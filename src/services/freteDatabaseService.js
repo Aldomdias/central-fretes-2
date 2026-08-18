@@ -3,6 +3,8 @@ import { getSupabaseClient, getSupabaseInfo, isSupabaseConfigured } from '../lib
 const SNAPSHOT_CHAVE = 'cadastro-fretes-principal';
 const FALLBACK_KEY = 'simulador-fretes-local-v6';
 const PAGE_SIZE = 1000;
+// Quantas páginas são lidas ao mesmo tempo nas consultas paginadas da malha.
+const PAGE_CONCURRENCY = 6;
 
 // Cache de sessão — evita recarregar/reenriquecer rotas a cada chamada.
 // Invalide com invalidarCacheBaseCompletaDb() quando salvar tabelas.
@@ -1547,32 +1549,75 @@ export async function buscarUltimoSnapshot() {
 
 
 
+// Lê todas as páginas de uma consulta em blocos paralelos.
+// A leitura página a página era o que fazia a malha de uma única origem B2C
+// (26 mil rotas) levar mais de um minuto e estourar o tempo limite do
+// Simulador do realizado com tabela oficial.
+// A ordenação precisa ser determinística (origem_id + id): com empate no
+// origem_id o Postgres pode devolver a mesma linha em duas faixas e perder
+// outra. O dedup por id fica como rede de segurança.
+// Concatena sem espalhar o array: push(...linhas) estoura a pilha do V8
+// quando a página tem dezenas de milhares de registros.
+function anexarLinhasDb(destino, linhas = []) {
+  for (let i = 0; i < linhas.length; i += 1) destino.push(linhas[i]);
+  return destino;
+}
+
+async function paginarEmParaleloDb(montarQuery, { pageSize = PAGE_SIZE, concorrencia = PAGE_CONCURRENCY } = {}) {
+  const vistos = new Set();
+  const linhas = [];
+  let inicio = 0;
+  let fim = false;
+
+  while (!fim) {
+    const faixas = Array.from({ length: concorrencia }, (_, i) => inicio + i * pageSize);
+    const paginas = await Promise.all(faixas.map(async (from) => {
+      const { data, error } = await montarQuery().range(from, from + pageSize - 1);
+      if (error) throw error;
+      return data || [];
+    }));
+
+    paginas.forEach((pagina) => {
+      pagina.forEach((row) => {
+        const chave = row?.id === undefined || row?.id === null ? null : String(row.id);
+        if (chave !== null) {
+          if (vistos.has(chave)) return;
+          vistos.add(chave);
+        }
+        linhas.push(row);
+      });
+      if (pagina.length < pageSize) fim = true;
+    });
+
+    inicio += concorrencia * pageSize;
+  }
+
+  return linhas;
+}
+
+// generalidades é a única tabela da malha sem coluna id — lá origem_id já é
+// chave única (uma linha por origem), então ordenar só por ele é determinístico.
+const TABELAS_SEM_ID_DB = new Set(['generalidades']);
+
 async function fetchRowsByOrigemIds(supabase, table, origemIds = []) {
   const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
   if (!ids.length) return [];
 
   const rows = [];
   const chunkSize = 100;
+  const desempatarPorId = !TABELAS_SEM_ID_DB.has(table);
 
   for (let index = 0; index < ids.length; index += chunkSize) {
     const chunk = ids.slice(index, index + chunkSize);
-    let from = 0;
-
-    while (true) {
-      const { data, error } = await supabase
+    const page = await paginarEmParaleloDb(() => {
+      const query = supabase
         .from(table)
         .select('*')
         .in('origem_id', chunk)
-        .order('origem_id', { ascending: true })
-        .range(from, from + PAGE_SIZE - 1);
-
-      if (error) throw error;
-
-      const page = data || [];
-      rows.push(...page);
-      if (page.length < PAGE_SIZE) break;
-      from += PAGE_SIZE;
-    }
+        .order('origem_id', { ascending: true });
+      return desempatarPorId ? query.order('id', { ascending: true }) : query;
+    });
+    anexarLinhasDb(rows, page);
   }
 
   return rows;
@@ -1593,22 +1638,14 @@ async function fetchCotacoesByOrigemIdsAndRotas(supabase, origemIds = [], rotaNo
       const origemChunk = ids.slice(oi, oi + origemChunkSize);
       for (let ri = 0; ri < rotas.length; ri += rotaChunkSize) {
         const rotaChunk = rotas.slice(ri, ri + rotaChunkSize);
-        let from = 0;
-        while (true) {
-          const { data, error } = await supabase
-            .from('cotacoes')
-            .select('*')
-            .in('origem_id', origemChunk)
-            .in('rota', rotaChunk)
-            .order('origem_id', { ascending: true })
-            .range(from, from + PAGE_SIZE - 1);
-
-          if (error) throw error;
-          const page = data || [];
-          rows.push(...page);
-          if (page.length < PAGE_SIZE) break;
-          from += PAGE_SIZE;
-        }
+        const page = await paginarEmParaleloDb(() => supabase
+          .from('cotacoes')
+          .select('*')
+          .in('origem_id', origemChunk)
+          .in('rota', rotaChunk)
+          .order('origem_id', { ascending: true })
+          .order('id', { ascending: true }));
+        anexarLinhasDb(rows, page);
       }
     }
   } catch {
@@ -1805,41 +1842,58 @@ async function fetchRotasByOrigemIds(supabase, origemIds = [], destinos = [], uf
 
   const rows = [];
   const chunkSize = 50;
-  const usarFiltroIbgeNoBanco = Boolean(destinosIbge.length && !ufFiltro && destinosIbge.length <= 150);
+  const IBGE_BLOCO = 150;
+  const IBGE_BLOCOS_SIMULTANEOS = 6;
+
+  // O filtro de destino só pode ir para o banco quando TODOS os destinos pedidos
+  // são código IBGE. Se vier nome de cidade, a rota tem de ser casada no
+  // navegador — tabelas com IBGE ausente/divergente ainda casam pelo nome.
+  const filtrarIbgeNoBanco = destinosNormalizados.length > 0
+    && destinosIbge.length === destinosNormalizados.length;
+
+  // Em blocos: milhares de IBGEs não cabem numa URL só, e sem filtro no banco a
+  // consulta lia a malha inteira da origem (dezenas de milhares de rotas, vários
+  // minutos) só para descartar quase tudo depois. É o que travava a comparação
+  // com concorrentes na Análise de transportadora.
+  const blocosIbge = filtrarIbgeNoBanco
+    ? Array.from(
+      { length: Math.ceil(destinosIbge.length / IBGE_BLOCO) },
+      (_, i) => destinosIbge.slice(i * IBGE_BLOCO, (i + 1) * IBGE_BLOCO)
+    )
+    : [null];
 
   for (let index = 0; index < ids.length; index += chunkSize) {
     const chunk = ids.slice(index, index + chunkSize);
-    let from = 0;
 
-    while (true) {
-      let query = supabase
-        .from('rotas')
-        .select('*')
-        .in('origem_id', chunk)
-        .order('origem_id', { ascending: true });
+    for (let b = 0; b < blocosIbge.length; b += IBGE_BLOCOS_SIMULTANEOS) {
+      const lote = blocosIbge.slice(b, b + IBGE_BLOCOS_SIMULTANEOS);
 
-      // Quando há UF destino, é mais seguro buscar a malha da origem/UF e casar no front.
-      if (usarFiltroIbgeNoBanco) {
-        query = query.in('ibge_destino', destinosIbge);
-      }
-
-      const { data, error } = await query.range(from, from + PAGE_SIZE - 1);
-
-      if (error) {
+      let resultados;
+      try {
+        resultados = await Promise.all(lote.map((blocoIbge) => paginarEmParaleloDb(
+          () => {
+            const query = supabase
+              .from('rotas')
+              .select('*')
+              .in('origem_id', chunk)
+              .order('origem_id', { ascending: true })
+              .order('id', { ascending: true });
+            return blocoIbge ? query.in('ibge_destino', blocoIbge) : query;
+          },
+          // Bloco filtrado devolve poucas linhas: ler as páginas em paralelo aí
+          // só gastaria requisições vazias.
+          { concorrencia: blocoIbge ? 1 : PAGE_CONCURRENCY }
+        )));
+      } catch (error) {
         throw new Error(`Erro ao buscar rotas da malha: ${error.message || error.details || 'Bad Request'}`);
       }
 
-      const rawPage = data || [];
-      const page = rawPage.filter((rota) => {
+      resultados.forEach((rawRows) => rawRows.forEach((rota) => {
         const ibge = String(rota.ibge_destino || rota.ibgeDestino || '').replace(/\D/g, '');
-        if (ufFiltro && ibge && ufFromIbgeLike(ibge) !== ufFiltro) return false;
-        if (!usarFiltroIbgeNoBanco && destinosNormalizados.length && !rotaDestinoLocalCompativelDb(rota, destinosNormalizados)) return false;
-        return true;
-      });
-
-      rows.push(...page);
-      if (rawPage.length < PAGE_SIZE) break;
-      from += PAGE_SIZE;
+        if (ufFiltro && ibge && ufFromIbgeLike(ibge) !== ufFiltro) return;
+        if (!filtrarIbgeNoBanco && destinosNormalizados.length && !rotaDestinoLocalCompativelDb(rota, destinosNormalizados)) return;
+        rows.push(rota);
+      }));
     }
   }
 
@@ -2724,7 +2778,59 @@ export async function carregarOpcoesSimuladorDb() {
   };
 }
 
-export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '', ufDestino = '' } = {}) {
+// Junta bases vindas de consultas diferentes sem perder origens. A mesma
+// transportadora volta uma vez por consulta (origem/canal/destino), então
+// sobrescrever pelo id faria perder a malha de todas as consultas menos a
+// última (ex.: transportadora oficial com Campinas e Itupeva ficava só com uma).
+function mesclarBasesTransportadorasDb(...bases) {
+  const byId = new Map();
+  bases.flat().forEach((item) => {
+    if (!item) return;
+    const chave = String(item.id);
+    const existente = byId.get(chave);
+    if (!existente) {
+      byId.set(chave, item);
+      return;
+    }
+    const origensExistentesIds = new Set((existente.origens || []).map((o) => String(o.id)));
+    const origensNovas = (item.origens || []).filter((o) => !origensExistentesIds.has(String(o.id)));
+    if (origensNovas.length) {
+      byId.set(chave, { ...existente, origens: [...(existente.origens || []), ...origensNovas] });
+    }
+  });
+  return [...byId.values()];
+}
+
+// Quando a busca por nome traz mais de um cadastro (o fallback usa %nome%),
+// fica só com o casamento exato se ele existir. Sem isso, um nome curto
+// ("3G") arrasta cadastros que apenas o contêm e o Simulador do realizado
+// acaba mostrando origens de outra transportadora.
+function preferirNomeExatoDb(base = [], nomeTransportadora = '') {
+  const alvo = normalizeTransportadoraBuscaDb(nomeTransportadora);
+  if (!alvo) return base;
+  const exatas = (base || []).filter((item) => normalizeTransportadoraBuscaDb(item?.nome) === alvo);
+  return exatas.length ? exatas : base;
+}
+
+// IBGEs de destino atendidos por uma base já carregada. Serve para recortar a
+// consulta dos concorrentes exatamente nos destinos que interessam.
+function destinosIbgeDaBaseDb(base = [], ufDestino = '') {
+  const uf = String(ufDestino || '').trim().toUpperCase();
+  const destinos = new Set();
+  (base || []).forEach((transportadora) => {
+    (transportadora?.origens || []).forEach((origemItem) => {
+      (origemItem?.rotas || []).forEach((rota) => {
+        const ibge = String(rota?.ibgeDestino || rota?.ibge_destino || '').replace(/[^0-9]/g, '');
+        if (ibge.length < 6) return;
+        if (uf && ufFromIbgeLike(ibge) !== uf) return;
+        destinos.add(ibge);
+      });
+    });
+  });
+  return [...destinos];
+}
+
+export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '', ufDestino = '', somenteTransportadora = false } = {}) {
   // Fonte da verdade do simulador: Supabase.
   // Não depende da tela Transportadoras estar aberta ou atualizada.
 
@@ -2747,16 +2853,43 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
   if (nomeTransportadora && origem) {
     const transportadoraIds = await buscarIdsTransportadoraPorNome({ supabase, nomeTransportadora });
     if (!transportadoraIds.length) return [];
-    // Para simulação em cima do realizado, quando há UF destino carregamos a malha
-    // da origem/UF inteira. É mais robusto do que filtrar por IBGE antes, porque
-    // algumas tabelas têm IBGE ausente/divergente, mas a rota está correta pelo nome.
-    if (ufDestino) {
-      return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: [], ufDestino, transportadoraIds });
-    }
 
-    // A transportadora e a origem já restringem a consulta. Buscar primeiro todos os
-    // destinos faria a mesma malha ser lida duas vezes, o que trava tabelas grandes.
-    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos, ufDestino, transportadoraIds });
+    // Malha da transportadora escolhida. Quando há UF destino carregamos a
+    // origem/UF inteira em vez de filtrar por IBGE antes: é mais robusto porque
+    // algumas tabelas têm IBGE ausente/divergente, mas a rota está certa pelo nome.
+    const baseSelecionada = await buscarBasePorOrigemDestino({
+      supabase,
+      origem,
+      canal,
+      destinos: ufDestino ? [] : destinos,
+      ufDestino,
+      transportadoraIds,
+    });
+
+    // O Simulador do realizado monta a concorrência por fora (por rota real) e
+    // aqui só quer a malha da tabela escolhida — buscar concorrente de novo
+    // duplicaria a leitura da malha e travava tabelas grandes.
+    if (somenteTransportadora) return preferirNomeExatoDb(baseSelecionada, nomeTransportadora);
+    if (!baseSelecionada.length) return [];
+
+    // Ranking, aderência e "perdeu para" só existem se a base tiver os
+    // concorrentes que atendem os MESMOS destinos. Sem isso a transportadora
+    // selecionada vence 100% das rotas por ser a única na comparação.
+    const destinosAlvo = destinos.length
+      ? destinos
+      : destinosIbgeDaBaseDb(baseSelecionada, ufDestino);
+
+    if (!destinosAlvo.length) return baseSelecionada;
+
+    const concorrentes = await buscarBasePorOrigemDestino({
+      supabase,
+      origem,
+      canal,
+      destinos: destinosAlvo,
+      ufDestino,
+    });
+
+    return mesclarBasesTransportadorasDb(baseSelecionada, concorrentes);
   }
 
   // Caso principal: simulação simples ou lista com destino informado.
@@ -2768,6 +2901,13 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
   // Caso análise de transportadora sem destino/origem: busca as rotas da transportadora
   // selecionada e depois monta a base concorrente para os mesmos destinos/origens.
   if (nomeTransportadora) {
+    // Só a malha da transportadora: caminho direto por transportadora_id, em vez
+    // de reler a malha inteira (todas as concorrentes) de cada origem dela.
+    if (somenteTransportadora) {
+      const malha = await carregarBaseTransportadorasDb([nomeTransportadora]);
+      return preferirNomeExatoDb(malha, nomeTransportadora);
+    }
+
     let { data: transportadorasAlvo, error: transportadoraError } = await supabase
       .from('transportadoras')
       .select('id, nome, status')
@@ -2811,30 +2951,43 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
       bases.push(...parcial);
     }
 
-    const byId = new Map();
-    bases.forEach((item) => {
-      const chave = String(item.id);
-      const existente = byId.get(chave);
-      if (!existente) {
-        byId.set(chave, item);
-        return;
-      }
-      // A mesma transportadora aparece uma vez por origem/canal pesquisado —
-      // mescla as origens em vez de sobrescrever, senão perdemos a malha de
-      // todas as origens exceto a última processada (ex.: transportadora
-      // oficial com Campinas e Itupeva ficava só com uma das duas).
-      const origensExistentesIds = new Set((existente.origens || []).map((o) => String(o.id)));
-      const origensNovas = (item.origens || []).filter((o) => !origensExistentesIds.has(String(o.id)));
-      if (origensNovas.length) {
-        byId.set(chave, { ...existente, origens: [...(existente.origens || []), ...origensNovas] });
-      }
-    });
-    return [...byId.values()];
+    return mesclarBasesTransportadorasDb(bases);
   }
 
   return [];
 }
 
+
+// Só as origens cadastradas de uma transportadora, sem carregar rotas.
+// A malha completa de uma transportadora grande passa de 300 mil rotas em
+// 25 origens e leva minutos — o Simulador do realizado só precisa das origens
+// para montar o seletor, e busca a malha depois, já recortada pela origem
+// escolhida. As origens vêm por transportadora_id, então nunca aparece origem
+// de outra transportadora com nome parecido.
+export async function carregarOrigensTransportadoraDb(nomeTransportadora = '') {
+  const nome = String(nomeTransportadora || '').trim();
+  if (!nome || !isSupabaseConfigured()) return [];
+
+  const supabase = ensureClient();
+  const transportadoraIds = await buscarIdsTransportadoraPorNome({ supabase, nomeTransportadora: nome });
+  if (!transportadoraIds.length) return [];
+
+  const [transportadorasRows, origens] = await Promise.all([
+    fetchTransportadorasByIds(supabase, transportadoraIds),
+    buscarOrigensFiltradasDb({ supabase, transportadoraIds }),
+  ]);
+
+  const base = transportadorasFromDbRows({
+    transportadoras: transportadorasRows || [],
+    origens: origens || [],
+    generalidades: [],
+    rotas: [],
+    cotacoes: [],
+    taxas: [],
+  }).map((transportadora) => ({ ...transportadora, apenasOrigens: true }));
+
+  return preferirNomeExatoDb(base, nome);
+}
 
 export async function carregarConferenciaBaseDb() {
   if (!isSupabaseConfigured()) {

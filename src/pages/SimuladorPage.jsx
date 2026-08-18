@@ -25,7 +25,7 @@ import {
 } from '../utils/calculoFrete';
 import { carregarGradeFrete, salvarGradeFrete } from '../utils/gradeFreteConfig';
 import { carregarGradeFreteCentralizada, salvarGradeFreteCentralizada, restaurarGradeFreteCentralizadaPadrao } from '../services/gradeFreteSupabaseService';
-import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
+import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, carregarOrigensTransportadoraDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, salvarVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import {
@@ -43,6 +43,8 @@ import {
   listarCapasNegociacaoParaSimulacao,
   carregarDetalhesNegociacaoParaSimulacao,
   criarTabelaNegociacao,
+  importarTabelaOficialParaNegociacao,
+  listarNegociacoesDaTransportadora,
   salvarResultadoSimulacaoNegociacao,
 } from '../services/tabelasNegociacaoService';
 import {
@@ -292,10 +294,12 @@ function aplicarFiltrosRealizadoQuery(query, filtros) {
   const origensPrefixos = [...new Set(
     origensDb.map((origem) => prefixoCidadePrincipalConsultaRealizadoDb(origem)).filter(Boolean)
   )];
+  // Só um prefixo por consulta. Um .or() de vários ilike em cidade_origem foi
+  // medido em ~30s por página de 500 contra ~1,6s do ilike simples — era o que
+  // fazia a busca de CT-es de uma malha com 2 origens (ex.: LUZON = Campinas +
+  // Itupeva) parecer travada. Quem chama quebra a busca por origem e junta.
   if (origensPrefixos.length === 1) {
     query = query.ilike('cidade_origem', `${origensPrefixos[0]}%`);
-  } else if (origensPrefixos.length > 1) {
-    query = query.or(origensPrefixos.map((prefixo) => `cidade_origem.ilike.${prefixo}%`).join(','));
   }
   const destinoPrefixo = prefixoCidadePrincipalConsultaRealizadoDb(filtros.destino || '');
   if (destinoPrefixo) query = query.ilike('cidade_destino', `${destinoPrefixo}%`);
@@ -456,12 +460,22 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
   const janelasData = montarJanelasDataRealizado(filtros.inicio, filtros.fim);
   const janelas = janelasData.length ? janelasData : [{ inicio: filtros.inicio || '', fim: filtros.fim || '' }];
 
+  // Uma consulta por origem em vez de um .or() com vários ilike: o OR custava
+  // ~30s por página de 500 e a busca nunca terminava em malha com 2+ origens.
+  const origensBusca = normalizarOrigensFiltroRealizadoSim(
+    filtros.origem ? [filtros.origem] : filtros.origens
+  );
+  const recortesOrigem = origensBusca.length > 1
+    ? origensBusca.map((origem) => ({ origem, origens: [] }))
+    : [{ origem: filtros.origem || origensBusca[0] || '', origens: [] }];
+
+  for (const recorte of recortesOrigem) {
   for (const janela of janelas) {
     let from = 0;
 
     while (allRows.length < totalMax) {
       const to = Math.min(from + PAGE_SIZE - 1, totalMax - 1);
-      const filtrosJanela = { ...filtros, inicio: janela.inicio, fim: janela.fim };
+      const filtrosJanela = { ...filtros, ...recorte, inicio: janela.inicio, fim: janela.fim };
       let query = supabase
         .from('realizado_local_ctes')
         .select(COLUNAS_REALIZADO_LOCAL_CTES_SIMULADOR)
@@ -485,6 +499,8 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
     }
 
     if (allRows.length >= totalMax) break;
+  }
+  if (allRows.length >= totalMax) break;
   }
 
   const rows = allRows.slice(0, totalMax);
@@ -3491,6 +3507,7 @@ function serializarEstadoSimulacaoRealizado(estado) {
       canaisUsados: [...estado.diagnostico.canaisUsados.entries()],
       origensUsadas: [...estado.diagnostico.origensUsadas.entries()],
       destinosSemResultado: [...estado.diagnostico.destinosSemResultado.entries()],
+      vencedorDivergente: [...estado.diagnostico.vencedorDivergente.entries()],
     },
     ctesDetalhes: estado.ctesDetalhes.map((item) => ({
       ...item,
@@ -3516,12 +3533,18 @@ function desserializarEstadoSimulacaoRealizado(texto) {
   estado.pedidosCapturadosSet = new Set(dados.pedidosCapturados || []);
   estado.pedidosComTabelaSet = new Set(dados.pedidosComTabela || []);
   estado.pedidosTotaisSet = new Set(dados.pedidosTotais || []);
+  // Mantém o formato de criarEstadoSimulacaoRealizado(). Reescrever o objeto
+  // inteiro aqui já deixou vencedorDivergente de fora, e o laço de simulação
+  // chama .set() nele — ao retomar um checkpoint a simulação morria com
+  // "Cannot read properties of undefined" e não devolvia resultado nenhum.
   estado.diagnostico = {
+    ...estado.diagnostico,
     linhasSemIbgeDestino: Number(dados.diagnostico?.linhasSemIbgeDestino) || 0,
     linhasSemResultado: Number(dados.diagnostico?.linhasSemResultado) || 0,
     canaisUsados: new Map(dados.diagnostico?.canaisUsados || []),
     origensUsadas: new Map(dados.diagnostico?.origensUsadas || []),
     destinosSemResultado: new Map(dados.diagnostico?.destinosSemResultado || []),
+    vencedorDivergente: new Map(dados.diagnostico?.vencedorDivergente || []),
   };
   estado.ctesDetalhes = Array.isArray(dados.ctesDetalhes) ? dados.ctesDetalhes : [];
   return estado;
@@ -5326,13 +5349,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       setCarregandoBaseOficialRealizado(true);
       try {
-        const base = await executarComTimeout(buscarBaseSimulacaoDb({
-          nomeTransportadora: transportadoraRealizado,
-          canal: canalRealizado,
-        }), 120000);
+        // Só as origens: a malha completa de uma transportadora grande passa de
+        // 300 mil rotas e estourava o tempo limite, deixando o seletor vazio e a
+        // simulação sem tabela. A malha é buscada depois, recortada pela origem.
+        const base = await executarComTimeout(carregarOrigensTransportadoraDb(transportadoraRealizado), 60000);
 
         if (!ativo) return;
-        setBaseOficialRealizadoSelecionada(filtrarBasePorTransportadoraSimulador(base || [], transportadoraRealizado));
+        setBaseOficialRealizadoSelecionada(base || []);
       } catch (error) {
         if (ativo) {
           console.warn('Não foi possível carregar a malha oficial da transportadora selecionada.', error?.message || error);
@@ -5586,7 +5609,34 @@ export default function SimuladorPage({ transportadoras = [] }) {
     const aderencia = Number(resultadoRealizado.aderenciaSelecionada || 0);
     const savingMensal = Number(resultadoRealizado.savingSelecionadaVsRealMes || 0);
 
-    if (!window.confirm(`Abrir uma revisão de competitividade de ${transportadora}${origem ? ` / ${origem}` : ''} em Negociações? A tabela oficial ficará como base atual e este diagnóstico será salvo como marco inicial.`)) return;
+    const canalRevisao = contexto.canal || resultadoRealizado.filtros?.canal || canalRealizado;
+
+    // Nada é sobrescrito: se já existe negociação em andamento para a mesma
+    // transportadora/origem, o usuário decide se continua nela ou abre um novo
+    // ciclo; as encerradas apenas numeram o ciclo da nova revisão.
+    let existentes = { abertas: [], encerradas: [], total: 0 };
+    try {
+      existentes = await listarNegociacoesDaTransportadora({ transportadora, canal: canalRevisao, origem });
+    } catch (erroConsulta) {
+      setErroSimulacao(erroConsulta.message || 'Não foi possível verificar negociações existentes desta transportadora.');
+      return;
+    }
+
+    const rotulo = `${transportadora}${origem ? ` / ${origem}` : ''}`;
+    const ciclo = existentes.total + 1;
+
+    if (existentes.abertas.length) {
+      const listaAbertas = existentes.abertas
+        .slice(0, 5)
+        .map((item) => `• ${item.origem || 'sem origem'} — ${item.status_gestao || item.status || 'em andamento'}`)
+        .join('\n');
+      if (!window.confirm(`${rotulo} já tem ${existentes.abertas.length} negociação(ões) em andamento:\n${listaAbertas}\n\nAbrir MAIS UMA revisão (ciclo ${ciclo})? Nenhuma negociação existente será alterada — mas o normal é continuar na que já está aberta.`)) return;
+    } else {
+      const historico = existentes.encerradas.length
+        ? `\n\n${existentes.encerradas.length} negociação(ões) anterior(es) já encerrada(s) continuam intactas no histórico — esta será o ciclo ${ciclo}.`
+        : '';
+      if (!window.confirm(`Abrir uma revisão de competitividade de ${rotulo} em Negociações? A tabela oficial (rotas, cotações, taxas por destino e generalidades) será copiada para a rodada 1 e este diagnóstico será salvo como marco inicial.${historico}`)) return;
+    }
 
     setSalvandoResultadoNegociacao(true);
     setErroSimulacao('');
@@ -5594,7 +5644,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     try {
       const nova = await criarTabelaNegociacao({
         transportadora,
-        canal: contexto.canal || resultadoRealizado.filtros?.canal || canalRealizado,
+        canal: canalRevisao,
         tipo_negociacao: 'REAJUSTE_TABELA_EXISTENTE',
         transportadora_base_id: tabelaOficial.id || '',
         transportadora_base_nome: transportadora,
@@ -5605,20 +5655,34 @@ export default function SimuladorPage({ transportadoras = [] }) {
         periodo_realizado_fim: contexto.fim || fimRealizado,
         origem,
         uf_origem: contexto.ufOrigem || resultadoRealizado.filtros?.ufOrigem || '',
-        descricao: 'Revisão de competitividade e recuperação de volume iniciada pelo Simulador do Realizado.',
-        observacao: `Diagnóstico inicial: ${resultadoRealizado.ctesAnalisados.toLocaleString('pt-BR')} CT-es; aderência ${aderencia.toFixed(2)}%; saving mensal potencial ${formatMoney(savingMensal)}.`,
+        descricao: `Revisão de competitividade e recuperação de volume iniciada pelo Simulador do Realizado (ciclo ${ciclo}).`,
+        observacao: `Ciclo ${ciclo}${existentes.total ? ` — ${existentes.total} negociação(ões) anterior(es) preservada(s)` : ''}. Diagnóstico inicial: ${resultadoRealizado.ctesAnalisados.toLocaleString('pt-BR')} CT-es; aderência ${aderencia.toFixed(2)}%; saving mensal potencial ${formatMoney(savingMensal)}.`,
         saving_projetado: savingMensal,
         aderencia_projetada: aderencia,
         origem_importacao: 'SIMULADOR_REALIZADO',
         incluir_simulacao: true,
       });
 
-      atualizarProcessamentoUi('Salvando diagnóstico como marco inicial da negociação...', 75);
+      atualizarProcessamentoUi('Copiando a tabela oficial vigente para a negociação...', 60);
+      let resumoImportacao = null;
+      let avisoImportacao = '';
+      try {
+        resumoImportacao = await importarTabelaOficialParaNegociacao(nova, tabelaOficial, {
+          canal: nova.canal,
+          origem: nova.origem,
+          observacao: 'Tabela oficial vigente copiada ao abrir a revisão de competitividade',
+          onProgress: (mensagem) => atualizarProcessamentoUi(mensagem, 65),
+        });
+      } catch (erroImportacao) {
+        avisoImportacao = erroImportacao.message || 'Não foi possível copiar a tabela oficial para a negociação.';
+      }
+
+      atualizarProcessamentoUi('Salvando diagnóstico como marco inicial da negociação...', 85);
       const atualizada = await salvarResultadoSimulacaoNegociacao(nova.id, {
         ...resultadoRealizado,
         negociacaoId: nova.id,
         negociacaoNome: nova.transportadora,
-        negociacaoLabel: `${nova.transportadora}${nova.origem ? ` — ${nova.origem}` : ''} — Revisão de competitividade`,
+        negociacaoLabel: `${nova.transportadora}${nova.origem ? ` — ${nova.origem}` : ''} — Revisão de competitividade (ciclo ${ciclo})`,
         tipoNegociacao: 'REAJUSTE_TABELA_EXISTENTE',
         modoNegociacao: 'REAJUSTE',
         diagnosticoInicial: true,
@@ -5628,10 +5692,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
         ...anterior,
         negociacaoId: atualizada.id,
         negociacaoNome: atualizada.transportadora,
-        negociacaoLabel: `${atualizada.transportadora}${atualizada.origem ? ` — ${atualizada.origem}` : ''} — Revisão de competitividade`,
+        negociacaoLabel: `${atualizada.transportadora}${atualizada.origem ? ` — ${atualizada.origem}` : ''} — Revisão de competitividade (ciclo ${ciclo})`,
       }));
-      finalizarProcessamentoUi('Revisão aberta em Negociações', 'Diagnóstico inicial salvo. A próxima proposta poderá ser registrada como nova rodada.', 100);
-      alert('Revisão de competitividade criada em Negociações. A tabela oficial ficou como base atual e o resultado foi salvo como diagnóstico inicial.');
+      finalizarProcessamentoUi('Revisão aberta em Negociações', 'Tabela oficial copiada e diagnóstico inicial salvo na rodada 1.', 100);
+      const detalheImportacao = resumoImportacao
+        ? `Tabela copiada para a rodada 1: ${resumoImportacao.rotas.toLocaleString('pt-BR')} rota(s), ${resumoImportacao.cotacoes.toLocaleString('pt-BR')} cotação(ões), ${resumoImportacao.taxas.toLocaleString('pt-BR')} taxa(s) por destino e as generalidades da tabela oficial.`
+        : `Atenção: a tabela oficial não foi copiada (${avisoImportacao}). Importe a tabela manualmente na negociação.`;
+      alert(`Revisão de competitividade criada em Negociações.\n\n${detalheImportacao}\n\nO diagnóstico do realizado foi salvo como marco inicial da rodada.`);
     } catch (error) {
       setErroSimulacao(error.message || 'Erro ao abrir revisão de competitividade em Negociações.');
       finalizarProcessamentoUi('Erro ao abrir revisão', 'Não foi possível criar a negociação.', 100);
@@ -6252,18 +6319,38 @@ export default function SimuladorPage({ transportadoras = [] }) {
           ? filtrarBasePorTransportadoraSimulador(basesMalhaRealizadoSelecionada, transportadoraRealizado)
           : [];
 
-        const precisaBuscarMalha = !baseJaCarregada.length || origemRealizado || ufsDestinoFiltroRealizado.length;
+        // A pré-carga da tela traz só as origens (sem rotas), para o seletor.
+        // Ela nunca serve como malha de simulação.
+        const malhaJaTemRotas = baseJaCarregada.some((transportadora) => (
+          !transportadora?.apenasOrigens
+          && (transportadora?.origens || []).some((origem) => (origem?.rotas || []).length)
+        ));
+
+        // Sem origem nem UF, uma transportadora com muitas origens obriga a ler a
+        // malha inteira (centenas de milhares de rotas) e a busca nunca termina.
+        const origensDaTabela = extrairOrigensBaseSimulador(baseJaCarregada, canalRealizado);
+        if (!malhaJaTemRotas && !origemRealizado && !ufsDestinoFiltroRealizado.length && origensDaTabela.length > 1) {
+          setErroSimulacao(`${transportadoraRealizado} tem ${origensDaTabela.length} origens no canal ${canalRealizado}. Escolha uma origem (ou pelo menos uma UF de destino) antes de buscar — carregar a malha inteira de uma vez não termina.`);
+          finalizarProcessamentoUi('Escolha uma origem', 'A malha completa da transportadora é grande demais para carregar de uma vez.', 100);
+          setBuscandoCtesRealizado(false);
+          return;
+        }
+
+        const precisaBuscarMalha = !malhaJaTemRotas || origemRealizado || ufsDestinoFiltroRealizado.length;
         if (precisaBuscarMalha) {
           const baseOficial = await carregarBaseOnlinePorUfDestino({
             nomeTransportadora: nomeTabelaSelecionada,
             canal: canalRealizado,
             origem: origemRealizado || '',
             ufDestino: ufsDestinoFiltroRealizado,
+            // Aqui só interessa a malha da tabela escolhida; a concorrência é
+            // montada depois, por rota real dos CT-es.
+            somenteTransportadora: true,
           });
           baseSelecionada = filtrarBasePorTransportadoraSimulador(baseOficial, nomeTabelaSelecionada);
         }
 
-        if (!baseSelecionada.length && baseJaCarregada.length) baseSelecionada = baseJaCarregada;
+        if (!baseSelecionada.length && malhaJaTemRotas) baseSelecionada = baseJaCarregada;
       }
 
       let origensTabelaSelecionada = extrairOrigensBaseSimulador(baseSelecionada, canalRealizado);
@@ -6682,16 +6769,34 @@ export default function SimuladorPage({ transportadoras = [] }) {
         ...baseSelecionada.flatMap((t) => (t.origens || []).map((o) => o.cidade)),
       ]).slice(0, 20);
 
+      // Recorta a concorrência pelos destinos que realmente aparecem nos CT-es.
+      // Carregar a malha inteira da origem custava 169s só em Itupeva/ATACADO
+      // (42.587 rotas de 19 transportadoras) para usar uma fração disso — e o
+      // laço repete isso para até 20 origens.
+      const ibgesDestinoRealizado = [...new Set(
+        rowsFiltrados
+          .map((row) => String(row.ibgeDestino || '').replace(/\D/g, '').slice(0, 7))
+          .filter((ibge) => ibge.length >= 6)
+      )];
+
       let basesOrigemCarregadas = 0;
       if (deveCompararConcorrentes) {
         for (let idx = 0; idx < origensParaBuscar.length; idx += 1) {
           const origemBusca = origensParaBuscar[idx];
           atualizarProcessamentoUi(`Buscando tabelas concorrentes da origem ${origemBusca}...`, Math.min(72, 60 + idx));
-          const baseOrigem = await carregarBaseOnlinePorUfDestino({
-            canal: ctx.canal,
-            origem: origemBusca,
-            ufDestino: ufsDestinoEfetivasRealizado,
-          });
+          // Sem IBGE nos CT-es não dá para recortar por destino; aí cai no
+          // recorte antigo por UF, que é lento mas não perde rota.
+          const baseOrigem = ibgesDestinoRealizado.length
+            ? await carregarBaseOnline({
+              canal: ctx.canal,
+              origem: origemBusca,
+              destinoCodigos: ibgesDestinoRealizado,
+            })
+            : await carregarBaseOnlinePorUfDestino({
+              canal: ctx.canal,
+              origem: origemBusca,
+              ufDestino: ufsDestinoEfetivasRealizado,
+            });
           if (Array.isArray(baseOrigem) && baseOrigem.length) {
             basesOrigemCarregadas += baseOrigem.length;
             basesParaMesclar.push(baseOrigem);
@@ -6767,6 +6872,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               canal: ctx.canal,
               origem: origemAtualReajusteOverride || ctx.origem || '',
               ufDestino: ufsDestinoEfetivasRealizado,
+              somenteTransportadora: true,
             });
             baseTabelaAtualReajuste = filtrarBasePorTransportadoraSimulador(baseOficialAtual, nomeTabelaAtualBusca);
             // Se a origem foi escolhida explicitamente, restringe AQUI, pra base
@@ -7034,11 +7140,35 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       atualizarProcessamentoUi(deveCompararConcorrentes ? 'Simulando CT-e a CT-e contra a tabela selecionada e concorrentes...' : 'Simulando CT-e a CT-e contra a tabela selecionada e o realizado...', 88);
       const resultado = await simularRealizadoComTabela(paramsSimulacao);
+
+      // Funil da simulação: diz em qual passo os CT-es se perderam. Sem isto,
+      // uma simulação que devolve zero é indistinguível de uma que quebrou.
+      console.info('[simulador/realizado] funil da simulação', {
+        tabela: nomeTabelaSelecionada,
+        origem: ctx.origem,
+        canal: ctx.canal,
+        malha: {
+          tabelas: baseParaSimulacao.length,
+          origens: baseParaSimulacao.reduce((n, t) => n + (t.origens || []).length, 0),
+          rotas: baseParaSimulacao.reduce((n, t) => n + (t.origens || []).reduce((m, o) => m + (o.rotas || []).length, 0), 0),
+          cotacoes: baseParaSimulacao.reduce((n, t) => n + (t.origens || []).reduce((m, o) => m + (o.cotacoes || []).length, 0), 0),
+        },
+        ctesEnviados: rowsFiltrados.length,
+        ctesAnalisados: resultado.ctesAnalisados,
+        ctesComCalculo: resultado.ctesSimulados,
+        ctesComTabelaSelecionada: resultado.ctesComTabelaSelecionada,
+        semIbgeDestino: resultado.diagnostico?.linhasSemIbgeDestino,
+        comIbgeMasSemCalculo: resultado.diagnostico?.linhasSemResultado,
+        destinosSemCobertura: resultado.diagnostico?.destinosSemResultado,
+        vencedorDeOutraTransportadora: resultado.diagnostico?.vencedorDivergente,
+      });
+
       aplicarResultadoSimulacaoRealizado(resultado);
 
       finalizarProcessamentoUi('Simulação do realizado concluída', 'Dossiê gerado com projeção, saving e rotas prioritárias.', 100);
     } catch (error) {
-      setErroSimulacao(error.message || 'Erro ao simular realizado.');
+      console.error('[simulador/realizado] a simulação quebrou', error);
+      setErroSimulacao(error.message || String(error) || 'Erro ao simular realizado.');
       finalizarProcessamentoUi('Erro na simulação do realizado', 'Não foi possível gerar o dossiê.', 100);
     } finally {
       simulacaoRealizadoEmCursoRef.current = false;

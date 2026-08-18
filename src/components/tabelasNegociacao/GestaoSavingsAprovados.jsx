@@ -8,6 +8,10 @@ import { normalizarTextoReajuste } from '../../utils/reajustesLocal';
 import { calcularJanelasSaving, calcularSavingLotacaoPorFluxo, calcularSavingPorRotaFaixa, MESES_BASE_SAVING_PADRAO } from '../../utils/savingsPosAprovacaoNegociacao';
 import { GRADE_FRETE_PADRAO, normalizarCanalGrade } from '../../utils/gradeFreteConfig';
 
+// Faixas com fim acima deste valor são "abertas" (ex.: 0–999999 de tabela por percentual)
+// e não representam segmentação real de peso.
+const LIMITE_FAIXA_ABERTA = 100000;
+
 // Filtro de transportadora é feito no cliente como reforço (não é o filtro principal):
 // ilike com wildcard nas duas pontas não usa índice em realizado_local_ctes, então a
 // consulta já filtra no servidor (ilike ou lista exata de vínculo) e isso aqui só
@@ -554,13 +558,21 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         const canalGrade = normalizarCanalGrade(item.canal);
         atualizarProgressoItem(item.id, 16, 'Lendo faixas da negociação');
         const faixasNegociadas = await listarFaixasPesoNegociacao(item.id);
-        const limitesPeso = faixasNegociadas.length
+        // Tabelas por percentual (ad valorem) têm faixa única 0–999999: nesse caso as
+        // faixas da negociação não segmentam nada e a comparação com o histórico
+        // ficaria em um único balde. Caímos na grade padrão do canal para comparar
+        // base x atual em faixas equivalentes.
+        const faixasSegmentam = faixasNegociadas.filter((faixa) => faixa.fim < LIMITE_FAIXA_ABERTA).length >= 1;
+        const usarFaixasNegociadas = faixasNegociadas.length > 0 && faixasSegmentam;
+        const limitesPeso = usarFaixasNegociadas
           ? faixasNegociadas.map((faixa) => faixa.fim)
           : (GRADE_FRETE_PADRAO[canalGrade] || []).map((faixa) => faixa.peso);
-        const origemFaixas = faixasNegociadas.length ? 'TABELA_NEGOCIADA' : 'GRADE_PADRAO';
-        atualizarProgressoItem(item.id, 20, faixasNegociadas.length
+        const origemFaixas = usarFaixasNegociadas
+          ? 'TABELA_NEGOCIADA'
+          : (faixasNegociadas.length ? 'GRADE_PADRAO_PERCENTUAL' : 'GRADE_PADRAO');
+        atualizarProgressoItem(item.id, 20, usarFaixasNegociadas
           ? `Usando ${faixasNegociadas.length} faixas negociadas`
-          : 'Usando grade padrão');
+          : (faixasNegociadas.length ? `Tabela sem faixas de peso: usando grade padrão ${canalGrade}` : 'Usando grade padrão'));
         const filtrosCalculo = {
           transportadoras: vinculoLista.length ? vinculoLista : [item.transportadora],
           origem: origemRealizado,
@@ -591,7 +603,8 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         const resultadoCompleto = {
           ...resultadoAgregado, janelas, versaoMetrica: VERSAO_METRICA_SAVING,
           deCache: false, calculadoEm: new Date().toISOString(), origemFaixas,
-          quantidadeFaixas: faixasNegociadas.length || limitesPeso.length, primeiroCte,
+          quantidadeFaixas: usarFaixasNegociadas ? faixasNegociadas.length : limitesPeso.length,
+          canalGradeFaixas: canalGrade, primeiroCte,
         };
         setResultados((prev) => ({ ...prev, [item.id]: resultadoCompleto }));
         atualizarProgressoItem(item.id, 100, `Concluído em ${(resultadoAgregado.tempoMs / 1000).toFixed(1)}s`);
@@ -1197,7 +1210,9 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                   <div style={{ fontSize: 11, color: resultado.origemFaixas === 'TABELA_NEGOCIADA' ? '#087f3f' : '#b45309', marginBottom: 10, fontWeight: 700 }}>
                     Faixas utilizadas: {resultado.origemFaixas === 'TABELA_NEGOCIADA'
                       ? `tabela negociada (${resultado.quantidadeFaixas} faixas)`
-                      : `grade padrão (${resultado.quantidadeFaixas || 0} faixas — fallback)`}
+                      : resultado.origemFaixas === 'GRADE_PADRAO_PERCENTUAL'
+                        ? `grade padrão ${resultado.canalGradeFaixas || ''} (${resultado.quantidadeFaixas || 0} faixas) — tabela por percentual, sem faixas de peso próprias`
+                        : `grade padrão (${resultado.quantidadeFaixas || 0} faixas — fallback)`}
                   </div>
                   {resultado.mensal?.length ? (
                     <div style={{ ...gestaoStyles.tabelaWrap, marginBottom: 12 }}>

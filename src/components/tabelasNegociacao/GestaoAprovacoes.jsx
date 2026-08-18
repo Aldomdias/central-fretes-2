@@ -17,6 +17,9 @@ export default function GestaoAprovacoes({
   onComplemento,
   onPublicar,
   onAprovarPublicar,
+  onMarcarJaPublicada,
+  mensagemErro = '',
+  mensagemSucesso = '',
   salvando = false,
 }) {
   const [observacao, setObservacao] = useState({});
@@ -39,6 +42,8 @@ export default function GestaoAprovacoes({
         {!ehGestor ? (
           <div className="sim-alert info">Somente perfil Gestão pode aprovar, recusar ou devolver negociações.</div>
         ) : null}
+        {mensagemErro ? <div className="sim-alert erro">{mensagemErro}</div> : null}
+        {mensagemSucesso ? <div className="sim-alert success">{mensagemSucesso}</div> : null}
 
         {pendentes.map((t) => (
           <div key={t.id} className="sim-parametros-box" style={{ marginBottom: 14 }}>
@@ -92,7 +97,12 @@ export default function GestaoAprovacoes({
               </div>
             </div>
             {ehGestor && podePublicarOficial(t) ? (
-              <button className="primary" type="button" disabled={salvando} onClick={() => onPublicar(t)}>Publicar na base oficial</button>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <button className="primary" type="button" disabled={salvando} onClick={() => onPublicar(t)}>Publicar na base oficial</button>
+                {typeof onMarcarJaPublicada === 'function' ? (
+                  <button className="sim-tab" type="button" disabled={salvando} onClick={() => onMarcarJaPublicada(t)} title="Use quando a tabela já foi inserida manualmente na base oficial">Já está na base oficial</button>
+                ) : null}
+              </div>
             ) : (
               <span style={gestaoStyles.badgeStatus('#16a34a')}>Aprovada</span>
             )}
