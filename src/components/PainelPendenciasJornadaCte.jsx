@@ -14,6 +14,7 @@ const CARDS = [
   { chave: 'auditadosSemFatura', label: 'Auditados sem fatura (15+ dias)', icone: '🧾', alerta: true },
   { chave: 'acordosFechadosAguardandoFatura', label: 'Acordos aguardando fatura', icone: '🤝' },
   { chave: 'descontosAguardandoConciliacao', label: 'Descontos aguardando conciliação', icone: '💰' },
+  { chave: 'cancelamentosAguardandoReemissao', label: 'Cancelamentos aguardando reemissão', icone: '🔄', alerta: true },
 ];
 
 export default function PainelPendenciasJornadaCte({ competencia, onSelecionarGrupo }) {

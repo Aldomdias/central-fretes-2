@@ -1091,6 +1091,9 @@ function canalCompativelRealizado(canalLinha, canalReferencia) {
   if (!linha) return false;
   if (linha === referencia) return true;
 
+  // Simétrico: "AMBOS"/"TODOS" atende qualquer canal e é atendido por qualquer canal.
+  if (canalAtendeTodos(referencia) || canalAtendeTodos(linha)) return true;
+
   const categoriaLinha = categoriaCanalRealizado(linha);
   const categoriaReferencia = categoriaCanalRealizado(referencia);
   return Boolean(categoriaLinha && categoriaReferencia && categoriaLinha === categoriaReferencia);

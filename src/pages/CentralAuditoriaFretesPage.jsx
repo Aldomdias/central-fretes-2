@@ -1930,6 +1930,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [opcoesLaudoTransportadorLote, setOpcoesLaudoTransportadorLote] = useState(OPCOES_LAUDO_TRANSPORTADOR_PADRAO);
   const [ctesSelecionadosDoccob, setCtesSelecionadosDoccob] = useState([]);
   const [devolutivaJornadaAberta, setDevolutivaJornadaAberta] = useState(false);
+  const devolutivaJornadaPainelRef = useRef(null);
   const [devolutivaJornadaForm, setDevolutivaJornadaForm] = useState({ resultado: 'concordou_desconto', observacao: '' });
   const [devolutivaJornadaSalvando, setDevolutivaJornadaSalvando] = useState(false);
   const [jornadaPorChaveAvulsa, setJornadaPorChaveAvulsa] = useState(new Map());
@@ -3598,6 +3599,12 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     }
   };
 
+  useEffect(() => {
+    if (devolutivaJornadaAberta) {
+      devolutivaJornadaPainelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [devolutivaJornadaAberta]);
+
   return (
     <>
       {mostrarAuditoriaAvulsa && (
@@ -3686,7 +3693,11 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         </div>
 
         {devolutivaJornadaAberta ? (
-          <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 10, padding: 12, marginTop: 10 }}>
+          <div
+            id="painel-devolutiva-jornada-avulsa"
+            ref={devolutivaJornadaPainelRef}
+            style={{ background: '#eef2ff', border: '2px solid #6366f1', borderRadius: 10, padding: 12, marginTop: 10 }}
+          >
             <div style={{ fontWeight: 700, color: '#3730a3', marginBottom: 8 }}>
               🧭 Registrar devolutiva da transportadora para os {resultadoCtesAvulsosFiltrado.length} CT-e(s) desta lista
             </div>

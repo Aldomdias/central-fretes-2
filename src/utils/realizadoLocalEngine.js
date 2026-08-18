@@ -633,7 +633,25 @@ function getCotacao(origem, rota, peso) {
   return null;
 }
 
-function resolverPesoCubagemRealizado({ cte = {}, origem = {}, gradeCanal = [] }) {
+const CDS_FL_SEM_CUBAGEM = new Set([
+  'CONTAGEM',
+  'DUQUE DE CAXIAS',
+  'ITAJAI',
+  'ITUPEVA',
+  'JABOATAO DOS GUARARAPES',
+  'SERRA',
+]);
+
+function normalizarRegraPesoEspecial(valor) {
+  return String(valor || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
+}
+
+function resolverPesoCubagemRealizado({ cte = {}, origem = {}, transportadora = {}, gradeCanal = [] }) {
   const pesoDeclarado = toNumber(cte.pesoDeclarado);
   // Regra alinhada ao Simulador Realizado: cubagem operacional so entra no
   // calculo quando veio do Tracking. A grade fica como fallback de simulacao.
@@ -659,6 +677,33 @@ function resolverPesoCubagemRealizado({ cte = {}, origem = {}, gradeCanal = [] }
     origem.generalidades?.fatorCubagem ??
     origem.generalidades?.fator_cubagem
   );
+  const nomeTransportadora = normalizarRegraPesoEspecial(transportadora?.nome);
+  const cidadeOrigem = normalizarRegraPesoEspecial(origem?.cidade);
+  const aplicarRegraFlCd = cte.aplicarRegraFlCdEcommerce === true
+    && nomeTransportadora === 'FL BRASIL'
+    && CDS_FL_SEM_CUBAGEM.has(cidadeOrigem);
+  if (aplicarRegraFlCd) {
+    const pesoBaseEspecial = Math.max(pesoInformado, pesoDeclarado);
+    const pesoMultiplicado = Number((pesoBaseEspecial * 1.2).toFixed(6));
+    return {
+      pesoInformado,
+      pesoDeclarado,
+      pesoCubadoOriginal,
+      pesoGrade: toNumber(linhaGrade?.peso),
+      valorNFGrade: toNumber(linhaGrade?.valorNF),
+      cubagemRealizadaInformada: cubagemRealizada,
+      cubagemRealizada,
+      cubagemGrade,
+      cubagemAplicada: 0,
+      origemCubagem: 'regra FL CD sem cubagem',
+      fatorCubagem: 0,
+      pesoCubadoCalculado: 0,
+      pesoConsiderado: pesoMultiplicado,
+      regraPesoEspecial: 'FL_CD_PESO_X_1_20',
+      multiplicadorPeso: 1.2,
+      pesoMultiplicado,
+    };
+  }
   const pesoCubadoCalculado = cubagemAplicada > 0 && fatorCubagem > 0 ? cubagemAplicada * fatorCubagem : 0;
   const pesoConsiderado = Math.max(pesoInformado, pesoCubadoCalculado, pesoDeclarado);
 
@@ -694,7 +739,7 @@ function resolverTipoCalculoRealizado(cotacao = {}, origem = {}) {
 }
 
 export function calcularItemTabela({ transportadora, origem, rota, cte, gradeCanal = [] }) {
-  const pesos = resolverPesoCubagemRealizado({ cte, origem, gradeCanal });
+  const pesos = resolverPesoCubagemRealizado({ cte, origem, transportadora, gradeCanal });
   const peso = pesos.pesoConsiderado;
   const valorNF = toNumber(cte.valorNF);
   const cotacao = getCotacao(origem, rota, peso);
@@ -756,6 +801,9 @@ export function calcularItemTabela({ transportadora, origem, rota, cte, gradeCan
         pesoCubado: pesos.pesoCubadoCalculado,
         pesoCubadoCalculado: pesos.pesoCubadoCalculado,
         pesoConsiderado: pesos.pesoConsiderado,
+        regraPesoEspecial: pesos.regraPesoEspecial || null,
+        multiplicadorPeso: pesos.multiplicadorPeso || null,
+        pesoMultiplicado: pesos.pesoMultiplicado || null,
         valorNFInformado: valorNF,
         valorNFGrade: pesos.valorNFGrade,
         valorBase: calculo.valorBase,
@@ -797,6 +845,11 @@ export function calcularItemTabela({ transportadora, origem, rota, cte, gradeCan
   };
 }
 
+function statusOrigemAtivoRealizado(status) {
+  const normalizado = String(status || 'ATIVA').trim().toUpperCase();
+  return normalizado === 'ATIVA' || normalizado === 'ATIVO';
+}
+
 export function construirIndiceFretesPorRota(transportadoras = [], municipios = []) {
   const mapasIbge = montarMapasIbge(municipios);
   const index = new Map();
@@ -804,8 +857,10 @@ export function construirIndiceFretesPorRota(transportadoras = [], municipios = 
 
   (transportadoras || []).forEach((transportadora) => {
     if (!transportadora?.nome) return;
+    if (!statusOrigemAtivoRealizado(transportadora.status)) return;
     stats.transportadoras += 1;
     (transportadora.origens || []).forEach((origem) => {
+      if (!statusOrigemAtivoRealizado(origem.status)) return;
       stats.origens += 1;
       const canais = canaisIndiceRealizado(origem.canal || '');
       const origemCidade = splitCidadeUf(origem.cidade || '', '').cidade;
