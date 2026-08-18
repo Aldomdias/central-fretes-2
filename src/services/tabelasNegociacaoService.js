@@ -14,7 +14,10 @@ import {
   obterNegociacaoCapa,
 } from './tabelasNegociacaoSnapshotService';
 import { salvarSecaoDb } from './freteDatabaseService';
-import { converterTabelaNegociacaoParaSimulador } from '../utils/tabelasNegociacaoSimuladorAdapter';
+import {
+  converterTabelaNegociacaoParaSimulador,
+  converterTransportadoraOficialParaNegociacao,
+} from '../utils/tabelasNegociacaoSimuladorAdapter';
 import { carregarCargasLotacaoSupabase, salvarTabelaLotacaoSupabase } from './lotacaoSupabaseService';
 import { normalizarTexto as normalizarTextoLotacao } from '../utils/lotacaoTables';
 import {
@@ -1202,6 +1205,89 @@ export async function abrirNovaRodadaTabelaNegociacao(id, dados = {}) {
   return data;
 }
 
+const STATUS_GESTAO_ENCERRADOS = [
+  'PUBLICADA_OFICIAL', 'APROVADA_GESTOR', 'RECUSADA', 'CANCELADA', 'SUBSTITUIDA',
+];
+const STATUS_ENCERRADOS = [
+  'PROMOVIDA PARA OFICIAL', 'APROVADA', 'REPROVADA', 'CANCELADA',
+];
+
+function negociacaoEncerrada(tabela = {}) {
+  return STATUS_GESTAO_ENCERRADOS.includes(upper(tabela.status_gestao))
+    || STATUS_ENCERRADOS.includes(upper(tabela.status));
+}
+
+// Antes de abrir uma revisão nova, olha o que já existe para a mesma
+// transportadora/canal/origem. Nada é sobrescrito aqui: a UI usa isso para
+// decidir se cria um novo ciclo (quando as anteriores já foram encerradas) ou
+// se avisa que existe negociação em andamento.
+export async function listarNegociacoesDaTransportadora({ transportadora, canal, origem } = {}) {
+  const supabase = supabaseOrThrow();
+  const nome = texto(transportadora);
+  if (!nome) return { abertas: [], encerradas: [], total: 0 };
+
+  let query = supabase
+    .from('tabelas_negociacao')
+    .select('id,transportadora,canal,origem,uf_origem,status,status_gestao,modalidade,criado_em,atualizado_em')
+    .ilike('transportadora', nome)
+    .order('criado_em', { ascending: false })
+    .limit(200);
+
+  const { data, error } = await query;
+  if (error) throw new Error(error.message || 'Erro ao verificar negociações existentes da transportadora.');
+
+  const canalNorm = upper(canal);
+  const origemNorm = upper(texto(origem));
+  const lista = (data || []).filter((tabela) => {
+    if (canalNorm && upper(tabela.canal) !== canalNorm) return false;
+    if (origemNorm && upper(texto(tabela.origem)) !== origemNorm) return false;
+    return true;
+  });
+
+  return {
+    abertas: lista.filter((tabela) => !negociacaoEncerrada(tabela)),
+    encerradas: lista.filter(negociacaoEncerrada),
+    total: lista.length,
+  };
+}
+
+// Caminho inverso da promoção para oficial: traz a tabela oficial vigente
+// (rotas, cotações, taxas por destino e generalidades) para dentro da
+// negociação, para a rodada já nascer com a tabela atual carregada.
+export async function importarTabelaOficialParaNegociacao(tabela, transportadoraOficial = {}, opcoes = {}) {
+  if (!tabela?.id) throw new Error('Negociação inválida para importar a tabela oficial.');
+
+  const convertido = converterTransportadoraOficialParaNegociacao(transportadoraOficial, {
+    canal: opcoes.canal || tabela.canal,
+    origem: opcoes.origem || tabela.origem,
+  });
+
+  if (!convertido.itens.length) {
+    throw new Error('A tabela oficial carregada não tem rotas/cotações para copiar para a negociação.');
+  }
+
+  // Trava contra sobrescrita: só copia por cima de itens já salvos quando a
+  // chamada pede explicitamente (opcoes.substituir).
+  if (opcoes.substituir !== true) {
+    const jaSalvos = await contarItensTabelaNegociacao(tabela.id);
+    if (jaSalvos > 0) {
+      throw new Error(`Esta negociação já tem ${jaSalvos.toLocaleString('pt-BR')} item(ns) salvos. A cópia da tabela oficial foi cancelada para não sobrescrever a tabela existente.`);
+    }
+  }
+
+  await substituirItensTabelaNegociacao(tabela, convertido.itens, {
+    modo: 'total',
+    origemImportacao: 'BASE_OFICIAL',
+    observacao: opcoes.observacao || 'Tabela oficial vigente copiada para a negociação',
+    onProgress: opcoes.onProgress,
+  });
+
+  await substituirTaxasDestino(tabela.id, convertido.taxasDestino);
+  await atualizarTabelaNegociacao(tabela.id, { generalidades: convertido.generalidades });
+
+  return convertido.resumo;
+}
+
 async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
   const tabela = await obterTabelaNegociacao(id);
   const itens = await listarTodosItensTabelaNegociacao(id);
@@ -1479,7 +1565,6 @@ export async function listarCapasNegociacaoParaSimulacao(filtros = {}) {
     let query = supabase
       .from('tabelas_negociacao')
       .select(cols)
-      .eq('incluir_simulacao', true)
       .order('criado_em', { ascending: false });
     if (filtros.tipoTabela) query = query.eq('tipo_tabela', filtros.tipoTabela);
     if (filtros.tipoNegociacao) query = query.eq('tipo_negociacao', filtros.tipoNegociacao);
@@ -2767,6 +2852,46 @@ export async function publicarNegociacaoNaBaseOficial(id, dados = {}) {
   }
 
   return publicada;
+}
+
+export async function marcarNegociacaoJaPublicada(id, dados = {}) {
+  const tabela = await obterTabelaNegociacao(id);
+  if (!podePublicarOficial(tabela)) {
+    throw new Error('Somente negociações aprovadas pelo gestor podem ser marcadas como já publicadas.');
+  }
+  const agora = dataISO();
+  const observacao = texto(dados.observacao) || 'Registro manual: tabela já estava na base oficial';
+
+  const atualizada = await aplicarTransicaoGestao(id, {
+    tipo: 'PUBLICACAO_OFICIAL',
+    status_gestao: 'PUBLICADA_OFICIAL',
+    status_aprovacao: 'PUBLICADA',
+    publicado_em: agora,
+    data_inicio_vigencia: dados.data_inicio_vigencia || tabela.data_inicio_vigencia || null,
+    observacao,
+    usuario_aprovacao: texto(dados.usuario?.nome || dados.usuario_aprovacao),
+  });
+
+  const resumoAnterior = getResumoSimulacaoSeguro(atualizada);
+  const historicoAnterior = getHistoricoRodadas(atualizada);
+  const entrada = {
+    id: `PUBLICACAO-MANUAL-${Date.now()}`,
+    tipo_registro: 'PUBLICACAO_MANUAL',
+    rodada: inteiro(resumoAnterior.rodada_atual || 1) || 1,
+    criado_em: agora,
+    usuario_aprovacao: texto(dados.usuario?.nome || dados.usuario_aprovacao),
+    observacao,
+  };
+
+  return atualizarTabelaNegociacao(id, {
+    status: 'PROMOVIDA PARA OFICIAL',
+    incluir_simulacao: false,
+    resumo_simulacao: {
+      ...resumoAnterior,
+      publicacao_manual: entrada,
+      historico_rodadas: historicoAnterior.concat([entrada]).slice(-30),
+    },
+  });
 }
 
 export async function garantirNegociadorAoAbrir(id, usuario = {}) {

@@ -575,7 +575,7 @@ export function converterTabelasNegociacaoParaSimulador(tabelas = [], filtros = 
   const canalFiltro = normalizarCanal(filtros.canal || '');
 
   return (tabelas || [])
-    .filter((tabela) => tabela && tabela.incluir_simulacao)
+    .filter((tabela) => tabela)
     .filter((tabela) => canalNegociacaoAtende(tabela.canal, canalFiltro))
     .map(converterTabelaNegociacaoParaSimulador)
     .filter((transportadora) => transportadora.origens.length);
@@ -589,8 +589,170 @@ export function nomesTabelasNegociacaoSimulador(tabelas = [], filtros = {}) {
   const canalFiltro = normalizarCanal(filtros.canal || '');
 
   return (tabelas || [])
-    .filter((tabela) => tabela && tabela.incluir_simulacao)
+    .filter((tabela) => tabela)
     .filter((tabela) => canalNegociacaoAtende(tabela.canal, canalFiltro))
     .map((tabela) => labelTabelaNegociacaoSimulador(tabela))
     .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
+// ─── CAMINHO INVERSO: BASE OFICIAL → ITENS DE NEGOCIAÇÃO ─────────────────────
+// Usado quando uma tabela oficial volta para Negociações (revisão de
+// competitividade / renegociação): a malha oficial é copiada como itens
+// (rotas + cotações), taxas por destino e generalidades da negociação, para que
+// a rodada já nasça com a tabela vigente carregada — o espelho de
+// promoverTabelaNegociacaoParaOficialInterno.
+
+function destinoDoNomeRota(nomeRota) {
+  const match = texto(nomeRota).match(/^([^|/]+?)\s*\/\s*([A-Za-z]{2})$/);
+  if (!match) return { cidadeDestino: '', ufDestino: '' };
+  return { cidadeDestino: texto(match[1]), ufDestino: upper(match[2]) };
+}
+
+function contextoOrigemOficial(origem = {}) {
+  const ibgeOrigem = pareceIbge(origem.ibgeOrigem || origem.ibge_origem)
+    || pareceIbge((origem.rotas || []).find((rota) => pareceIbge(rota?.ibgeOrigem))?.ibgeOrigem);
+  return {
+    cidade: texto(origem.cidade),
+    uf: upper(origem.uf || origem.ufOrigem) || ufPorIbge(ibgeOrigem),
+    ibgeOrigem,
+    canal: texto(origem.canal),
+  };
+}
+
+function itemRotaDaBaseOficial(rota = {}, origem = {}, indice = 0) {
+  const ibgeDestino = pareceIbge(rota.ibgeDestino || rota.ibge_destino);
+  if (!ibgeDestino) return null;
+
+  const nomeRota = texto(rota.nomeRota || rota.rota) || `IBGE ${ibgeDestino}`;
+  const destino = destinoDoNomeRota(nomeRota);
+
+  return {
+    tipo_item: 'ROTA',
+    cidade_origem: origem.cidade,
+    uf_origem: origem.uf,
+    ibge_origem: pareceIbge(rota.ibgeOrigem) || origem.ibgeOrigem,
+    cidade_destino: destino.cidadeDestino,
+    uf_destino: destino.ufDestino || ufPorIbge(ibgeDestino),
+    ibge_destino: ibgeDestino,
+    faixa_peso: 'ROTA',
+    prazo: numero(rota.prazoEntregaDias),
+    origem_importacao: 'BASE_OFICIAL_ROTAS',
+    observacao: nomeRota,
+    dados_originais: {
+      tipo_item: 'ROTA',
+      cotacaoFinal: nomeRota,
+      nomeRota,
+      ibgeDestino,
+      ufDestino: destino.ufDestino || ufPorIbge(ibgeDestino),
+      cidadeDestino: destino.cidadeDestino,
+      valorMinimoFrete: numero(rota.valorMinimoFrete),
+      canal: texto(rota.canal || origem.canal),
+      rota_oficial_id: texto(rota.id) || `rota-${indice + 1}`,
+      origem_copia: 'BASE_OFICIAL',
+    },
+  };
+}
+
+function itemCotacaoDaBaseOficial(cotacao = {}, origem = {}, indice = 0) {
+  const nomeRota = texto(cotacao.rota);
+  const pesoMin = numero(cotacao.pesoMin);
+  const pesoMaxBruto = numero(cotacao.pesoMax ?? cotacao.pesoLimite);
+  const pesoMax = pesoMaxBruto > 0 && pesoMaxBruto < 99999999 ? pesoMaxBruto : 0;
+  const faixa = pesoMax > 0 ? `${pesoMin}-${pesoMax}kg` : `${pesoMin}kg+`;
+
+  return {
+    tipo_item: 'COTACAO',
+    cidade_origem: origem.cidade,
+    uf_origem: origem.uf,
+    ibge_origem: origem.ibgeOrigem,
+    faixa_peso: nomeRota ? `${nomeRota} | ${faixa}` : faixa,
+    peso_inicial: pesoMin,
+    peso_final: pesoMax,
+    frete_minimo: numero(cotacao.freteMinimo),
+    taxa_aplicada: numero(cotacao.valorFixo ?? cotacao.taxaAplicada),
+    frete_percentual: numero(cotacao.percentual),
+    valor_excedente: numero(cotacao.excesso),
+    excesso_kg: numero(cotacao.excessoPeso),
+    origem_importacao: 'BASE_OFICIAL_COTACOES',
+    observacao: nomeRota,
+    dados_originais: {
+      tipo_item: 'COTACAO',
+      cotacaoFinal: nomeRota,
+      nomeRota,
+      rsKg: numero(cotacao.rsKg),
+      tipoCalculo: texto(cotacao.tipoCalculo),
+      regraCalculo: texto(cotacao.regraCalculo),
+      cotacao_oficial_id: texto(cotacao.id) || `cotacao-${indice + 1}`,
+      origem_copia: 'BASE_OFICIAL',
+    },
+  };
+}
+
+function taxaDestinoDaBaseOficial(taxa = {}) {
+  const ibgeDestino = pareceIbge(taxa.ibgeDestino || taxa.ibge_destino);
+  if (!ibgeDestino) return null;
+  return {
+    ibge_destino: ibgeDestino,
+    uf_destino: upper(taxa.ufDestino) || ufPorIbge(ibgeDestino),
+    cidade_destino: texto(taxa.cidadeDestino),
+    tda: numero(taxa.tda),
+    tdr: numero(taxa.tdr),
+    trt: numero(taxa.trt),
+    suframa: numero(taxa.suframa),
+    outras_taxas: numero(taxa.outras),
+    gris: numero(taxa.gris),
+    gris_minimo: numero(taxa.grisMinimo),
+    advalorem: numero(taxa.adVal),
+    advalorem_minimo: numero(taxa.adValMinimo),
+    observacao: texto(taxa.observacao),
+    taxas_extras: normalizarTaxasExtras(taxa.taxasExtras),
+  };
+}
+
+export function converterTransportadoraOficialParaNegociacao(transportadora = {}, opcoes = {}) {
+  const canalFiltro = normalizarCanal(opcoes.canal || '');
+  const origemFiltro = normalizarChave(opcoes.origem || '');
+
+  const todasOrigens = (transportadora.origens || []).filter(Boolean);
+  let origens = todasOrigens.filter((origem) => canalNegociacaoAtende(origem.canal, canalFiltro));
+  if (origemFiltro) {
+    const porOrigem = origens.filter((origem) => normalizarChave(origem.cidade) === origemFiltro);
+    if (porOrigem.length) origens = porOrigem;
+  }
+  if (!origens.length) origens = todasOrigens;
+
+  const itens = [];
+  const taxasPorIbge = new Map();
+  let generalidades = null;
+
+  origens.forEach((origem) => {
+    if (!generalidades) generalidades = montarGeneralidades(origem.generalidades || {});
+    const contexto = contextoOrigemOficial(origem);
+
+    (origem.rotas || []).forEach((rota, indice) => {
+      const item = itemRotaDaBaseOficial(rota, contexto, indice);
+      if (item) itens.push(item);
+    });
+
+    (origem.cotacoes || []).forEach((cotacao, indice) => {
+      itens.push(itemCotacaoDaBaseOficial(cotacao, contexto, indice));
+    });
+
+    (origem.taxasEspeciais || []).forEach((taxa) => {
+      const linha = taxaDestinoDaBaseOficial(taxa);
+      if (linha && !taxasPorIbge.has(linha.ibge_destino)) taxasPorIbge.set(linha.ibge_destino, linha);
+    });
+  });
+
+  return {
+    itens,
+    taxasDestino: Array.from(taxasPorIbge.values()),
+    generalidades: generalidades || montarGeneralidades({}),
+    resumo: {
+      origens: origens.length,
+      rotas: itens.filter((item) => item.tipo_item === 'ROTA').length,
+      cotacoes: itens.filter((item) => item.tipo_item === 'COTACAO').length,
+      taxas: taxasPorIbge.size,
+    },
+  };
 }

@@ -8,6 +8,10 @@ import { normalizarTextoReajuste } from '../../utils/reajustesLocal';
 import { calcularJanelasSaving, calcularSavingLotacaoPorFluxo, calcularSavingPorRotaFaixa, MESES_BASE_SAVING_PADRAO } from '../../utils/savingsPosAprovacaoNegociacao';
 import { GRADE_FRETE_PADRAO, normalizarCanalGrade } from '../../utils/gradeFreteConfig';
 
+// Faixas com fim acima deste valor são "abertas" (ex.: 0–999999 de tabela por percentual)
+// e não representam segmentação real de peso.
+const LIMITE_FAIXA_ABERTA = 100000;
+
 // Filtro de transportadora é feito no cliente como reforço (não é o filtro principal):
 // ilike com wildcard nas duas pontas não usa índice em realizado_local_ctes, então a
 // consulta já filtra no servidor (ilike ou lista exata de vínculo) e isso aqui só
@@ -554,13 +558,21 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         const canalGrade = normalizarCanalGrade(item.canal);
         atualizarProgressoItem(item.id, 16, 'Lendo faixas da negociação');
         const faixasNegociadas = await listarFaixasPesoNegociacao(item.id);
-        const limitesPeso = faixasNegociadas.length
+        // Tabelas por percentual (ad valorem) têm faixa única 0–999999: nesse caso as
+        // faixas da negociação não segmentam nada e a comparação com o histórico
+        // ficaria em um único balde. Caímos na grade padrão do canal para comparar
+        // base x atual em faixas equivalentes.
+        const faixasSegmentam = faixasNegociadas.filter((faixa) => faixa.fim < LIMITE_FAIXA_ABERTA).length >= 1;
+        const usarFaixasNegociadas = faixasNegociadas.length > 0 && faixasSegmentam;
+        const limitesPeso = usarFaixasNegociadas
           ? faixasNegociadas.map((faixa) => faixa.fim)
           : (GRADE_FRETE_PADRAO[canalGrade] || []).map((faixa) => faixa.peso);
-        const origemFaixas = faixasNegociadas.length ? 'TABELA_NEGOCIADA' : 'GRADE_PADRAO';
-        atualizarProgressoItem(item.id, 20, faixasNegociadas.length
+        const origemFaixas = usarFaixasNegociadas
+          ? 'TABELA_NEGOCIADA'
+          : (faixasNegociadas.length ? 'GRADE_PADRAO_PERCENTUAL' : 'GRADE_PADRAO');
+        atualizarProgressoItem(item.id, 20, usarFaixasNegociadas
           ? `Usando ${faixasNegociadas.length} faixas negociadas`
-          : 'Usando grade padrão');
+          : (faixasNegociadas.length ? `Tabela sem faixas de peso: usando grade padrão ${canalGrade}` : 'Usando grade padrão'));
         const filtrosCalculo = {
           transportadoras: vinculoLista.length ? vinculoLista : [item.transportadora],
           origem: origemRealizado,
@@ -591,7 +603,8 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         const resultadoCompleto = {
           ...resultadoAgregado, janelas, versaoMetrica: VERSAO_METRICA_SAVING,
           deCache: false, calculadoEm: new Date().toISOString(), origemFaixas,
-          quantidadeFaixas: faixasNegociadas.length || limitesPeso.length, primeiroCte,
+          quantidadeFaixas: usarFaixasNegociadas ? faixasNegociadas.length : limitesPeso.length,
+          canalGradeFaixas: canalGrade, primeiroCte,
         };
         setResultados((prev) => ({ ...prev, [item.id]: resultadoCompleto }));
         atualizarProgressoItem(item.id, 100, `Concluído em ${(resultadoAgregado.tempoMs / 1000).toFixed(1)}s`);
@@ -671,16 +684,19 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     }
   }
 
-  async function calcularTodas({ recalcular = false } = {}) {
+  async function calcularTodas({ recalcular = false, negociacoesAlvo = null, modoLabel = null } = {}) {
     setCalculandoTodas(true);
-    const fila = recalcular ? negociacoesAprovadas : negociacoesAprovadas.filter((item) => !resultados[item.id]);
+    const base = negociacoesAlvo || negociacoesAprovadas;
+    const fila = negociacoesAlvo
+      ? negociacoesAlvo
+      : (recalcular ? base : base.filter((item) => !resultados[item.id]));
     for (let i = 0; i < fila.length; i += 1) {
       const item = fila[i];
       setProgressoTodas({
         atual: i + 1,
         total: fila.length,
         transportadora: item.transportadora,
-        modo: recalcular ? 'Recalculando todas' : 'Calculando pendentes',
+        modo: modoLabel || (recalcular ? 'Recalculando todas' : 'Calculando pendentes'),
       });
       if (!item.isLotacao && statusVinculo(item).label === 'Sem vínculo') {
         setErros((prev) => ({ ...prev, [item.id]: 'Sem vínculo com uma transportadora do realizado. Selecione o nome correto em “Buscar vínculos”.' }));
@@ -691,6 +707,19 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     }
     setProgressoTodas(null);
     setCalculandoTodas(false);
+  }
+
+  // Atualiza só as negociações que já têm CT-e naquela competência, em vez de
+  // recalcular tudo — assim um mês fechado (ex.: julho) não fica sendo puxado de
+  // novo toda hora; só a competência escolhida (ex.: agosto) é reconsultada.
+  function atualizarCompetencia(competencia) {
+    const alvo = negociacoesCalculadas.filter((item) =>
+      (resultados[item.id]?.mensal || []).some((mes) => mes.competencia === competencia));
+    if (!alvo.length) return;
+    calcularTodas({
+      negociacoesAlvo: alvo,
+      modoLabel: `Atualizando ${nomeMesSaving(competencia)}`,
+    });
   }
 
   function verDetalhe(item) {
@@ -824,7 +853,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
           {savingMensal.length ? (
             <div style={{ marginTop: 14, ...gestaoStyles.tabelaWrap }}>
               <table className="sim-table" style={{ minWidth: 620 }}>
-                <thead><tr><th>MÃªs do realizado</th><th>CT-es comparÃ¡veis</th><th>Transportadoras</th><th>Saving do mÃªs</th></tr></thead>
+                <thead><tr><th>MÃªs do realizado</th><th>CT-es comparÃ¡veis</th><th>Transportadoras</th><th>Saving do mÃªs</th><th></th></tr></thead>
                 <tbody>
                   {savingMensal.map((mes) => (
                     <tr key={mes.competencia}>
@@ -832,6 +861,18 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                       <td>{mes.ctesAtual.toLocaleString('pt-BR')}</td>
                       <td>{mes.transportadoras.size}</td>
                       <td style={{ fontWeight: 800, color: mes.saving >= 0 ? '#087f3f' : '#c1121f' }}>{formatMoney(mes.saving)}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="sim-tab"
+                          style={{ padding: '2px 8px', fontSize: 10 }}
+                          disabled={calculandoTodas}
+                          title="Recalcula só as negociações com CT-e nesta competência, sem mexer nos meses já fechados"
+                          onClick={() => atualizarCompetencia(mes.competencia)}
+                        >
+                          Atualizar
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1169,7 +1210,9 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                   <div style={{ fontSize: 11, color: resultado.origemFaixas === 'TABELA_NEGOCIADA' ? '#087f3f' : '#b45309', marginBottom: 10, fontWeight: 700 }}>
                     Faixas utilizadas: {resultado.origemFaixas === 'TABELA_NEGOCIADA'
                       ? `tabela negociada (${resultado.quantidadeFaixas} faixas)`
-                      : `grade padrão (${resultado.quantidadeFaixas || 0} faixas — fallback)`}
+                      : resultado.origemFaixas === 'GRADE_PADRAO_PERCENTUAL'
+                        ? `grade padrão ${resultado.canalGradeFaixas || ''} (${resultado.quantidadeFaixas || 0} faixas) — tabela por percentual, sem faixas de peso próprias`
+                        : `grade padrão (${resultado.quantidadeFaixas || 0} faixas — fallback)`}
                   </div>
                   {resultado.mensal?.length ? (
                     <div style={{ ...gestaoStyles.tabelaWrap, marginBottom: 12 }}>

@@ -43,6 +43,7 @@ import {
   PREFIXO_QUESTIONAMENTO_AUDITORIA_LOTACAO,
   STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO,
   TIPO_SOLICITACAO_EXCECAO_SEM_CTE,
+  isMovimentoEncerradoAuditoria,
   montarComentarioDevolucaoOperacao,
 } from '../services/lotacaoPendenciaFlow';
 import {
@@ -198,13 +199,7 @@ function movimentoProntoPagamento(item = {}) {
 }
 
 function movimentoTratado(item = {}) {
-  const status = String(item.status || '').trim().toUpperCase();
-  if (['TRATADO', 'CONCLUIDO', 'CONCLUÍDO', 'FINALIZADO', 'AUDITADO_OK', 'BAIXADO', 'ENCERRADO', 'LIBERADO_PAGAMENTO']
-    .includes(status)) return true;
-  // Questionamento já respondido pela Operação e com DIST vinculada: a resposta
-  // já é a confirmação necessária, não precisa de tratamento manual adicional.
-  const distVinculada = Boolean(item.dist || item.distKey || item.dist_key);
-  return status === 'RESPONDIDO_OPERACAO' && distVinculada;
+  return isMovimentoEncerradoAuditoria(item);
 }
 
 function labelTratamentoConcluido(item = {}) {

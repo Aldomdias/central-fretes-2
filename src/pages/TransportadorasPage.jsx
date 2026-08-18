@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { analisarCoberturaOrigem, baixarModelo, buildImportPayload, exportarInconsistenciasExcel, exportarSecao, gerarArquivosVerum, parseFileToRows } from '../utils/importacao';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
+import ModalChamadoAmdTabela from '../components/ModalChamadoAmdTabela';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora, salvarVinculosTransportadoras, removerVinculoTransportadora, buscarNomesCteSimilares } from '../services/vinculosTransportadorasService';
 import { normalizarChave } from '../services/vinculosTransportadorasPuro';
 import { listarCarteirasAuditoria, salvarCarteiraAuditoria, propagarAuditorParaFaturas } from '../services/auditoriaFretesService';
@@ -1498,6 +1499,9 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   const [salvando, setSalvando] = useState(false);
   const [feedbackSalvar, setFeedbackSalvar] = useState('');
   const [origemConfirmando, setOrigemConfirmando] = useState(null);
+  // null = fechado; objeto = modal de chamado AMD aberto (com origem/canal ja preenchidos)
+  const [chamadoAmd, setChamadoAmd] = useState(null);
+  const [feedbackChamado, setFeedbackChamado] = useState('');
   const { vinculosDaTransportadora, carteiraDaTransportadora, auditorNomes, salvarAuditor, recarregarVinculos, adicionarVinculo, removerVinculo } = useVinculosEAuditores();
   const origensBase = Array.isArray(transportadora?.origens) ? transportadora.origens : [];
   const origens = origensBase.filter((origem) => String(origem?.cidade || '').toLowerCase().includes(busca.toLowerCase()));
@@ -1531,7 +1535,8 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   return (
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← Transportadoras</button>
-      <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{origensBase.length} origem(ns)</span>{store.syncStatus?.rascunhoLocal ? <span className="status-pill light">Rascunho local</span> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={atualizarDadosTransportadora} disabled={store.syncStatus?.carregandoDetalheId === transportadora.id}>Atualizar dados</button><button className="btn-primary" onClick={salvarTransportadoraAtual} disabled={salvando || store.syncStatus?.carregandoDetalheId === transportadora.id}>{salvando ? 'Salvando...' : 'Salvar alterações'}</button><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora)}>Gerar arquivo Verum</button><button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button></div></div>
+      <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{origensBase.length} origem(ns)</span>{store.syncStatus?.rascunhoLocal ? <span className="status-pill light">Rascunho local</span> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={atualizarDadosTransportadora} disabled={store.syncStatus?.carregandoDetalheId === transportadora.id}>Atualizar dados</button><button className="btn-primary" onClick={salvarTransportadoraAtual} disabled={salvando || store.syncStatus?.carregandoDetalheId === transportadora.id}>{salvando ? 'Salvando...' : 'Salvar alterações'}</button><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmd({ origem: '', canal: '' })} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button><button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button></div></div>
+      {feedbackChamado ? <div className="mini-feedback success top-space">{feedbackChamado}</div> : null}
       {store.syncStatus?.carregandoDetalheId === transportadora.id ? (
         <div className="hint-box top-space">
           <strong>Carregando detalhes da transportadora...</strong><br />
@@ -1607,6 +1612,13 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
                 </select>
                 <button className="btn-link inline-btn" onClick={() => setInconsistenciasOpen(origem.id)}>Ver inconsistências</button>
                 <button className="btn-link inline-btn" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar Verum</button>
+                <button
+                  className="btn-link inline-btn"
+                  title="Abrir chamado de ajuste de tabela para esta origem"
+                  onClick={() => setChamadoAmd({ origem: origem.cidade || '', canal: canalOrigemValor(canaisOrigem(origem)) })}
+                >
+                  🎫 Chamado AMD
+                </button>
                 <span className="status-pill light">{origem.status}</span>
                 <ActionIcon onClick={() => { setEditing(origem); setModalOpen(true); }}>✎</ActionIcon>
                 <ActionIcon danger onClick={() => confirmarRemocaoOrigem(origem)}>🗑</ActionIcon>
@@ -1635,6 +1647,16 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
       />
       <OrigemModal open={modalOpen} initialValue={editing} onSave={saveOrigem} onClose={() => { setModalOpen(false); setEditing(null); }} />
       <InconsistenciasModal open={!!inconsistenciasOpen} title={typeof inconsistenciasOpen === 'number' ? 'Inconsistências da origem' : 'Inconsistências da transportadora'} transportadora={transportadora} origem={typeof inconsistenciasOpen === 'number' ? origensBase.find((item) => item.id === inconsistenciasOpen) : null} onClose={() => setInconsistenciasOpen(false)} />
+      <ModalChamadoAmdTabela
+        open={!!chamadoAmd}
+        transportadora={transportadora}
+        origens={origensBase}
+        origemPadrao={chamadoAmd?.origem || ''}
+        canalPadrao={chamadoAmd?.canal || ''}
+        sessao={sessao}
+        onCriado={(solicitacao) => setFeedbackChamado(`Chamado ${solicitacao?.protocolo || ''} aberto na Central de Solicitações.`)}
+        onClose={() => setChamadoAmd(null)}
+      />
     </div>
   );
 }
@@ -1922,9 +1944,11 @@ function CadastroOrigemTab({ transportadoraId, origem, store }) {
   );
 }
 
-function OrigemDetail({ transportadora, origem, onBack, store }) {
+function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
   const [aba, setAba] = useState('cadastro');
   const [inconsistenciasOpen, setInconsistenciasOpen] = useState(false);
+  const [chamadoAmdOpen, setChamadoAmdOpen] = useState(false);
+  const [feedbackChamado, setFeedbackChamado] = useState('');
   const rotasColumns = [
     { key: 'nomeRota', label: 'Nome da Rota' }, { key: 'ibgeOrigem', label: 'IBGE Origem' }, { key: 'ibgeDestino', label: 'IBGE Destino' }, { key: 'canal', label: 'Canal' }, { key: 'prazoEntregaDias', label: 'Prazo' }, { key: 'valorMinimoFrete', label: 'Mínimo' },
   ];
@@ -1951,7 +1975,8 @@ function OrigemDetail({ transportadora, origem, onBack, store }) {
   return (
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← {transportadora.nome}</button>
-      <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{canalOrigemLabel(origem)}</strong> · {origem.rotas.length} rota(s)</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar arquivo Verum</button><span className="status-pill dark">{origem.status}</span></div></div>
+      <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{canalOrigemLabel(origem)}</strong> · {origem.rotas.length} rota(s)</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmdOpen(true)} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button><span className="status-pill dark">{origem.status}</span></div></div>
+      {feedbackChamado ? <div className="mini-feedback success top-space">{feedbackChamado}</div> : null}
       <div className="tabs-row"><TabButton active={aba === 'cadastro'} onClick={() => setAba('cadastro')}>Cadastro</TabButton><TabButton active={aba === 'canal'} onClick={() => setAba('canal')}>Canal</TabButton><TabButton active={aba === 'generalidades'} onClick={() => setAba('generalidades')}>Generalidades</TabButton><TabButton active={aba === 'rotas'} onClick={() => setAba('rotas')}>Rotas</TabButton><TabButton active={aba === 'cotacoes'} onClick={() => setAba('cotacoes')}>Cotações</TabButton><TabButton active={aba === 'taxas'} onClick={() => setAba('taxas')}>Taxas Especiais</TabButton></div>
       {aba === 'cadastro' && <CadastroOrigemTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'canal' && <CanalTab transportadoraId={transportadora.id} origem={origem} store={store} />}
@@ -1960,6 +1985,16 @@ function OrigemDetail({ transportadora, origem, onBack, store }) {
       {aba === 'cotacoes' && <CrudTab title="Cotação" secao="cotacoes" tipoImportacao="cotacoes" origem={origem} transportadora={transportadora} store={store} columns={cotacoesColumns} fields={cotacoesFields} hint={<>Fretes/cotações aceitam importação no modelo com <strong>Rota do frete</strong>, pesos, excesso, taxa aplicada e percentual.</>} />}
       {aba === 'taxas' && <TaxasEspeciaisTab origem={origem} transportadora={transportadora} store={store} />}
       <InconsistenciasModal open={inconsistenciasOpen} title="Inconsistências da origem" transportadora={transportadora} origem={origem} onClose={() => setInconsistenciasOpen(false)} />
+      <ModalChamadoAmdTabela
+        open={chamadoAmdOpen}
+        transportadora={transportadora}
+        origens={[origem]}
+        origemPadrao={origem?.cidade || ''}
+        canalPadrao={canalOrigemValor(canaisOrigem(origem))}
+        sessao={sessao}
+        onCriado={(solicitacao) => setFeedbackChamado(`Chamado ${solicitacao?.protocolo || ''} aberto na Central de Solicitações.`)}
+        onClose={() => setChamadoAmdOpen(false)}
+      />
     </div>
   );
 }
@@ -1984,7 +2019,7 @@ export default function TransportadorasPage({ transportadoras, transportadoraSel
         ? <TransportadorasList items={transportadoras} onOpen={onOpenTransportadora} store={store} />
         : !origem
           ? <OrigensList transportadora={transportadora} onBack={onVoltar} onOpenOrigin={onOpenOrigem} store={store} sessao={sessao} />
-          : <OrigemDetail transportadora={transportadora} origem={origem} onBack={onVoltar} store={store} />}
+          : <OrigemDetail transportadora={transportadora} origem={origem} onBack={onVoltar} store={store} sessao={sessao} />}
     </>
   );
 }

@@ -65,6 +65,9 @@ export default function GestaoShell({
   onComplementoGestor,
   onPublicarOficial,
   onAprovarPublicarOficial,
+  onMarcarJaPublicada,
+  mensagemErro = '',
+  mensagemSucesso = '',
   salvandoGestao = false,
   selecionadaId = null,
   abaInicial = 'visao-geral',
@@ -166,6 +169,9 @@ export default function GestaoShell({
           onComplemento={onComplementoGestor}
           onPublicar={onPublicarOficial}
           onAprovarPublicar={onAprovarPublicarOficial}
+          onMarcarJaPublicada={onMarcarJaPublicada}
+          mensagemErro={mensagemErro}
+          mensagemSucesso={mensagemSucesso}
           salvando={salvandoGestao}
         />
       ) : null}

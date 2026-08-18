@@ -45,6 +45,7 @@ import {
   devolverParaAjusteNegociacao,
   solicitarComplementoNegociacao,
   publicarNegociacaoNaBaseOficial,
+  marcarNegociacaoJaPublicada,
   garantirNegociadorAoAbrir,
   buscarCnpjTransportadoraCadastro,
 } from '../services/tabelasNegociacaoService';
@@ -2594,9 +2595,11 @@ export default function TabelasNegociacaoPage() {
     if (!tabela?.id) return;
     var ok = window.confirm('Enviar ' + tabela.transportadora + ' para aprovação do gestor?');
     if (!ok) return;
+    var cnpjEnvio = await garantirCnpjTransportadora(tabela, 'enviar para aprovação');
+    if (!cnpjEnvio) return;
     setSalvandoGestao(true); setErro(''); setSucesso('');
     try {
-      var at = await enviarParaAprovacaoGestor(tabela.id, { usuario: sessao, observacao: 'Enviada pela lista gerencial' });
+      var at = await enviarParaAprovacaoGestor(tabela.id, { usuario: sessao, observacao: 'Enviada pela lista gerencial', cnpj_transportadora: cnpjEnvio });
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
       setSucesso('Enviada para aprovação do gestor.');
     } catch (e) { setErro(e.message || 'Erro ao enviar para aprovação.'); }
@@ -2632,11 +2635,48 @@ export default function TabelasNegociacaoPage() {
     });
   }
 
+  async function garantirCnpjTransportadora(tabela, acao) {
+    var verbo = acao || 'aprovar';
+    var cnpj = normalizarCnpj(tabela?.cnpj_transportadora);
+    if (cnpjPreenchidoValido(cnpj)) return cnpj;
+    var sugestao = '';
+    try {
+      var cadastro = await buscarCnpjTransportadoraCadastro(tabela?.transportadora);
+      if (cadastro?.cnpj) sugestao = formatarCnpj(cadastro.cnpj);
+    } catch {
+      // sugestão é auxiliar; segue com o campo vazio
+    }
+    var informado = window.prompt('Informe o CNPJ completo de ' + (tabela?.transportadora || 'transportadora') + ' para ' + verbo + ':', sugestao);
+    if (informado === null) return null;
+    var normalizado = normalizarCnpj(informado);
+    if (!cnpjPreenchidoValido(normalizado)) {
+      setErro('CNPJ inválido. Informe os 14 dígitos da transportadora para ' + verbo + '.');
+      return null;
+    }
+    return normalizado;
+  }
+
+  async function handleMarcarJaPublicada(tabela) {
+    var ok = window.confirm('Marcar ' + tabela.transportadora + ' como já publicada na base oficial?' + String.fromCharCode(10,10) + 'Use apenas quando a tabela já foi inserida manualmente na base. Nada será copiado para a base oficial.');
+    if (!ok) return;
+    setSalvandoGestao(true); setErro(''); setSucesso('');
+    try {
+      var at = await marcarNegociacaoJaPublicada(tabela.id, { usuario: sessao });
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      if (selecionada && selecionada.id === at.id) setSelecionada(at);
+      setSucesso('Negociação marcada como já publicada na base oficial.');
+    } catch (e) { setErro(e.message || 'Erro ao marcar como já publicada.'); }
+    finally { setSalvandoGestao(false); }
+  }
+
   async function handleAprovarGestor(tabela, obs) {
+    var cnpjAprovacao = await garantirCnpjTransportadora(tabela, 'aprovar');
+    if (!cnpjAprovacao) return;
     setSalvandoGestao(true); setErro(''); setSucesso('');
     try {
       var at = await aprovarGestorNegociacao(tabela.id, {
         usuario: sessao,
+        cnpj_transportadora: cnpjAprovacao,
         aprovador_id: sessao?.id,
         aprovador_nome: sessao?.nome,
         observacao_aprovacao: obs,
@@ -2649,12 +2689,15 @@ export default function TabelasNegociacaoPage() {
   }
 
   async function handleAprovarPublicarOficial(tabela, obs) {
+    var cnpjPublicacao = await garantirCnpjTransportadora(tabela, 'aprovar e publicar');
+    if (!cnpjPublicacao) return;
     var ok = window.confirm('Aprovar e publicar ' + tabela.transportadora + ' na base oficial agora? A tabela operacional será movida para a base oficial e os itens pesados serão limpos da negociação.');
     if (!ok) return;
     setSalvandoGestao(true); setErro(''); setSucesso('');
     try {
       var aprovada = await aprovarGestorNegociacao(tabela.id, {
         usuario: sessao,
+        cnpj_transportadora: cnpjPublicacao,
         aprovador_id: sessao?.id,
         aprovador_nome: sessao?.nome,
         observacao_aprovacao: obs,
@@ -2662,6 +2705,7 @@ export default function TabelasNegociacaoPage() {
       });
       var publicada = await publicarNegociacaoNaBaseOficial(aprovada.id, {
         usuario: sessao,
+        cnpj_transportadora: cnpjPublicacao,
         data_inicio_vigencia: hojeISO(),
         substituir_tabela_anterior: isReajusteNegociacao(aprovada),
         observacao: obs || 'Aprovada pelo gestor e publicada na base oficial',
@@ -2704,12 +2748,15 @@ export default function TabelasNegociacaoPage() {
   }
 
   async function handlePublicarOficial(tabela) {
+    var cnpjPublicar = await garantirCnpjTransportadora(tabela, 'publicar na base oficial');
+    if (!cnpjPublicar) return;
     var ok = window.confirm('Publicar ' + tabela.transportadora + ' na base oficial? Esta ação só é permitida após aprovação do gestor.');
     if (!ok) return;
     setSalvandoGestao(true); setErro(''); setSucesso('');
     try {
       var at = await publicarNegociacaoNaBaseOficial(tabela.id, {
         usuario: sessao,
+        cnpj_transportadora: cnpjPublicar,
         data_inicio_vigencia: hojeISO(),
         substituir_tabela_anterior: isReajusteNegociacao(tabela),
       });
@@ -2820,6 +2867,9 @@ export default function TabelasNegociacaoPage() {
         onComplementoGestor={handleComplementoGestor}
         onPublicarOficial={handlePublicarOficial}
         onAprovarPublicarOficial={handleAprovarPublicarOficial}
+        onMarcarJaPublicada={handleMarcarJaPublicada}
+        mensagemErro={erro}
+        mensagemSucesso={sucesso}
         salvandoGestao={salvandoGestao}
         selecionadaId={selecionada?.id}
         abaInicial={abaGestao}
