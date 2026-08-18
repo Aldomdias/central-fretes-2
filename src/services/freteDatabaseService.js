@@ -1,93 +1,4187 @@
-export * from './freteDatabaseService.base.js';
-import * as base from './freteDatabaseService.base.js';
+import { getSupabaseClient, getSupabaseInfo, isSupabaseConfigured } from '../lib/supabaseClient';
 
-function normalizarNomeTransportadora(value = '') {
-  return String(value || '')
+const SNAPSHOT_CHAVE = 'cadastro-fretes-principal';
+const FALLBACK_KEY = 'simulador-fretes-local-v6';
+const PAGE_SIZE = 1000;
+
+// Cache de sessão — evita recarregar/reenriquecer rotas a cada chamada.
+// Invalide com invalidarCacheBaseCompletaDb() quando salvar tabelas.
+let _cacheBaseCompleta = null;
+export function invalidarCacheBaseCompletaDb() { _cacheBaseCompleta = null; }
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function ensureClient() {
+  const client = getSupabaseClient();
+  if (!client) {
+    throw new Error(
+      'Supabase não configurado. Preencha VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.'
+    );
+  }
+  return client;
+}
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function generateUuid() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const hex = () => Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+  return `${hex()}${hex()}-${hex()}-4${hex().slice(1)}-a${hex().slice(1)}-${hex()}${hex()}${hex()}`;
+}
+
+function safeUuid(value, usedIds) {
+  const raw = String(value || '').trim();
+  if (UUID_REGEX.test(raw) && !usedIds.has(raw)) {
+    usedIds.add(raw);
+    return raw;
+  }
+  let generated = generateUuid();
+  while (usedIds.has(generated)) generated = generateUuid();
+  usedIds.add(generated);
+  return generated;
+}
+
+function toNumberOrNull(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+
+  let text = String(value).trim();
+  if (!text) return null;
+  text = text.replace(/R\$|%/gi, '').replace(/\s+/g, '');
+
+  const hasComma = text.includes(',');
+  const hasDot = text.includes('.');
+
+  if (hasComma && hasDot) {
+    text = text.replace(/\./g, '').replace(',', '.');
+  } else if (hasComma) {
+    text = text.replace(',', '.');
+  } else if (hasDot) {
+    const parts = text.split('.');
+    const pareceMilhar = parts.length > 1 && parts.slice(1).every((part) => part.length === 3);
+    if (pareceMilhar) text = parts.join('');
+  }
+
+  const parsed = Number(text.replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizarCepDb(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.padStart(8, '0').slice(0, 8);
+}
+
+function onlyDigitsDb(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function isTransportadoraCnpjColumnMissing(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return error?.code === '42703'
+    || error?.code === 'PGRST204'
+    || (message.includes('transportadoras.cnpj') && message.includes('does not exist'))
+    || (message.includes("'cnpj'") && message.includes('schema cache'));
+}
+
+async function carregarTransportadorasResumoCompat(supabase) {
+  const atual = await supabase
+    .from('transportadoras')
+    .select('id, nome, status, cnpj, cnpj_raiz')
+    .order('nome', { ascending: true });
+
+  if (!isTransportadoraCnpjColumnMissing(atual.error)) return atual;
+
+  // Permite testar o front antes de aplicar a migration no Supabase. Os campos
+  // ficam vazios até as colunas serem criadas, mas a tela antiga segue abrindo.
+  return supabase
+    .from('transportadoras')
+    .select('id, nome, status')
+    .order('nome', { ascending: true });
+}
+
+function pickFirstDb(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+  }
+  return '';
+}
+
+function toSafeRealizadoNumber(value, maxAbs = 999999999999) {
+  const parsed = toNumberOrNull(value);
+  if (parsed === null) return null;
+  if (!Number.isFinite(parsed)) return null;
+  if (Math.abs(parsed) > maxAbs) return null;
+  return parsed;
+}
+
+function toBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return ['true', '1', 'sim', 'yes'].includes(normalized);
+  }
+  return Boolean(value);
+}
+
+function buildSnapshotPayload(transportadoras, chave = SNAPSHOT_CHAVE) {
+  return {
+    chave,
+    payload: {
+      transportadoras: clone(transportadoras),
+      updatedAt: new Date().toISOString(),
+    },
+  };
+}
+
+// Concorrencia de paginas buscadas ao mesmo tempo por tabela. O Supabase/PostgREST
+// limita cada resposta a PAGE_SIZE linhas (db-max-rows), entao tabelas grandes como
+// "rotas" (~1,2M linhas) precisam de mais de 1000 paginas - buscar uma de cada vez
+// (sequencial) fazia isso levar minutos so em latencia de rede. Buscando varias
+// paginas em paralelo, o tempo total cai proporcionalmente a concorrencia.
+const PAGINAS_EM_PARALELO = 8;
+
+// Sob carga (muitas tabelas grandes buscadas em paralelo), o Supabase às vezes
+// responde com timeout transitório (504 / "statement timeout"). Sem retry,
+// isso derrubava a carga inteira da base com uma mensagem em branco — daí a
+// tela de simulação parecer travada/sem fazer nada. Repete algumas vezes com
+// backoff antes de desistir de verdade.
+async function comRetry(fn, tentativas = 4) {
+  let ultimaResposta;
+  for (let i = 0; i < tentativas; i += 1) {
+    const resposta = await fn();
+    if (!resposta.error) return resposta;
+    ultimaResposta = resposta;
+    const { error } = resposta;
+    const transitorio = error.code === '57014' || /timeout|504/i.test(error.message || '');
+    if (!transitorio || i === tentativas - 1) return resposta;
+    await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+  }
+  return ultimaResposta;
+}
+
+async function fetchAllRows(supabase, table, orderBy = null, ascending = true, onPage = null) {
+  // ORDER BY estável é obrigatório: sem ele, o Postgres não garante a ordem
+  // das linhas entre as páginas do .range(), fazendo páginas repetirem e
+  // PULAREM linhas. Em tabelas grandes (rotas ~500k) isso fazia o motor perder
+  // rotas e devolver SEM_ROTA / AMD=0. Quando não há coluna de ordenação
+  // explícita, ordena por id (PK) para paginação determinística e completa.
+  const ordenarPor = orderBy || 'id';
+
+  // Usa a mesma coluna do ORDER BY pra contar (nao "id" fixo): "generalidades"
+  // nao tem coluna id, so origem_id - um select('id') fixo aqui quebra com
+  // 42703 (coluna inexistente) e derruba a carga inteira da malha.
+  const { count, error: erroCount } = await comRetry(() =>
+    supabase.from(table).select(ordenarPor, { count: 'exact', head: true })
+  );
+  if (erroCount) throw erroCount;
+
+  const total = count || 0;
+  if (!total) return [];
+
+  const totalPaginas = Math.ceil(total / PAGE_SIZE);
+  const paginas = new Array(totalPaginas);
+  let carregados = 0;
+
+  async function buscarPagina(indice) {
+    const from = indice * PAGE_SIZE;
+    const { data, error } = await comRetry(() =>
+      supabase
+        .from(table)
+        .select('*')
+        .order(ordenarPor, { ascending })
+        .range(from, from + PAGE_SIZE - 1)
+    );
+    if (error) throw error;
+    paginas[indice] = data || [];
+    carregados += paginas[indice].length;
+    onPage?.(carregados, table);
+  }
+
+  for (let inicio = 0; inicio < totalPaginas; inicio += PAGINAS_EM_PARALELO) {
+    const lote = [];
+    for (let i = inicio; i < Math.min(inicio + PAGINAS_EM_PARALELO, totalPaginas); i += 1) lote.push(buscarPagina(i));
+    // eslint-disable-next-line no-await-in-loop
+    await Promise.all(lote);
+  }
+
+  return paginas.flat();
+}
+
+function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspeciais) {
+  return {
+    id: origem.id,
+    cidade: origem.cidade || '',
+    codigoCentro: origem.codigo_centro || '',
+    cnpj: onlyDigitsDb(origem.cnpj).slice(0, 14),
+    cnpjRaiz: onlyDigitsDb(origem.cnpj_raiz || origem.cnpj).slice(0, 8),
+    canal: origem.canal || 'ATACADO',
+    status: origem.status || 'Ativa',
+    validado: Boolean(origem.validado),
+    validado_em: origem.validado_em || null,
+    validado_por: origem.validado_por || null,
+    generalidades: {
+      incideIcms: Boolean(generalidade?.incide_icms),
+      aliquotaIcms: generalidade?.aliquota_icms ?? 0,
+      adValorem: generalidade?.ad_valorem ?? 0,
+      adValoremMinimo: generalidade?.ad_valorem_minimo ?? 0,
+      pedagio: generalidade?.pedagio ?? 0,
+      gris: generalidade?.gris ?? 0,
+      grisMinimo: generalidade?.gris_minimo ?? 0,
+      tas: generalidade?.tas ?? 0,
+      ctrc: generalidade?.ctrc ?? 0,
+      cubagem: generalidade?.cubagem ?? 300,
+      tipoCalculo: generalidade?.tipo_calculo || 'PERCENTUAL',
+      observacoes: generalidade?.observacoes || '',
+      freteMinimo: generalidade?.frete_minimo ?? 0,
+      regraCalculo: generalidade?.regra_calculo || '',
+      taxaEmergencial: generalidade?.taxa_emergencial ?? 0,
+    },
+    rotas: rotas.map((item) => ({
+      id: item.id,
+      nomeRota: item.nome_rota || '',
+      ibgeOrigem: item.ibge_origem || '',
+      ibgeDestino: onlyDigitsDb(item.ibge_destino).slice(0, 7) || item.ibge_destino || '',
+      canal: item.canal || origem.canal || 'ATACADO',
+      prazoEntregaDias: item.prazo_entrega_dias ?? 0,
+      valorMinimoFrete: item.valor_minimo_frete ?? 0,
+      codigoUnidade: item.codigo_unidade || '',
+      cepInicial: item.cep_inicial || '',
+      cepFinal: item.cep_final || '',
+      metodoEnvio: item.metodo_envio || '',
+      inicioVigencia: item.inicio_vigencia || '',
+      fimVigencia: item.fim_vigencia || '',
+      ...(item.extra || {}),
+    })),
+    cotacoes: cotacoes.map((item) => ({
+      id: item.id,
+      rota: item.rota || '',
+      pesoMin: item.peso_min ?? 0,
+      pesoMax: item.peso_max ?? item.peso_limite ?? 0,
+      rsKg: item.rs_kg ?? 0,
+      excesso: item.excesso ?? 0,
+      percentual: item.percentual ?? 0,
+      valorFixo: item.valor_fixo ?? item.taxa_aplicada ?? 0,
+      freteMinimo: item.frete_minimo ?? 0,
+      tipoCalculo: item.tipo_calculo || item.tipoCalculo || '',
+      regraCalculo: item.regra_calculo || item.regraCalculo || '',
+      ...(item.extra || {}),
+    })),
+    taxasEspeciais: taxasEspeciais.map((item) => ({
+      id: item.id,
+      ibgeDestino: onlyDigitsDb(item.ibge_destino).slice(0, 7) || item.ibge_destino || '',
+      tda: item.tda ?? 0,
+      tdr: item.tdr ?? 0,
+      trt: item.trt ?? 0,
+      suframa: item.suframa ?? 0,
+      outras: item.outras ?? 0,
+      gris: item.gris,
+      grisMinimo: item.gris_minimo,
+      adVal: item.ad_val,
+      adValMinimo: item.ad_val_minimo,
+      taxasExtras: Array.isArray(item.taxas_extras) ? item.taxas_extras : [],
+      ...(item.extra || {}),
+    })),
+  };
+}
+
+function mapBaseToTables(transportadoras) {
+  const transportadorasRows = [];
+  const origensRows = [];
+  const generalidadesRows = [];
+  const rotasRows = [];
+  const cotacoesRows = [];
+  const taxasRows = [];
+
+  const usedTransportadoras = new Set();
+  const usedOrigens = new Set();
+  const usedRotas = new Set();
+  const usedCotacoes = new Set();
+  const usedTaxas = new Set();
+
+  (transportadoras || []).forEach((transportadora) => {
+    const transportadoraId = safeUuid(transportadora.id, usedTransportadoras);
+
+    transportadorasRows.push({
+      id: transportadoraId,
+      nome: transportadora.nome || '',
+      status: transportadora.status || 'Ativa',
+      cnpj: onlyDigitsDb(transportadora.cnpj).slice(0, 14) || null,
+      cnpj_raiz: onlyDigitsDb(transportadora.cnpjRaiz || transportadora.cnpj).slice(0, 8) || null,
+      tde: toNumberOrNull(transportadora.tde) ?? 0,
+      tde_cnpjs: Array.isArray(transportadora.tdeCnpjs)
+        ? transportadora.tdeCnpjs.map((item) => onlyDigitsDb(item)).filter(Boolean)
+        : [],
+    });
+
+    (transportadora.origens || []).forEach((origem) => {
+      const origemId = safeUuid(origem.id, usedOrigens);
+      const generalidades = origem.generalidades || {};
+
+      origensRows.push({
+        id: origemId,
+        transportadora_id: transportadoraId,
+        cidade: origem.cidade || '',
+        codigo_centro: onlyDigitsDb(origem.codigoCentro || origem.codigo_centro) || null,
+        cnpj: onlyDigitsDb(origem.cnpj).slice(0, 14) || null,
+        cnpj_raiz: onlyDigitsDb(origem.cnpjRaiz || origem.cnpj).slice(0, 8) || null,
+        canal: origem.canal || 'ATACADO',
+        status: origem.status || 'Ativa',
+        validado: Boolean(origem.validado),
+        validado_em: origem.validado_em || null,
+        validado_por: origem.validado_por || null,
+      });
+
+      generalidadesRows.push({
+        origem_id: origemId,
+        incide_icms: toBoolean(generalidades.incideIcms),
+        aliquota_icms: toNumberOrNull(generalidades.aliquotaIcms),
+        ad_valorem: toNumberOrNull(generalidades.adValorem),
+        ad_valorem_minimo: toNumberOrNull(generalidades.adValoremMinimo),
+        pedagio: toNumberOrNull(generalidades.pedagio),
+        gris: toNumberOrNull(generalidades.gris),
+        gris_minimo: toNumberOrNull(generalidades.grisMinimo),
+        tas: toNumberOrNull(generalidades.tas),
+        ctrc: toNumberOrNull(generalidades.ctrc),
+        cubagem: toNumberOrNull(generalidades.cubagem),
+        tipo_calculo: generalidades.tipoCalculo || 'PERCENTUAL',
+        observacoes: generalidades.observacoes || '',
+        frete_minimo: toNumberOrNull(generalidades.freteMinimo),
+        regra_calculo: generalidades.regraCalculo || '',
+        taxa_emergencial: toNumberOrNull(generalidades.taxaEmergencial),
+      });
+
+      (origem.rotas || []).forEach((item) => {
+        const {
+          id, nomeRota, ibgeOrigem, ibgeDestino, canal, prazoEntregaDias,
+          valorMinimoFrete, codigoUnidade, cepInicial, cepFinal, metodoEnvio,
+          inicioVigencia, fimVigencia, ...extra
+        } = item || {};
+
+        rotasRows.push({
+          id: safeUuid(id, usedRotas),
+          origem_id: origemId,
+          nome_rota: nomeRota || '',
+          ibge_origem: ibgeOrigem || '',
+          ibge_destino: onlyDigitsDb(ibgeDestino).slice(0, 7) || ibgeDestino || '',
+          canal: canal || origem.canal || 'ATACADO',
+          prazo_entrega_dias: toNumberOrNull(prazoEntregaDias),
+          valor_minimo_frete: toNumberOrNull(valorMinimoFrete),
+          codigo_unidade: codigoUnidade || '',
+          cep_inicial: cepInicial || '',
+          cep_final: cepFinal || '',
+          metodo_envio: metodoEnvio || '',
+          inicio_vigencia: inicioVigencia || '',
+          fim_vigencia: fimVigencia || '',
+          extra,
+        });
+      });
+
+      (origem.cotacoes || []).forEach((item) => {
+        const { id, rota, pesoMin, pesoMax, rsKg, excesso, percentual, valorFixo, ...extra } =
+          item || {};
+
+        cotacoesRows.push({
+          id: safeUuid(id, usedCotacoes),
+          origem_id: origemId,
+          rota: rota || '',
+          peso_min: toNumberOrNull(pesoMin),
+          peso_max: toNumberOrNull(pesoMax),
+          rs_kg: toNumberOrNull(rsKg),
+          excesso: toNumberOrNull(excesso),
+          percentual: toNumberOrNull(percentual),
+          valor_fixo: toNumberOrNull(valorFixo),
+          extra,
+        });
+      });
+
+      (origem.taxasEspeciais || []).forEach((item) => {
+        const { id, ibgeDestino, tda, tdr, trt, suframa, outras, gris, grisMinimo, adVal, adValMinimo, taxasExtras, ...extra } = item || {};
+
+        taxasRows.push({
+          id: safeUuid(id, usedTaxas),
+          origem_id: origemId,
+          ibge_destino: onlyDigitsDb(ibgeDestino).slice(0, 7) || ibgeDestino || '',
+          tda: toNumberOrNull(tda),
+          tdr: toNumberOrNull(tdr),
+          trt: toNumberOrNull(trt),
+          suframa: toNumberOrNull(suframa),
+          outras: toNumberOrNull(outras),
+          gris: toNumberOrNull(gris),
+          gris_minimo: toNumberOrNull(grisMinimo),
+          ad_val: toNumberOrNull(adVal),
+          ad_val_minimo: toNumberOrNull(adValMinimo),
+          taxas_extras: Array.isArray(taxasExtras) ? taxasExtras : [],
+          extra,
+        });
+      });
+    });
+  });
+
+  return {
+    transportadorasRows,
+    origensRows,
+    generalidadesRows,
+    rotasRows,
+    cotacoesRows,
+    taxasRows,
+  };
+}
+
+
+async function fetchTransportadorasByNome(supabase, nomes = []) {
+  const normalized = Array.from(
+    new Set(
+      (nomes || [])
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (!normalized.length) return [];
+
+  const rows = [];
+  const chunkSize = 200;
+  for (let index = 0; index < normalized.length; index += chunkSize) {
+    const chunk = normalized.slice(index, index + chunkSize);
+    const { data, error } = await supabase
+      .from('transportadoras')
+      .select('id, nome')
+      .in('nome', chunk);
+
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  return rows;
+}
+
+function applyExistingTransportadoraIds(mapped, existentes = []) {
+  const byNome = new Map(
+    (existentes || []).map((item) => [String(item.nome || '').trim().toLowerCase(), item.id])
+  );
+
+  if (!byNome.size) return mapped;
+
+  const transportadoraIdMap = new Map();
+  const transportadorasRows = (mapped.transportadorasRows || []).map((row) => {
+    const nomeKey = String(row.nome || '').trim().toLowerCase();
+    const existingId = byNome.get(nomeKey);
+    if (existingId && row.id !== existingId) {
+      transportadoraIdMap.set(row.id, existingId);
+      return { ...row, id: existingId };
+    }
+    return row;
+  });
+
+  if (!transportadoraIdMap.size) {
+    return { ...mapped, transportadorasRows };
+  }
+
+  const remapOrigem = (row) => ({
+    ...row,
+    transportadora_id: transportadoraIdMap.get(row.transportadora_id) || row.transportadora_id,
+  });
+
+  return {
+    ...mapped,
+    transportadorasRows,
+    origensRows: (mapped.origensRows || []).map(remapOrigem),
+  };
+}
+
+function origemKey(row = {}) {
+  return [
+    String(row.transportadora_id || '').trim(),
+    String(row.cidade || '').trim().toLowerCase(),
+    String(row.canal || 'ATACADO').trim().toUpperCase(),
+  ].join('__');
+}
+
+async function fetchOrigensExistentes(supabase, origensRows = []) {
+  const transportadoraIds = Array.from(
+    new Set((origensRows || []).map((row) => row.transportadora_id).filter(Boolean))
+  );
+
+  if (!transportadoraIds.length) return [];
+
+  const rows = [];
+  const chunkSize = 200;
+
+  for (let index = 0; index < transportadoraIds.length; index += chunkSize) {
+    const chunk = transportadoraIds.slice(index, index + chunkSize);
+    const { data, error } = await supabase
+      .from('origens')
+      .select('id, transportadora_id, cidade, canal')
+      .in('transportadora_id', chunk);
+
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  const wanted = new Set((origensRows || []).map(origemKey));
+  return rows.filter((row) => wanted.has(origemKey(row)));
+}
+
+function applyExistingOrigemIds(mapped, existentes = []) {
+  const byKey = new Map((existentes || []).map((item) => [origemKey(item), item.id]));
+  if (!byKey.size) return mapped;
+
+  const origemIdMap = new Map();
+  const origensRows = (mapped.origensRows || []).map((row) => {
+    const existingId = byKey.get(origemKey(row));
+    if (existingId && row.id !== existingId) {
+      origemIdMap.set(row.id, existingId);
+      return { ...row, id: existingId };
+    }
+    return row;
+  });
+
+  if (!origemIdMap.size) return { ...mapped, origensRows };
+
+  const remapOrigemId = (row) => ({
+    ...row,
+    origem_id: origemIdMap.get(row.origem_id) || row.origem_id,
+  });
+
+  return {
+    ...mapped,
+    origensRows,
+    generalidadesRows: (mapped.generalidadesRows || []).map(remapOrigemId),
+    rotasRows: (mapped.rotasRows || []).map(remapOrigemId),
+    cotacoesRows: (mapped.cotacoesRows || []).map(remapOrigemId),
+    taxasRows: (mapped.taxasRows || []).map(remapOrigemId),
+  };
+}
+
+function sanitizeImportacaoPayload(payload = {}) {
+  const tipo = String(payload.tipo || '').trim();
+  const canal = String(payload.canal || '').trim();
+  const arquivo = String(payload.arquivo || '').trim();
+  const inseridos = Number(payload.inseridos || 0) || 0;
+  const erros = Array.isArray(payload.erros) ? payload.erros : [];
+  const meta = payload.meta && typeof payload.meta === 'object' ? payload.meta : null;
+  const duracaoMs = Number(payload.duracaoMs || payload.duracao_ms || 0) || 0;
+  const status = erros.length ? (inseridos > 0 ? 'parcial' : 'erro') : 'sucesso';
+
+  return {
+    arquivo,
+    tipo,
+    canal,
+    inseridos,
+    erros,
+    meta,
+    duracao_ms: duracaoMs || null,
+    status,
+  };
+}
+
+async function upsertRows(supabase, table, rows, conflictField) {
+  if (!rows.length) return;
+  const chunkSize = 500;
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const chunk = rows.slice(index, index + chunkSize);
+    const { error } = await supabase.from(table).upsert(chunk, { onConflict: conflictField });
+    if (error) {
+      throw new Error(`Erro ao gravar ${table}: ${error.message || error.details || 'erro desconhecido'}`);
+    }
+  }
+}
+
+export function bancoConfigurado() {
+  return isSupabaseConfigured();
+}
+
+export async function carregarSnapshotFretesDb(chave = SNAPSHOT_CHAVE) {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    return raw ? JSON.parse(raw) : null;
+  }
+
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('cadastros_snapshot')
+    .select('id, chave, payload, updated_at, created_at')
+    .eq('chave', chave)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
+export async function carregarBaseCompletaDb(onProgress = null) {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
+  }
+
+  // Array vazio é "truthy" em JS — sem o length aqui, uma carga que falhe
+  // parcialmente e resulte em [] ficava presa em cache pro resto da sessão,
+  // fazendo a tela de simulação (e qualquer outra) achar que a base está
+  // vazia mesmo com transportadoras cadastradas no banco.
+  if (_cacheBaseCompleta?.length) return _cacheBaseCompleta;
+
+  const supabase = ensureClient();
+
+  // Sem total conhecido de antemão (6 tabelas em paralelo), reporta a soma de
+  // linhas já carregadas em todas elas pra dar uma noção visível de progresso
+  // em vez de ficar travado num percentual fixo.
+  const linhasPorTabela = {};
+  const reportarProgresso = (total, table) => {
+    linhasPorTabela[table] = total;
+    const carregados = Object.values(linhasPorTabela).reduce((soma, n) => soma + n, 0);
+    onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados, total: null });
+  };
+
+  const [transportadoras, origens, generalidades, rotas, cotacoes, taxas] =
+    await Promise.all([
+      fetchAllRows(supabase, 'transportadoras', 'nome', true, reportarProgresso),
+      fetchAllRows(supabase, 'origens', 'cidade', true, reportarProgresso),
+      fetchAllRows(supabase, 'generalidades', 'origem_id', true, reportarProgresso),
+      fetchAllRows(supabase, 'rotas', null, true, reportarProgresso),
+      fetchAllRows(supabase, 'cotacoes', null, true, reportarProgresso),
+      fetchAllRows(supabase, 'taxas_especiais', null, true, reportarProgresso),
+    ]);
+
+  const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);
+
+  const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
+  const rotasByOrigem = new Map();
+  const cotacoesByOrigem = new Map();
+  const taxasByOrigem = new Map();
+
+  rotasNormalizadas.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = rotasByOrigem.get(key) || [];
+    list.push(item);
+    rotasByOrigem.set(key, list);
+  });
+
+  cotacoes.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = cotacoesByOrigem.get(key) || [];
+    list.push(item);
+    cotacoesByOrigem.set(key, list);
+  });
+
+  taxas.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = taxasByOrigem.get(key) || [];
+    list.push(item);
+    taxasByOrigem.set(key, list);
+  });
+
+  const origensByTransportadora = new Map();
+
+  origens.forEach((origem) => {
+    const key = String(origem.transportadora_id);
+    const list = origensByTransportadora.get(key) || [];
+    list.push(
+      normalizeOrigemFromDb(
+        origem,
+        generalidadeByOrigem.get(String(origem.id)),
+        rotasByOrigem.get(String(origem.id)) || [],
+        cotacoesByOrigem.get(String(origem.id)) || [],
+        taxasByOrigem.get(String(origem.id)) || []
+      )
+    );
+    origensByTransportadora.set(key, list);
+  });
+
+  _cacheBaseCompleta = transportadoras.map((transportadora) => ({
+    id: transportadora.id,
+    nome: transportadora.nome || '',
+    status: transportadora.status || 'Ativa',
+    cnpj: transportadora.cnpj || '',
+    cnpjRaiz: transportadora.cnpj_raiz || '',
+    tde: transportadora.tde ?? 0,
+    tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+    origens: origensByTransportadora.get(String(transportadora.id)) || [],
+  }));
+  return _cacheBaseCompleta;
+}
+
+// Normaliza nome de cidade pra comparar sem depender de acento/caixa - o
+// cadastro tem grafias inconsistentes da mesma cidade (ex: "Jaboatão" e
+// "Jaboatao" convivem, com a maioria das linhas sem acento).
+function normalizarCidadeFiltroDb(valor) {
+  return String(valor || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .trim()
+    .toUpperCase();
+}
+
+async function fetchAllRowsFiltradoPorColuna(supabase, table, coluna, valores, orderBy = null, onProgress = null) {
+  const ordenarPor = orderBy || 'id';
+  const allRows = [];
+  for (const grupo of chunksDb(valores, 100)) {
+    // Paginacao por cursor (id > ultimoId), nao por OFFSET: com filtro de baixa
+    // seletividade (ex: ~100 codigos de ibge_destino que batem em dezenas de
+    // milhares de linhas de 'rotas'), OFFSET faz o Postgres reescanear do zero
+    // a cada pagina - pagina em offset 25000 fica reescaneando as 25000 linhas
+    // anteriores de novo, e cada pagina subsequente fica mais lenta (chegou a
+    // 115s numa unica pagina). Cursor por id evita esse re-trabalho: cada
+    // pagina continua exatamente de onde a anterior parou.
+    let ultimoId = null;
+    for (;;) {
+      let query = supabase
+        .from(table)
+        .select('*')
+        .in(coluna, grupo)
+        .order(ordenarPor, { ascending: true })
+        .limit(PAGE_SIZE);
+      if (ultimoId !== null) query = query.gt(ordenarPor, ultimoId);
+      const { data, error } = await query;
+      if (error) throw error;
+      const rows = data || [];
+      allRows.push(...rows);
+      onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: allRows.length, total: null });
+      if (rows.length < PAGE_SIZE) break;
+      ultimoId = rows[rows.length - 1]?.[ordenarPor];
+      if (ultimoId === undefined || ultimoId === null) break;
+    }
+  }
+  return allRows;
+}
+
+async function fetchAllRowsFiltradoPorOrigens(supabase, table, origemIds, orderBy = null, onProgress = null) {
+  return fetchAllRowsFiltradoPorColuna(supabase, table, 'origem_id', origemIds, orderBy, onProgress);
+}
+
+// Cotacoes sao por origem_id + rota (nome_rota) - uma origem pode ter varias rotas
+// cadastradas (uma pra cada regiao/grupo de destinos), cada uma com dezenas de faixas
+// de peso. Filtrar so por origem_id (como fetchAllRowsFiltradoPorOrigens faz) traz TODAS
+// as rotas daquela origem, nao so a(s) que realmente atende(m) os destinos pedidos -
+// pra poucos destinos isso infla o carregamento em ordens de magnitude sem necessidade.
+async function fetchCotacoesFiltradasPorRota(supabase, origemIds, rotaNomes, onProgress = null) {
+  if (!origemIds.length || !rotaNomes.length) return [];
+  const allRows = [];
+  for (const grupoOrigem of chunksDb(origemIds, 100)) {
+    let ultimoId = null;
+    for (;;) {
+      let query = supabase
+        .from('cotacoes')
+        .select('*')
+        .in('origem_id', grupoOrigem)
+        .in('rota', rotaNomes)
+        .order('id', { ascending: true })
+        .limit(PAGE_SIZE);
+      if (ultimoId !== null) query = query.gt('id', ultimoId);
+      const { data, error } = await query;
+      if (error) throw error;
+      const rows = data || [];
+      allRows.push(...rows);
+      onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: allRows.length, total: null });
+      if (rows.length < PAGE_SIZE) break;
+      ultimoId = rows[rows.length - 1]?.id;
+      if (ultimoId == null) break;
+    }
+  }
+  return allRows;
+}
+
+function chunksDb(lista = [], tamanho = 100) {
+  const saida = [];
+  for (let i = 0; i < lista.length; i += tamanho) saida.push(lista.slice(i, i + tamanho));
+  return saida;
+}
+
+// Carrega so a malha das origens cujo nome de cidade bate com algum dos nomes
+// em filtroCidades (ex: restricao a CDs especificos na resimulacao do
+// e-commerce). Nao usa o cache de carregarBaseCompletaDb (e um recorte, nao a
+// base inteira) - pensado pra ser rapido justamente por evitar buscar
+// milhoes de linhas de rotas/cotacoes/taxas de origens que nao interessam.
+const CAMPOS_ROTA_CALCULO_ECOMMERCE = [
+  'id', 'origem_id', 'nome_rota', 'ibge_origem', 'ibge_destino', 'canal',
+  'prazo_entrega_dias', 'valor_minimo_frete', 'codigo_unidade',
+  'cep_inicial', 'cep_final', 'metodo_envio', 'inicio_vigencia', 'fim_vigencia',
+].join(',');
+
+function deduplicarRotasCalculoEcommerce(rotas = []) {
+  const unicas = new Map();
+  (rotas || []).forEach((rota) => {
+    // Depois que o destino ja foi resolvido para IBGE, diferencas de id, CEP,
+    // unidade e vigencia entre importacoes historicas nao mudam o calculo: a
+    // cotacao e localizada por origem + nome da rota e a taxa pelo IBGE.
+    const chave = [
+      String(rota.origem_id || ''),
+      normalizarCidadeFiltroDb(rota.nome_rota || ''),
+      String(rota.ibge_destino || '').replace(/\D/g, ''),
+      normalizarCidadeFiltroDb(rota.canal || ''),
+      Number(rota.prazo_entrega_dias || 0),
+      Number(rota.valor_minimo_frete || 0),
+    ].join('|');
+    if (!unicas.has(chave)) unicas.set(chave, rota);
+  });
+  return [...unicas.values()];
+}
+
+async function fetchRotasPorOrigensEDestinos(supabase, origemIds, destinosIbge, onProgress = null) {
+  if (!origemIds.length || !destinosIbge.length) return [];
+  const allRows = [];
+
+  async function buscarOrigemEDestinos(origemId, grupoDestino) {
+    const executar = () => supabase
+      .from('rotas')
+      .select(CAMPOS_ROTA_CALCULO_ECOMMERCE)
+      .eq('origem_id', origemId)
+      .in('ibge_destino', grupoDestino)
+      .limit(PAGE_SIZE);
+    const { data, error } = await comRetry(executar, 3);
+    if (error) {
+      const transitorio = error.code === '57014' || /timeout|504|canceling statement/i.test(error.message || '');
+      if (transitorio && grupoDestino.length > 1) {
+        const meio = Math.ceil(grupoDestino.length / 2);
+        await buscarOrigemEDestinos(origemId, grupoDestino.slice(0, meio));
+        await buscarOrigemEDestinos(origemId, grupoDestino.slice(meio));
+        return;
+      }
+      throw error;
+    }
+    const rows = data || [];
+    // Uma unica origem atingiu o teto da API: divide por destino em vez de
+    // paginar com ORDER BY global, que e justamente o plano lento visto na Rede.
+    if (rows.length >= PAGE_SIZE && grupoDestino.length > 1) {
+      const meio = Math.ceil(grupoDestino.length / 2);
+      await buscarOrigemEDestinos(origemId, grupoDestino.slice(0, meio));
+      await buscarOrigemEDestinos(origemId, grupoDestino.slice(meio));
+      return;
+    }
+    if (rows.length >= PAGE_SIZE && grupoDestino.length === 1) {
+      let ultimoId = null;
+      for (;;) {
+        let query = supabase
+          .from('rotas')
+          .select(CAMPOS_ROTA_CALCULO_ECOMMERCE)
+          .eq('origem_id', origemId)
+          .eq('ibge_destino', grupoDestino[0])
+          .order('id', { ascending: true })
+          .limit(PAGE_SIZE);
+        if (ultimoId !== null) query = query.gt('id', ultimoId);
+        // eslint-disable-next-line no-await-in-loop
+        const { data: pagina, error: erroPagina } = await comRetry(() => query, 3);
+        if (erroPagina) throw erroPagina;
+        const linhas = pagina || [];
+        allRows.push(...linhas);
+        onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: allRows.length, total: null });
+        if (linhas.length < PAGE_SIZE) return;
+        ultimoId = linhas[linhas.length - 1]?.id;
+        if (ultimoId == null) return;
+      }
+    }
+    allRows.push(...rows);
+    onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: allRows.length, total: null });
+  }
+
+  // Poucas requisicoes pequenas em paralelo sao muito mais previsiveis que uma
+  // consulta gigante combinando dezenas de origem_id e forçando ordenacao global.
+  // destinosIbge tambem precisa ir em grupos pequenos (nao so origemIds): passar
+  // centenas/milhares de codigos IBGE de uma vez no .in() estoura o tamanho da URL
+  // e volta "Bad Request" antes mesmo de tentar (visto numa origem com pedidos pro
+  // Brasil inteiro, tipo ITAJAI, com lote de pedidos grande o suficiente pra juntar
+  // muitos destinos distintos numa pagina so).
+  for (const grupoOrigens of chunksDb(origemIds, 6)) {
+    for (const grupoDestino of chunksDb(destinosIbge, 100)) {
+      // eslint-disable-next-line no-await-in-loop
+      await Promise.all(grupoOrigens.map((origemId) => buscarOrigemEDestinos(origemId, grupoDestino)));
+    }
+  }
+  return allRows;
+}
+
+// Taxas especiais tambem sao vinculadas a um destino. Buscar somente por origem_id
+// fazia uma origem grande baixar milhares de taxas de destinos que nao pertenciam ao
+// lote atual. Alem do desperdicio, as paginas finais acabavam em statement_timeout.
+async function fetchTaxasPorOrigensEDestinos(supabase, origemIds, destinosIbge, onProgress = null) {
+  if (!origemIds.length || !destinosIbge.length) return [];
+  const allRows = [];
+
+  async function buscarGrupoDestino(grupoDestino, aposId = null) {
+    let ultimoId = aposId;
+    for (;;) {
+      const executar = () => {
+        let query = supabase
+          .from('taxas_especiais')
+          .select('*')
+          .in('origem_id', origemIds)
+          .in('ibge_destino', grupoDestino)
+          .order('id', { ascending: true })
+          .limit(PAGE_SIZE);
+        if (ultimoId !== null) query = query.gt('id', ultimoId);
+        return query;
+      };
+      const { data, error } = await comRetry(executar, 3);
+      if (error) {
+        const transitorio = error.code === '57014' || /timeout|504|canceling statement/i.test(error.message || '');
+        if (transitorio && grupoDestino.length > 1) {
+          const meio = Math.ceil(grupoDestino.length / 2);
+          await buscarGrupoDestino(grupoDestino.slice(0, meio), ultimoId);
+          await buscarGrupoDestino(grupoDestino.slice(meio), ultimoId);
+          return;
+        }
+        throw error;
+      }
+      const rows = data || [];
+      allRows.push(...rows);
+      onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: allRows.length, total: null });
+      if (rows.length < PAGE_SIZE) break;
+      ultimoId = rows[rows.length - 1]?.id;
+      if (ultimoId == null) break;
+    }
+  }
+
+  for (const grupoDestino of chunksDb(destinosIbge, 100)) {
+    // eslint-disable-next-line no-await-in-loop
+    await buscarGrupoDestino(grupoDestino);
+  }
+  return allRows;
+}
+
+// Carrega a malha de UMA origem (CD/cidade) mas SO das rotas que atendem os destinos
+// informados - nao a rede inteira daquele CD. Um CD grande pode atender centenas de
+// destinos no Brasil todo; se a leva de pedidos que estamos processando so tem uns
+// poucos destinos, buscar so os pares (origem, destino) que interessam evita carregar
+// dado que nunca vai ser usado (mesmo principio da ferramenta "Simular Saida de
+// Transportadora", que busca por par ibge_origem/ibge_destino exato).
+export async function carregarBaseFiltradaPorOrigemEDestinosDb(filtroCidades = [], destinosIbge = [], onProgress = null) {
+  if (!isSupabaseConfigured() || !filtroCidades.length || !destinosIbge.length) return [];
+  const supabase = ensureClient();
+
+  const nomesNorm = filtroCidades.map((nome) => normalizarCidadeFiltroDb(nome));
+  const { data: todasOrigens, error: erroOrigens } = await supabase.from('origens').select('*');
+  if (erroOrigens) throw erroOrigens;
+  const origens = (todasOrigens || []).filter((o) => {
+    if (!statusOrigemAtivoDb(o.status)) return false;
+    const cidadeNorm = normalizarCidadeFiltroDb(o.cidade);
+    return nomesNorm.some((nome) => cidadeNorm.includes(nome));
+  });
+  if (!origens.length) return [];
+
+  const origemIds = origens.map((o) => o.id);
+  const transportadoraIds = [...new Set(origens.map((o) => o.transportadora_id))];
+
+  const rotas = await fetchRotasPorOrigensEDestinos(supabase, origemIds, destinosIbge, onProgress);
+  if (!rotas.length) return [];
+
+  const rotaNomes = [...new Set(rotas.map((r) => r.nome_rota).filter(Boolean))];
+
+  const [transportadoras, generalidades, cotacoes, taxas] = await Promise.all([
+    (async () => {
+      const { data, error } = await supabase.from('transportadoras').select('*').in('id', transportadoraIds);
+      if (error) throw error;
+      return data || [];
+    })(),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'generalidades', origemIds, 'origem_id'),
+    fetchCotacoesFiltradasPorRota(supabase, origemIds, rotaNomes, onProgress),
+    fetchTaxasPorOrigensEDestinos(supabase, origemIds, destinosIbge, onProgress),
+  ]);
+
+  onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: rotas.length + cotacoes.length + taxas.length, total: null });
+
+  const rotasNormalizadas = deduplicarRotasCalculoEcommerce(
+    await enriquecerRotasComIbgeDestinoPorCepDb(rotas)
+  );
+
+  const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
+  const rotasByOrigem = new Map();
+  const cotacoesByOrigem = new Map();
+  const taxasByOrigem = new Map();
+
+  rotasNormalizadas.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = rotasByOrigem.get(key) || [];
+    list.push(item);
+    rotasByOrigem.set(key, list);
+  });
+  cotacoes.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = cotacoesByOrigem.get(key) || [];
+    list.push(item);
+    cotacoesByOrigem.set(key, list);
+  });
+  taxas.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = taxasByOrigem.get(key) || [];
+    list.push(item);
+    taxasByOrigem.set(key, list);
+  });
+
+  const origensComRota = origens.filter((o) => rotasByOrigem.has(String(o.id)));
+  const origensByTransportadora = new Map();
+  origensComRota.forEach((origem) => {
+    const key = String(origem.transportadora_id);
+    const list = origensByTransportadora.get(key) || [];
+    list.push(
+      normalizeOrigemFromDb(
+        origem,
+        generalidadeByOrigem.get(String(origem.id)),
+        rotasByOrigem.get(String(origem.id)) || [],
+        cotacoesByOrigem.get(String(origem.id)) || [],
+        taxasByOrigem.get(String(origem.id)) || []
+      )
+    );
+    origensByTransportadora.set(key, list);
+  });
+
+  return transportadoras
+    .map((transportadora) => ({
+      id: transportadora.id,
+      nome: transportadora.nome || '',
+      status: transportadora.status || 'Ativa',
+      cnpj: transportadora.cnpj || '',
+      cnpjRaiz: transportadora.cnpj_raiz || '',
+      tde: transportadora.tde ?? 0,
+      tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+      origens: origensByTransportadora.get(String(transportadora.id)) || [],
+    }))
+    .filter((t) => t.origens.length);
+}
+
+export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [], onProgress = null) {
+  if (!isSupabaseConfigured() || !filtroCidades.length) return [];
+  const supabase = ensureClient();
+
+  // Filtra em memoria (sem/com acento, maiusculo) em vez de ILIKE no banco:
+  // "Jaboatão" (com acento) via ILIKE so achava 3 de 16 origens reais, porque
+  // a maioria esta cadastrada sem acento ("Jaboatao") - um ILIKE simples
+  // deixava a malha incompleta silenciosamente. A tabela origens e pequena
+  // (~1.200 linhas), entao filtrar tudo em memoria e barato e correto.
+  const nomesNorm = filtroCidades.map((nome) => normalizarCidadeFiltroDb(nome));
+  const { data: todasOrigens, error: erroOrigens } = await supabase.from('origens').select('*');
+  if (erroOrigens) throw erroOrigens;
+  const origens = (todasOrigens || []).filter((o) => {
+    if (!statusOrigemAtivoDb(o.status)) return false;
+    const cidadeNorm = normalizarCidadeFiltroDb(o.cidade);
+    return nomesNorm.some((nome) => cidadeNorm.includes(nome));
+  });
+  if (!origens.length) return [];
+
+  onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: origens.length, total: null });
+
+  const origemIds = origens.map((o) => o.id);
+  const transportadoraIds = [...new Set(origens.map((o) => o.transportadora_id))];
+
+  const [transportadoras, generalidades, rotas, cotacoes, taxas] = await Promise.all([
+    (async () => {
+      const { data, error } = await supabase.from('transportadoras').select('*').in('id', transportadoraIds);
+      if (error) throw error;
+      return data || [];
+    })(),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'generalidades', origemIds, 'origem_id'),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'rotas', origemIds),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'cotacoes', origemIds),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'taxas_especiais', origemIds),
+  ]);
+
+  onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: origens.length + rotas.length + cotacoes.length + taxas.length, total: null });
+
+  const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);
+
+  const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
+  const rotasByOrigem = new Map();
+  const cotacoesByOrigem = new Map();
+  const taxasByOrigem = new Map();
+
+  rotasNormalizadas.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = rotasByOrigem.get(key) || [];
+    list.push(item);
+    rotasByOrigem.set(key, list);
+  });
+  cotacoes.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = cotacoesByOrigem.get(key) || [];
+    list.push(item);
+    cotacoesByOrigem.set(key, list);
+  });
+  taxas.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = taxasByOrigem.get(key) || [];
+    list.push(item);
+    taxasByOrigem.set(key, list);
+  });
+
+  const origensByTransportadora = new Map();
+  origens.forEach((origem) => {
+    const key = String(origem.transportadora_id);
+    const list = origensByTransportadora.get(key) || [];
+    list.push(
+      normalizeOrigemFromDb(
+        origem,
+        generalidadeByOrigem.get(String(origem.id)),
+        rotasByOrigem.get(String(origem.id)) || [],
+        cotacoesByOrigem.get(String(origem.id)) || [],
+        taxasByOrigem.get(String(origem.id)) || []
+      )
+    );
+    origensByTransportadora.set(key, list);
+  });
+
+  return transportadoras.map((transportadora) => ({
+    id: transportadora.id,
+    nome: transportadora.nome || '',
+    status: transportadora.status || 'Ativa',
+    cnpj: transportadora.cnpj || '',
+    cnpjRaiz: transportadora.cnpj_raiz || '',
+    tde: transportadora.tde ?? 0,
+    tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+    origens: origensByTransportadora.get(String(transportadora.id)) || [],
+  }));
+}
+
+// Carrega so a malha que atende os destinos (codigos IBGE) informados - pensado
+// pra recortes pequenos de pedidos (resimular so os visiveis/filtrados), onde
+// o numero de destinos e muito menor que a rede toda. Filtra direto pela
+// coluna rotas.ibge_destino: hoje 100% das rotas tem esse campo preenchido
+// (sem depender do fallback por faixa de CEP), entao e seguro pra base atual -
+// se no futuro aparecerem rotas so-por-CEP, elas ficariam de fora aqui.
+// filtroCidades (opcional) intersecta ainda mais, restringindo as origens.
+export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtroCidades = [], onProgress = null) {
+  if (!isSupabaseConfigured() || !destinosIbge.length) return [];
+  const supabase = ensureClient();
+
+  const rotasBrutas = await fetchAllRowsFiltradoPorColuna(supabase, 'rotas', 'ibge_destino', destinosIbge, null, onProgress);
+  if (!rotasBrutas.length) return [];
+
+  // Busca a tabela de origens inteira (pequena, ~1.200 linhas) e filtra em
+  // memoria, em vez de um .in('id', <lista de ids das rotas>) - destinos
+  // grandes (capitais) podem ter milhares de rotas espalhadas por quase todas
+  // as origens, e um IN gigante nessa consulta estourava o timeout do banco.
+  const origemIdsRotas = new Set(rotasBrutas.map((r) => r.origem_id));
+  const { data: todasOrigens, error: erroTodasOrigens } = await supabase.from('origens').select('*');
+  if (erroTodasOrigens) throw erroTodasOrigens;
+  const nomesCdNorm = filtroCidades.map((nome) => normalizarCidadeFiltroDb(nome));
+  const origens = (todasOrigens || []).filter((o) => origemIdsRotas.has(o.id)
+    && statusOrigemAtivoDb(o.status)
+    && (!nomesCdNorm.length || nomesCdNorm.some((nome) => normalizarCidadeFiltroDb(o.cidade).includes(nome))));
+
+  if (!origens.length) return [];
+
+  const origemIds = origens.map((o) => o.id);
+  const rotas = rotasBrutas.filter((r) => origemIds.includes(r.origem_id));
+  const rotaNomes = [...new Set(rotas.map((r) => r.nome_rota).filter(Boolean))];
+  const transportadoraIds = [...new Set(origens.map((o) => o.transportadora_id))];
+
+  onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: rotas.length, total: null });
+
+  const [transportadoras, generalidades, cotacoes, taxas] = await Promise.all([
+    (async () => {
+      const { data, error } = await supabase.from('transportadoras').select('*').in('id', transportadoraIds);
+      if (error) throw error;
+      return data || [];
+    })(),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'generalidades', origemIds, 'origem_id'),
+    fetchCotacoesFiltradasPorRota(supabase, origemIds, rotaNomes, onProgress),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'taxas_especiais', origemIds),
+  ]);
+
+  onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: rotas.length + cotacoes.length + taxas.length, total: null });
+
+  const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);
+
+  const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
+  const rotasByOrigem = new Map();
+  const cotacoesByOrigem = new Map();
+  const taxasByOrigem = new Map();
+
+  rotasNormalizadas.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = rotasByOrigem.get(key) || [];
+    list.push(item);
+    rotasByOrigem.set(key, list);
+  });
+  cotacoes.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = cotacoesByOrigem.get(key) || [];
+    list.push(item);
+    cotacoesByOrigem.set(key, list);
+  });
+  taxas.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = taxasByOrigem.get(key) || [];
+    list.push(item);
+    taxasByOrigem.set(key, list);
+  });
+
+  const origensByTransportadora = new Map();
+  origens.forEach((origem) => {
+    const key = String(origem.transportadora_id);
+    const list = origensByTransportadora.get(key) || [];
+    list.push(
+      normalizeOrigemFromDb(
+        origem,
+        generalidadeByOrigem.get(String(origem.id)),
+        rotasByOrigem.get(String(origem.id)) || [],
+        cotacoesByOrigem.get(String(origem.id)) || [],
+        taxasByOrigem.get(String(origem.id)) || []
+      )
+    );
+    origensByTransportadora.set(key, list);
+  });
+
+  return transportadoras.map((transportadora) => ({
+    id: transportadora.id,
+    nome: transportadora.nome || '',
+    status: transportadora.status || 'Ativa',
+    cnpj: transportadora.cnpj || '',
+    cnpjRaiz: transportadora.cnpj_raiz || '',
+    tde: transportadora.tde ?? 0,
+    tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+    origens: origensByTransportadora.get(String(transportadora.id)) || [],
+  }));
+}
+
+export async function carregarBaseTransportadorasDb(nomes = []) {
+  const nomesLimpos = Array.from(new Set(
+    (nomes || []).map((nome) => String(nome || '').trim()).filter(Boolean)
+  ));
+
+  if (!nomesLimpos.length) return carregarBaseCompletaDb();
+
+  if (!isSupabaseConfigured()) {
+    const base = await carregarBaseCompletaDb();
+    const alvoNorm = nomesLimpos.map((nome) => normalizeTransportadoraBuscaDb(nome));
+    return (base || []).filter((transportadora) => {
+      const nomeNorm = normalizeTransportadoraBuscaDb(transportadora.nome || '');
+      return alvoNorm.some((alvo) => nomeNorm === alvo || nomeNorm.includes(alvo) || alvo.includes(nomeNorm));
+    });
+  }
+
+  const supabase = ensureClient();
+  const todasTransportadoras = await fetchAllRows(supabase, 'transportadoras', 'nome', true);
+  const alvoNorm = nomesLimpos.map((nome) => normalizeTransportadoraBuscaDb(nome));
+  const transportadoras = (todasTransportadoras || []).filter((transportadora) => {
+    const nomeNorm = normalizeTransportadoraBuscaDb(transportadora.nome || '');
+    return alvoNorm.some((alvo) => nomeNorm === alvo || nomeNorm.includes(alvo) || alvo.includes(nomeNorm));
+  });
+
+  const transportadoraIds = transportadoras.map((item) => item.id).filter(Boolean);
+  if (!transportadoraIds.length) return [];
+
+  const origens = await buscarOrigensFiltradasDb({ supabase, transportadoraIds });
+  const origemIds = (origens || []).map((item) => item.id).filter(Boolean);
+  if (!origemIds.length) {
+    return transportadoras.map((transportadora) => ({
+      id: transportadora.id,
+      nome: transportadora.nome || '',
+      status: transportadora.status || 'Ativa',
+      detalheCarregado: true,
+      origens: [],
+    }));
+  }
+
+  const [generalidades, rotasRaw, cotacoes, taxas] = await Promise.all([
+    fetchRowsByOrigemIds(supabase, 'generalidades', origemIds),
+    fetchRowsByOrigemIds(supabase, 'rotas', origemIds),
+    fetchRowsByOrigemIds(supabase, 'cotacoes', origemIds),
+    fetchRowsByOrigemIds(supabase, 'taxas_especiais', origemIds),
+  ]);
+
+  const rotas = await enriquecerRotasComIbgeDestinoPorCepDb(rotasRaw);
+  return transportadorasFromDbRows({
+    transportadoras,
+    origens,
+    generalidades,
+    rotas,
+    cotacoes,
+    taxas,
+  });
+}
+
+export async function carregarResumoBaseDb() {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    if (!raw) return { transportadoras: [], resumo: { transportadoras: 0, origens: 0, rotas: 0, cotacoes: 0 } };
+    const parsed = JSON.parse(raw);
+    const transportadoras = Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
+    const origens = transportadoras.flatMap((item) => item.origens || []);
+    return {
+      transportadoras,
+      resumo: {
+        transportadoras: transportadoras.length,
+        origens: origens.length,
+        rotas: origens.reduce((acc, origem) => acc + (origem.rotas?.length || 0), 0),
+        cotacoes: origens.reduce((acc, origem) => acc + (origem.cotacoes?.length || 0), 0),
+      },
+    };
+  }
+
+  const supabase = ensureClient();
+
+  const [
+    transportadorasResponse,
+    origensResponse,
+    rotasCountResponse,
+    cotacoesCountResponse,
+  ] = await Promise.all([
+    carregarTransportadorasResumoCompat(supabase),
+    supabase.from('origens').select('id, transportadora_id, cidade, codigo_centro, cnpj, cnpj_raiz, canal, status, validado, validado_em, validado_por').order('cidade', { ascending: true }),
+    // O dashboard precisa apenas de um indicador imediato. `exact` obrigava o
+    // Postgres a contar tabelas que podem ter mais de um milhao de linhas antes
+    // de liberar a aplicacao. `planned` usa as estatisticas do banco e evita
+    // colocar essa varredura pesada no caminho critico do login.
+    supabase.from('rotas').select('id', { count: 'planned', head: true }),
+    supabase.from('cotacoes').select('id', { count: 'planned', head: true }),
+  ]);
+
+  if (transportadorasResponse.error) throw transportadorasResponse.error;
+  if (origensResponse.error) throw origensResponse.error;
+  if (rotasCountResponse.error) throw rotasCountResponse.error;
+  if (cotacoesCountResponse.error) throw cotacoesCountResponse.error;
+
+  const origensByTransportadora = new Map();
+  (origensResponse.data || []).forEach((origem) => {
+    const key = String(origem.transportadora_id);
+    const lista = origensByTransportadora.get(key) || [];
+    lista.push({
+      id: origem.id,
+      cidade: origem.cidade || '',
+      codigoCentro: origem.codigo_centro || '',
+      cnpj: origem.cnpj || '',
+      cnpjRaiz: origem.cnpj_raiz || '',
+      canal: origem.canal || 'ATACADO',
+      status: origem.status || 'Ativa',
+      validado: Boolean(origem.validado),
+      validado_em: origem.validado_em || null,
+      validado_por: origem.validado_por || null,
+      generalidades: {},
+      rotas: [],
+      cotacoes: [],
+      taxasEspeciais: [],
+    });
+    origensByTransportadora.set(key, lista);
+  });
+
+  const transportadoras = (transportadorasResponse.data || []).map((transportadora) => ({
+    id: transportadora.id,
+    nome: transportadora.nome || '',
+    status: transportadora.status || 'Ativa',
+    cnpj: transportadora.cnpj || '',
+    cnpjRaiz: transportadora.cnpj_raiz || '',
+    // A view de cobertura agrega rotas e cotacoes e pode ser cara. Ela fica na
+    // conferencia explicita; a lista inicial usa um marcador leve.
+    resumoCobertura: {
+      cobertura: 'Sem validação',
+      severidade: 'warn',
+      inconsistentes: 0,
+      pendencias: 0,
+      faltandoFrete: 0,
+      faltandoRota: 0,
+      totalRotas: 0,
+      totalCotacoes: 0,
+      resumo: true,
+    },
+    origens: origensByTransportadora.get(String(transportadora.id)) || [],
+  }));
+
+  return {
+    transportadoras,
+    resumo: {
+      transportadoras: transportadoras.length,
+      origens: (origensResponse.data || []).length,
+      rotas: rotasCountResponse.count || 0,
+      cotacoes: cotacoesCountResponse.count || 0,
+    },
+  };
+}
+
+export async function atualizarCnpjsTransportadorasDb(registros = []) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  const rows = (registros || []).map((item) => {
+    const cnpj = onlyDigitsDb(item.cnpj).slice(0, 14);
+    return { id: item.id, cnpj, cnpj_raiz: cnpj.slice(0, 8) };
+  }).filter((item) => item.id && item.cnpj.length === 14);
+  if (!rows.length) return { atualizadas: 0 };
+  await upsertRows(ensureClient(), 'transportadoras', rows, 'id');
+  invalidarCacheBaseCompletaDb();
+  return { atualizadas: rows.length };
+}
+
+export async function atualizarCnpjsOrigensDb(registros = []) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  const rows = (registros || []).map((item) => {
+    const cnpj = onlyDigitsDb(item.cnpj).slice(0, 14);
+    return { id: item.id, cnpj, cnpj_raiz: cnpj.slice(0, 8) };
+  }).filter((item) => item.id && item.cnpj.length === 14);
+  if (!rows.length) return { atualizadas: 0 };
+  await upsertRows(ensureClient(), 'origens', rows, 'id');
+  invalidarCacheBaseCompletaDb();
+  return { atualizadas: rows.length };
+}
+
+// `secao` aceita uma string ('rotas') ou um array (['rotas', 'cotacoes']) para
+// resolver os IDs existentes uma única vez e evitar N idas e vindas ao Supabase
+// quando várias seções da mesma origem precisam ser salvas juntas.
+export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHAVE, options = {}) {
+  const secoes = Array.isArray(secao) ? secao : [secao];
+
+  if (!isSupabaseConfigured()) {
+    const payload = buildSnapshotPayload(transportadoras, chave);
+    localStorage.setItem(FALLBACK_KEY, JSON.stringify(payload));
+    return { modo: 'local', secao, updated_at: payload.payload.updatedAt };
+  }
+
+  const supabase = ensureClient();
+  let {
+    transportadorasRows,
+    origensRows,
+    generalidadesRows,
+    rotasRows,
+    cotacoesRows,
+    taxasRows,
+  } = mapBaseToTables(transportadoras);
+
+  const transportadorasExistentes = await fetchTransportadorasByNome(
+    supabase,
+    transportadorasRows.map((item) => item.nome)
+  );
+
+  ({
+    transportadorasRows,
+    origensRows,
+    generalidadesRows,
+    rotasRows,
+    cotacoesRows,
+    taxasRows,
+  } = applyExistingTransportadoraIds(
+    { transportadorasRows, origensRows, generalidadesRows, rotasRows, cotacoesRows, taxasRows },
+    transportadorasExistentes
+  ));
+
+  const origensExistentes = await fetchOrigensExistentes(supabase, origensRows);
+
+  ({
+    transportadorasRows,
+    origensRows,
+    generalidadesRows,
+    rotasRows,
+    cotacoesRows,
+    taxasRows,
+  } = applyExistingOrigemIds(
+    { transportadorasRows, origensRows, generalidadesRows, rotasRows, cotacoesRows, taxasRows },
+    origensExistentes
+  ));
+
+  await upsertRows(supabase, 'transportadoras', transportadorasRows, 'id');
+  await upsertRows(supabase, 'origens', origensRows, 'id');
+
+  if (secoes.includes('generalidades')) {
+    await upsertRows(supabase, 'generalidades', generalidadesRows, 'origem_id');
+  }
+  if (secoes.includes('rotas')) {
+    await upsertRows(supabase, 'rotas', rotasRows, 'id');
+  }
+  if (secoes.includes('cotacoes')) {
+    await upsertRows(supabase, 'cotacoes', cotacoesRows, 'id');
+  }
+  if (secoes.includes('taxas')) {
+    await upsertRows(supabase, 'taxas_especiais', taxasRows, 'id');
+  }
+
+  if (options.atualizarSnapshot !== true) {
+    invalidarCacheBaseCompletaDb();
+    return { modo: 'supabase', secao, updated_at: new Date().toISOString(), snapshot: 'ignorado' };
+  }
+
+  const payload = buildSnapshotPayload(transportadoras, chave);
+  const { data, error } = await supabase
+    .from('cadastros_snapshot')
+    .upsert(payload, { onConflict: 'chave' })
+    .select('id, updated_at')
+    .single();
+
+  if (error) throw error;
+  invalidarCacheBaseCompletaDb();
+  return { modo: 'supabase', secao, updated_at: data?.updated_at };
+}
+
+export async function salvarBaseCompletaDb(transportadoras, chave = SNAPSHOT_CHAVE) {
+  if (!isSupabaseConfigured()) {
+    const payload = buildSnapshotPayload(transportadoras, chave);
+    localStorage.setItem(FALLBACK_KEY, JSON.stringify(payload));
+    return { modo: 'local', updated_at: payload.payload.updatedAt };
+  }
+
+  const supabase = ensureClient();
+  const payload = buildSnapshotPayload(transportadoras, chave);
+  const { data, error } = await supabase
+    .from('cadastros_snapshot')
+    .upsert(payload, { onConflict: 'chave' })
+    .select('id, updated_at')
+    .single();
+
+  if (error) throw error;
+  invalidarCacheBaseCompletaDb();
+  return { modo: 'supabase', updated_at: data?.updated_at };
+}
+
+export async function salvarSnapshotFretesDb(transportadoras, chave = SNAPSHOT_CHAVE) {
+  return salvarBaseCompletaDb(transportadoras, chave);
+}
+
+export async function testarConexaoFretesDb() {
+  if (!isSupabaseConfigured()) {
+    return { ok: false, mensagem: 'Supabase não configurado.' };
+  }
+
+  const supabase = ensureClient();
+  const { error } = await supabase.from('transportadoras').select('id').limit(1);
+  if (error) throw error;
+  return { ok: true, mensagem: 'Conexão com Supabase validada.' };
+}
+
+export async function salvarSnapshotBase(payload, metadata = {}) {
+  const transportadoras = Array.isArray(payload) ? payload : payload?.transportadoras || [];
+  return salvarBaseCompletaDb(transportadoras, metadata.chave || SNAPSHOT_CHAVE);
+}
+
+export async function buscarUltimoSnapshot() {
+  return carregarSnapshotFretesDb();
+}
+
+
+
+
+async function fetchRowsByOrigemIds(supabase, table, origemIds = []) {
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  if (!ids.length) return [];
+
+  const rows = [];
+  const chunkSize = 100;
+
+  for (let index = 0; index < ids.length; index += chunkSize) {
+    const chunk = ids.slice(index, index + chunkSize);
+    let from = 0;
+
+    while (true) {
+      const { data, error } = await supabase
+        .from(table)
+        .select('*')
+        .in('origem_id', chunk)
+        .order('origem_id', { ascending: true })
+        .range(from, from + PAGE_SIZE - 1);
+
+      if (error) throw error;
+
+      const page = data || [];
+      rows.push(...page);
+      if (page.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+  }
+
+  return rows;
+}
+
+async function fetchCotacoesByOrigemIdsAndRotas(supabase, origemIds = [], rotaNomes = []) {
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  const rotas = Array.from(new Set((rotaNomes || []).map((item) => String(item || '').trim()).filter(Boolean)));
+  if (!ids.length) return [];
+  if (!rotas.length || rotas.length > 400) return fetchRowsByOrigemIds(supabase, 'cotacoes', ids);
+
+  const rows = [];
+  const origemChunkSize = 50;
+  const rotaChunkSize = 80;
+
+  try {
+    for (let oi = 0; oi < ids.length; oi += origemChunkSize) {
+      const origemChunk = ids.slice(oi, oi + origemChunkSize);
+      for (let ri = 0; ri < rotas.length; ri += rotaChunkSize) {
+        const rotaChunk = rotas.slice(ri, ri + rotaChunkSize);
+        let from = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from('cotacoes')
+            .select('*')
+            .in('origem_id', origemChunk)
+            .in('rota', rotaChunk)
+            .order('origem_id', { ascending: true })
+            .range(from, from + PAGE_SIZE - 1);
+
+          if (error) throw error;
+          const page = data || [];
+          rows.push(...page);
+          if (page.length < PAGE_SIZE) break;
+          from += PAGE_SIZE;
+        }
+      }
+    }
+  } catch {
+    return fetchRowsByOrigemIds(supabase, 'cotacoes', ids);
+  }
+
+  // Se a base usa nome de cotação diferente do nome da rota, volta para o modo robusto.
+  // Também faz fallback se encontrou menos cotações que o esperado (pode ter perdido registros).
+  if (!rows.length) return fetchRowsByOrigemIds(supabase, 'cotacoes', ids);
+
+  // Verifica se pode ter perdido cotações — busca pelo total de registros para comparar
+  // Se robusto retornar mais, usa o robusto
+  try {
+    const robusto = await fetchRowsByOrigemIds(supabase, 'cotacoes', ids);
+    if (robusto.length > rows.length) return robusto;
+  } catch {}
+
+  return rows;
+}
+
+async function fetchTaxasByOrigemIdsAndDestinos(supabase, origemIds = [], destinosIbge = []) {
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  if (!ids.length) return [];
+
+  // Busca por origem_id apenas: a tabela taxas_especiais e uma lista de
+  // excecoes (pequena por origem), entao nao vale o risco de filtrar
+  // ibge_destino via .in() no banco. O IBGE cadastrado na taxa vem de um
+  // campo de texto livre na tela de Transportadoras e pode ter formatacao
+  // diferente do IBGE da rota (espacos, digito verificador etc.); um match
+  // exato no Postgres perderia a linha silenciosamente. O filtro por destino
+  // (normalizado) e aplicado aqui em JS, junto com a normalizacao que
+  // getTaxaDestino tambem aplica.
+  const rows = await fetchRowsByOrigemIds(supabase, 'taxas_especiais', ids);
+
+  const destinos = Array.from(new Set((destinosIbge || []).map((item) => onlyDigitsDb(item).slice(0, 7)).filter(Boolean)));
+  if (!destinos.length) return rows;
+
+  const destinosSet = new Set(destinos);
+  return rows.filter((row) => destinosSet.has(onlyDigitsDb(row.ibge_destino).slice(0, 7)));
+}
+
+
+async function fetchTransportadorasByIds(supabase, ids = []) {
+  const uniqueIds = Array.from(new Set((ids || []).filter(Boolean)));
+  if (!uniqueIds.length) return [];
+
+  const rows = [];
+  const chunkSize = 100;
+  for (let index = 0; index < uniqueIds.length; index += chunkSize) {
+    const chunk = uniqueIds.slice(index, index + chunkSize);
+    const { data, error } = await supabase
+      .from('transportadoras')
+      .select('id, nome, status, cnpj, cnpj_raiz, tde, tde_cnpjs')
+      .in('id', chunk);
+
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+  return rows;
+}
+
+async function fetchOrigensByIds(supabase, ids = []) {
+  const uniqueIds = Array.from(new Set((ids || []).filter(Boolean)));
+  if (!uniqueIds.length) return [];
+
+  const rows = [];
+  const chunkSize = 100;
+  for (let index = 0; index < uniqueIds.length; index += chunkSize) {
+    const chunk = uniqueIds.slice(index, index + chunkSize);
+    const { data, error } = await supabase
+      .from('origens')
+      .select('*')
+      .in('id', chunk);
+
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+  return rows;
+}
+
+function parseRouteKeysDb(routeKeys = []) {
+  const pares = [];
+  const keySet = new Set();
+
+  (routeKeys || []).forEach((raw) => {
+    const texto = String(raw || '').trim();
+    if (!texto) return;
+    const [canalRaw, rotaRaw] = texto.includes('|') ? texto.split('|') : ['', texto];
+    const [origemRaw, destinoRaw] = String(rotaRaw || '').split('-');
+    const ibgeOrigem = String(origemRaw || '').replace(/\D/g, '');
+    const ibgeDestino = String(destinoRaw || '').replace(/\D/g, '');
+    if (!ibgeOrigem || !ibgeDestino) return;
+    const canal = categoriaCanalDb(canalRaw);
+    const pairKey = `${ibgeOrigem}-${ibgeDestino}`;
+    pares.push({ canal, ibgeOrigem, ibgeDestino, pairKey });
+    keySet.add(canal ? `${canal}|${pairKey}` : pairKey);
+  });
+
+  return { pares, keySet };
+}
+
+async function fetchRotasByIbgePairs(supabase, pares = [], onProgress = null) {
+  const pairSet = new Set((pares || []).map((par) => par.pairKey).filter(Boolean));
+  if (!pairSet.size) return [];
+
+  const paresUnicos = Array.from(
+    new Map((pares || [])
+      .filter((par) => par.ibgeOrigem && par.ibgeDestino && par.pairKey)
+      .map((par) => [par.pairKey, par]))
+      .values()
+  );
+  const rowsById = new Map();
+  const pairChunkSize = 6;
+  let paresConsultados = 0;
+
+  for (let index = 0; index < paresUnicos.length; index += pairChunkSize) {
+    const chunk = paresUnicos.slice(index, index + pairChunkSize);
+    const filtro = chunk
+      .map((par) => `and(ibge_origem.eq.${par.ibgeOrigem},ibge_destino.eq.${par.ibgeDestino})`)
+      .join(',');
+    let from = 0;
+
+    while (true) {
+      const { data, error } = await supabase
+        .from('rotas')
+        .select('*')
+        .or(filtro)
+        .range(from, from + PAGE_SIZE - 1);
+
+      if (error) throw error;
+
+      const page = data || [];
+      page.forEach((rota) => {
+        const ibgeOrigem = String(rota.ibge_origem || '').replace(/\D/g, '');
+        const ibgeDestino = String(rota.ibge_destino || '').replace(/\D/g, '');
+        if (!pairSet.has(`${ibgeOrigem}-${ibgeDestino}`)) return;
+        rowsById.set(String(rota.id || `${rota.origem_id}-${ibgeOrigem}-${ibgeDestino}-${rota.nome_rota || ''}`), rota);
+      });
+
+      if (page.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+    paresConsultados += chunk.length;
+    onProgress?.(Math.min(paresConsultados, paresUnicos.length), paresUnicos.length);
+  }
+
+  return [...rowsById.values()];
+}
+
+function destinoKeyDb(value = '') {
+  return normalizeBuscaDb(cidadeSemUfDb(value));
+}
+
+function rotaDestinoLocalCompativelDb(rota = {}, destinosNormalizados = []) {
+  if (!destinosNormalizados.length) return true;
+
+  const destinoIbges = new Set(
+    destinosNormalizados
+      .map((item) => String(item || '').replace(/\D/g, ''))
+      .filter((item) => item.length >= 6)
+  );
+  const destinoNomes = new Set(
+    destinosNormalizados
+      .map((item) => destinoKeyDb(item))
+      .filter(Boolean)
+  );
+
+  const rotaIbge = String(rota.ibge_destino || rota.ibgeDestino || '').replace(/\D/g, '');
+  if (rotaIbge && destinoIbges.has(rotaIbge)) return true;
+
+  const nomeRota = rota.nome_rota || rota.nomeRota || rota.rota || rota.cidade_destino || '';
+  const nomeRotaKey = destinoKeyDb(nomeRota);
+  if (!nomeRotaKey) return false;
+
+  for (const destinoNome of destinoNomes) {
+    if (!destinoNome) continue;
+    if (nomeRotaKey === destinoNome) return true;
+    if (nomeRotaKey.includes(destinoNome) && destinoNome.length >= 5) return true;
+    if (destinoNome.includes(nomeRotaKey) && nomeRotaKey.length >= 5) return true;
+  }
+
+  return false;
+}
+
+async function fetchRotasByOrigemIds(supabase, origemIds = [], destinos = [], ufDestino = '') {
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  const destinosNormalizados = Array.from(new Set((destinos || []).map((item) => String(item || '').trim()).filter(Boolean)));
+  const ufFiltro = String(ufDestino || '').trim().toUpperCase();
+  const destinosIbge = destinosNormalizados
+    .map((item) => String(item || '').replace(/\D/g, ''))
+    .filter((item) => item.length >= 6);
+
+  if (!ids.length) return [];
+
+  const rows = [];
+  const chunkSize = 50;
+  const usarFiltroIbgeNoBanco = Boolean(destinosIbge.length && !ufFiltro && destinosIbge.length <= 150);
+
+  for (let index = 0; index < ids.length; index += chunkSize) {
+    const chunk = ids.slice(index, index + chunkSize);
+    let from = 0;
+
+    while (true) {
+      let query = supabase
+        .from('rotas')
+        .select('*')
+        .in('origem_id', chunk)
+        .order('origem_id', { ascending: true });
+
+      // Quando há UF destino, é mais seguro buscar a malha da origem/UF e casar no front.
+      if (usarFiltroIbgeNoBanco) {
+        query = query.in('ibge_destino', destinosIbge);
+      }
+
+      const { data, error } = await query.range(from, from + PAGE_SIZE - 1);
+
+      if (error) {
+        throw new Error(`Erro ao buscar rotas da malha: ${error.message || error.details || 'Bad Request'}`);
+      }
+
+      const rawPage = data || [];
+      const page = rawPage.filter((rota) => {
+        const ibge = String(rota.ibge_destino || rota.ibgeDestino || '').replace(/\D/g, '');
+        if (ufFiltro && ibge && ufFromIbgeLike(ibge) !== ufFiltro) return false;
+        if (!usarFiltroIbgeNoBanco && destinosNormalizados.length && !rotaDestinoLocalCompativelDb(rota, destinosNormalizados)) return false;
+        return true;
+      });
+
+      rows.push(...page);
+      if (rawPage.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+  }
+
+  return rows;
+}
+
+function ufFromIbgeLike(value) {
+  const ibge = String(value || '').replace(/\D/g, '');
+  if (!ibge) return '';
+  const prefix = ibge.slice(0, 2);
+  const map = {
+    '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
+    '21': 'MA', '22': 'PI', '23': 'CE', '24': 'RN', '25': 'PB', '26': 'PE', '27': 'AL', '28': 'SE', '29': 'BA',
+    '31': 'MG', '32': 'ES', '33': 'RJ', '35': 'SP',
+    '41': 'PR', '42': 'SC', '43': 'RS',
+    '50': 'MS', '51': 'MT', '52': 'GO', '53': 'DF',
+  };
+  return map[prefix] || '';
+}
+
+async function buscarDestinosTransportadoraOrigem({ supabase, nomeTransportadora, origem, canal, ufDestino = '' }) {
+  let { data: transportadorasAlvo, error: transportadoraError } = await supabase
+    .from('transportadoras')
+    .select('id, nome, status')
+    .ilike('nome', nomeTransportadora);
+
+  if (transportadoraError) throw transportadoraError;
+
+  if (nomeTransportadora && !(transportadorasAlvo || []).length) {
+    const fallback = await supabase
+      .from('transportadoras')
+      .select('id, nome, status')
+      .ilike('nome', `%${nomeTransportadora}%`);
+
+    if (fallback.error) throw fallback.error;
+    transportadorasAlvo = fallback.data || [];
+  }
+
+  const alvoIds = (transportadorasAlvo || []).map((item) => item.id);
+  if (!alvoIds.length) return [];
+
+  const origensAlvo = await buscarOrigensFiltradasDb({
+    supabase,
+    origem,
+    canal,
+    transportadoraIds: alvoIds,
+  });
+
+  const origemIds = (origensAlvo || []).map((item) => item.id);
+  if (!origemIds.length) return [];
+
+  const rotasAlvo = await fetchRotasByOrigemIds(supabase, origemIds, []);
+  const uf = String(ufDestino || '').trim().toUpperCase();
+
+  return Array.from(new Set(
+    (rotasAlvo || [])
+      .map((rota) => String(rota.ibge_destino || rota.ibgeDestino || '').replace(/\D/g, ''))
+      .filter(Boolean)
+      .filter((ibge) => !uf || ufFromIbgeLike(ibge) === uf)
+  ));
+}
+
+function groupByOrigemId(rows = []) {
+  const map = new Map();
+  rows.forEach((row) => {
+    const key = String(row.origem_id);
+    const list = map.get(key) || [];
+    list.push(row);
+    map.set(key, list);
+  });
+  return map;
+}
+
+async function buscarIdsTransportadoraPorNome({ supabase, nomeTransportadora }) {
+  let { data, error } = await supabase
+    .from('transportadoras')
+    .select('id')
+    .ilike('nome', nomeTransportadora);
+
+  if (error) throw error;
+  if (nomeTransportadora && !(data || []).length) {
+    const fallback = await supabase
+      .from('transportadoras')
+      .select('id')
+      .ilike('nome', `%${nomeTransportadora}%`);
+    if (fallback.error) throw fallback.error;
+    data = fallback.data || [];
+  }
+
+  return (data || []).map((item) => item.id).filter(Boolean);
+}
+
+function transportadorasFromDbRows({ transportadoras = [], origens = [], generalidades = [], rotas = [], cotacoes = [], taxas = [] }) {
+  const generalidadeByOrigem = new Map((generalidades || []).map((item) => [String(item.origem_id), item]));
+  const rotasByOrigem = groupByOrigemId(rotas);
+  const cotacoesByOrigem = groupByOrigemId(cotacoes);
+  const taxasByOrigem = groupByOrigemId(taxas);
+
+  const origensByTransportadora = new Map();
+  (origens || []).forEach((origem) => {
+    const key = String(origem.transportadora_id);
+    const list = origensByTransportadora.get(key) || [];
+    list.push(normalizeOrigemFromDb(
+      origem,
+      generalidadeByOrigem.get(String(origem.id)),
+      rotasByOrigem.get(String(origem.id)) || [],
+      cotacoesByOrigem.get(String(origem.id)) || [],
+      taxasByOrigem.get(String(origem.id)) || []
+    ));
+    origensByTransportadora.set(key, list);
+  });
+
+  return (transportadoras || []).map((transportadora) => ({
+    id: transportadora.id,
+    nome: transportadora.nome || '',
+    status: transportadora.status || 'Ativa',
+    cnpj: transportadora.cnpj || '',
+    cnpjRaiz: transportadora.cnpj_raiz || '',
+    tde: transportadora.tde ?? 0,
+    tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+    detalheCarregado: true,
+    origens: origensByTransportadora.get(String(transportadora.id)) || [],
+  })).filter((item) => item.origens.length);
+}
+
+async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = [], ufDestino = '', transportadoraIds = [] }) {
+  const destinosNormalizados = Array.from(new Set((destinos || []).map((item) => String(item || '').trim()).filter(Boolean)));
+
+  const origensBase = await buscarOrigensFiltradasDb({
+    supabase,
+    origem,
+    canal,
+    transportadoraIds,
+  });
+
+  const origemIdsBase = (origensBase || []).map((item) => item.id);
+  if (!origemIdsBase.length) return [];
+
+  const rotasRaw = await fetchRotasByOrigemIds(supabase, origemIdsBase, destinosNormalizados, ufDestino);
+  const rotas = await enriquecerRotasComIbgeDestinoPorCepDb(rotasRaw);
+
+  const origemIdsComRota = Array.from(new Set((rotas || []).map((item) => item.origem_id)));
+  if (!origemIdsComRota.length) return [];
+
+  const origens = (origensBase || []).filter((item) => origemIdsComRota.includes(item.id));
+  const transportadoraIdsComRota = Array.from(new Set(origens.map((item) => item.transportadora_id).filter(Boolean)));
+
+  const rotaNomes = Array.from(new Set((rotas || []).map((item) => item.nome_rota || item.nomeRota || item.rota || '').filter(Boolean)));
+  const destinosIbgeDasRotas = Array.from(new Set((rotas || []).map((item) => item.ibge_destino || item.ibgeDestino || '').filter(Boolean)));
+
+  const [
+    transportadorasRows,
+    generalidades,
+    cotacoes,
+    taxas,
+  ] = await Promise.all([
+    fetchTransportadorasByIds(supabase, transportadoraIdsComRota),
+    fetchRowsByOrigemIds(supabase, 'generalidades', origemIdsComRota),
+    fetchCotacoesByOrigemIdsAndRotas(supabase, origemIdsComRota, rotaNomes),
+    fetchTaxasByOrigemIdsAndDestinos(supabase, origemIdsComRota, destinosIbgeDasRotas),
+  ]);
+
+  return transportadorasFromDbRows({
+    transportadoras: transportadorasRows || [],
+    origens,
+    generalidades,
+    rotas: rotas || [],
+    cotacoes,
+    taxas,
+  });
+}
+
+export async function buscarBaseSimulacaoPorRotasDb({ routeKeys = [], canal = '', onProgress = null } = {}) {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
+  }
+
+  const { pares, keySet } = parseRouteKeysDb(routeKeys);
+  if (!pares.length) return [];
+
+  const supabase = ensureClient();
+  const rotasBase = await fetchRotasByIbgePairs(supabase, pares, onProgress);
+  if (!rotasBase.length) return [];
+
+  const origemRows = await fetchOrigensByIds(supabase, Array.from(new Set(rotasBase.map((item) => item.origem_id).filter(Boolean))));
+  const origemById = new Map((origemRows || []).map((item) => [String(item.id), item]));
+  const canalFiltro = categoriaCanalDb(canal);
+
+  const rotas = rotasBase.filter((rota) => {
+    const origemRow = origemById.get(String(rota.origem_id));
+    if (!origemRow) return false;
+    if (!statusOrigemAtivoDb(origemRow.status)) return false;
+    if (canalFiltro && !canalCompativelDb(origemRow.canal, canalFiltro)) return false;
+    const ibgeOrigem = String(rota.ibge_origem || '').replace(/\D/g, '');
+    const ibgeDestino = String(rota.ibge_destino || '').replace(/\D/g, '');
+    const pairKey = `${ibgeOrigem}-${ibgeDestino}`;
+    const canaisOrigem = expandirCanalCadastroDb(origemRow.canal).map(categoriaCanalDb).filter(Boolean);
+    return keySet.has(pairKey) || canaisOrigem.some((canalOrigem) => keySet.has(`${canalOrigem}|${pairKey}`));
+  });
+
+  const origemIdsComRota = Array.from(new Set(rotas.map((item) => item.origem_id).filter(Boolean)));
+  if (!origemIdsComRota.length) return [];
+
+  const origens = origemRows.filter((item) => origemIdsComRota.includes(item.id));
+  const transportadoraIds = Array.from(new Set(origens.map((item) => item.transportadora_id).filter(Boolean)));
+  const rotaNomes = Array.from(new Set((rotas || []).map((item) => item.nome_rota || item.nomeRota || item.rota || '').filter(Boolean)));
+  const destinosIbgeDasRotas = Array.from(new Set((rotas || []).map((item) => item.ibge_destino || item.ibgeDestino || '').filter(Boolean)));
+
+  const [transportadorasRows, generalidades, cotacoes, taxas] = await Promise.all([
+    fetchTransportadorasByIds(supabase, transportadoraIds),
+    fetchRowsByOrigemIds(supabase, 'generalidades', origemIdsComRota),
+    fetchCotacoesByOrigemIdsAndRotas(supabase, origemIdsComRota, rotaNomes),
+    fetchTaxasByOrigemIdsAndDestinos(supabase, origemIdsComRota, destinosIbgeDasRotas),
+  ]);
+
+  return transportadorasFromDbRows({
+    transportadoras: transportadorasRows || [],
+    origens,
+    generalidades,
+    rotas: rotas || [],
+    cotacoes,
+    taxas,
+  });
+}
+
+
+export async function carregarTransportadoraCompletaDb(transportadoraId, transportadoraNome = '') {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const transportadoras = Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
+    return transportadoras.find((item) =>
+      String(item.id) === String(transportadoraId) ||
+      String(item.nome || '').trim().toLowerCase() === String(transportadoraNome || '').trim().toLowerCase()
+    ) || null;
+  }
+
+  const supabase = ensureClient();
+
+  let transportadora = null;
+  let transportadoraError = null;
+
+  if (transportadoraId) {
+    const response = await supabase
+      .from('transportadoras')
+      .select('id, nome, status, cnpj, cnpj_raiz, tde, tde_cnpjs')
+      .eq('id', transportadoraId)
+      .maybeSingle();
+
+    transportadora = response.data;
+    transportadoraError = response.error;
+  }
+
+  if (!transportadora && transportadoraNome) {
+    const response = await supabase
+      .from('transportadoras')
+      .select('id, nome, status, cnpj, cnpj_raiz, tde, tde_cnpjs')
+      .ilike('nome', transportadoraNome)
+      .maybeSingle();
+
+    transportadora = response.data;
+    transportadoraError = response.error;
+
+    if (!transportadora && !transportadoraError) {
+      const fallback = await supabase
+        .from('transportadoras')
+        .select('id, nome, status, cnpj, cnpj_raiz, tde, tde_cnpjs')
+        .ilike('nome', `%${transportadoraNome}%`)
+        .limit(2);
+
+      if (fallback.error) transportadoraError = fallback.error;
+      else if ((fallback.data || []).length === 1) transportadora = fallback.data[0];
+    }
+  }
+
+  if (transportadoraError) throw transportadoraError;
+  if (!transportadora) {
+    throw new Error(`Transportadora não encontrada no Supabase: ${transportadoraNome || transportadoraId}`);
+  }
+
+  const { data: origens, error: origensError } = await supabase
+    .from('origens')
+    .select('*')
+    .eq('transportadora_id', transportadora.id)
+    .order('cidade', { ascending: true });
+
+  if (origensError) throw origensError;
+
+  const origemIds = (origens || []).map((item) => item.id);
+
+  const [generalidades, rotas, cotacoes, taxas] = await Promise.all([
+    fetchRowsByOrigemIds(supabase, 'generalidades', origemIds),
+    fetchRowsByOrigemIds(supabase, 'rotas', origemIds),
+    fetchRowsByOrigemIds(supabase, 'cotacoes', origemIds),
+    fetchRowsByOrigemIds(supabase, 'taxas_especiais', origemIds),
+  ]);
+
+  const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);
+
+  return transportadorasFromDbRows({
+    transportadoras: [transportadora],
+    origens: origens || [],
+    generalidades,
+    rotas: rotasNormalizadas,
+    cotacoes,
+    taxas,
+  })[0] || {
+    id: transportadora.id,
+    nome: transportadora.nome || '',
+    status: transportadora.status || 'Ativa',
+    detalheCarregado: true,
+    origens: [],
+  };
+}
+
+
+
+function pickIbgeValue(row, keys = []) {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') return String(value).trim();
+  }
+  return '';
+}
+
+function normalizeBuscaDb(texto) {
+  return String(texto || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    .toUpperCase()
-    .replace(/\b(LTDA|EIRELI|S\/?A|SA|ME|EPP)\b/g, ' ')
-    .replace(/[^A-Z0-9]+/g, ' ')
+    .toLowerCase()
+    .trim();
+}
+
+function normalizeTransportadoraBuscaDb(texto) {
+  return normalizeBuscaDb(texto)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\b(s\s*a|sa|s\/a|ltda|eireli|me|epp|eirelli)\b/g, ' ')
+    .replace(/\b(logistica|transportes|transporte|cargas|carga)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-function selecionarTransportadoraExata(baseTransportadoras = [], nomeTransportadora = '') {
-  const alvo = normalizarNomeTransportadora(nomeTransportadora);
-  if (!alvo) return [];
-  const lista = Array.isArray(baseTransportadoras) ? baseTransportadoras : [];
-
-  const exatas = lista.filter((item) => normalizarNomeTransportadora(item?.nome) === alvo);
-  if (exatas.length) return exatas;
-
-  return lista.filter((item) => {
-    const nome = normalizarNomeTransportadora(item?.nome);
-    return nome && (nome.includes(alvo) || alvo.includes(nome));
-  });
+function normalizarCanalDb(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
 }
 
-function destinosDaBaseSelecionada(baseTransportadoras = [], ufDestino = '') {
-  const uf = String(ufDestino || '').trim().toUpperCase();
-  const ufPorPrefixo = {
-    '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
-    '21': 'MA', '22': 'PI', '23': 'CE', '24': 'RN', '25': 'PB', '26': 'PE', '27': 'AL', '28': 'SE', '29': 'BA',
-    '31': 'MG', '32': 'ES', '33': 'RJ', '35': 'SP', '41': 'PR', '42': 'SC', '43': 'RS',
-    '50': 'MS', '51': 'MT', '52': 'GO', '53': 'DF',
-  };
-  const destinos = new Set();
-  (baseTransportadoras || []).forEach((transportadora) => {
-    (transportadora?.origens || []).forEach((origem) => {
-      (origem?.rotas || []).forEach((rota) => {
-        const ibge = String(rota?.ibgeDestino || rota?.ibge_destino || '').replace(/\D/g, '').slice(0, 7);
-        if (!ibge) return;
-        if (uf && ufPorPrefixo[ibge.slice(0, 2)] !== uf) return;
-        destinos.add(ibge);
+const CANAIS_B2C_DB = [
+  'B2C',
+  'VIA VAREJO',
+  'MERCADO LIVRE',
+  'MERCADOR LIVRE',
+  'B2W',
+  'MAGAZINE LUIZA',
+  'CARREFOUR',
+  'CANTU PNEUS',
+  'GPA',
+  'COLOMBO',
+  'AMAZON',
+  'INTER',
+  'ANYMARKET',
+  'ANY MARKET',
+  'BRADESCO SHOP',
+  'ITAU SHOP',
+  'ITAÚ SHOP',
+  'SHOPEE',
+  '99',
+  'MUSTANG',
+  'LIVELO',
+  'COOPERA',
+  'MARKETPLACE',
+  'MARKET PLACE',
+  'ECOMMERCE',
+  'E-COMMERCE',
+];
+
+const CANAIS_ATACADO_DB = [
+  'ATACADO',
+  'B2B',
+];
+
+function contemCanalDb(canal, lista = []) {
+  return lista.some((item) => canal === item || canal.includes(item));
+}
+
+function categoriaCanalDb(value) {
+  const canal = normalizarCanalDb(value);
+  if (!canal) return '';
+  if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
+  if (canal.includes('REVERSA')) return 'REVERSA';
+  if (contemCanalDb(canal, CANAIS_ATACADO_DB)) return 'ATACADO';
+  if (contemCanalDb(canal, CANAIS_B2C_DB)) return 'B2C';
+  return canal;
+}
+
+// Expande o canal de uma origem do cadastro nos canais concretos de simulação.
+// "AMBOS"/"TODOS" e combos ("ATACADO+B2C", "ATACADO E B2C") viram [ATACADO, B2C],
+// para a origem entrar nos MESMOS índices/baldes das demais (não ficar isolada).
+function expandirCanalCadastroDb(canalBruto) {
+  const c = String(canalBruto || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().trim();
+  if (!c) return ['ATACADO'];
+  if (c.includes('AMBOS') || c.includes('TODOS')) return ['ATACADO', 'B2C'];
+  if (c.includes('+') || /\sE\s/.test(c)) {
+    const partes = c.split(/\+|\sE\s/).map((s) => s.trim()).filter(Boolean);
+    return partes.length ? partes : [c];
+  }
+  return [c];
+}
+
+function canalCompativelDb(canalBase = '', canalFiltro = '') {
+  const filtro = normalizarCanalDb(canalFiltro);
+  if (!filtro) return true;
+  if (filtro === 'AMBOS' || filtro === 'TODOS') return true;
+
+  const base = normalizarCanalDb(canalBase);
+  if (!base) return false;
+
+  const canaisBase = expandirCanalCadastroDb(base);
+  if (canaisBase.some((canal) => canal === filtro)) return true;
+
+  const categoriaBase = categoriaCanalDb(base);
+  const categoriaFiltro = categoriaCanalDb(filtro);
+  return Boolean(categoriaBase && categoriaFiltro && categoriaBase === categoriaFiltro);
+}
+
+function cidadeSemUfDb(texto = '') {
+  return String(texto || '')
+    .replace(/\s*(?:\/|-)\s*[A-Z]{2}\s*$/i, '')
+    .trim();
+}
+
+function origemCompativelDb(cidadeBase = '', origemFiltro = '') {
+  const filtro = normalizeBuscaDb(cidadeSemUfDb(origemFiltro));
+  if (!filtro) return true;
+  const cidade = normalizeBuscaDb(cidadeSemUfDb(cidadeBase));
+  if (!cidade) return false;
+  return cidade === filtro || cidade.includes(filtro) || filtro.includes(cidade);
+}
+
+async function buscarOrigensFiltradasDb({ supabase, origem = '', canal = '', transportadoraIds = [] } = {}) {
+  // Busca paginada — resolve o problema do limite de 1000 linhas do Supabase
+  const PAGE = 1000;
+  let todas = [];
+  let pagina = 0;
+  let continuar = true;
+
+  // Monta prefixos para o ilike: usa o nome original E a versão sem acento
+  // Ex: "Itajaí" → tenta "Itaja" para pegar variações com/sem acento
+  const origemRaw = cidadeSemUfDb(origem).trim();
+  const origemPrefix = origemRaw.length >= 4 ? origemRaw.slice(0, 5) : origemRaw;
+
+  while (continuar) {
+    let query = supabase
+      .from('origens')
+      .select('id, transportadora_id, cidade, canal, status')
+      .order('cidade', { ascending: true })
+      .range(pagina * PAGE, (pagina + 1) * PAGE - 1);
+
+    if (Array.isArray(transportadoraIds) && transportadoraIds.length) {
+      query = query.in('transportadora_id', transportadoraIds);
+    }
+
+    // Filtra no banco com prefixo amplo (ignora acento usando primeiras letras)
+    if (origemPrefix) {
+      query = query.ilike('cidade', `${origemPrefix}%`);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    todas = todas.concat(data || []);
+    continuar = (data || []).length === PAGE;
+    pagina++;
+    if (pagina > 20) break;
+  }
+
+  return todas
+    .filter((item) => statusOrigemAtivoDb(item.status))
+    .filter((item) => canalCompativelDb(item.canal, canal))
+    .filter((item) => origemCompativelDb(item.cidade, origem));
+}
+
+function statusOrigemAtivoDb(status) {
+  const normalizado = String(status || 'ATIVA').trim().toUpperCase();
+  return normalizado === 'ATIVA' || normalizado === 'ATIVO';
+}
+
+function normalizeMunicipioIbgeRow(row = {}) {
+  let ibge = pickIbgeValue(row, [
+    'ibge',
+    'codigo_ibge',
+    'cod_ibge',
+    'codigo',
+    'codigo_municipio',
+    'cod_municipio',
+    'cod_mun',
+    'id_municipio',
+    'codigo_municipio_completo',
+  ]).replace(/\D/g, '');
+
+  let cidade = pickIbgeValue(row, [
+    'cidade',
+    'municipio',
+    'nome_municipio',
+    'nome',
+    'descricao',
+    'nome_mun',
+    'nm_municipio',
+  ]);
+
+  let uf = pickIbgeValue(row, [
+    'uf',
+    'sigla_uf',
+    'estado',
+    'uf_sigla',
+    'sg_uf',
+  ]).toUpperCase().slice(0, 2);
+
+  // Fallback para bases IBGE com nomes de colunas diferentes.
+  Object.entries(row || {}).forEach(([key, value]) => {
+    const chave = String(key || '').toLowerCase();
+    const texto = String(value ?? '').trim();
+
+    if (!ibge && /ibge|cod|codigo/.test(chave)) {
+      const digitos = texto.replace(/\D/g, '');
+      if (digitos.length >= 7) ibge = digitos.slice(0, 7);
+    }
+
+    if (!cidade && /cidade|municip|munic|nome/.test(chave) && texto && !/^\d+$/.test(texto)) {
+      cidade = texto;
+    }
+
+    if (!uf && /uf|sigla|estado/.test(chave) && /^[A-Za-z]{2}$/.test(texto)) {
+      uf = texto.toUpperCase();
+    }
+  });
+
+  if (!ibge || !cidade) return null;
+  return { ibge, cidade, uf };
+}
+
+async function resolverIbgePorCepDbComCache(cep, cache) {
+  const cepLimpo = normalizarCepDb(cep);
+  if (!cepLimpo) return '';
+  if (cache.has(cepLimpo)) return cache.get(cepLimpo);
+
+  const municipio = await resolverCepEmFaixasDb(cepLimpo).catch(() => null);
+  const ibge = onlyDigitsDb(municipio?.ibge || municipio?.codigo_ibge || municipio?.codigo || '').slice(0, 7);
+  cache.set(cepLimpo, ibge || '');
+  return ibge || '';
+}
+
+async function enriquecerRotasComIbgeDestinoPorCepDb(rotas = []) {
+  const lista = Array.isArray(rotas) ? rotas : [];
+  const pendentes = lista.filter((rota) => {
+    const ibge = onlyDigitsDb(pickFirstDb(rota.ibge_destino, rota.ibgeDestino, rota.codigo_ibge_destino, rota.codigoMunicipioDestino));
+    const cepInicial = normalizarCepDb(pickFirstDb(rota.cep_inicial, rota.cepInicial, rota.cep_inicio, rota.cepInicio));
+    const cepFinal = normalizarCepDb(pickFirstDb(rota.cep_final, rota.cepFinal, rota.cep_fim, rota.cepFim));
+    return !ibge && Boolean(cepInicial || cepFinal);
+  });
+
+  if (!pendentes.length || !isSupabaseConfigured()) return lista;
+
+  // Timeout de segurança: se o enriquecimento demorar demais, retorna lista sem ele.
+  // Rotas com IBGE direto já estão corretas; só as que dependem de CEP ficam sem o campo.
+  let _timeoutHandle;
+  const _timeoutPromise = new Promise((resolve) => { _timeoutHandle = setTimeout(() => resolve(null), 20000); });
+  const _enrichPromise = _enriquecerRotas(lista);
+  const resultado = await Promise.race([_enrichPromise, _timeoutPromise]);
+  clearTimeout(_timeoutHandle);
+  return resultado ?? lista;
+}
+
+async function _enriquecerRotas(lista) {
+  const cache = new Map();
+  const resultado = [];
+
+  for (const rota of lista) {
+    const ibgeAtual = onlyDigitsDb(pickFirstDb(rota.ibge_destino, rota.ibgeDestino, rota.codigo_ibge_destino, rota.codigoMunicipioDestino)).slice(0, 7);
+    if (ibgeAtual) {
+      resultado.push(rota);
+      continue;
+    }
+
+    const cepInicial = normalizarCepDb(pickFirstDb(rota.cep_inicial, rota.cepInicial, rota.cep_inicio, rota.cepInicio));
+    const cepFinal = normalizarCepDb(pickFirstDb(rota.cep_final, rota.cepFinal, rota.cep_fim, rota.cepFim));
+    let ibgeResolvido = '';
+
+    if (cepInicial) ibgeResolvido = await resolverIbgePorCepDbComCache(cepInicial, cache);
+    if (!ibgeResolvido && cepFinal) ibgeResolvido = await resolverIbgePorCepDbComCache(cepFinal, cache);
+
+    if (ibgeResolvido) {
+      resultado.push({
+        ...rota,
+        ibge_destino: ibgeResolvido,
+        extra: {
+          ...(rota.extra || {}),
+          ibgeResolvidoPorCep: true,
+          cepReferenciaIbge: cepInicial || cepFinal || '',
+        },
+      });
+    } else {
+      resultado.push(rota);
+    }
+  }
+
+  return resultado;
+}
+
+export async function carregarMunicipiosIbgeDb() {
+  if (!isSupabaseConfigured()) return [];
+
+  const supabase = ensureClient();
+
+  try {
+    const PAGE = 1000; // limite padrao de linhas por requisicao do PostgREST
+    const linhas = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from('ibge_municipios')
+        .select('*')
+        .range(from, from + PAGE - 1);
+
+      if (error) return linhas.length ? linhas.map(normalizeMunicipioIbgeRow).filter(Boolean) : [];
+
+      const lote = data || [];
+      linhas.push(...lote);
+      if (lote.length < PAGE) break;
+      from += PAGE;
+    }
+
+    return linhas
+      .map(normalizeMunicipioIbgeRow)
+      .filter(Boolean)
+      .sort((a, b) => `${a.cidade}/${a.uf}`.localeCompare(`${b.cidade}/${b.uf}`, 'pt-BR'));
+  } catch {
+    return [];
+  }
+}
+
+async function resolverCepEmFaixasDb(cepLimpo) {
+  if (!isSupabaseConfigured() || !cepLimpo) return null;
+
+  const supabase = ensureClient();
+  const colunas = [
+    { inicio: 'cep_inicial', fim: 'cep_final' },
+    { inicio: 'cep_inicio', fim: 'cep_fim' },
+    { inicio: 'cep_ini', fim: 'cep_fim' },
+    { inicio: 'faixa_inicial', fim: 'faixa_final' },
+  ];
+
+  for (const col of colunas) {
+    try {
+      const { data, error } = await supabase
+        .from('ibge_faixas_cep')
+        .select('*')
+        .lte(col.inicio, cepLimpo)
+        .gte(col.fim, cepLimpo)
+        .limit(1);
+
+      if (!error && data?.[0]) {
+        const municipio = normalizeMunicipioIbgeRow(data[0]);
+        if (municipio) return municipio;
+
+        const ibge = pickIbgeValue(data[0], ['ibge', 'codigo_ibge', 'cod_ibge', 'codigo_municipio', 'codigo_municipio_completo']).replace(/\D/g, '');
+        if (ibge) return { ibge, cidade: '', uf: '' };
+      }
+    } catch {
+      // tenta próxima combinação
+    }
+  }
+
+  return null;
+}
+
+export async function resolverDestinoIbgeDb(valor) {
+  const texto = String(valor || '').trim();
+  if (!texto) return null;
+
+  const somenteDigitos = texto.replace(/\D/g, '');
+
+  if (somenteDigitos.length === 7) {
+    const municipios = await carregarMunicipiosIbgeDb();
+    return municipios.find((item) => item.ibge === somenteDigitos) || { ibge: somenteDigitos, cidade: '', uf: '' };
+  }
+
+  if (somenteDigitos.length === 8) {
+    const porCep = await resolverCepEmFaixasDb(somenteDigitos);
+    if (porCep?.ibge) return porCep;
+  }
+
+  const termoCidade = texto
+    .replace(/\s*·\s*\d+$/i, '')
+    .replace(/\s*\/\s*[A-Z]{2}$/i, '')
+    .trim();
+
+  if (!termoCidade || !isSupabaseConfigured()) return null;
+
+  const municipios = await carregarMunicipiosIbgeDb();
+  const termoNormalizado = normalizeBuscaDb(termoCidade);
+
+  const exatoLocal = municipios.find((item) =>
+    normalizeBuscaDb(item.cidade) === termoNormalizado ||
+    normalizeBuscaDb(`${item.cidade}/${item.uf}`) === termoNormalizado
+  );
+  if (exatoLocal) return exatoLocal;
+
+  const parcialLocal = municipios.find((item) => normalizeBuscaDb(item.cidade).includes(termoNormalizado));
+  if (parcialLocal) return parcialLocal;
+
+  const supabase = ensureClient();
+  const colunas = ['cidade', 'municipio', 'nome_municipio', 'nome'];
+
+  for (const coluna of colunas) {
+    try {
+      const { data, error } = await supabase
+        .from('ibge_municipios')
+        .select('*')
+        .ilike(coluna, termoCidade)
+        .limit(1);
+
+      if (!error && data?.[0]) {
+        const municipio = normalizeMunicipioIbgeRow(data[0]);
+        if (municipio) return municipio;
+      }
+    } catch {
+      // tenta próxima coluna
+    }
+  }
+
+  for (const coluna of colunas) {
+    try {
+      const { data, error } = await supabase
+        .from('ibge_municipios')
+        .select('*')
+        .ilike(coluna, `%${termoCidade}%`)
+        .limit(1);
+
+      if (!error && data?.[0]) {
+        const municipio = normalizeMunicipioIbgeRow(data[0]);
+        if (municipio) return municipio;
+      }
+    } catch {
+      // tenta próxima coluna
+    }
+  }
+
+  // Último fallback: tenta encontrar uma rota já cadastrada cujo nome contenha a cidade digitada.
+  try {
+    const { data, error } = await supabase
+      .from('rotas')
+      .select('ibge_destino, nome_rota')
+      .ilike('nome_rota', `%${termoCidade}%`)
+      .limit(1);
+
+    if (!error && data?.[0]?.ibge_destino) {
+      return {
+        ibge: String(data[0].ibge_destino).replace(/\D/g, ''),
+        cidade: data[0].nome_rota || termoCidade,
+        uf: '',
+      };
+    }
+  } catch {
+    // sem fallback
+  }
+
+  return null;
+}
+
+
+export async function carregarOpcoesSimuladorDb() {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    const transportadoras = Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
+
+    const nomes = [...new Set(transportadoras.map((item) => item.nome).filter(Boolean))].sort();
+    const origens = [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.cidade).filter(Boolean)))].sort();
+    const canais = [...new Set(transportadoras.flatMap((item) => (item.origens || []).flatMap((origem) => expandirCanalCadastroDb(origem.canal))))].sort();
+
+    const origensPorTransportadora = {};
+    const canaisPorTransportadora = {};
+    const origensPorCanal = {};
+    transportadoras.forEach((transportadora) => {
+      const nome = transportadora.nome || '';
+      if (!nome) return;
+      origensPorTransportadora[nome] = [...new Set((transportadora.origens || []).map((origem) => origem.cidade).filter(Boolean))].sort();
+      canaisPorTransportadora[nome] = [...new Set((transportadora.origens || []).flatMap((origem) => expandirCanalCadastroDb(origem.canal)))].sort();
+      (transportadora.origens || []).forEach((origem) => {
+        // AMBOS entra nos baldes de ATACADO e B2C (não num balde "AMBOS" isolado).
+        expandirCanalCadastroDb(origem.canal).forEach((canalOrigem) => {
+          if (!origensPorCanal[canalOrigem]) origensPorCanal[canalOrigem] = [];
+          if (origem.cidade && !origensPorCanal[canalOrigem].includes(origem.cidade)) {
+            origensPorCanal[canalOrigem].push(origem.cidade);
+          }
+        });
       });
     });
+
+    Object.keys(origensPorCanal).forEach((canal) => {
+      origensPorCanal[canal].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    });
+
+    return { transportadoras: nomes, origens, canais, origensPorTransportadora, canaisPorTransportadora, origensPorCanal, municipiosIbge: [], fonte: 'local' };
+  }
+
+  const supabase = ensureClient();
+
+  const [transportadorasResponse, origensResponse] = await Promise.all([
+    supabase.from('transportadoras').select('id, nome, status').order('nome', { ascending: true }),
+    supabase.from('origens').select('id, transportadora_id, cidade, canal').order('cidade', { ascending: true }),
+  ]);
+
+  if (transportadorasResponse.error) throw transportadorasResponse.error;
+  if (origensResponse.error) throw origensResponse.error;
+
+  const nomePorId = new Map((transportadorasResponse.data || []).map((item) => [String(item.id), item.nome || '']));
+  const transportadoras = [...new Set((transportadorasResponse.data || []).map((item) => item.nome).filter(Boolean))].sort();
+  const origens = [...new Set((origensResponse.data || []).map((item) => item.cidade).filter(Boolean))].sort();
+  const canais = [...new Set((origensResponse.data || []).flatMap((item) => expandirCanalCadastroDb(item.canal)))].sort();
+
+  const origensPorTransportadora = {};
+  const canaisPorTransportadora = {};
+  const origensPorCanal = {};
+
+  (origensResponse.data || []).forEach((origem) => {
+    const nome = nomePorId.get(String(origem.transportadora_id));
+    if (!nome) return;
+
+    if (!origensPorTransportadora[nome]) origensPorTransportadora[nome] = [];
+    if (!canaisPorTransportadora[nome]) canaisPorTransportadora[nome] = [];
+
+    if (origem.cidade && !origensPorTransportadora[nome].includes(origem.cidade)) {
+      origensPorTransportadora[nome].push(origem.cidade);
+    }
+
+    // AMBOS entra nos baldes de ATACADO e B2C (não num balde "AMBOS" isolado).
+    expandirCanalCadastroDb(origem.canal).forEach((canal) => {
+      if (!canaisPorTransportadora[nome].includes(canal)) canaisPorTransportadora[nome].push(canal);
+      if (!origensPorCanal[canal]) origensPorCanal[canal] = [];
+      if (origem.cidade && !origensPorCanal[canal].includes(origem.cidade)) {
+        origensPorCanal[canal].push(origem.cidade);
+      }
+    });
   });
-  return [...destinos];
+
+  Object.keys(origensPorCanal).forEach((canal) => {
+    origensPorCanal[canal].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  });
+
+  Object.keys(origensPorTransportadora).forEach((nome) => {
+    origensPorTransportadora[nome].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  });
+
+  Object.keys(canaisPorTransportadora).forEach((nome) => {
+    canaisPorTransportadora[nome].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  });
+
+  // IBGE carrega em paralelo sem bloquear — se timeout, retorna [] e o simulador
+  // ainda funciona (IBGE só é necessário para resolver destinos por código).
+  const municipiosIbge = await carregarMunicipiosIbgeDb().catch(() => []);
+
+  return {
+    transportadoras,
+    origens,
+    canais: canais.length ? canais : ['ATACADO'],
+    origensPorTransportadora,
+    canaisPorTransportadora,
+    origensPorCanal,
+    municipiosIbge,
+    fonte: 'supabase',
+    atualizadoEm: new Date().toISOString(),
+  };
 }
 
-export async function buscarBaseSimulacaoDb(args = {}) {
-  const {
-    nomeTransportadora = '',
-    origem = '',
-    canal = '',
-    destinoCodigo = '',
-    destinoCodigos = [],
-    ufDestino = '',
-  } = args || {};
+export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '', ufDestino = '' } = {}) {
+  // Fonte da verdade do simulador: Supabase.
+  // Não depende da tela Transportadoras estar aberta ou atualizada.
 
-  if (!String(nomeTransportadora || '').trim()) {
-    return base.buscarBaseSimulacaoDb(args);
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
   }
 
-  if (!String(origem || '').trim()) {
-    const selecionada = await base.carregarBaseTransportadorasDb([nomeTransportadora]);
-    return selecionarTransportadoraExata(selecionada, nomeTransportadora);
-  }
-
-  const baseSelecionadaBruta = await base.buscarBaseSimulacaoDb(args);
-  const baseSelecionada = selecionarTransportadoraExata(baseSelecionadaBruta, nomeTransportadora);
-  if (!baseSelecionada.length) return [];
-
-  const destinosInformados = Array.from(new Set([
+  const supabase = ensureClient();
+  const destinos = Array.from(new Set([
     ...(Array.isArray(destinoCodigos) ? destinoCodigos : []),
     destinoCodigo,
   ].map((item) => String(item || '').trim()).filter(Boolean)));
 
-  const destinosAlvo = destinosInformados.length
-    ? destinosInformados
-    : destinosDaBaseSelecionada(baseSelecionada, ufDestino);
+  // Caso análise de transportadora por origem.
+  // Quando a tela pede malha por UF, carregamos a origem/UF inteira. Isso é mais robusto
+  // para tabelas onde o IBGE da rota veio vazio/incorreto, mas o nome da cidade está certo.
+  if (nomeTransportadora && origem) {
+    const transportadoraIds = await buscarIdsTransportadoraPorNome({ supabase, nomeTransportadora });
+    if (!transportadoraIds.length) return [];
+    // Para simulação em cima do realizado, quando há UF destino carregamos a malha
+    // da origem/UF inteira. É mais robusto do que filtrar por IBGE antes, porque
+    // algumas tabelas têm IBGE ausente/divergente, mas a rota está correta pelo nome.
+    if (ufDestino) {
+      return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: [], ufDestino, transportadoraIds });
+    }
 
-  if (!destinosAlvo.length) return baseSelecionada;
+    // A transportadora e a origem já restringem a consulta. Buscar primeiro todos os
+    // destinos faria a mesma malha ser lida duas vezes, o que trava tabelas grandes.
+    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos, ufDestino, transportadoraIds });
+  }
 
-  const concorrentes = await base.buscarBaseSimulacaoDb({
-    origem,
-    canal,
-    destinoCodigos: destinosAlvo,
-    ufDestino,
+  // Caso principal: simulação simples ou lista com destino informado.
+  // Busca todos os concorrentes da mesma origem/canal/destino.
+  if (origem || destinos.length) {
+    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos, ufDestino });
+  }
+
+  // Caso análise de transportadora sem destino/origem: busca as rotas da transportadora
+  // selecionada e depois monta a base concorrente para os mesmos destinos/origens.
+  if (nomeTransportadora) {
+    let { data: transportadorasAlvo, error: transportadoraError } = await supabase
+      .from('transportadoras')
+      .select('id, nome, status')
+      .ilike('nome', nomeTransportadora);
+
+    if (transportadoraError) throw transportadoraError;
+
+    if (nomeTransportadora && !(transportadorasAlvo || []).length) {
+      const fallback = await supabase
+        .from('transportadoras')
+        .select('id, nome, status')
+        .ilike('nome', `%${nomeTransportadora}%`);
+
+      if (fallback.error) throw fallback.error;
+      transportadorasAlvo = fallback.data || [];
+    }
+
+    const alvoIds = (transportadorasAlvo || []).map((item) => item.id);
+    if (!alvoIds.length) return [];
+
+    const { data: origensAlvo, error: origensAlvoError } = await supabase
+      .from('origens')
+      .select('id, cidade, canal')
+      .in('transportadora_id', alvoIds);
+
+    if (origensAlvoError) throw origensAlvoError;
+
+    const pares = (origensAlvo || [])
+      .filter((item) => canalCompativelDb(item.canal, canal))
+      // Usa o canal da SIMULAÇÃO (não o "AMBOS" cru da origem) para buscar os
+      // concorrentes — senão filtraria concorrentes por "AMBOS" e ninguém casa.
+      .map((item) => ({ origem: item.cidade, canal: canal || item.canal }));
+
+    const bases = [];
+    const paresUnicos = Array.from(
+      new Map(pares.map((par) => [`${par.origem}||${par.canal}`, par])).values()
+    );
+
+    for (const par of paresUnicos) {
+      const parcial = await buscarBasePorOrigemDestino({ supabase, origem: par.origem, canal: par.canal, destinos: [], ufDestino });
+      bases.push(...parcial);
+    }
+
+    const byId = new Map();
+    bases.forEach((item) => {
+      const chave = String(item.id);
+      const existente = byId.get(chave);
+      if (!existente) {
+        byId.set(chave, item);
+        return;
+      }
+      // A mesma transportadora aparece uma vez por origem/canal pesquisado —
+      // mescla as origens em vez de sobrescrever, senão perdemos a malha de
+      // todas as origens exceto a última processada (ex.: transportadora
+      // oficial com Campinas e Itupeva ficava só com uma das duas).
+      const origensExistentesIds = new Set((existente.origens || []).map((o) => String(o.id)));
+      const origensNovas = (item.origens || []).filter((o) => !origensExistentesIds.has(String(o.id)));
+      if (origensNovas.length) {
+        byId.set(chave, { ...existente, origens: [...(existente.origens || []), ...origensNovas] });
+      }
+    });
+    return [...byId.values()];
+  }
+
+  return [];
+}
+
+
+export async function carregarConferenciaBaseDb() {
+  if (!isSupabaseConfigured()) {
+    return {
+      conectado: false,
+      transportadoras: 0,
+      origens: 0,
+      rotas: 0,
+      cotacoes: 0,
+      validadas: 0,
+      completas: 0,
+      parciais: 0,
+      inconsistentes: 0,
+      semValidacao: true,
+    };
+  }
+
+  const supabase = ensureClient();
+
+  const [transportadoras, origens, rotas, cotacoes] = await Promise.all([
+    supabase.from('transportadoras').select('id', { count: 'exact', head: true }),
+    supabase.from('origens').select('id', { count: 'exact', head: true }),
+    supabase.from('rotas').select('id', { count: 'exact', head: true }),
+    supabase.from('cotacoes').select('id', { count: 'exact', head: true }),
+  ]);
+
+  if (transportadoras.error) throw transportadoras.error;
+  if (origens.error) throw origens.error;
+  if (rotas.error) throw rotas.error;
+  if (cotacoes.error) throw cotacoes.error;
+
+  let cobertura = [];
+  let semValidacao = false;
+
+  try {
+    const { data, error } = await supabase
+      .from('vw_cobertura_transportadoras')
+      .select('status_cobertura');
+
+    if (error) {
+      semValidacao = true;
+    } else {
+      cobertura = data || [];
+    }
+  } catch {
+    semValidacao = true;
+  }
+
+  return {
+    conectado: true,
+    transportadoras: transportadoras.count || 0,
+    origens: origens.count || 0,
+    rotas: rotas.count || 0,
+    cotacoes: cotacoes.count || 0,
+    validadas: cobertura.length,
+    completas: cobertura.filter((item) => item.status_cobertura === 'Completa').length,
+    parciais: cobertura.filter((item) => item.status_cobertura === 'Parcial').length,
+    inconsistentes: cobertura.filter((item) => item.status_cobertura === 'Inconsistente').length,
+    semValidacao,
+  };
+}
+
+
+export async function listarImportacoes(limit = 15) {
+  if (!isSupabaseConfigured()) return [];
+
+  const supabase = ensureClient();
+
+  let query = supabase
+    .from('frete_importacoes')
+    .select('*')
+    .limit(limit);
+
+  // Tenta primeiro pela coluna mais comum do schema atual.
+  let response = await query.order('criado_em', { ascending: false });
+
+  // Fallback para bases antigas que possam estar usando camelCase.
+  if (response.error) {
+    response = await supabase
+      .from('frete_importacoes')
+      .select('*')
+      .order('criadoEm', { ascending: false })
+      .limit(limit);
+  }
+
+  if (response.error) {
+    throw response.error;
+  }
+
+  return response.data || [];
+}
+
+
+function tabelaPorSecao(secao) {
+  if (secao === 'rotas') return 'rotas';
+  if (secao === 'cotacoes') return 'cotacoes';
+  if (secao === 'taxas' || secao === 'taxasEspeciais') return 'taxas_especiais';
+  if (secao === 'generalidades') return 'generalidades';
+  return '';
+}
+
+export async function excluirLinhaSecaoDb(secao, linhaId) {
+  if (!isSupabaseConfigured()) return { ok: true, modo: 'local' };
+
+  const table = tabelaPorSecao(secao);
+  if (!table || !linhaId) return { ok: true, ignorado: true };
+
+  const supabase = ensureClient();
+  const campo = table === 'generalidades' ? 'origem_id' : 'id';
+
+  const { error } = await supabase.from(table).delete().eq(campo, linhaId);
+  if (error) throw error;
+
+  return { ok: true };
+}
+
+export async function limparSecaoOrigemDb(origemId, secao) {
+  if (!isSupabaseConfigured()) return { ok: true, modo: 'local' };
+
+  const table = tabelaPorSecao(secao);
+  if (!table || !origemId) return { ok: true, ignorado: true };
+
+  const supabase = ensureClient();
+
+  const { error } = await supabase.from(table).delete().eq('origem_id', origemId);
+  if (error) throw error;
+
+  return { ok: true };
+}
+
+export async function atualizarValidacaoOrigemDb(origemId, { validado, validadoEm, validadoPor }) {
+  if (!isSupabaseConfigured()) return { ok: true, modo: 'local' };
+  if (!origemId) return { ok: true, ignorado: true };
+
+  const supabase = ensureClient();
+  const { error } = await supabase
+    .from('origens')
+    .update({ validado: Boolean(validado), validado_em: validadoEm || null, validado_por: validadoPor || null })
+    .eq('id', origemId);
+  if (error) throw error;
+
+  return { ok: true };
+}
+
+export async function excluirOrigemDb(origemId) {
+  if (!isSupabaseConfigured()) return { ok: true, modo: 'local' };
+  if (!origemId) return { ok: true, ignorado: true };
+
+  const supabase = ensureClient();
+
+  for (const table of ['taxas_especiais', 'cotacoes', 'rotas', 'generalidades']) {
+    const { error } = await supabase.from(table).delete().eq('origem_id', origemId);
+    if (error) throw error;
+  }
+
+  const { error } = await supabase.from('origens').delete().eq('id', origemId);
+  if (error) throw error;
+
+  return { ok: true };
+}
+
+export async function excluirTransportadoraDb(transportadoraId) {
+  if (!isSupabaseConfigured()) return { ok: true, modo: 'local' };
+  if (!transportadoraId) return { ok: true, ignorado: true };
+
+  const supabase = ensureClient();
+
+  const { data: origens, error: origensError } = await supabase
+    .from('origens')
+    .select('id')
+    .eq('transportadora_id', transportadoraId);
+
+  if (origensError) throw origensError;
+
+  const origemIds = (origens || []).map((item) => item.id);
+
+  if (origemIds.length) {
+    for (const table of ['taxas_especiais', 'cotacoes', 'rotas', 'generalidades']) {
+      const { error } = await supabase.from(table).delete().in('origem_id', origemIds);
+      if (error) throw error;
+    }
+
+    const { error: origemDeleteError } = await supabase.from('origens').delete().in('id', origemIds);
+    if (origemDeleteError) throw origemDeleteError;
+  }
+
+  const { error } = await supabase.from('transportadoras').delete().eq('id', transportadoraId);
+  if (error) throw error;
+
+  return { ok: true };
+}
+
+
+function removerCampo(payload, campo) {
+  const { [campo]: _removido, ...restante } = payload;
+  return restante;
+}
+
+function extrairColunaInexistente(error) {
+  const mensagem = String(error?.message || '');
+  const match = mensagem.match(/Could not find the '([^']+)' column/i);
+  return match?.[1] || '';
+}
+
+export async function registrarImportacao(payload) {
+  let sanitized = sanitizeImportacaoPayload(payload);
+
+  if (!isSupabaseConfigured()) {
+    return { ok: true, mode: 'local', payload: sanitized };
+  }
+
+  const supabase = ensureClient();
+
+  for (let tentativa = 0; tentativa < 8; tentativa += 1) {
+    const { error } = await supabase
+      .from('frete_importacoes')
+      .insert(sanitized);
+
+    if (!error) return { ok: true, mode: 'remote' };
+
+    const colunaInexistente = extrairColunaInexistente(error);
+    if (colunaInexistente && Object.prototype.hasOwnProperty.call(sanitized, colunaInexistente)) {
+      sanitized = removerCampo(sanitized, colunaInexistente);
+      continue;
+    }
+
+    throw error;
+  }
+
+  throw new Error('Não foi possível registrar histórico de importação por incompatibilidade de colunas.');
+}
+
+const REALIZADO_LOCAL_KEY = 'amd-realizado-ctes-v1';
+const REALIZADO_LOCAL_LIMIT = 3000;
+
+function readRealizadoLocal() {
+  try {
+    const raw = localStorage.getItem(REALIZADO_LOCAL_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeRealizadoLocal(rows = []) {
+  try {
+    localStorage.setItem(REALIZADO_LOCAL_KEY, JSON.stringify((rows || []).slice(0, REALIZADO_LOCAL_LIMIT)));
+  } catch {
+    // localStorage pode não suportar bases grandes; Supabase é a fonte recomendada.
+  }
+}
+
+function normalizeRealizadoDbRow(row = {}) {
+  return {
+    id: row.id || row.chave_cte || row.chaveCte || '',
+    arquivoOrigem: row.arquivo_origem || row.arquivoOrigem || '',
+    competencia: row.competencia || '',
+    transportadora: row.transportadora || '',
+    cnpjTransportadora: row.cnpj_transportadora || row.cnpjTransportadora || '',
+    documentoDestinatario: row.documento_destinatario || row.documentoDestinatario || '',
+    emissao: row.emissao || row.data_emissao || row.dataEmissao || row.data_ref || row.dataRef || '',
+    chaveCte: row.chave_cte || row.chaveCte || '',
+    numeroCte: row.numero_cte || row.numeroCte || '',
+    serieCte: row.serie_cte || row.serieCte || '',
+    valorCte: row.valor_cte ?? row.valorCte ?? 0,
+    valorCalculado: row.valor_calculado ?? row.valorCalculado ?? 0,
+    diferenca: row.diferenca ?? 0,
+    situacao: row.situacao || '',
+    status: row.status || '',
+    statusConciliacao: row.status_conciliacao || row.statusConciliacao || '',
+    statusErp: row.status_erp || row.statusErp || '',
+    ufOrigem: row.uf_origem || row.ufOrigem || '',
+    ufDestino: row.uf_destino || row.ufDestino || '',
+    ibgeOrigem: row.ibge_origem || row.ibgeOrigem || '',
+    ibgeDestino: row.ibge_destino || row.ibgeDestino || '',
+    peso: row.peso ?? 0,
+    pesoDeclarado: row.peso_declarado ?? row.pesoDeclarado ?? row.peso ?? 0,
+    pesoCubado: row.peso_cubado ?? row.pesoCubado ?? 0,
+    metrosCubicos: row.metros_cubicos ?? row.metrosCubicos ?? 0,
+    volume: row.volume ?? 0,
+    canais: row.canais || '',
+    canal: row.canal || '',
+    canalVendas: row.canal_vendas || row.canalVendas || '',
+    valorNF: row.valor_nf ?? row.valorNF ?? 0,
+    percentualFrete: row.percentual_frete ?? row.percentualFrete ?? 0,
+    cepDestino: row.cep_destino || row.cepDestino || '',
+    cepOrigem: row.cep_origem || row.cepOrigem || '',
+    cidadeOrigem: row.cidade_origem || row.cidadeOrigem || '',
+    cidadeDestino: row.cidade_destino || row.cidadeDestino || '',
+    transportadoraContratada: row.transportadora_contratada || row.transportadoraContratada || '',
+    prazoEntregaCliente: row.prazo_entrega_cliente ?? row.prazoEntregaCliente ?? 0,
+    raw: row.raw || {},
+    criadoEm: row.criado_em || row.criadoEm || '',
+  };
+}
+
+function buildRealizadoFallbackKey(row = {}) {
+  const parts = [
+    row.numeroCte || row.numero_cte,
+    row.emissao,
+    row.transportadora,
+    row.cidadeOrigem || row.cidade_origem,
+    row.cidadeDestino || row.cidade_destino,
+    row.valorCte ?? row.valor_cte ?? row.valorNF ?? row.valor_nf,
+  ]
+    .map((part) => String(part ?? '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80))
+    .filter(Boolean);
+
+  return parts.length >= 2 ? `cte-sem-chave-${parts.join('-')}` : '';
+}
+
+function sanitizeRealizadoDbRow(row = {}) {
+  const chave = String(row.chaveCte || row.chave_cte || buildRealizadoFallbackKey(row)).trim();
+  return {
+    arquivo_origem: row.arquivoOrigem || row.arquivo_origem || '',
+    competencia: row.competencia || '',
+    transportadora: row.transportadora || '',
+    cnpj_transportadora: row.cnpjTransportadora || row.cnpj_transportadora || '',
+    emissao: row.emissao || null,
+    chave_cte: chave || null,
+    numero_cte: row.numeroCte || row.numero_cte || '',
+    serie_cte: row.serieCte || row.serie_cte || '',
+    valor_cte: toSafeRealizadoNumber(row.valorCte ?? row.valor_cte),
+    valor_calculado: toSafeRealizadoNumber(row.valorCalculado ?? row.valor_calculado),
+    diferenca: toSafeRealizadoNumber(row.diferenca),
+    situacao: row.situacao || '',
+    status: row.status || '',
+    status_conciliacao: row.statusConciliacao || row.status_conciliacao || '',
+    status_erp: row.statusErp || row.status_erp || '',
+    uf_origem: row.ufOrigem || row.uf_origem || '',
+    uf_destino: row.ufDestino || row.uf_destino || '',
+    ibge_origem: String(row.ibgeOrigem || row.ibge_origem || '').replace(/\D/g, '').slice(0, 7),
+    ibge_destino: String(row.ibgeDestino || row.ibge_destino || '').replace(/\D/g, '').slice(0, 7),
+    peso_declarado: toSafeRealizadoNumber(row.pesoDeclarado ?? row.peso_declarado),
+    peso_cubado: toSafeRealizadoNumber(row.pesoCubado ?? row.peso_cubado),
+    metros_cubicos: toSafeRealizadoNumber(row.metrosCubicos ?? row.metros_cubicos),
+    volume: toSafeRealizadoNumber(row.volume),
+    canais: row.canais || '',
+    canal: row.canal || '',
+    canal_vendas: row.canalVendas || row.canal_vendas || '',
+    valor_nf: toSafeRealizadoNumber(row.valorNF ?? row.valor_nf),
+    percentual_frete: toSafeRealizadoNumber(row.percentualFrete ?? row.percentual_frete, 999999),
+    cep_destino: row.cepDestino || row.cep_destino || '',
+    cep_origem: row.cepOrigem || row.cep_origem || '',
+    cidade_origem: row.cidadeOrigem || row.cidade_origem || '',
+    cidade_destino: row.cidadeDestino || row.cidade_destino || '',
+    transportadora_contratada: row.transportadoraContratada || row.transportadora_contratada || '',
+    prazo_entrega_cliente: toSafeRealizadoNumber(row.prazoEntregaCliente ?? row.prazo_entrega_cliente, 999999),
+    raw: {},
+  };
+}
+
+function filtrarRealizadoLocal(rows = [], filtros = {}) {
+  const inicio = filtros.inicio ? new Date(`${filtros.inicio}T00:00:00`) : null;
+  const fim = filtros.fim ? new Date(`${filtros.fim}T23:59:59`) : null;
+  const canal = String(filtros.canal || '').trim();
+  const transportadoraRealizada = String(filtros.transportadoraRealizada || '').trim().toLowerCase();
+  const origem = String(filtros.origem || '').trim();
+  const destino = String(filtros.destino || '').trim();
+  const ufOrigem = String(filtros.ufOrigem || '').trim().toUpperCase();
+  const ufDestino = String(filtros.ufDestino || '').trim().toUpperCase();
+
+  return (rows || []).filter((row) => {
+    const emissao = row.emissao ? new Date(row.emissao) : null;
+    if (inicio && (!emissao || emissao < inicio)) return false;
+    if (fim && (!emissao || emissao > fim)) return false;
+    if (canal && !canalCompativelDb(row.canal || row.canalVendas || row.canais, canal)) return false;
+    if (transportadoraRealizada && !String(row.transportadora || '').toLowerCase().includes(transportadoraRealizada)) return false;
+    if (origem && !origemCompativelDb(row.cidadeOrigem, origem)) return false;
+    if (destino && !origemCompativelDb(row.cidadeDestino, destino)) return false;
+    if (ufOrigem && String(row.ufOrigem || '').trim().toUpperCase() !== ufOrigem) return false;
+    if (ufDestino && String(row.ufDestino || '').trim().toUpperCase() !== ufDestino) return false;
+    return true;
+  });
+}
+
+function temFiltroRealizadoDb(filtros = {}) {
+  return Boolean(filtros.inicio || filtros.fim || filtros.canal || filtros.transportadoraRealizada || filtros.ufOrigem || filtros.ufDestino || filtros.origem || filtros.destino || filtros.somenteSemCanal);
+}
+
+function isCanalRealizadoPreenchido(value) {
+  return String(value ?? '').trim().length > 0;
+}
+
+function aplicarFiltroSemCanal(rows = [], filtros = {}) {
+  const incluirSemCanal = filtros.incluirSemCanal !== false;
+  if (incluirSemCanal) return rows;
+  return rows.filter((row) => isCanalRealizadoPreenchido(row.canal));
+}
+
+const REALIZADO_SELECT_COLUMNS = [
+  'id','arquivo_origem','competencia','transportadora','cnpj_transportadora','emissao','chave_cte','numero_cte','serie_cte',
+  'valor_cte','valor_calculado','diferenca','situacao','status','status_conciliacao','status_erp','uf_origem','uf_destino','ibge_origem','ibge_destino',
+  'peso_declarado','peso_cubado','metros_cubicos','volume','canais','canal','canal_vendas','valor_nf','percentual_frete',
+  'cep_destino','cep_origem','cidade_origem','cidade_destino','transportadora_contratada','prazo_entrega_cliente','criado_em','updated_at'
+].join(',');
+
+const REALIZADO_LOCAL_SELECT_COLUMNS = [
+  'id','arquivo_origem','competencia','transportadora','cnpj_transportadora','documento_destinatario','data_emissao','chave_cte','numero_cte',
+  'valor_cte','valor_calculado','diferenca','situacao','status','status_conciliacao','status_erp','uf_origem','uf_destino',
+  'ibge_origem','ibge_destino','chave_rota_ibge','peso','peso_declarado','peso_cubado','cubagem','qtd_volumes','canal','canal_original','valor_nf',
+  'cidade_origem','cidade_destino','created_at','updated_at'
+].join(',');
+
+function normalizeReajustesTransportadoraRow(row = {}) {
+  return {
+    nome: String(row.nome || row.transportadora || '').trim(),
+    ctes: Number(row.ctes ?? row.total_ctes ?? 0) || 0,
+    frete: Number(row.valor_cte ?? row.valorCte ?? row.frete ?? 0) || 0,
+    valorCte: Number(row.valor_cte ?? row.valorCte ?? 0) || 0,
+    valorNF: Number(row.valor_nf ?? row.valorNF ?? 0) || 0,
+    peso: Number(row.peso ?? 0) || 0,
+    primeiraData: row.primeira_data || row.primeiraData || '',
+    ultimaData: row.ultima_data || row.ultimaData || '',
+  };
+}
+
+function normalizeReajustesRealizadoDiaRow(row = {}) {
+  const data = row.data_emissao || row.dataEmissao || row.data_ref || row.dataRef || row.emissao || '';
+  const transportadora = String(row.transportadora || row.nome || '').trim();
+  return {
+    id: row.id || `${transportadora}|${String(data).slice(0, 10)}`,
+    transportadora,
+    dataEmissao: data,
+    emissao: data,
+    ctes: Number(row.ctes ?? row.total_ctes ?? row.totalCtes ?? 0) || 0,
+    valorCte: Number(row.valor_cte ?? row.valorCte ?? 0) || 0,
+    valorNF: Number(row.valor_nf ?? row.valorNF ?? 0) || 0,
+    peso: Number(row.peso ?? row.peso_declarado ?? row.pesoDeclarado ?? 0) || 0,
+    agregadoReajuste: true,
+  };
+}
+
+function uniqueNonEmpty(values = []) {
+  return [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function canalVariantesConsultaDb(canalFiltro = '') {
+  const categoria = categoriaCanalDb(canalFiltro);
+  if (!categoria) return [];
+  // AMBOS/TODOS = tabela/CT-e que atende B2C e Atacado ao mesmo tempo — tem que
+  // entrar na consulta dos dois canais, senão fica silenciosamente de fora quando
+  // alguém filtra por um canal específico (bug real: zerava histórico de
+  // transportadoras com CT-e nesse canal combinado).
+  if (categoria === 'B2C') {
+    return uniqueNonEmpty([
+      'B2C', 'b2c', 'VIA VAREJO', 'Via Varejo', 'MERCADO LIVRE', 'Mercado Livre', 'MERCADOR LIVRE', 'Mercador Livre',
+      'B2W', 'MAGAZINE LUIZA', 'Magazine Luiza', 'MAGALU', 'CARREFOUR', 'Carrefour', 'GPA', 'COLOMBO', 'Colombo',
+      'AMAZON', 'Amazon', 'INTER', 'Inter', 'ANYMARKET', 'AnyMarket', 'ANY MARKET', 'BRADESCO SHOP', 'Bradesco Shop',
+      'ITAU SHOP', 'ITAÚ SHOP', 'Itaú Shop', 'SHOPEE', 'Shopee', 'LIVELO', 'Livelo', 'MARKETPLACE', 'Marketplace',
+      'MARKET PLACE', 'ECOMMERCE', 'E-COMMERCE', 'AMBOS', 'Ambos', 'TODOS', 'Todos',
+    ]);
+  }
+  if (categoria === 'ATACADO') {
+    return uniqueNonEmpty(['ATACADO', 'Atacado', 'B2B', 'b2b', 'AMBOS', 'Ambos', 'TODOS', 'Todos']);
+  }
+  return uniqueNonEmpty([canalFiltro, normalizarCanalDb(canalFiltro), categoria]);
+}
+
+function limparOrigemParaConsultaDb(origem = '') {
+  return cidadeSemUfDb(origem)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+}
+
+
+function normalizeResumoRealizadoDb(raw = {}) {
+  const valorCte = Number(raw.valor_cte ?? raw.valorCte ?? 0) || 0;
+  const valorNF = Number(raw.valor_nf ?? raw.valorNF ?? 0) || 0;
+  const percentual = raw.percentual_frete ?? raw.percentualFrete;
+  return {
+    total: Number(raw.total ?? 0) || 0,
+    comCanal: Number(raw.com_canal ?? raw.comCanal ?? 0) || 0,
+    semCanal: Number(raw.sem_canal ?? raw.semCanal ?? 0) || 0,
+    valorCte,
+    valorNF,
+    percentualFrete: Number.isFinite(Number(percentual)) ? Number(percentual) : (valorNF > 0 ? (valorCte / valorNF) * 100 : 0),
+    periodoInicio: raw.periodo_inicio ?? raw.periodoInicio ?? '',
+    periodoFim: raw.periodo_fim ?? raw.periodoFim ?? '',
+    amostra: Boolean(raw.amostra),
+    filtroAplicado: Boolean(raw.filtro_aplicado ?? raw.filtroAplicado),
+  };
+}
+
+function resumoFromRowsRealizado(rows = []) {
+  const lista = Array.isArray(rows) ? rows : [];
+  const comCanalRows = lista.filter((row) => isCanalRealizadoPreenchido(row.canal));
+  const valorCte = comCanalRows.reduce((acc, row) => acc + (Number(row.valorCte) || 0), 0);
+  const valorNF = comCanalRows.reduce((acc, row) => acc + (Number(row.valorNF) || 0), 0);
+  const datas = comCanalRows.map((row) => row.emissao).filter(Boolean).sort();
+  const chaves = new Set(comCanalRows.map((row) => row.chaveCte || row.numeroCte || row.id).filter(Boolean));
+  return {
+    total: lista.length,
+    comCanal: chaves.size || comCanalRows.length,
+    semCanal: Math.max(lista.length - comCanalRows.length, 0),
+    valorCte,
+    valorNF,
+    percentualFrete: valorNF > 0 ? (valorCte / valorNF) * 100 : 0,
+    periodoInicio: datas[0] || '',
+    periodoFim: datas[datas.length - 1] || '',
+    amostra: true,
+    filtroAplicado: false,
+  };
+}
+
+async function resumirRealizadoCtesViaRpc(supabase, filtros = {}) {
+  const resposta = await supabase.rpc('resumo_realizado_ctes', {
+    p_inicio: filtros.inicio || null,
+    p_fim: filtros.fim || null,
+    p_canal: filtros.canal || null,
+    p_origem: filtros.origem || null,
+    p_uf_destino: filtros.ufDestino || null,
+    p_transportadora: filtros.transportadoraRealizada || null,
+    p_uf_origem: filtros.ufOrigem || null,
+    p_destino: filtros.destino || null,
   });
 
-  return Array.isArray(concorrentes) && concorrentes.length ? concorrentes : baseSelecionada;
+  if (resposta?.error) throw resposta.error;
+  return normalizeResumoRealizadoDb(resposta?.data || {});
+}
+
+async function listarRealizadoCtesViaAmostraRpc(supabase, filtros = {}) {
+  const temFiltro = temFiltroRealizadoDb(filtros);
+  const consultaAmpla = filtros.consultaAmpla === true;
+  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro || consultaAmpla ? 10000 : 50)) || 50, temFiltro || consultaAmpla ? 50000 : 200));
+  const resposta = await supabase.rpc('amostra_realizado_ctes', {
+    p_limit: limit,
+    p_inicio: filtros.inicio || null,
+    p_fim: filtros.fim || null,
+    p_canal: filtros.canal || null,
+    p_origem: filtros.origem || null,
+    p_uf_destino: filtros.ufDestino || null,
+    p_transportadora: filtros.transportadoraRealizada || null,
+    p_uf_origem: filtros.ufOrigem || null,
+    p_destino: filtros.destino || null,
+    p_incluir_sem_canal: filtros.incluirSemCanal !== false,
+    p_somente_sem_canal: filtros.somenteSemCanal === true,
+  });
+
+  if (resposta?.error) throw resposta.error;
+  return aplicarFiltroSemCanal(filtrarRealizadoLocal((resposta?.data || []).map(normalizeRealizadoDbRow), filtros), filtros);
+}
+
+export async function resumirRealizadoCtes(filtros = {}) {
+  if (!isSupabaseConfigured()) {
+    return resumoFromRowsRealizado(filtrarRealizadoLocal(readRealizadoLocal(), filtros));
+  }
+
+  const supabase = ensureClient();
+  try {
+    return await executarComTimeout(
+      resumirRealizadoCtesViaRpc(supabase, filtros),
+      30000,
+      'O resumo do realizado demorou demais. Rode o SQL atualizado de resumo/amostra e tente filtrar por período.'
+    );
+  } catch (error) {
+    const amostra = await listarRealizadoCtes({ ...filtros, limit: 200, amostra: true }).catch(() => []);
+    const fallback = resumoFromRowsRealizado(amostra);
+    fallback.erro = error.message || String(error);
+    return fallback;
+  }
+}
+
+export async function carregarPainelRealizadoCtes(filtros = {}) {
+  const temFiltro = temFiltroRealizadoDb(filtros);
+  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 15000 : 50)) || 50, temFiltro ? 50000 : 200));
+  const filtrosBusca = { ...filtros, limit, amostra: !temFiltro };
+
+  if (!isSupabaseConfigured()) {
+    const rows = aplicarFiltroSemCanal(filtrarRealizadoLocal(readRealizadoLocal(), filtrosBusca), filtrosBusca).slice(0, limit);
+    return { rows, resumo: resumoFromRowsRealizado(rows), origem: 'local' };
+  }
+
+  const [resumoResult, rowsResult] = await Promise.allSettled([
+    resumirRealizadoCtes(filtrosBusca),
+    listarRealizadoCtes(filtrosBusca),
+  ]);
+
+  const rows = rowsResult.status === 'fulfilled' ? rowsResult.value : [];
+  const resumo = resumoResult.status === 'fulfilled' ? resumoResult.value : resumoFromRowsRealizado(rows);
+  const erros = [];
+  if (resumoResult.status === 'rejected') erros.push(`resumo: ${resumoResult.reason?.message || resumoResult.reason}`);
+  if (rowsResult.status === 'rejected') erros.push(`amostra: ${rowsResult.reason?.message || rowsResult.reason}`);
+
+  if (!rows.length && !resumo?.total && erros.length) {
+    throw new Error(`Não consegui puxar a base realizada do Supabase. ${erros.join(' | ')}`);
+  }
+
+  return {
+    rows,
+    resumo,
+    origem: 'supabase',
+    erroAmostra: rowsResult.status === 'rejected' ? (rowsResult.reason?.message || String(rowsResult.reason)) : '',
+  };
+}
+
+export async function listarTransportadorasRealizadoReajustes() {
+  if (!isSupabaseConfigured()) {
+    const mapa = new Map();
+    readRealizadoLocal().forEach((row) => {
+      const nome = String(row.transportadora || '').trim();
+      if (!nome || !isCanalRealizadoPreenchido(row.canal)) return;
+      const atual = mapa.get(nome) || { nome, ctes: 0, frete: 0, valorCte: 0, valorNF: 0, peso: 0 };
+      atual.ctes += 1;
+      atual.frete += Number(row.valorCte || 0) || 0;
+      atual.valorCte += Number(row.valorCte || 0) || 0;
+      atual.valorNF += Number(row.valorNF || 0) || 0;
+      atual.peso += Number(row.peso || row.pesoDeclarado || 0) || 0;
+      mapa.set(nome, atual);
+    });
+    return [...mapa.values()].sort((a, b) => b.frete - a.frete || b.ctes - a.ctes || a.nome.localeCompare(b.nome, 'pt-BR'));
+  }
+
+  const supabase = ensureClient();
+  const { data, error } = await executarComTimeout(
+    supabase.rpc('reajustes_realizado_transportadoras'),
+    25000,
+    'A consulta de transportadoras do realizado demorou demais.'
+  );
+  if (error) throw error;
+  return (data || []).map(normalizeReajustesTransportadoraRow).filter((row) => row.nome);
+}
+
+// Tamanho de cada página. O PostgREST/Supabase aplica um max-rows padrão de 1000
+// em respostas de RPC e SELECT. Sem paginação a consulta agregada por dia×transportadora
+// era truncada em 1000 linhas (cobrindo só os primeiros dias do período por causa do
+// ORDER BY crescente), zerando o realizado. Paginar com .range() busca todas as linhas.
+const REAJUSTES_DIARIO_PAGINA = 1000;
+
+async function buscarRpcRealizadoDiarioPaginado(supabase, filtros, limit) {
+  const todos = [];
+  let from = 0;
+
+  while (todos.length < limit) {
+    const to = Math.min(from + REAJUSTES_DIARIO_PAGINA, limit) - 1;
+    const { data, error } = await executarComTimeout(
+      supabase
+        .rpc('reajustes_realizado_diario_local', {
+          p_inicio: filtros.inicio || null,
+          p_fim: filtros.fim || null,
+        })
+        .range(from, to),
+      30000,
+      'A consulta consolidada de CT-es para reajustes demorou demais.'
+    );
+    if (error) throw error;
+
+    const pagina = data || [];
+    todos.push(...pagina);
+
+    // Página incompleta = chegamos ao fim dos resultados.
+    if (pagina.length < (to - from + 1)) break;
+    from = to + 1;
+  }
+
+  return todos;
+}
+
+async function buscarSelectRealizadoDiarioPaginado(supabase, filtros, limit) {
+  const todos = [];
+  let from = 0;
+
+  while (todos.length < limit) {
+    const to = Math.min(from + REAJUSTES_DIARIO_PAGINA, limit) - 1;
+
+    let query = supabase
+      .from('realizado_local_ctes')
+      .select(REALIZADO_LOCAL_SELECT_COLUMNS);
+
+    if (filtros.inicio) query = query.gte('data_emissao', `${filtros.inicio}T00:00:00`);
+    if (filtros.fim) query = query.lte('data_emissao', `${filtros.fim}T23:59:59`);
+    // Ordenar decrescente garante que, mesmo em caso de truncamento inesperado,
+    // os CT-es mais recentes (que definem ultimaDataRealizado) venham primeiro.
+    query = query.order('data_emissao', { ascending: false, nullsFirst: false });
+    query = query.range(from, to);
+
+    const { data, error } = await executarComTimeout(
+      query,
+      30000,
+      'A consulta direta de CT-es para reajustes demorou demais.'
+    );
+    if (error) throw error;
+
+    const pagina = data || [];
+    todos.push(...pagina);
+
+    if (pagina.length < (to - from + 1)) break;
+    from = to + 1;
+  }
+
+  return todos;
+}
+
+function montarQueryRealizadoLocalParaSimulacao(supabase, filtros = {}) {
+  const origem = limparOrigemParaConsultaDb(filtros.origem || '');
+  const destino = limparOrigemParaConsultaDb(filtros.destino || '');
+  const transportadoraRealizada = String(filtros.transportadoraRealizada || '').trim();
+  const canalVariantes = canalVariantesConsultaDb(filtros.canal || '');
+
+  let query = supabase
+    .from('realizado_local_ctes')
+    .select(REALIZADO_LOCAL_SELECT_COLUMNS);
+
+  const transportadorasExatas = Array.isArray(filtros.transportadorasExatas)
+    ? filtros.transportadorasExatas.map((nome) => String(nome || '').trim()).filter(Boolean)
+    : [];
+
+  if (filtros.inicio) query = query.gte('data_emissao', `${filtros.inicio}T00:00:00`);
+  if (filtros.fim) query = query.lte('data_emissao', `${filtros.fim}T23:59:59`);
+  if (filtros.ufOrigem) query = query.eq('uf_origem', String(filtros.ufOrigem).trim().toUpperCase());
+  if (filtros.ufDestino) query = query.eq('uf_destino', String(filtros.ufDestino).trim().toUpperCase());
+  if (transportadorasExatas.length) query = query.in('transportadora', transportadorasExatas);
+  else if (transportadoraRealizada) query = query.ilike('transportadora', `%${transportadoraRealizada}%`);
+  if (origem) query = query.ilike('cidade_origem', `${origem}%`);
+  if (destino) query = query.ilike('cidade_destino', `${destino}%`);
+  if (canalVariantes.length) query = query.in('canal', canalVariantes);
+  if (filtros.incluirSemCanal === false) query = query.not('canal', 'is', null).neq('canal', '');
+  return query.order('data_emissao', { ascending: false, nullsFirst: false });
+}
+
+export async function listarRealizadoLocalCtesParaSimulacao(filtros = {}) {
+  const limit = Math.max(1, Math.min(Number(filtros.limit || 50000) || 50000, 100000));
+
+  if (!isSupabaseConfigured()) {
+    return [];
+  }
+
+  const supabase = ensureClient();
+
+  // O PostgREST limita cada request a ~1000 linhas por padrão, ignorando um
+  // .limit() maior do client. Sem paginar via .range(), resultados acima de
+  // 1000 linhas eram truncados silenciosamente (base ficava incompleta).
+  const todos = [];
+  let from = 0;
+  while (todos.length < limit) {
+    const to = Math.min(from + REAJUSTES_DIARIO_PAGINA, limit) - 1;
+    const { data, error } = await executarComTimeout(
+      montarQueryRealizadoLocalParaSimulacao(supabase, filtros).range(from, to),
+      30000,
+      'A consulta da base realizado_local_ctes para simulação demorou demais. Use filtros de período/canal/origem.'
+    );
+    if (error) throw error;
+
+    const pagina = data || [];
+    todos.push(...pagina);
+
+    if (pagina.length < (to - from + 1)) break;
+    from = to + 1;
+  }
+
+  return aplicarFiltroSemCanal(filtrarRealizadoLocal(todos.map(normalizeRealizadoDbRow), filtros), filtros);
+}
+
+export async function calcularSavingPosAprovacaoAgregado(filtros = {}) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  const supabase = ensureClient();
+  const transportadoras = Array.isArray(filtros.transportadoras)
+    ? filtros.transportadoras.map((nome) => String(nome || '').trim()).filter(Boolean)
+    : [];
+  const limitesPeso = Array.isArray(filtros.limitesPeso)
+    ? filtros.limitesPeso.map(Number).filter((valor) => Number.isFinite(valor) && valor > 0).sort((a, b) => a - b)
+    : [];
+  if (!transportadoras.length) throw new Error('Informe ao menos uma transportadora vinculada.');
+  const inicio = Date.now();
+  const parametrosRpc = {
+    p_transportadoras: transportadoras,
+    p_origem: filtros.origem || '',
+    p_canais: canalVariantesConsultaDb(filtros.canal || ''),
+    p_data_corte: filtros.dataCorte,
+    p_fim_atual: filtros.fimAtual,
+    p_meses_base: Number(filtros.mesesBase || 3),
+    p_limites_peso: limitesPeso.length ? limitesPeso : [999999999],
+  };
+  let { data, error } = await supabase.rpc('saving_pos_aprovacao_fluxos_mensal_json', parametrosRpc);
+  if (error && ['PGRST202', '42883'].includes(String(error.code || ''))) {
+    const fallback = await supabase.rpc('saving_pos_aprovacao_fluxos_mensal', parametrosRpc);
+    data = fallback.data;
+    error = fallback.error;
+  }
+  if (error) throw error;
+  const dadosCompletos = Array.isArray(data) ? data : [];
+  const linhas = dadosCompletos.map((row) => ({
+    competencia: row.competencia ? String(row.competencia).slice(0, 10) : '',
+    rota: row.rota || 'Sem rota',
+    faixa: row.faixa || 'Sem faixa',
+    ctesBase: Number(row.ctes_base || 0),
+    ctesAtual: Number(row.ctes_atual || 0),
+    valorNFBase: Number(row.valor_nf_base || 0),
+    valorNFAtual: Number(row.valor_nf_atual || 0),
+    valorCteBase: Number(row.valor_cte_base || 0),
+    valorCteAtual: Number(row.valor_cte_atual || 0),
+    pctBase: Number(row.pct_base || 0),
+    pctAtual: Number(row.pct_atual || 0),
+    diffPct: Number(row.diff_pct || 0),
+    saving: Number(row.saving || 0),
+  }));
+  const totais = linhas.reduce((acc, linha) => {
+    acc.saving += linha.saving;
+    acc.valorNFAtual += linha.valorNFAtual;
+    acc.valorCteAtual += linha.valorCteAtual;
+    acc.valorNFBase += linha.valorNFBase;
+    acc.valorCteBase += linha.valorCteBase;
+    acc.ctesBase += linha.ctesBase;
+    acc.ctesAtual += linha.ctesAtual;
+    return acc;
+  }, { saving: 0, valorNFAtual: 0, valorCteAtual: 0, valorNFBase: 0, valorCteBase: 0, ctesBase: 0, ctesAtual: 0 });
+  totais.pctBaseMedio = totais.valorNFAtual > 0
+    ? linhas.reduce((acc, linha) => acc + linha.pctBase * linha.valorNFAtual, 0) / totais.valorNFAtual
+    : 0;
+  totais.pctAtualMedio = totais.valorNFAtual > 0 ? totais.valorCteAtual / totais.valorNFAtual : 0;
+  const mensal = [...linhas.reduce((mapa, linha) => {
+    const chave = linha.competencia || 'Sem competÃªncia';
+    const atual = mapa.get(chave) || { competencia: chave, saving: 0, valorNFAtual: 0, valorCteAtual: 0, ctesAtual: 0, rotas: 0 };
+    atual.saving += linha.saving;
+    atual.valorNFAtual += linha.valorNFAtual;
+    atual.valorCteAtual += linha.valorCteAtual;
+    atual.ctesAtual += linha.ctesAtual;
+    atual.rotas += 1;
+    mapa.set(chave, atual);
+    return mapa;
+  }, new Map()).values()].sort((a, b) => String(a.competencia).localeCompare(String(b.competencia)));
+  mensal.forEach((mes) => { mes.pctAtualMedio = mes.valorNFAtual > 0 ? mes.valorCteAtual / mes.valorNFAtual : 0; });
+  return { linhas, mensal, totais, ctesBase: totais.ctesBase, ctesAtual: totais.ctesAtual, tempoMs: Date.now() - inicio, fonte: 'RPC_AGREGADA_MENSAL' };
+}
+
+export async function listarFaixasPesoNegociacao(tabelaNegociacaoId) {
+  if (!tabelaNegociacaoId || !isSupabaseConfigured()) return [];
+  const supabase = ensureClient();
+  const { data, error } = await supabase.rpc('faixas_peso_negociacao', {
+    p_tabela_negociacao_id: tabelaNegociacaoId,
+  });
+  if (error) {
+    const codigo = String(error.code || '');
+    if (['PGRST202', '42883'].includes(codigo)) return [];
+    throw error;
+  }
+  return (data || [])
+    .map((faixa) => ({
+      inicio: Number(faixa.peso_inicial),
+      fim: Number(faixa.peso_final),
+      rotas: Number(faixa.rotas || 0),
+    }))
+    .filter((faixa) => Number.isFinite(faixa.inicio) && Number.isFinite(faixa.fim) && faixa.fim > faixa.inicio)
+    .sort((a, b) => a.fim - b.fim);
+}
+
+export async function buscarPrimeiroCteSaving(filtros = {}) {
+  if (!isSupabaseConfigured()) return '';
+  const supabase = ensureClient();
+  const transportadoras = Array.isArray(filtros.transportadoras)
+    ? filtros.transportadoras.map((nome) => String(nome || '').trim()).filter(Boolean)
+    : [];
+  if (!transportadoras.length) return '';
+  const { data, error } = await supabase.rpc('primeiro_cte_saving', {
+    p_transportadoras: transportadoras,
+    p_origem: filtros.origem || '',
+    p_canais: canalVariantesConsultaDb(filtros.canal || ''),
+    p_data_corte: filtros.dataCorte,
+    p_fim_atual: filtros.fimAtual,
+  });
+  if (error) throw error;
+  return data ? String(data).slice(0, 10) : '';
+}
+
+export async function listarRealizadoDiarioReajustes(filtros = {}) {
+  const limit = Math.max(1, Math.min(Number(filtros.limit || 100000) || 100000, 100000));
+
+  if (!isSupabaseConfigured()) {
+    return filtrarRealizadoLocal(readRealizadoLocal(), filtros).slice(0, limit);
+  }
+
+  const supabase = ensureClient();
+
+  try {
+    const data = await buscarRpcRealizadoDiarioPaginado(supabase, filtros, limit);
+    return data.map(normalizeReajustesRealizadoDiaRow).filter((row) => row.transportadora && row.dataEmissao);
+  } catch (rpcError) {
+    try {
+      const data = await buscarSelectRealizadoDiarioPaginado(supabase, filtros, limit);
+      return data.map(normalizeRealizadoDbRow);
+    } catch (selectError) {
+      throw new Error(`Erro ao carregar realizado_local_ctes para reajustes. RPC: ${rpcError.message || rpcError}. Select: ${selectError.message || selectError}`);
+    }
+  }
+}
+
+async function listarRealizadoCtesViaSelect(supabase, filtros = {}) {
+  const temFiltro = temFiltroRealizadoDb(filtros);
+  const consultaAmpla = filtros.consultaAmpla === true;
+  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro || consultaAmpla ? 10000 : 50)) || 50, temFiltro || consultaAmpla ? 50000 : 200));
+  const origem = limparOrigemParaConsultaDb(filtros.origem || '');
+  const destino = limparOrigemParaConsultaDb(filtros.destino || '');
+  const transportadoraRealizada = String(filtros.transportadoraRealizada || '').trim();
+  const canalVariantes = canalVariantesConsultaDb(filtros.canal || '');
+
+  let query = supabase
+    .from('realizado_ctes')
+    .select(REALIZADO_SELECT_COLUMNS)
+    .limit(limit);
+
+  if (filtros.inicio) query = query.gte('emissao', `${filtros.inicio}T00:00:00`);
+  if (filtros.fim) query = query.lte('emissao', `${filtros.fim}T23:59:59`);
+  if (filtros.ufOrigem) query = query.eq('uf_origem', String(filtros.ufOrigem).trim().toUpperCase());
+  if (filtros.ufDestino) query = query.eq('uf_destino', String(filtros.ufDestino).trim().toUpperCase());
+  if (transportadoraRealizada) query = query.ilike('transportadora', `%${transportadoraRealizada}%`);
+  if (origem) query = query.ilike('cidade_origem', `${origem}%`);
+  if (destino) query = query.ilike('cidade_destino', `${destino}%`);
+  if (canalVariantes.length) query = query.in('canal', canalVariantes);
+  if (filtros.incluirSemCanal === false) query = query.not('canal', 'is', null).neq('canal', '');
+  if (filtros.somenteSemCanal) query = query.or('canal.is.null,canal.eq.');
+
+  if (filtros.inicio || filtros.fim) {
+    query = query.order('emissao', { ascending: false, nullsFirst: false });
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return aplicarFiltroSemCanal(filtrarRealizadoLocal((data || []).map(normalizeRealizadoDbRow), filtros), filtros);
+}
+
+async function listarRealizadoCtesViaRpc(supabase, filtros = {}) {
+  const temFiltro = temFiltroRealizadoDb(filtros);
+  const consultaAmpla = filtros.consultaAmpla === true;
+  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro || consultaAmpla ? 10000 : 50)) || 50, temFiltro || consultaAmpla ? 50000 : 200));
+  const resposta = await supabase.rpc('listar_realizado_ctes', {
+    p_limit: limit,
+    p_inicio: filtros.inicio || null,
+    p_fim: filtros.fim || null,
+    p_canal: filtros.canal || null,
+    p_origem: filtros.origem || null,
+    p_uf_destino: filtros.ufDestino || null,
+    p_transportadora: filtros.transportadoraRealizada || null,
+    p_uf_origem: filtros.ufOrigem || null,
+    p_destino: filtros.destino || null,
+    p_incluir_sem_canal: filtros.incluirSemCanal !== false,
+    p_somente_sem_canal: filtros.somenteSemCanal === true,
+  });
+
+  if (resposta?.error) throw resposta.error;
+  return aplicarFiltroSemCanal(filtrarRealizadoLocal((resposta?.data || []).map(normalizeRealizadoDbRow), filtros), filtros);
+}
+
+export async function listarRealizadoCtes(filtros = {}) {
+  const temFiltro = temFiltroRealizadoDb(filtros);
+  const consultaAmpla = filtros.consultaAmpla === true;
+  const filtrosSeguros = {
+    ...filtros,
+    limit: Math.max(1, Math.min(Number(filtros.limit || (temFiltro || consultaAmpla ? 10000 : 50)) || 50, temFiltro || consultaAmpla ? 50000 : 200)),
+    amostra: filtros.amostra === true || (!temFiltro && !consultaAmpla),
+  };
+
+  if (!isSupabaseConfigured()) {
+    const locais = filtrarRealizadoLocal(readRealizadoLocal(), filtrosSeguros);
+    return aplicarFiltroSemCanal(locais, filtrosSeguros).slice(0, filtrosSeguros.limit || REALIZADO_LOCAL_LIMIT);
+  }
+
+  const supabase = ensureClient();
+  const timeoutConsulta = temFiltro || consultaAmpla ? 25000 : 8000;
+  let amostraError = null;
+
+  if (!consultaAmpla || filtrosSeguros.amostra === true) {
+    try {
+      return await executarComTimeout(
+        listarRealizadoCtesViaAmostraRpc(supabase, filtrosSeguros),
+        timeoutConsulta,
+        'A amostra rápida do realizado demorou demais. Rode o SQL atualizado de resumo/amostra.'
+      );
+    } catch (error) {
+      amostraError = error;
+    }
+  }
+
+  try {
+    return await executarComTimeout(
+      listarRealizadoCtesViaSelect(supabase, filtrosSeguros),
+      timeoutConsulta,
+      'A consulta direta do realizado demorou demais. Use filtros mais específicos ou rode o SQL atualizado de performance.'
+    );
+  } catch (selectError) {
+    try {
+      return await executarComTimeout(
+        listarRealizadoCtesViaRpc(supabase, filtrosSeguros),
+        timeoutConsulta,
+        'A listagem RPC do realizado demorou demais. Use filtros de período/canal/origem/UF.'
+      );
+    } catch (rpcError) {
+      const detalheAmostra = amostraError ? (amostraError.message || amostraError) : 'amostra ignorada em consulta ampla';
+      throw new Error(`Erro ao carregar realizado_ctes via Supabase. A tabela tem volume alto; rode o SQL atualizado. Detalhe amostra: ${detalheAmostra}. Detalhe select: ${selectError.message || selectError}. Detalhe RPC: ${rpcError.message || rpcError}`);
+    }
+  }
+}
+
+function aguardar(ms = 0) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function executarComTimeout(promise, ms, mensagem) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(mensagem)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+
+async function validarTabelaRealizadoCtes(supabase) {
+  const { error } = await supabase
+    .from('realizado_ctes')
+    .select('chave_cte')
+    .limit(1);
+
+  if (error) {
+    throw new Error(
+      `Não consegui acessar a tabela realizado_ctes no Supabase. Rode novamente o script supabase/realizado_ctes_schema.sql e confira as permissões/RLS. Detalhe: ${error.message}`
+    );
+  }
+}
+
+async function contarChavesRealizadoNoSupabase(supabase, chaves = []) {
+  const unicas = [...new Set((chaves || []).filter(Boolean))];
+  if (!unicas.length) return 0;
+
+  let confirmados = 0;
+  const chunkSize = 500;
+  for (let index = 0; index < unicas.length; index += chunkSize) {
+    const chunk = unicas.slice(index, index + chunkSize);
+    const { count, error } = await supabase
+      .from('realizado_ctes')
+      .select('chave_cte', { count: 'exact', head: true })
+      .in('chave_cte', chunk);
+
+    if (error) {
+      throw new Error(`O Supabase gravou/recebeu a importação, mas não deixou confirmar a leitura. Confira permissões/RLS da tabela realizado_ctes. Detalhe: ${error.message}`);
+    }
+
+    confirmados += Number(count || 0);
+  }
+
+  return confirmados;
+}
+
+function isRpcMissingError(error) {
+  const message = String(error?.message || error?.details || error?.hint || '').toLowerCase();
+  const code = String(error?.code || '');
+  return code === 'PGRST202' || message.includes('function') || message.includes('rpc') || message.includes('not found') || message.includes('could not find');
+}
+
+async function salvarRealizadoCtesViaRpc(supabase, payload = [], options = {}) {
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const chunkSize = Number(options.chunkSize || 250) || 250;
+  let confirmados = 0;
+
+  for (let index = 0; index < payload.length; index += chunkSize) {
+    const chunk = payload.slice(index, index + chunkSize);
+    const resposta = await executarComTimeout(
+      supabase.rpc('importar_realizado_ctes', { p_rows: chunk }),
+      90000,
+      'A gravação via função do Supabase demorou demais e foi interrompida. Tente novamente com um período menor.'
+    );
+
+    if (resposta?.error) throw resposta.error;
+
+    const qtd = Number(resposta?.data || 0);
+    confirmados += Number.isFinite(qtd) ? qtd : 0;
+    onProgress?.({
+      salvos: Math.min(index + chunk.length, payload.length),
+      confirmados,
+      total: payload.length,
+      modo: 'supabase',
+      metodo: 'rpc',
+    });
+    await aguardar(0);
+  }
+
+  return confirmados;
+}
+
+async function salvarRealizadoCtesViaUpsert(supabase, payload = [], options = {}) {
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const chunkSize = Number(options.chunkSize || 250) || 250;
+  let retornadosSupabase = 0;
+
+  for (let index = 0; index < payload.length; index += chunkSize) {
+    const chunk = payload.slice(index, index + chunkSize);
+    const resposta = await executarComTimeout(
+      supabase
+        .from('realizado_ctes')
+        .upsert(chunk, { onConflict: 'chave_cte' })
+        .select('chave_cte'),
+      90000,
+      'A gravação no Supabase demorou demais e foi interrompida. Verifique a conexão e tente novamente com um período menor.'
+    );
+
+    if (resposta?.error) {
+      throw new Error(`Erro ao salvar realizado_ctes no Supabase. Rode o script supabase/realizado_ctes_schema.sql e confira permissões/RLS. Detalhe: ${resposta.error.message}`);
+    }
+
+    retornadosSupabase += Array.isArray(resposta?.data) ? resposta.data.length : 0;
+    onProgress?.({
+      salvos: Math.min(index + chunk.length, payload.length),
+      confirmados: retornadosSupabase,
+      total: payload.length,
+      modo: 'supabase',
+      metodo: 'upsert',
+    });
+    await aguardar(0);
+  }
+
+  return retornadosSupabase;
+}
+
+export async function diagnosticarRealizadoSupabaseDb() {
+  const info = getSupabaseInfo();
+  if (!info.configured) {
+    return {
+      ok: false,
+      configured: false,
+      host: info.host,
+      total: null,
+      comCanal: null,
+      semCanal: null,
+      erro: 'Supabase não configurado no front. Confira VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no Vercel.',
+    };
+  }
+
+  const supabase = ensureClient();
+  const status = {
+    ok: false,
+    configured: true,
+    host: info.host,
+    total: null,
+    comCanal: null,
+    semCanal: null,
+    tabelaOk: false,
+    rpcOk: false,
+    listagemRpcOk: false,
+    contagemExata: false,
+    erro: '',
+  };
+
+  try {
+    const tabela = await executarComTimeout(
+      supabase.from('realizado_ctes').select('id').limit(1),
+      5000,
+      'A tabela realizado_ctes demorou para responder.'
+    );
+    if (tabela.error) {
+      status.erro = `Tabela realizado_ctes não respondeu: ${tabela.error.message}`;
+      return status;
+    }
+    status.tabelaOk = true;
+    status.listagemRpcOk = true;
+  } catch (error) {
+    status.erro = error.message || 'Tabela realizado_ctes não respondeu.';
+    return status;
+  }
+
+  try {
+    const estimativa = await executarComTimeout(
+      supabase.from('realizado_ctes').select('id', { count: 'planned', head: true }),
+      5000,
+      'Estimativa de total demorou demais.'
+    );
+    if (!estimativa.error) {
+      status.total = Number(estimativa.count || 0);
+      status.contagemExata = false;
+    }
+  } catch {
+    // Mantém diagnóstico OK mesmo sem estimativa.
+  }
+
+  try {
+    const resumo = await executarComTimeout(
+      resumirRealizadoCtesViaRpc(supabase, {}),
+      30000,
+      'Resumo rápido demorou demais.'
+    );
+    if (resumo) {
+      status.total = Number(resumo.total || status.total || 0);
+      status.comCanal = Number(resumo.comCanal || 0);
+      status.semCanal = Number(resumo.semCanal || 0);
+      status.valorCte = Number(resumo.valorCte || 0);
+      status.valorNF = Number(resumo.valorNF || 0);
+      status.percentualFrete = Number(resumo.percentualFrete || 0);
+      status.contagemExata = true;
+      status.listagemRpcOk = true;
+    }
+  } catch (error) {
+    status.erro = status.erro || `Resumo pendente: ${error.message || error}`;
+  }
+
+  try {
+    const rpcImport = await executarComTimeout(
+      supabase.rpc('importar_realizado_ctes', { p_rows: [] }),
+      5000,
+      'Teste da RPC de importação demorou demais.'
+    );
+    status.rpcOk = !rpcImport.error;
+    if (rpcImport.error) status.erro = status.erro || `RPC de importação pendente: ${rpcImport.error.message || rpcImport.error}`;
+  } catch (error) {
+    status.erro = status.erro || (error.message || 'RPC de importação pendente.');
+  }
+
+  status.ok = status.tabelaOk;
+  return status;
+}
+
+export async function salvarRealizadoCtes(rows = [], options = {}) {
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const requireSupabase = options.requireSupabase === true;
+  const normalized = (rows || []).map(normalizeRealizadoDbRow).filter((row) => row.chaveCte || row.numeroCte);
+  if (!normalized.length) return { ok: true, inseridos: 0, confirmados: 0 };
+
+  if (!isSupabaseConfigured()) {
+    if (requireSupabase) {
+      throw new Error(
+        'Supabase não configurado no front. A importação não será salva na base online. Confira as variáveis VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no Vercel/GitHub e publique novamente.'
+      );
+    }
+
+    const atual = readRealizadoLocal();
+    const byKey = new Map(atual.map((row) => [row.chaveCte || `${row.numeroCte}|${row.emissao}`, row]));
+    normalized.forEach((row) => byKey.set(row.chaveCte || `${row.numeroCte}|${row.emissao}`, row));
+    writeRealizadoLocal([...byKey.values()].sort((a, b) => String(b.emissao).localeCompare(String(a.emissao))));
+    onProgress?.({ salvos: normalized.length, confirmados: normalized.length, total: normalized.length, modo: 'local', metodo: 'local' });
+    return { ok: true, inseridos: normalized.length, confirmados: normalized.length, modo: 'local', metodo: 'local' };
+  }
+
+  const supabase = ensureClient();
+  await validarTabelaRealizadoCtes(supabase);
+
+  const payload = normalized.map(sanitizeRealizadoDbRow).filter((row) => row.chave_cte);
+  if (!payload.length) {
+    throw new Error('A planilha foi lida, mas nenhum CT-e ficou com chave para salvar. Confira se existe coluna Chave CT-e ou Número CT-e.');
+  }
+
+  let retornadosSupabase = 0;
+  let metodo = 'rpc';
+
+  try {
+    retornadosSupabase = await salvarRealizadoCtesViaRpc(supabase, payload, options);
+  } catch (rpcError) {
+    if (!isRpcMissingError(rpcError)) {
+      throw new Error(`Erro ao salvar via função importar_realizado_ctes. Rode novamente o script supabase/realizado_ctes_schema.sql. Detalhe: ${rpcError.message || rpcError}`);
+    }
+
+    metodo = 'upsert';
+    retornadosSupabase = await salvarRealizadoCtesViaUpsert(supabase, payload, options);
+  }
+
+  const confirmados = await contarChavesRealizadoNoSupabase(
+    supabase,
+    payload.map((row) => row.chave_cte)
+  );
+
+  if (!confirmados) {
+    const info = getSupabaseInfo();
+    throw new Error(
+      `A chamada de gravação terminou, mas nenhuma linha foi confirmada na tabela realizado_ctes. Projeto do front: ${info.host || 'não identificado'}. Isso normalmente é RLS/permissão, script SQL não rodado ou Vercel apontando para outro Supabase.`
+    );
+  }
+
+  return {
+    ok: true,
+    inseridos: payload.length,
+    confirmados,
+    retornadosSupabase,
+    lidos: normalized.length,
+    modo: 'supabase',
+    metodo,
+    projeto: getSupabaseInfo().host,
+  };
+}
+
+export async function excluirRealizadoCtes(filtros = {}) {
+  const limpezaTotal = !filtros.inicio && !filtros.fim && !filtros.arquivoOrigem && !filtros.somenteSemCanal;
+  if (limpezaTotal && filtros.confirmacao !== 'APAGAR BASE REALIZADA') {
+    throw new Error('Exclusão bloqueada por segurança. Para zerar a base, confirme digitando APAGAR BASE REALIZADA.');
+  }
+  if (filtros.somenteSemCanal && filtros.confirmacao !== 'EXCLUIR SEM CANAL') {
+    throw new Error('Exclusão de pendências bloqueada por segurança. Para excluir, confirme digitando EXCLUIR SEM CANAL.');
+  }
+
+  if (!isSupabaseConfigured()) {
+    const atual = readRealizadoLocal();
+    if (filtros.somenteSemCanal) {
+      const restantes = atual.filter((row) => isCanalRealizadoPreenchido(row.canal));
+      writeRealizadoLocal(restantes);
+      return { ok: true, removidos: atual.length - restantes.length, modo: 'local' };
+    }
+
+    if (limpezaTotal) {
+      writeRealizadoLocal([]);
+      return { ok: true, removidos: atual.length, modo: 'local' };
+    }
+
+    const remover = new Set(filtrarRealizadoLocal(atual, filtros).map((row) => row.chaveCte || `${row.numeroCte}|${row.emissao}`));
+    const restantes = atual.filter((row) => !remover.has(row.chaveCte || `${row.numeroCte}|${row.emissao}`));
+    writeRealizadoLocal(restantes);
+    return { ok: true, removidos: atual.length - restantes.length, modo: 'local' };
+  }
+
+  const supabase = ensureClient();
+
+  if (filtros.somenteSemCanal) {
+    const rpc = await supabase.rpc('excluir_realizado_ctes_sem_canal', { p_confirmacao: 'EXCLUIR SEM CANAL' });
+    if (!rpc.error) {
+      return { ok: true, removidos: Number(rpc.data || 0), modo: 'supabase', metodo: 'rpc' };
+    }
+
+    if (!isRpcMissingError(rpc.error)) {
+      throw new Error(`Erro ao excluir pendências sem canal. Detalhe: ${rpc.error.message}`);
+    }
+  }
+
+  if (limpezaTotal) {
+    const rpc = await supabase.rpc('limpar_realizado_ctes', { p_confirmacao: 'APAGAR BASE REALIZADA' });
+    if (!rpc.error) {
+      return { ok: true, removidos: Number(rpc.data || 0), modo: 'supabase', metodo: 'rpc' };
+    }
+    if (!isRpcMissingError(rpc.error)) {
+      throw new Error(`Erro ao limpar base realizada. Detalhe: ${rpc.error.message}`);
+    }
+  }
+
+  let query = supabase.from('realizado_ctes').delete();
+
+  if (filtros.inicio) query = query.gte('emissao', `${filtros.inicio}T00:00:00`);
+  if (filtros.fim) query = query.lte('emissao', `${filtros.fim}T23:59:59`);
+  if (filtros.arquivoOrigem) query = query.eq('arquivo_origem', filtros.arquivoOrigem);
+  if (filtros.somenteSemCanal) query = query.or('canal.is.null,canal.eq.');
+  if (limpezaTotal) query = query.neq('chave_cte', '__nunca__');
+
+  const { error, count } = await query.select('id', { count: 'exact' });
+  if (error) throw error;
+  return { ok: true, modo: 'supabase', removidos: Number(count || 0) };
 }
