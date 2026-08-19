@@ -166,6 +166,17 @@ function valorBrutoPorAlias(mapa, aliases) {
   return null;
 }
 
+// Valores em R$ (taxa da faixa, excedente, frete minimo). Quando a celula e
+// numerica de verdade, o bruto e a unica leitura confiavel: o texto formatado
+// (raw:false) de 173,503 chega como "173,503" e a heuristica de milhar
+// americano lia 173.503 — mil vezes maior. Colunas de % continuam no texto
+// (o bruto vem 0.05 para "5%").
+function numeroValor(mapa, aliases) {
+  const bruto = valorBrutoPorAlias(mapa, aliases);
+  if (bruto !== null) return bruto;
+  return numero(valorPorAlias(mapa, aliases), '');
+}
+
 function valorPorAlias(mapa, aliases, padrao = '') {
   for (const alias of aliases) {
     const chaveNormalizada = normalizarTexto(alias);
@@ -485,7 +496,7 @@ function normalizarFrete(linha, indice, rotasPorChave) {
   const pesoFinal = valorBrutoPorAlias(mapa, ALIASES_PESO_FINAL)
     ?? numeroPeso(valorPorAlias(mapa, ALIASES_PESO_FINAL), '');
 
-  const taxaAplicada = numero(valorPorAlias(mapa, [
+  const taxaAplicada = numeroValor(mapa, [
     'Taxa Aplicada',
     'TAXA APLICADA',
     'Taxa',
@@ -496,9 +507,9 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     'Frete Peso',
     'Frete R$',
     'FRETE (R$)',
-  ]), '');
+  ]);
 
-  const excedente = numero(valorPorAlias(mapa, [
+  const excedente = numeroValor(mapa, [
     'Excedente',
     'EXCEDENTE',
     'Excesso',
@@ -511,7 +522,7 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     'Kg Excedente',
     'R$ Kg Excedente',
     'Valor Kg Excedente',
-  ]), '');
+  ]);
 
   const fretePercentual = numero(valorPorAlias(mapa, [
     'Frete Percentual',
@@ -525,7 +536,7 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     'Frete (%)',
   ]), '');
 
-  const freteMinimo = numero(valorPorAlias(mapa, [
+  const freteMinimo = numeroValor(mapa, [
     'Frete Mínimo',
     'Frete Minimo',
     'Mínimo',
@@ -534,7 +545,7 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     'Valor Minimo',
     'FRETE MINIMO',
     'FRETE MÍNIMO',
-  ]), '');
+  ]);
 
   const advalorem = numero(valorPorAlias(mapa, [
     'AD Valorem',
