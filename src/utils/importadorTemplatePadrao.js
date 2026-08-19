@@ -89,8 +89,50 @@ function limparTexto(valor) {
   return String(valor ?? '').trim();
 }
 
+const PREFIXO_BRUTO = '__BRUTO__';
+
+const ALIASES_PESO_INICIAL = [
+  'Peso Inicial',
+  'Peso Min',
+  'Peso Mínimo',
+  'Peso Minimo',
+  'Peso De',
+  'De',
+  'Kg Inicial',
+];
+
+const ALIASES_PESO_FINAL = [
+    'Peso Final',
+    'Peso Max',
+    'Peso Máximo',
+    'Peso Maximo',
+    'Peso Limite',
+    'PESO LIMITE',
+    'Peso Até',
+    'Peso Ate',
+    'Até',
+    'Ate',
+    'Kg Final',
+  ];
+
+
 // Parser movido para ./parseNumeroPlanilha.js (modulo proprio testavel).
 const numero = parseNumeroPlanilha;
+
+// Peso vindo como TEXTO da planilha. Diferente de valores em R$, aqui a
+// vírgula sozinha é sempre decimal ("1,999" = 1,999 kg, faixa 0 a 1,999),
+// nunca separador de milhar americano — senão a faixa vira 0 a 1999 kg e
+// desalinha todo o cálculo.
+function numeroPeso(valor, padrao = '') {
+  if (typeof valor === 'number') return numero(valor, padrao);
+  const texto = String(valor ?? '').trim();
+  if (!texto) return padrao;
+  if (texto.includes(',') && !texto.includes('.')) {
+    const n = Number(texto.replace(/[^0-9,-]/g, '').replace(',', '.'));
+    return Number.isFinite(n) ? n : padrao;
+  }
+  return numero(texto, padrao);
+}
 
 // Detecta se uma faixa de peso é do tipo "excedente" (acima de X kg).
 // Usada para separar corretamente excesso_kg (limiar) de valor_excedente (R$/kg).
@@ -109,6 +151,19 @@ function criarMapaLinha(linha) {
   });
 
   return mapa;
+}
+
+// Le o valor NUMERICO bruto da celula (quando existe) para o alias informado.
+// Retorna null quando a coluna veio como texto.
+function valorBrutoPorAlias(mapa, aliases) {
+  for (const alias of aliases) {
+    const chave = `${PREFIXO_BRUTO}${normalizarTexto(alias)}`;
+    if (mapa.has(chave)) {
+      const valor = mapa.get(chave);
+      if (typeof valor === 'number' && Number.isFinite(valor)) return valor;
+    }
+  }
+  return null;
 }
 
 function valorPorAlias(mapa, aliases, padrao = '') {
@@ -172,6 +227,16 @@ function sheetParaLinhas(sheet) {
     raw: false,
   });
 
+  // Mesma grade, porem com os valores BRUTOS da celula. Quando a celula e
+  // numerica de verdade usamos esse valor: o texto formatado (raw:false) e
+  // ambiguo para pesos como "1,999" (decimal BR) x "1,999" (milhar US), e a
+  // heuristica do parser de texto lia 1999 no lugar de 1,999.
+  const aoaBruto = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: '',
+    raw: true,
+  });
+
   let headerIndex = 0;
   for (let i = 0; i < Math.min(aoa.length, 30); i += 1) {
     if (linhaTemCabecalhoVerum(aoa[i] || [])) {
@@ -186,11 +251,19 @@ function sheetParaLinhas(sheet) {
   });
 
   return aoa.slice(headerIndex + 1)
-    .filter((row) => !row.every((cell) => limparTexto(cell) === ''))
-    .map((row) => {
+    .map((row, indice) => ({ row, bruto: aoaBruto[headerIndex + 1 + indice] || [] }))
+    .filter(({ row }) => !row.every((cell) => limparTexto(cell) === ''))
+    .map(({ row, bruto }) => {
       const item = {};
       headers.forEach((header, index) => {
         item[header] = row[index] ?? '';
+        // Guarda o valor bruto em paralelo (nao substitui o formatado: colunas
+        // de % chegam como 0.05 no bruto e "5%" no texto). So os campos de peso
+        // consultam esse espelho, via valorBrutoPorAlias.
+        const valorBruto = bruto[index];
+        if (typeof valorBruto === 'number' && Number.isFinite(valorBruto)) {
+          item[`${PREFIXO_BRUTO}${header}`] = valorBruto;
+        }
       });
       return item;
     });
@@ -406,29 +479,11 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     'Descricao Faixa',
   ]));
 
-  const pesoInicial = numero(valorPorAlias(mapa, [
-    'Peso Inicial',
-    'Peso Min',
-    'Peso Mínimo',
-    'Peso Minimo',
-    'Peso De',
-    'De',
-    'Kg Inicial',
-  ]), '');
+  const pesoInicial = valorBrutoPorAlias(mapa, ALIASES_PESO_INICIAL)
+    ?? numeroPeso(valorPorAlias(mapa, ALIASES_PESO_INICIAL), '');
 
-  const pesoFinal = numero(valorPorAlias(mapa, [
-    'Peso Final',
-    'Peso Max',
-    'Peso Máximo',
-    'Peso Maximo',
-    'Peso Limite',
-    'PESO LIMITE',
-    'Peso Até',
-    'Peso Ate',
-    'Até',
-    'Ate',
-    'Kg Final',
-  ]), '');
+  const pesoFinal = valorBrutoPorAlias(mapa, ALIASES_PESO_FINAL)
+    ?? numeroPeso(valorPorAlias(mapa, ALIASES_PESO_FINAL), '');
 
   const taxaAplicada = numero(valorPorAlias(mapa, [
     'Taxa Aplicada',
