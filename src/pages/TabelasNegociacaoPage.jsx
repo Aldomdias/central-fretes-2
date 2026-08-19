@@ -16,6 +16,7 @@ import {
   DEFAULT_GENERALIDADES,
   alternarTabelaNegociacaoNaSimulacao,
   abrirNovaRodadaTabelaNegociacao,
+  abrirRevisaoNegociacaoPublicada,
   aprovarTabelaNegociacao,
   atualizarTabelaNegociacao,
   criarTabelaNegociacao,
@@ -201,6 +202,20 @@ function getRodadaAtualTabela(tabela) {
   var resumo = getResumoTabela(tabela);
   var hist = getHistoricoRodadasTabela(tabela);
   return Number(resumo.rodada_atual || (hist.length ? hist[hist.length - 1].rodada : 1) || 1);
+}
+function negociacaoPublicada(tabela) {
+  return String((tabela || {}).status_gestao || '').toUpperCase() === 'PUBLICADA_OFICIAL';
+}
+// O vinculo mora nas colunas revisao_* e, enquanto a migration nao roda,
+// tambem em resumo_simulacao.revisao — por isso as duas leituras.
+function getVinculoRevisao(tabela) {
+  var resumo = getResumoTabela(tabela);
+  var doJson = resumo.revisao || {};
+  return {
+    revisaoDeId: (tabela || {}).revisao_de_id || doJson.revisao_de_id || '',
+    revisaoNumero: Number((tabela || {}).revisao_numero || doJson.revisao_numero || 0),
+    revisaoAbertaId: (tabela || {}).revisao_aberta_id || doJson.revisao_aberta_id || '',
+  };
 }
 function getIndicadoresTabela(tabela) {
   var resumo = getResumoTabela(tabela);
@@ -1012,6 +1027,7 @@ export default function TabelasNegociacaoPage() {
   const [modalNovaOrigem, setModalNovaOrigem] = useState(null);
   const [novaOrigem, setNovaOrigem] = useState(Object.assign({}, NOVA_ORIGEM_VAZIA));
   const [abrindoRodada, setAbrindoRodada] = useState(false);
+  const [abrindoRevisao, setAbrindoRevisao] = useState(false);
   const [laudoSalvoAberto, setLaudoSalvoAberto] = useState(null);
   const [tipoLaudoRodadas, setTipoLaudoRodadas] = useState('transportador');
   const [tipoLaudoConsolidado, setTipoLaudoConsolidado] = useState(LAUDO_AUDIENCE.TRANSPORTADORA);
@@ -2531,6 +2547,53 @@ export default function TabelasNegociacaoPage() {
     return handleAbrirNovaRodadaTabela(selecionada);
   }
 
+  // Tabela ja publicada nao usa "+ Nova rodada": reabrir a propria negociacao
+  // a tiraria do ar (status volta pra EM NEGOCIACAO e ela some do painel de
+  // savings) e, ao aprovar, sobrescreveria a origem sem deixar o periodo
+  // anterior fechado. A revisao nasce como negociacao nova, ligada a publicada.
+  async function handleAbrirRevisaoPublicada(tabelaBase) {
+    var tabela = tabelaBase || selecionada;
+    if (!tabela) return;
+
+    var origem = origemTabelaLabel(tabela);
+    // Sem origem definida na negociacao, a copia da base oficial nao tem como
+    // recortar e traz TODAS as origens da transportadora — avisa antes.
+    var semOrigem = !String(tabela.origem || '').trim();
+    var ok = window.confirm(
+      'Abrir uma REVISÃO da tabela publicada de ' + tabela.transportadora + (origem && origem !== '-' ? ' · ' + origem : '') + '?'
+      + '\n\nA tabela vigente NÃO é alterada: ela continua publicada e o saving dela continua contando.'
+      + '\nA revisão entra como uma negociação nova, já com a tabela oficial vigente copiada para a rodada 1.'
+      + (semOrigem ? '\n\nATENÇÃO: esta negociação não tem origem definida, então a revisão vai copiar TODAS as origens da transportadora.' : '')
+    );
+    if (!ok) return;
+
+    setAbrindoRevisao(true); setErro(''); setSucesso('');
+    try {
+      var res = await abrirRevisaoNegociacaoPublicada(tabela.id, {
+        usuario: sessao,
+      });
+
+      if (res.ja_existe) {
+        var jaAberta = tabelas.filter(function(i) { return i.id === res.revisao_id; })[0];
+        setErro('Esta tabela já tem uma revisão em andamento' + (jaAberta ? ' (' + (jaAberta.descricao || jaAberta.transportadora) + ')' : '') + '. Continue nela em vez de abrir outra.');
+        if (jaAberta) await abrirTabela(jaAberta, { telaNegociacao: true });
+        return;
+      }
+
+      setTabelas(function(p) {
+        var semOriginal = p.map(function(i) { return i.id === res.original.id ? res.original : i; });
+        return [res.revisao].concat(semOriginal);
+      });
+      await abrirTabela(res.revisao, { telaNegociacao: telaAtiva === 'negociacao', sincronizarUrl: telaAtiva === 'negociacao' });
+      setAbaNegoc('importacao');
+      setSucesso(
+        'Revisão ' + res.numero_revisao + ' aberta para ' + res.revisao.transportadora + '. A tabela publicada continua vigente.'
+        + (res.aviso_importacao ? ' Atenção: ' + res.aviso_importacao : ' A tabela oficial vigente foi copiada para a rodada 1.')
+      );
+    } catch (e) { setErro(e.message || 'Erro ao abrir a revisão da tabela publicada.'); }
+    finally { setAbrindoRevisao(false); }
+  }
+
   async function abrirModalAprovacao(tabela) {
     setModalAprovacao(tabela);
     const cnpjSalvo = normalizarCnpj(tabela?.cnpj_transportadora);
@@ -3080,6 +3143,38 @@ export default function TabelasNegociacaoPage() {
               </h2>
               <p>{selecionada.tipo_tabela} · {selecionada.canal} · {selecionada.status} · Rodada {getRodadaAtualTabela(selecionada)}ª</p>
               <p style={{ marginTop: 4, color: '#475569' }}>{origemTabelaLabel(selecionada)}{selecionada.descricao ? ' · ' + selecionada.descricao : ''}</p>
+              {(function() {
+                var vinc = getVinculoRevisao(selecionada);
+                if (vinc.revisaoDeId) {
+                  var origemRev = tabelas.filter(function(i) { return i.id === vinc.revisaoDeId; })[0];
+                  return (
+                    <p style={{ marginTop: 6, fontSize: 12, color: '#0369a1', background: '#e0f2fe', border: '1px solid #7dd3fc', borderRadius: 6, padding: '6px 10px', display: 'inline-block' }}>
+                      <strong>Revisão{vinc.revisaoNumero ? ' ' + vinc.revisaoNumero : ''}</strong>
+                      {' · a tabela publicada continua vigente até esta revisão ser aprovada.'}
+                      {origemRev ? (
+                        <button type="button" className="link-button" style={{ marginLeft: 8 }} onClick={function() { abrirTabela(origemRev, { telaNegociacao: true }); }}>
+                          Ver a publicada
+                        </button>
+                      ) : null}
+                    </p>
+                  );
+                }
+                if (vinc.revisaoAbertaId) {
+                  var revAberta = tabelas.filter(function(i) { return i.id === vinc.revisaoAbertaId; })[0];
+                  return (
+                    <p style={{ marginTop: 6, fontSize: 12, color: '#92400e', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 6, padding: '6px 10px', display: 'inline-block' }}>
+                      <strong>Em revisão</strong>
+                      {' · esta tabela está publicada e vigente; a renegociação corre em outra negociação.'}
+                      {revAberta ? (
+                        <button type="button" className="link-button" style={{ marginLeft: 8 }} onClick={function() { abrirTabela(revAberta, { telaNegociacao: true }); }}>
+                          Ir para a revisão
+                        </button>
+                      ) : null}
+                    </p>
+                  );
+                }
+                return null;
+              })()}
               {selecionada ? (function() {
                 var estSim = getEstadoSimulacaoNegociacao(selecionada);
                 return (
@@ -3098,7 +3193,13 @@ export default function TabelasNegociacaoPage() {
                     <button className={estSim.disponivel ? 'sim-tab' : 'primary'} type="button" onClick={function() { gerenciarSimulacaoLista(selecionada); }}>
                       {estSim.rotuloAcao}
                     </button>
-                    <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? 'Abrindo...' : '+ Nova rodada'}</button>
+                    {negociacaoPublicada(selecionada) ? (
+                      <button className="primary" type="button" onClick={function() { handleAbrirRevisaoPublicada(selecionada); }} disabled={abrindoRevisao}>
+                        {abrindoRevisao ? 'Abrindo revisão...' : 'Abrir revisão da tabela publicada'}
+                      </button>
+                    ) : (
+                      <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? 'Abrindo...' : '+ Nova rodada'}</button>
+                    )}
                   </>
                 );
               })() : null}

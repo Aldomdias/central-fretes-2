@@ -13,7 +13,7 @@ import {
   listarNegociacoesResumo,
   obterNegociacaoCapa,
 } from './tabelasNegociacaoSnapshotService';
-import { salvarSecaoDb } from './freteDatabaseService';
+import { carregarTransportadoraCompletaDb, salvarSecaoDb } from './freteDatabaseService';
 import {
   converterTabelaNegociacaoParaSimulador,
   converterTransportadoraOficialParaNegociacao,
@@ -613,6 +613,12 @@ const COLUNAS_GESTAO_TABELAS_NEGOCIACAO = [
 const COLUNAS_OPCIONAIS_TABELAS_NEGOCIACAO = [
   'numero_amd',
   'solicitacao_amd_id',
+  // Vinculo de revisao (migration 20260819120000). Enquanto a migration nao
+  // roda, o insert cai no fallback sem essas colunas — por isso o vinculo
+  // tambem e espelhado em resumo_simulacao.revisao, que sempre existe.
+  'revisao_de_id',
+  'revisao_numero',
+  'revisao_aberta_id',
 ];
 
 function erroColunaGestaoAusente(error) {
@@ -802,6 +808,8 @@ export async function criarTabelaNegociacao(payload = {}) {
     negociador_nome: texto(payload.negociador_nome || payload.usuario?.nome || payload.usuario_nome),
     status_gestao: payload.status_gestao || 'EM_NEGOCIACAO',
     status_aprovacao: 'PENDENTE',
+    revisao_de_id: texto(payload.revisao_de_id || payload.revisaoDeId) || null,
+    revisao_numero: payload.revisao_numero !== undefined ? inteiro(payload.revisao_numero) : null,
     historico_gestao: [{
       id: `CRIACAO-${Date.now()}`,
       tipo: 'CRIACAO',
@@ -878,6 +886,9 @@ export async function atualizarTabelaNegociacao(id, payload = {}) {
     usuario_aprovacao:         payload.usuario_aprovacao !== undefined ? texto(payload.usuario_aprovacao) : undefined,
     observacao_aprovacao:      payload.observacao_aprovacao !== undefined ? texto(payload.observacao_aprovacao) : undefined,
     tabela_anterior_id:        payload.tabela_anterior_id !== undefined ? texto(payload.tabela_anterior_id) : undefined,
+    revisao_de_id:             payload.revisao_de_id !== undefined ? texto(payload.revisao_de_id) || null : undefined,
+    revisao_numero:            payload.revisao_numero !== undefined ? inteiro(payload.revisao_numero) : undefined,
+    revisao_aberta_id:         payload.revisao_aberta_id !== undefined ? texto(payload.revisao_aberta_id) || null : undefined,
     percentual_medio_impacto:  payload.percentual_medio_impacto !== undefined ? numero(payload.percentual_medio_impacto) : undefined,
     origem_importacao:         payload.origem_importacao !== undefined ? texto(payload.origem_importacao) : undefined,
     generalidades:             payload.generalidades !== undefined ? payload.generalidades : undefined,
@@ -1261,6 +1272,132 @@ export async function listarNegociacoesDaTransportadora({ transportadora, canal,
     abertas: lista.filter((tabela) => !negociacaoEncerrada(tabela)),
     encerradas: lista.filter(negociacaoEncerrada),
     total: lista.length,
+  };
+}
+
+// Revisão de uma tabela JÁ PUBLICADA (ex.: transportadora que já está
+// carregando e quer rever preço pra ganhar volume).
+//
+// Diferente de "+ Nova rodada", que reabre a própria negociação e a tira do
+// ar (o status volta pra EM NEGOCIAÇÃO e ela some do painel de savings), aqui
+// nasce uma negociação NOVA ligada à publicada:
+//   - a publicada continua PUBLICADA_OFICIAL, vigente e com o saving correndo;
+//   - a revisão entra no pipeline como qualquer outra negociação;
+//   - se a revisão for recusada, nada precisa ser desfeito.
+//
+// A tabela da revisão vem da BASE OFICIAL, não da negociação publicada: ao
+// publicar, os itens da negociação são apagados (ver
+// limparDadosOperacionaisNegociacaoPublicada), então a base oficial é a única
+// fonte da tabela que está valendo hoje.
+export async function abrirRevisaoNegociacaoPublicada(id, dados = {}) {
+  const original = await obterTabelaNegociacao(id, { completo: true });
+  if (!original) throw new Error('Negociação não encontrada.');
+
+  if (normalizarStatusGestao(original) !== 'PUBLICADA_OFICIAL') {
+    throw new Error('Só dá para abrir revisão de uma negociação já publicada na base oficial. Para uma nova proposta da negociação em andamento, use "+ Nova rodada".');
+  }
+
+  const revisaoEmAndamento = texto(original.revisao_aberta_id)
+    || texto(getResumoSimulacaoSeguro(original).revisao?.revisao_aberta_id);
+  if (revisaoEmAndamento && !dados.forcar) {
+    return { ja_existe: true, revisao_id: revisaoEmAndamento };
+  }
+
+  const transportadora = texto(original.transportadora);
+  const canal = texto(original.canal);
+  const origem = texto(original.origem);
+
+  const existentes = await listarNegociacoesDaTransportadora({ transportadora, canal, origem });
+  const numeroRevisao = (existentes.total || 0) + 1;
+
+  const oficial = await carregarTransportadoraCompletaDb(
+    texto(original.transportadora_base_id) || texto(original.transportadora_id),
+    transportadora
+  );
+  if (!oficial) {
+    throw new Error(`Não encontrei ${transportadora || 'a transportadora'} na base oficial para copiar a tabela vigente.`);
+  }
+
+  const agora = dataISO();
+  const vinculoRevisao = {
+    revisao_de_id: original.id,
+    revisao_numero: numeroRevisao,
+    aberta_em: agora,
+    transportadora,
+    origem,
+    canal,
+    publicado_em_original: original.publicado_em || null,
+  };
+
+  const nova = await criarTabelaNegociacao({
+    transportadora,
+    cnpj_transportadora: original.cnpj_transportadora || '',
+    canal,
+    tipo_tabela: original.tipo_tabela,
+    tipo_negociacao: 'REAJUSTE_TABELA_EXISTENTE',
+    transportadora_base_id: texto(original.transportadora_base_id) || texto(oficial.id),
+    transportadora_base_nome: transportadora,
+    tabela_base_id: texto(original.tabela_base_id) || texto(oficial.id),
+    modalidade: 'REVISAO_TABELA_PUBLICADA',
+    comparar_com_proprio_realizado: true,
+    origem,
+    uf_origem: original.uf_origem || '',
+    uf_destino: original.uf_destino || '',
+    regiao: original.regiao || '',
+    tipo_veiculo: original.tipo_veiculo || '',
+    numero_amd: original.numero_amd || '',
+    descricao: `Revisão da tabela publicada${origem ? ` · ${origem}` : ''} (revisão ${numeroRevisao}).`,
+    observacao: texto(dados.observacao)
+      || `Revisão aberta a partir da negociação publicada em ${(original.publicado_em || '').slice(0, 10) || 'data não informada'}. A tabela vigente continua valendo até a revisão ser aprovada.`,
+    origem_importacao: 'REVISAO_TABELA_PUBLICADA',
+    incluir_simulacao: true,
+    revisao_de_id: original.id,
+    revisao_numero: numeroRevisao,
+    usuario: dados.usuario,
+    criado_por: dados.usuario?.id,
+    criado_por_nome: dados.usuario?.nome,
+  });
+
+  // Espelho no JSON: se a migration das colunas de revisão ainda não rodou, o
+  // insert cai no fallback que descarta essas colunas e o vínculo se perderia.
+  const resumoNova = getResumoSimulacaoSeguro(nova);
+  await atualizarTabelaNegociacao(nova.id, {
+    resumo_simulacao: { ...resumoNova, revisao: vinculoRevisao },
+  });
+
+  let resumoImportacao = null;
+  let avisoImportacao = '';
+  try {
+    resumoImportacao = await importarTabelaOficialParaNegociacao(nova, oficial, {
+      canal,
+      origem,
+      observacao: 'Tabela oficial vigente copiada ao abrir a revisão',
+      onProgress: dados.onProgress,
+    });
+  } catch (error) {
+    avisoImportacao = error.message || 'Não foi possível copiar a tabela oficial vigente para a revisão.';
+  }
+
+  const resumoOriginal = getResumoSimulacaoSeguro(original);
+  const atualizada = await atualizarTabelaNegociacao(original.id, {
+    revisao_aberta_id: nova.id,
+    resumo_simulacao: {
+      ...resumoOriginal,
+      revisao: {
+        ...(resumoOriginal.revisao || {}),
+        revisao_aberta_id: nova.id,
+        revisao_numero: numeroRevisao,
+        revisao_aberta_em: agora,
+      },
+    },
+  });
+
+  return {
+    revisao: { ...nova, revisao_de_id: original.id, revisao_numero: numeroRevisao },
+    original: atualizada,
+    numero_revisao: numeroRevisao,
+    resumo_importacao: resumoImportacao,
+    aviso_importacao: avisoImportacao,
   };
 }
 
