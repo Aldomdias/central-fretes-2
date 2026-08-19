@@ -219,8 +219,6 @@ export function montarDadosAjusteRotaFaixa(resultado = {}) {
       freteRealizado,
       freteTabela,
       freteTabelaGanharia,
-      valorNFGanharia: Number(rota.valorNFGanharia || 0),
-      freteRealizadoGanharia: Number(rota.freteRealizadoGanharia || 0),
       freteRealizadoPerderia: Number(rota.freteRealizadoPerderia || (detalheCompletoDaRota ? freteRealizadoPerderiaDetalhado : 0) || 0),
       pctRealizado: Number(rota.percentualFreteRealizado || 0),
       pctTabelaFinal: valorNF > 0 ? (freteTabela / valorNF) * 100 : Number(rota.percentualFreteSelecionada || 0),
@@ -245,15 +243,13 @@ export function montarDadosAjusteRotaFaixa(resultado = {}) {
     acc.freteRealizado += item.freteRealizado;
     acc.freteTabela += item.freteTabela;
     acc.freteTabelaGanharia += item.freteTabelaGanharia;
-    acc.valorNFGanharia += Number(item.valorNFGanharia || 0);
-    acc.freteRealizadoGanharia += Number(item.freteRealizadoGanharia || 0);
     acc.freteRealizadoPerderia += item.freteRealizadoPerderia;
     acc.peso += item.peso;
     acc.volumes += item.volumes;
     acc.volumesGanharia += item.volumesGanharia;
     acc.pesoGanharia += item.pesoGanharia;
     return acc;
-  }, { ctes: 0, ctesSemCalculo: 0, ctesGanharia: 0, ctesPerderia: 0, valorNF: 0, freteRealizado: 0, freteTabela: 0, freteTabelaGanharia: 0, valorNFGanharia: 0, freteRealizadoGanharia: 0, freteRealizadoPerderia: 0, peso: 0, volumes: 0, volumesGanharia: 0, pesoGanharia: 0 });
+  }, { ctes: 0, ctesSemCalculo: 0, ctesGanharia: 0, ctesPerderia: 0, valorNF: 0, freteRealizado: 0, freteTabela: 0, freteTabelaGanharia: 0, freteRealizadoPerderia: 0, peso: 0, volumes: 0, volumesGanharia: 0, pesoGanharia: 0 });
 
   const ctesResultado = Number(r.ctesAnalisados || 0);
   const ctesForaAgrupamento = Math.max(0, ctesResultado - totais.ctes);
@@ -269,8 +265,6 @@ export function montarDadosAjusteRotaFaixa(resultado = {}) {
       freteRealizado: Math.max(0, Number(r.freteRealizado || 0) - totais.freteRealizado),
       freteTabela: Math.max(0, Number(r.freteSelecionada || 0) - totais.freteTabela),
       freteTabelaGanharia: Math.max(0, Number(r.freteSelecionadaGanhadora || 0) - totais.freteTabelaGanharia),
-      valorNFGanharia: Math.max(0, Number(r.valorNFGanhariaSelecionada || 0) - totais.valorNFGanharia),
-      freteRealizadoGanharia: Math.max(0, Number(r.freteRealizadoGanhariaSelecionada || 0) - totais.freteRealizadoGanharia),
       freteRealizadoPerderia: 0,
       pctRealizado: 0,
       pctTabelaFinal: 0,
@@ -302,8 +296,6 @@ export function montarDadosAjusteRotaFaixa(resultado = {}) {
     totais.freteRealizado += linhaSemRota.freteRealizado;
     totais.freteTabela += linhaSemRota.freteTabela;
     totais.freteTabelaGanharia += linhaSemRota.freteTabelaGanharia;
-    totais.valorNFGanharia += linhaSemRota.valorNFGanharia;
-    totais.freteRealizadoGanharia += linhaSemRota.freteRealizadoGanharia;
     totais.freteRealizadoPerderia += linhaSemRota.freteRealizadoPerderia;
     totais.peso += linhaSemRota.peso;
     totais.volumes += linhaSemRota.volumes;
@@ -321,8 +313,6 @@ export function montarDadosAjusteRotaFaixa(resultado = {}) {
   if (r.freteSelecionada !== undefined) totais.freteTabela = Number(r.freteSelecionada || 0);
   if (r.valorNFComTabelaSelecionada !== undefined) totais.valorNF = Number(r.valorNFComTabelaSelecionada || 0);
   if (r.freteSelecionadaGanhadora !== undefined) totais.freteTabelaGanharia = Number(r.freteSelecionadaGanhadora || 0);
-  if (r.valorNFGanhariaSelecionada !== undefined) totais.valorNFGanharia = Number(r.valorNFGanhariaSelecionada || 0);
-  if (r.freteRealizadoGanhariaSelecionada !== undefined) totais.freteRealizadoGanharia = Number(r.freteRealizadoGanhariaSelecionada || 0);
   if (r.freteRealizadoComTabelaSelecionada !== undefined || r.freteRealizadoGanhariaSelecionada !== undefined) {
     totais.freteRealizadoPerderia = Math.max(0, Number(r.freteRealizadoComTabelaSelecionada || 0) - Number(r.freteRealizadoGanhariaSelecionada || 0));
   }
@@ -336,14 +326,6 @@ export function montarDadosAjusteRotaFaixa(resultado = {}) {
   const pctTabelaTotal = r.percentualFreteSelecionadaComTabela !== undefined
     ? Number(r.percentualFreteSelecionadaComTabela || 0)
     : (totais.valorNF > 0 ? (totais.freteTabela / totais.valorNF) * 100 : 0);
-  // % da tabela apenas nos CT-es em que ela ganharia — o total sobre toda a
-  // base calculavel ficava distorcido por rotas fora de escala.
-  const pctTabelaGanhasTotal = r.percentualFreteTabelaGanharia !== undefined
-    ? Number(r.percentualFreteTabelaGanharia || 0)
-    : (totais.valorNFGanharia > 0 ? (totais.freteTabelaGanharia / totais.valorNFGanharia) * 100 : 0);
-  const pctRealizadoGanhasTotal = r.percentualFreteRealizadoGanharia !== undefined
-    ? Number(r.percentualFreteRealizadoGanharia || 0)
-    : (totais.valorNFGanharia > 0 ? (totais.freteRealizadoGanharia / totais.valorNFGanharia) * 100 : 0);
   const ctesComCalculoTotal = Number(r.ctesComTabelaSelecionada || Math.max(0, totais.ctes - totais.ctesSemCalculo));
   const linhasAtendidas = linhas.filter((linha) => {
     const ctesComResultadoTabela = Number(linha.ctesGanharia || 0) + Number(linha.ctesPerderia || 0);
@@ -381,7 +363,7 @@ export function montarDadosAjusteRotaFaixa(resultado = {}) {
   return {
     linhas, linhasAtendidas, totais, transportadora, periodo,
     nomeTabelaLaudo, rotuloTabelaLaudo,
-    pctRealizadoTotal, pctRealizadoGanhasTotal, pctTabelaTotal, pctTabelaGanhasTotal, aderenciaTotal, reduzirTotal,
+    pctRealizadoTotal, pctTabelaTotal, aderenciaTotal, reduzirTotal,
     dias, meses, ctesComCalculoTotal, volumesAtendidosPorDia, volumesGanhariaPorDia, pedidosAtendidosTotal,
     savingPeriodo, savingMensal, savingAnual,
   };
@@ -458,7 +440,7 @@ export function gerarHtmlAjusteRotaFaixa(resultado = {}, { incluirSavingGerencia
   const {
     linhasAtendidas, totais, transportadora, periodo,
     rotuloTabelaLaudo,
-    pctRealizadoTotal, pctRealizadoGanhasTotal, pctTabelaTotal, pctTabelaGanhasTotal, aderenciaTotal, reduzirTotal,
+    pctRealizadoTotal, pctTabelaTotal, aderenciaTotal, reduzirTotal,
     ctesComCalculoTotal, volumesAtendidosPorDia, volumesGanhariaPorDia, pedidosAtendidosTotal,
     savingPeriodo, savingMensal, savingAnual,
   } = montarDadosAjusteRotaFaixa(r);
@@ -513,13 +495,14 @@ export function gerarHtmlAjusteRotaFaixa(resultado = {}, { incluirSavingGerencia
       <div class="card"><span>Perderia</span><strong>${formatNumberBR(totais.ctesPerderia, 0)}</strong></div>
       <div class="card"><span>Aderencia da tabela</span><strong>${formatPercent(aderenciaTotal)}</strong></div>
       <div class="card"><span>Faturamento atual</span><strong>${formatMoney(totais.freteRealizado)}</strong></div>
+      <div class="card rpa-cell"><span>Faturamento ${esc(rotuloTabelaLaudo)}</span><strong>${formatMoney(totais.freteTabela)}</strong></div>
       <div class="card"><span>Faturamento ${esc(rotuloTabelaLaudo)} nas ganhas</span><strong>${formatMoney(totais.freteTabelaGanharia)}</strong></div>
       ${incluirSavingGerencial ? `
       <div class="card"><span>Saving no periodo</span><strong>${formatMoney(savingPeriodo)}</strong></div>
       <div class="card"><span>Saving mensal</span><strong>${formatMoney(savingMensal)}</strong></div>
       <div class="card"><span>Saving anual</span><strong>${formatMoney(savingAnual)}</strong></div>` : ''}
-      <div class="card"><span>% realizado medio nas ganhas</span><strong>${formatPercent(pctRealizadoGanhasTotal)}</strong></div>
-      <div class="card rpa-cell"><span>% ${esc(rotuloTabelaLaudo)} nas ganhas</span><strong>${formatPercent(pctTabelaGanhasTotal)}</strong></div>
+      <div class="card"><span>% realizado medio</span><strong>${formatPercent(pctRealizadoTotal)}</strong></div>
+      <div class="card"><span>% ${esc(rotuloTabelaLaudo)}</span><strong>${formatPercent(pctTabelaTotal)}</strong></div>
       <div class="card"><span>Reducao media sugerida</span><strong>${formatPercent(reduzirTotal)}</strong></div>
       <div class="card"><span>Perdendo p/ outras transportadoras</span><strong>${formatMoney(totais.freteRealizadoPerderia)}</strong></div>
       <div class="card"><span>Volumes/dia (base atendida)</span><strong>${formatNumberBR(volumesAtendidosPorDia, 1)}</strong></div>
@@ -530,11 +513,10 @@ export function gerarHtmlAjusteRotaFaixa(resultado = {}, { incluirSavingGerencia
       <strong>Como ler os cards:</strong> Os valores financeiros e percentuais consideram apenas os CT-es em rotas/faixas atendidas pela ${esc(rotuloTabelaLaudo)}.
       "Fora da tabela" mostra o volume do recorte que ficou sem cobertura e nao entra no faturamento, aderencia, percentuais ou reducao sugerida.
       Aderencia da tabela = dos CT-es com calculo, % em que a ${esc(rotuloTabelaLaudo)} ganharia do frete realizado (mesma logica da Aderencia de cada rota).
-      Faturamento atual = soma do frete cobrado apenas nos CT-es onde a ${esc(rotuloTabelaLaudo)} encontrou cobertura.
+      Faturamento atual = soma do frete cobrado apenas nos CT-es onde a ${esc(rotuloTabelaLaudo)} encontrou cobertura. Faturamento ${esc(rotuloTabelaLaudo)} = soma da tabela simulada nessa mesma base calculavel.
       Faturamento ${esc(rotuloTabelaLaudo)} nas ganhas = apenas o recorte em que a tabela ficaria competitiva contra o frete atual.
       ${incluirSavingGerencial ? 'Saving = economia nas rotas ganhas, projetada pelo periodo, por mes e em 12 meses.' : ''}
-      % realizado medio nas ganhas = frete cobrado / valor NF apenas nos CT-es em que a ${esc(rotuloTabelaLaudo)} ganharia — o mesmo recorte do % da tabela, para comparacao direta.
-      % ${esc(rotuloTabelaLaudo)} nas ganhas = tabela simulada / valor NF apenas nos CT-es em que ela ganharia — o percentual que ela praticaria de fato.
+      % realizado medio e % ${esc(rotuloTabelaLaudo)} = frete cobrado / tabela simulada sobre o valor NF total, na mesma base.
       Reducao media sugerida = quanto a ${esc(rotuloTabelaLaudo)} precisaria cair, em media, nas rotas onde ela ficou mais cara que o realizado.
       Perdendo = frete realizado nas rotas em que ela perderia para outra transportadora.
       "Volumes/dia (base atendida)" e o volume das rotas/faixas atendidas dividido pelos dias; "Volumes/dia (rotas ganhas)" e so o volume dos CT-es onde a ${esc(rotuloTabelaLaudo)} ganharia — a projecao real de quanto ela carregaria por dia.
@@ -585,6 +567,7 @@ export function gerarWorkbookAjusteRotaFaixa(resultado = {}, { incluirSavingGere
     ['Ganharia', totais.ctesGanharia],
     ['Perderia', totais.ctesPerderia],
     ['Faturamento atual', Number(totais.freteRealizado.toFixed(2))],
+    [`Faturamento ${rotuloTabelaLaudo}`, Number(totais.freteTabela.toFixed(2))],
     [`Faturamento ${rotuloTabelaLaudo} nas ganhas`, Number(totais.freteTabelaGanharia.toFixed(2))],
     ...(incluirSavingGerencial ? [
       ['Saving no periodo', Number(savingPeriodo.toFixed(2))],
@@ -592,8 +575,8 @@ export function gerarWorkbookAjusteRotaFaixa(resultado = {}, { incluirSavingGere
       ['Saving anual', Number(savingAnual.toFixed(2))],
     ] : []),
     ['Aderencia da tabela (%)', Number(aderenciaTotal.toFixed(2))],
-    ['% realizado medio nas ganhas', Number(pctRealizadoGanhasTotal.toFixed(2))],
-    [`% ${rotuloTabelaLaudo} nas ganhas`, Number(pctTabelaGanhasTotal.toFixed(2))],
+    ['% realizado medio', Number(pctRealizadoTotal.toFixed(2))],
+    [`% ${rotuloTabelaLaudo}`, Number(pctTabelaTotal.toFixed(2))],
     ['Reducao media sugerida (%)', Number(reduzirTotal.toFixed(2))],
     ['Perdendo para outras transportadoras', Number(totais.freteRealizadoPerderia.toFixed(2))],
     ['Volumes/dia (base atendida)', Number(volumesAtendidosPorDia.toFixed(2))],
