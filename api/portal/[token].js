@@ -21,10 +21,19 @@ const RESULTADOS_VALIDOS = new Set([
 ]);
 
 const RESULTADO_LABEL = {
-  concordou_desconto: 'Concordo — conceder desconto na fatura',
+  concordou_desconto: 'Concordo — conceder desconto na próxima fatura',
   concordou_cancelamento: 'Concordo — cancelar e reemitir o CT-e',
   nao_concordou: 'Não concordo com a divergência',
   em_analise: 'Ainda em análise',
+};
+
+// O que acontece depois de cada escolha — a transportadora precisa saber que
+// "desconto na fatura" não encerra o assunto agora: fica aguardando a fatura.
+const RESULTADO_EFEITO = {
+  concordou_desconto: 'O CT-e fica <strong>aguardando a fatura</strong>. Quando ela chegar, conferimos se o desconto combinado foi aplicado — só então o caso é encerrado.',
+  concordou_cancelamento: 'Aguardamos o cancelamento e o número do <strong>CT-e substituto</strong> para dar baixa.',
+  nao_concordou: 'O caso segue <strong>em tratativa</strong> e nossa equipe entra em contato com a sua justificativa em mãos.',
+  em_analise: 'O CT-e continua <strong>pendente</strong> e voltaremos a cobrar o retorno.',
 };
 
 function getClient() {
@@ -116,8 +125,13 @@ export function paginaPortal({ tokenRow, processo, ctes, respostas, enviado }) {
     </tr>`;
   }).join('');
 
+  const houveDesconto = (respostas || []).some((r) => r.resultado === 'concordou_desconto');
   const aviso = enviado
-    ? `<div class="ok">✅ Resposta recebida com sucesso. O time de auditoria vai conferir e dar sequência. Você pode fechar esta página — ou revisar e reenviar, se precisar corrigir algo.</div>`
+    ? `<div class="ok">✅ Resposta recebida com sucesso. O time de auditoria vai conferir e dar sequência. Você pode fechar esta página — ou revisar e reenviar, se precisar corrigir algo.${
+      houveDesconto
+        ? '<div style="font-weight:400;margin-top:8px">Nos CT-es em que você optou por <b>desconto na fatura</b>, o caso fica aguardando a fatura: vamos conferir a aplicação do desconto quando ela chegar.</div>'
+        : ''
+    }</div>`
     : '';
 
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
@@ -132,6 +146,9 @@ header h1{margin:0 0 6px;font-size:22px}header p{margin:3px 0;color:#cbd5e1;font
 .card{padding:12px;border:1px solid #dbe3ef;border-radius:9px;background:#fff}
 .card small{display:block;color:#64748b;margin-bottom:4px}.card strong{font-size:18px}
 .intro{padding:18px 30px;line-height:1.55}
+.efeitos{margin-top:12px;padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;font-size:13px}
+.efeitos ul{margin:8px 0 0;padding-left:18px}
+.efeitos li{margin-bottom:6px;color:#334155}
 .ok{margin:0 30px 16px;padding:14px;background:#dcfce7;border:1px solid #86efac;border-radius:9px;color:#065f46;font-weight:700}
 .lista{padding:0 30px 24px}
 table{width:100%;border-collapse:collapse;font-size:13px}
@@ -165,6 +182,14 @@ th{display:none}td{border:0;padding:6px 10px}tr{border-bottom:1px solid #e2e8f0;
   <div class="intro">
     <p>Prezados, identificamos as divergências abaixo na auditoria dos CT-es emitidos. Pedimos a conferência de cada documento e o retorno com a tratativa escolhida.</p>
     <p>Sua resposta é registrada no sistema e conferida pelo time de auditoria antes de qualquer ajuste em fatura.</p>
+    <div class="efeitos">
+      <strong>O que acontece depois de cada escolha</strong>
+      <ul>
+        ${Object.entries(RESULTADO_EFEITO).map(([chave, efeito]) => (
+    `<li><b>${esc(RESULTADO_LABEL[chave])}:</b> ${efeito}</li>`
+  )).join('')}
+      </ul>
+    </div>
   </div>
   <form method="POST" class="lista">
     <table>

@@ -19,6 +19,14 @@ const CARDS_CARGA = [
 
 /** Cards do fluxo de tratativa — esses vêm da tabela de jornada. */
 const CARDS_JORNADA = [
+  {
+    chave: 'respostasPortalPendentes',
+    label: 'Respostas do portal a validar',
+    icone: '📥',
+    alerta: true,
+    apenasAviso: true,
+    ajuda: 'A transportadora respondeu pelo link do laudo. Nada muda na jornada até você validar no painel acima.',
+  },
   { chave: 'naoAuditados', label: 'Não auditados', icone: '📄', ajuda: 'CT-es que já entraram na jornada mas seguem sem decisão registrada.' },
   { chave: 'auditadosOk', label: 'Auditados OK', icone: '✅' },
   { chave: 'divergentes', label: 'Divergentes', icone: '❗', ajuda: 'Marcados como divergentes na jornada, aguardando tratativa.' },
@@ -159,7 +167,13 @@ export default function PainelPendenciasJornadaCte({
     return null;
   }
 
-  function clicarCard(chave, lista, label, origem) {
+  function clicarCard(chave, lista, label, origem, apenasAviso) {
+    // Respostas do portal não são um recorte da tabela: elas se resolvem no
+    // painel de validação, então o card só leva o auditor até lá.
+    if (apenasAviso) {
+      document.getElementById('painel-respostas-portal')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
     const desativando = cardAtivo === chave;
     setCardAtivo(desativando ? null : chave);
     // origem 'carga' = CT-es que já estão carregados na tela; a página deve só
@@ -274,8 +288,8 @@ export default function PainelPendenciasJornadaCte({
                   role="button"
                   tabIndex={0}
                   title={card.ajuda || (qtd ? `Ver os ${qtd} CT-e(s) deste grupo no detalhe abaixo` : 'Nenhum CT-e neste grupo')}
-                  onClick={() => qtd && clicarCard(card.chave, card.lista, card.label, card.origem)}
-                  onKeyDown={(e) => { if (qtd && (e.key === 'Enter' || e.key === ' ')) clicarCard(card.chave, card.lista, card.label, card.origem); }}
+                  onClick={() => qtd && clicarCard(card.chave, card.lista, card.label, card.origem, card.apenasAviso)}
+                  onKeyDown={(e) => { if (qtd && (e.key === 'Enter' || e.key === ' ')) clicarCard(card.chave, card.lista, card.label, card.origem, card.apenasAviso); }}
                   style={{
                     padding: '12px 14px',
                     cursor: qtd ? 'pointer' : 'default',

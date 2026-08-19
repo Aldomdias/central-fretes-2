@@ -2280,6 +2280,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
 
       <RespostasPortalPendentes
         competencia={competencia}
+        recarregarChave={jornadaVersao}
         onAplicado={async () => {
           if (!registrosDetalheVisiveis.length) return;
           const mapa = await buscarJornadaPorIdentificadores(

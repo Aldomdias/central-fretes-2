@@ -485,6 +485,20 @@ export async function carregarPainelPendencias({ competencia } = {}) {
   const valorAcordado = linhas.reduce((acc, l) => acc + Number(l.valor_acordado || 0), 0);
   const valorRecuperado = linhas.reduce((acc, l) => acc + Number(l.valor_recuperado || 0), 0);
 
+  // Respostas que chegaram pelo portal e ainda dependem do aval do auditor.
+  // Consulta separada porque não vivem na tabela de jornada — e é aditiva:
+  // se a migration do portal ainda não rodou, o painel segue funcionando.
+  let respostasPortalPendentes = [];
+  try {
+    const { data: respostas } = await client
+      .from('auditoria_cte_portal_respostas')
+      .select('id, chave_cte, numero_cte, transportadora, resultado, respondido_em')
+      .eq('status_validacao', 'PENDENTE');
+    respostasPortalPendentes = respostas || [];
+  } catch (error) {
+    console.warn('[Jornada CT-e] respostas do portal indisponíveis:', error?.message || error);
+  }
+
   // Chaves que já têm uma decisão registrada — o painel usa isso pra saber o
   // que ainda falta auditar entre os CT-es carregados na tela, sem precisar
   // buscar a jornada de milhares de chaves uma a uma.
@@ -502,6 +516,7 @@ export async function carregarPainelPendencias({ competencia } = {}) {
     auditadosSemFatura,
     descontosAguardandoConciliacao,
     cancelamentosAguardandoReemissao,
+    respostasPortalPendentes,
     chavesTratadas,
     valorDivergenteIdentificado,
     valorAcordado,
@@ -768,6 +783,92 @@ export async function registrarDecisaoJornadaEmLote({
   }
 
   return { atualizados: gravados };
+}
+
+/**
+ * Valida (aplica ou rejeita) várias respostas do portal de uma vez.
+ *
+ * Diferente de registrarDecisaoJornadaEmLote, aqui os valores do CT-e vêm da
+ * jornada já existente — a resposta do portal não carrega valor_cte/calculado,
+ * e sobrescrevê-los com zero apagaria a divergência identificada.
+ */
+export async function validarRespostasPortalEmLote({ respostas = [], aplicar, observacao, usuario, onProgress, tamanhoLote = 200 }) {
+  const lista = respostas.filter((r) => r?.id);
+  if (!lista.length) return { validadas: 0 };
+  const client = ensureClient();
+  const agora = nowIso();
+
+  if (aplicar) {
+    const chaves = [...new Set(lista.map((r) => String(r.chave_cte)).filter(Boolean))];
+    const jornadaPorChave = new Map();
+    for (let i = 0; i < chaves.length; i += tamanhoLote) {
+      const { data } = await client
+        .from('auditoria_cte_jornada')
+        .select('*')
+        .in('chave_cte', chaves.slice(i, i + tamanhoLote));
+      (data || []).forEach((l) => jornadaPorChave.set(String(l.chave_cte), l));
+    }
+
+    const payload = [];
+    const eventos = [];
+    lista.forEach((resposta) => {
+      const config = RESULTADOS_RETORNO_TRANSPORTADORA[resposta.resultado];
+      if (!config) return;
+      const chave = String(resposta.chave_cte);
+      const atual = jornadaPorChave.get(chave);
+      const divergencia = Number(atual?.valor_divergencia_identificada || 0);
+      payload.push({
+        ...(atual || { chave_cte: chave, numero_cte: resposta.numero_cte || null, transportadora: resposta.transportadora || null }),
+        chave_cte: chave,
+        status_operacional: config.statusOperacional,
+        status_financeiro: config.statusFinanceiro || atual?.status_financeiro || 'SEM_IMPACTO',
+        valor_acordado: config.pedeValor
+          ? Number(resposta.valor_proposto ?? divergencia)
+          : Number(atual?.valor_acordado || 0),
+        aguardando_desde: null,
+        observacao: `Via portal (${resposta.respondido_por || 'transportadora'}): ${config.label}`
+          + (resposta.justificativa ? ` — ${resposta.justificativa}` : ''),
+        updated_at: agora,
+      });
+      eventos.push({
+        chave_cte: chave,
+        processo_id: resposta.processo_id || null,
+        acao: 'RESPOSTA_PORTAL_APLICADA',
+        status_anterior: atual?.status_operacional || null,
+        status_novo: config.statusOperacional,
+        comentario: `Resposta do portal aplicada pelo auditor.${observacao ? ` Obs: ${observacao}` : ''}`,
+        user_id: usuario?.id || null,
+        user_name: usuario?.nome || null,
+        user_email: usuario?.email || null,
+        origem_tela: 'auditoria-cte',
+      });
+    });
+
+    for (let i = 0; i < payload.length; i += tamanhoLote) {
+      const lote = payload.slice(i, i + tamanhoLote);
+      const { error } = await client.from('auditoria_cte_jornada').upsert(lote, { onConflict: 'chave_cte' });
+      if (error) throw error;
+      const { error: erroEventos } = await client.from('audit_historico_eventos').insert(eventos.slice(i, i + tamanhoLote));
+      if (erroEventos) console.warn('[Jornada CT-e] eventos não gravados neste lote:', erroEventos.message);
+      onProgress?.({ etapa: 'salvando_jornada', carregados: Math.min(i + tamanhoLote, payload.length), total: payload.length });
+    }
+  }
+
+  const ids = lista.map((r) => r.id);
+  for (let i = 0; i < ids.length; i += tamanhoLote) {
+    const { error } = await client
+      .from('auditoria_cte_portal_respostas')
+      .update({
+        status_validacao: aplicar ? 'APLICADO' : 'REJEITADO',
+        validado_em: agora,
+        validado_por: usuario?.nome || usuario?.email || null,
+        observacao_validacao: observacao || null,
+      })
+      .in('id', ids.slice(i, i + tamanhoLote));
+    if (error) throw error;
+  }
+
+  return { validadas: lista.length };
 }
 
 export async function carregarTimelineCte(chaveCte) {
