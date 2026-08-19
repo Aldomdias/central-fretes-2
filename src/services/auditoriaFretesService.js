@@ -809,17 +809,44 @@ export async function marcarFaturasLancadasFinanceiroEmLote(state, pagamentosLan
   };
 }
 
+// Le a tabela inteira em paginas de 1000 (limite do PostgREST), disparando um
+// lote de paginas em paralelo por vez. Era sequencial: com 14 mil faturas isso
+// segurava a Central de Auditoria em "Carregando..." por dezenas de segundos.
+//
+// Sem ORDER BY de proposito: ordenar por id fazia o Postgres reordenar a tabela
+// inteira em cada pagina e, com varias paginas simultaneas, ficava mais lento
+// que o modo sequencial. Como o range sem ordem nao garante particao perfeita,
+// o resultado e deduplicado por id no final.
+const PAGINACAO_LOTE = 8;
+
 async function paginarTudo(client, table, select, onProgress) {
-  const linhas = [];
   const PAGE = 1000;
-  for (let inicio = 0; ; inicio += PAGE) {
+  const porId = new Map();
+  const semId = [];
+
+  const acumular = (linhas) => {
+    for (const linha of linhas) {
+      if (linha?.id == null) semId.push(linha);
+      else porId.set(linha.id, linha);
+    }
+    onProgress?.({ tabela: table, carregados: porId.size + semId.length });
+  };
+
+  const lerPagina = async (inicio) => {
     const { data, error } = await client.from(table).select(select).range(inicio, inicio + PAGE - 1);
     if (error) throw new Error(`Erro ao ler ${table}: ${error.message}`);
-    linhas.push(...(data || []));
-    onProgress?.({ tabela: table, carregados: linhas.length });
-    if (!data || data.length < PAGE) break;
+    return data || [];
+  };
+
+  for (let lote = 0; ; lote += 1) {
+    const inicios = Array.from({ length: PAGINACAO_LOTE }, (_, i) => (lote * PAGINACAO_LOTE + i) * PAGE);
+    const paginas = await Promise.all(inicios.map(lerPagina));
+    paginas.forEach(acumular);
+    // Ultima pagina do lote incompleta = a tabela acabou dentro deste lote.
+    if (paginas[paginas.length - 1].length < PAGE) break;
   }
-  return linhas;
+
+  return [...porId.values(), ...semId];
 }
 
 // Canal não vem no arquivo Verum (nem em Faturas nem em Detalhes) — só existe

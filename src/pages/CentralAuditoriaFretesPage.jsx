@@ -3487,6 +3487,14 @@ ${portaisLaudo.length ? `
     }
   };
 
+  // Hook fica ANTES do return antecipado do detalhe da fatura: se ficasse
+  // depois, abrir uma fatura renderizava menos hooks e a tela ficava em branco.
+  useEffect(() => {
+    if (devolutivaJornadaAberta) {
+      devolutivaJornadaPainelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [devolutivaJornadaAberta]);
+
   const faturaAtual = aberta ? state.faturas.find((item) => item.id === aberta.id) : null;
 
   // Detalhe abre como tela propria no lugar da lista; ao fechar, a lista volta
@@ -3664,12 +3672,6 @@ ${portaisLaudo.length ? `
       setProgressoImportacao(null);
     }
   };
-
-  useEffect(() => {
-    if (devolutivaJornadaAberta) {
-      devolutivaJornadaPainelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  }, [devolutivaJornadaAberta]);
 
   return (
     <>
