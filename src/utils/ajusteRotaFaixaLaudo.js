@@ -495,7 +495,6 @@ export function gerarHtmlAjusteRotaFaixa(resultado = {}, { incluirSavingGerencia
       <div class="card"><span>Perderia</span><strong>${formatNumberBR(totais.ctesPerderia, 0)}</strong></div>
       <div class="card"><span>Aderencia da tabela</span><strong>${formatPercent(aderenciaTotal)}</strong></div>
       <div class="card"><span>Faturamento atual</span><strong>${formatMoney(totais.freteRealizado)}</strong></div>
-      <div class="card rpa-cell"><span>Faturamento ${esc(rotuloTabelaLaudo)}</span><strong>${formatMoney(totais.freteTabela)}</strong></div>
       <div class="card"><span>Faturamento ${esc(rotuloTabelaLaudo)} nas ganhas</span><strong>${formatMoney(totais.freteTabelaGanharia)}</strong></div>
       ${incluirSavingGerencial ? `
       <div class="card"><span>Saving no periodo</span><strong>${formatMoney(savingPeriodo)}</strong></div>
@@ -513,7 +512,7 @@ export function gerarHtmlAjusteRotaFaixa(resultado = {}, { incluirSavingGerencia
       <strong>Como ler os cards:</strong> Os valores financeiros e percentuais consideram apenas os CT-es em rotas/faixas atendidas pela ${esc(rotuloTabelaLaudo)}.
       "Fora da tabela" mostra o volume do recorte que ficou sem cobertura e nao entra no faturamento, aderencia, percentuais ou reducao sugerida.
       Aderencia da tabela = dos CT-es com calculo, % em que a ${esc(rotuloTabelaLaudo)} ganharia do frete realizado (mesma logica da Aderencia de cada rota).
-      Faturamento atual = soma do frete cobrado apenas nos CT-es onde a ${esc(rotuloTabelaLaudo)} encontrou cobertura. Faturamento ${esc(rotuloTabelaLaudo)} = soma da tabela simulada nessa mesma base calculavel.
+      Faturamento atual = soma do frete cobrado apenas nos CT-es onde a ${esc(rotuloTabelaLaudo)} encontrou cobertura.
       Faturamento ${esc(rotuloTabelaLaudo)} nas ganhas = apenas o recorte em que a tabela ficaria competitiva contra o frete atual.
       ${incluirSavingGerencial ? 'Saving = economia nas rotas ganhas, projetada pelo periodo, por mes e em 12 meses.' : ''}
       % realizado medio e % ${esc(rotuloTabelaLaudo)} = frete cobrado / tabela simulada sobre o valor NF total, na mesma base.
@@ -567,7 +566,6 @@ export function gerarWorkbookAjusteRotaFaixa(resultado = {}, { incluirSavingGere
     ['Ganharia', totais.ctesGanharia],
     ['Perderia', totais.ctesPerderia],
     ['Faturamento atual', Number(totais.freteRealizado.toFixed(2))],
-    [`Faturamento ${rotuloTabelaLaudo}`, Number(totais.freteTabela.toFixed(2))],
     [`Faturamento ${rotuloTabelaLaudo} nas ganhas`, Number(totais.freteTabelaGanharia.toFixed(2))],
     ...(incluirSavingGerencial ? [
       ['Saving no periodo', Number(savingPeriodo.toFixed(2))],
