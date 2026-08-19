@@ -1351,6 +1351,10 @@ export async function abrirRevisaoNegociacaoPublicada(id, dados = {}) {
       || `Revisão aberta a partir da negociação publicada em ${(original.publicado_em || '').slice(0, 10) || 'data não informada'}. A tabela vigente continua valendo até a revisão ser aprovada.`,
     origem_importacao: 'REVISAO_TABELA_PUBLICADA',
     incluir_simulacao: true,
+    // Configuracao de analise herdada da publicada: a revisao ja nasce
+    // comparando o mesmo periodo/recorte, sem reconfigurar tudo na mao.
+    periodo_realizado_inicio: original.periodo_realizado_inicio || null,
+    periodo_realizado_fim: original.periodo_realizado_fim || null,
     revisao_de_id: original.id,
     revisao_numero: numeroRevisao,
     usuario: dados.usuario,
@@ -1364,6 +1368,18 @@ export async function abrirRevisaoNegociacaoPublicada(id, dados = {}) {
   await atualizarTabelaNegociacao(nova.id, {
     resumo_simulacao: { ...resumoNova, revisao: vinculoRevisao },
   });
+
+  // Vínculos de saving e base de comparação: campos sem passagem em
+  // atualizarTabelaNegociacao, gravados direto. Se a coluna não existir no
+  // ambiente, seguir sem eles é aceitável — são conveniência, não o vínculo.
+  const configHerdada = {};
+  if (original.vinculo_transportadoras_saving) configHerdada.vinculo_transportadoras_saving = original.vinculo_transportadoras_saving;
+  if (original.origem_realizado_saving) configHerdada.origem_realizado_saving = original.origem_realizado_saving;
+  if (original.base_comparacao_inicial) configHerdada.base_comparacao_inicial = original.base_comparacao_inicial;
+  if (Object.keys(configHerdada).length) {
+    const supabase = supabaseOrThrow();
+    await supabase.from('tabelas_negociacao').update(configHerdada).eq('id', nova.id);
+  }
 
   let resumoImportacao = null;
   let avisoImportacao = '';
