@@ -743,6 +743,19 @@ export async function buscarCnpjTransportadoraCadastro(nome) {
   return (data || []).length === 1 ? data[0] : null;
 }
 
+// Transportadoras que ja existem na base oficial, para a publicacao poder entrar
+// numa delas em vez de sempre criar um cadastro novo com o nome da negociacao
+// (era assim que nascia "CARVALIMA B2C" separada de "CARVALIMA TRANSPORTES").
+export async function listarTransportadorasCadastro() {
+  const supabase = supabaseOrThrow();
+  const { data, error } = await supabase
+    .from('transportadoras')
+    .select('id, nome, cnpj, cnpj_raiz')
+    .order('nome', { ascending: true });
+  if (error) throw new Error(error.message || 'Erro ao listar as transportadoras da base oficial.');
+  return data || [];
+}
+
 export { carregarResumoCompletoNegociacao, carregarLaudoTransportadoraConsolidado };
 
 export async function criarTabelaNegociacao(payload = {}) {

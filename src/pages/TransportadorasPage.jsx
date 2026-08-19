@@ -1502,6 +1502,8 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   // null = fechado; objeto = modal de chamado AMD aberto (com origem/canal ja preenchidos)
   const [chamadoAmd, setChamadoAmd] = useState(null);
   const [feedbackChamado, setFeedbackChamado] = useState('');
+  // null = fechado; objeto = origem escolhida para mover de transportadora
+  const [origemTransferindo, setOrigemTransferindo] = useState(null);
   const { vinculosDaTransportadora, carteiraDaTransportadora, auditorNomes, salvarAuditor, recarregarVinculos, adicionarVinculo, removerVinculo } = useVinculosEAuditores();
   const origensBase = Array.isArray(transportadora?.origens) ? transportadora.origens : [];
   const origens = origensBase.filter((origem) => String(origem?.cidade || '').toLowerCase().includes(busca.toLowerCase()));
@@ -1524,6 +1526,18 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
     const resultado = await store.salvarTransportadoraCompleta?.(transportadora.id);
     setSalvando(false);
     setFeedbackSalvar(resultado?.ok ? (resultado.mensagem || 'Transportadora salva no Supabase.') : (resultado?.erro?.message || 'Não foi possível salvar a transportadora.'));
+  };
+
+  const transferirOrigem = async (origem, destinoId) => {
+    const destino = (store.transportadoras || []).find((item) => String(item.id) === String(destinoId));
+    const ok = window.confirm(`Mover a origem ${origem?.cidade || ''} (${canalOrigemLabel(origem)}) de ${transportadora.nome} para ${destino?.nome || ''}? As rotas, fretes e taxas dessa origem vão junto.`);
+    if (!ok) return { ok: false, cancelado: true };
+    const resultado = await store.transferirOrigem?.(transportadora.id, origem.id, destinoId);
+    if (resultado?.ok) {
+      setOrigemTransferindo(null);
+      setFeedbackSalvar(`Origem ${origem?.cidade || ''} transferida para ${destino?.nome || ''}.`);
+    }
+    return resultado || { ok: false, erro: 'Não foi possível transferir a origem.' };
   };
 
   const confirmarRemocaoOrigem = (origem) => {
@@ -1620,6 +1634,13 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
                   🎫 Chamado AMD
                 </button>
                 <span className="status-pill light">{origem.status}</span>
+                <button
+                  className="btn-link inline-btn"
+                  title="Mover esta origem (com rotas, fretes e taxas) para outra transportadora"
+                  onClick={() => setOrigemTransferindo(origem)}
+                >
+                  ↗ Mover
+                </button>
                 <ActionIcon onClick={() => { setEditing(origem); setModalOpen(true); }}>✎</ActionIcon>
                 <ActionIcon danger onClick={() => confirmarRemocaoOrigem(origem)}>🗑</ActionIcon>
               </div>
@@ -1645,6 +1666,14 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
         }}
         onClose={() => setOrigemConfirmando(null)}
       />
+      <TransferirOrigemModal
+        open={!!origemTransferindo}
+        origem={origemTransferindo}
+        transportadoraAtual={transportadora}
+        transportadoras={store.transportadoras || []}
+        onConfirmar={(destinoId) => transferirOrigem(origemTransferindo, destinoId)}
+        onClose={() => setOrigemTransferindo(null)}
+      />
       <OrigemModal open={modalOpen} initialValue={editing} onSave={saveOrigem} onClose={() => { setModalOpen(false); setEditing(null); }} />
       <InconsistenciasModal open={!!inconsistenciasOpen} title={typeof inconsistenciasOpen === 'number' ? 'Inconsistências da origem' : 'Inconsistências da transportadora'} transportadora={transportadora} origem={typeof inconsistenciasOpen === 'number' ? origensBase.find((item) => item.id === inconsistenciasOpen) : null} onClose={() => setInconsistenciasOpen(false)} />
       <ModalChamadoAmdTabela
@@ -1658,6 +1687,66 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
         onClose={() => setChamadoAmd(null)}
       />
     </div>
+  );
+}
+
+// Move uma origem para outra transportadora. Serve pro caso em que a publicacao
+// de uma negociacao criou uma transportadora nova ("CARVALIMA B2C") em vez de
+// entrar na que ja existia ("CARVALIMA TRANSPORTES").
+function TransferirOrigemModal({ open, origem, transportadoraAtual, transportadoras, onConfirmar, onClose }) {
+  const [destinoId, setDestinoId] = useState('');
+  const [busca, setBusca] = useState('');
+  const [erro, setErro] = useState('');
+  const [salvando, setSalvando] = useState(false);
+
+  useEffect(() => {
+    if (open) { setDestinoId(''); setBusca(''); setErro(''); }
+  }, [open, origem?.id]);
+
+  if (!open) return null;
+
+  const opcoes = (transportadoras || [])
+    .filter((item) => String(item.id) !== String(transportadoraAtual?.id))
+    .filter((item) => String(item.nome || '').toLowerCase().includes(busca.trim().toLowerCase()))
+    .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
+
+  const confirmar = async () => {
+    if (!destinoId) { setErro('Escolha a transportadora de destino.'); return; }
+    setSalvando(true);
+    setErro('');
+    const resultado = await onConfirmar(destinoId);
+    setSalvando(false);
+    if (resultado && !resultado.ok && !resultado.cancelado) setErro(resultado.erro || 'Não foi possível transferir a origem.');
+  };
+
+  return (
+    <Modal open={open} title="Mover origem para outra transportadora" onClose={onClose}>
+      <p style={{ color: 'var(--text-muted, #64748b)', marginTop: 0 }}>
+        <strong>{origem?.cidade}</strong> ({canalOrigemLabel(origem)}) · {(origem?.rotas || []).length} rota(s) · {(origem?.cotacoes || []).length} frete(s)
+        <br />Sai de <strong>{transportadoraAtual?.nome}</strong>. As rotas, fretes, taxas e generalidades vão junto.
+      </p>
+      <input
+        className="search-input"
+        value={busca}
+        onChange={(e) => setBusca(e.target.value)}
+        placeholder="Buscar transportadora de destino..."
+      />
+      <div className="field top-space">
+        <label>Transportadora de destino</label>
+        <select value={destinoId} onChange={(e) => { setDestinoId(e.target.value); setErro(''); }}>
+          <option value="">Selecione a transportadora de destino</option>
+          {opcoes.map((item) => (
+            <option key={item.id} value={item.id}>{item.nome} ({(item.origens || []).length} origem(ns))</option>
+          ))}
+        </select>
+      </div>
+      {!opcoes.length ? <div className="mini-feedback info top-space">Nenhuma transportadora encontrada para esse filtro.</div> : null}
+      {erro ? <div className="mini-feedback error top-space">{erro}</div> : null}
+      <div className="actions-right gap-row top-space">
+        <button className="btn-secondary" onClick={onClose} disabled={salvando}>Cancelar</button>
+        <button className="btn-primary" onClick={confirmar} disabled={salvando || !destinoId}>{salvando ? 'Movendo...' : 'Mover origem'}</button>
+      </div>
+    </Modal>
   );
 }
 

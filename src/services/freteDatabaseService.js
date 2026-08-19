@@ -3132,6 +3132,52 @@ export async function atualizarValidacaoOrigemDb(origemId, { validado, validadoE
   return { ok: true };
 }
 
+// Move uma origem inteira (com rotas, cotacoes, taxas e generalidades) de uma
+// transportadora para outra. Os filhos apontam para origem_id, entao basta
+// trocar o transportadora_id da origem — nada precisa ser recopiado.
+// Bloqueia quando o destino ja tem uma origem da mesma cidade no mesmo canal,
+// pra nao criar duplicidade (a fusao teria de decidir quais rotas ficam).
+export async function transferirOrigemDb(origemId, novaTransportadoraId) {
+  if (!isSupabaseConfigured()) return { ok: true, modo: 'local' };
+  if (!origemId || !novaTransportadoraId) return { ok: false, erro: 'Informe a origem e a transportadora de destino.' };
+
+  const supabase = ensureClient();
+
+  const { data: origem, error: erroOrigem } = await supabase
+    .from('origens')
+    .select('id, transportadora_id, cidade, canal')
+    .eq('id', origemId)
+    .maybeSingle();
+  if (erroOrigem) throw erroOrigem;
+  if (!origem) throw new Error('Origem não encontrada na base oficial.');
+  if (String(origem.transportadora_id) === String(novaTransportadoraId)) {
+    return { ok: true, ignorado: true, motivo: 'A origem já pertence a essa transportadora.' };
+  }
+
+  const { data: existentes, error: erroExistentes } = await supabase
+    .from('origens')
+    .select('id, cidade, canal')
+    .eq('transportadora_id', novaTransportadoraId);
+  if (erroExistentes) throw erroExistentes;
+
+  const mesmaChave = (existentes || []).find((item) => (
+    String(item.cidade || '').trim().toLowerCase() === String(origem.cidade || '').trim().toLowerCase()
+    && String(item.canal || 'ATACADO').trim().toUpperCase() === String(origem.canal || 'ATACADO').trim().toUpperCase()
+  ));
+  if (mesmaChave) {
+    throw new Error(`A transportadora de destino já tem a origem ${origem.cidade} no canal ${origem.canal || 'ATACADO'}. Renomeie o canal ou remova a duplicada antes de transferir.`);
+  }
+
+  const { error } = await supabase
+    .from('origens')
+    .update({ transportadora_id: novaTransportadoraId })
+    .eq('id', origemId);
+  if (error) throw error;
+
+  invalidarCacheBaseCompletaDb();
+  return { ok: true, origemId, de: origem.transportadora_id, para: novaTransportadoraId };
+}
+
 export async function excluirOrigemDb(origemId) {
   if (!isSupabaseConfigured()) return { ok: true, modo: 'local' };
   if (!origemId) return { ok: true, ignorado: true };

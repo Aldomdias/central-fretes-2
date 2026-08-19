@@ -48,6 +48,7 @@ import {
   marcarNegociacaoJaPublicada,
   garantirNegociadorAoAbrir,
   buscarCnpjTransportadoraCadastro,
+  listarTransportadorasCadastro,
 } from '../services/tabelasNegociacaoService';
 import { cnpjPreenchidoValido, formatarCnpj, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
 import { LaudoNegociacaoTemplate, LaudoRodadasNegociacaoTemplate } from '../components/laudos';
@@ -1003,6 +1004,11 @@ export default function TabelasNegociacaoPage() {
     data_inicio_vigencia: hojeISO(), substituir_tabela_anterior: false, promover_para_oficial: false,
     usuario_aprovacao: '', observacao_aprovacao: '', justificativa_aprovacao: '', cnpj_transportadora: '',
   });
+  // Escolha da transportadora da base oficial que vai receber a tabela publicada.
+  // Sem isso a publicacao sempre criava um cadastro novo com o nome da negociacao
+  // (era assim que nascia "CARVALIMA B2C" separada de "CARVALIMA TRANSPORTES").
+  const [transportadorasOficiais, setTransportadorasOficiais] = useState([]);
+  const [modalDestinoOficial, setModalDestinoOficial] = useState(null);
   const [modalNovaOrigem, setModalNovaOrigem] = useState(null);
   const [novaOrigem, setNovaOrigem] = useState(Object.assign({}, NOVA_ORIGEM_VAZIA));
   const [abrindoRodada, setAbrindoRodada] = useState(false);
@@ -2538,8 +2544,10 @@ export default function TabelasNegociacaoPage() {
       tabela_base_id: tabela?.tabela_base_id || '',
       transportadora_base_nome: tabela?.transportadora_base_nome || tabela?.transportadora || '',
       cnpj_transportadora: formatarCnpj(cnpjSalvo),
+      transportadora_oficial_nome: '',
       modo: podePublicarOficial(tabela) && usuarioEhGestor(sessao) ? 'publicar' : 'enviar',
     });
+    if (podePublicarOficial(tabela) && usuarioEhGestor(sessao)) carregarTransportadorasOficiais();
     if (!cnpjSalvo) {
       try {
         const cadastro = await buscarCnpjTransportadoraCadastro(tabela?.transportadora);
@@ -2550,6 +2558,33 @@ export default function TabelasNegociacaoPage() {
         // O preenchimento automático é auxiliar; o campo permanece editável.
       }
     }
+  }
+
+  async function carregarTransportadorasOficiais() {
+    try {
+      const lista = await listarTransportadorasCadastro();
+      setTransportadorasOficiais(lista || []);
+      return lista || [];
+    } catch {
+      setTransportadorasOficiais([]);
+      return [];
+    }
+  }
+
+  // Abre o seletor e resolve com o nome escolhido (null = cancelou).
+  function escolherTransportadoraOficial(tabela) {
+    return new Promise(function(resolve) {
+      carregarTransportadorasOficiais().then(function(opcoes) {
+        setModalDestinoOficial({ tabela: tabela, opcoes: opcoes, resolver: resolve });
+      });
+    });
+  }
+
+  function fecharDestinoOficial(nomeEscolhido) {
+    setModalDestinoOficial(function(atual) {
+      if (atual && typeof atual.resolver === 'function') atual.resolver(nomeEscolhido);
+      return null;
+    });
   }
 
   async function confirmarAprovacao() {
@@ -2691,7 +2726,9 @@ export default function TabelasNegociacaoPage() {
   async function handleAprovarPublicarOficial(tabela, obs) {
     var cnpjPublicacao = await garantirCnpjTransportadora(tabela, 'aprovar e publicar');
     if (!cnpjPublicacao) return;
-    var ok = window.confirm('Aprovar e publicar ' + tabela.transportadora + ' na base oficial agora? A tabela operacional será movida para a base oficial e os itens pesados serão limpos da negociação.');
+    var destinoOficial = await escolherTransportadoraOficial(tabela);
+    if (destinoOficial === null) return;
+    var ok = window.confirm('Aprovar e publicar ' + tabela.transportadora + ' dentro de "' + destinoOficial + '" na base oficial agora? A tabela operacional será movida para a base oficial e os itens pesados serão limpos da negociação.');
     if (!ok) return;
     setSalvandoGestao(true); setErro(''); setSucesso('');
     try {
@@ -2708,6 +2745,7 @@ export default function TabelasNegociacaoPage() {
         cnpj_transportadora: cnpjPublicacao,
         data_inicio_vigencia: hojeISO(),
         substituir_tabela_anterior: isReajusteNegociacao(aprovada),
+        transportadora_oficial_nome: destinoOficial,
         observacao: obs || 'Aprovada pelo gestor e publicada na base oficial',
       });
       setTabelas(function(p) { return p.map(function(i) { return i.id === publicada.id ? publicada : i; }); });
@@ -2750,7 +2788,9 @@ export default function TabelasNegociacaoPage() {
   async function handlePublicarOficial(tabela) {
     var cnpjPublicar = await garantirCnpjTransportadora(tabela, 'publicar na base oficial');
     if (!cnpjPublicar) return;
-    var ok = window.confirm('Publicar ' + tabela.transportadora + ' na base oficial? Esta ação só é permitida após aprovação do gestor.');
+    var destinoPublicacao = await escolherTransportadoraOficial(tabela);
+    if (destinoPublicacao === null) return;
+    var ok = window.confirm('Publicar ' + tabela.transportadora + ' dentro de "' + destinoPublicacao + '" na base oficial? Esta ação só é permitida após aprovação do gestor.');
     if (!ok) return;
     setSalvandoGestao(true); setErro(''); setSucesso('');
     try {
@@ -2759,6 +2799,7 @@ export default function TabelasNegociacaoPage() {
         cnpj_transportadora: cnpjPublicar,
         data_inicio_vigencia: hojeISO(),
         substituir_tabela_anterior: isReajusteNegociacao(tabela),
+        transportadora_oficial_nome: destinoPublicacao,
       });
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
       setSucesso('Publicada na base oficial.');
@@ -4270,6 +4311,44 @@ export default function TabelasNegociacaoPage() {
       ) : null)}
 
       {/* MODAL APROVAÇÃO */}
+      {renderModalPortal(modalDestinoOficial ? (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 100001, display: 'grid', placeItems: 'center', padding: 20 }}
+          onClick={function() { fecharDestinoOficial(null); }}
+        >
+          <div className="sim-card" style={{ width: 'min(560px,100%)' }} onClick={function(event) { event.stopPropagation(); }}>
+            <h2 style={{ marginTop: 0 }}>Onde cadastrar esta tabela?</h2>
+            <p style={{ color: '#64748b' }}>
+              A negociação <strong>{modalDestinoOficial.tabela?.transportadora}</strong> vai virar origem na base oficial.
+              Escolha a transportadora que vai receber essa origem — assim ela não fica como um cadastro separado.
+            </p>
+            <label>Transportadora da base oficial
+              <select
+                value={modalDestinoOficial.escolha === undefined ? '' : modalDestinoOficial.escolha}
+                onChange={function(e) {
+                  var valor = e.target.value;
+                  setModalDestinoOficial(function(atual) { return atual ? Object.assign({}, atual, { escolha: valor }) : atual; });
+                }}
+              >
+                <option value="">Criar cadastro novo: {modalDestinoOficial.tabela?.transportadora}</option>
+                {(modalDestinoOficial.opcoes || []).map(function(item) {
+                  return <option key={item.id} value={item.nome}>{item.nome}</option>;
+                })}
+              </select>
+            </label>
+            <div className="sim-actions" style={{ marginTop: 14 }}>
+              <button
+                className="primary"
+                type="button"
+                onClick={function() { fecharDestinoOficial(modalDestinoOficial.escolha || modalDestinoOficial.tabela?.transportadora || ''); }}
+              >
+                Continuar
+              </button>
+              <button className="sim-tab" type="button" onClick={function() { fecharDestinoOficial(null); }}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      ) : null)}
       {renderModalPortal(modalAprovacao ? (
         <div
           style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 100000, display: 'grid', placeItems: 'center', padding: 20 }}
@@ -4326,6 +4405,22 @@ export default function TabelasNegociacaoPage() {
                 </label>
               )}
             </div>
+            {aprovacao.modo === 'publicar' ? (
+              <label style={{ marginTop: 12, display: 'block' }}>Cadastrar dentro da transportadora
+                <select
+                  value={aprovacao.transportadora_oficial_nome || ''}
+                  onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { transportadora_oficial_nome: e.target.value }); }); }}
+                >
+                  <option value="">Criar/usar cadastro com o nome da negociação: {modalAprovacao.transportadora}</option>
+                  {transportadorasOficiais.map(function(item) {
+                    return <option key={item.id} value={item.nome}>{item.nome}</option>;
+                  })}
+                </select>
+                <span style={{ display: 'block', fontSize: 12, color: '#64748b', marginTop: 4 }}>
+                  Escolha uma transportadora que já existe na base oficial para a origem entrar dentro dela, em vez de criar um cadastro separado.
+                </span>
+              </label>
+            ) : null}
             {isReajusteNegociacao(modalAprovacao) ? (
               <div className="sim-alert info" style={{ marginTop: 12 }}>
                 Reajuste aprovado: a tabela anterior sera mantida no historico e a nova proposta podera ser promovida como oficial a partir da vigencia informada.

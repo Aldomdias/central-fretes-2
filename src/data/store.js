@@ -8,6 +8,7 @@ import {
   atualizarValidacaoOrigemDb,
   excluirLinhaSecaoDb,
   excluirOrigemDb,
+  transferirOrigemDb,
   excluirTransportadoraDb,
   limparSecaoOrigemDb,
   salvarBaseCompletaDb,
@@ -753,6 +754,46 @@ export function useFreteStore(sessao = null) {
           'origem',
           'origem'
         );
+      },
+      // Move a origem (com rotas, cotacoes, taxas e generalidades) para outra
+      // transportadora. Usado quando a publicacao de uma negociacao criou uma
+      // transportadora separada em vez de entrar na que ja existia.
+      async transferirOrigem(transportadoraId, origemId, destinoId) {
+        if (!destinoId || String(destinoId) === String(transportadoraId)) {
+          return { ok: false, erro: 'Escolha uma transportadora de destino diferente.' };
+        }
+
+        if (bancoConfigurado()) {
+          setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+          try {
+            await transferirOrigemDb(origemId, destinoId);
+          } catch (error) {
+            setSyncStatus((prev) => ({ ...prev, sincronizando: false, erro: error.message || 'Erro ao transferir a origem no Supabase.' }));
+            return { ok: false, erro: error.message || 'Erro ao transferir a origem no Supabase.' };
+          }
+          setSyncStatus((prev) => ({ ...prev, sincronizando: false, erro: '', ultimaSincronizacao: new Date().toISOString() }));
+        }
+
+        let movida = null;
+        setTransportadoras((prev) => {
+          const lista = prev || [];
+          movida = (lista.find((t) => t.id === transportadoraId)?.origens || []).find((o) => o.id === origemId) || null;
+          if (!movida) return lista;
+          return lista.map((t) => {
+            if (t.id === transportadoraId) return { ...t, origens: (t.origens || []).filter((o) => o.id !== origemId) };
+            if (t.id === destinoId) return { ...t, origens: [...(t.origens || []), movida] };
+            return t;
+          });
+        });
+
+        registrarAlteracaoTransportadora(sessao, {
+          tipo: 'transferencia_origem',
+          transportadoraId,
+          origemId,
+          detalhe: `Transferiu a origem para a transportadora ${destinoId}`,
+        });
+
+        return { ok: true };
       },
       removerOrigem(transportadoraId, origemId) {
         setTransportadoras((prev) =>
