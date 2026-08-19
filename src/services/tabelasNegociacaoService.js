@@ -936,9 +936,52 @@ export async function excluirTabelaNegociacao(id) {
     .eq('tabela_negociacao_id', id);
   if (erroLotacao) throw new Error(erroLotacao.message || 'Erro ao desvincular tabelas de lotação da negociação.');
 
+  // Se a excluida era a revisao de uma tabela publicada, a publicada nao pode
+  // ficar apontando pra uma negociacao que nao existe mais — sem isso ela fica
+  // marcada como "em revisao" pra sempre e recusa abrir uma nova revisao.
+  await limparPonteiroRevisaoNaPublicada(supabase, id);
+
   const { error } = await supabase.from('tabelas_negociacao').delete().eq('id', id);
   if (error) throw new Error(error.message || 'Erro ao excluir tabela em negociação.');
   return true;
+}
+
+// Limpa "em revisão" da publicada. Tolera a migration 20260819120000 ainda não
+// aplicada: sem a coluna, o vínculo vive só no resumo_simulacao.
+async function limparMarcaRevisaoAberta(supabase, publicada) {
+  const resumo = getResumoSimulacaoSeguro(publicada);
+  delete resumo.revisao;
+
+  const { error } = await supabase
+    .from('tabelas_negociacao')
+    .update({ revisao_aberta_id: null, resumo_simulacao: resumo })
+    .eq('id', publicada.id);
+
+  if (error) {
+    await supabase
+      .from('tabelas_negociacao')
+      .update({ resumo_simulacao: resumo })
+      .eq('id', publicada.id);
+  }
+}
+
+async function limparPonteiroRevisaoNaPublicada(supabase, revisaoId) {
+  const { data: publicadas, error } = await supabase
+    .from('tabelas_negociacao')
+    .select('id, resumo_simulacao')
+    .eq('revisao_aberta_id', revisaoId);
+
+  // Sem a coluna ainda: procura pelo espelho no JSON.
+  const alvos = error
+    ? (await supabase
+      .from('tabelas_negociacao')
+      .select('id, resumo_simulacao')
+      .contains('resumo_simulacao', { revisao: { revisao_aberta_id: revisaoId } })).data || []
+    : publicadas || [];
+
+  for (const publicada of alvos) {
+    await limparMarcaRevisaoAberta(supabase, publicada);
+  }
 }
 
 // ─── ITENS (rotas / cotações / faixas) ───────────────────────────────────────
@@ -1300,7 +1343,18 @@ export async function abrirRevisaoNegociacaoPublicada(id, dados = {}) {
   const revisaoEmAndamento = texto(original.revisao_aberta_id)
     || texto(getResumoSimulacaoSeguro(original).revisao?.revisao_aberta_id);
   if (revisaoEmAndamento && !dados.forcar) {
-    return { ja_existe: true, revisao_id: revisaoEmAndamento };
+    // O ponteiro pode estar órfão (a revisão foi excluída). Só bloqueia se a
+    // revisão realmente existir — senão limpa e deixa abrir uma nova.
+    const supabaseGuarda = supabaseOrThrow();
+    const { data: aindaExiste } = await supabaseGuarda
+      .from('tabelas_negociacao')
+      .select('id')
+      .eq('id', revisaoEmAndamento)
+      .maybeSingle();
+
+    if (aindaExiste) return { ja_existe: true, revisao_id: revisaoEmAndamento };
+
+    await limparMarcaRevisaoAberta(supabaseGuarda, original);
   }
 
   const transportadora = texto(original.transportadora);
