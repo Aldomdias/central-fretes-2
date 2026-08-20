@@ -57,9 +57,11 @@ import {
   isSolicitacaoExcecaoSemCte,
 } from '../services/lotacaoPendenciaFlow';
 import { carregarSessao } from '../utils/authLocal';
+import AlocacaoDiariaLotacao from '../components/AlocacaoDiariaLotacao';
 
 const ABAS_OPERACAO = [
   { id: 'visao', label: 'Visão geral' },
+  { id: 'alocacao', label: 'Alocação diária' },
   { id: 'consulta', label: 'Viagens / Tabelas' },
   { id: 'cobertura', label: 'Cobertura de tabela' },
   { id: 'aprovacoes', label: 'Aprovações' },
@@ -1972,6 +1974,18 @@ export default function LotacaoOperacaoPage({ onRespostaConcluida }) {
     viagensConsolidadas.find((item) => item.distKey === distSelecionadaKey) || null
   ), [viagensConsolidadas, distSelecionadaKey]);
 
+  // A alocacao ja foi gravada no Supabase; aqui so reflete na base em memoria
+  // para a lista e os KPIs nao ficarem defasados ate o proximo carregamento.
+  const aplicarAlocacaoNaBase = useCallback((cargaAtualizada) => {
+    if (!cargaAtualizada?.id) return;
+    setBaseFluxo((prev) => ({
+      ...prev,
+      cargas: (prev.cargas || []).map((carga) => (
+        carga.id === cargaAtualizada.id ? { ...carga, ...cargaAtualizada } : carga
+      )),
+    }));
+  }, []);
+
   const atualizarFiltro = (campo, valor) => setFiltros((prev) => ({ ...prev, [campo]: valor }));
   const limparFiltros = () => setFiltros({ origem: '', destino: '', tipo: '', transportadora: '' });
 
@@ -2161,6 +2175,15 @@ export default function LotacaoOperacaoPage({ onRespostaConcluida }) {
           indicadores={indicadoresAprovacoes}
           onAbrirCustos={() => setAbaAtiva('custos')}
           onAbrirAprovacoes={() => setAbaAtiva('aprovacoes')}
+        />
+      )}
+
+      {abaAtiva === 'alocacao' && (
+        <AlocacaoDiariaLotacao
+          cargas={baseFluxo.cargas}
+          tabelas={tabelas}
+          usuario={sessao}
+          onCargaAtualizada={aplicarAlocacaoNaBase}
         />
       )}
 

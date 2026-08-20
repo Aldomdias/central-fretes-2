@@ -221,6 +221,8 @@ function tabelaParaDb(tabela = {}) {
     abas_ignoradas: tabela.abasIgnoradas || [],
     fontes_valor: tabela.fontesValor || {},
     resumo_fontes_valor: tabela.resumoFontesValor || '',
+    vigencia_inicio: tabela.vigenciaInicio || null,
+    vigencia_fim: tabela.vigenciaFim || null,
     created_at: tabela.createdAt || new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
@@ -297,6 +299,8 @@ function dbParaTabela(row = {}, linhas = []) {
     abasIgnoradas: Array.isArray(row.abas_ignoradas) ? row.abas_ignoradas : [],
     fontesValor: row.fontes_valor || {},
     resumoFontesValor: row.resumo_fontes_valor || '',
+    vigenciaInicio: row.vigencia_inicio || '',
+    vigenciaFim: row.vigencia_fim || '',
     fonteDados: 'supabase',
   };
 }
@@ -347,7 +351,16 @@ export async function salvarTabelaLotacaoSupabase(tabela) {
   const { error: deleteError } = await supabase.from('lotacao_tabelas').delete().eq('tipo_nome_key', tabelaRow.tipo_nome_key);
   if (deleteError) throw new Error(detalheErroSupabase(deleteError));
   const { error: tabelaError } = await supabase.from('lotacao_tabelas').insert(tabelaRow);
-  if (tabelaError) throw new Error(detalheErroSupabase(tabelaError));
+  if (tabelaError) {
+    // Banco ainda sem a migration de vigencia: salva sem esses campos.
+    if (String(tabelaError.message || '').includes('vigencia')) {
+      const { vigencia_inicio: _vi, vigencia_fim: _vf, ...semVigencia } = tabelaRow;
+      const { error: erroCompat } = await supabase.from('lotacao_tabelas').insert(semVigencia);
+      if (erroCompat) throw new Error(detalheErroSupabase(erroCompat));
+    } else {
+      throw new Error(detalheErroSupabase(tabelaError));
+    }
+  }
   const rotas = (tabela.linhas || []).map((linha) => rotaParaDb(linha, tabela.id));
   for (let index = 0; index < rotas.length; index += INSERT_CHUNK_SIZE) {
     const chunk = rotas.slice(index, index + INSERT_CHUNK_SIZE);
@@ -446,7 +459,74 @@ function cargaParaDb(carga = {}, arquivoOrigem = '') {
     finalizado:        Boolean(carga.finalizado),
     ocorrencia:        String(carga.ocorrencia        || '').slice(0, 500),
     arquivo_origem:    String(arquivoOrigem || '').slice(0, 200),
+    ...camposAlocacaoParaDb(carga),
   };
+}
+
+// Fase 1 da Lotacao nativa. Ficam separados do resto porque a migration
+// 20260819130000 pode ainda nao ter rodado no banco: nesse caso as colunas sao
+// removidas do payload e o import continua funcionando como antes.
+export const COLUNAS_ALOCACAO_LOTACAO = [
+  'status_operacional',
+  'origem_registro',
+  'alocado_em',
+  'alocado_por',
+  'observacao_alocacao',
+  'valor_fonte',
+  'valor_tabela',
+  'valor_target',
+  'valor_antt',
+  'tabela_id',
+  'tabela_nome',
+  'tabela_rota_id',
+];
+
+function camposAlocacaoParaDb(carga = {}) {
+  const row = {};
+  if (carga.statusOperacional)  row.status_operacional  = String(carga.statusOperacional).slice(0, 40);
+  if (carga.origemRegistro)     row.origem_registro     = String(carga.origemRegistro).slice(0, 40);
+  if (carga.alocadoEm)          row.alocado_em          = parseDateSafe(carga.alocadoEm);
+  if (carga.alocadoPor)         row.alocado_por         = String(carga.alocadoPor).slice(0, 200);
+  if (carga.observacaoAlocacao) row.observacao_alocacao = String(carga.observacaoAlocacao).slice(0, 1000);
+  if (carga.valorFonte)         row.valor_fonte         = String(carga.valorFonte).slice(0, 40);
+  if (carga.valorTabela  != null) row.valor_tabela      = numSafe(carga.valorTabela);
+  if (carga.valorTarget  != null) row.valor_target      = numSafe(carga.valorTarget);
+  if (carga.valorAntt    != null) row.valor_antt        = numSafe(carga.valorAntt);
+  if (carga.tabelaId)           row.tabela_id           = String(carga.tabelaId).slice(0, 200);
+  if (carga.tabelaNome)         row.tabela_nome         = String(carga.tabelaNome).slice(0, 200);
+  if (carga.tabelaRotaId)       row.tabela_rota_id      = String(carga.tabelaRotaId).slice(0, 200);
+  return row;
+}
+
+function erroColunaAlocacao(error) {
+  const mensagem = String(error?.message || '').toLowerCase();
+  return COLUNAS_ALOCACAO_LOTACAO.some((coluna) => mensagem.includes(coluna));
+}
+
+// Campos que o Excel deixa de mandar assim que a carga foi alocada na tela.
+export const CAMPOS_PROTEGIDOS_OPERACAO = [
+  'alocado_em',
+  'transportadora',
+  'placa_cavalo',
+  'placa_carreta',
+  'valor_comparacao',
+  ...COLUNAS_ALOCACAO_LOTACAO.filter((coluna) => coluna !== 'alocado_em'),
+];
+
+// Regra da transicao: enquanto a carga nunca foi alocada aqui, o fluxo continua
+// mandando (comportamento antigo). Depois de alocada, a Operacao e a dona dos
+// campos de alocacao e reimportar a planilha nao apaga o que foi decidido.
+function preservarCamposDaOperacao(row = {}, existente = null) {
+  if (!existente || !existente.alocado_em) return row;
+  const preservado = { ...row };
+  CAMPOS_PROTEGIDOS_OPERACAO.forEach((coluna) => { delete preservado[coluna]; });
+  return preservado;
+}
+
+function semColunasAlocacao(row = {}) {
+  const limpo = { ...row };
+  COLUNAS_ALOCACAO_LOTACAO.forEach((coluna) => { delete limpo[coluna]; });
+  return limpo;
 }
 
 function dbParaCarga(row = {}) {
@@ -489,6 +569,18 @@ function dbParaCarga(row = {}) {
     ocorrencia:      row.ocorrencia      || '',
     arquivoOrigem:   row.arquivo_origem  || '',
     importadoEm:     row.importado_em    || '',
+    statusOperacional:  row.status_operacional  || '',
+    origemRegistro:     row.origem_registro     || 'fluxo_excel',
+    alocadoEm:          row.alocado_em          || '',
+    alocadoPor:         row.alocado_por         || '',
+    observacaoAlocacao: row.observacao_alocacao || '',
+    valorFonte:         row.valor_fonte         || '',
+    valorTabela:        row.valor_tabela  != null ? Number(row.valor_tabela)  : null,
+    valorTarget:        row.valor_target  != null ? Number(row.valor_target)  : null,
+    valorAntt:          row.valor_antt    != null ? Number(row.valor_antt)    : null,
+    tabelaId:           row.tabela_id           || '',
+    tabelaNome:         row.tabela_nome         || '',
+    tabelaRotaId:       row.tabela_rota_id      || '',
     rotaKey:         [normalizarTexto(row.origem || ''), normalizarTexto(row.destino || ''), normalizarTexto(row.tipo_veiculo || 'GERAL')].join('|'),
     regraCalculo:    'Valor carregado do Supabase',
   };
@@ -570,18 +662,27 @@ export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '
   // status, datas de coleta e outros campos podem ter mudado).
   const distsDoLote = [...new Set(cargas.map((c) => c.dist).filter(Boolean))];
   const idsPorDist = new Map();
+  const existentePorDist = new Map();
   if (modo !== 'substituir') {
     const CHUNK_DIST = 200;
+    const COLUNAS_EXISTENTE = `id,dist,${CAMPOS_PROTEGIDOS_OPERACAO.join(',')}`;
     for (let i = 0; i < distsDoLote.length; i += CHUNK_DIST) {
       const lote = distsDoLote.slice(i, i + CHUNK_DIST);
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from('lotacao_cargas')
-        .select('id,dist')
+        .select(COLUNAS_EXISTENTE)
         .in('dist', lote);
+      if (error && erroColunaAlocacao(error)) {
+        // Migration da Fase 1 ainda nao aplicada: segue com o comportamento antigo.
+        ({ data, error } = await supabase.from('lotacao_cargas').select('id,dist').in('dist', lote));
+      }
       if (error) throw new Error(detalheErroSupabase(error));
       (data || []).forEach((row) => {
         const chave = normalizarTexto(row.dist || '');
-        if (chave && !idsPorDist.has(chave)) idsPorDist.set(chave, row.id);
+        if (chave && !idsPorDist.has(chave)) {
+          idsPorDist.set(chave, row.id);
+          existentePorDist.set(chave, row);
+        }
       });
     }
   }
@@ -593,7 +694,10 @@ export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '
     const chaveDist = normalizarTexto(carga.dist || '');
     const idExistente = chaveDist ? idsPorDist.get(chaveDist) : null;
     if (idExistente) {
-      atualizacoes.push({ id: idExistente, row });
+      atualizacoes.push({
+        id: idExistente,
+        row: preservarCamposDaOperacao(row, existentePorDist.get(chaveDist)),
+      });
     } else {
       rowsNovas.push(row);
     }
@@ -604,7 +708,10 @@ export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '
   let atualizadas = 0;
   const falhas = [];
   await executarComConcorrencia(atualizacoes, async ({ id, row }) => {
-    const { error } = await supabase.from('lotacao_cargas').update(row).eq('id', id);
+    let { error } = await supabase.from('lotacao_cargas').update(row).eq('id', id);
+    if (error && erroColunaAlocacao(error)) {
+      ({ error } = await supabase.from('lotacao_cargas').update(semColunasAlocacao(row)).eq('id', id));
+    }
     if (error) {
       falhas.push({ dist: row.dist, erro: detalheErroSupabase(error) });
       return;
@@ -616,7 +723,10 @@ export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '
   let inseridas = 0;
   for (let i = 0; i < rowsNovas.length; i += CHUNK) {
     const chunk = rowsNovas.slice(i, i + CHUNK);
-    const { error } = await supabase.from('lotacao_cargas').insert(chunk);
+    let { error } = await supabase.from('lotacao_cargas').insert(chunk);
+    if (error && erroColunaAlocacao(error)) {
+      ({ error } = await supabase.from('lotacao_cargas').insert(chunk.map(semColunasAlocacao)));
+    }
     if (error) {
       falhas.push({ dist: `lote ${i / CHUNK + 1}`, erro: detalheErroSupabase(error) });
       continue;
@@ -645,6 +755,76 @@ export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '
     duplicadasRemovidas,
     falhas,
   };
+}
+
+// Grava a alocacao de uma carga e registra a trilha campo a campo.
+// `alteracoes` vem no formato do app (camelCase), igual ao que dbParaCarga devolve.
+export async function salvarAlocacaoCargaSupabase(cargaId, alteracoes = {}, { usuario = {}, motivo = '', eventos = [] } = {}) {
+  if (!isSupabaseConfigured()) return { ok: false, modo: 'local' };
+  if (!cargaId) throw new Error('Carga sem identificador para alocar.');
+
+  const supabase = ensureClient();
+  const row = {
+    ...camposAlocacaoParaDb(alteracoes),
+  };
+  if (alteracoes.transportadora !== undefined)  row.transportadora   = String(alteracoes.transportadora || '').slice(0, 200);
+  if (alteracoes.placaCavalo !== undefined)     row.placa_cavalo     = String(alteracoes.placaCavalo || '').toUpperCase().slice(0, 20);
+  if (alteracoes.placaCarreta !== undefined)    row.placa_carreta    = String(alteracoes.placaCarreta || '').toUpperCase().slice(0, 20);
+  if (alteracoes.valorComparacao !== undefined) row.valor_comparacao = numSafe(alteracoes.valorComparacao);
+  if (alteracoes.pedagio !== undefined)         row.pedagio          = numSafe(alteracoes.pedagio);
+  if (alteracoes.tipoVeiculo !== undefined)     row.tipo_veiculo     = String(alteracoes.tipoVeiculo || '').slice(0, 100);
+
+  if (!Object.keys(row).length) return { ok: true, modo: 'supabase', semAlteracao: true };
+
+  const { error } = await supabase.from('lotacao_cargas').update(row).eq('id', cargaId);
+  if (error) {
+    if (erroColunaAlocacao(error)) {
+      throw new Error('A Fase 1 da Lotação precisa da migration 20260819130000_lotacao_alocacao_fase1.sql aplicada no Supabase.');
+    }
+    throw new Error(detalheErroSupabase(error));
+  }
+
+  if (eventos.length) {
+    const linhas = eventos.map((evento) => ({
+      carga_id: cargaId,
+      dist: String(alteracoes.dist || evento.dist || '').slice(0, 200),
+      dist_key: normalizarTexto(alteracoes.dist || evento.dist || ''),
+      campo: String(evento.campo || '').slice(0, 100),
+      valor_anterior: String(evento.valorAnterior ?? '').slice(0, 500),
+      valor_novo: String(evento.valorNovo ?? '').slice(0, 500),
+      motivo: String(motivo || '').slice(0, 500),
+      usuario_id: String(usuario.id || '').slice(0, 100),
+      usuario_nome: String(usuario.nome || usuario.name || '').slice(0, 200),
+    }));
+    const { error: erroEvento } = await supabase.from('lotacao_carga_eventos').insert(linhas);
+    // A trilha nao pode derrubar a alocacao: se falhar, avisa mas mantem o salvo.
+    if (erroEvento) console.error('[Lotação] Falha ao gravar trilha da alocação:', detalheErroSupabase(erroEvento));
+  }
+
+  return { ok: true, modo: 'supabase', eventos: eventos.length };
+}
+
+export async function carregarEventosCargaSupabase(cargaId) {
+  if (!isSupabaseConfigured() || !cargaId) return [];
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('lotacao_carga_eventos')
+    .select('*')
+    .eq('carga_id', cargaId)
+    .order('criado_em', { ascending: false });
+  if (error) {
+    console.warn('[Lotação] Trilha da carga indisponível:', detalheErroSupabase(error));
+    return [];
+  }
+  return (data || []).map((row) => ({
+    id: row.id,
+    campo: row.campo || '',
+    valorAnterior: row.valor_anterior || '',
+    valorNovo: row.valor_novo || '',
+    motivo: row.motivo || '',
+    usuarioNome: row.usuario_nome || '',
+    criadoEm: row.criado_em || '',
+  }));
 }
 
 export async function carregarCargasLotacaoSupabase(filtros = {}) {
