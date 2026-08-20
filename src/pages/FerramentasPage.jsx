@@ -27,6 +27,8 @@ import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 import { relacionarTrackingComCtes } from '../utils/trackingCteLink';
 import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { carregarAliasesCidadeIbge, salvarAliasCidadeIbge, removerAliasCidadeIbge } from '../services/cidadeIbgeAliasService';
+import { carregarEquivalenciasOrigem, salvarEquivalenciaOrigem, removerEquivalenciaOrigem, buscarOrigensDaTransportadora } from '../services/origemEquivalenciaService';
+import { normalizarTransportadoraOrigemEquiv } from '../utils/origemEquivalencia';
 import {
   CANAIS_PARAMETRIZAVEIS,
   definirCanalTransportadora,
@@ -687,6 +689,178 @@ function VinculosCidadeIbgeCard() {
                 <td>{a.uf || '-'}</td>
                 <td>{a.ibge}</td>
                 <td><button className="btn-secondary" type="button" onClick={() => remover(a.id)}>Remover</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ExcecoesOrigemCard({ transportadoras = [] }) {
+  const [lista, setLista] = useState([]);
+  const [transportadora, setTransportadora] = useState('');
+  const [origemTabela, setOrigemTabela] = useState('');
+  const [origemCte, setOrigemCte] = useState('');
+  const [uf, setUf] = useState('');
+  const [ibgeCte, setIbgeCte] = useState('');
+  const [ibgeTabela, setIbgeTabela] = useState('');
+  const [municipios, setMunicipios] = useState([]);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const [salvando, setSalvando] = useState(false);
+  const [origensBanco, setOrigensBanco] = useState(null);
+  const [buscandoOrigens, setBuscandoOrigens] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try { setLista(await carregarEquivalenciasOrigem()); } catch (e) { setErr(e.message || String(e)); }
+      try { setMunicipios(await carregarMunicipiosIbgeDb()); } catch { /* IBGE vira preenchimento manual */ }
+    })();
+  }, []);
+
+  const nomesTransportadoras = useMemo(() => (
+    Array.from(new Set((transportadoras || []).map((t) => String(t.nome || '').trim()).filter(Boolean)))
+      .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+  ), [transportadoras]);
+
+  // Transportadora escolhida: casa pelo nome normalizado (mesma regra do motor),
+  // senao "TAM" nao acha "TAM TRANSPORTES LTDA" e a lista de origens vem vazia.
+  const transportadoraSelecionada = useMemo(() => {
+    const digitado = String(transportadora || '').trim();
+    if (!digitado) return null;
+    const exata = (transportadoras || []).find((item) => String(item.nome || '').trim().toLowerCase() === digitado.toLowerCase());
+    if (exata) return exata;
+    const alvo = normalizarTransportadoraOrigemEquiv(digitado);
+    if (!alvo) return null;
+    return (transportadoras || []).find((item) => normalizarTransportadoraOrigemEquiv(item.nome) === alvo) || null;
+  }, [transportadoras, transportadora]);
+
+  // As origens do resumo carregado no login vem cortadas (o Supabase limita a
+  // consulta unica a 1000 linhas, e cidades no fim do alfabeto somem). Buscamos
+  // as origens da transportadora escolhida direto no banco.
+  useEffect(() => {
+    let cancelado = false;
+    const id = transportadoraSelecionada?.id;
+    if (!id) { setOrigensBanco(null); return undefined; }
+    setBuscandoOrigens(true);
+    (async () => {
+      const origens = await buscarOrigensDaTransportadora(id);
+      if (cancelado) return;
+      setOrigensBanco(origens);
+      setBuscandoOrigens(false);
+    })();
+    return () => { cancelado = true; };
+  }, [transportadoraSelecionada]);
+
+  // Sugestoes de origem: banco quando deu certo, senao o que veio no resumo.
+  // E so sugestao — o campo continua aceitando digitacao livre.
+  const origensDaTransportadora = useMemo(() => {
+    const doResumo = (transportadoraSelecionada?.origens || []).map((o) => String(o.cidade || '').trim()).filter(Boolean);
+    const base = origensBanco && origensBanco.length ? origensBanco : doResumo;
+    return Array.from(new Set(base)).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [transportadoraSelecionada, origensBanco]);
+
+  // Os dois IBGEs importam pra performance: com eles a busca de rotas acha a
+  // tabela direto, em vez de carregar a transportadora inteira. Resolvemos
+  // sozinhos pela lista oficial pra ninguem precisar procurar codigo.
+  const resolverIbge = (cidade) => {
+    const alvoCidade = normalizarCidadeBuscaFerr(cidade);
+    const alvoUf = String(uf || '').trim().toUpperCase();
+    if (!alvoCidade) return '';
+    const achou = (municipios || []).find((m) => {
+      const c = normalizarCidadeBuscaFerr(m.cidade || m.nome || m.municipio);
+      const u = String(m.uf || m.estado || '').trim().toUpperCase();
+      return c === alvoCidade && (!alvoUf || u === alvoUf);
+    });
+    return String(achou?.ibge || achou?.codigo_ibge || achou?.codigo || '').replace(/\D/g, '').slice(0, 7);
+  };
+
+  useEffect(() => { if (!ibgeTabela) setIbgeTabela(resolverIbge(origemTabela)); }, [origemTabela, uf, municipios]);
+  useEffect(() => { if (!ibgeCte) setIbgeCte(resolverIbge(origemCte)); }, [origemCte, uf, municipios]);
+
+  const salvar = async () => {
+    setErr(''); setMsg(''); setSalvando(true);
+    try {
+      const r = await salvarEquivalenciaOrigem({ transportadora, origemTabela, origemCte, uf, ibgeCte: ibgeCte || resolverIbge(origemCte), ibgeTabela: ibgeTabela || resolverIbge(origemTabela) }, lista);
+      setLista(r.equivalencias);
+      setMsg(`Exce\u00e7\u00e3o salva (${r.modo === 'supabase' ? 'Supabase' : 'local'}). Resimule o m\u00eas na Auditoria CT-e para aplicar.`);
+      setOrigemCte(''); setIbgeCte(''); setIbgeTabela('');
+    } catch (e) { setErr(e.message || String(e)); }
+    setSalvando(false);
+  };
+
+  const remover = async (id) => {
+    setErr(''); setMsg('');
+    try { setLista(await removerEquivalenciaOrigem(id, lista)); }
+    catch (e) { setErr(e.message || String(e)); }
+  };
+
+  return (
+    <div style={{ padding: '16px 20px', display: 'grid', gap: 14 }}>
+      <div className="hint-box compact">
+        Use quando a transportadora <strong>emite o CT-e numa cidade diferente da origem da tabela</strong> e por isso o frete não calcula (ex.: TAM tem tabela com origem <strong>Serra</strong>, mas emite como <strong>Vitória</strong>). A exceção só libera a origem para o cálculo — a tabela usada continua sendo a de Serra, sem duplicar rotas. Vale só para a transportadora escolhida. Depois de salvar, <strong>resimule o mês na Auditoria CT-e</strong>.
+      </div>
+      {err ? <div className="sim-alert error">{err}</div> : null}
+      {msg ? <div className="sim-alert info">{msg}</div> : null}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 1fr 0.4fr 0.8fr 0.8fr auto', gap: 10, alignItems: 'end' }}>
+        <label>Transportadora
+          <input type="text" list="ferr-excecao-transportadoras" value={transportadora} onChange={(e) => { setTransportadora(e.target.value); setOrigemTabela(''); }} placeholder="ex.: TAM" />
+          <datalist id="ferr-excecao-transportadoras">
+            {nomesTransportadoras.map((nome) => <option key={nome} value={nome} />)}
+          </datalist>
+        </label>
+        <label>Origem da tabela
+          <input type="text" list="ferr-excecao-origens" value={origemTabela} onChange={(e) => setOrigemTabela(e.target.value)} placeholder="ex.: Serra" />
+          <datalist id="ferr-excecao-origens">
+            {origensDaTransportadora.map((cidade) => <option key={cidade} value={cidade} />)}
+          </datalist>
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+            {!transportadora.trim()
+              ? 'Escolha a transportadora primeiro'
+              : buscandoOrigens
+                ? 'Buscando origens...'
+                : !transportadoraSelecionada
+                  ? 'Transportadora não encontrada na base — pode digitar a origem mesmo assim'
+                  : origensDaTransportadora.length
+                    ? `${origensDaTransportadora.length} origem(ns) na tabela`
+                    : 'Nenhuma origem encontrada — pode digitar mesmo assim'}
+          </span>
+        </label>
+        <label>Origem no CT-e
+          <input type="text" value={origemCte} onChange={(e) => setOrigemCte(e.target.value)} placeholder="ex.: Vitória" />
+        </label>
+        <label>UF
+          <input type="text" value={uf} onChange={(e) => setUf(e.target.value.toUpperCase().slice(0, 2))} placeholder="ex.: ES" maxLength={2} />
+        </label>
+        <label title="Preenchido automaticamente pela lista oficial. Deixa a busca da tabela direta, sem carregar a transportadora inteira.">IBGE da tabela
+          <input type="text" value={ibgeTabela} onChange={(e) => setIbgeTabela(e.target.value.replace(/\D/g, '').slice(0, 7))} placeholder="automático" inputMode="numeric" />
+        </label>
+        <label title="Preenchido automaticamente pela lista oficial.">IBGE do CT-e
+          <input type="text" value={ibgeCte} onChange={(e) => setIbgeCte(e.target.value.replace(/\D/g, '').slice(0, 7))} placeholder="automático" inputMode="numeric" />
+        </label>
+        <button className="primary" type="button" onClick={salvar} disabled={salvando || !transportadora.trim() || !origemTabela.trim() || !origemCte.trim()}>
+          {salvando ? 'Salvando...' : 'Salvar exceção'}
+        </button>
+      </div>
+
+      <div className="sim-analise-tabela-wrap">
+        <table className="sim-analise-tabela">
+          <thead><tr><th>Transportadora</th><th>Origem da tabela</th><th>Considera também</th><th>UF</th><th>IBGE tabela</th><th>IBGE CT-e</th><th>Ação</th></tr></thead>
+          <tbody>
+            {lista.length === 0 ? (
+              <tr><td colSpan={7} style={{ color: 'var(--muted)' }}>Nenhuma exceção cadastrada ainda.</td></tr>
+            ) : lista.map((e) => (
+              <tr key={e.id}>
+                <td>{e.transportadora}</td>
+                <td>{e.origemTabela}</td>
+                <td>{e.origemCte}</td>
+                <td>{e.uf || '-'}</td>
+                <td>{e.ibgeTabela || '-'}</td>
+                <td>{e.ibgeCte || '-'}</td>
+                <td><button className="btn-secondary" type="button" onClick={() => remover(e.id)}>Remover</button></td>
               </tr>
             ))}
           </tbody>
@@ -1465,6 +1639,18 @@ export default function FerramentasPage({ transportadoras = [] }) {
           <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='cidade-ibge'?'△':'▽'}</span>
         </button>
         {abaAberta === 'cidade-ibge' && <VinculosCidadeIbgeCard />}
+      </div>
+
+      {/* Excecoes de origem por transportadora */}
+      <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
+        <button type="button" onClick={() => toggleAba('excecoes-origem')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='excecoes-origem'?'1px solid var(--border-soft)':'none'}}>
+          <div>
+            <div className="panel-title" style={{margin:0}}>📍 Exceções de origem</div>
+            <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>Transportadora emite o CT-e de outra cidade (ex.: TAM, tabela Serra, emite Vitória)</div>
+          </div>
+          <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='excecoes-origem'?'△':'▽'}</span>
+        </button>
+        {abaAberta === 'excecoes-origem' && <ExcecoesOrigemCard transportadoras={transportadoras} />}
       </div>
 
       {/* Pendencias de canal */}

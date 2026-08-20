@@ -14,6 +14,8 @@ import {
 import { resolverAliquotaIcmsUfContexto } from '../utils/icmsUfMatrix';
 import { buscarTrackingParaRealizado, enriquecerRealizadoComTracking } from './realizadoTrackingEnrichment';
 import { obterRaizCnpj } from '../utils/cnpj.js';
+import { carregarMapaEquivalenciasOrigem } from './origemEquivalenciaService';
+import { ibgesOrigemEquivalentes, origemAceitaPorExcecao } from '../utils/origemEquivalencia';
 
 const PAGE_SIZE = 1000;
 const INSERT_CHUNK = 500;
@@ -57,6 +59,10 @@ function semCamposResultadoOpcionais(row) {
 let _cacheBaseFrete = null;
 const _cacheBaseFretePorTransportadora = new Map();
 let _cacheMapaVinculosTransportadoras = null;
+// Exceções de origem (Ferramentas): transportadora emite CT-e numa cidade
+// diferente da origem cadastrada na tabela. Fica em cache de módulo porque o
+// casamento de origem acontece dentro de funções síncronas do motor.
+let _cacheMapaEquivalenciasOrigem = new Map();
 
 function ensureSupabase() {
   if (!isSupabaseConfigured()) {
@@ -171,6 +177,22 @@ async function carregarMapaVinculosAuditoria() {
     _cacheMapaVinculosTransportadoras = new Map();
   }
   return _cacheMapaVinculosTransportadoras;
+}
+
+// Carrega as exceções de origem pro cache de módulo. Chamada nos pontos
+// assíncronos de entrada, antes de processar os CT-e.
+export async function precarregarEquivalenciasOrigemAuditoria() {
+  try {
+    _cacheMapaEquivalenciasOrigem = await carregarMapaEquivalenciasOrigem();
+  } catch (error) {
+    console.warn('[Auditoria CT-e] exceções de origem indisponíveis; seguindo sem elas.', error?.message || error);
+    _cacheMapaEquivalenciasOrigem = new Map();
+  }
+  return _cacheMapaEquivalenciasOrigem;
+}
+
+export function invalidarCacheEquivalenciasOrigemAuditoria() {
+  _cacheMapaEquivalenciasOrigem = new Map();
 }
 
 export function invalidarCacheVinculosAuditoriaCte() {
@@ -453,12 +475,25 @@ function routeKeysRegistros(registros = []) {
     const destino = pickDigits(cte, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino', 'ibge_corrigido_destino']);
     const canal = canalCategoria(pick(cte, ['canal', 'canal_original']));
     if (!origem || !destino) return;
-    keys.add(`${origem}-${destino}`);
-    keys.add(`${destino}-${origem}`);
-    if (canal) {
-      keys.add(`${canal}|${origem}-${destino}`);
-      keys.add(`${canal}|${destino}-${origem}`);
-    }
+    // Exceções de origem (Ferramentas): o CT-e sai de Vitória, mas a tabela da
+    // TAM está cadastrada em Serra. Sem incluir a origem da tabela aqui, a busca
+    // direcionada por rota não acha nada e o sistema cai no plano B — carregar a
+    // tabela inteira da transportadora, que é lento pra valer.
+    const origensBusca = new Set([origem]);
+    ibgesOrigemEquivalentes(
+      _cacheMapaEquivalenciasOrigem,
+      pick(cte, ['cidade_origem', 'cidadeOrigem', 'origem']),
+      origem,
+    ).forEach((valor) => origensBusca.add(valor));
+
+    origensBusca.forEach((ibgeOrigemBusca) => {
+      keys.add(`${ibgeOrigemBusca}-${destino}`);
+      keys.add(`${destino}-${ibgeOrigemBusca}`);
+      if (canal) {
+        keys.add(`${canal}|${ibgeOrigemBusca}-${destino}`);
+        keys.add(`${canal}|${destino}-${ibgeOrigemBusca}`);
+      }
+    });
   });
   return Array.from(keys);
 }
@@ -533,6 +568,17 @@ function listarOrigensCompativeis(transportadora, cte = {}) {
 
   const candidatas = (transportadora?.origens || []).filter((origem) => canalCompativel(origem.canal, canal));
   if (!candidatas.length) return [];
+
+  // Exceção cadastrada em Ferramentas (ex.: TAM, origem Serra, considera
+  // Vitória): vale antes do IBGE, senão a origem certa nunca entra na disputa.
+  const porExcecao = candidatas.filter((origem) => origemAceitaPorExcecao(
+    _cacheMapaEquivalenciasOrigem,
+    transportadora?.nome,
+    origem.cidade,
+    cidadeOrigem,
+    ibgeOrigem,
+  ));
+  if (porExcecao.length) return porExcecao;
 
   if (ibgeOrigem) {
     const porIbge = candidatas.filter((origem) => (
@@ -1183,6 +1229,7 @@ export async function resimularRegistros({ registros, transportadorasAlvo, onPro
     : await enriquecerCtesComTrackingAoVivo(registros, onProgress);
 
   const mapaVinculos = await carregarMapaVinculosAuditoria();
+  await precarregarEquivalenciasOrigemAuditoria();
   const transportadoras = await carregarBaseFreteParaRegistros(registrosParaCalcular, onProgress, transportadorasAlvo, mapaVinculos);
   const alvosNormalizados = Array.from(new Set(
     (transportadorasAlvo || [])
@@ -1488,6 +1535,7 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
 
   const supabase = ensureSupabase();
   const mapaVinculos = await carregarMapaVinculosAuditoria();
+  await precarregarEquivalenciasOrigemAuditoria();
 
   if (!ctesUnicos.length) {
     return { registros: [], encontrados: 0, naoEncontrados: normalizadas.length };
@@ -1614,6 +1662,7 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
 
   const supabase = ensureSupabase();
   const mapaVinculos = await carregarMapaVinculosAuditoria();
+  await precarregarEquivalenciasOrigemAuditoria();
 
   const ctes = [];
   for (let inicio = 0; inicio < chavesCte.length; inicio += 200) {
