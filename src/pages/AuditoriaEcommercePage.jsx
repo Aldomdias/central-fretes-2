@@ -22,8 +22,20 @@ import {
   listarSessoesResimulacaoEcommerce,
   assinaturaFaseamentoEcommerce,
   excluirProgressoOrigensEcommerce,
+  carregarCoberturaEcommerce,
+  carregarCoberturaDiariaEcommerce,
+  limitesBaseEcommerce,
 } from '../services/ecommerceAuditoriaService';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
+import {
+  competenciasDoIntervalo,
+  intervaloDaCompetencia,
+  listarCompetenciasIndicadores,
+  lerCompetenciaIndicadores,
+  salvarCompetenciaIndicadores,
+  excluirCompetenciaIndicadores,
+  mesclarResumosIndicadores,
+} from '../services/ecommerceIndicadoresCache';
 
 const CHAVE_HISTORICO_RESIMULACAO = 'amd-auditoria-ecommerce-resimulacoes-v1';
 const CHAVE_HISTORICO_RESIMULACAO_EXCLUIDAS = 'amd-auditoria-ecommerce-resimulacoes-excluidas-v1';
@@ -48,30 +60,22 @@ function lerSessoesExcluidas() {
 
 const CDS_RESTRICAO = ['Itupeva', 'Jaboatão', 'Serra', 'Duque de Caxias', 'Itajaí'];
 
-const CHAVE_SNAPSHOT_INDICADORES = 'amd-auditoria-ecommerce-indicadores-snapshot-v1';
+const CHAVE_SNAPSHOT_COBERTURA = 'amd-auditoria-ecommerce-cobertura-snapshot-v1';
 
-function lerSnapshotIndicadores(cenarioPeso, dataInicio, dataFim) {
-  try {
-    const todos = JSON.parse(localStorage.getItem(CHAVE_SNAPSHOT_INDICADORES) || '{}');
-    const chave = `${cenarioPeso}|${dataInicio || ''}|${dataFim || ''}`;
-    return todos[chave] || null;
-  } catch {
-    return null;
-  }
-}
-
-function salvarSnapshotIndicadores(cenarioPeso, dataInicio, dataFim, resumo) {
-  try {
-    const todos = JSON.parse(localStorage.getItem(CHAVE_SNAPSHOT_INDICADORES) || '{}');
-    const chave = `${cenarioPeso}|${dataInicio || ''}|${dataFim || ''}`;
-    todos[chave] = { resumo, atualizadoEm: new Date().toISOString() };
-    // So guarda os 6 recortes mais recentes - snapshot e conveniencia, nao precisa
-    // virar um deposito ilimitado de recortes velhos no localStorage.
-    const entradas = Object.entries(todos).sort((a, b) => String(b[1]?.atualizadoEm || '').localeCompare(String(a[1]?.atualizadoEm || '')));
-    localStorage.setItem(CHAVE_SNAPSHOT_INDICADORES, JSON.stringify(Object.fromEntries(entradas.slice(0, 6))));
-  } catch {
-    // localStorage indisponivel/cheio - snapshot e so conveniencia, segue sem ele.
-  }
+// Celula "x de y (z%)" com barrinha, usada na tabela de cobertura. Verde quando o
+// periodo esta fechado, ambar quando falta pedaco, cinza quando nao ha elegivel.
+function renderBarraCobertura(feitos = 0, elegiveis = 0) {
+  if (!elegiveis) return <span style={{ color: '#94a3b8' }}>sem elegiveis</span>;
+  const pct = (feitos / elegiveis) * 100;
+  const cor = pct >= 99 ? '#16a34a' : pct > 0 ? '#f59e0b' : '#cbd5e1';
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 8, alignItems: 'center' }}>
+      <span style={{ height: 10, background: '#e2e8f0', borderRadius: 999, overflow: 'hidden' }}>
+        <span style={{ display: 'block', width: `${Math.min(100, pct)}%`, height: '100%', background: cor }} />
+      </span>
+      <span style={{ whiteSpace: 'nowrap' }}>{feitos.toLocaleString('pt-BR')} ({pct.toFixed(pct >= 99.95 || pct === 0 ? 0 : 1)}%)</span>
+    </div>
+  );
 }
 
 function formatarNumero(value, casas = 0) {
@@ -92,6 +96,14 @@ function formatarData(value) {
   const data = new Date(value);
   if (Number.isNaN(data.getTime())) return '-';
   return data.toLocaleDateString('pt-BR');
+}
+
+// 'YYYY-MM-DD' puro nao pode passar por new Date(): vira meia-noite UTC e volta
+// um dia atras no fuso de Brasilia.
+function formatarDiaIso(iso) {
+  if (!iso) return '-';
+  const [ano, mes, dia] = String(iso).slice(0, 10).split('-');
+  return dia ? `${dia}/${mes}/${ano}` : '-';
 }
 
 function boolTexto(value) {
@@ -152,6 +164,10 @@ function consolidarItensBi(itens = []) {
     pagosAMaisComTaxaMarketplace: desvios.filter((item) => Number(item.taxaMarketplace || 0) > 0).length,
     valorTaxaMarketplace: Number(desvios.reduce((soma, item) => soma + Number(item.taxaMarketplace || 0), 0).toFixed(2)),
     perdaComTaxaMarketplace: Number(desvios.filter((item) => Number(item.taxaMarketplace || 0) > 0).reduce((soma, item) => soma + Number(item.perda || 0), 0).toFixed(2)),
+    pedidosComAdicionalTributario: itens.filter((item) => Number(item.adicionalTributario || 0) > 0).length,
+    valorAdicionalTributario: Number(itens.reduce((soma, item) => soma + Number(item.adicionalTributario || 0), 0).toFixed(2)),
+    pagosAMaisComAdicionalTributario: desvios.filter((item) => Number(item.adicionalTributario || 0) > 0).length,
+    valorAdicionalTributarioNosDesvios: Number(desvios.reduce((soma, item) => soma + Number(item.adicionalTributario || 0), 0).toFixed(2)),
     alternativas: rankingBi(desvios, 'transportadoraIdeal'),
     transportadorasUsadas: rankingBi(desvios, 'transportadoraUsada'),
     origensIdeais: rankingBi(desvios, 'origemIdeal'),
@@ -364,36 +380,215 @@ export default function AuditoriaEcommercePage() {
   const [painelCandidatos, setPainelCandidatos] = useState(null);
   const [tabelaConsultada, setTabelaConsultada] = useState(null);
   const [abaPrincipal, setAbaPrincipal] = useState('operacao');
+  const [cobertura, setCobertura] = useState(null);
+  const [carregandoCobertura, setCarregandoCobertura] = useState(false);
+  const [progressoCobertura, setProgressoCobertura] = useState(null);
+  const [mesExpandido, setMesExpandido] = useState(null);
+  const [diasCobertura, setDiasCobertura] = useState({});
   const [indicadores, setIndicadores] = useState(null);
   const [indicadoresAtualizadoEm, setIndicadoresAtualizadoEm] = useState(null);
   const [cenarioPainel, setCenarioPainel] = useState('cotado');
   const [carregandoIndicadores, setCarregandoIndicadores] = useState(false);
+  const [competenciasCache, setCompetenciasCache] = useState([]);
+  const [competenciasSelecionadas, setCompetenciasSelecionadas] = useState([]);
+  const [competenciaEmCurso, setCompetenciaEmCurso] = useState(null);
+  const [mesesDaBase, setMesesDaBase] = useState([]);
   const [linhasIndicadoresLidas, setLinhasIndicadoresLidas] = useState(0);
-  const filtrosBiVazio = { somenteDesvios: false, campanha: null, diferencaPeso: null, pesoInconsistente: null, taxaMarketplace: null, transportadoraIdeal: '', transportadoraUsada: '', origemIdeal: '', origemUsada: '', competencia: '', semana: '', canal: '', uf: '' };
+  const filtrosBiVazio = { somenteDesvios: false, campanha: null, diferencaPeso: null, pesoInconsistente: null, taxaMarketplace: null, adicionalTributario: null, transportadoraIdeal: '', transportadoraUsada: '', origemIdeal: '', origemUsada: '', competencia: '', semana: '', canal: '', uf: '' };
   const [filtrosBi, setFiltrosBi] = useState(filtrosBiVazio);
 
-  async function atualizarIndicadores() {
+  // Cobertura da base: contagens rapidas (nao le linhas) de quanto de cada mes
+  // ja esta cruzado e recalculado. Fica guardada no navegador pra abrir na hora.
+  useEffect(() => {
+    try {
+      const salvo = JSON.parse(localStorage.getItem(CHAVE_SNAPSHOT_COBERTURA) || 'null');
+      if (salvo && Array.isArray(salvo.meses)) setCobertura(salvo);
+    } catch {
+      // snapshot corrompido/indisponivel - a tela abre vazia e o usuario atualiza.
+    }
+  }, []);
+
+  async function atualizarCobertura() {
     setErro('');
-    setCarregandoIndicadores(true);
+    setCarregandoCobertura(true);
+    setProgressoCobertura(null);
+    try {
+      const resultado = await carregarCoberturaEcommerce({ onProgress: setProgressoCobertura });
+      setCobertura(resultado);
+      setDiasCobertura({});
+      setMesExpandido(null);
+      try {
+        localStorage.setItem(CHAVE_SNAPSHOT_COBERTURA, JSON.stringify(resultado));
+      } catch {
+        // snapshot e so conveniencia - segue sem ele se o localStorage estiver cheio.
+      }
+    } catch (error) {
+      setErro(error.message || 'Erro ao carregar a cobertura da base.');
+    } finally {
+      setCarregandoCobertura(false);
+      setProgressoCobertura(null);
+    }
+  }
+
+  async function alternarDetalheMes(mesIso) {
+    if (mesExpandido === mesIso) {
+      setMesExpandido(null);
+      return;
+    }
+    setMesExpandido(mesIso);
+    if (diasCobertura[mesIso]) return;
+    try {
+      const dias = await carregarCoberturaDiariaEcommerce(mesIso, { onProgress: setProgressoCobertura });
+      setDiasCobertura((atual) => ({ ...atual, [mesIso]: dias }));
+    } catch (error) {
+      setErro(error.message || 'Erro ao detalhar o mes.');
+    } finally {
+      setProgressoCobertura(null);
+    }
+  }
+
+  const competenciasDoPeriodo = useMemo(
+    () => competenciasDoIntervalo(filtrosServidor.dataInicio, filtrosServidor.dataFim),
+    [filtrosServidor.dataInicio, filtrosServidor.dataFim]
+  );
+
+  const competenciasDoCenario = useMemo(
+    () => competenciasCache.filter((registro) => registro.cenarioPeso === cenarioPainel),
+    [competenciasCache, cenarioPainel]
+  );
+
+  const competenciasDaLista = useMemo(() => {
+    const salvas = new Map(competenciasDoCenario.map((registro) => [registro.competencia, registro]));
+    // A lista nao pode depender do filtro de datas: ele fica na aba "Operacao e
+    // pedidos", entao quem abre direto o painel via os meses da propria base.
+    const nomes = [...new Set([...mesesDaBase, ...competenciasDoPeriodo, ...salvas.keys()])].sort((a, b) => b.localeCompare(a));
+    return nomes.map((competencia) => ({
+      competencia,
+      salva: salvas.has(competencia) && !salvas.get(competencia).desatualizada,
+      desatualizada: Boolean(salvas.get(competencia)?.desatualizada),
+      total: salvas.get(competencia)?.total || 0,
+      atualizadoEm: salvas.get(competencia)?.atualizadoEm || null,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mesesDaBase, competenciasDoPeriodo, competenciasDoCenario]);
+
+  // Meses que existem na base de pedidos, pra listar tudo que da pra analisar
+  // mesmo antes de qualquer competencia ter sido carregada.
+  useEffect(() => {
+    let cancelado = false;
+    limitesBaseEcommerce()
+      .then((limites) => {
+        if (cancelado || !limites?.primeiro || !limites?.ultimo) return;
+        setMesesDaBase(competenciasDoIntervalo(limites.primeiro.slice(0, 7) + '-01', limites.ultimo));
+      })
+      .catch(() => setMesesDaBase([]));
+    return () => { cancelado = true; };
+  }, []);
+
+  async function recarregarListaCompetencias() {
+    const lista = await listarCompetenciasIndicadores();
+    setCompetenciasCache(lista);
+    return lista;
+  }
+
+  // Le do banco UMA competencia e guarda no cache local. Cada mes vira um registro
+  // proprio, entao carregar agosto nao apaga julho nem obriga a varrer os dois.
+  async function carregarCompetencia(competencia, cenario = cenarioPainel) {
+    const { dataInicio, dataFim } = intervaloDaCompetencia(competencia);
+    setCompetenciaEmCurso(competencia);
     setLinhasIndicadoresLidas(0);
     try {
       // So restringe por data no servidor; canal, UF, campanha, transportadora e
       // divergencia de peso ficam disponiveis para filtro dinamico no navegador
       // (filtrosBi), sem precisar buscar de novo no banco a cada troca de filtro.
       const resultado = await carregarIndicadoresEcommerce({
-        filtros: { dataInicio: filtrosServidor.dataInicio || null, dataFim: filtrosServidor.dataFim || null },
-        cenarioPeso: cenarioPainel,
+        filtros: { dataInicio, dataFim },
+        cenarioPeso: cenario,
         onProgress: ({ carregados }) => setLinhasIndicadoresLidas(carregados),
       });
-      setIndicadores(resultado);
-      setFiltrosBi(filtrosBiVazio);
-      salvarSnapshotIndicadores(cenarioPainel, filtrosServidor.dataInicio, filtrosServidor.dataFim, resultado);
-      setIndicadoresAtualizadoEm(new Date().toISOString());
+      await salvarCompetenciaIndicadores(cenario, competencia, resultado);
+      return resultado;
+    } finally {
+      setCompetenciaEmCurso(null);
+    }
+  }
+
+  // Mostra na tela a soma das competencias marcadas, lendo tudo do cache local.
+  async function montarPainelDasCompetencias(competencias, cenario = cenarioPainel) {
+    const resumos = [];
+    let maisRecente = null;
+    for (const competencia of competencias) {
+      const registro = await lerCompetenciaIndicadores(cenario, competencia);
+      if (!registro) continue;
+      resumos.push(registro.resumo);
+      if (!maisRecente || registro.atualizadoEm > maisRecente) maisRecente = registro.atualizadoEm;
+    }
+    if (!resumos.length) {
+      setIndicadores(null);
+      setIndicadoresAtualizadoEm(null);
+      return;
+    }
+    setIndicadores(mesclarResumosIndicadores(resumos));
+    setIndicadoresAtualizadoEm(maisRecente);
+    setFiltrosBi(filtrosBiVazio);
+  }
+
+  // Botao principal: carrega o que falta das competencias do periodo filtrado
+  // (as ja salvas sao reaproveitadas) e mostra a soma delas.
+  async function atualizarIndicadores({ refazer = false } = {}) {
+    setErro('');
+    setCarregandoIndicadores(true);
+    setLinhasIndicadoresLidas(0);
+    try {
+      // Sem filtro de data, "carregar tudo" vale para os meses listados da base.
+      const competencias = competenciasDoPeriodo.length ? competenciasDoPeriodo : competenciasDaLista.map((linha) => linha.competencia);
+      if (!competencias.length) {
+        setErro('Nenhuma competencia encontrada na base.');
+        return;
+      }
+      const jaSalvas = new Set((await recarregarListaCompetencias()).filter((r) => r.cenarioPeso === cenarioPainel).map((r) => r.competencia));
+      for (const competencia of competencias) {
+        if (!refazer && jaSalvas.has(competencia)) continue;
+        await carregarCompetencia(competencia);
+      }
+      await recarregarListaCompetencias();
+      setCompetenciasSelecionadas(competencias);
+      await montarPainelDasCompetencias(competencias);
     } catch (error) {
       setErro(error.message || 'Erro ao carregar indicadores.');
     } finally {
       setCarregandoIndicadores(false);
     }
+  }
+
+  async function alternarCompetenciaSelecionada(competencia) {
+    const novas = competenciasSelecionadas.includes(competencia)
+      ? competenciasSelecionadas.filter((c) => c !== competencia)
+      : [...competenciasSelecionadas, competencia].sort();
+    setCompetenciasSelecionadas(novas);
+    await montarPainelDasCompetencias(novas);
+  }
+
+  async function recarregarUmaCompetencia(competencia) {
+    setErro('');
+    setCarregandoIndicadores(true);
+    try {
+      await carregarCompetencia(competencia);
+      await recarregarListaCompetencias();
+      await montarPainelDasCompetencias(competenciasSelecionadas.includes(competencia) ? competenciasSelecionadas : [...competenciasSelecionadas, competencia].sort());
+    } catch (error) {
+      setErro(error.message || 'Erro ao recarregar a competencia.');
+    } finally {
+      setCarregandoIndicadores(false);
+    }
+  }
+
+  async function removerCompetenciaDoCache(competencia) {
+    await excluirCompetenciaIndicadores(cenarioPainel, competencia);
+    await recarregarListaCompetencias();
+    const novas = competenciasSelecionadas.filter((c) => c !== competencia);
+    setCompetenciasSelecionadas(novas);
+    await montarPainelDasCompetencias(novas);
   }
 
   // Regra 80/20 (80% preco + 20% prazo) so muda o resultado se a resimulacao for
@@ -424,15 +619,14 @@ export default function AuditoriaEcommercePage() {
         });
       }
       setConsiderarPrazo(novoConsiderarPrazo);
-      const resultado = await carregarIndicadoresEcommerce({
-        filtros: filtrosData,
-        cenarioPeso: cenarioPainel,
-        onProgress: ({ carregados }) => setLinhasIndicadoresLidas(carregados),
-      });
-      setIndicadores(resultado);
-      setFiltrosBi(filtrosBiVazio);
-      salvarSnapshotIndicadores(cenarioPainel, filtrosServidor.dataInicio, filtrosServidor.dataFim, resultado);
-      setIndicadoresAtualizadoEm(new Date().toISOString());
+      // A resimulacao mudou os resultados no banco, entao o cache de todas as
+      // competencias do periodo esta velho - refaz cada uma.
+      for (const competencia of competenciasDoPeriodo) {
+        await carregarCompetencia(competencia);
+      }
+      await recarregarListaCompetencias();
+      setCompetenciasSelecionadas(competenciasDoPeriodo);
+      await montarPainelDasCompetencias(competenciasDoPeriodo);
       setMensagem(`Indicadores recalculados com ${novoConsiderarPrazo ? 'preco 80% + prazo 20%' : 'somente preco'}.`);
     } catch (error) {
       setErro(error.message || 'Erro ao recalcular indicadores com o novo criterio.');
@@ -615,16 +809,21 @@ export default function AuditoriaEcommercePage() {
   // cenario ou de periodo - a consulta completa (sem filtro de data chega a
   // escanear a base inteira, ~100s) so roda de verdade quando o usuario clica
   // em "Atualizar indicadores".
+  // Ao trocar de cenario ou de periodo, monta o painel na hora com o que ja esta
+  // no cache local (sem tocar no banco). O que faltar aparece na lista de
+  // competencias como "nao carregada", pra buscar so aquele mes.
   useEffect(() => {
-    const snapshot = lerSnapshotIndicadores(cenarioPainel, filtrosServidor.dataInicio, filtrosServidor.dataFim);
-    if (snapshot) {
-      setIndicadores(snapshot.resumo);
-      setIndicadoresAtualizadoEm(snapshot.atualizadoEm);
-      setFiltrosBi(filtrosBiVazio);
-    } else {
-      setIndicadores(null);
-      setIndicadoresAtualizadoEm(null);
-    }
+    let cancelado = false;
+    (async () => {
+      const lista = await listarCompetenciasIndicadores();
+      if (cancelado) return;
+      setCompetenciasCache(lista);
+      const salvasDoCenario = new Set(lista.filter((r) => r.cenarioPeso === cenarioPainel && !r.desatualizada).map((r) => r.competencia));
+      const alvo = (competenciasDoPeriodo.length ? competenciasDoPeriodo : [...salvasDoCenario].sort()).filter((c) => salvasDoCenario.has(c));
+      setCompetenciasSelecionadas(alvo);
+      await montarPainelDasCompetencias(alvo, cenarioPainel);
+    })();
+    return () => { cancelado = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cenarioPainel, filtrosServidor.dataInicio, filtrosServidor.dataFim]);
 
@@ -1098,6 +1297,7 @@ export default function AuditoriaEcommercePage() {
     if (filtrosBi.diferencaPeso !== null && item.diferencaPeso !== filtrosBi.diferencaPeso) return false;
     if (filtrosBi.pesoInconsistente !== null && item.pesoPossivelmenteInconsistente !== filtrosBi.pesoInconsistente) return false;
     if (filtrosBi.taxaMarketplace !== null && (Number(item.taxaMarketplace || 0) > 0) !== filtrosBi.taxaMarketplace) return false;
+    if (filtrosBi.adicionalTributario !== null && (Number(item.adicionalTributario || 0) > 0) !== filtrosBi.adicionalTributario) return false;
     if (filtrosBi.transportadoraIdeal && item.transportadoraIdeal !== filtrosBi.transportadoraIdeal) return false;
     if (filtrosBi.transportadoraUsada && item.transportadoraUsada !== filtrosBi.transportadoraUsada) return false;
     if (filtrosBi.origemIdeal && item.origemIdeal !== filtrosBi.origemIdeal) return false;
@@ -1110,6 +1310,27 @@ export default function AuditoriaEcommercePage() {
   }), [indicadores, filtrosBi]);
 
   const indicadoresBi = useMemo(() => consolidarItensBi(itensBiFiltrados), [itensBiFiltrados]);
+
+  // Ultimo mes "fechado" em cada cenario e quanto ainda falta recalcular na base toda.
+  const resumoCobertura = useMemo(() => {
+    const meses = cobertura?.meses || [];
+    const completo = (campo) => {
+      let ultimo = null;
+      for (const mes of meses) {
+        if (mes.cruzados > 0 && mes[campo] / mes.cruzados >= 0.99) ultimo = mes.dataInicio.slice(0, 7);
+        else if (mes.cruzados > 0) break;
+      }
+      return ultimo;
+    };
+    return {
+      primeiroDiaBase: cobertura?.limites?.primeiro ? formatarDiaIso(cobertura.limites.primeiro) : null,
+      ultimoDiaBase: cobertura?.limites?.ultimo ? formatarDiaIso(cobertura.limites.ultimo) : null,
+      completoCotado: completo('cotado'),
+      completoFaturado: completo('faturado'),
+      faltaCotado: meses.reduce((soma, mes) => soma + Math.max(0, mes.cruzados - mes.cotado), 0),
+      faltaFaturado: meses.reduce((soma, mes) => soma + Math.max(0, mes.cruzados - mes.faturado), 0),
+    };
+  }, [cobertura]);
 
   // Cada item do painel ja carrega os dois lados (visao atual + "outro cenario"), gravados
   // na mesma rodada de resimulacao - entao a comparacao cotado x faturado nao precisa de
@@ -1149,6 +1370,7 @@ export default function AuditoriaEcommercePage() {
         <button className={abaPrincipal === 'operacao' ? 'tab-btn active' : 'tab-btn'} type="button" onClick={() => setAbaPrincipal('operacao')}>Operacao e pedidos</button>
         <button className={abaPrincipal === 'indicadores' ? 'tab-btn active' : 'tab-btn'} type="button" onClick={() => setAbaPrincipal('indicadores')}>Painel de indicadores</button>
         <button className={abaPrincipal === 'comparativo' ? 'tab-btn active' : 'tab-btn'} type="button" onClick={() => setAbaPrincipal('comparativo')}>Comparativo cotado x faturado</button>
+        <button className={abaPrincipal === 'cobertura' ? 'tab-btn active' : 'tab-btn'} type="button" onClick={() => setAbaPrincipal('cobertura')}>Cobertura da base</button>
       </div>
 
       <div style={{ display: abaPrincipal === 'operacao' ? 'contents' : 'none' }}>
@@ -1577,10 +1799,10 @@ export default function AuditoriaEcommercePage() {
           <div className="panel-header-row">
             <div>
               <div className="panel-title">Indicadores da auditoria financeira</div>
-              <p className="compact">Usa somente pedidos ja calculados (status OK) que atendem aos filtros principais.</p>
+              <p className="compact">Usa somente pedidos ja calculados (status OK) que atendem aos filtros principais. Cada competencia (mes) fica guardada separada neste navegador — carrega uma vez e depois abre na hora, sozinha ou somada com as outras.</p>
               {indicadoresAtualizadoEm ? (
                 <p className="compact" style={{ color: '#94a3b8' }}>
-                  Dados de {new Date(indicadoresAtualizadoEm).toLocaleString('pt-BR')} (snapshot salvo neste navegador). Clique em "Atualizar indicadores" pra recalcular na hora.
+                  Exibindo {competenciasSelecionadas.length ? competenciasSelecionadas.join(', ') : 'nada'} · dado mais recente de {new Date(indicadoresAtualizadoEm).toLocaleString('pt-BR')}.
                 </p>
               ) : null}
             </div>
@@ -1591,8 +1813,8 @@ export default function AuditoriaEcommercePage() {
                   <option value="faturado">Peso faturado - cenario financeiro</option>
                 </select>
               </label>
-              <button className="btn-primary" type="button" onClick={atualizarIndicadores} disabled={carregandoIndicadores}>
-                {carregandoIndicadores ? `Lendo ${formatarNumero(linhasIndicadoresLidas)} pedidos...` : 'Atualizar indicadores'}
+              <button className="btn-primary" type="button" onClick={() => atualizarIndicadores()} disabled={carregandoIndicadores}>
+                {carregandoIndicadores ? `${competenciaEmCurso || ''} — lendo ${formatarNumero(linhasIndicadoresLidas)} pedidos...` : 'Carregar as que faltam'}
               </button>
             </div>
           </div>
@@ -1610,7 +1832,53 @@ export default function AuditoriaEcommercePage() {
             <small className="compact">Muda o criterio muda a escolha "ideal" - refaz a resimulacao do periodo filtrado e recarrega o painel. Pode demorar em bases grandes.</small>
           </div>
 
-          {!indicadores && !carregandoIndicadores ? <div className="sim-alert info">Clique em Atualizar indicadores depois do fechamento. A mesma rodada alimenta as visoes cotada e faturada.</div> : null}
+          <div style={{ marginTop: 14, border: '1px solid #e2e8f0', borderRadius: 10, padding: 12 }}>
+            <div className="panel-header-row" style={{ marginBottom: 8 }}>
+              <div className="panel-title">Competencias salvas ({cenarioPainel})</div>
+              <button className="btn-secondary" type="button" style={{ padding: '2px 8px', fontSize: '0.72rem' }} onClick={() => atualizarIndicadores({ refazer: true })} disabled={carregandoIndicadores}>
+                Refazer as competencias listadas
+              </button>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {competenciasDaLista.length ? competenciasDaLista.map((linha) => (
+                <div
+                  key={linha.competencia}
+                  style={{
+                    border: `1px solid ${competenciasSelecionadas.includes(linha.competencia) ? '#2563eb' : '#e2e8f0'}`,
+                    background: linha.salva ? (competenciasSelecionadas.includes(linha.competencia) ? '#eff6ff' : '#fff') : '#f8fafc',
+                    borderRadius: 8, padding: '8px 10px', minWidth: 190,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={competenciasSelecionadas.includes(linha.competencia)}
+                      disabled={!linha.salva || carregandoIndicadores}
+                      onChange={() => alternarCompetenciaSelecionada(linha.competencia)}
+                    />
+                    <strong>{linha.competencia}</strong>
+                  </div>
+                  {linha.salva ? (
+                    <>
+                      <div className="compact">{formatarNumero(linha.total)} pedidos</div>
+                      <div className="compact" style={{ color: '#94a3b8' }}>{new Date(linha.atualizadoEm).toLocaleString('pt-BR')}</div>
+                      <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                        <button className="btn-secondary" type="button" style={{ padding: '1px 6px', fontSize: '0.68rem' }} onClick={() => recarregarUmaCompetencia(linha.competencia)} disabled={carregandoIndicadores}>Recarregar</button>
+                        <button className="btn-secondary" type="button" style={{ padding: '1px 6px', fontSize: '0.68rem' }} onClick={() => removerCompetenciaDoCache(linha.competencia)} disabled={carregandoIndicadores}>Apagar</button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="compact" style={{ color: '#b45309' }}>{linha.desatualizada ? 'desatualizada (formato antigo)' : 'nao carregada'}</div>
+                      <button className="btn-secondary" type="button" style={{ padding: '1px 6px', fontSize: '0.68rem', marginTop: 4 }} onClick={() => recarregarUmaCompetencia(linha.competencia)} disabled={carregandoIndicadores}>Carregar so este mes</button>
+                    </>
+                  )}
+                </div>
+              )) : <p className="compact">Nenhuma competencia encontrada. Importe pedidos na aba "Operacao e pedidos" primeiro.</p>}
+            </div>
+          </div>
+
+          {!indicadores && !carregandoIndicadores ? <div className="sim-alert info">Marque uma competencia salva acima, ou carregue as do periodo filtrado. A mesma rodada alimenta as visoes cotada e faturada.</div> : null}
 
           {indicadores ? (
             <>
@@ -1647,6 +1915,10 @@ export default function AuditoriaEcommercePage() {
                     <option value="">Todos</option><option value="true">Com valor</option><option value="false">Sem valor</option>
                   </select>
                 </label>
+              <label className="field">Tem adicional tributario?<select value={filtrosBi.adicionalTributario === null ? '' : String(filtrosBi.adicionalTributario)} onChange={(e) => setFiltrosBi((f) => ({ ...f, adicionalTributario: e.target.value === '' ? null : e.target.value === 'true' }))}>
+                    <option value="">Todos</option><option value="true">Com valor</option><option value="false">Sem valor</option>
+                  </select>
+                </label>
                 <label className="field">Canal
                   <select value={filtrosBi.canal} onChange={(e) => setFiltrosBi((f) => ({ ...f, canal: e.target.value }))}>
                     <option value="">Todos</option>
@@ -1675,6 +1947,8 @@ export default function AuditoriaEcommercePage() {
                 <div className="summary-card" style={{ cursor: 'pointer' }} onClick={() => setFiltrosBi((f) => ({ ...f, somenteDesvios: true, diferencaPeso: true }))}><span>Desvios com diferenca de peso</span><strong>{formatarNumero(indicadoresBi.pagosAMaisPesoDiferente)}</strong><small>perda {formatarMoeda(itensBiFiltrados.filter((i) => i.perda > 0 && i.diferencaPeso).reduce((s, i) => s + i.perda, 0))} - clique</small></div>
                 <div className="summary-card" style={{ cursor: 'pointer' }} onClick={() => setFiltrosBi((f) => ({ ...f, somenteDesvios: true, taxaMarketplace: true }))}><span>Desvios com Frete a Cobrar Mkt</span><strong>{formatarNumero(indicadoresBi.pagosAMaisComTaxaMarketplace)}</strong><small>perda {formatarMoeda(indicadoresBi.perdaComTaxaMarketplace)} - clique</small></div>
                 <div className="summary-card"><span>Frete a Cobrar Mkt nos desvios</span><strong>{formatarMoeda(indicadoresBi.valorTaxaMarketplace)}</strong><small>soma da taxa no recorte</small></div>
+                <div className="summary-card" style={{ cursor: 'pointer' }} onClick={() => setFiltrosBi((f) => ({ ...f, adicionalTributario: true }))}><span>Adicional tributario</span><strong>{formatarMoeda(indicadoresBi.valorAdicionalTributario)}</strong><small>{formatarNumero(indicadoresBi.pedidosComAdicionalTributario)} pedidos com adicional - clique</small></div>
+                <div className="summary-card"><span>Adicional tributario nos desvios</span><strong>{formatarMoeda(indicadoresBi.valorAdicionalTributarioNosDesvios)}</strong><small>{formatarNumero(indicadoresBi.pagosAMaisComAdicionalTributario)} desvios com adicional</small></div>
                 <div className="summary-card"><span>Escolha mudou pelo peso</span><strong>{formatarNumero(itensBiFiltrados.filter((item) => item.mudouTransportadoraPorPeso).length)}</strong><small>cotado x faturado escolheram transportadoras diferentes</small></div>
                 <div className="summary-card" style={{ cursor: 'pointer' }} onClick={() => setFiltrosBi((f) => ({ ...f, pesoInconsistente: true }))}><span>Peso possivelmente inconsistente</span><strong>{formatarNumero(itensBiFiltrados.filter((item) => item.pesoPossivelmenteInconsistente).length)}</strong><small>faturado muito acima do cotado e da cubagem de referencia - clique</small></div>
               </div>
@@ -1721,11 +1995,41 @@ export default function AuditoriaEcommercePage() {
           <div className="panel-header-row">
             <div>
               <div className="panel-title">Comparativo cotado x faturado</div>
-              <p className="compact">Usa o mesmo snapshot do Painel de indicadores (visao atual: <strong>{cenarioPainel}</strong>).{indicadoresAtualizadoEm ? <> Dados de {new Date(indicadoresAtualizadoEm).toLocaleString('pt-BR')}.</> : null} Se nao aparecer nada, va no "Painel de indicadores" e clique em "Atualizar indicadores" (uma vez pra cada cenario) primeiro.</p>
+              <p className="compact">
+                Usa as mesmas competencias carregadas no Painel de indicadores (visao atual: <strong>{cenarioPainel}</strong>){competenciasSelecionadas.length ? <> — {competenciasSelecionadas.join(', ')}</> : null}.
+                {indicadoresAtualizadoEm ? <> Dados de {new Date(indicadoresAtualizadoEm).toLocaleString('pt-BR')}.</> : null} Se nao aparecer nada, va no "Painel de indicadores" e carregue a competencia primeiro.
+              </p>
+            </div>
+            <div className="actions-right wrap">
+              {/* Mesmo filtrosBi do painel: o recorte escolhido aqui vale nas duas telas. */}
+              <label className="field" style={{ minWidth: 170 }}>Competencia
+                <select value={filtrosBi.competencia} onChange={(e) => setFiltrosBi((f) => ({ ...f, competencia: e.target.value, semana: '' }))}>
+                  <option value="">Todas carregadas</option>
+                  {[...new Set((indicadores?.itens || []).map((item) => competenciaBi(item.dataCriacao)))].sort().map((valor) => <option key={valor} value={valor}>{valor}</option>)}
+                </select>
+              </label>
+              <label className="field" style={{ minWidth: 170 }}>Semana
+                <select value={filtrosBi.semana} onChange={(e) => setFiltrosBi((f) => ({ ...f, semana: e.target.value }))}>
+                  <option value="">Todas</option>
+                  {[...new Set((indicadores?.itens || []).filter((item) => !filtrosBi.competencia || competenciaBi(item.dataCriacao) === filtrosBi.competencia).map((item) => semanaBi(item.dataCriacao)))].sort().map((valor) => <option key={valor} value={valor}>{valor}</option>)}
+                </select>
+              </label>
+              <label className="field" style={{ minWidth: 150 }}>Canal
+                <select value={filtrosBi.canal} onChange={(e) => setFiltrosBi((f) => ({ ...f, canal: e.target.value }))}>
+                  <option value="">Todos</option>
+                  {[...new Set((indicadores?.itens || []).map((item) => item.canal).filter(Boolean))].sort().map((valor) => <option key={valor} value={valor}>{valor}</option>)}
+                </select>
+              </label>
+              <label className="field" style={{ minWidth: 110 }}>UF
+                <select value={filtrosBi.uf} onChange={(e) => setFiltrosBi((f) => ({ ...f, uf: e.target.value }))}>
+                  <option value="">Todas</option>
+                  {[...new Set((indicadores?.itens || []).map((item) => item.uf).filter(Boolean))].sort().map((valor) => <option key={valor} value={valor}>{valor}</option>)}
+                </select>
+              </label>
             </div>
           </div>
 
-          {!indicadores ? <div className="sim-alert info">Nenhum dado carregado ainda pra esse cenario/periodo. Va em "Painel de indicadores" e clique em "Atualizar indicadores".</div> : (
+          {!indicadores ? <div className="sim-alert info">Nenhuma competencia carregada nesse cenario. Va em "Painel de indicadores" e carregue o mes que quer analisar.</div> : (
             <>
               <div className="summary-strip lotacao-summary-mini" style={{ marginTop: 14 }}>
                 <div className="summary-card"><span>Pedidos comparaveis</span><strong>{formatarNumero(comparativoBi.totalComparavel)}</strong><small>tem os dois cenarios calculados</small></div>
@@ -1758,6 +2062,80 @@ export default function AuditoriaEcommercePage() {
                   {itensBiFiltrados.filter((item) => item.mudouTransportadoraPorPeso).sort((a, b) => Math.abs(b.valorIdealOutroCenario - b.valorIdeal) - Math.abs(a.valorIdealOutroCenario - a.valorIdeal)).slice(0, 200).map((item) => <tr key={item.id}><td>{item.pedido}</td><td>{formatarData(item.dataCriacao)}</td><td>{item.transportadoraIdeal}</td><td>{item.transportadoraIdealOutroCenario}</td><td>{formatarMoeda(item.valorIdeal)}</td><td>{formatarMoeda(item.valorIdealOutroCenario)}</td><td><strong>{formatarMoeda(item.valorIdealOutroCenario - item.valorIdeal)}</strong></td></tr>)}
                 </tbody></table>
               </div>
+            </>
+          )}
+        </section>
+      ) : null}
+
+      {abaPrincipal === 'cobertura' ? (
+        <section className="panel-card">
+          <div className="panel-header-row">
+            <div>
+              <div className="panel-title">Cobertura da base</div>
+              <p className="compact">Quanto de cada mes ja esta importado, cruzado com CT-e e recalculado em cada cenario de peso. Ignora os filtros da tela — mostra a base inteira. So faz contagens, entao responde em segundos.</p>
+              {cobertura?.atualizadoEm ? (
+                <p className="compact" style={{ color: '#94a3b8' }}>Contagem de {new Date(cobertura.atualizadoEm).toLocaleString('pt-BR')} (salva neste navegador).</p>
+              ) : null}
+            </div>
+            <div className="actions-right wrap">
+              <button className="btn-primary" type="button" onClick={atualizarCobertura} disabled={carregandoCobertura}>
+                {carregandoCobertura ? `Contando ${progressoCobertura ? `${progressoCobertura.prontos}/${progressoCobertura.total}` : ''}...` : 'Atualizar cobertura'}
+              </button>
+            </div>
+          </div>
+
+          {!cobertura ? (
+            <div className="sim-alert info">Clique em "Atualizar cobertura" pra ver ate onde a base vai e o que ja esta recalculado.</div>
+          ) : (
+            <>
+              <div className="summary-strip lotacao-summary-mini" style={{ marginTop: 14 }}>
+                <div className="summary-card"><span>Base importada ate</span><strong>{resumoCobertura.ultimoDiaBase || '-'}</strong><small>primeiro pedido em {resumoCobertura.primeiroDiaBase || '-'}</small></div>
+                <div className="summary-card"><span>Pedidos na base</span><strong>{formatarNumero(cobertura.limites?.total || 0)}</strong><small>todos os canais e periodos</small></div>
+                <div className="summary-card"><span>Cotado completo ate</span><strong>{resumoCobertura.completoCotado || 'nenhum mes'}</strong><small>ultimo mes com 99%+ recalculado</small></div>
+                <div className="summary-card"><span>Faturado completo ate</span><strong>{resumoCobertura.completoFaturado || 'nenhum mes'}</strong><small>ultimo mes com 99%+ recalculado</small></div>
+                <div className="summary-card"><span>Falta recalcular</span><strong>{formatarNumero(resumoCobertura.faltaCotado + resumoCobertura.faltaFaturado)}</strong><small>{formatarNumero(resumoCobertura.faltaCotado)} cotado · {formatarNumero(resumoCobertura.faltaFaturado)} faturado</small></div>
+              </div>
+
+              <div style={{ marginTop: 18, overflow: 'auto' }}>
+                <table className="sim-analise-tabela" style={{ width: '100%', minWidth: 980 }}>
+                  <thead><tr><th>Periodo</th><th>Pedidos</th><th>Com CT-e</th><th>Sem CT-e</th><th>Recalculado cotado</th><th>Recalculado faturado</th><th>Detalhe</th></tr></thead>
+                  <tbody>
+                    {cobertura.meses.map((mes) => {
+                      const chaveMes = mes.dataInicio.slice(0, 7);
+                      const dias = diasCobertura[chaveMes];
+                      return [
+                        <tr key={chaveMes}>
+                          <td><strong>{chaveMes}</strong></td>
+                          <td>{formatarNumero(mes.total)}</td>
+                          <td>{formatarNumero(mes.cruzados)}</td>
+                          <td>{mes.semCte ? <span style={{ color: '#b45309' }}>{formatarNumero(mes.semCte)}</span> : '0'}</td>
+                          <td>{renderBarraCobertura(mes.cotado, mes.cruzados)}</td>
+                          <td>{renderBarraCobertura(mes.faturado, mes.cruzados)}</td>
+                          <td><button className="btn-secondary" type="button" style={{ padding: '2px 8px', fontSize: '0.72rem' }} onClick={() => alternarDetalheMes(chaveMes)}>{mesExpandido === chaveMes ? 'Fechar' : 'Por dia'}</button></td>
+                        </tr>,
+                        mesExpandido === chaveMes ? (
+                          !dias ? (
+                            <tr key={`${chaveMes}-load`}><td colSpan={7} className="compact">Contando dia a dia{progressoCobertura ? ` (${progressoCobertura.prontos}/${progressoCobertura.total})` : ''}...</td></tr>
+                          ) : dias.filter((dia) => dia.total > 0).map((dia) => (
+                            <tr key={dia.dataInicio} style={{ background: '#f8fafc' }}>
+                              <td style={{ paddingLeft: 24 }}>{formatarDiaIso(dia.dataInicio)}</td>
+                              <td>{formatarNumero(dia.total)}</td>
+                              <td>{formatarNumero(dia.cruzados)}</td>
+                              <td>{dia.semCte ? formatarNumero(dia.semCte) : '0'}</td>
+                              <td>{renderBarraCobertura(dia.cotado, dia.cruzados)}</td>
+                              <td>{renderBarraCobertura(dia.faturado, dia.cruzados)}</td>
+                              <td />
+                            </tr>
+                          ))
+                        ) : null,
+                      ];
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="compact" style={{ marginTop: 10 }}>
+                O percentual e sobre os pedidos <strong>com CT-e</strong> do periodo, que sao os unicos elegiveis pra recalculo. Pedidos "Sem CT-e" nao entram no painel de indicadores — se o numero estiver alto num mes recente, provavelmente falta rodar o cruzamento com Tracking/CT-e.
+              </p>
             </>
           )}
         </section>

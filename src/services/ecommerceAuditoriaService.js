@@ -1392,7 +1392,7 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
   while (true) {
     let query = supabase
       .from('ecommerce_order_snapshot')
-      .select('id,pedido,data_criacao,sim_status,sim_peso_base,sim_mesma_transportadora,sim_transportadora_ideal,sim_origem_ideal,sim_diferenca_vs_cte,sim_valor_ideal,cotado_status:sim_resultado_cotado->>sim_status,cotado_mesma:sim_resultado_cotado->>sim_mesma_transportadora,cotado_transportadora:sim_resultado_cotado->>sim_transportadora_ideal,cotado_origem:sim_resultado_cotado->>sim_origem_ideal,cotado_diferenca:sim_resultado_cotado->>sim_diferenca_vs_cte,cotado_valor:sim_resultado_cotado->>sim_valor_ideal,faturado_status:sim_resultado_faturado->>sim_status,faturado_mesma:sim_resultado_faturado->>sim_mesma_transportadora,faturado_transportadora:sim_resultado_faturado->>sim_transportadora_ideal,faturado_origem:sim_resultado_faturado->>sim_origem_ideal,faturado_diferenca:sim_resultado_faturado->>sim_diferenca_vs_cte,faturado_valor:sim_resultado_faturado->>sim_valor_ideal,cte_transportadora,cte_cidade_origem,cte_valor,custo_frete_transportadora,possui_campanha_frete,frete_a_cobrar_marketplace,peso_cotado,peso_faturado,diferenca_peso,cubagem_cotada,cidade,uf,canal')
+      .select('id,pedido,data_criacao,sim_status,sim_peso_base,sim_mesma_transportadora,sim_transportadora_ideal,sim_origem_ideal,sim_diferenca_vs_cte,sim_valor_ideal,cotado_status:sim_resultado_cotado->>sim_status,cotado_mesma:sim_resultado_cotado->>sim_mesma_transportadora,cotado_transportadora:sim_resultado_cotado->>sim_transportadora_ideal,cotado_origem:sim_resultado_cotado->>sim_origem_ideal,cotado_diferenca:sim_resultado_cotado->>sim_diferenca_vs_cte,cotado_valor:sim_resultado_cotado->>sim_valor_ideal,faturado_status:sim_resultado_faturado->>sim_status,faturado_mesma:sim_resultado_faturado->>sim_mesma_transportadora,faturado_transportadora:sim_resultado_faturado->>sim_transportadora_ideal,faturado_origem:sim_resultado_faturado->>sim_origem_ideal,faturado_diferenca:sim_resultado_faturado->>sim_diferenca_vs_cte,faturado_valor:sim_resultado_faturado->>sim_valor_ideal,cte_transportadora,cte_cidade_origem,cte_valor,custo_frete_transportadora,possui_campanha_frete,frete_a_cobrar_marketplace,adicional_tributario_frete,desconto_campanha_frete,peso_cotado,peso_faturado,diferenca_peso,cubagem_cotada,cidade,uf,canal')
       .order('id', { ascending: true })
       .limit(limite);
     // O painel financeiro analisa somente resultados concluidos. Ignora o filtro
@@ -1451,6 +1451,8 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
         perda: sim.sim_mesma_transportadora === false && desvio > 0.009 ? desvio : 0,
         campanha: Boolean(row.possui_campanha_frete),
         taxaMarketplace: Number(row.frete_a_cobrar_marketplace || 0),
+        adicionalTributario: Number(row.adicional_tributario_frete || 0),
+        descontoCampanha: Number(row.desconto_campanha_frete || 0),
         diferencaPeso: Math.abs(diferencaPeso) > 0.01 || (pesoCotado > 0 && pesoFaturado > 0 && Math.abs(pesoCotado - pesoFaturado) > 0.01),
         pesoCotado,
         pesoFaturado,
@@ -1560,4 +1562,127 @@ export async function consultarTabelaOrigemDb({ transportadora, origemCidade, ib
     cotacoes,
     generalidades: generalidades || null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Cobertura da base: ate onde a base de pedidos vai e, dentro dela, quanto ja
+// esta cruzado com CT-e e recalculado em cada cenario de peso. Usa somente
+// contagens (head:true), entao nao le linha nenhuma - responde em segundos mesmo
+// com a base inteira, ao contrario do painel de indicadores.
+// ---------------------------------------------------------------------------
+
+function primeiroDiaMes(iso) {
+  return `${iso.slice(0, 7)}-01`;
+}
+
+function proximoMes(iso) {
+  const [ano, mes] = iso.slice(0, 7).split('-').map(Number);
+  return mes === 12 ? `${ano + 1}-01-01` : `${ano}-${String(mes + 1).padStart(2, '0')}-01`;
+}
+
+function ultimoDiaDoMes(iso) {
+  const proximo = proximoMes(iso);
+  const d = new Date(`${proximo}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function listarDiasDoIntervalo(inicio, fim) {
+  const dias = [];
+  const d = new Date(`${inicio}T00:00:00Z`);
+  const limite = new Date(`${fim}T00:00:00Z`);
+  while (d <= limite && dias.length < 400) {
+    dias.push(d.toISOString().slice(0, 10));
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return dias;
+}
+
+// Extremos da base (sem filtro de data): ate que dia ja foi importado.
+export async function limitesBaseEcommerce() {
+  if (!isSupabaseConfigured()) return { configurado: false, primeiro: null, ultimo: null, total: 0 };
+  const supabase = getSupabaseClient();
+  const [primeiraResp, ultimaResp, totalResp] = await Promise.all([
+    supabase.from('ecommerce_order_snapshot').select('data_criacao').not('data_criacao', 'is', null).order('data_criacao', { ascending: true }).limit(1),
+    supabase.from('ecommerce_order_snapshot').select('data_criacao').not('data_criacao', 'is', null).order('data_criacao', { ascending: false }).limit(1),
+    supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true }),
+  ]);
+  if (primeiraResp.error) throw primeiraResp.error;
+  if (ultimaResp.error) throw ultimaResp.error;
+  return {
+    configurado: true,
+    primeiro: primeiraResp.data?.[0]?.data_criacao ? String(primeiraResp.data[0].data_criacao).slice(0, 10) : null,
+    ultimo: ultimaResp.data?.[0]?.data_criacao ? String(ultimaResp.data[0].data_criacao).slice(0, 10) : null,
+    total: totalResp.count || 0,
+  };
+}
+
+// Contagens de um recorte de datas: total na base, cruzado com CT-e e recalculado
+// em cada cenario. Os "recalculados" so contam pedidos com cruzamento ok, que sao
+// os unicos elegiveis - assim a barra de cobertura nunca passa de 100%.
+async function contarFatiaCobertura(supabase, dataInicio, dataFim) {
+  const base = () => aplicarFiltrosEcommerce(
+    supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true }),
+    { dataInicio, dataFim }
+  );
+  const [total, cruzados, cotado, faturado, semCte] = await Promise.all([
+    base(),
+    base().eq('cruzamento_status', 'ok'),
+    base().eq('cruzamento_status', 'ok').not('sim_resultado_cotado', 'is', null),
+    base().eq('cruzamento_status', 'ok').not('sim_resultado_faturado', 'is', null),
+    base().neq('cruzamento_status', 'ok'),
+  ]);
+  for (const resp of [total, cruzados, cotado, faturado, semCte]) {
+    if (resp.error) throw resp.error;
+  }
+  return {
+    dataInicio,
+    dataFim,
+    total: total.count || 0,
+    cruzados: cruzados.count || 0,
+    semCte: semCte.count || 0,
+    cotado: cotado.count || 0,
+    faturado: faturado.count || 0,
+  };
+}
+
+// Executa as fatias em ondas pequenas pra nao estourar o limite de conexoes do
+// PostgREST quando o usuario abre o detalhe diario de um mes inteiro.
+async function contarFatiasEmOndas(supabase, intervalos, onProgress, tamanhoOnda = 4) {
+  const linhas = [];
+  for (let i = 0; i < intervalos.length; i += tamanhoOnda) {
+    const onda = intervalos.slice(i, i + tamanhoOnda);
+    const resultados = await Promise.all(onda.map(({ inicio, fim }) => contarFatiaCobertura(supabase, inicio, fim)));
+    linhas.push(...resultados);
+    if (onProgress) onProgress({ prontos: linhas.length, total: intervalos.length });
+  }
+  return linhas;
+}
+
+// Cobertura mes a mes de toda a base importada.
+export async function carregarCoberturaEcommerce({ onProgress } = {}) {
+  if (!isSupabaseConfigured()) return { configurado: false, meses: [], limites: null };
+  const supabase = getSupabaseClient();
+  const limites = await limitesBaseEcommerce();
+  if (!limites.primeiro || !limites.ultimo) return { configurado: true, meses: [], limites };
+
+  const intervalos = [];
+  let cursor = primeiroDiaMes(limites.primeiro);
+  const fimBase = primeiroDiaMes(limites.ultimo);
+  while (cursor <= fimBase && intervalos.length < 60) {
+    intervalos.push({ inicio: cursor, fim: ultimoDiaDoMes(cursor) });
+    cursor = proximoMes(cursor);
+  }
+  const meses = await contarFatiasEmOndas(supabase, intervalos, onProgress);
+  return { configurado: true, limites, meses, atualizadoEm: new Date().toISOString() };
+}
+
+// Detalhe dia a dia de um mes (usado ao expandir uma linha da cobertura).
+export async function carregarCoberturaDiariaEcommerce(mesIso, { onProgress } = {}) {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = getSupabaseClient();
+  const inicio = primeiroDiaMes(`${mesIso}-01`);
+  const fim = ultimoDiaDoMes(inicio);
+  const intervalos = listarDiasDoIntervalo(inicio, fim).map((dia) => ({ inicio: dia, fim: dia }));
+  return contarFatiasEmOndas(supabase, intervalos, onProgress, 6);
 }
