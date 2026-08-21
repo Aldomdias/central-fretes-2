@@ -11,7 +11,7 @@ import {
   buildLookupTables,
   simularRealizadoPorTransportadora,
 } from '../utils/calculoFrete';
-import { resolverAliquotaIcmsUfContexto } from '../utils/icmsUfMatrix';
+import { carregarMatrizIcmsUfCentralizada, resolverAliquotaIcmsUfContexto } from '../utils/icmsUfMatrix';
 import { buscarTrackingParaRealizado, enriquecerRealizadoComTracking } from './realizadoTrackingEnrichment';
 import { obterRaizCnpj } from '../utils/cnpj.js';
 import { carregarMapaEquivalenciasOrigem } from './origemEquivalenciaService';
@@ -401,7 +401,7 @@ function getTipoCalculo(origem = {}, cotacao = {}) {
   return 'PERCENTUAL';
 }
 
-function inferirAliquotaIcmsAuditoria(origem = {}, rota = {}, cte = {}) {
+function inferirAliquotaIcmsAuditoria(origem = {}, rota = {}, cte = {}, transportadoraTabela = '') {
   const generalidades = origem.generalidades || {};
   const manual = toNumber(
     generalidades.aliquotaIcms ??
@@ -426,9 +426,14 @@ function inferirAliquotaIcmsAuditoria(origem = {}, rota = {}, cte = {}) {
   const matriz = resolverAliquotaIcmsUfContexto({
     ufOrigem,
     ufDestino,
-    transportadora: nomeTransportadoraCte(cte),
-    cidadeOrigem: pick(cte, ['cidade_origem', 'origem']),
-    canal: pick(cte, ['canal', 'canal_original']),
+    // As excecoes de ICMS sao cadastradas pelo nome canonico da tabela.
+    // O CT-e pode trazer outra razao social (resolvida pelo vinculo), portanto
+    // consultar pelo nome bruto faria a excecao perder para a matriz geral.
+    transportadora: transportadoraTabela || nomeTransportadoraCte(cte),
+    // Cidade e canal da excecao pertencem ao cadastro da tabela localizada.
+    // Os campos brutos do CT-e podem ter outra grafia ou estar vazios.
+    cidadeOrigem: origem?.cidade || pick(cte, ['cidade_origem', 'origem']),
+    canal: origem?.canal || rota?.canal || pick(cte, ['canal', 'canal_original']),
   });
   if (matriz) return matriz;
   if (!ufOrigem || !ufDestino) return { aliquota: 12, origem: 'legislacao_sem_uf_completa', ufOrigem, ufDestino };
@@ -1029,7 +1034,7 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
 
   const tipoCalculo = getTipoCalculo(origem, cotacao);
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
-  const icmsInfo = inferirAliquotaIcmsAuditoria(origem, rota, cteCalculo);
+  const icmsInfo = inferirAliquotaIcmsAuditoria(origem, rota, cteCalculo, transportadora?.nome);
   const documentoDestinatario = pickDigits(cteCalculo, ['documento_destinatario', 'documentoDestinatario', 'cnpj_destinatario'], 14);
   const generalidades = {
     ...(origem.generalidades || {}),
@@ -1661,6 +1666,10 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
   const numerosCte = normalizadas.filter((valor) => valor.length < 20);
 
   const supabase = ensureSupabase();
+  // A auditoria pode ser aberta diretamente, sem passar pela tela da matriz.
+  // Sincroniza antes do calculo para nao usar uma copia antiga do localStorage
+  // e deixar de aplicar excecoes cadastradas no Supabase.
+  await carregarMatrizIcmsUfCentralizada();
   const mapaVinculos = await carregarMapaVinculosAuditoria();
   await precarregarEquivalenciasOrigemAuditoria();
 
