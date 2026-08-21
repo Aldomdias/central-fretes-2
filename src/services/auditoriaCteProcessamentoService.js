@@ -511,7 +511,16 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
       routeKeys,
       onProgress: (carregados, total) => onProgress?.({ etapa: 'carregando_tabelas_rotas', carregados, total }),
     }));
-    if (baseRotas.length) return baseRotas;
+    // Encontrar alguma tabela para as rotas nao basta: a consulta enxuta pode
+    // trazer concorrentes e deixar de fora justamente a transportadora do CT-e
+    // (especialmente quando a origem real e liberada por equivalencia). Nesse
+    // caso seguimos para a busca por transportadora/base completa.
+    const cobreTransportadorasDosCtes = baseRotas.length > 0 && (registros || []).every((cte) => {
+      const nome = nomeTransportadoraCte(cte, mapaVinculos);
+      const cnpj = pick(cte, ['cnpj_transportadora', 'cnpjTransportadora', 'cnpj_transportador']);
+      return localizarTransportadoras(baseRotas, nome, cnpj).length > 0;
+    });
+    if (cobreTransportadorasDosCtes) return baseRotas;
   }
 
   const nomes = (transportadorasAlvo || []).length
