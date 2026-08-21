@@ -27,6 +27,7 @@ import {
   limitesBaseEcommerce,
 } from '../services/ecommerceAuditoriaService';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
+import { abrirLaudoAuditoriaEcommerce } from '../utils/laudoAuditoriaEcommerce';
 import {
   competenciasDoIntervalo,
   intervaloDaCompetencia,
@@ -1311,6 +1312,17 @@ export default function AuditoriaEcommercePage() {
 
   const indicadoresBi = useMemo(() => consolidarItensBi(itensBiFiltrados), [itensBiFiltrados]);
 
+  function gerarLaudoExecutivo() {
+    try {
+      abrirLaudoAuditoriaEcommerce(itensBiFiltrados, {
+        cenario: cenarioPainel,
+        periodo: filtrosBi.competencia || (competenciasSelecionadas.length ? [...competenciasSelecionadas].sort().join(', ') : undefined),
+      });
+    } catch (error) {
+      setErro(error?.message || 'Não foi possível abrir o laudo.');
+    }
+  }
+
   // Ultimo mes "fechado" em cada cenario e quanto ainda falta recalcular na base toda.
   const resumoCobertura = useMemo(() => {
     const meses = cobertura?.meses || [];
@@ -1813,6 +1825,9 @@ export default function AuditoriaEcommercePage() {
                   <option value="faturado">Peso faturado - cenario financeiro</option>
                 </select>
               </label>
+              <button className="btn-secondary" type="button" onClick={gerarLaudoExecutivo} disabled={!itensBiFiltrados.length || carregandoIndicadores}>
+                Gerar laudo executivo / PDF
+              </button>
               <button className="btn-primary" type="button" onClick={() => atualizarIndicadores()} disabled={carregandoIndicadores}>
                 {carregandoIndicadores ? `${competenciaEmCurso || ''} — lendo ${formatarNumero(linhasIndicadoresLidas)} pedidos...` : 'Carregar as que faltam'}
               </button>
