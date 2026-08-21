@@ -13,6 +13,7 @@ const MENU_GRUPOS = [
     titulo: 'Simulacao',
     itens: [
       { chave: 'simulador', label: 'Simulador' },
+      { chave: 'simulador-reversa', label: 'Simulador Reversa' },
       { chave: 'tabelas-negociacao', label: 'Negociacoes' },
       { chave: 'reajustes', label: 'Reajustes' },
       { chave: 'perda-realizado', label: 'Perda por transportadora' },

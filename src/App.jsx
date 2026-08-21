@@ -33,6 +33,7 @@ import PerdaRealizadoPage from './pages/PerdaRealizadoPage';
 import OportunidadeOrigemPage from './pages/OportunidadeOrigemPage';
 import OportunidadeTransportadoraPage from './pages/OportunidadeTransportadoraPage';
 import SimularSaidaTransportadoraPage from './pages/SimularSaidaTransportadoraPage';
+import SimuladorReversaPage from './pages/SimuladorReversaPage';
 import GestaoBaseCtePage from './pages/GestaoBaseCtePage';
 import VisualConceptPage from './pages/VisualConceptPage';
 import IcmsUfPage from './pages/IcmsUfPage';
@@ -48,7 +49,7 @@ import { assinarManutencao } from './services/manutencaoService';
 import ManutencaoOverlay from './components/ManutencaoOverlay';
 
 const PAGINAS_PERMITIDAS = [
-  'dashboard', 'conceito-app', 'simulador', 'tabelas-negociacao', 'cte', 'cte-origem-destino', 'auditoria-cte', 'tracking',
+  'dashboard', 'conceito-app', 'simulador', 'simulador-reversa', 'tabelas-negociacao', 'cte', 'cte-origem-destino', 'auditoria-cte', 'tracking',
   'torre-controle', 'reajustes', 'avaliacao-prazos', 'importacao', 'formatacao', 'importar-template',
   'importacao-ia-tabelas',
   'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
@@ -204,6 +205,7 @@ export default function App() {
     'oportunidade-origem': <OportunidadeOrigemPage />,
     'oportunidade-transportadora': <OportunidadeTransportadoraPage />,
     'simular-saida-transportadora': <SimularSaidaTransportadoraPage />,
+    'simulador-reversa': <SimuladorReversaPage />,
     'gestao-base-cte': <GestaoBaseCtePage />,
     'consulta-ibge': <ConsultaIbgePage />,
     'icms-uf': <IcmsUfPage />,

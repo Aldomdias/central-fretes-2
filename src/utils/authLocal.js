@@ -15,6 +15,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'dashboard', label: 'Dashboard', grupo: 'Geral' },
   { chave: 'conceito-app', label: 'Conceito visual', grupo: 'Geral' },
   { chave: 'simulador', label: 'Simulador', grupo: 'Fretes' },
+  { chave: 'simulador-reversa', label: 'Simulador Reversa', grupo: 'Fretes' },
   { chave: 'tabelas-negociacao', label: 'Tabelas em Negociação', grupo: 'Suprimentos' },
   { chave: 'cte', label: 'CT-e', grupo: 'Auditoria' },
   { chave: 'cte-origem-destino', label: 'CT-e Origem x Destino', grupo: 'Auditoria' },
@@ -69,6 +70,7 @@ export const PERFIS_USUARIO = {
       'dashboard',
       'conceito-app',
       'simulador',
+      'simulador-reversa',
       'tabelas-negociacao',
       'cte',
       'tracking',
@@ -131,6 +133,7 @@ export const PERFIS_USUARIO = {
       'oportunidade-origem',
       'oportunidade-transportadora',
       'simular-saida-transportadora',
+      'simulador-reversa',
     ],
   },
 };

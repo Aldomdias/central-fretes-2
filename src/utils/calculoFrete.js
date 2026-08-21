@@ -197,29 +197,39 @@ function getUfOrigem(origem, cidadePorIbge) {
   return entry ? getUfByIbge(entry[0]) : '';
 }
 
-function inferirAliquotaIcms(origem, rota, cidadePorIbge, transportadoraNome = '') {
-  const manual = toNumber(origem?.generalidades?.aliquotaIcms);
-  if (manual > 0) return { aliquota: manual, origem: 'manual' };
+function inferirAliquotaIcms(origem, rota, cidadePorIbge, transportadoraNome = '', inverterIcms = false) {
+  // Reversa: a tabela e cadastrada como origem=CD -> destino=cliente, mas o transporte
+  // real vai do cliente ate o CD. O ICMS acompanha o trajeto real, entao com
+  // inverterIcms=true as UFs sao trocadas antes de resolver a aliquota.
+  const ufTabelaOrigem = getUfOrigem(origem, cidadePorIbge);
+  const ufTabelaDestino = getUfByIbge(rota?.ibgeDestino);
+  const ufOrigem = inverterIcms ? ufTabelaDestino : ufTabelaOrigem;
+  const ufDestino = inverterIcms ? ufTabelaOrigem : ufTabelaDestino;
+  const cidadeOrigemContexto = inverterIcms
+    ? getCidadeByIbge(rota?.ibgeDestino, cidadePorIbge)
+    : origem?.cidade;
+  const comUfs = (resultado) => ({ ufOrigem, ufDestino, ...resultado });
 
-  const ufOrigem = getUfOrigem(origem, cidadePorIbge);
-  const ufDestino = getUfByIbge(rota?.ibgeDestino);
+  const manual = toNumber(origem?.generalidades?.aliquotaIcms);
+  if (manual > 0) return comUfs({ aliquota: manual, origem: 'manual' });
+
   const matriz = resolverAliquotaIcmsUfContexto({
     ufOrigem,
     ufDestino,
     transportadora: transportadoraNome,
-    cidadeOrigem: origem?.cidade,
+    cidadeOrigem: cidadeOrigemContexto,
     canal: origem?.canal || rota?.canal,
   });
-  if (matriz) return matriz;
-  if (!ufOrigem || !ufDestino) return { aliquota: 12, origem: 'legislacao' };
-  if (ufOrigem === ufDestino) return { aliquota: 17, origem: 'legislacao' };
+  if (matriz) return comUfs(matriz);
+  if (!ufOrigem || !ufDestino) return comUfs({ aliquota: 12, origem: 'legislacao' });
+  if (ufOrigem === ufDestino) return comUfs({ aliquota: 17, origem: 'legislacao' });
 
   const sulSudesteSemES = new Set(['PR', 'SC', 'RS', 'SP', 'RJ', 'MG']);
   const norteNordesteCentroOesteMaisES = new Set(['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'PA', 'PB', 'PE', 'PI', 'RN', 'RO', 'RR', 'SE', 'TO']);
   if (sulSudesteSemES.has(ufOrigem) && norteNordesteCentroOesteMaisES.has(ufDestino)) {
-    return { aliquota: 7, origem: 'legislacao' };
+    return comUfs({ aliquota: 7, origem: 'legislacao' });
   }
-  return { aliquota: 12, origem: 'legislacao' };
+  return comUfs({ aliquota: 12, origem: 'legislacao' });
 }
 
 function normalizeIbge(value) {
@@ -454,7 +464,7 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
   };
 }
 
-function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal, ignorarCubagem = false, documentoDestinatario = '' }) {
+function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal, ignorarCubagem = false, documentoDestinatario = '', inverterIcms = false }) {
   const gradeLinha = getLinhaGradeMaisProxima(gradeCanal, peso);
   const fatoresCubagem = [
     origem?.generalidades?.cubagem,
@@ -472,7 +482,7 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0
 
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
   const tipoCalculo = resolverTipoCalculo(origem, cotacao);
-  const icmsInfo = inferirAliquotaIcms(origem, rota, cidadePorIbge, transportadora?.nome || transportadora?.transportadora || '');
+  const icmsInfo = inferirAliquotaIcms(origem, rota, cidadePorIbge, transportadora?.nome || transportadora?.transportadora || '', inverterIcms);
   const generalidadesCalculadas = {
     ...(origem.generalidades || {}),
     aliquotaIcms: icmsInfo.aliquota,
@@ -503,7 +513,7 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0
     subtotal: calculo.subtotal,
     valorBase: calculo.valorBase,
     descricao: `Origem ${origem.cidade} • Destino ${cidadeDestino || `IBGE ${rota.ibgeDestino}`}`,
-    detalhes: buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF: valorNFUtilizado, calculo, gradeLinha, fatorCubagem, pesosAplicados, valorNFManualInformado, valorNFOrigem, icmsInfo: { ...icmsInfo, ufOrigem: getUfOrigem(origem, cidadePorIbge), ufDestino } }),
+    detalhes: buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF: valorNFUtilizado, calculo, gradeLinha, fatorCubagem, pesosAplicados, valorNFManualInformado, valorNFOrigem, icmsInfo: { ...icmsInfo, ufOrigem: icmsInfo.ufOrigem || getUfOrigem(origem, cidadePorIbge), ufDestino: icmsInfo.ufDestino || ufDestino } }),
   };
 }
 
@@ -564,7 +574,7 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indic
       .filter(({ origem }) => canalCompativel(origem.canal, filtros.canal))
       .filter(({ origem }) => origemCompativel(origem.cidade, filtros.origem))
       .map(({ transportadora, origem, rota }) => {
-        const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem });
+        const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem, inverterIcms: filtros.inverterIcms });
         return itemComCanalSimulado(item, filtros.canal);
       })
       .filter(Boolean);
@@ -582,7 +592,7 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indic
             return String(rota.ibgeDestino) === filtros.destinoCodigo || cidade === destinoNormalizado;
           })
           .map((rota) => {
-            const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem });
+            const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem, inverterIcms: filtros.inverterIcms });
             return itemComCanalSimulado(item, filtros.canal);
           })
           .filter(Boolean),
@@ -590,8 +600,8 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indic
   );
 }
 
-export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, cidadePorIbge, gradeCanal = [], indicePorDestino, ignorarCubagem = false }) {
-  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, gradeCanal, ignorarCubagem }, cidadePorIbge, indicePorDestino);
+export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, cidadePorIbge, gradeCanal = [], indicePorDestino, ignorarCubagem = false, inverterIcms = false }) {
+  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, gradeCanal, ignorarCubagem, inverterIcms }, cidadePorIbge, indicePorDestino);
   return rankearPorChave(resultados)
     .filter((item) => origemCompativel(item.origem, origem) && String(item.ibgeDestino) === String(destinoCodigo))
     .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
