@@ -74,6 +74,7 @@ import {
   buscarCtesPorIdentificadores,
   buscarResultadosAuditoriaPorIdentificadores,
   processarCtesPorChave,
+  enriquecerCtesComFaturas,
   invalidarCacheBaseFreteAuditoriaCte,
   buscarResultadoAuditoriaPorChave,
 } from '../services/auditoriaCteProcessamentoService';
@@ -2352,7 +2353,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         buscarResultadosAuditoriaPorIdentificadores(ids, setProgressoCtesAvulsos).catch(() => []),
       ]);
       const salvosPorChave = new Map((salvos || []).map((row) => [chaveResultadoAuditoria(row), row]));
-      const linhas = (base.ctes || []).map((cte) => linhaConsultaCteAvulso(cte, salvosPorChave.get(chaveResultadoAuditoria(cte))));
+      const linhasBase = (base.ctes || []).map((cte) => linhaConsultaCteAvulso(cte, salvosPorChave.get(chaveResultadoAuditoria(cte))));
+      const linhas = await enriquecerCtesComFaturas(linhasBase);
       setResultadoCtesAvulsos(linhas);
       setResultadoCtesAvulsosSalvos(linhas.some((row) => Number(row.valor_calculado || 0) > 0 && row.detalhes_calculo));
       setMensagemImportacao(
@@ -2415,7 +2417,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         trackingOverridePorChave,
         reentregaPorChave,
       });
-      setResultadoCtesAvulsos(registros);
+      const registrosComFaturas = await enriquecerCtesComFaturas(registros);
+      setResultadoCtesAvulsos(registrosComFaturas);
       if (registros.length) {
         await salvarAuditoriaAvulsa(registros);
       } else {
@@ -3990,7 +3993,7 @@ ${portaisLaudo.length ? `
             )}
             <div className="audit-quick-table-wrap">
               <table className="sim-analise-tabela audit-quick-table">
-                <thead><tr><th>DOCCOB</th><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Canal</th><th>Rota</th><th>Peso NF</th><th>Pago</th><th>C�lculo Verum</th><th>Dif. Verum</th><th>C�lculo AMD</th><th>Dif. AMD</th><th>Status</th></tr></thead>
+                <thead><tr><th>DOCCOB</th><th>CT-e</th><th>Chave</th><th>Fatura</th><th>Transportadora</th><th>Canal</th><th>Rota</th><th>Peso NF</th><th>Pago</th><th>C�lculo Verum</th><th>Dif. Verum</th><th>C�lculo AMD</th><th>Dif. AMD</th><th>Status</th></tr></thead>
                 <tbody>
                   {resultadoCtesAvulsosFiltrado.map((row, index) => {
                     const key = row.chave_cte || row.numero_cte || index;
@@ -4024,6 +4027,15 @@ ${portaisLaudo.length ? `
                           </td>
                           <td><strong>{row.numero_cte || '-'}</strong></td>
                           <td><span className="audit-key-cell">{row.chave_cte || '-'}</span></td>
+                          <td>
+                            {row.tem_fatura ? (
+                              <span className="audit-invoice-badge audit-invoice-badge-linked" title={(row.faturas_vinculadas || []).map((fatura) => `${fatura.numero_fatura || 'Sem numero'}${fatura.status ? ` (${fatura.status})` : ''}`).join(', ')}>
+                                Sim · {(row.numeros_fatura || []).join(', ') || 'vinculada'}
+                              </span>
+                            ) : (
+                              <span className="audit-invoice-badge audit-invoice-badge-unlinked">Não</span>
+                            )}
+                          </td>
                           <td>{row.transportadora || row.transportadora_realizada || '-'}</td>
                           <td>{row.canal || row.canal_original || '-'}</td>
                           <td>{row.origem || row.cidade_origem || '-'} -&gt; {row.destino || row.cidade_destino || '-'}</td>
@@ -4060,7 +4072,7 @@ ${portaisLaudo.length ? `
                           <td><span className={statusClass}>{semValorNf ? 'Sem valor NF' : linhaOk ? 'Dentro da tolerancia' : (row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-'))}</span></td>
                         </tr>
                         {aberto && (
-                          <tr className="audit-quick-detail-row"><td colSpan="13">
+                          <tr className="audit-quick-detail-row"><td colSpan="14">
                             <div className="hint-box compact" style={{ marginBottom: 10, borderColor: semValorNf ? '#fdba74' : '#dbe3ef', background: semValorNf ? '#fff7ed' : '#f8fafc' }}>
                               <strong>{semValorNf ? 'CT-e sem valor NF identificado.' : 'Ajustes manuais do CT-e'}</strong>
                               <div className="form-grid three" style={{ marginTop: 8 }}>

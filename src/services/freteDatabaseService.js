@@ -2019,7 +2019,7 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
   })).filter((item) => item.origens.length);
 }
 
-async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = [], ufDestino = '', transportadoraIds = [] }) {
+async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = [], ufDestino = '', transportadoraIds = [], incluirOrigensInativas = false }) {
   const destinosNormalizados = Array.from(new Set((destinos || []).map((item) => String(item || '').trim()).filter(Boolean)));
 
   const origensBase = await buscarOrigensFiltradasDb({
@@ -2027,6 +2027,7 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
     origem,
     canal,
     transportadoraIds,
+    incluirInativas: incluirOrigensInativas,
   });
 
   const origemIdsBase = (origensBase || []).map((item) => item.id);
@@ -2341,7 +2342,7 @@ function origemCompativelDb(cidadeBase = '', origemFiltro = '') {
   return cidade === filtro || cidade.includes(filtro) || filtro.includes(cidade);
 }
 
-async function buscarOrigensFiltradasDb({ supabase, origem = '', canal = '', transportadoraIds = [] } = {}) {
+async function buscarOrigensFiltradasDb({ supabase, origem = '', canal = '', transportadoraIds = [], incluirInativas = false } = {}) {
   // Busca paginada — resolve o problema do limite de 1000 linhas do Supabase
   const PAGE = 1000;
   let todas = [];
@@ -2379,7 +2380,7 @@ async function buscarOrigensFiltradasDb({ supabase, origem = '', canal = '', tra
   }
 
   return todas
-    .filter((item) => statusOrigemAtivoDb(item.status))
+    .filter((item) => incluirInativas || statusOrigemAtivoDb(item.status))
     .filter((item) => canalCompativelDb(item.canal, canal))
     .filter((item) => origemCompativelDb(item.cidade, origem));
 }
@@ -2830,7 +2831,7 @@ function destinosIbgeDaBaseDb(base = [], ufDestino = '') {
   return [...destinos];
 }
 
-export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '', ufDestino = '', somenteTransportadora = false } = {}) {
+export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '', ufDestino = '', somenteTransportadora = false, incluirOrigensInativas = false } = {}) {
   // Fonte da verdade do simulador: Supabase.
   // Não depende da tela Transportadoras estar aberta ou atualizada.
 
@@ -2895,7 +2896,7 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
   // Caso principal: simulação simples ou lista com destino informado.
   // Busca todos os concorrentes da mesma origem/canal/destino.
   if (origem || destinos.length) {
-    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos, ufDestino });
+    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos, ufDestino, incluirOrigensInativas });
   }
 
   // Caso análise de transportadora sem destino/origem: busca as rotas da transportadora

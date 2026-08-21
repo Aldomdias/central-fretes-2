@@ -1392,7 +1392,7 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
   while (true) {
     let query = supabase
       .from('ecommerce_order_snapshot')
-      .select('id,pedido,data_criacao,sim_status,sim_peso_base,sim_mesma_transportadora,sim_transportadora_ideal,sim_origem_ideal,sim_diferenca_vs_cte,sim_valor_ideal,cotado_status:sim_resultado_cotado->>sim_status,cotado_mesma:sim_resultado_cotado->>sim_mesma_transportadora,cotado_transportadora:sim_resultado_cotado->>sim_transportadora_ideal,cotado_origem:sim_resultado_cotado->>sim_origem_ideal,cotado_diferenca:sim_resultado_cotado->>sim_diferenca_vs_cte,cotado_valor:sim_resultado_cotado->>sim_valor_ideal,faturado_status:sim_resultado_faturado->>sim_status,faturado_mesma:sim_resultado_faturado->>sim_mesma_transportadora,faturado_transportadora:sim_resultado_faturado->>sim_transportadora_ideal,faturado_origem:sim_resultado_faturado->>sim_origem_ideal,faturado_diferenca:sim_resultado_faturado->>sim_diferenca_vs_cte,faturado_valor:sim_resultado_faturado->>sim_valor_ideal,cte_transportadora,cte_cidade_origem,cte_valor,custo_frete_transportadora,possui_campanha_frete,frete_a_cobrar_marketplace,adicional_tributario_frete,desconto_campanha_frete,peso_cotado,peso_faturado,diferenca_peso,cubagem_cotada,cidade,uf,canal')
+      .select('id,pedido,data_criacao,sim_status,sim_peso_base,sim_mesma_transportadora,sim_transportadora_ideal,sim_origem_ideal,sim_diferenca_vs_cte,sim_valor_ideal,cotado_status:sim_resultado_cotado->>sim_status,cotado_mesma:sim_resultado_cotado->>sim_mesma_transportadora,cotado_transportadora:sim_resultado_cotado->>sim_transportadora_ideal,cotado_origem:sim_resultado_cotado->>sim_origem_ideal,cotado_diferenca:sim_resultado_cotado->>sim_diferenca_vs_cte,cotado_valor:sim_resultado_cotado->>sim_valor_ideal,faturado_status:sim_resultado_faturado->>sim_status,faturado_mesma:sim_resultado_faturado->>sim_mesma_transportadora,faturado_transportadora:sim_resultado_faturado->>sim_transportadora_ideal,faturado_origem:sim_resultado_faturado->>sim_origem_ideal,faturado_diferenca:sim_resultado_faturado->>sim_diferenca_vs_cte,faturado_valor:sim_resultado_faturado->>sim_valor_ideal,cte_transportadora,cte_cidade_origem,cte_valor,custo_frete_transportadora,frete_tabela,possui_campanha_frete,frete_a_cobrar_marketplace,adicional_tributario_frete,desconto_campanha_frete,peso_cotado,peso_faturado,diferenca_peso,cubagem_cotada,cidade,uf,canal')
       .order('id', { ascending: true })
       .limit(limite);
     // O painel financeiro analisa somente resultados concluidos. Ignora o filtro
@@ -1453,6 +1453,7 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
         taxaMarketplace: Number(row.frete_a_cobrar_marketplace || 0),
         adicionalTributario: Number(row.adicional_tributario_frete || 0),
         descontoCampanha: Number(row.desconto_campanha_frete || 0),
+        freteCotado: Number(row.frete_tabela || 0),
         diferencaPeso: Math.abs(diferencaPeso) > 0.01 || (pesoCotado > 0 && pesoFaturado > 0 && Math.abs(pesoCotado - pesoFaturado) > 0.01),
         pesoCotado,
         pesoFaturado,

@@ -412,6 +412,7 @@ export async function resumirTrackingSupabase(options = {}) {
 }
 
 function fromDbRow(row = {}) {
+  const raw = row.raw && typeof row.raw === 'object' ? row.raw : {};
   return {
     id: row.id,
     data: row.data || '',
@@ -421,6 +422,8 @@ function fromDbRow(row = {}) {
     cteNumero: row.cte_numero || '',
     pedido: row.pedido || '',
     pedidoErp: row.pedido_erp || '',
+    pedidoLojista: raw['Pedido Lojista'] || '',
+    pedidoMarketplace: raw['Pedido Marketplace'] || '',
     canal: row.canal || '',
     canalOriginal: row.canal_original || '',
     transportadora: row.transportadora || '',
@@ -449,6 +452,7 @@ function fromDbRow(row = {}) {
     abaOrigem: row.aba_origem || '',
     linhaExcel: row.linha_excel || '',
     ibgeOk: Boolean(row.ibge_ok),
+    raw,
   };
 }
 
@@ -519,7 +523,7 @@ export async function buscarTrackingPorChaveNfeManual(chaveNfe) {
 // Busca livre pra conferencia manual (ex.: descobrir se um CT-e tem NF
 // rastreada antes de gerar o DOCCOB). Aceita qualquer combinacao dos campos;
 // so entram no filtro os que vierem preenchidos.
-export async function pesquisarTrackingSupabase({ chaveNfe, chaveCte, cteNumero, notaFiscal } = {}, { limit = 50 } = {}) {
+export async function pesquisarTrackingSupabase({ chaveNfe, chaveCte, cteNumero, notaFiscal, pedido, pedidoErp } = {}, { limit = 50 } = {}) {
   if (!isSupabaseConfigured()) return { rows: [], erro: 'Supabase nao configurado.' };
   const supabase = getSupabaseClient();
   const selectCols = `
@@ -536,10 +540,72 @@ export async function pesquisarTrackingSupabase({ chaveNfe, chaveCte, cteNumero,
   if (chaveCteDigitos) query = query.eq('chave_cte', chaveCteDigitos);
   if (String(cteNumero || '').trim()) query = query.ilike('cte_numero', `%${String(cteNumero).trim()}%`);
   if (String(notaFiscal || '').trim()) query = query.ilike('nota_fiscal', `%${String(notaFiscal).trim()}%`);
-  if (!chaveNfeDigitos && !chaveCteDigitos && !String(cteNumero || '').trim() && !String(notaFiscal || '').trim()) {
+  if (String(pedido || '').trim()) query = query.ilike('pedido', `%${String(pedido).trim()}%`);
+  if (String(pedidoErp || '').trim()) query = query.ilike('pedido_erp', `%${String(pedidoErp).trim()}%`);
+  if (!chaveNfeDigitos && !chaveCteDigitos && !String(cteNumero || '').trim()
+    && !String(notaFiscal || '').trim() && !String(pedido || '').trim() && !String(pedidoErp || '').trim()) {
     return { rows: [], erro: 'Informe ao menos um campo de busca.' };
   }
   const { data, error } = await query.order('updated_at', { ascending: false }).limit(limit);
   if (error) throw new Error(`Erro ao pesquisar Tracking: ${error.message}`);
   return { rows: (data || []).map(fromDbRow) };
+}
+
+// Pesquisa todas as referências de pedido preservadas pelo Tracking. Pedido ERP
+// fica em coluna própria; Marketplace tem mapa indexado; Lojista ainda vem no
+// JSON bruto e por isso é consultado por igualdade (com e sem prefixo "2-").
+export async function pesquisarTrackingPorPedidoAmpliado(termo, { limit = 50 } = {}) {
+  const busca = String(termo || '').trim();
+  if (!busca) return { rows: [], erro: 'Informe o pedido.' };
+  if (!isSupabaseConfigured()) return { rows: [], erro: 'Supabase nao configurado.' };
+
+  const supabase = getSupabaseClient();
+  const porId = new Map();
+  const adicionar = (rows = []) => rows.forEach((row) => {
+    const normalizada = row?.notaFiscal !== undefined ? row : fromDbRow(row);
+    if (normalizada?.id) porId.set(String(normalizada.id), normalizada);
+  });
+
+  const [pedido, pedidoErp, mapaMarketplace] = await Promise.all([
+    pesquisarTrackingSupabase({ pedido: busca }, { limit }),
+    pesquisarTrackingSupabase({ pedidoErp: busca }, { limit }),
+    supabase
+      .from('tracking_pedido_marketplace_map')
+      .select('pedido_marketplace,chave_cte,pedido_erp')
+      .ilike('pedido_marketplace', `%${busca}%`)
+      .limit(limit),
+  ]);
+  adicionar(pedido.rows);
+  adicionar(pedidoErp.rows);
+  if (mapaMarketplace.error) throw new Error(`Erro ao pesquisar Pedido Marketplace: ${mapaMarketplace.error.message}`);
+
+  const chavesCte = [...new Set((mapaMarketplace.data || []).map((item) => item.chave_cte).filter(Boolean))];
+  if (chavesCte.length) {
+    const { data, error } = await supabase
+      .from(TABELA_TRACKING)
+      .select('*')
+      .in('chave_cte', chavesCte)
+      .limit(limit);
+    if (error) throw new Error(`Erro ao carregar Tracking pelo Pedido Marketplace: ${error.message}`);
+    adicionar(data);
+  }
+
+  // Marketplace e ERP são fontes indexadas. Se alguma delas resolveu o pedido,
+  // não bloqueia a tela com a varredura do JSON bruto da base inteira.
+  if (porId.size) return { rows: [...porId.values()].slice(0, limit) };
+
+  const candidatosLojista = /^\d+$/.test(busca) && !/^\d+-/.test(busca)
+    ? [`2-${busca}`]
+    : [busca];
+  for (const pedidoLojista of candidatosLojista) {
+    const { data, error } = await supabase
+      .from(TABELA_TRACKING)
+      .select('*')
+      .contains('raw', { 'Pedido Lojista': pedidoLojista })
+      .limit(limit);
+    if (error) throw new Error(`Erro ao pesquisar Pedido Lojista: ${error.message}`);
+    adicionar(data);
+  }
+
+  return { rows: [...porId.values()].slice(0, limit) };
 }

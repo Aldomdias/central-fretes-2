@@ -14,7 +14,7 @@ const VERSAO_DB = 1;
 // adicional tributario), competencias salvas antes nao tem esse campo e mostrariam
 // zero - subir a versao faz a tela marcar essas competencias como desatualizadas
 // em vez de exibir numero errado.
-export const VERSAO_ITENS = 2;
+export const VERSAO_ITENS = 3;
 
 function abrirDb() {
   return new Promise((resolve, reject) => {

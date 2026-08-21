@@ -27,7 +27,7 @@ import { carregarGradeFrete, salvarGradeFrete } from '../utils/gradeFreteConfig'
 import { carregarGradeFreteCentralizada, salvarGradeFreteCentralizada, restaurarGradeFreteCentralizadaPadrao } from '../services/gradeFreteSupabaseService';
 import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, carregarOrigensTransportadoraDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, salvarVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
+import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import {
   carregarSimulacaoRealizadoMensal,
   carregarSimulacoesRealizadoMensalPorIds,
@@ -4635,11 +4635,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [carregandoAnaliseMensalRealizado, setCarregandoAnaliseMensalRealizado] = useState(false);
   const [salvandoAnaliseMensalRealizado, setSalvandoAnaliseMensalRealizado] = useState(false);
   const [feedbackAnaliseMensalRealizado, setFeedbackAnaliseMensalRealizado] = useState('');
-  const [nomesRealizadoParaVincular, setNomesRealizadoParaVincular] = useState([]);
-  const [buscaVinculoRealizado, setBuscaVinculoRealizado] = useState('');
-  const [salvandoVinculoReajusteRealizado, setSalvandoVinculoReajusteRealizado] = useState(false);
-  const [feedbackVinculoReajusteRealizado, setFeedbackVinculoReajusteRealizado] = useState('');
-
+  const [nomesRealizadoParaComparar, setNomesRealizadoParaComparar] = useState([]);
+  const [buscaNomeRealizadoComparacao, setBuscaNomeRealizadoComparacao] = useState('');
   // --- Fluxo em duas etapas: Buscar CT-es -> Simular ---
   // baseRealizadoCarregada guarda a base navegável (tipo BI) já buscada/enriquecida
   // e o contexto necessário para a simulação rodar só sobre o que está na tela.
@@ -5191,33 +5188,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
       } catch {
         return new Map();
       }
-    }
-  };
-
-  // Confirma manualmente qual nome (como aparece no realizado/CT-e) corresponde à
-  // transportadora base do reajuste, e grava como vínculo permanente — assim as
-  // próximas simulações dessa negociação já casam certo sem precisar escolher de novo.
-  const confirmarVinculoReajusteRealizado = async () => {
-    const nomesCte = [...new Set((nomesRealizadoParaVincular || []).map((nome) => String(nome || '').trim()).filter(Boolean))];
-    const nomeTabela = String(transportadoraBaseReajusteRealizado || '').trim();
-    if (!nomesCte.length || !nomeTabela) return;
-
-    setSalvandoVinculoReajusteRealizado(true);
-    setFeedbackVinculoReajusteRealizado('');
-    try {
-      const vinculosAtuais = await carregarVinculosTransportadoras();
-      const chavesNovas = new Set(nomesCte.map((nome) => normalizarChaveSimulador(nome)));
-      const semEstesCtes = (vinculosAtuais || []).filter(
-        (item) => !chavesNovas.has(normalizarChaveSimulador(item.nomeCte))
-      );
-      const novosVinculos = nomesCte.map((nomeCte) => ({ nomeCte, nomeTabela, origem: 'simulador-reajuste' }));
-      await salvarVinculosTransportadoras([...semEstesCtes, ...novosVinculos]);
-      setFeedbackVinculoReajusteRealizado(`Vínculo salvo: "${nomesCte.join('", "')}" (realizado) → "${nomeTabela}" (tabela).`);
-      if (transportadoraRealizado) await onBuscarCtesRealizado();
-    } catch (error) {
-      setFeedbackVinculoReajusteRealizado(error.message || 'Erro ao salvar o vínculo.');
-    } finally {
-      setSalvandoVinculoReajusteRealizado(false);
     }
   };
 
@@ -6282,6 +6252,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
     try {
       atualizarProcessamentoUi('Carregando negociação...', 12);
       const mapaVinculos = await carregarMapaVinculosSimulador();
+      // Seleção exclusiva desta execução: ajuda a localizar os CT-es que serão
+      // comparados sem alterar o cadastro global nem o cache local de vínculos.
+      if (isReajusteRealizadoSelecionado && transportadoraBaseReajusteRealizado) {
+        nomesRealizadoParaComparar.forEach((nomeRealizado) => {
+          const chave = normalizarChaveSimulador(nomeRealizado);
+          if (chave) mapaVinculos.set(chave, transportadoraBaseReajusteRealizado);
+        });
+      }
       atualizarProcessamentoUi('Carregando vínculos de transportadoras...', 16);
       const ehNegociacaoSelecionada = nomesNegociacaoRealizado.includes(transportadoraRealizado);
       // Vínculo traduz nome-do-CT-e -> nome-da-tabela; só faz sentido aplicar quando
@@ -8932,7 +8910,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               Transportadora / tabela
               <select
                 value={transportadoraRealizado}
-                onChange={(event) => { setTransportadoraRealizado(event.target.value); setOrigemRealizado(''); setOrigensRealizadoMarcadas([]); setNomesRealizadoParaVincular([]); setBuscaVinculoRealizado(''); setFeedbackVinculoReajusteRealizado(''); }}
+                onChange={(event) => { setTransportadoraRealizado(event.target.value); setOrigemRealizado(''); setOrigensRealizadoMarcadas([]); setNomesRealizadoParaComparar([]); setBuscaNomeRealizadoComparacao(''); }}
                 title={transportadoraRealizado}
                 style={{ maxWidth: '100%', textOverflow: 'ellipsis' }}
               >
@@ -8948,77 +8926,40 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
             {isReajusteRealizadoSelecionado && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <strong style={{ color: 'var(--text)' }}>Nome(s) desta transportadora no realizado</strong>
+                <strong style={{ color: 'var(--text)' }}>Localizar nome no realizado para comparação</strong>
+                <small style={{ color: '#64748b' }}>A seleção vale somente para esta simulação e não é salva na base.</small>
                 {opcoesBiRealizado.transportadoras.length ? (
                   <>
-                    {nomesRealizadoParaVincular.length ? (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
-                        {nomesRealizadoParaVincular.map((nome) => (
-                          <span
-                            key={nome}
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1d4ed8', borderRadius: 999, padding: '2px 8px', fontSize: 12, fontWeight: 600 }}
-                          >
-                            {nome}
-                            <button
-                              type="button"
-                              onClick={() => setNomesRealizadoParaVincular((prev) => prev.filter((item) => item !== nome))}
-                              style={{ border: 'none', background: 'none', color: '#1d4ed8', cursor: 'pointer', fontWeight: 700, padding: 0, lineHeight: 1 }}
-                              aria-label={`Remover ${nome}`}
-                            >
-                              ×
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
                     <input
-                      value={buscaVinculoRealizado}
-                      onChange={(event) => setBuscaVinculoRealizado(event.target.value)}
-                      placeholder="Digite pra localizar o nome no realizado..."
+                      value={buscaNomeRealizadoComparacao}
+                      onChange={(event) => setBuscaNomeRealizadoComparacao(event.target.value)}
+                      placeholder="Digite para localizar o nome no realizado..."
                       autoComplete="off"
-                      style={{ marginBottom: 6 }}
                     />
                     <div style={{ maxHeight: 180, overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff' }}>
                       {opcoesBiRealizado.transportadoras
-                        .filter(({ nome }) => !buscaVinculoRealizado.trim() || nome.toLowerCase().includes(buscaVinculoRealizado.trim().toLowerCase()))
+                        .filter(({ nome }) => !buscaNomeRealizadoComparacao.trim() || nome.toLowerCase().includes(buscaNomeRealizadoComparacao.trim().toLowerCase()))
                         .slice(0, 200)
                         .map(({ nome, qtd }) => {
-                          const marcado = nomesRealizadoParaVincular.includes(nome);
+                          const marcado = nomesRealizadoParaComparar.includes(nome);
                           return (
-                            <div
-                              key={nome}
-                              onClick={() => setNomesRealizadoParaVincular((prev) => (
-                                marcado ? prev.filter((item) => item !== nome) : [...prev, nome]
-                              ))}
-                              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', fontSize: 13, cursor: 'pointer', borderBottom: '1px solid #f1f5f9', background: marcado ? '#eff6ff' : '#fff' }}
-                            >
-                              <input type="checkbox" checked={marcado} readOnly style={{ pointerEvents: 'none' }} />
+                            <label key={nome} style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8, padding: '7px 10px', fontSize: 13, cursor: 'pointer', borderBottom: '1px solid #f1f5f9', background: marcado ? '#eff6ff' : '#fff' }}>
+                              <input
+                                type="checkbox"
+                                checked={marcado}
+                                onChange={() => setNomesRealizadoParaComparar((prev) => (
+                                  marcado ? prev.filter((item) => item !== nome) : [...prev, nome]
+                                ))}
+                              />
                               <span style={{ flex: 1, fontWeight: marcado ? 700 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nome}</span>
                               <small style={{ color: '#94a3b8' }}>{qtd.toLocaleString('pt-BR')} CT-es</small>
-                            </div>
+                            </label>
                           );
                         })}
-                      {!opcoesBiRealizado.transportadoras.some(({ nome }) => !buscaVinculoRealizado.trim() || nome.toLowerCase().includes(buscaVinculoRealizado.trim().toLowerCase())) ? (
-                        <div style={{ padding: '8px 10px', fontSize: 12, color: '#94a3b8' }}>Nada encontrado.</div>
-                      ) : null}
                     </div>
                   </>
                 ) : (
                   <small style={{ color: '#64748b' }}>Busque os CT-es primeiro para listar os nomes encontrados.</small>
-                )}
-                <button
-                  type="button"
-                  className="sim-tab"
-                  style={{ marginTop: 6 }}
-                  disabled={!nomesRealizadoParaVincular.length || salvandoVinculoReajusteRealizado}
-                  onClick={confirmarVinculoReajusteRealizado}
-                >
-                  {salvandoVinculoReajusteRealizado
-                    ? 'Salvando vínculo...'
-                    : `Confirmar vínculo${nomesRealizadoParaVincular.length > 1 ? ` (${nomesRealizadoParaVincular.length} nomes)` : ''}`}
-                </button>
-                {feedbackVinculoReajusteRealizado && (
-                  <small style={{ color: '#166534' }}>{feedbackVinculoReajusteRealizado}</small>
                 )}
               </div>
             )}

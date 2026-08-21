@@ -40,6 +40,79 @@ import {
 
 const CHAVE_HISTORICO_RESIMULACAO = 'amd-auditoria-ecommerce-resimulacoes-v1';
 const CHAVE_HISTORICO_RESIMULACAO_EXCLUIDAS = 'amd-auditoria-ecommerce-resimulacoes-excluidas-v1';
+const CHAVE_TRANSPORTADORAS_EXCLUIDAS_PAINEL = 'amd-auditoria-ecommerce-painel-transportadoras-excluidas-v1';
+const CHAVE_CRITERIO_PAINEL = 'amd-auditoria-ecommerce-painel-criterio-80-20-v1';
+
+function lerCriterioPainel() {
+  try {
+    const salvo = localStorage.getItem(CHAVE_CRITERIO_PAINEL);
+    return salvo === null ? true : salvo === 'true';
+  } catch {
+    return true;
+  }
+}
+
+// Mantem compatibilidade com os snapshots antigos, que eram gerados com 80/20
+// e usavam apenas "cotado" ou "faturado" como chave.
+function cenarioCacheIndicadores(cenarioPeso, usarPrazo) {
+  return usarPrazo ? cenarioPeso : `${cenarioPeso}-somente-preco`;
+}
+
+function lerTransportadorasExcluidasPainel() {
+  try {
+    const valor = JSON.parse(localStorage.getItem(CHAVE_TRANSPORTADORAS_EXCLUIDAS_PAINEL) || '[]');
+    return Array.isArray(valor) ? valor.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function SeletorTransportadorasExcluidas({ opcoes, selecionadas, onChange }) {
+  const [aberto, setAberto] = useState(false);
+  const [busca, setBusca] = useState('');
+  const buscaNormalizada = busca.trim().toLocaleLowerCase('pt-BR');
+  const filtradas = buscaNormalizada
+    ? opcoes.filter((nome) => nome.toLocaleLowerCase('pt-BR').includes(buscaNormalizada))
+    : opcoes;
+
+  function alternar(nome) {
+    onChange(selecionadas.includes(nome)
+      ? selecionadas.filter((item) => item !== nome)
+      : [...selecionadas, nome].sort((a, b) => a.localeCompare(b, 'pt-BR')));
+  }
+
+  return (
+    <div className="field" style={{ position: 'relative' }}>
+      <span>Retirar transportadoras (sujeira)</span>
+      <button
+        className="btn-secondary"
+        type="button"
+        onClick={() => setAberto((valor) => !valor)}
+        style={{ width: '100%', textAlign: 'left', minHeight: 34 }}
+      >
+        {selecionadas.length ? `${selecionadas.length} retirada(s)` : 'Nenhuma retirada'} {aberto ? '▲' : '▼'}
+      </button>
+      {aberto ? (
+        <div style={{ position: 'absolute', zIndex: 40, top: '100%', left: 0, right: 0, marginTop: 4, padding: 8, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 24px rgba(15, 23, 42, 0.16)' }}>
+          <input type="text" autoFocus value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar transportadora..." style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6 }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+            <small>{filtradas.length} encontrada(s)</small>
+            {selecionadas.length ? <button type="button" onClick={() => onChange([])} style={{ border: 0, background: 'none', color: '#b91c1c', cursor: 'pointer' }}>Limpar retiradas</button> : null}
+          </div>
+          <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+            {filtradas.map((nome) => (
+              <label key={nome} style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8, padding: '4px 2px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={selecionadas.includes(nome)} onChange={() => alternar(nome)} />
+                <span title={nome} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nome}</span>
+              </label>
+            ))}
+            {!filtradas.length ? <small>Nenhuma transportadora encontrada.</small> : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function lerHistoricoResimulacao() {
   try {
@@ -361,7 +434,7 @@ export default function AuditoriaEcommercePage() {
   // Processa um peso por rodada para reduzir o volume; cada resultado fica preservado
   // separadamente e pode ser complementado depois pelo segundo peso.
   const [pesoBase, setPesoBase] = useState('cotado');
-  const [considerarPrazo, setConsiderarPrazo] = useState(true);
+  const [considerarPrazo, setConsiderarPrazo] = useState(lerCriterioPainel);
   const [transportadorasExcluidas, setTransportadorasExcluidas] = useState([]);
   const [restringirCds, setRestringirCds] = useState(false);
   const [usarSaldoDia, setUsarSaldoDia] = useState(true);
@@ -397,6 +470,19 @@ export default function AuditoriaEcommercePage() {
   const [linhasIndicadoresLidas, setLinhasIndicadoresLidas] = useState(0);
   const filtrosBiVazio = { somenteDesvios: false, campanha: null, diferencaPeso: null, pesoInconsistente: null, taxaMarketplace: null, adicionalTributario: null, transportadoraIdeal: '', transportadoraUsada: '', origemIdeal: '', origemUsada: '', competencia: '', semana: '', canal: '', uf: '' };
   const [filtrosBi, setFiltrosBi] = useState(filtrosBiVazio);
+  const [transportadorasBiExcluidas, setTransportadorasBiExcluidas] = useState(lerTransportadorasExcluidasPainel);
+
+  useEffect(() => {
+    try { localStorage.setItem(CHAVE_CRITERIO_PAINEL, String(considerarPrazo)); } catch { /* segue sem persistir */ }
+  }, [considerarPrazo]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAVE_TRANSPORTADORAS_EXCLUIDAS_PAINEL, JSON.stringify(transportadorasBiExcluidas));
+    } catch {
+      // A persistencia e apenas uma conveniencia; o filtro continua funcionando na sessao.
+    }
+  }, [transportadorasBiExcluidas]);
 
   // Cobertura da base: contagens rapidas (nao le linhas) de quanto de cada mes
   // ja esta cruzado e recalculado. Fica guardada no navegador pra abrir na hora.
@@ -454,8 +540,8 @@ export default function AuditoriaEcommercePage() {
   );
 
   const competenciasDoCenario = useMemo(
-    () => competenciasCache.filter((registro) => registro.cenarioPeso === cenarioPainel),
-    [competenciasCache, cenarioPainel]
+    () => competenciasCache.filter((registro) => registro.cenarioPeso === cenarioCacheIndicadores(cenarioPainel, considerarPrazo)),
+    [competenciasCache, cenarioPainel, considerarPrazo]
   );
 
   const competenciasDaLista = useMemo(() => {
@@ -494,7 +580,7 @@ export default function AuditoriaEcommercePage() {
 
   // Le do banco UMA competencia e guarda no cache local. Cada mes vira um registro
   // proprio, entao carregar agosto nao apaga julho nem obriga a varrer os dois.
-  async function carregarCompetencia(competencia, cenario = cenarioPainel) {
+  async function carregarCompetencia(competencia, cenario = cenarioPainel, usarPrazo = considerarPrazo) {
     const { dataInicio, dataFim } = intervaloDaCompetencia(competencia);
     setCompetenciaEmCurso(competencia);
     setLinhasIndicadoresLidas(0);
@@ -507,7 +593,7 @@ export default function AuditoriaEcommercePage() {
         cenarioPeso: cenario,
         onProgress: ({ carregados }) => setLinhasIndicadoresLidas(carregados),
       });
-      await salvarCompetenciaIndicadores(cenario, competencia, resultado);
+      await salvarCompetenciaIndicadores(cenarioCacheIndicadores(cenario, usarPrazo), competencia, resultado);
       return resultado;
     } finally {
       setCompetenciaEmCurso(null);
@@ -515,11 +601,11 @@ export default function AuditoriaEcommercePage() {
   }
 
   // Mostra na tela a soma das competencias marcadas, lendo tudo do cache local.
-  async function montarPainelDasCompetencias(competencias, cenario = cenarioPainel) {
+  async function montarPainelDasCompetencias(competencias, cenario = cenarioPainel, usarPrazo = considerarPrazo) {
     const resumos = [];
     let maisRecente = null;
     for (const competencia of competencias) {
-      const registro = await lerCompetenciaIndicadores(cenario, competencia);
+      const registro = await lerCompetenciaIndicadores(cenarioCacheIndicadores(cenario, usarPrazo), competencia);
       if (!registro) continue;
       resumos.push(registro.resumo);
       if (!maisRecente || registro.atualizadoEm > maisRecente) maisRecente = registro.atualizadoEm;
@@ -547,10 +633,11 @@ export default function AuditoriaEcommercePage() {
         setErro('Nenhuma competencia encontrada na base.');
         return;
       }
-      const jaSalvas = new Set((await recarregarListaCompetencias()).filter((r) => r.cenarioPeso === cenarioPainel).map((r) => r.competencia));
+      const chaveCenario = cenarioCacheIndicadores(cenarioPainel, considerarPrazo);
+      const jaSalvas = new Set((await recarregarListaCompetencias()).filter((r) => r.cenarioPeso === chaveCenario).map((r) => r.competencia));
       for (const competencia of competencias) {
         if (!refazer && jaSalvas.has(competencia)) continue;
-        await carregarCompetencia(competencia);
+        await carregarCompetencia(competencia, cenarioPainel, considerarPrazo);
       }
       await recarregarListaCompetencias();
       setCompetenciasSelecionadas(competencias);
@@ -585,7 +672,7 @@ export default function AuditoriaEcommercePage() {
   }
 
   async function removerCompetenciaDoCache(competencia) {
-    await excluirCompetenciaIndicadores(cenarioPainel, competencia);
+    await excluirCompetenciaIndicadores(cenarioCacheIndicadores(cenarioPainel, considerarPrazo), competencia);
     await recarregarListaCompetencias();
     const novas = competenciasSelecionadas.filter((c) => c !== competencia);
     setCompetenciasSelecionadas(novas);
@@ -620,20 +707,34 @@ export default function AuditoriaEcommercePage() {
         });
       }
       setConsiderarPrazo(novoConsiderarPrazo);
-      // A resimulacao mudou os resultados no banco, entao o cache de todas as
-      // competencias do periodo esta velho - refaz cada uma.
-      for (const competencia of competenciasDoPeriodo) {
-        await carregarCompetencia(competencia);
+      // Guarda os dois pesos sob o criterio escolhido. Assim trocar entre cotado
+      // e faturado tambem e apenas navegacao local, sem nova varredura da base.
+      for (const cenario of ['cotado', 'faturado']) {
+        for (const competencia of competenciasDoPeriodo) {
+          await carregarCompetencia(competencia, cenario, novoConsiderarPrazo);
+        }
       }
       await recarregarListaCompetencias();
       setCompetenciasSelecionadas(competenciasDoPeriodo);
-      await montarPainelDasCompetencias(competenciasDoPeriodo);
+      await montarPainelDasCompetencias(competenciasDoPeriodo, cenarioPainel, novoConsiderarPrazo);
       setMensagem(`Indicadores recalculados com ${novoConsiderarPrazo ? 'preco 80% + prazo 20%' : 'somente preco'}.`);
     } catch (error) {
       setErro(error.message || 'Erro ao recalcular indicadores com o novo criterio.');
     } finally {
       setCarregandoIndicadores(false);
     }
+  }
+
+  async function alternarCriterioPainel(novoConsiderarPrazo) {
+    const chaveDestino = cenarioCacheIndicadores(cenarioPainel, novoConsiderarPrazo);
+    const lista = await recarregarListaCompetencias();
+    const possuiSnapshot = lista.some((registro) => registro.cenarioPeso === chaveDestino && !registro.desatualizada);
+    if (possuiSnapshot) {
+      setConsiderarPrazo(novoConsiderarPrazo);
+      setMensagem(`Snapshot de ${novoConsiderarPrazo ? '80% preço + 20% prazo' : 'somente preço'} aberto sem nova carga.`);
+      return;
+    }
+    await recalcularIndicadoresComCriterio(novoConsiderarPrazo);
   }
 
   async function abrirTabelaCadastrada(cand) {
@@ -819,14 +920,15 @@ export default function AuditoriaEcommercePage() {
       const lista = await listarCompetenciasIndicadores();
       if (cancelado) return;
       setCompetenciasCache(lista);
-      const salvasDoCenario = new Set(lista.filter((r) => r.cenarioPeso === cenarioPainel && !r.desatualizada).map((r) => r.competencia));
+      const chaveCenario = cenarioCacheIndicadores(cenarioPainel, considerarPrazo);
+      const salvasDoCenario = new Set(lista.filter((r) => r.cenarioPeso === chaveCenario && !r.desatualizada).map((r) => r.competencia));
       const alvo = (competenciasDoPeriodo.length ? competenciasDoPeriodo : [...salvasDoCenario].sort()).filter((c) => salvasDoCenario.has(c));
       setCompetenciasSelecionadas(alvo);
-      await montarPainelDasCompetencias(alvo, cenarioPainel);
+      await montarPainelDasCompetencias(alvo, cenarioPainel, considerarPrazo);
     })();
     return () => { cancelado = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cenarioPainel, filtrosServidor.dataInicio, filtrosServidor.dataFim]);
+  }, [cenarioPainel, considerarPrazo, filtrosServidor.dataInicio, filtrosServidor.dataFim]);
 
   useEffect(() => {
     if (!cdCentros.mapa.size) return;
@@ -1292,7 +1394,12 @@ export default function AuditoriaEcommercePage() {
     }));
   }, [linhas, filtros]);
 
+  const opcoesTransportadorasBi = useMemo(() => [...new Set((indicadores?.itens || [])
+    .flatMap((item) => [item.transportadoraUsada, item.transportadoraIdeal])
+    .filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR')), [indicadores]);
+
   const itensBiFiltrados = useMemo(() => (indicadores?.itens || []).filter((item) => {
+    if (transportadorasBiExcluidas.includes(item.transportadoraUsada) || transportadorasBiExcluidas.includes(item.transportadoraIdeal)) return false;
     if (filtrosBi.somenteDesvios && !(item.perda > 0)) return false;
     if (filtrosBi.campanha !== null && item.campanha !== filtrosBi.campanha) return false;
     if (filtrosBi.diferencaPeso !== null && item.diferencaPeso !== filtrosBi.diferencaPeso) return false;
@@ -1308,9 +1415,81 @@ export default function AuditoriaEcommercePage() {
     if (filtrosBi.canal && item.canal !== filtrosBi.canal) return false;
     if (filtrosBi.uf && item.uf !== filtrosBi.uf) return false;
     return true;
-  }), [indicadores, filtrosBi]);
+  }), [indicadores, filtrosBi, transportadorasBiExcluidas]);
 
   const indicadoresBi = useMemo(() => consolidarItensBi(itensBiFiltrados), [itensBiFiltrados]);
+
+  const analiseDivergenciaPeso = useMemo(() => {
+    const casos = itensBiFiltrados.filter((item) => item.diferencaPeso && item.pesoCotado > 0 && item.pesoFaturado > 0);
+    const comparaveisFinanceiros = casos.filter((item) => item.transportadoraIdealOutroCenario);
+    const valorCotado = comparaveisFinanceiros.reduce((soma, item) => soma + Number(cenarioPainel === 'cotado' ? item.valorIdeal : item.valorIdealOutroCenario || 0), 0);
+    const valorFaturado = comparaveisFinanceiros.reduce((soma, item) => soma + Number(cenarioPainel === 'faturado' ? item.valorIdeal : item.valorIdealOutroCenario || 0), 0);
+    const pesoCotado = casos.reduce((soma, item) => soma + Number(item.pesoCotado || 0), 0);
+    const pesoFaturado = casos.reduce((soma, item) => soma + Number(item.pesoFaturado || 0), 0);
+    const faturadoMaior = casos.filter((item) => item.pesoFaturado > item.pesoCotado);
+    const cotadoMaior = casos.filter((item) => item.pesoCotado > item.pesoFaturado);
+    const resumirDirecao = (lista) => ({
+      quantidade: lista.length,
+      diferencaKg: lista.reduce((soma, item) => soma + Math.abs(Number(item.pesoFaturado || 0) - Number(item.pesoCotado || 0)), 0),
+      perda: lista.reduce((soma, item) => soma + Number(item.perda || 0), 0),
+    });
+    return {
+      quantidade: casos.length,
+      percentual: itensBiFiltrados.length ? (casos.length / itensBiFiltrados.length) * 100 : 0,
+      pesoCotado,
+      pesoFaturado,
+      diferencaKg: pesoFaturado - pesoCotado,
+      diferencaPercentual: pesoCotado ? ((pesoFaturado - pesoCotado) / pesoCotado) * 100 : 0,
+      mediaCotada: casos.length ? pesoCotado / casos.length : 0,
+      mediaFaturada: casos.length ? pesoFaturado / casos.length : 0,
+      comparaveisFinanceiros: comparaveisFinanceiros.length,
+      valorCotado,
+      valorFaturado,
+      impactoFinanceiro: valorFaturado - valorCotado,
+      faturadoMaior: resumirDirecao(faturadoMaior),
+      cotadoMaior: resumirDirecao(cotadoMaior),
+    };
+  }, [itensBiFiltrados, cenarioPainel]);
+
+  const analiseCampanhas = useMemo(() => {
+    const com = itensBiFiltrados.filter((item) => item.campanha);
+    const sem = itensBiFiltrados.filter((item) => !item.campanha);
+    const resumir = (lista) => ({
+      quantidade: lista.length,
+      desvios: lista.filter((item) => item.perda > 0).length,
+      valorPago: lista.reduce((soma, item) => soma + Number(item.valorPago || 0), 0),
+      valorIdeal: lista.reduce((soma, item) => soma + Number(item.valorIdeal || 0), 0),
+      perda: lista.reduce((soma, item) => soma + Number(item.perda || 0), 0),
+    });
+    const totalDesconto = com.reduce((soma, item) => soma + Number(item.descontoCampanha || 0), 0);
+    return {
+      percentual: itensBiFiltrados.length ? (com.length / itensBiFiltrados.length) * 100 : 0,
+      totalDesconto,
+      mediaDesconto: com.length ? totalDesconto / com.length : 0,
+      com: resumir(com),
+      sem: resumir(sem),
+    };
+  }, [itensBiFiltrados]);
+
+  const analiseAdicionalTributario = useMemo(() => {
+    const com = itensBiFiltrados.filter((item) => Number(item.adicionalTributario || 0) > 0);
+    const sem = itensBiFiltrados.filter((item) => !(Number(item.adicionalTributario || 0) > 0));
+    const resumir = (lista) => ({
+      quantidade: lista.length,
+      desvios: lista.filter((item) => item.perda > 0).length,
+      valorPago: lista.reduce((soma, item) => soma + Number(item.valorPago || 0), 0),
+      valorIdeal: lista.reduce((soma, item) => soma + Number(item.valorIdeal || 0), 0),
+      perda: lista.reduce((soma, item) => soma + Number(item.perda || 0), 0),
+    });
+    const totalAdicional = com.reduce((soma, item) => soma + Number(item.adicionalTributario || 0), 0);
+    return {
+      percentual: itensBiFiltrados.length ? (com.length / itensBiFiltrados.length) * 100 : 0,
+      totalAdicional,
+      mediaAdicional: com.length ? totalAdicional / com.length : 0,
+      com: resumir(com),
+      sem: resumir(sem),
+    };
+  }, [itensBiFiltrados]);
 
   function gerarLaudoExecutivo() {
     try {
@@ -1839,17 +2018,18 @@ export default function AuditoriaEcommercePage() {
               <input
                 type="checkbox"
                 checked={considerarPrazo}
-                onChange={(e) => recalcularIndicadoresComCriterio(e.target.checked)}
+                onChange={(e) => alternarCriterioPainel(e.target.checked)}
                 disabled={carregandoIndicadores}
               />
               Regra 80/20 (80% preco + 20% prazo) na transportadora ideal
             </label>
-            <small className="compact">Muda o criterio muda a escolha "ideal" - refaz a resimulacao do periodo filtrado e recarrega o painel. Pode demorar em bases grandes.</small>
+            <small className="compact">Cada combinação de critério e peso fica salva separadamente. Se já existir, abre na hora; se for a primeira vez, calcula e cria o snapshot.</small>
+            <button className="btn-secondary" type="button" onClick={() => recalcularIndicadoresComCriterio(considerarPrazo)} disabled={carregandoIndicadores}>Recalcular este critério</button>
           </div>
 
           <div style={{ marginTop: 14, border: '1px solid #e2e8f0', borderRadius: 10, padding: 12 }}>
             <div className="panel-header-row" style={{ marginBottom: 8 }}>
-              <div className="panel-title">Competencias salvas ({cenarioPainel})</div>
+            <div className="panel-title">Competencias salvas ({cenarioPainel} · {considerarPrazo ? '80/20' : 'somente preço'})</div>
               <button className="btn-secondary" type="button" style={{ padding: '2px 8px', fontSize: '0.72rem' }} onClick={() => atualizarIndicadores({ refazer: true })} disabled={carregandoIndicadores}>
                 Refazer as competencias listadas
               </button>
@@ -1949,8 +2129,20 @@ export default function AuditoriaEcommercePage() {
                 <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <input type="checkbox" checked={filtrosBi.somenteDesvios} onChange={(e) => setFiltrosBi((f) => ({ ...f, somenteDesvios: e.target.checked }))} /> Somente outra transportadora mais barata
                 </label>
+                <SeletorTransportadorasExcluidas
+                  opcoes={opcoesTransportadorasBi}
+                  selecionadas={transportadorasBiExcluidas}
+                  onChange={setTransportadorasBiExcluidas}
+                />
                 <button className="btn-secondary" type="button" onClick={() => setFiltrosBi(filtrosBiVazio)}>Limpar exploracao</button>
               </div>
+
+              {transportadorasBiExcluidas.length ? (
+                <div className="sim-alert info" style={{ marginTop: 10 }}>
+                  <strong>{transportadorasBiExcluidas.length} transportadora(s) retirada(s) do painel:</strong>{' '}
+                  {transportadorasBiExcluidas.join(', ')}. Pedidos em que elas aparecem como usada ou ideal não entram nos indicadores, rankings, tabela ou PDF.
+                </div>
+              ) : null}
 
               <div className="summary-strip lotacao-summary-mini" style={{ marginTop: 14 }}>
                 <div className="summary-card"><span>Resultados no recorte</span><strong>{formatarNumero(indicadoresBi.ressimulados)}</strong><small>filtros cruzados ativos</small></div>
@@ -1966,6 +2158,73 @@ export default function AuditoriaEcommercePage() {
                 <div className="summary-card"><span>Adicional tributario nos desvios</span><strong>{formatarMoeda(indicadoresBi.valorAdicionalTributarioNosDesvios)}</strong><small>{formatarNumero(indicadoresBi.pagosAMaisComAdicionalTributario)} desvios com adicional</small></div>
                 <div className="summary-card"><span>Escolha mudou pelo peso</span><strong>{formatarNumero(itensBiFiltrados.filter((item) => item.mudouTransportadoraPorPeso).length)}</strong><small>cotado x faturado escolheram transportadoras diferentes</small></div>
                 <div className="summary-card" style={{ cursor: 'pointer' }} onClick={() => setFiltrosBi((f) => ({ ...f, pesoInconsistente: true }))}><span>Peso possivelmente inconsistente</span><strong>{formatarNumero(itensBiFiltrados.filter((item) => item.pesoPossivelmenteInconsistente).length)}</strong><small>faturado muito acima do cotado e da cubagem de referencia - clique</small></div>
+              </div>
+
+              <div style={{ marginTop: 18, border: '2px solid #93c5fd', background: '#eff6ff', borderRadius: 12, padding: 14 }}>
+                <div className="panel-title">Análise detalhada — divergência de peso</div>
+                <p className="compact" style={{ marginTop: 4 }}>
+                  Compara exatamente os mesmos pedidos que possuem peso cotado e faturado diferentes, respeitando todos os filtros ativos e as transportadoras retiradas.
+                </p>
+                <div className="summary-strip lotacao-summary-mini" style={{ marginTop: 12 }}>
+                  <div className="summary-card"><span>Pedidos com divergência</span><strong>{formatarNumero(analiseDivergenciaPeso.quantidade)}</strong><small>{formatarNumero(analiseDivergenciaPeso.percentual, 1)}% do recorte</small></div>
+                  <div className="summary-card"><span>Peso total cotado</span><strong>{formatarNumero(analiseDivergenciaPeso.pesoCotado, 2)} kg</strong><small>média {formatarNumero(analiseDivergenciaPeso.mediaCotada, 2)} kg/pedido</small></div>
+                  <div className="summary-card"><span>Peso total faturado</span><strong>{formatarNumero(analiseDivergenciaPeso.pesoFaturado, 2)} kg</strong><small>média {formatarNumero(analiseDivergenciaPeso.mediaFaturada, 2)} kg/pedido</small></div>
+                  <div className="summary-card"><span>Diferença de peso</span><strong>{analiseDivergenciaPeso.diferencaKg >= 0 ? '+' : ''}{formatarNumero(analiseDivergenciaPeso.diferencaKg, 2)} kg</strong><small>{analiseDivergenciaPeso.diferencaPercentual >= 0 ? '+' : ''}{formatarNumero(analiseDivergenciaPeso.diferencaPercentual, 1)}% sobre o cotado</small></div>
+                  <div className="summary-card"><span>Frete ideal pelo cotado</span><strong>{formatarMoeda(analiseDivergenciaPeso.valorCotado)}</strong><small>{formatarNumero(analiseDivergenciaPeso.comparaveisFinanceiros)} pedidos comparáveis</small></div>
+                  <div className="summary-card"><span>Frete ideal pelo faturado</span><strong>{formatarMoeda(analiseDivergenciaPeso.valorFaturado)}</strong><small>mesmos pedidos comparáveis</small></div>
+                  <div className="summary-card"><span>Impacto financeiro do peso</span><strong>{analiseDivergenciaPeso.impactoFinanceiro >= 0 ? '+' : ''}{formatarMoeda(analiseDivergenciaPeso.impactoFinanceiro)}</strong><small>faturado menos cotado</small></div>
+                </div>
+                <div style={{ overflowX: 'auto', marginTop: 12 }}>
+                  <table className="sim-analise-tabela" style={{ width: '100%' }}>
+                    <thead><tr><th>Direção da divergência</th><th>Pedidos</th><th>Diferença absoluta</th><th>Perda identificada</th></tr></thead>
+                    <tbody>
+                      <tr><td>Faturado maior que o cotado</td><td>{formatarNumero(analiseDivergenciaPeso.faturadoMaior.quantidade)}</td><td>+{formatarNumero(analiseDivergenciaPeso.faturadoMaior.diferencaKg, 2)} kg</td><td>{formatarMoeda(analiseDivergenciaPeso.faturadoMaior.perda)}</td></tr>
+                      <tr><td>Cotado maior que o faturado</td><td>{formatarNumero(analiseDivergenciaPeso.cotadoMaior.quantidade)}</td><td>{formatarNumero(analiseDivergenciaPeso.cotadoMaior.diferencaKg, 2)} kg</td><td>{formatarMoeda(analiseDivergenciaPeso.cotadoMaior.perda)}</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(500px, 1fr))', gap: 18, marginTop: 18 }}>
+                <div style={{ border: '2px solid #c4b5fd', background: '#f5f3ff', borderRadius: 12, padding: 14 }}>
+                  <div className="panel-title">Análise detalhada — campanhas de frete</div>
+                  <p className="compact" style={{ marginTop: 4 }}>Mede a presença da campanha e compara o comportamento financeiro dos pedidos com e sem campanha.</p>
+                  <div className="summary-strip lotacao-summary-mini" style={{ marginTop: 12 }}>
+                    <div className="summary-card"><span>Pedidos com campanha</span><strong>{formatarNumero(analiseCampanhas.com.quantidade)}</strong><small>{formatarNumero(analiseCampanhas.percentual, 1)}% do recorte</small></div>
+                    <div className="summary-card"><span>Desconto de campanha</span><strong>{formatarMoeda(analiseCampanhas.totalDesconto)}</strong><small>média {formatarMoeda(analiseCampanhas.mediaDesconto)}/pedido</small></div>
+                    <div className="summary-card"><span>Desvios com campanha</span><strong>{formatarNumero(analiseCampanhas.com.desvios)}</strong><small>perda {formatarMoeda(analiseCampanhas.com.perda)}</small></div>
+                    <div className="summary-card"><span>Frete pago com campanha</span><strong>{formatarMoeda(analiseCampanhas.com.valorPago)}</strong><small>ideal {formatarMoeda(analiseCampanhas.com.valorIdeal)}</small></div>
+                  </div>
+                  <div style={{ overflowX: 'auto', marginTop: 12 }}>
+                    <table className="sim-analise-tabela" style={{ width: '100%' }}>
+                      <thead><tr><th>Grupo</th><th>Pedidos</th><th>Desvios</th><th>Frete pago</th><th>Frete ideal</th><th>Perda</th></tr></thead>
+                      <tbody>
+                        <tr><td>Com campanha</td><td>{formatarNumero(analiseCampanhas.com.quantidade)}</td><td>{formatarNumero(analiseCampanhas.com.desvios)}</td><td>{formatarMoeda(analiseCampanhas.com.valorPago)}</td><td>{formatarMoeda(analiseCampanhas.com.valorIdeal)}</td><td>{formatarMoeda(analiseCampanhas.com.perda)}</td></tr>
+                        <tr><td>Sem campanha</td><td>{formatarNumero(analiseCampanhas.sem.quantidade)}</td><td>{formatarNumero(analiseCampanhas.sem.desvios)}</td><td>{formatarMoeda(analiseCampanhas.sem.valorPago)}</td><td>{formatarMoeda(analiseCampanhas.sem.valorIdeal)}</td><td>{formatarMoeda(analiseCampanhas.sem.perda)}</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div style={{ border: '2px solid #fdba74', background: '#fff7ed', borderRadius: 12, padding: 14 }}>
+                  <div className="panel-title">Análise detalhada — adicional tributário</div>
+                  <p className="compact" style={{ marginTop: 4 }}>Mostra quanto do recorte recebeu adicional tributário e como esses pedidos se comportam frente aos demais.</p>
+                  <div className="summary-strip lotacao-summary-mini" style={{ marginTop: 12 }}>
+                    <div className="summary-card"><span>Pedidos com adicional</span><strong>{formatarNumero(analiseAdicionalTributario.com.quantidade)}</strong><small>{formatarNumero(analiseAdicionalTributario.percentual, 1)}% do recorte</small></div>
+                    <div className="summary-card"><span>Total do adicional</span><strong>{formatarMoeda(analiseAdicionalTributario.totalAdicional)}</strong><small>média {formatarMoeda(analiseAdicionalTributario.mediaAdicional)}/pedido</small></div>
+                    <div className="summary-card"><span>Desvios com adicional</span><strong>{formatarNumero(analiseAdicionalTributario.com.desvios)}</strong><small>perda {formatarMoeda(analiseAdicionalTributario.com.perda)}</small></div>
+                    <div className="summary-card"><span>Frete pago com adicional</span><strong>{formatarMoeda(analiseAdicionalTributario.com.valorPago)}</strong><small>ideal {formatarMoeda(analiseAdicionalTributario.com.valorIdeal)}</small></div>
+                  </div>
+                  <div style={{ overflowX: 'auto', marginTop: 12 }}>
+                    <table className="sim-analise-tabela" style={{ width: '100%' }}>
+                      <thead><tr><th>Grupo</th><th>Pedidos</th><th>Desvios</th><th>Frete pago</th><th>Frete ideal</th><th>Perda</th></tr></thead>
+                      <tbody>
+                        <tr><td>Com adicional</td><td>{formatarNumero(analiseAdicionalTributario.com.quantidade)}</td><td>{formatarNumero(analiseAdicionalTributario.com.desvios)}</td><td>{formatarMoeda(analiseAdicionalTributario.com.valorPago)}</td><td>{formatarMoeda(analiseAdicionalTributario.com.valorIdeal)}</td><td>{formatarMoeda(analiseAdicionalTributario.com.perda)}</td></tr>
+                        <tr><td>Sem adicional</td><td>{formatarNumero(analiseAdicionalTributario.sem.quantidade)}</td><td>{formatarNumero(analiseAdicionalTributario.sem.desvios)}</td><td>{formatarMoeda(analiseAdicionalTributario.sem.valorPago)}</td><td>{formatarMoeda(analiseAdicionalTributario.sem.valorIdeal)}</td><td>{formatarMoeda(analiseAdicionalTributario.sem.perda)}</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(390px, 1fr))', gap: 18, marginTop: 18 }}>

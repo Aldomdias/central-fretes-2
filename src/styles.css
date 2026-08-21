@@ -3405,6 +3405,23 @@ button:disabled { opacity: 0.58; cursor: not-allowed; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.audit-invoice-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.audit-invoice-badge-linked {
+  background: #dbeafe;
+  color: #1e40af;
+}
+.audit-invoice-badge-unlinked {
+  background: #f1f5f9;
+  color: #64748b;
+}
 .audit-quick-detail-row > td {
   padding: 14px !important;
   border-top: 0;

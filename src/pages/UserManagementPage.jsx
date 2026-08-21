@@ -180,6 +180,24 @@ export default function UserManagementPage({ usuarioAtual }) {
   const [origemDados, setOrigemDados] = useState('local');
   const perfis = useMemo(() => Object.entries(PERFIS_USUARIO), []);
   const podeAdministrar = usuarioPodeAdministrarUsuarios(usuarioAtual);
+  const resumoUsuarios = useMemo(() => {
+    const ativos = usuarios.filter((usuario) => usuario.ativo !== false).length;
+    const porPerfil = usuarios.reduce((acc, usuario) => {
+      const perfil = usuario.perfil || 'CONSULTA';
+      acc[perfil] = (acc[perfil] || 0) + 1;
+      return acc;
+    }, {});
+    return {
+      total: usuarios.length,
+      ativos,
+      inativos: usuarios.length - ativos,
+      perfis: Object.keys(porPerfil).length,
+      detalhePerfis: Object.entries(porPerfil)
+        .sort((a, b) => b[1] - a[1])
+        .map(([perfil, total]) => `${nomePerfil(perfil)}: ${total}`)
+        .join(' · '),
+    };
+  }, [usuarios]);
 
   useEffect(() => {
     let ativo = true;
@@ -288,6 +306,29 @@ export default function UserManagementPage({ usuarioAtual }) {
         </div>
       </header>
 
+      <div className="summary-strip" style={{ flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
+        <div className="summary-card" style={{ borderLeft: '4px solid #071b49' }}>
+          <span>Usuários cadastrados</span>
+          <strong>{resumoUsuarios.total.toLocaleString('pt-BR')}</strong>
+          <small>Total no Supabase</small>
+        </div>
+        <div className="summary-card" style={{ borderLeft: '4px solid #16a34a' }}>
+          <span>Ativos</span>
+          <strong style={{ color: '#15803d' }}>{resumoUsuarios.ativos.toLocaleString('pt-BR')}</strong>
+          <small>Podem acessar o sistema</small>
+        </div>
+        <div className="summary-card" style={{ borderLeft: '4px solid #dc2626' }}>
+          <span>Inativos</span>
+          <strong style={{ color: '#b91c1c' }}>{resumoUsuarios.inativos.toLocaleString('pt-BR')}</strong>
+          <small>Acesso bloqueado</small>
+        </div>
+        <div className="summary-card" style={{ borderLeft: '4px solid #9153f0', minWidth: 280 }}>
+          <span>Perfis em uso</span>
+          <strong style={{ color: '#7e22ce' }}>{resumoUsuarios.perfis.toLocaleString('pt-BR')}</strong>
+          <small>{resumoUsuarios.detalhePerfis || 'Nenhum perfil cadastrado'}</small>
+        </div>
+      </div>
+
       <div className="panel-card">
         <div className="section-row compact-top">
           <div>
@@ -349,7 +390,7 @@ export default function UserManagementPage({ usuarioAtual }) {
         <div className="section-row compact-top">
           <div>
             <div className="panel-title">Usuários cadastrados</div>
-            <p className="compact">Altere perfil, senha, status e módulos de acesso.</p>
+            <p className="compact">Altere e-mail, perfil, senha, status e módulos de acesso.</p>
           </div>
           <span className="status-pill dark">{usuarios.length} usuário(s)</span>
         </div>
@@ -372,7 +413,22 @@ export default function UserManagementPage({ usuarioAtual }) {
                 return (
                   <tr key={usuario.id}>
                     <td><strong>{usuario.nome}</strong></td>
-                    <td>{usuario.email}</td>
+                    <td>
+                      <input
+                        type="email"
+                        defaultValue={usuario.email || ''}
+                        onBlur={(event) => {
+                          const email = event.target.value.trim().toLowerCase();
+                          if (!email) {
+                            event.target.value = usuario.email || '';
+                          } else if (email !== String(usuario.email || '').trim().toLowerCase()) {
+                            alterar(usuario.id, { email }, 'E-mail atualizado.');
+                          }
+                        }}
+                        disabled={salvando || adminPrincipal}
+                        aria-label={`E-mail de ${usuario.nome}`}
+                      />
+                    </td>
                     <td>
                       <select value={usuario.perfil} onChange={(event) => alterarPerfilUsuario(usuario, event.target.value)} disabled={salvando || adminPrincipal}>
                         {perfis.map(([chave, perfil]) => (

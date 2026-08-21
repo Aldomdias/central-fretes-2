@@ -326,6 +326,12 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
   const [calculandoTodas, setCalculandoTodas] = useState(false);
   const [progressoTodas, setProgressoTodas] = useState(null);
   const [progressoItem, setProgressoItem] = useState({});
+  const [canalFiltro, setCanalFiltro] = useState('TODOS');
+  const [statusFiltro, setStatusFiltro] = useState('TODOS');
+  const [transportadoraFiltro, setTransportadoraFiltro] = useState('TODAS');
+  const [competenciaFiltro, setCompetenciaFiltro] = useState('TODAS');
+  const [buscaAnalitica, setBuscaAnalitica] = useState('');
+  const [visaoAnalitica, setVisaoAnalitica] = useState('dashboard');
   // Cache da consulta "base" (mercado inteiro) por canal+período — várias negociações
   // do mesmo canal com a mesma janela reaproveitam a mesma busca em vez de repetir
   // uma consulta pesada (empresa inteira) pra cada transportadora em "Calcular todas".
@@ -728,11 +734,37 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  const negociacoesCalculadas = negociacoesAprovadas.filter((item) => resultados[item.id]);
-  const negociacoesPendentes = negociacoesAprovadas.filter((item) => !resultados[item.id]);
-  const savingTotal = negociacoesCalculadas.reduce((acc, item) => acc + (resultados[item.id]?.totais.saving || 0), 0);
+  const canaisDisponiveis = [...new Set(negociacoesAprovadas.map((item) => item.canal || 'SEM CANAL'))].sort();
+  const transportadorasDisponiveis = [...new Set(negociacoesAprovadas.map((item) => item.transportadora))].sort();
+  const competenciasDisponiveis = [...new Set(negociacoesAprovadas.flatMap((item) =>
+    (resultados[item.id]?.mensal || []).map((mes) => String(mes.competencia).slice(0, 7))
+  ))].sort().reverse();
+  const termoAnalitico = normalizarTextoReajuste(buscaAnalitica);
+  const negociacoesFiltradas = negociacoesAprovadas.filter((item) => {
+    const canalOk = canalFiltro === 'TODOS' || (item.canal || 'SEM CANAL') === canalFiltro;
+    const statusOk = statusFiltro === 'TODOS'
+      || (statusFiltro === 'CALCULADAS' ? Boolean(resultados[item.id]) : !resultados[item.id]);
+    const transportadoraOk = transportadoraFiltro === 'TODAS' || item.transportadora === transportadoraFiltro;
+    const competenciaOk = competenciaFiltro === 'TODAS' || (resultados[item.id]?.mensal || [])
+      .some((mes) => String(mes.competencia).startsWith(competenciaFiltro));
+    const buscaOk = !termoAnalitico || normalizarTextoReajuste(
+      `${item.transportadora} ${item.nome} ${item.origem} ${item.canal}`
+    ).includes(termoAnalitico);
+    return canalOk && statusOk && transportadoraOk && competenciaOk && buscaOk;
+  });
+  const negociacoesCalculadas = negociacoesFiltradas.filter((item) => resultados[item.id]);
+  const negociacoesPendentes = negociacoesFiltradas.filter((item) => !resultados[item.id]);
+  function savingNoEscopo(item) {
+    const resultado = resultados[item.id];
+    if (!resultado) return 0;
+    if (competenciaFiltro === 'TODAS') return Number(resultado.totais?.saving || 0);
+    return (resultado.mensal || [])
+      .filter((mes) => String(mes.competencia).startsWith(competenciaFiltro))
+      .reduce((acc, mes) => acc + Number(mes.saving || 0), 0);
+  }
+  const savingTotal = negociacoesCalculadas.reduce((acc, item) => acc + savingNoEscopo(item), 0);
   const savingMensal = [...negociacoesCalculadas.reduce((mapa, item) => {
-    (resultados[item.id]?.mensal || []).forEach((mes) => {
+    (resultados[item.id]?.mensal || []).filter((mes) => competenciaFiltro === 'TODAS' || String(mes.competencia).startsWith(competenciaFiltro)).forEach((mes) => {
       const atual = mapa.get(mes.competencia) || { competencia: mes.competencia, saving: 0, ctesAtual: 0, transportadoras: new Set() };
       atual.saving += Number(mes.saving || 0);
       atual.ctesAtual += Number(mes.ctesAtual || 0);
@@ -742,8 +774,36 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     return mapa;
   }, new Map()).values()].sort((a, b) => String(a.competencia).localeCompare(String(b.competencia)));
   const transportadorasAcompanhadas = new Set(negociacoesCalculadas.map((item) => item.transportadora)).size;
+  const rankingCanais = [...negociacoesCalculadas.reduce((mapa, item) => {
+    const canal = item.canal || 'SEM CANAL';
+    const atual = mapa.get(canal) || { canal, saving: 0, negociacoes: 0, rotas: 0 };
+    atual.saving += savingNoEscopo(item);
+    atual.negociacoes += 1;
+    atual.rotas += Number(resultados[item.id]?.linhas?.length || 0);
+    mapa.set(canal, atual);
+    return mapa;
+  }, new Map()).values()].sort((a, b) => b.saving - a.saving);
+  const rankingTransportadoras = [...negociacoesCalculadas.reduce((mapa, item) => {
+    const atual = mapa.get(item.transportadora) || { nome: item.transportadora, saving: 0, negociacoes: 0 };
+    atual.saving += savingNoEscopo(item);
+    atual.negociacoes += 1;
+    mapa.set(item.transportadora, atual);
+    return mapa;
+  }, new Map()).values()].sort((a, b) => b.saving - a.saving);
+  const maiorSavingCanal = Math.max(1, ...rankingCanais.map((item) => Math.abs(item.saving)));
+  const savingPositivo = negociacoesCalculadas.filter((item) => savingNoEscopo(item) >= 0);
+  const savingNegativo = negociacoesCalculadas.filter((item) => savingNoEscopo(item) < 0);
+  const rotasComparaveis = negociacoesCalculadas.reduce((acc, item) => acc + Number(resultados[item.id]?.linhas?.length || 0), 0);
+  const ctesComparaveis = savingMensal.reduce((acc, mes) => acc + Number(mes.ctesAtual || 0), 0);
+  const melhorCanal = rankingCanais[0] || null;
+  const piorCanal = rankingCanais.length ? [...rankingCanais].sort((a, b) => a.saving - b.saving)[0] : null;
+  const ultimoMes = savingMensal[savingMensal.length - 1] || null;
+  const mesAnterior = savingMensal[savingMensal.length - 2] || null;
+  const variacaoMensal = mesAnterior && mesAnterior.saving
+    ? (Number(ultimoMes?.saving || 0) - Number(mesAnterior.saving)) / Math.abs(Number(mesAnterior.saving))
+    : null;
   const kpis = [
-    { label: 'Aprovadas', value: negociacoesAprovadas.length },
+    { label: 'Aprovadas no recorte', value: negociacoesFiltradas.length },
     { label: 'Já calculadas', value: negociacoesCalculadas.length },
     { label: 'Pendentes', value: negociacoesPendentes.length },
     { label: 'Transportadoras', value: transportadorasAcompanhadas },
@@ -786,6 +846,46 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         nos {MESES_BASE_SAVING_PADRAO} meses anteriores à data de referência.
       </p>
 
+      <div style={{ display: 'flex', gap: 6, margin: '16px 0 12px', flexWrap: 'wrap' }}>
+        {[['dashboard', 'Visão executiva'], ['laudo', 'Laudo interativo'], ['mensal', 'Evolução mensal'], ['detalhes', 'Detalhamento']].map(([id, label]) => (
+          <button key={id} type="button" className="sim-tab" onClick={() => setVisaoAnalitica(id)} style={{ padding: '7px 12px', fontWeight: visaoAnalitica === id ? 800 : 600, color: visaoAnalitica === id ? '#1d4ed8' : '#475569', background: visaoAnalitica === id ? '#eff6ff' : '#fff', borderColor: visaoAnalitica === id ? '#60a5fa' : '#cbd5e1' }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ padding: 14, border: '1px solid #dbe4f0', borderRadius: 12, background: '#f8fafc', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))', gap: 10 }}>
+        <label style={{ fontSize: 11, color: '#475569' }}>Canal
+          <select value={canalFiltro} onChange={(e) => setCanalFiltro(e.target.value)} style={{ display: 'block', width: '100%', marginTop: 4, padding: '7px 8px' }}>
+            <option value="TODOS">Todos os canais</option>
+            {canaisDisponiveis.map((canal) => <option key={canal} value={canal}>{canal}</option>)}
+          </select>
+        </label>
+        <label style={{ fontSize: 11, color: '#475569' }}>Competência
+          <select value={competenciaFiltro} onChange={(e) => setCompetenciaFiltro(e.target.value)} style={{ display: 'block', width: '100%', marginTop: 4, padding: '7px 8px' }}>
+            <option value="TODAS">Todo o período</option>
+            {competenciasDisponiveis.map((mes) => <option key={mes} value={mes}>{nomeMesSaving(`${mes}-01`)}</option>)}
+          </select>
+        </label>
+        <label style={{ fontSize: 11, color: '#475569' }}>Transportadora
+          <select value={transportadoraFiltro} onChange={(e) => setTransportadoraFiltro(e.target.value)} style={{ display: 'block', width: '100%', marginTop: 4, padding: '7px 8px' }}>
+            <option value="TODAS">Todas</option>
+            {transportadorasDisponiveis.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
+          </select>
+        </label>
+        <label style={{ fontSize: 11, color: '#475569' }}>Situação
+          <select value={statusFiltro} onChange={(e) => setStatusFiltro(e.target.value)} style={{ display: 'block', width: '100%', marginTop: 4, padding: '7px 8px' }}>
+            <option value="TODOS">Todas</option><option value="CALCULADAS">Calculadas</option><option value="PENDENTES">Pendentes</option>
+          </select>
+        </label>
+        <label style={{ fontSize: 11, color: '#475569' }}>Busca livre
+          <input value={buscaAnalitica} onChange={(e) => setBuscaAnalitica(e.target.value)} placeholder="Rota, origem, negociação..." style={{ display: 'block', width: '100%', marginTop: 4, padding: '7px 8px', boxSizing: 'border-box' }} />
+        </label>
+        <div style={{ display: 'flex', alignItems: 'end' }}>
+          <button type="button" className="sim-tab" style={{ width: '100%', padding: '7px 8px' }} onClick={() => { setCanalFiltro('TODOS'); setCompetenciaFiltro('TODAS'); setTransportadoraFiltro('TODAS'); setStatusFiltro('TODOS'); setBuscaAnalitica(''); }}>Limpar filtros</button>
+        </div>
+      </div>
+
       {!negociacoesAprovadas.length ? (
         <div className="sim-alert info">Nenhuma negociação aprovada pelo gestor até o momento.</div>
       ) : (
@@ -803,7 +903,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
             <button
               type="button"
               className="sim-tab"
-              onClick={() => calcularTodas({ recalcular: false })}
+              onClick={() => calcularTodas({ recalcular: false, negociacoesAlvo: negociacoesFiltradas, modoLabel: 'Calculando seleção' })}
               disabled={calculandoTodas || !negociacoesPendentes.length}
             >
               Calcular pendentes ({negociacoesPendentes.length})
@@ -811,16 +911,16 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
             <button
               type="button"
               className="sim-tab"
-              onClick={() => calcularTodas({ recalcular: true })}
-              disabled={calculandoTodas || !negociacoesAprovadas.length}
+              onClick={() => calcularTodas({ recalcular: true, negociacoesAlvo: negociacoesFiltradas, modoLabel: 'Recalculando seleção' })}
+              disabled={calculandoTodas || !negociacoesFiltradas.length}
               title="Consulta novamente a base atualizada e substitui todos os savings salvos"
             >
-              Recalcular todas ({negociacoesAprovadas.length})
+              Recalcular seleção ({negociacoesFiltradas.length})
             </button>
             <button
               type="button"
               className="sim-tab"
-              onClick={() => baixarLaudoSavings(tabelas, negociacoesAprovadas, resultados)}
+              onClick={() => baixarLaudoSavings(tabelas, negociacoesFiltradas, resultados)}
               disabled={!negociacoesCalculadas.length}
               title={!negociacoesCalculadas.length ? 'Calcule ao menos uma negociação para gerar o laudo' : ''}
             >
@@ -829,7 +929,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
             <button
               type="button"
               className="sim-tab"
-              onClick={() => baixarEmailSavings(tabelas, negociacoesAprovadas, resultados)}
+              onClick={() => baixarEmailSavings(tabelas, negociacoesFiltradas, resultados)}
               disabled={!negociacoesCalculadas.length}
               title="Baixa um arquivo .eml com o resumo formatado no corpo do e-mail"
             >
@@ -850,7 +950,99 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
               </div>
             ) : null}
           </div>
-          {savingMensal.length ? (
+          {visaoAnalitica === 'dashboard' && negociacoesCalculadas.length ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(310px, 1fr))', gap: 14, marginTop: 14 }}>
+              <div style={{ border: '1px solid #dbe4f0', borderRadius: 12, padding: 14 }}>
+                <h3 style={{ margin: '0 0 12px', fontSize: 15 }}>Saving por canal</h3>
+                <div style={{ display: 'grid', gap: 11 }}>
+                  {rankingCanais.map((item) => (
+                    <button key={item.canal} type="button" onClick={() => setCanalFiltro(item.canal)} style={{ border: 0, background: 'transparent', padding: 0, textAlign: 'left', cursor: 'pointer' }} title={`Filtrar pelo canal ${item.canal}`}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12 }}><strong>{item.canal}</strong><span style={{ color: item.saving >= 0 ? '#087f3f' : '#c1121f', fontWeight: 800 }}>{formatMoney(item.saving)}</span></div>
+                      <div style={{ height: 8, borderRadius: 99, background: '#e2e8f0', marginTop: 5, overflow: 'hidden' }}><div style={{ width: `${Math.max(3, Math.abs(item.saving) / maiorSavingCanal * 100)}%`, height: '100%', borderRadius: 99, background: item.saving >= 0 ? '#16a34a' : '#dc2626' }} /></div>
+                      <div style={{ fontSize: 10, color: '#64748b', marginTop: 3 }}>{item.negociacoes} negociações · {item.rotas} rotas comparáveis</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ border: '1px solid #dbe4f0', borderRadius: 12, padding: 14 }}>
+                <h3 style={{ margin: '0 0 12px', fontSize: 15 }}>Ranking de transportadoras</h3>
+                <div style={{ display: 'grid', gap: 7 }}>
+                  {rankingTransportadoras.slice(0, 8).map((item, index) => (
+                    <button key={item.nome} type="button" onClick={() => setTransportadoraFiltro(item.nome)} style={{ display: 'grid', gridTemplateColumns: '24px minmax(0, 1fr) auto', gap: 7, alignItems: 'center', border: 0, borderBottom: '1px solid #f1f5f9', background: 'transparent', padding: '5px 0', textAlign: 'left', cursor: 'pointer' }}>
+                      <span style={{ color: '#94a3b8', fontWeight: 800 }}>{index + 1}</span><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.nome}</span><strong style={{ color: item.saving >= 0 ? '#087f3f' : '#c1121f' }}>{formatMoney(item.saving)}</strong>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : null}
+          {visaoAnalitica === 'laudo' ? (
+            <article style={{ marginTop: 16, border: '1px solid #cbd5e1', borderRadius: 14, overflow: 'hidden', background: '#fff' }}>
+              <header style={{ padding: '20px 22px', color: '#fff', background: 'linear-gradient(135deg, #001f4f, #174ea6)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'start', flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontSize: 11, letterSpacing: 1.1, textTransform: 'uppercase', opacity: 0.8 }}>Laudo gerencial interativo</div>
+                    <h3 style={{ margin: '5px 0 4px', fontSize: 23 }}>Performance de savings pós-aprovação</h3>
+                    <div style={{ fontSize: 12, opacity: 0.8 }}>Recorte atual: {canalFiltro === 'TODOS' ? 'todos os canais' : canalFiltro} · {competenciaFiltro === 'TODAS' ? 'todo o período' : nomeMesSaving(`${competenciaFiltro}-01`)}</div>
+                  </div>
+                  <button type="button" className="sim-tab" onClick={() => baixarLaudoSavings(tabelas, negociacoesFiltradas, resultados)} disabled={!negociacoesCalculadas.length} style={{ background: '#fff', color: '#001f4f', padding: '7px 11px' }}>Exportar este recorte</button>
+                </div>
+              </header>
+
+              {!negociacoesCalculadas.length ? (
+                <div className="sim-alert info" style={{ margin: 18 }}>Não há negociações calculadas neste recorte. Ajuste os filtros ou calcule as pendências.</div>
+              ) : (
+                <div style={{ padding: 20, display: 'grid', gap: 18 }}>
+                  <section>
+                    <h4 style={{ margin: '0 0 10px', color: '#001f4f' }}>1. Parecer executivo</h4>
+                    <div style={{ padding: 14, borderRadius: 10, background: savingTotal >= 0 ? '#f0fdf4' : '#fef2f2', borderLeft: `4px solid ${savingTotal >= 0 ? '#16a34a' : '#dc2626'}`, lineHeight: 1.55, fontSize: 13 }}>
+                      O recorte apresenta <strong style={{ color: savingTotal >= 0 ? '#087f3f' : '#c1121f' }}>{formatMoney(savingTotal)}</strong> de saving realizado em <strong>{negociacoesCalculadas.length}</strong> negociações calculadas, cobrindo <strong>{rotasComparaveis.toLocaleString('pt-BR')} rotas</strong> e <strong>{ctesComparaveis.toLocaleString('pt-BR')} CT-es comparáveis</strong>. {savingPositivo.length} negociações geram economia e {savingNegativo.length} apresentam impacto negativo.
+                      {melhorCanal ? <> O canal de maior contribuição é <button type="button" onClick={() => setCanalFiltro(melhorCanal.canal)} style={{ border: 0, padding: 0, background: 'transparent', color: '#1d4ed8', fontWeight: 800, cursor: 'pointer' }}>{melhorCanal.canal}</button>, com {formatMoney(melhorCanal.saving)}.</> : null}
+                    </div>
+                  </section>
+
+                  <section>
+                    <h4 style={{ margin: '0 0 10px', color: '#001f4f' }}>2. Indicadores e tendência</h4>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+                      {[
+                        ['Saving no recorte', formatMoney(savingTotal), savingTotal >= 0 ? '#087f3f' : '#c1121f'],
+                        ['Negociações positivas', `${savingPositivo.length} de ${negociacoesCalculadas.length}`, '#087f3f'],
+                        ['Exceções negativas', savingNegativo.length, savingNegativo.length ? '#c1121f' : '#087f3f'],
+                        ['Variação último mês', variacaoMensal === null ? 'Sem base anterior' : formatPercent(variacaoMensal), variacaoMensal === null || variacaoMensal >= 0 ? '#087f3f' : '#c1121f'],
+                      ].map(([label, value, color]) => <div key={label} style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 10 }}><div style={{ fontSize: 11, color: '#64748b' }}>{label}</div><strong style={{ display: 'block', marginTop: 5, fontSize: 18, color }}>{value}</strong></div>)}
+                    </div>
+                  </section>
+
+                  <section>
+                    <h4 style={{ margin: '0 0 10px', color: '#001f4f' }}>3. Contribuição por canal</h4>
+                    <div style={gestaoStyles.tabelaWrap}>
+                      <table className="sim-table" style={{ minWidth: 620 }}><thead><tr><th>Canal</th><th>Negociações</th><th>Rotas</th><th>Participação</th><th>Saving</th><th></th></tr></thead><tbody>
+                        {rankingCanais.map((canal) => <tr key={canal.canal}><td><strong>{canal.canal}</strong></td><td>{canal.negociacoes}</td><td>{canal.rotas}</td><td>{savingTotal ? formatPercent(canal.saving / savingTotal) : '—'}</td><td style={{ fontWeight: 800, color: canal.saving >= 0 ? '#087f3f' : '#c1121f' }}>{formatMoney(canal.saving)}</td><td><button type="button" className="sim-tab" style={{ padding: '3px 8px', fontSize: 10 }} onClick={() => setCanalFiltro(canal.canal)}>Analisar canal</button></td></tr>)}
+                      </tbody></table>
+                    </div>
+                  </section>
+
+                  <section>
+                    <h4 style={{ margin: '0 0 10px', color: '#001f4f' }}>4. Pontos de atenção</h4>
+                    {savingNegativo.length ? <div style={gestaoStyles.tabelaWrap}><table className="sim-table" style={{ minWidth: 680 }}><thead><tr><th>Transportadora</th><th>Canal</th><th>Origem</th><th>Rotas</th><th>Impacto</th><th></th></tr></thead><tbody>
+                      {[...savingNegativo].sort((a, b) => savingNoEscopo(a) - savingNoEscopo(b)).map((item) => <tr key={item.id}><td><strong>{item.transportadora}</strong></td><td>{item.canal}</td><td>{item.origem || '—'}</td><td>{resultados[item.id]?.linhas?.length || 0}</td><td style={{ color: '#c1121f', fontWeight: 800 }}>{formatMoney(savingNoEscopo(item))}</td><td><button type="button" className="sim-tab" style={{ padding: '3px 8px', fontSize: 10 }} onClick={() => { setTransportadoraFiltro(item.transportadora); setVisaoAnalitica('detalhes'); setAbertos((prev) => ({ ...prev, [item.id]: true })); }}>Abrir evidências</button></td></tr>)}
+                    </tbody></table></div> : <div className="sim-alert info">Nenhuma negociação com saving negativo no recorte atual.</div>}
+                  </section>
+
+                  <section style={{ padding: 14, background: '#f8fafc', borderRadius: 10 }}>
+                    <h4 style={{ margin: '0 0 8px', color: '#001f4f' }}>5. Recomendação</h4>
+                    <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: '#475569' }}>
+                      {savingNegativo.length
+                        ? `Priorizar a revisão das ${savingNegativo.length} negociação(ões) com impacto negativo, começando por ${[...savingNegativo].sort((a, b) => savingNoEscopo(a) - savingNoEscopo(b))[0]?.transportadora}. Validar rotas, faixas e vínculo do realizado antes da próxima atualização.`
+                        : 'Manter o acompanhamento mensal e validar a continuidade do ganho nas rotas de maior volume. O recorte não apresenta exceções negativas neste momento.'}
+                      {piorCanal && piorCanal.saving < 0 ? ` O canal ${piorCanal.canal} requer atenção especial.` : ''}
+                    </p>
+                  </section>
+                </div>
+              )}
+            </article>
+          ) : null}
+          {visaoAnalitica === 'mensal' && savingMensal.length ? (
             <div style={{ marginTop: 14, ...gestaoStyles.tabelaWrap }}>
               <table className="sim-table" style={{ minWidth: 620 }}>
                 <thead><tr><th>MÃªs do realizado</th><th>CT-es comparÃ¡veis</th><th>Transportadoras</th><th>Saving do mÃªs</th><th></th></tr></thead>
@@ -882,7 +1074,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         </>
       )}
 
-      {negociacoesAprovadas.length ? (
+      {negociacoesFiltradas.length && !['mensal', 'laudo'].includes(visaoAnalitica) ? (
         <div style={{ marginTop: 14, ...gestaoStyles.tabelaWrap }}>
           <table className="sim-table" style={{ minWidth: 1080 }}>
             <thead>
@@ -900,7 +1092,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
               </tr>
             </thead>
             <tbody>
-              {negociacoesAprovadas.map((item) => {
+              {negociacoesFiltradas.map((item) => {
                 const r = resultados[item.id];
                 const vinculoStatus = statusVinculo(item);
                 return (
@@ -1021,7 +1213,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                     </td>
                     <td>{r ? r.linhas.length : '—'}</td>
                     <td style={{ fontWeight: 700, color: r ? (r.totais.saving >= 0 ? '#087f3f' : '#c1121f') : '#94a3b8' }}>
-                      {r ? formatMoney(r.totais.saving) : '—'}
+                      {r ? formatMoney(savingNoEscopo(item)) : '—'}
                     </td>
                     <td>
                       <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1064,7 +1256,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
       ) : null}
 
       <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
-        {negociacoesAprovadas.map((item) => {
+        {visaoAnalitica === 'detalhes' ? negociacoesFiltradas.map((item) => {
           const resultado = resultados[item.id];
           const aberto = Boolean(abertos[item.id]);
           const vinculoLista = vinculoAtual(item);
@@ -1282,7 +1474,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
               ) : null}
             </div>
           );
-        })}
+        }) : null}
       </div>
     </section>
   );
