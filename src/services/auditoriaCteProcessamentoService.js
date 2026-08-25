@@ -1725,6 +1725,21 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
   const ctesParaCalculo = deveConsultarTracking
     ? await enriquecerCtesComTrackingAoVivo(ctesUnicos, onProgress)
     : ctesUnicos.map((cte) => ({ ...cte, trackingNaoConsultado: opcoesCalculo.apenasDadosCompletos === false }));
+  if (typeof window !== 'undefined') {
+    ctesParaCalculo.forEach((cte) => {
+      const numero = onlyDigits(pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']));
+      if (numero === '1600282') {
+        console.log('[DEBUG TDE] cte 1600282', {
+          lote: normalizadas.length,
+          deveConsultarTracking,
+          faltaDocumentoDestinatario,
+          documento_destinatario: pickDigits(cte, ['documento_destinatario', 'documentoDestinatario', 'cnpj_destinatario'], 14),
+          trackingMatch: cte.trackingMatch,
+          trackingPendente: cte.trackingPendente,
+        });
+      }
+    });
+  }
   onProgress?.({ etapa: 'calculando_amd', carregados: 0, total: ctesUnicos.length });
   await new Promise((resolve) => setTimeout(resolve, 0));
 

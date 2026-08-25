@@ -755,6 +755,14 @@ export function calcularItemTabela({ transportadora, origem, rota, cte, gradeCan
     tde: transportadora?.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora?.tdeCnpjs) ? transportadora.tdeCnpjs : [],
   };
+  if (typeof window !== 'undefined' && (cte.numeroCte === '1600282' || cte.chaveCte === '1600282')) {
+    console.log('[DEBUG TDE] calcularItemTabela 1600282', {
+      documentoDestinatario: cte.documentoDestinatario,
+      transportadoraNome: transportadora?.nome,
+      tdeCnpjs: transportadora?.tdeCnpjs,
+      tde: transportadora?.tde,
+    });
+  }
   const engineInput = {
     rota,
     cotacao,
