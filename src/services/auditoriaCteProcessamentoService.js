@@ -1,5 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { buscarBaseSimulacaoPorRotasDb, carregarBaseCompletaDb, carregarBaseTransportadorasDb } from './freteDatabaseService';
+import { buscarBaseSimulacaoPorRotasDb, carregarBaseCompletaDb, carregarBaseTransportadorasDb, invalidarCacheBaseCompletaDb } from './freteDatabaseService';
 import { calcularFreteFaixaPeso, calcularFretePercentual } from './freteCalcEngine';
 import { filtrarCpComercialCte } from './cteBasePolicy';
 import {
@@ -208,6 +208,7 @@ export function invalidarCacheVinculosAuditoriaCte() {
 export function invalidarCacheBaseFreteAuditoriaCte() {
   _cacheBaseFretePorTransportadora.clear();
   _cacheBaseFrete = null;
+  invalidarCacheBaseCompletaDb();
 }
 
 // Busca o resultado ja calculado/salvo de um CT-e (com o detalhamento do
