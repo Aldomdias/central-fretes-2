@@ -5562,7 +5562,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
           ? { ...tabela, ...negociacaoAtualizada, incluir_simulacao: negociacaoAtualizada.incluir_simulacao ?? false }
           : tabela
       )));
-      alert(`Resultado salvo em ${negociacaoAtualizada.transportadora || resultadoRealizado.negociacaoNome || 'negociação'}. A negociação saiu do Simulador — use "Simular novamente" na central ou abra "+ Nova rodada" para nova proposta.`);
+      const canaisPendentes = negociacaoAtualizada.resumo_simulacao?.canais_pendentes_rodada || [];
+      const mensagemDisponibilidade = canaisPendentes.length
+        ? `A negociação continua no Simulador para analisar: ${canaisPendentes.join(', ')}.`
+        : 'Todos os canais da rodada foram analisados e a negociação saiu do Simulador.';
+      alert(`Resultado salvo em ${negociacaoAtualizada.transportadora || resultadoRealizado.negociacaoNome || 'negociação'}. ${mensagemDisponibilidade}`);
     } catch (error) {
       setErroSimulacao(error.message || 'Erro ao salvar resultado na negociação.');
     } finally {

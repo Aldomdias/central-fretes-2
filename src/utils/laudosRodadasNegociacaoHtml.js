@@ -135,6 +135,11 @@ export function obterSimulacoesRodadas(tabelaOuResumo = {}) {
     .sort(ordenarSimulacoes);
 }
 
+function canalDaSimulacao(simulacao = {}) {
+  const canal = upper(simulacao.canal || simulacao.resumo?.canal || simulacao.resumo?.filtros?.canal);
+  return canal === 'B2B' ? 'ATACADO' : canal;
+}
+
 export function consolidarUltimaSimulacaoPorRodada(simulacoes = []) {
   const mapa = new Map();
   simulacoes.forEach((sim) => {
@@ -1189,9 +1194,12 @@ function montarRelatorioTransportador({ tabela, comparativo, evolucaoRodadas, ro
   return resumoTexto(linhas);
 }
 
-export function montarLaudosRodadasNegociacao(tabela = {}) {
+export function montarLaudosRodadasNegociacao(tabela = {}, opcoes = {}) {
   const resumo = getResumo(tabela);
-  const simulacoesTodas = obterSimulacoesRodadas(resumo);
+  const canalFiltro = upper(opcoes.canal || '');
+  const canalFiltroNormalizado = canalFiltro === 'B2B' ? 'ATACADO' : canalFiltro;
+  const simulacoesTodas = obterSimulacoesRodadas(resumo)
+    .filter((simulacao) => !canalFiltroNormalizado || canalDaSimulacao(simulacao) === canalFiltroNormalizado);
   const simulacoes = consolidarUltimaSimulacaoPorRodada(simulacoesTodas);
   const evolucaoRodadas = simulacoes.map(getIndicadoresRodada);
   const comparativo = montarComparativo(evolucaoRodadas);
@@ -1266,7 +1274,7 @@ export function montarLaudosRodadasNegociacao(tabela = {}) {
 
   const base = {
     transportadora: tabela.transportadora || resumo.transportadora || 'Transportadora',
-    canal: tabela.canal || resumo.canal || '',
+    canal: canalFiltroNormalizado || tabela.canal || resumo.canal || '',
     origem: tabela.origem || resumo.filtros?.origem || '',
     ufDestino: tabela.uf_destino || resumo.filtros?.ufDestino || '',
     periodo: resumo.filtros?.inicio || resumo.filtros?.fim ? `${resumo.filtros?.inicio || 'início'} a ${resumo.filtros?.fim || 'fim'}` : 'período analisado',

@@ -41,6 +41,7 @@ import {
 const CHAVE_HISTORICO_RESIMULACAO = 'amd-auditoria-ecommerce-resimulacoes-v1';
 const CHAVE_HISTORICO_RESIMULACAO_EXCLUIDAS = 'amd-auditoria-ecommerce-resimulacoes-excluidas-v1';
 const CHAVE_TRANSPORTADORAS_EXCLUIDAS_PAINEL = 'amd-auditoria-ecommerce-painel-transportadoras-excluidas-v1';
+const CHAVE_PERIODOS_TRANSPORTADORAS_PAINEL = 'amd-auditoria-ecommerce-painel-periodos-transportadoras-v1';
 const CHAVE_CRITERIO_PAINEL = 'amd-auditoria-ecommerce-painel-criterio-80-20-v1';
 
 function lerCriterioPainel() {
@@ -62,6 +63,17 @@ function lerTransportadorasExcluidasPainel() {
   try {
     const valor = JSON.parse(localStorage.getItem(CHAVE_TRANSPORTADORAS_EXCLUIDAS_PAINEL) || '[]');
     return Array.isArray(valor) ? valor.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function lerPeriodosTransportadorasPainel() {
+  try {
+    const valor = JSON.parse(localStorage.getItem(CHAVE_PERIODOS_TRANSPORTADORAS_PAINEL) || '[]');
+    return Array.isArray(valor)
+      ? valor.filter((item) => item?.transportadora && /^\d{4}-\d{2}$/.test(item?.competencia || ''))
+      : [];
   } catch {
     return [];
   }
@@ -112,6 +124,70 @@ function SeletorTransportadorasExcluidas({ opcoes, selecionadas, onChange }) {
       ) : null}
     </div>
   );
+}
+
+function SeletorPeriodosTransportadoras({ opcoes, competencias, regras, onChange }) {
+  const [transportadora, setTransportadora] = useState('');
+  const [competencia, setCompetencia] = useState('');
+
+  function adicionar() {
+    if (!transportadora || !competencia) return;
+    if (regras.some((item) => item.transportadora === transportadora && item.competencia === competencia)) return;
+    onChange([...regras, { transportadora, competencia }].sort((a, b) =>
+      a.transportadora.localeCompare(b.transportadora, 'pt-BR') || a.competencia.localeCompare(b.competencia)));
+    setCompetencia('');
+  }
+
+  return (
+    <div className="field" style={{ gridColumn: 'span 2' }}>
+      <span>Transportadora válida somente no período</span>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, 1fr) minmax(120px, 180px) auto', gap: 6 }}>
+        <select value={transportadora} onChange={(e) => setTransportadora(e.target.value)}>
+          <option value="">Selecione a transportadora</option>
+          {opcoes.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
+        </select>
+        <select value={competencia} onChange={(e) => setCompetencia(e.target.value)}>
+          <option value="">Selecione o mês</option>
+          {competencias.map((mes) => <option key={mes} value={mes}>{mes.split('-').reverse().join('/')}</option>)}
+        </select>
+        <button className="btn-secondary" type="button" disabled={!transportadora || !competencia} onClick={adicionar}>Adicionar</button>
+      </div>
+      <small>A transportadora disputa apenas os meses adicionados. Nos demais, o pedido permanece e a próxima candidata elegível assume o ranking.</small>
+      {regras.length ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+          {regras.map((regra) => (
+            <button
+              key={`${regra.transportadora}-${regra.competencia}`}
+              type="button"
+              title="Clique para remover esta regra"
+              onClick={() => onChange(regras.filter((item) => item !== regra))}
+              style={{ border: '1px solid #93c5fd', borderRadius: 999, background: '#eff6ff', color: '#1e3a8a', padding: '4px 9px', cursor: 'pointer' }}
+            >
+              {regra.transportadora} · {regra.competencia.split('-').reverse().join('/')} ×
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ordenarCandidatosPainel(candidatos = [], canal = '', usarPrazo = true) {
+  const lista = (candidatos || []).filter((item) => Number(item?.valor || 0) > 0);
+  const porPreco = (a, b) => Number(a.valor || 0) - Number(b.valor || 0)
+    || Number(a.prazo || 0) - Number(b.prazo || 0)
+    || String(a.transportadora || '').localeCompare(String(b.transportadora || ''), 'pt-BR');
+  if (!usarPrazo || String(canal || '').trim().toUpperCase() !== 'B2C') return [...lista].sort(porPreco);
+  const precos = lista.map((item) => Number(item.valor || 0)).filter((valor) => valor > 0);
+  const prazos = lista.map((item) => Number(item.prazo || 0)).filter((valor) => valor > 0);
+  const menorPreco = Math.min(...precos);
+  const menorPrazo = Math.min(...prazos);
+  if (!Number.isFinite(menorPreco) || !Number.isFinite(menorPrazo)) return [...lista].sort(porPreco);
+  return [...lista].sort((a, b) => {
+    const scoreA = (0.8 * (Number(a.valor || 0) / menorPreco)) + (0.2 * (Number(a.prazo || 0) / menorPrazo));
+    const scoreB = (0.8 * (Number(b.valor || 0) / menorPreco)) + (0.2 * (Number(b.prazo || 0) / menorPrazo));
+    return scoreA - scoreB || porPreco(a, b);
+  });
 }
 
 function lerHistoricoResimulacao() {
@@ -462,6 +538,7 @@ export default function AuditoriaEcommercePage() {
   const [indicadores, setIndicadores] = useState(null);
   const [indicadoresAtualizadoEm, setIndicadoresAtualizadoEm] = useState(null);
   const [cenarioPainel, setCenarioPainel] = useState('cotado');
+  const [usarPrazoPainel, setUsarPrazoPainel] = useState(lerCriterioPainel);
   const [carregandoIndicadores, setCarregandoIndicadores] = useState(false);
   const [competenciasCache, setCompetenciasCache] = useState([]);
   const [competenciasSelecionadas, setCompetenciasSelecionadas] = useState([]);
@@ -471,6 +548,7 @@ export default function AuditoriaEcommercePage() {
   const filtrosBiVazio = { somenteDesvios: false, campanha: null, diferencaPeso: null, pesoInconsistente: null, taxaMarketplace: null, adicionalTributario: null, transportadoraIdeal: '', transportadoraUsada: '', origemIdeal: '', origemUsada: '', competencia: '', semana: '', canal: '', uf: '' };
   const [filtrosBi, setFiltrosBi] = useState(filtrosBiVazio);
   const [transportadorasBiExcluidas, setTransportadorasBiExcluidas] = useState(lerTransportadorasExcluidasPainel);
+  const [periodosTransportadorasBi, setPeriodosTransportadorasBi] = useState(lerPeriodosTransportadorasPainel);
 
   useEffect(() => {
     try { localStorage.setItem(CHAVE_CRITERIO_PAINEL, String(considerarPrazo)); } catch { /* segue sem persistir */ }
@@ -483,6 +561,14 @@ export default function AuditoriaEcommercePage() {
       // A persistencia e apenas uma conveniencia; o filtro continua funcionando na sessao.
     }
   }, [transportadorasBiExcluidas]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAVE_PERIODOS_TRANSPORTADORAS_PAINEL, JSON.stringify(periodosTransportadorasBi));
+    } catch {
+      // A persistencia e apenas uma conveniencia; o filtro continua funcionando na sessao.
+    }
+  }, [periodosTransportadorasBi]);
 
   // Cobertura da base: contagens rapidas (nao le linhas) de quanto de cada mes
   // ja esta cruzado e recalculado. Fica guardada no navegador pra abrir na hora.
@@ -1398,7 +1484,83 @@ export default function AuditoriaEcommercePage() {
     .flatMap((item) => [item.transportadoraUsada, item.transportadoraIdeal])
     .filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR')), [indicadores]);
 
-  const itensBiFiltrados = useMemo(() => (indicadores?.itens || []).filter((item) => {
+  const opcoesCompetenciasBi = useMemo(() => [...new Set((indicadores?.itens || [])
+    .map((item) => competenciaBi(item.dataCriacao))
+    .filter((competencia) => /^\d{4}-\d{2}$/.test(competencia)))]
+    .sort((a, b) => b.localeCompare(a)), [indicadores]);
+
+  const periodosPermitidosPorTransportadora = useMemo(() => {
+    const mapa = new Map();
+    periodosTransportadorasBi.forEach(({ transportadora, competencia }) => {
+      if (!mapa.has(transportadora)) mapa.set(transportadora, new Set());
+      mapa.get(transportadora).add(competencia);
+    });
+    return mapa;
+  }, [periodosTransportadorasBi]);
+
+  const itensBiComCriterio = useMemo(() => (indicadores?.itens || []).map((item) => {
+    const candidatos = ordenarCandidatosPainel(item.candidatos, item.canal, usarPrazoPainel);
+    const vencedor = candidatos[0];
+    if (!vencedor) return item;
+    const mesmaTransportadora = String(item.transportadoraUsada || '').trim().toUpperCase()
+      === String(vencedor.transportadora || '').trim().toUpperCase();
+    const valorIdeal = Number(vencedor.valor || 0);
+    const detalhesPeso = vencedor.detalhes || {};
+    return {
+      ...item,
+      candidatos,
+      transportadoraIdeal: vencedor.transportadora || 'Nao identificada',
+      origemIdeal: vencedor.origem || 'Nao identificada',
+      valorIdeal,
+      pesoCubadoSimulado: Number(detalhesPeso.pesoCubadoCalculado ?? detalhesPeso.pesoCubado ?? 0),
+      pesoSimulado: Number(detalhesPeso.pesoConsiderado ?? detalhesPeso.pesoInformado ?? (cenarioPainel === 'faturado' ? item.pesoFaturado : item.pesoCotado) ?? 0),
+      mesmaTransportadora,
+      perda: !mesmaTransportadora && valorIdeal > 0 ? Math.max(0, Number(item.valorPago || 0) - valorIdeal) : 0,
+      criterioPainel: usarPrazoPainel ? '80/20' : 'somente_preco',
+    };
+  }), [indicadores, usarPrazoPainel, cenarioPainel]);
+
+  const itensBiComPeriodos = useMemo(() => itensBiComCriterio.map((item) => {
+    const competenciaItem = competenciaBi(item.dataCriacao);
+    const periodosIdeal = periodosPermitidosPorTransportadora.get(item.transportadoraIdeal);
+    if (!periodosIdeal || periodosIdeal.has(competenciaItem)) return item;
+
+    const proxima = (item.candidatos || []).find((candidato) => {
+      const periodosCandidato = periodosPermitidosPorTransportadora.get(candidato.transportadora);
+      return !periodosCandidato || periodosCandidato.has(competenciaItem);
+    });
+    if (!proxima) {
+      return {
+        ...item,
+        transportadoraIdealOriginal: item.transportadoraIdeal,
+        transportadoraIdeal: 'Sem alternativa elegível',
+        origemIdeal: 'Nao identificada',
+        valorIdeal: 0,
+        mesmaTransportadora: null,
+        perda: 0,
+        substituicaoPeriodo: true,
+      };
+    }
+
+    const mesmaTransportadora = String(item.transportadoraUsada || '').trim().toUpperCase()
+      === String(proxima.transportadora || '').trim().toUpperCase();
+    const valorIdeal = Number(proxima.valor || 0);
+    const detalhesPeso = proxima.detalhes || {};
+    return {
+      ...item,
+      transportadoraIdealOriginal: item.transportadoraIdeal,
+      transportadoraIdeal: proxima.transportadora || 'Nao identificada',
+      origemIdeal: proxima.origem || 'Nao identificada',
+      valorIdeal,
+      pesoCubadoSimulado: Number(detalhesPeso.pesoCubadoCalculado ?? detalhesPeso.pesoCubado ?? 0),
+      pesoSimulado: Number(detalhesPeso.pesoConsiderado ?? detalhesPeso.pesoInformado ?? (cenarioPainel === 'faturado' ? item.pesoFaturado : item.pesoCotado) ?? 0),
+      mesmaTransportadora,
+      perda: !mesmaTransportadora && valorIdeal > 0 ? Math.max(0, Number(item.valorPago || 0) - valorIdeal) : 0,
+      substituicaoPeriodo: true,
+    };
+  }), [itensBiComCriterio, periodosPermitidosPorTransportadora, cenarioPainel]);
+
+  const itensBiFiltrados = useMemo(() => itensBiComPeriodos.filter((item) => {
     if (transportadorasBiExcluidas.includes(item.transportadoraUsada) || transportadorasBiExcluidas.includes(item.transportadoraIdeal)) return false;
     if (filtrosBi.somenteDesvios && !(item.perda > 0)) return false;
     if (filtrosBi.campanha !== null && item.campanha !== filtrosBi.campanha) return false;
@@ -1415,7 +1577,7 @@ export default function AuditoriaEcommercePage() {
     if (filtrosBi.canal && item.canal !== filtrosBi.canal) return false;
     if (filtrosBi.uf && item.uf !== filtrosBi.uf) return false;
     return true;
-  }), [indicadores, filtrosBi, transportadorasBiExcluidas]);
+  }), [itensBiComPeriodos, filtrosBi, transportadorasBiExcluidas]);
 
   const indicadoresBi = useMemo(() => consolidarItensBi(itensBiFiltrados), [itensBiFiltrados]);
 
@@ -1462,10 +1624,22 @@ export default function AuditoriaEcommercePage() {
       perda: lista.reduce((soma, item) => soma + Number(item.perda || 0), 0),
     });
     const totalDesconto = com.reduce((soma, item) => soma + Number(item.descontoCampanha || 0), 0);
+    const mudaramEscolha = com.filter((item) => item.impactoCampanhaEscolha?.status === 'mudou');
+    const naoMudaramEscolha = com.filter((item) => item.impactoCampanhaEscolha?.status === 'nao_mudou');
+    const indeterminadosEscolha = com.filter((item) => item.impactoCampanhaEscolha?.status === 'indeterminado');
     return {
       percentual: itensBiFiltrados.length ? (com.length / itensBiFiltrados.length) * 100 : 0,
       totalDesconto,
       mediaDesconto: com.length ? totalDesconto / com.length : 0,
+      escolha: {
+        mudaram: mudaramEscolha.length,
+        naoMudaram: naoMudaramEscolha.length,
+        indeterminados: indeterminadosEscolha.length,
+        descontoDecisivo: mudaramEscolha.reduce((soma, item) => soma + Number(item.descontoCampanha || 0), 0),
+        descontoMinimo: mudaramEscolha.reduce((soma, item) => soma + Number(item.impactoCampanhaEscolha?.descontoMinimo || 0), 0),
+        custoLogisticoAdicional: mudaramEscolha.reduce((soma, item) => soma + Number(item.impactoCampanhaEscolha?.custoLogisticoAdicional || 0), 0),
+        itens: mudaramEscolha,
+      },
       com: resumir(com),
       sem: resumir(sem),
     };
@@ -2017,19 +2191,20 @@ export default function AuditoriaEcommercePage() {
             <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 'auto' }}>
               <input
                 type="checkbox"
-                checked={considerarPrazo}
-                onChange={(e) => alternarCriterioPainel(e.target.checked)}
-                disabled={carregandoIndicadores}
+                checked={usarPrazoPainel}
+                onChange={(e) => {
+                  setUsarPrazoPainel(e.target.checked);
+                  setMensagem(`Ranking alterado localmente para ${e.target.checked ? '80% preço + 20% prazo' : 'somente preço'}, sem nova busca.`);
+                }}
               />
               Regra 80/20 (80% preco + 20% prazo) na transportadora ideal
             </label>
-            <small className="compact">Cada combinação de critério e peso fica salva separadamente. Se já existir, abre na hora; se for a primeira vez, calcula e cria o snapshot.</small>
-            <button className="btn-secondary" type="button" onClick={() => recalcularIndicadoresComCriterio(considerarPrazo)} disabled={carregandoIndicadores}>Recalcular este critério</button>
+            <small className="compact">Clique para reorganizar as candidatas já carregadas. Indicadores, transportadora ideal, perdas, tabela e PDF mudam na hora, sem buscar ou ressimular a base.</small>
           </div>
 
           <div style={{ marginTop: 14, border: '1px solid #e2e8f0', borderRadius: 10, padding: 12 }}>
             <div className="panel-header-row" style={{ marginBottom: 8 }}>
-            <div className="panel-title">Competencias salvas ({cenarioPainel} · {considerarPrazo ? '80/20' : 'somente preço'})</div>
+            <div className="panel-title">Competencias salvas ({cenarioPainel} · painel em {usarPrazoPainel ? '80/20' : 'somente preço'})</div>
               <button className="btn-secondary" type="button" style={{ padding: '2px 8px', fontSize: '0.72rem' }} onClick={() => atualizarIndicadores({ refazer: true })} disabled={carregandoIndicadores}>
                 Refazer as competencias listadas
               </button>
@@ -2134,6 +2309,12 @@ export default function AuditoriaEcommercePage() {
                   selecionadas={transportadorasBiExcluidas}
                   onChange={setTransportadorasBiExcluidas}
                 />
+                <SeletorPeriodosTransportadoras
+                  opcoes={opcoesTransportadorasBi}
+                  competencias={opcoesCompetenciasBi}
+                  regras={periodosTransportadorasBi}
+                  onChange={setPeriodosTransportadorasBi}
+                />
                 <button className="btn-secondary" type="button" onClick={() => setFiltrosBi(filtrosBiVazio)}>Limpar exploracao</button>
               </div>
 
@@ -2141,6 +2322,13 @@ export default function AuditoriaEcommercePage() {
                 <div className="sim-alert info" style={{ marginTop: 10 }}>
                   <strong>{transportadorasBiExcluidas.length} transportadora(s) retirada(s) do painel:</strong>{' '}
                   {transportadorasBiExcluidas.join(', ')}. Pedidos em que elas aparecem como usada ou ideal não entram nos indicadores, rankings, tabela ou PDF.
+                </div>
+              ) : null}
+
+              {periodosTransportadorasBi.length ? (
+                <div className="sim-alert info" style={{ marginTop: 10 }}>
+                  <strong>Regra por período ativa:</strong>{' '}
+                  cada transportadora configurada participa somente nas competências exibidas acima. Fora delas, o pedido permanece no painel e a próxima transportadora elegível do ranking é promovida.
                 </div>
               ) : null}
 
@@ -2201,6 +2389,23 @@ export default function AuditoriaEcommercePage() {
                       <tbody>
                         <tr><td>Com campanha</td><td>{formatarNumero(analiseCampanhas.com.quantidade)}</td><td>{formatarNumero(analiseCampanhas.com.desvios)}</td><td>{formatarMoeda(analiseCampanhas.com.valorPago)}</td><td>{formatarMoeda(analiseCampanhas.com.valorIdeal)}</td><td>{formatarMoeda(analiseCampanhas.com.perda)}</td></tr>
                         <tr><td>Sem campanha</td><td>{formatarNumero(analiseCampanhas.sem.quantidade)}</td><td>{formatarNumero(analiseCampanhas.sem.desvios)}</td><td>{formatarMoeda(analiseCampanhas.sem.valorPago)}</td><td>{formatarMoeda(analiseCampanhas.sem.valorIdeal)}</td><td>{formatarMoeda(analiseCampanhas.sem.perda)}</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="panel-title" style={{ marginTop: 18 }}>A campanha mudou a transportadora?</div>
+                  <p className="compact" style={{ marginTop: 4 }}>Estimativa contrafactual: considera o desconto aplicado somente na opção usada e compara com a melhor alternativa da ressimulação.</p>
+                  <div className="summary-strip lotacao-summary-mini" style={{ marginTop: 12 }}>
+                    <div className="summary-card"><span>Mudou a escolha</span><strong>{formatarNumero(analiseCampanhas.escolha.mudaram)}</strong><small>casos em que o desconto virou o ranking</small></div>
+                    <div className="summary-card"><span>Não mudou</span><strong>{formatarNumero(analiseCampanhas.escolha.naoMudaram)}</strong><small>mesma vencedora ou desconto insuficiente</small></div>
+                    <div className="summary-card"><span>Indeterminados</span><strong>{formatarNumero(analiseCampanhas.escolha.indeterminados)}</strong><small>faltam valores comparáveis</small></div>
+                    <div className="summary-card"><span>Custo adicional causado</span><strong>{formatarMoeda(analiseCampanhas.escolha.custoLogisticoAdicional)}</strong><small>nos casos de mudança estimada</small></div>
+                  </div>
+                  <div style={{ overflowX: 'auto', marginTop: 12 }}>
+                    <table className="sim-analise-tabela" style={{ width: '100%', minWidth: 900 }}>
+                      <thead><tr><th>Pedido</th><th>Usada</th><th>Vencedora sem campanha</th><th>Frete usado sem desconto</th><th>Desconto</th><th>Frete usado após desconto</th><th>Desconto mínimo decisivo</th><th>Custo logístico adicional</th></tr></thead>
+                      <tbody>
+                        {analiseCampanhas.escolha.itens.sort((a, b) => Number(b.impactoCampanhaEscolha?.custoLogisticoAdicional || 0) - Number(a.impactoCampanhaEscolha?.custoLogisticoAdicional || 0)).slice(0, 100).map((item) => <tr key={`campanha-escolha-${item.id}`}><td>{item.pedido}</td><td>{item.transportadoraUsada}</td><td>{item.transportadoraIdeal}</td><td>{formatarMoeda(item.impactoCampanhaEscolha.selecionadaSemDesconto)}</td><td>-{formatarMoeda(item.descontoCampanha)}</td><td>{formatarMoeda(item.impactoCampanhaEscolha.selecionadaComDesconto)}</td><td>{formatarMoeda(item.impactoCampanhaEscolha.descontoMinimo)}</td><td><strong>{formatarMoeda(item.impactoCampanhaEscolha.custoLogisticoAdicional)}</strong></td></tr>)}
+                        {!analiseCampanhas.escolha.itens.length && <tr><td colSpan={8}>Nenhum caso em que a campanha tenha alterado a escolha neste recorte.</td></tr>}
                       </tbody>
                     </table>
                   </div>

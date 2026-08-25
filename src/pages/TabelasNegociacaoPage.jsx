@@ -1030,6 +1030,7 @@ export default function TabelasNegociacaoPage() {
   const [abrindoRevisao, setAbrindoRevisao] = useState(false);
   const [laudoSalvoAberto, setLaudoSalvoAberto] = useState(null);
   const [tipoLaudoRodadas, setTipoLaudoRodadas] = useState('transportador');
+  const [canalLaudoRodadas, setCanalLaudoRodadas] = useState('');
   const [tipoLaudoConsolidado, setTipoLaudoConsolidado] = useState(LAUDO_AUDIENCE.TRANSPORTADORA);
   const [exibirFaturamentoGanhoConsolidado, setExibirFaturamentoGanhoConsolidado] = useState(true);
   const [laudoTransportadora, setLaudoTransportadora] = useState(null);
@@ -1405,7 +1406,7 @@ export default function TabelasNegociacaoPage() {
 
   function obterLaudoGeralRodadasAtual() {
     if (!selecionada) return null;
-    var laudos = montarLaudosRodadasNegociacao(selecionada);
+    var laudos = montarLaudosRodadasNegociacao(selecionada, { canal: canalLaudoRodadas });
     return tipoLaudoRodadas === 'transportador' ? laudos.transportador : laudos.executivo;
   }
 
@@ -2597,7 +2598,11 @@ export default function TabelasNegociacaoPage() {
   async function abrirModalAprovacao(tabela) {
     setModalAprovacao(tabela);
     const cnpjSalvo = normalizarCnpj(tabela?.cnpj_transportadora);
+    var canaisCadastro = String(tabela?.canal || '').toUpperCase().split('+').map(function(c) { return c === 'B2B' ? 'ATACADO' : c; }).filter(Boolean);
+    var aprovacoesCanal = tabela?.resumo_simulacao?.aprovacoes_por_canal || {};
+    var canalPendente = canaisCadastro.find(function(c) { return !aprovacoesCanal[c]; }) || canaisCadastro[0] || tabela?.canal || 'ATACADO';
     setAprovacao({
+      canal: canalPendente,
       data_inicio_vigencia: hojeISO(),
       substituir_tabela_anterior: isReajusteNegociacao(tabela),
       promover_para_oficial: false,
@@ -4063,7 +4068,13 @@ export default function TabelasNegociacaoPage() {
             if (carregandoResumoCompleto) {
               return <div className="sim-alert info">Carregando histórico completo das rodadas...</div>;
             }
-            var historico = getHistoricoRodadasTabela(selecionada).slice().reverse();
+            var historicoCompleto = getHistoricoRodadasTabela(selecionada).slice().reverse();
+            var historico = historicoCompleto.filter(function(registro) {
+              if (!canalLaudoRodadas || registro.tipo_registro !== 'SIMULACAO') return true;
+              var canalRegistro = String(registro.canal || registro.resumo?.canal || registro.resumo?.filtros?.canal || '').toUpperCase();
+              if (canalRegistro === 'B2B') canalRegistro = 'ATACADO';
+              return canalRegistro === canalLaudoRodadas;
+            });
             var simulacoes = historico.filter(function(r) { return r.tipo_registro === 'SIMULACAO'; });
             return (
               <div>
@@ -4079,6 +4090,16 @@ export default function TabelasNegociacaoPage() {
                   <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? 'Abrindo rodada...' : '+ Abrir próxima rodada'}</button>
                   <button className="sim-tab" type="button" onClick={function() { setAbaNegoc('importacao'); }}>Ir para importação</button>
                   <button className="sim-tab" type="button" onClick={function(event) { event.preventDefault(); event.stopPropagation(); abrirModalNovaOrigem(selecionada); }}>+ Adicionar origem</button>
+                </div>
+
+                <div className="sim-actions" style={{ marginBottom: 14, alignItems: 'center' }}>
+                  <strong>Canal da análise:</strong>
+                  <select value={canalLaudoRodadas} onChange={function(event) { setCanalLaudoRodadas(event.target.value); }}>
+                    <option value="">Todos os canais</option>
+                    <option value="B2C">B2C</option>
+                    <option value="ATACADO">B2B / Atacado</option>
+                  </select>
+                  <small style={{ color: '#64748b' }}>O histórico e o laudo abaixo usam somente o canal escolhido.</small>
                 </div>
 
                 {simulacoes.length > 1 ? (
@@ -4142,6 +4163,7 @@ export default function TabelasNegociacaoPage() {
                         <LaudoRodadasNegociacaoTemplate
                           tipo={tipoLaudoRodadas}
                           tabela={selecionada}
+                          canal={canalLaudoRodadas}
                           onFeedback={feedbackLaudo}
                         />
                       </LaudoRodadasErrorBoundary>
@@ -4162,6 +4184,7 @@ export default function TabelasNegociacaoPage() {
                           <tr>
                             <th>Rodada</th>
                             <th>Tipo</th>
+                            <th>Canal</th>
                             <th>Data</th>
                             <th>Aderência</th>
                             <th>% atual</th>
@@ -4196,6 +4219,7 @@ export default function TabelasNegociacaoPage() {
                                   </button>
                                 </td>
                                 <td style={{ fontSize: 11 }}>{isSim ? 'SIM' : 'IMP'}</td>
+                                <td style={{ fontSize: 11 }}>{isSim ? (rodada.canal || rodada.resumo?.canal || rodada.resumo?.filtros?.canal || '-') : '-'}</td>
                                 <td style={{ fontSize: 11 }}>{formatDateBR(rodada.criado_em)}</td>
                                 <td style={{ fontSize: 11 }}>{isSim ? formatPercent(ind.aderencia || 0) : '-'}</td>
                                 <td style={{ fontSize: 11 }}>{isSim ? formatPercent(ind.percentual_frete_realizado || 0) : '-'}</td>
@@ -4205,7 +4229,7 @@ export default function TabelasNegociacaoPage() {
                               </tr>
                             );
                           })}
-                          {!historico.length ? <tr><td colSpan="8">Nenhuma rodada registrada ainda.</td></tr> : null}
+                          {!historico.length ? <tr><td colSpan="9">Nenhuma rodada registrada ainda.</td></tr> : null}
                         </tbody>
                       </table>
                     </div>
@@ -4470,6 +4494,14 @@ export default function TabelasNegociacaoPage() {
                 : ' A negociação não irá direto para a base oficial — o gestor precisa aprovar antes da publicação.'}
             </p>
             <div className="sim-form-grid sim-grid-2" style={{ marginBottom: 12 }}>
+              <label>Canal desta aprovação
+                <select value={aprovacao.canal || ''} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { canal: e.target.value }); }); }}>
+                  {String(modalAprovacao.canal || '').toUpperCase().split('+').map(function(canal) {
+                    var valor = canal === 'B2B' ? 'ATACADO' : canal;
+                    return <option key={valor} value={valor}>{valor === 'ATACADO' ? 'B2B / Atacado' : valor}</option>;
+                  })}
+                </select>
+              </label>
               <label>CNPJ da transportadora <strong style={{ color: '#b91c1c' }}>*</strong>
                 <input
                   value={aprovacao.cnpj_transportadora}

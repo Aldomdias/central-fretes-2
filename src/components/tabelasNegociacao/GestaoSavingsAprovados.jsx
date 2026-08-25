@@ -340,13 +340,19 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
   const negociacoesAprovadas = useMemo(() => {
     return (tabelas || [])
       .filter((t) => STATUS_ELEGIVEIS.includes(t.status_gestao) && t.transportadora && t.aprovado_em)
-      .map((t) => ({
-        id: t.id,
+      .flatMap((t) => {
+        const canalCadastro = String(t.canal || '').toUpperCase();
+        const canais = canalCadastro.includes('AMBOS') || canalCadastro.includes('TODOS') || canalCadastro.includes('+')
+          ? ['ATACADO', 'B2C']
+          : [t.canal || ''];
+        return canais.map((canal) => ({
+        id: canais.length > 1 ? `${t.id}::${canal}` : t.id,
+        negociacaoId: t.id,
         transportadora: t.transportadora,
         nome: t.descricao || t.nome_negociacao || t.transportadora,
         origem: t.origem || '',
         origemRealizadoSalva: t.origem_realizado_saving || '',
-        canal: t.canal || '',
+        canal,
         isLotacao: String(t.tipo_negociacao || t.tipo_tabela || t.canal || '')
           .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().includes('LOTACAO'),
         aprovadoEm: t.aprovado_em,
@@ -355,9 +361,10 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         publicadoEm: t.publicado_em || '',
         statusGestao: t.status_gestao,
         savingProjetado: Number(t.saving_estimado || t.saving_projetado || 0),
-        savingCache: t.saving_pos_aprovacao_detalhe || null,
+        savingCache: t.saving_pos_aprovacao_detalhe?.porCanal?.[canal] || (canais.length === 1 ? t.saving_pos_aprovacao_detalhe : null),
         savingCacheCalculadoEm: t.saving_pos_aprovacao_calculado_em || '',
-      }))
+      }));
+      })
       .sort((a, b) => String(b.aprovadoEm).localeCompare(String(a.aprovadoEm)));
   }, [tabelas]);
 
@@ -396,6 +403,10 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     return String(datasReferencia[item.id] || item.dataReferenciaSalva || item.aprovadoEm).slice(0, 10);
   }
 
+  function negociacaoId(item) {
+    return item.negociacaoId || item.id;
+  }
+
   function vinculoAtual(item) {
     return vinculos[item.id] || item.vinculoSalvo || [];
   }
@@ -404,7 +415,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     setSalvandoData((prev) => ({ ...prev, [item.id]: true }));
     setErros((prev) => ({ ...prev, [item.id]: '' }));
     try {
-      await atualizarDataReferenciaSaving(item.id, novaData);
+      await atualizarDataReferenciaSaving(negociacaoId(item), novaData);
       setDatasReferencia((prev) => ({ ...prev, [item.id]: novaData }));
       setResultados((prev) => {
         const next = { ...prev };
@@ -448,7 +459,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     setSalvandoVinculo((prev) => ({ ...prev, [item.id]: true }));
     setErros((prev) => ({ ...prev, [item.id]: '' }));
     try {
-      await atualizarVinculoTransportadoraSaving(item.id, lista);
+      await atualizarVinculoTransportadoraSaving(negociacaoId(item), lista);
       setVinculosAbertos((prev) => ({ ...prev, [item.id]: false }));
       setResultados((prev) => {
         const next = { ...prev };
@@ -479,8 +490,8 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     setSalvandoOrigem((prev) => ({ ...prev, [item.id]: true }));
     setErros((prev) => ({ ...prev, [item.id]: '' }));
     try {
-      const atualizada = await atualizarOrigemRealizadoSaving(item.id, origem === item.origem ? '' : origem);
-      if (typeof onSavingSalvo === 'function') onSavingSalvo(item.id, atualizada);
+      const atualizada = await atualizarOrigemRealizadoSaving(negociacaoId(item), origem === item.origem ? '' : origem);
+      if (typeof onSavingSalvo === 'function') onSavingSalvo(negociacaoId(item), atualizada);
       setResultados((prev) => {
         const next = { ...prev };
         delete next[item.id];
@@ -543,8 +554,8 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         setResultados((prev) => ({ ...prev, [item.id]: resultadoCompleto }));
         atualizarProgressoItem(item.id, 100, 'Concluído');
         if (abrirDepois) setAbertos((prev) => ({ ...prev, [item.id]: true }));
-        const cacheSalvo = await salvarSavingPosAprovacaoCache(item.id, resultadoCompleto);
-        if (typeof onSavingSalvo === 'function') onSavingSalvo(item.id, cacheSalvo);
+        const cacheSalvo = await salvarSavingPosAprovacaoCache(negociacaoId(item), { ...resultadoCompleto, canal: item.canal });
+        if (typeof onSavingSalvo === 'function') onSavingSalvo(negociacaoId(item), cacheSalvo);
         return;
       }
       // Se houver vínculo manual, usa lista exata (rápido, indexado). Senão cai no
@@ -563,7 +574,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         }, 1500);
         const canalGrade = normalizarCanalGrade(item.canal);
         atualizarProgressoItem(item.id, 16, 'Lendo faixas da negociação');
-        const faixasNegociadas = await listarFaixasPesoNegociacao(item.id);
+        const faixasNegociadas = await listarFaixasPesoNegociacao(negociacaoId(item));
         // Tabelas por percentual (ad valorem) têm faixa única 0–999999: nesse caso as
         // faixas da negociação não segmentam nada e a comparação com o histórico
         // ficaria em um único balde. Caímos na grade padrão do canal para comparar
@@ -615,8 +626,8 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         setResultados((prev) => ({ ...prev, [item.id]: resultadoCompleto }));
         atualizarProgressoItem(item.id, 100, `Concluído em ${(resultadoAgregado.tempoMs / 1000).toFixed(1)}s`);
         if (abrirDepois) setAbertos((prev) => ({ ...prev, [item.id]: true }));
-        const cacheSalvo = await salvarSavingPosAprovacaoCache(item.id, resultadoCompleto);
-        if (typeof onSavingSalvo === 'function') onSavingSalvo(item.id, cacheSalvo);
+        const cacheSalvo = await salvarSavingPosAprovacaoCache(negociacaoId(item), { ...resultadoCompleto, canal: item.canal });
+        if (typeof onSavingSalvo === 'function') onSavingSalvo(negociacaoId(item), cacheSalvo);
         return;
       } catch (rpcError) {
         if (progressoTimer) window.clearInterval(progressoTimer);
@@ -680,8 +691,8 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
       if (abrirDepois) setAbertos((prev) => ({ ...prev, [item.id]: true }));
       // Salva o resultado no banco pra sobreviver a um F5 — se der erro (ex: migration
       // ainda não aplicada), o cálculo em tela continua valendo, só não persiste.
-      const cacheSalvo = await salvarSavingPosAprovacaoCache(item.id, resultadoCompleto);
-      if (typeof onSavingSalvo === 'function') onSavingSalvo(item.id, cacheSalvo);
+      const cacheSalvo = await salvarSavingPosAprovacaoCache(negociacaoId(item), { ...resultadoCompleto, canal: item.canal });
+      if (typeof onSavingSalvo === 'function') onSavingSalvo(negociacaoId(item), cacheSalvo);
     } catch (err) {
       setErros((prev) => ({ ...prev, [item.id]: err?.message || 'Erro ao calcular saving.' }));
     } finally {

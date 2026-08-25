@@ -20,6 +20,7 @@ const MENU_GRUPOS = [
       { chave: 'oportunidade-origem', label: 'Oportunidade por origem' },
       { chave: 'oportunidade-transportadora', label: 'Oportunidade transportadora' },
       { chave: 'simular-saida-transportadora', label: 'Saida de transportadora' },
+      { chave: 'gestao-contratos', label: 'Gestao de contratos' },
     ],
   },
   {
@@ -85,6 +86,7 @@ const ICONS = {
   'auditoria-ecommerce': 'M3 3v18h18M7 15l4-4 3 3 5-6',
   'torre-controle': 'M5 20V9h4v11H5zm5 0V4h4v16h-4zm5 0v-7h4v7h-4z',
   reajustes: 'M4 17l6-6 4 4 6-8m0 0h-5m5 0v5',
+  'gestao-contratos': 'M7 3h7l5 5v13H7a2 2 0 01-2-2V5a2 2 0 012-2zm7 0v5h5M9 13h6M9 17h4',
   importacao: 'M12 3v12m0 0l-4-4m4 4l4-4M5 19h14',
   'importacao-ia-tabelas': 'M12 3l2.2 4.5L19 8.2l-3.5 3.3.8 4.8L12 14l-4.3 2.3.8-4.8L5 8.2l4.8-.7L12 3z',
   formatacao: 'M4 6h16M4 11h16M4 16h10',

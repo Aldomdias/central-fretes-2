@@ -3,7 +3,7 @@ import { carregarBaseCompletaDb, carregarBaseFiltradaPorCidadesOrigemDb, carrega
 import { montarMapasIbge, resolverIbgeLocal, categoriaCanalRealizado } from '../utils/realizadoLocalEngine.js';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from './vinculosTransportadorasService.js';
 import { construirIndiceResimulacaoEcommerce, calcularCandidatosOrigemEcommerce, calcularResultadoFinalEcommerce } from '../utils/ecommerceResimulacaoEngine.js';
-import { deduplicarCandidatosEcommerce, isTransportadoraEbazarEcommerce, normalizarNomeCidade } from '../utils/ecommerceAuditoriaPuro.js';
+import { calcularImpactoCampanhaNaEscolha, deduplicarCandidatosEcommerce, isTransportadoraEbazarEcommerce, normalizarNomeCidade } from '../utils/ecommerceAuditoriaPuro.js';
 
 export { deduplicarCandidatosEcommerce, isTransportadoraEbazarEcommerce, normalizarNomeCidade } from '../utils/ecommerceAuditoriaPuro.js';
 
@@ -1392,7 +1392,7 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
   while (true) {
     let query = supabase
       .from('ecommerce_order_snapshot')
-      .select('id,pedido,data_criacao,sim_status,sim_peso_base,sim_mesma_transportadora,sim_transportadora_ideal,sim_origem_ideal,sim_diferenca_vs_cte,sim_valor_ideal,cotado_status:sim_resultado_cotado->>sim_status,cotado_mesma:sim_resultado_cotado->>sim_mesma_transportadora,cotado_transportadora:sim_resultado_cotado->>sim_transportadora_ideal,cotado_origem:sim_resultado_cotado->>sim_origem_ideal,cotado_diferenca:sim_resultado_cotado->>sim_diferenca_vs_cte,cotado_valor:sim_resultado_cotado->>sim_valor_ideal,faturado_status:sim_resultado_faturado->>sim_status,faturado_mesma:sim_resultado_faturado->>sim_mesma_transportadora,faturado_transportadora:sim_resultado_faturado->>sim_transportadora_ideal,faturado_origem:sim_resultado_faturado->>sim_origem_ideal,faturado_diferenca:sim_resultado_faturado->>sim_diferenca_vs_cte,faturado_valor:sim_resultado_faturado->>sim_valor_ideal,cte_transportadora,cte_cidade_origem,cte_valor,custo_frete_transportadora,frete_tabela,possui_campanha_frete,frete_a_cobrar_marketplace,adicional_tributario_frete,desconto_campanha_frete,peso_cotado,peso_faturado,diferenca_peso,cubagem_cotada,cidade,uf,canal')
+      .select('id,pedido,data_criacao,sim_status,sim_peso_base,sim_mesma_transportadora,sim_transportadora_ideal,sim_origem_ideal,sim_diferenca_vs_cte,sim_valor_ideal,sim_candidatos,cotado_status:sim_resultado_cotado->>sim_status,cotado_mesma:sim_resultado_cotado->>sim_mesma_transportadora,cotado_transportadora:sim_resultado_cotado->>sim_transportadora_ideal,cotado_origem:sim_resultado_cotado->>sim_origem_ideal,cotado_diferenca:sim_resultado_cotado->>sim_diferenca_vs_cte,cotado_valor:sim_resultado_cotado->>sim_valor_ideal,cotado_candidatos:sim_resultado_cotado->sim_candidatos,faturado_status:sim_resultado_faturado->>sim_status,faturado_mesma:sim_resultado_faturado->>sim_mesma_transportadora,faturado_transportadora:sim_resultado_faturado->>sim_transportadora_ideal,faturado_origem:sim_resultado_faturado->>sim_origem_ideal,faturado_diferenca:sim_resultado_faturado->>sim_diferenca_vs_cte,faturado_valor:sim_resultado_faturado->>sim_valor_ideal,faturado_candidatos:sim_resultado_faturado->sim_candidatos,cte_transportadora,cte_cidade_origem,cte_valor,custo_frete_transportadora,frete_tabela,possui_campanha_frete,frete_a_cobrar_marketplace,adicional_tributario_frete,desconto_campanha_frete,peso_cotado,peso_faturado,diferenca_peso,cubagem_cotada,cidade,uf,canal')
       .order('id', { ascending: true })
       .limit(limite);
     // O painel financeiro analisa somente resultados concluidos. Ignora o filtro
@@ -1410,6 +1410,7 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
         sim_origem_ideal: row[`${prefixo}_origem`],
         sim_diferenca_vs_cte: Number(row[`${prefixo}_diferenca`] || 0),
         sim_valor_ideal: Number(row[`${prefixo}_valor`] || 0),
+        sim_candidatos: Array.isArray(row[`${prefixo}_candidatos`]) ? row[`${prefixo}_candidatos`] : [],
       } : null;
       const resultado = resultadoPorPrefixo(cenarioPeso);
       const resultadoLegado = row.sim_status === 'ok' && row.sim_peso_base === cenarioPeso
@@ -1420,6 +1421,7 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
             sim_origem_ideal: row.sim_origem_ideal,
             sim_diferenca_vs_cte: row.sim_diferenca_vs_cte,
             sim_valor_ideal: row.sim_valor_ideal,
+            sim_candidatos: Array.isArray(row.sim_candidatos) ? row.sim_candidatos : [],
           }
         : null;
       const sim = resultado || resultadoLegado;
@@ -1436,6 +1438,16 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
       const referenciaPeso = Math.max(pesoCotado, pesoCubadoReferencia, 0);
       const pesoPossivelmenteInconsistente = pesoFaturado > 0 && referenciaPeso > 0
         && pesoFaturado > referenciaPeso * 1.5 && pesoFaturado - referenciaPeso > 10;
+      const valorPago = Number(row.custo_frete_transportadora || row.cte_valor || 0);
+      const impactoCampanhaEscolha = calcularImpactoCampanhaNaEscolha({
+        possuiCampanha: Boolean(row.possui_campanha_frete),
+        mesmaTransportadora: sim.sim_mesma_transportadora,
+        freteTabela: Number(row.frete_tabela || 0),
+        descontoCampanha: Number(row.desconto_campanha_frete || 0),
+        valorIdeal: Number(sim.sim_valor_ideal || 0),
+        candidatos: sim.sim_candidatos || [],
+        valorPago,
+      });
       resumo.itens.push({
         id: row.id,
         pedido: row.pedido,
@@ -1463,7 +1475,8 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
         transportadoraIdealOutroCenario: outroResultado?.sim_transportadora_ideal || '',
         valorIdealOutroCenario: Number(outroResultado?.sim_valor_ideal || 0),
         valorIdeal: Number(sim.sim_valor_ideal || 0),
-        valorPago: Number(row.custo_frete_transportadora || row.cte_valor || 0),
+        valorPago,
+        impactoCampanhaEscolha,
       });
       if (sim.sim_mesma_transportadora === true) resumo.mesmaTransportadora += 1;
       else if (sim.sim_mesma_transportadora === false) resumo.outraTransportadora += 1;

@@ -40,6 +40,7 @@ import IcmsUfPage from './pages/IcmsUfPage';
 import AuditoriaEcommercePage from './pages/AuditoriaEcommercePage';
 import ImportarDescontosObtidosPage from './pages/ImportarDescontosObtidosPage';
 import PainelDescontosObtidosPage from './pages/PainelDescontosObtidosPage';
+import GestaoContratosPage from './pages/GestaoContratosPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, MODULOS_SISTEMA, sairLocal, usuarioPodeAdministrarUsuarios, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
@@ -47,6 +48,7 @@ import { entrarPresenca, sairPresenca } from './services/presencaService';
 import { sairSupabaseAuth } from './services/biometriaService';
 import { assinarManutencao } from './services/manutencaoService';
 import ManutencaoOverlay from './components/ManutencaoOverlay';
+import SupabaseStatusBanner from './components/SupabaseStatusBanner';
 
 const PAGINAS_PERMITIDAS = [
   'dashboard', 'conceito-app', 'simulador', 'simulador-reversa', 'tabelas-negociacao', 'cte', 'cte-origem-destino', 'auditoria-cte', 'tracking',
@@ -57,6 +59,7 @@ const PAGINAS_PERMITIDAS = [
   'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
   'icms-uf', 'auditoria-ecommerce', 'usuarios-ativos',
   'importar-descontos-obtidos', 'painel-descontos-obtidos',
+  'gestao-contratos',
 ];
 
 function primeiraPaginaPermitida(usuario) {
@@ -215,6 +218,7 @@ export default function App() {
     'minha-senha': <MinhaSenhaPage usuarioAtual={sessao} onSenhaAlterada={setSessao} />,
     'importar-descontos-obtidos': <ImportarDescontosObtidosPage />,
     'painel-descontos-obtidos': <PainelDescontosObtidosPage />,
+    'gestao-contratos': <GestaoContratosPage sessao={sessao} />,
     transportadoras: <TransportadorasPage transportadoras={transportadorasMemo} transportadoraSelecionadaId={transportadoraSelecionadaId} origemSelecionadaId={origemSelecionadaId} onOpenTransportadora={abrirTransportadora} onOpenOrigem={setOrigemSelecionadaId} onVoltar={voltarTransportadoras} store={store} sessao={sessao} />,
   };
 
@@ -227,6 +231,7 @@ export default function App() {
 
   return (
     <div className={`app-layout ${sidebarRecolhida ? 'sidebar-collapsed' : ''}`}>
+      <SupabaseStatusBanner />
       <button
         type="button"
         className="mobile-menu-button"

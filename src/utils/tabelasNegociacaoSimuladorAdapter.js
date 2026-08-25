@@ -451,11 +451,14 @@ function getChaveOrigem(origem) {
 
 function adicionarOrigem(origensMap, tabela, origemInfo, generalidades, taxas) {
   const canal = normalizarCanal(tabela.canal);
+  const cnpj = String(tabela.cnpj_transportadora || tabela.cnpjTransportadora || '').replace(/\D/g, '').slice(0, 14);
   const origemBase = {
     id: `neg-origem-${tabela.id || 'sem-id'}-${origensMap.size + 1}`,
     cidade: origemInfo.cidadeOrigem,
     uf: origemInfo.ufOrigem,
     ibgeOrigem: origemInfo.ibgeOrigem,
+    cnpj,
+    cnpjRaiz: cnpj.slice(0, 8),
     canal,
     generalidades,
     taxasEspeciais: taxas.map(montarTaxaDestino).filter((taxa) => taxa.ibgeDestino || taxa.cidadeDestino),
@@ -510,6 +513,7 @@ export function converterTabelaNegociacaoParaSimulador(tabela = {}) {
   const generalidades = montarGeneralidades(tabela.generalidades || {});
   const nomeTransportadora = labelTabelaNegociacaoSimulador(tabela);
   const canalTabela = normalizarCanal(tabela.canal);
+  const cnpj = String(tabela.cnpj_transportadora || tabela.cnpjTransportadora || '').replace(/\D/g, '').slice(0, 14);
 
   const rotasTecnicas = [];
   const cotacoes = [];
@@ -562,6 +566,8 @@ export function converterTabelaNegociacaoParaSimulador(tabela = {}) {
     negociacaoId: tabela.id,
     nome: nomeTransportadora,
     nomeOriginal: texto(tabela.transportadora),
+    cnpj,
+    cnpjRaiz: cnpj.slice(0, 8),
     canal: canalTabela,
     tipoTabela: tabela.tipo_tabela || 'FRACIONADO',
     status: tabela.status,

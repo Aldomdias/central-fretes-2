@@ -183,6 +183,23 @@ function normalizarCanalPorNegociacao(payload = {}) {
   return upper(payload.canal || 'ATACADO');
 }
 
+function normalizarCanalAnalise(value) {
+  const canal = upper(value);
+  if (canal === 'B2B') return 'ATACADO';
+  return canal;
+}
+
+function canaisOperacionaisNegociacao(value) {
+  const canal = upper(value);
+  if (!canal) return [];
+  if (canal.includes('AMBOS') || canal.includes('TODOS')) return ['ATACADO', 'B2C'];
+  return [...new Set(canal.split(/\+|\s+E\s+/).map(normalizarCanalAnalise).filter(Boolean))];
+}
+
+function canalRegistroSimulacao(registro = {}) {
+  return normalizarCanalAnalise(registro.canal || registro.resumo?.canal || registro.resumo?.filtros?.canal);
+}
+
 function dataISO() {
   return new Date().toISOString();
 }
@@ -2197,6 +2214,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
   const rodadaAtual = inteiro(resumoAnterior.rodada_atual || 1) || 1;
   const agora = dataISO();
   const impacto = calcularImpactoResultado(resultado, tabelaAtual);
+  const canalAnalise = normalizarCanalAnalise(resultado.canal || resultado.filtros?.canal || tabelaAtual.canal);
   const diasOperacionais = Math.max(1, numero(resultado.dias || 0) || 1);
   const ehReajusteResultado = impacto.tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE';
   const volumesProjetadosNegociacao = ehReajusteResultado
@@ -2217,6 +2235,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     rodada: rodadaAtual,
     tipoNegociacao: impacto.tipoNegociacao,
     filtros: resultado.filtros || {},
+    canal: canalAnalise,
 
     ctesAnalisados: resultado.ctesAnalisados || 0,
     ctesSimulados: resultado.ctesSimulados || 0,
@@ -2378,6 +2397,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     tipo_registro: 'SIMULACAO',
     rodada: rodadaAtual,
     criado_em: agora,
+    canal: canalAnalise,
     resumo: resumoResultado,
     indicadores: {
       aderencia: numero(resultado.aderencia_projetada ?? resultado.aderenciaSelecionada ?? 0),
@@ -2435,7 +2455,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
 
     // Ao salvar novamente a mesma rodada, substitui a simulação anterior
     // e remove apenas marcadores vazios de abertura/nova rodada.
-    const ehSimulacaoDaRodada = tipoRegistro === 'SIMULACAO';
+    const ehSimulacaoDaRodada = tipoRegistro === 'SIMULACAO' && canalRegistroSimulacao(item) === canalAnalise;
     const ehMarcadorVazio =
       totalItens === 0 &&
       (
@@ -2449,6 +2469,14 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
   });
 
   const historicoAtualizado = historicoSemRegistroVazioDaRodada.concat([entradaRodada]).slice(-30);
+  const canaisEsperados = canaisOperacionaisNegociacao(tabelaAtual.canal);
+  const canaisAnalisadosNaRodada = new Set(
+    historicoAtualizado
+      .filter((item) => item.tipo_registro === 'SIMULACAO' && inteiro(item.rodada || 0) === rodadaAtual)
+      .map(canalRegistroSimulacao)
+      .filter(Boolean)
+  );
+  const canaisPendentes = canaisEsperados.filter((canal) => !canaisAnalisadosNaRodada.has(canal));
 
   const payload = {
     saving_projetado: numero(
@@ -2520,7 +2548,9 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     resultado_simulacao_json: resumoResultado,
     percentual_medio_impacto: impacto.impactoPercentual,
 
-    incluir_simulacao: false,
+    // Negociações que atendem mais de um canal continuam disponíveis até que
+    // exista uma análise salva para cada canal na rodada atual.
+    incluir_simulacao: canaisPendentes.length > 0,
 
     resumo_simulacao: {
       ...resumoAnterior,
@@ -2528,6 +2558,8 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
       rodada_atual: rodadaAtual,
       ultima_simulacao_em: agora,
       ultima_simulacao: entradaRodada,
+      canais_analisados_rodada: [...canaisAnalisadosNaRodada],
+      canais_pendentes_rodada: canaisPendentes,
       laudos: resultado.laudos || resumoAnterior.laudos || null,
       laudosEmail: resultado.laudosEmail || resumoAnterior.laudosEmail || null,
       laudos_gerados_em: resultado.laudos ? agora : resumoAnterior.laudos_gerados_em,
@@ -2906,32 +2938,42 @@ export async function aprovarGestorNegociacao(id, dados = {}) {
   const resumoAnterior = getResumoSimulacaoSeguro(tabelaAtual);
   const historicoAnterior = getHistoricoRodadas(tabelaAtual);
   const impactoAtual = calcularImpactoResultado(tabelaAtual?.resultado_simulacao_json || resumoAnterior || {}, tabelaAtual || {});
+  const canaisEsperados = canaisOperacionaisNegociacao(tabelaAtual.canal);
+  const aprovacoesAnteriores = resumoAnterior.aprovacoes_por_canal && typeof resumoAnterior.aprovacoes_por_canal === 'object'
+    ? resumoAnterior.aprovacoes_por_canal
+    : {};
+  const canalAprovacao = normalizarCanalAnalise(dados.canal || canaisEsperados.find((canal) => !aprovacoesAnteriores[canal]) || tabelaAtual.canal);
 
   const entradaAprovacao = {
     id: `APROVACAO-GESTOR-${Date.now()}`,
     tipo_registro: 'APROVACAO_GESTOR',
     rodada: inteiro(resumoAnterior.rodada_atual || 1) || 1,
     criado_em: agora,
+    canal: canalAprovacao,
     data_inicio_vigencia: dados.data_inicio_vigencia || null,
     usuario_aprovacao: texto(dados.aprovador_nome || dados.usuario?.nome || dados.usuario_aprovacao),
     observacao: dados.observacao_aprovacao || dados.justificativa_aprovacao || '',
     percentual_medio_impacto: numero(dados.percentual_medio_impacto ?? impactoAtual.impactoPercentual),
   };
+  const aprovacoesPorCanal = { ...aprovacoesAnteriores, [canalAprovacao]: entradaAprovacao };
+  const canaisPendentesAprovacao = canaisEsperados.filter((canal) => !aprovacoesPorCanal[canal]);
+  const aprovacaoCompleta = canaisPendentesAprovacao.length === 0;
 
   const eventoGestao = montarEventoGestao('APROVACAO_GESTOR', tabelaAtual, {
     ...dados,
-    status_gestao: 'APROVADA_GESTOR',
+    canal: canalAprovacao,
+    status_gestao: aprovacaoCompleta ? 'APROVADA_GESTOR' : 'AGUARDANDO_APROVACAO_GESTOR',
     observacao: dados.observacao_aprovacao || dados.justificativa_aprovacao,
   });
 
   const payload = {
     cnpj_transportadora: cnpj,
     cnpj_raiz_transportadora: obterRaizCnpj(cnpj),
-    status_gestao: 'APROVADA_GESTOR',
-    status: 'APROVADA',
-    status_aprovacao: 'APROVADA',
-    aprovado_em: agora,
-    data_aprovacao: agora,
+    status_gestao: aprovacaoCompleta ? 'APROVADA_GESTOR' : 'AGUARDANDO_APROVACAO_GESTOR',
+    status: aprovacaoCompleta ? 'APROVADA' : tabelaAtual.status,
+    status_aprovacao: aprovacaoCompleta ? 'APROVADA' : 'AGUARDANDO_GESTOR',
+    aprovado_em: aprovacaoCompleta ? agora : tabelaAtual.aprovado_em,
+    data_aprovacao: aprovacaoCompleta ? agora : tabelaAtual.data_aprovacao,
     data_inicio_vigencia: dados.data_inicio_vigencia || null,
     justificativa_aprovacao: texto(dados.justificativa_aprovacao),
     usuario_aprovacao: texto(dados.aprovador_nome || dados.usuario?.nome || dados.usuario_aprovacao),
@@ -2944,8 +2986,10 @@ export async function aprovarGestorNegociacao(id, dados = {}) {
     historico_gestao: getHistoricoGestao(tabelaAtual).concat([eventoGestao]).slice(-100),
     resumo_simulacao: {
       ...resumoAnterior,
-      aprovada_em: agora,
+      aprovada_em: aprovacaoCompleta ? agora : resumoAnterior.aprovada_em,
       ultima_aprovacao: entradaAprovacao,
+      aprovacoes_por_canal: aprovacoesPorCanal,
+      canais_pendentes_aprovacao: canaisPendentesAprovacao,
       historico_rodadas: historicoAnterior.concat([entradaAprovacao]).slice(-30),
     },
   };
@@ -3196,12 +3240,24 @@ export async function atualizarOrigemRealizadoSaving(id, origemRealizado) {
 
 export async function salvarSavingPosAprovacaoCache(id, detalhe = {}) {
   const supabase = supabaseOrThrow();
+  const canal = normalizarCanalAnalise(detalhe.canal || detalhe.canalCalculo);
+  const tabelaAtual = await obterTabelaNegociacao(id);
+  const cacheAtual = tabelaAtual.saving_pos_aprovacao_detalhe && typeof tabelaAtual.saving_pos_aprovacao_detalhe === 'object'
+    ? tabelaAtual.saving_pos_aprovacao_detalhe
+    : {};
+  const porCanal = canal
+    ? { ...(cacheAtual.porCanal || {}), [canal]: { ...detalhe, canal } }
+    : (cacheAtual.porCanal || {});
+  const savingTotal = canal
+    ? Object.values(porCanal).reduce((soma, item) => soma + Number(item?.totais?.saving || 0), 0)
+    : Number(detalhe?.totais?.saving || 0);
+  const detalhePersistido = canal ? { ...cacheAtual, porCanal, atualizadoEm: new Date().toISOString() } : detalhe;
   const { data, error } = await supabase
     .from('tabelas_negociacao')
     .update({
-      saving_pos_aprovacao_valor: Number(detalhe?.totais?.saving || 0),
+      saving_pos_aprovacao_valor: savingTotal,
       saving_pos_aprovacao_calculado_em: new Date().toISOString(),
-      saving_pos_aprovacao_detalhe: detalhe || null,
+      saving_pos_aprovacao_detalhe: detalhePersistido || null,
     })
     .eq('id', id)
     .select('id, saving_pos_aprovacao_valor, saving_pos_aprovacao_calculado_em, saving_pos_aprovacao_detalhe')

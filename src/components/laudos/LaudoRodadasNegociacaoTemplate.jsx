@@ -347,9 +347,9 @@ function TabelaSimples({ titulo, linhas = [], tipo = 'uf' }) {
   );
 }
 
-export function LaudoRodadasNegociacaoTemplate({ tipo = 'executivo', tabela = null, dados = null, onFeedback = null }) {
+export function LaudoRodadasNegociacaoTemplate({ tipo = 'executivo', tabela = null, dados = null, canal = '', onFeedback = null }) {
   const laudoRef = useRef(null);
-  const laudos = dados ? null : montarLaudosRodadasNegociacao(tabela || {});
+  const laudos = dados ? null : montarLaudosRodadasNegociacao(tabela || {}, { canal });
   const laudo = dados || (tipo === 'transportador' ? laudos.transportador : laudos.executivo);
   const externo = laudoRodadasExterno(laudo, tipo);
   const comparativo = laudo.comparativo || {};
