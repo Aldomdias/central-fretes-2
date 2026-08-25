@@ -128,6 +128,7 @@ export function aplicarReauditoriaDetalhes(detalhes = [], resultadosPorChave = n
     if (calculado <= 0) {
       return {
         ...item,
+        detalhes_calculo: resultado?.detalhes_calculo ?? item.detalhes_calculo ?? null,
         calculado_frete_verum: calculadoVerum || Number(item.calculado_frete_verum || 0),
         calculado_frete: 0,
         diferenca: 0,
@@ -138,6 +139,7 @@ export function aplicarReauditoriaDetalhes(detalhes = [], resultadosPorChave = n
     const diferenca = Number((valor - calculado).toFixed(2));
     return {
       ...item,
+      detalhes_calculo: resultado?.detalhes_calculo ?? item.detalhes_calculo ?? null,
       calculado_frete_verum: calculadoVerum,
       calculado_frete: calculado,
       diferenca,
