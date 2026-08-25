@@ -739,11 +739,26 @@ function resolverTipoCalculoRealizado(cotacao = {}, origem = {}) {
 }
 
 export function calcularItemTabela({ transportadora, origem, rota, cte, gradeCanal = [] }) {
+  if (typeof window !== 'undefined' && String(cte?.numeroCte || '').includes('1600282')) {
+    console.log('[DEBUG TDE] calcularItemTabela ENTROU 1600282', {
+      documentoDestinatario: cte.documentoDestinatario,
+      transportadoraNome: transportadora?.nome,
+      tdeCnpjs: transportadora?.tdeCnpjs,
+      tde: transportadora?.tde,
+      origemId: origem?.id,
+      rotaNome: rota?.nomeRota,
+    });
+  }
   const pesos = resolverPesoCubagemRealizado({ cte, origem, transportadora, gradeCanal });
   const peso = pesos.pesoConsiderado;
   const valorNF = toNumber(cte.valorNF);
   const cotacao = getCotacao(origem, rota, peso);
-  if (!cotacao) return null;
+  if (!cotacao) {
+    if (typeof window !== 'undefined' && String(cte?.numeroCte || '').includes('1600282')) {
+      console.log('[DEBUG TDE] calcularItemTabela SEM COTACAO 1600282 - retornou null');
+    }
+    return null;
+  }
 
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
   const tipoCalculo = resolverTipoCalculoRealizado(cotacao, origem);
