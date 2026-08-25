@@ -1,3 +1,5 @@
+import { normalizarDocumentoTde, normalizarRegrasTde } from '../utils/tde.js';
+
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return 0;
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
@@ -118,18 +120,12 @@ function calcularIcmsPorDentro(subtotal, aliquotaPercentual) {
   return (base / (1 - aliquota)) - base;
 }
 
-function normalizeDocumento(value) {
-  return String(value || '').replace(/\D/g, '');
-}
-
 function calcularTde(generalidades = {}, documentoDestinatario = '') {
-  const documento = normalizeDocumento(documentoDestinatario);
+  const documento = normalizarDocumentoTde(documentoDestinatario);
   if (!documento) return 0;
-  const valorTde = toNumber(generalidades.tde);
-  if (valorTde <= 0) return 0;
-  const cnpjs = Array.isArray(generalidades.tdeCnpjs) ? generalidades.tdeCnpjs : [];
-  const lista = new Set(cnpjs.map(normalizeDocumento).filter(Boolean));
-  return lista.has(documento) ? valorTde : 0;
+  const regra = normalizarRegrasTde(generalidades.tdeCnpjs, generalidades.tde)
+    .find((item) => item.cnpj === documento);
+  return regra ? toNumber(regra.valor) : 0;
 }
 
 export function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 0, pesoKg = 0, documentoDestinatario = '' }) {

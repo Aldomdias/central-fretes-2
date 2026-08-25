@@ -16,6 +16,7 @@ import {
 } from '../services/freteDatabaseService';
 import { registrarAlteracaoTransportadora } from '../services/auditoriaTransportadorasService';
 import { normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
+import { normalizarRegrasTde } from '../utils/tde.js';
 
 const STORAGE_KEY = 'simulador-fretes-local-v6';
 
@@ -81,9 +82,7 @@ function normalizeTransportadora(transportadora = {}) {
     cnpj: normalizarCnpj(transportadora.cnpj),
     cnpjRaiz: String(transportadora.cnpjRaiz || transportadora.cnpj_raiz || obterRaizCnpj(transportadora.cnpj)).replace(/\D/g, '').slice(0, 8),
     tde: Number(transportadora.tde) || 0,
-    tdeCnpjs: Array.isArray(transportadora.tdeCnpjs)
-      ? transportadora.tdeCnpjs.map((item) => String(item || '').replace(/\D/g, '')).filter(Boolean)
-      : [],
+    tdeCnpjs: normalizarRegrasTde(transportadora.tdeCnpjs, transportadora.tde),
     origens: Array.isArray(transportadora.origens)
       ? transportadora.origens.map(normalizeOrigem)
       : [],
@@ -678,7 +677,7 @@ export function useFreteStore(sessao = null) {
                     ...t,
                     tde: tde !== undefined ? Number(tde) || 0 : t.tde,
                     tdeCnpjs: tdeCnpjs !== undefined
-                      ? tdeCnpjs.map((item) => String(item || '').replace(/\D/g, '')).filter(Boolean)
+                      ? normalizarRegrasTde(tdeCnpjs, tde !== undefined ? tde : t.tde)
                       : t.tdeCnpjs,
                   }
             ),

@@ -1,4 +1,5 @@
 import { getSupabaseClient, getSupabaseInfo, isSupabaseConfigured } from '../lib/supabaseClient';
+import { normalizarRegrasTde } from '../utils/tde.js';
 
 const SNAPSHOT_CHAVE = 'cadastro-fretes-principal';
 const FALLBACK_KEY = 'simulador-fretes-local-v6';
@@ -313,9 +314,7 @@ function mapBaseToTables(transportadoras) {
       cnpj: onlyDigitsDb(transportadora.cnpj).slice(0, 14) || null,
       cnpj_raiz: onlyDigitsDb(transportadora.cnpjRaiz || transportadora.cnpj).slice(0, 8) || null,
       tde: toNumberOrNull(transportadora.tde) ?? 0,
-      tde_cnpjs: Array.isArray(transportadora.tdeCnpjs)
-        ? transportadora.tdeCnpjs.map((item) => onlyDigitsDb(item)).filter(Boolean)
-        : [],
+      tde_cnpjs: normalizarRegrasTde(transportadora.tdeCnpjs, transportadora.tde),
     });
 
     (transportadora.origens || []).forEach((origem) => {

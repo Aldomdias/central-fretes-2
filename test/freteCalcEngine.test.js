@@ -425,6 +425,20 @@ test('TDE so aplica quando o CNPJ do destinatario esta na lista da transportador
   assert.equal(resultado.subtotal, 350);
 });
 
+test('TDE aplica o valor especifico cadastrado para cada CNPJ', () => {
+  const generalidades = {
+    tde: 999,
+    tdeCnpjs: [
+      { cnpj: '12.345.678/0001-99', nomeCliente: 'Cliente A', valor: 125.5 },
+      { cnpj: '98.765.432/0001-10', nomeCliente: 'Cliente B', valor: 310 },
+    ],
+  };
+
+  assert.equal(resolverTaxas({ generalidades, documentoDestinatario: '12345678000199' }).tde, 125.5);
+  assert.equal(resolverTaxas({ generalidades, documentoDestinatario: '98765432000110' }).tde, 310);
+  assert.equal(resolverTaxas({ generalidades, documentoDestinatario: '11111111000111' }).tde, 0);
+});
+
 test('cubagem do Tracking = unitaria x volumes (cubagem por volume)', () => {
   const resultado = resolverCubagemTracking({
     cubagemUnitaria: 0.265,

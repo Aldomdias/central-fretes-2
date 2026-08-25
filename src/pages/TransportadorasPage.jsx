@@ -10,6 +10,7 @@ import { carregarSessao } from '../utils/authLocal';
 import { listarHistoricoAlteracoesTransportadoras } from '../services/auditoriaTransportadorasService';
 import { cnpjPreenchidoValido, formatarCnpj, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
 import { atualizarCnpjsOrigensDb } from '../services/freteDatabaseService';
+import { normalizarRegrasTde } from '../utils/tde.js';
 
 // Carrega vínculos (transportadora_vinculos) e carteiras de auditoria uma vez
 // e expõe lookups prontos, pra mostrar/editar isso sem sair da tela de Transportadoras.
@@ -328,7 +329,20 @@ function TransportadoraModal({ open, initialValue, onSave, onClose }) {
   );
 }
 
-function parseCnpjListaFile(file) {
+function normalizarCabecalhoTde(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function numeroTdePlanilha(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
+  let texto = String(value ?? '').replace(/R\$/gi, '').replace(/\s/g, '');
+  if (texto.includes(',') && texto.includes('.')) texto = texto.replace(/\./g, '').replace(',', '.');
+  else if (texto.includes(',')) texto = texto.replace(',', '.');
+  const numero = Number(texto);
+  return Number.isFinite(numero) ? numero : NaN;
+}
+
+function parseTdeFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (event) => {
@@ -336,14 +350,27 @@ function parseCnpjListaFile(file) {
         const workbook = XLSX.read(event.target?.result, { type: 'array' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
         const linhas = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
-        const cnpjs = new Set();
-        linhas.forEach((linha) => {
-          const chaveCnpj = Object.keys(linha).find((chave) => chave.trim().toLowerCase().replace(/[^a-z]/g, '').includes('cnpj'))
-            || Object.keys(linha)[0];
-          const digitos = String(linha[chaveCnpj] ?? '').replace(/\D/g, '');
-          if (digitos) cnpjs.add(digitos);
+        if (!linhas.length) throw new Error('O arquivo está vazio.');
+        const chaves = Object.keys(linhas[0]);
+        const localizar = (nomes) => chaves.find((chave) => nomes.includes(normalizarCabecalhoTde(chave)));
+        const chaveCnpj = localizar(['cnpj']);
+        const chaveNome = localizar(['nomecliente', 'cliente', 'nome']);
+        const chaveValor = localizar(['valor', 'valortde', 'tde']);
+        const ausentes = [!chaveCnpj && 'CNPJ', !chaveValor && 'Valor'].filter(Boolean);
+        if (ausentes.length) throw new Error(`Coluna(s) obrigatória(s) ausente(s): ${ausentes.join(', ')}.`);
+        const regras = [];
+        const erros = [];
+        linhas.forEach((linha, indice) => {
+          const cnpj = String(linha[chaveCnpj] ?? '').replace(/\D/g, '');
+          const valor = numeroTdePlanilha(linha[chaveValor]);
+          if (cnpj.length !== 14) erros.push(`linha ${indice + 2}: CNPJ deve ter 14 dígitos`);
+          if (!Number.isFinite(valor) || valor < 0) erros.push(`linha ${indice + 2}: valor inválido`);
+          if (cnpj.length === 14 && Number.isFinite(valor) && valor >= 0) {
+            regras.push({ cnpj, nomeCliente: chaveNome ? String(linha[chaveNome] ?? '').trim() : '', valor });
+          }
         });
-        resolve([...cnpjs]);
+        if (erros.length) throw new Error(`Arquivo não importado. Corrija: ${erros.slice(0, 5).join('; ')}${erros.length > 5 ? `; e mais ${erros.length - 5} erro(s)` : ''}.`);
+        resolve(normalizarRegrasTde(regras));
       } catch (error) {
         reject(error);
       }
@@ -354,36 +381,41 @@ function parseCnpjListaFile(file) {
 }
 
 function baixarModeloCnpjs() {
-  const sheet = XLSX.utils.aoa_to_sheet([['CNPJ'], ['12345678000199']]);
+  const sheet = XLSX.utils.aoa_to_sheet([['CNPJ', 'Nome Cliente', 'Valor'], ['12345678000199', 'Cliente Exemplo', 150.50]]);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, sheet, 'CNPJs');
   XLSX.writeFile(workbook, 'modelo-tde-cnpjs.xlsx');
 }
 
+function exportarTdesCadastradas(regras, transportadoraNome) {
+  const linhas = regras.map((regra) => ({
+    CNPJ: regra.cnpj,
+    'Nome Cliente': regra.nomeCliente || '',
+    Valor: Number(regra.valor) || 0,
+  }));
+  const sheet = XLSX.utils.json_to_sheet(linhas, { header: ['CNPJ', 'Nome Cliente', 'Valor'] });
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, 'TDEs');
+  const nomeSeguro = String(transportadoraNome || 'transportadora').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+  XLSX.writeFile(workbook, `tde-${nomeSeguro || 'transportadora'}.xlsx`);
+}
+
 function TdeSection({ transportadora, store }) {
   const inputRef = useRef(null);
-  const [valor, setValor] = useState(transportadora.tde || 0);
   const [feedback, setFeedback] = useState('');
-  const cnpjs = transportadora.tdeCnpjs || [];
-
-  useEffect(() => { setValor(transportadora.tde || 0); }, [transportadora.id, transportadora.tde]);
-
-  function salvarValor() {
-    store.atualizarTde(transportadora.id, { tde: Number(valor) || 0 });
-    setFeedback('Valor da TDE atualizado. Clique em "Salvar alterações" para enviar ao Supabase.');
-  }
+  const regras = normalizarRegrasTde(transportadora.tdeCnpjs, transportadora.tde);
 
   async function importarCnpjs(event) {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      const novos = await parseCnpjListaFile(file);
+      const novos = await parseTdeFile(file);
       if (!novos.length) {
         setFeedback('Nenhum CNPJ encontrado no arquivo.');
       } else {
-        const combinados = [...new Set([...cnpjs, ...novos])];
+        const combinados = normalizarRegrasTde([...regras, ...novos], transportadora.tde);
         store.atualizarTde(transportadora.id, { tdeCnpjs: combinados });
-        setFeedback(`${novos.length} CNPJ(s) lido(s) do arquivo. Lista atual: ${combinados.length} CNPJ(s). Clique em "Salvar alterações" para enviar ao Supabase.`);
+        setFeedback(`${novos.length} TDE(s) importada(s). Cadastro atual: ${combinados.length}. Clique em "Salvar alterações" para enviar ao Supabase.`);
       }
     } catch (error) {
       setFeedback(error.message || 'Erro ao importar CNPJs.');
@@ -402,18 +434,15 @@ function TdeSection({ transportadora, store }) {
       <strong style={{ fontSize: '0.9rem' }}>TDE por CNPJ do destinatário</strong>
       <p style={{ fontSize: 12, color: 'var(--muted)', margin: '4px 0 10px' }}>
         Vale para toda a transportadora (todas as origens). Aplicada no Simulador Realizado e na Auditoria CT-e quando o
-        documento (CNPJ) do destinatário do CT-e está na lista abaixo.
+        documento (CNPJ) do destinatário do CT-e está cadastrado. Cada CNPJ pode ter um valor diferente.
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'end', flexWrap: 'wrap' }}>
-        <div className="field" style={{ margin: 0 }}>
-          <label>TDE (R$)</label>
-          <input type="number" step="0.01" style={{ width: 160 }} value={valor} onChange={(e) => setValor(e.target.value)} onBlur={salvarValor} />
-        </div>
-        <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar lista de CNPJs</button>
+        <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar TDEs por CNPJ</button>
         <button className="btn-secondary" onClick={baixarModeloCnpjs}>Baixar modelo</button>
-        <button className="btn-danger" onClick={limparCnpjs} disabled={!cnpjs.length}>Excluir CNPJs</button>
+        <button className="btn-secondary" onClick={() => exportarTdesCadastradas(regras, transportadora.nome)} disabled={!regras.length}>Exportar cadastro</button>
+        <button className="btn-danger" onClick={limparCnpjs} disabled={!regras.length}>Excluir TDEs</button>
         <input hidden ref={inputRef} type="file" accept=".xlsx,.xls,.csv" onChange={importarCnpjs} />
-        <span style={{ fontSize: 12, color: 'var(--muted)' }}>{cnpjs.length} CNPJ(s) cadastrado(s)</span>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}><strong>{regras.length}</strong> CNPJ(s) com TDE</span>
       </div>
       {feedback && <div className="mini-feedback info top-space" style={{ marginTop: 8 }}>{feedback}</div>}
     </div>

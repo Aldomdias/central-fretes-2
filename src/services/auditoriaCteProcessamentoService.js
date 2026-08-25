@@ -201,13 +201,13 @@ export function invalidarCacheVinculosAuditoriaCte() {
 }
 
 // Força recarregar as tabelas de frete do zero (ex.: usuário ajustou uma tabela
-// em outra aba e quer resimular sem perder a busca/filtro atual na Auditoria).
-// NÃO limpa o cache da base completa (_cacheBaseFrete) — recarregar TODAS as
-// transportadoras do sistema é lento (usado só como fallback quando a busca
-// direcionada por nome não acha a transportadora). Só o cache direcionado por
-// transportadora é limpo, que é rápido e cobre o caso comum (1-5 transportadoras).
+// ou o TDE por CNPJ em outra aba e quer resimular sem perder a busca/filtro
+// atual na Auditoria). Limpa também o cache da base completa (_cacheBaseFrete):
+// deixá-lo "congelado" fazia resimulações caírem no fallback de base completa
+// com dados desatualizados (ex.: TDE por CNPJ recém-editado não aparecia).
 export function invalidarCacheBaseFreteAuditoriaCte() {
   _cacheBaseFretePorTransportadora.clear();
+  _cacheBaseFrete = null;
 }
 
 // Busca o resultado ja calculado/salvo de um CT-e (com o detalhamento do
@@ -1713,7 +1713,14 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para recalcular.');
   }
 
-  const deveConsultarTracking = opcoesCalculo.apenasDadosCompletos === false && opcoesCalculo.consultarTrackingAoVivo !== false;
+  // Mesmo no recálculo "completo" da tela de Faturas, a base de CT-es antiga
+  // pode não ter documento_destinatario. Nesse caso o Tracking precisa ser
+  // consultado para que regras por CNPJ (como TDE) entrem no cálculo.
+  const faltaDocumentoDestinatario = ctesUnicos.some((cte) => (
+    !pickDigits(cte, ['documento_destinatario', 'documentoDestinatario', 'cnpj_destinatario'], 14)
+  ));
+  const deveConsultarTracking = opcoesCalculo.consultarTrackingAoVivo !== false
+    && (opcoesCalculo.apenasDadosCompletos === false || faltaDocumentoDestinatario);
   const ctesParaCalculo = deveConsultarTracking
     ? await enriquecerCtesComTrackingAoVivo(ctesUnicos, onProgress)
     : ctesUnicos.map((cte) => ({ ...cte, trackingNaoConsultado: opcoesCalculo.apenasDadosCompletos === false }));
