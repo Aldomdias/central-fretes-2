@@ -1508,7 +1508,7 @@ async function enriquecerCtesComTrackingAoVivo(ctes = [], onProgress) {
     try {
       const mapasTracking = await withTimeout(
         buscarTrackingParaRealizado(linhas),
-        8000,
+        25000,
         `Tracking lote ${Math.floor(inicio / tamanhoLote) + 1}`,
       );
       linhasEnriquecidas = enriquecerRealizadoComTracking(linhas, mapasTracking).linhas || linhas;
