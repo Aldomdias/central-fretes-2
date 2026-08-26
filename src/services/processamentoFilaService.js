@@ -68,7 +68,11 @@ export async function aguardarVezProcessamento(id, onStatus) {
       .select('id', { count: 'exact', head: true })
       .eq('status', 'AGUARDANDO')
       .or(`prioridade.lt.${registro.prioridade},and(prioridade.eq.${registro.prioridade},criado_em.lt.${registro.criado_em})`);
-    onStatus?.({ ...registro, posicao: (count || 0) + 1 });
+    const { data: emAndamento } = await supabase.from('processamentos_pesados')
+      .select('titulo,tipo,usuario_nome,total_itens,itens_processados,etapa,heartbeat_em')
+      .eq('status', 'PROCESSANDO')
+      .order('iniciado_em', { ascending: true });
+    onStatus?.({ ...registro, posicao: (count || 0) + 1, emAndamento: emAndamento || [] });
     await esperar(INTERVALO_FILA_MS);
   }
 }

@@ -394,6 +394,23 @@ function BarraProgresso({ progresso }) {
           <div className="auditoria-progress-indeterminate" style={{ position: 'absolute', top: 0, left: 0, height: '100%', width: '35%', borderRadius: 999, background: '#2563eb' }} />
         )}
       </div>
+      {aguardandoFila && Array.isArray(progresso.emAndamento) && progresso.emAndamento.length > 0 && (
+        <div style={{ marginTop: 10, fontSize: 12, color: '#475569' }}>
+          Esperando liberar espaço. Rodando agora:
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+            {progresso.emAndamento.map((tarefa, i) => {
+              const t = Number(tarefa.total_itens || 0);
+              const f = Number(tarefa.itens_processados || 0);
+              return (
+                <li key={i}>
+                  <strong>{tarefa.usuario_nome || 'alguém'}</strong> · {tarefa.titulo}
+                  {t ? ` · ${f.toLocaleString('pt-BR')}/${t.toLocaleString('pt-BR')}` : ''}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
       <style>{`@keyframes auditoriaProgressSlide{0%{left:-35%}100%{left:100%}}.auditoria-progress-indeterminate{animation:auditoriaProgressSlide 1.1s ease-in-out infinite}`}</style>
     </div>
   );

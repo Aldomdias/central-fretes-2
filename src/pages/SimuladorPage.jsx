@@ -3551,6 +3551,18 @@ function desserializarEstadoSimulacaoRealizado(texto) {
   return estado;
 }
 
+function mensagemAguardandoFila(fila) {
+  const base = `Aguardando fila · posição ${fila.posicao || 1}`;
+  const emAndamento = Array.isArray(fila.emAndamento) ? fila.emAndamento : [];
+  if (!emAndamento.length) return base;
+  const resumo = emAndamento.map((tarefa) => {
+    const t = Number(tarefa.total_itens || 0);
+    const f = Number(tarefa.itens_processados || 0);
+    return `${tarefa.usuario_nome || 'alguém'} (${tarefa.titulo}${t ? ` · ${f.toLocaleString('pt-BR')}/${t.toLocaleString('pt-BR')}` : ''})`;
+  }).join(', ');
+  return `${base} · rodando agora: ${resumo}`;
+}
+
 // Processa um lote de linhas acumulando no estado. Pode ser chamada várias vezes
 // (uma por parcela) — o corpo do loop é o mesmo da simulação de passada única.
 async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline = [], baseOnlineAtual = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade, indicePorDestino, onProgress }) {
@@ -6269,7 +6281,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       });
       if (tarefaFilaBusca) {
         await aguardarVezProcessamento(tarefaFilaBusca.id, (fila) => {
-          atualizarProcessamentoUi(`Aguardando fila · posição ${fila.posicao || 1}`, 8);
+          atualizarProcessamentoUi(mensagemAguardandoFila(fila), 8);
         });
         heartbeatFilaBusca = window.setInterval(() => {
           atualizarProcessamentoPesado(tarefaFilaBusca.id, { etapa: 'buscando_ctes' });
@@ -6733,7 +6745,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       });
       if (tarefaFila) {
         await aguardarVezProcessamento(tarefaFila.id, (fila) => {
-          atualizarProcessamentoUi(`Aguardando fila · posição ${fila.posicao || 1}`, 10);
+          atualizarProcessamentoUi(mensagemAguardandoFila(fila), 10);
         });
         heartbeatFila = window.setInterval(() => {
           atualizarProcessamentoPesado(tarefaFila.id, { etapa: 'simulando', total: rowsBase.length });
