@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { assinarUsuariosAtivos, listarHistoricoAcessos, presencaDisponivel } from '../services/presencaService';
-import { listarProcessamentosPesados } from '../services/processamentoFilaService';
+import { listarProcessamentosPesados, carregarConfiguracaoFila } from '../services/processamentoFilaService';
 
 function formatarDataHora(valor) {
   if (!valor) return '-';
@@ -28,6 +28,7 @@ export default function PainelUsuariosAtivosPage() {
   const [carregandoHistorico, setCarregandoHistorico] = useState(false);
   const [processamentos, setProcessamentos] = useState([]);
   const [erroFila, setErroFila] = useState('');
+  const [configFila, setConfigFila] = useState({ orcamentoItens: null, limiteTarefasGlobais: 2 });
 
   useEffect(() => {
     const cancelar = assinarUsuariosAtivos(setUsuarios);
@@ -51,6 +52,15 @@ export default function PainelUsuariosAtivosPage() {
     };
     carregarFila();
     const timer = window.setInterval(carregarFila, 10000);
+    return () => { ativo = false; window.clearInterval(timer); };
+  }, []);
+
+  useEffect(() => {
+    let ativo = true;
+    carregarConfiguracaoFila().then((config) => { if (ativo) setConfigFila(config); }).catch(() => {});
+    const timer = window.setInterval(() => {
+      carregarConfiguracaoFila().then((config) => { if (ativo) setConfigFila(config); }).catch(() => {});
+    }, 30000);
     return () => { ativo = false; window.clearInterval(timer); };
   }, []);
 
@@ -173,12 +183,14 @@ export default function PainelUsuariosAtivosPage() {
 
       <div className="panel-title" style={{ marginTop: 24 }}>Fila de tarefas pesadas</div>
       <p style={{ color: 'var(--text-muted, #64748b)', marginTop: '-8px' }}>
-        Auditorias e simulações compartilham 2 posições. Atualização automática a cada 10 segundos.
+        Auditorias e simulações compartilham {configFila.limiteTarefasGlobais} posições
+        {configFila.orcamentoItens ? ` (ou até ${configFila.orcamentoItens.toLocaleString('pt-BR')} itens somados)` : ''}.
+        Atualização automática a cada 10 segundos. Ajuste em Ferramentas → Fila de processamento pesado.
       </p>
       {erroFila && <div style={{ padding: 10, borderRadius: 8, background: '#fef2f2', color: '#b91c1c' }}>{erroFila}</div>}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '12px 0' }}>
         <span style={{ padding: '5px 10px', borderRadius: 999, background: '#dcfce7', color: '#166534', fontWeight: 700 }}>
-          {filaAtiva.filter((item) => item.status === 'PROCESSANDO').length}/2 processando
+          {filaAtiva.filter((item) => item.status === 'PROCESSANDO').length}/{configFila.limiteTarefasGlobais} processando
         </span>
         <span style={{ padding: '5px 10px', borderRadius: 999, background: '#fef3c7', color: '#92400e', fontWeight: 700 }}>
           {filaAtiva.filter((item) => item.status === 'AGUARDANDO').length} aguardando

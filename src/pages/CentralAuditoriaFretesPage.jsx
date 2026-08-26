@@ -3550,7 +3550,12 @@ ${portaisLaudo.length ? `
       const mapaAuditorPorTransportadora = new Map();
       (state.carteiras || []).forEach((carteira) => {
         if (!carteira.auditor_nome) return;
-        mapaAuditorPorTransportadora.set(normalizarNomeTransportadora(carteira.transportadora), {
+        // A carteira pode ter sido cadastrada com um nome-alias da
+        // transportadora (antes do vinculo existir, ou digitado diferente).
+        // Resolve pelo mesmo mapa de vinculos usado no nome da fatura, senao
+        // a chave nunca bate e a fatura nova entra sem auditor.
+        const nomeCarteiraResolvido = aplicarVinculoTransportadora(carteira.transportadora, mapaVinculosImportacao);
+        mapaAuditorPorTransportadora.set(normalizarNomeTransportadora(nomeCarteiraResolvido), {
           auditor_nome: carteira.auditor_nome,
           auditor_email: carteira.auditor_email || '',
         });
@@ -4572,9 +4577,16 @@ function Gestao({ state, onState }) {
   // - Fatura aberta que ja tem outro auditor: so muda se `transferirAbertas`
   //   for true. Se false, mantem o auditor atual "ate ele resolver" e nao
   //   empurra pendencia pra pessoa nova.
-  const aplicarAtribuicaoComEstado = async (estadoBase, carteira, usuario, { transferirAbertas = true } = {}) => {
+  const aplicarAtribuicaoComEstado = async (estadoBase, carteira, usuario, { transferirAbertas = true, atualizarEncerradasAgora = false } = {}) => {
     const gestorNome = carregarSessao()?.nome || 'Gestao';
     const agora = new Date().toISOString();
+    // Guarda o auditor QUE ESTAVA antes de sobrescrever a carteira — as
+    // faturas ja pagas/encerradas sem auditor recebem esse nome (o "dono"
+    // anterior da carteira), nunca o novo auditor: e' um preenchimento
+    // provisorio (base historica real vira depois), nao uma atribuicao real
+    // de trabalho pro novo auditor.
+    const auditorAntigoNome = carteira.auditor_nome || null;
+    const auditorAntigoEmail = carteira.auditor_email || '';
     let next = await salvarCarteiraAuditoria(estadoBase, {
       ...carteira,
       auditor_id: usuario.id,
@@ -4583,10 +4595,24 @@ function Gestao({ state, onState }) {
       atribuido_por: gestorNome,
       atribuido_em: agora,
     });
-    const carteiraNorm = normalizarNomeTransportadora(carteira.transportadora);
+    const carteiraNorm = normalizarNomeTransportadora(resolverNomeTransportadora(carteira.transportadora));
     const relacionadas = next.faturas.filter((item) => normalizarNomeTransportadora(resolverNomeTransportadora(item.transportadora)) === carteiraNorm);
     for (const fatura of relacionadas) {
-      if (ENCERRADOS.has(fatura.status)) continue;
+      if (ENCERRADOS.has(fatura.status)) {
+        // Encerrada com auditor: nunca muda, fica pra sempre com quem tratou
+        // (preserva a metrica de delegacao). Encerrada SEM auditor: so entra
+        // se a gestora confirmou o ajuste em massa agora, e recebe o auditor
+        // ANTERIOR da carteira (ou o novo, se nunca teve um antes) como
+        // preenchimento provisorio.
+        if (fatura.auditor_nome || !atualizarEncerradasAgora) continue;
+        const preenchimento = auditorAntigoNome
+          ? { auditor_nome: auditorAntigoNome, auditor_email: auditorAntigoEmail }
+          : { auditor_nome: usuario.nome, auditor_email: usuario.email };
+        next = await atualizarFaturaAuditoria(next, { ...fatura, ...preenchimento }, {
+          acao: 'AUDITOR_ATRIBUIDO', descricao: `Preenchimento provisorio (${preenchimento.auditor_nome}) ao atribuir carteira a ${usuario.nome}.`, usuario_nome: gestorNome,
+        });
+        continue;
+      }
       const jaTemOutroAuditor = Boolean(fatura.auditor_nome) && fatura.auditor_nome !== usuario.nome;
       if (jaTemOutroAuditor && !transferirAbertas) continue;
       next = await atualizarFaturaAuditoria(next, { ...fatura, auditor_nome: usuario.nome, auditor_email: usuario.email }, {
@@ -4603,7 +4629,7 @@ function Gestao({ state, onState }) {
   // dono — sao as que disparam a pergunta de transferencia. Encerradas nunca
   // contam aqui (ja ficam com quem tratou de qualquer forma).
   const contarPendenciasDeOutroAuditor = (carteira, novoAuditorNome) => {
-    const carteiraNorm = normalizarNomeTransportadora(carteira.transportadora);
+    const carteiraNorm = normalizarNomeTransportadora(resolverNomeTransportadora(carteira.transportadora));
     return state.faturas.filter((item) => (
       normalizarNomeTransportadora(resolverNomeTransportadora(item.transportadora)) === carteiraNorm
       && !ENCERRADOS.has(item.status)
@@ -4612,18 +4638,74 @@ function Gestao({ state, onState }) {
     )).length;
   };
 
+  // Faturas ENCERRADAS (pagas/canceladas/etc) sem nenhum auditor — disparam
+  // a 2a pergunta ("atualizar as ja pagas agora?"), so quando transferirAbertas
+  // for true (fluxo "tudo em aberto"). "So as novas" nunca oferece essa opcao.
+  const contarEncerradasSemAuditor = (carteira) => {
+    const carteiraNorm = normalizarNomeTransportadora(resolverNomeTransportadora(carteira.transportadora));
+    return state.faturas.filter((item) => (
+      normalizarNomeTransportadora(resolverNomeTransportadora(item.transportadora)) === carteiraNorm
+      && ENCERRADOS.has(item.status)
+      && !item.auditor_nome
+    )).length;
+  };
+
   const [confirmacaoTransferencia, setConfirmacaoTransferencia] = useState(null);
 
-  const executarAtribuicaoUnica = async (carteira, usuario, transferirAbertas) => {
+  // Corrige faturas que ficaram sem auditor por causa do mismatch de nome
+  // (carteira cadastrada com alias, fatura importada com o nome oficial —
+  // ver aplicarAtribuicaoComEstado acima). So mexe em faturas SEM auditor
+  // definido; quem ja tem auditor fica como esta, pra preservar continuidade.
+  const [sincronizandoAuditores, setSincronizandoAuditores] = useState(false);
+  const [resultadoSincronizacao, setResultadoSincronizacao] = useState(null);
+  const sincronizarFaturasSemAuditor = async () => {
+    setSincronizandoAuditores(true);
+    setResultadoSincronizacao(null);
+    setErroAtribuicao('');
+    try {
+      const mapaAuditorPorCarteira = new Map();
+      carteiras.forEach((carteira) => {
+        if (!carteira.auditor_nome) return;
+        const chave = normalizarNomeTransportadora(resolverNomeTransportadora(carteira.transportadora));
+        mapaAuditorPorCarteira.set(chave, { auditor_nome: carteira.auditor_nome, auditor_email: carteira.auditor_email || '' });
+      });
+      const pendentes = state.faturas.filter((fatura) => {
+        if (fatura.auditor_nome) return false;
+        const chave = normalizarNomeTransportadora(resolverNomeTransportadora(fatura.transportadora));
+        return mapaAuditorPorCarteira.has(chave);
+      });
+      let estadoAtual = state;
+      let corrigidas = 0;
+      const gestorNome = carregarSessao()?.nome || 'Gestao';
+      for (const fatura of pendentes) {
+        const chave = normalizarNomeTransportadora(resolverNomeTransportadora(fatura.transportadora));
+        const auditorDaCarteira = mapaAuditorPorCarteira.get(chave);
+        estadoAtual = await atualizarFaturaAuditoria(estadoAtual, { ...fatura, ...auditorDaCarteira }, {
+          acao: 'AUDITOR_ATRIBUIDO', descricao: `Sincronizado com a carteira de ${auditorDaCarteira.auditor_nome} (correcao retroativa).`, usuario_nome: gestorNome,
+        });
+        corrigidas += 1;
+      }
+      const totalSemAuditorAntes = state.faturas.filter((f) => !f.auditor_nome).length;
+      onState(estadoAtual);
+      setResultadoSincronizacao({ corrigidas, aindaSemCarteira: totalSemAuditorAntes - corrigidas });
+    } catch (error) {
+      setErroAtribuicao(error.message || 'Erro ao sincronizar auditores.');
+    } finally {
+      setSincronizandoAuditores(false);
+    }
+  };
+
+  const executarAtribuicaoUnica = async (carteira, usuario, transferirAbertas, atualizarEncerradasAgora = false) => {
     setErroAtribuicao('');
     setSalvandoAtribuicao(true);
     try {
-      onState(await aplicarAtribuicaoComEstado(state, carteira, usuario, { transferirAbertas }));
+      onState(await aplicarAtribuicaoComEstado(state, carteira, usuario, { transferirAbertas, atualizarEncerradasAgora }));
       setEditandoTransportadora(null);
       setAuditorId('');
       setAdicionandoParaAuditor(null);
       setTransportadoraParaAdicionar('');
       setConfirmacaoTransferencia(null);
+      setConfirmacaoEncerradas(null);
     } catch (error) {
       setErroAtribuicao(error.message || 'Erro ao atribuir auditor.');
     } finally {
@@ -4631,25 +4713,45 @@ function Gestao({ state, onState }) {
     }
   };
 
-  const executarAtribuicaoMassa = async (listaCarteiras, usuario, transferirAbertas) => {
+  const executarAtribuicaoMassa = async (listaCarteiras, usuario, transferirAbertas, atualizarEncerradasAgora = false) => {
     setAplicandoMassa(true);
     setSalvandoAtribuicao(true);
     setErroAtribuicao('');
     try {
       let estadoAtual = state;
       for (const carteira of listaCarteiras) {
-        estadoAtual = await aplicarAtribuicaoComEstado(estadoAtual, carteira, usuario, { transferirAbertas });
+        estadoAtual = await aplicarAtribuicaoComEstado(estadoAtual, carteira, usuario, { transferirAbertas, atualizarEncerradasAgora });
       }
       onState(estadoAtual);
       setSelecionadas(new Set());
       setAuditorIdMassa('');
       setConfirmacaoTransferencia(null);
+      setConfirmacaoEncerradas(null);
     } catch (error) {
       setErroAtribuicao(error.message || 'Erro ao atribuir auditor em massa.');
     } finally {
       setAplicandoMassa(false);
       setSalvandoAtribuicao(false);
     }
+  };
+
+  const [confirmacaoEncerradas, setConfirmacaoEncerradas] = useState(null);
+
+  // 2a pergunta, so quando "tudo em aberto" foi escolhido (ou nao havia
+  // conflito nenhum, o que já significa "tudo"): se tem fatura ja
+  // encerrada/paga sem auditor, pergunta se atualiza agora (preenchimento
+  // provisorio com o auditor anterior) ou deixa pra base historica resolver
+  // depois. "So as novas" nunca chega a perguntar isso.
+  const prosseguirComTransferencia = (tipo, alvo, usuario, transferirAbertas) => {
+    const carteirasAlvo = tipo === 'unica' ? [alvo] : alvo;
+    const encerradasPendentes = carteirasAlvo.reduce((total, c) => total + contarEncerradasSemAuditor(c), 0);
+    if (transferirAbertas && encerradasPendentes > 0) {
+      setConfirmacaoTransferencia(null);
+      setConfirmacaoEncerradas({ tipo, alvo, usuario, encerradasPendentes });
+      return;
+    }
+    if (tipo === 'unica') executarAtribuicaoUnica(alvo, usuario, transferirAbertas, false);
+    else executarAtribuicaoMassa(alvo, usuario, transferirAbertas, false);
   };
 
   const atribuir = async () => {
@@ -4662,7 +4764,7 @@ function Gestao({ state, onState }) {
       setConfirmacaoTransferencia({ tipo: 'unica', carteira, usuario, pendencias });
       return;
     }
-    await executarAtribuicaoUnica(carteira, usuario, true);
+    prosseguirComTransferencia('unica', carteira, usuario, true);
   };
 
   const adicionarTransportadoraAoAuditor = async (usuario) => {
@@ -4673,7 +4775,7 @@ function Gestao({ state, onState }) {
       setConfirmacaoTransferencia({ tipo: 'unica', carteira, usuario, pendencias });
       return;
     }
-    await executarAtribuicaoUnica(carteira, usuario, true);
+    prosseguirComTransferencia('unica', carteira, usuario, true);
   };
 
   const atribuirEmMassa = async () => {
@@ -4685,7 +4787,7 @@ function Gestao({ state, onState }) {
       setConfirmacaoTransferencia({ tipo: 'massa', listaCarteiras, usuario, pendencias });
       return;
     }
-    await executarAtribuicaoMassa(listaCarteiras, usuario, true);
+    prosseguirComTransferencia('massa', listaCarteiras, usuario, true);
   };
 
   return (
@@ -4696,6 +4798,25 @@ function Gestao({ state, onState }) {
         <Card label="Transportadoras" value={carteiras.length} />
         <Card label="Sem responsavel" value={carteiras.filter((item) => !item.auditor_nome).length} color="#9b1111" />
         <Card label="Faturas vencidas" value={carteiras.reduce((total, item) => total + item.vencidas, 0)} color="#9b1111" />
+      </div>
+      <div className="table-card" style={{ marginTop: 12 }}>
+        <div className="panel-title audit-table-title">Sincronizar faturas sem auditor</div>
+        <p style={{ margin: '0 0 10px' }}>
+          Corrige faturas que ficaram sem auditor por causa do nome da transportadora (alias diferente da carteira).
+          Só atualiza faturas SEM auditor definido — quem já tem auditor não muda.
+        </p>
+        <button type="button" onClick={sincronizarFaturasSemAuditor} disabled={sincronizandoAuditores}>
+          {sincronizandoAuditores ? 'Sincronizando...' : 'Sincronizar faturas sem auditor'}
+        </button>
+        {resultadoSincronizacao && (
+          <p style={{ marginTop: 8 }}>
+            {resultadoSincronizacao.corrigidas} fatura(s) corrigida(s).
+            {resultadoSincronizacao.aindaSemCarteira > 0
+              ? ` ${resultadoSincronizacao.aindaSemCarteira} continuam sem auditor porque a transportadora ainda não tem carteira atribuída.`
+              : ''}
+          </p>
+        )}
+        {erroAtribuicao && <p className="error-text">{erroAtribuicao}</p>}
       </div>
       {porAuditor.size > 0 && (
         <div className="table-card">
@@ -4934,22 +5055,64 @@ function Gestao({ state, onState }) {
               <button
                 className="btn-primary"
                 disabled={salvandoAtribuicao}
-                onClick={() => (confirmacaoTransferencia.tipo === 'unica'
-                  ? executarAtribuicaoUnica(confirmacaoTransferencia.carteira, confirmacaoTransferencia.usuario, true)
-                  : executarAtribuicaoMassa(confirmacaoTransferencia.listaCarteiras, confirmacaoTransferencia.usuario, true))}
+                onClick={() => prosseguirComTransferencia(
+                  confirmacaoTransferencia.tipo,
+                  confirmacaoTransferencia.tipo === 'unica' ? confirmacaoTransferencia.carteira : confirmacaoTransferencia.listaCarteiras,
+                  confirmacaoTransferencia.usuario,
+                  true,
+                )}
               >
                 Transferir para {confirmacaoTransferencia.usuario.nome}
               </button>
               <button
                 className="btn-secondary"
                 disabled={salvandoAtribuicao}
-                onClick={() => (confirmacaoTransferencia.tipo === 'unica'
-                  ? executarAtribuicaoUnica(confirmacaoTransferencia.carteira, confirmacaoTransferencia.usuario, false)
-                  : executarAtribuicaoMassa(confirmacaoTransferencia.listaCarteiras, confirmacaoTransferencia.usuario, false))}
+                onClick={() => prosseguirComTransferencia(
+                  confirmacaoTransferencia.tipo,
+                  confirmacaoTransferencia.tipo === 'unica' ? confirmacaoTransferencia.carteira : confirmacaoTransferencia.listaCarteiras,
+                  confirmacaoTransferencia.usuario,
+                  false,
+                )}
               >
                 Manter com quem já está tratando (só as novas vão para {confirmacaoTransferencia.usuario.nome})
               </button>
               <button className="btn-secondary" disabled={salvandoAtribuicao} onClick={() => setConfirmacaoTransferencia(null)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmacaoEncerradas && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 100001, display: 'grid', placeItems: 'center', padding: 20 }}
+          onClick={() => !salvandoAtribuicao && setConfirmacaoEncerradas(null)}
+        >
+          <div className="sim-card" style={{ width: 'min(520px, 100%)' }} onClick={(event) => event.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Faturas já pagas sem auditor</h3>
+            <p style={{ color: '#475569' }}>
+              Existem {confirmacaoEncerradas.encerradasPendentes} fatura(s) já encerrada(s) (paga/cancelada/etc) sem nenhum auditor definido.
+              Devo atualizar todas agora? Elas recebem o auditor que estava na carteira antes desta troca (preenchimento provisório —
+              a base histórica real ainda vai ser importada depois pra corrigir os nomes definitivos).
+            </p>
+            <div className="audit-form-actions" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+              <button
+                className="btn-primary"
+                disabled={salvandoAtribuicao}
+                onClick={() => (confirmacaoEncerradas.tipo === 'unica'
+                  ? executarAtribuicaoUnica(confirmacaoEncerradas.alvo, confirmacaoEncerradas.usuario, true, true)
+                  : executarAtribuicaoMassa(confirmacaoEncerradas.alvo, confirmacaoEncerradas.usuario, true, true))}
+              >
+                Sim, atualizar as {confirmacaoEncerradas.encerradasPendentes} agora
+              </button>
+              <button
+                className="btn-secondary"
+                disabled={salvandoAtribuicao}
+                onClick={() => (confirmacaoEncerradas.tipo === 'unica'
+                  ? executarAtribuicaoUnica(confirmacaoEncerradas.alvo, confirmacaoEncerradas.usuario, true, false)
+                  : executarAtribuicaoMassa(confirmacaoEncerradas.alvo, confirmacaoEncerradas.usuario, true, false))}
+              >
+                Não, deixar pra base histórica resolver depois
+              </button>
+              <button className="btn-secondary" disabled={salvandoAtribuicao} onClick={() => setConfirmacaoEncerradas(null)}>Cancelar</button>
             </div>
           </div>
         </div>

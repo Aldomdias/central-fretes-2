@@ -5,7 +5,7 @@ import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import ModalChamadoAmdTabela from '../components/ModalChamadoAmdTabela';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora, salvarVinculosTransportadoras, removerVinculoTransportadora, buscarNomesCteSimilares } from '../services/vinculosTransportadorasService';
 import { normalizarChave } from '../services/vinculosTransportadorasPuro';
-import { listarCarteirasAuditoria, salvarCarteiraAuditoria, propagarAuditorParaFaturas } from '../services/auditoriaFretesService';
+import { listarCarteirasAuditoria, salvarCarteiraAuditoria, propagarAuditorParaFaturas, analisarImpactoAuditor } from '../services/auditoriaFretesService';
 import { carregarSessao } from '../utils/authLocal';
 import { listarHistoricoAlteracoesTransportadoras } from '../services/auditoriaTransportadorasService';
 import { cnpjPreenchidoValido, formatarCnpj, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
@@ -79,8 +79,24 @@ function useVinculosEAuditores() {
     setVinculosRaw(novaLista);
   }
 
-  async function salvarAuditor(nomeTransportadora, auditorNome) {
+  // So consulta o impacto (quantas abertas ficariam com outro auditor,
+  // quantas encerradas estao sem nenhum) — quem chama decide se precisa
+  // perguntar antes de gravar. Nao salva nada ainda.
+  async function analisarAntesDeSalvar(nomeTransportadora, auditorNome) {
     const existente = carteiraDaTransportadora(nomeTransportadora);
+    const mapaVinculos = criarMapaVinculosTransportadoras(vinculosRaw || []);
+    const chaveAlvo = normalizarChave(nomeTransportadora);
+    return analisarImpactoAuditor({
+      novoAuditorNome: auditorNome,
+      cnpjTransportadora: existente?.cnpj_transportadora || null,
+      matchesTransportadora: (nomeFatura) => normalizarChave(aplicarVinculoTransportadora(nomeFatura, mapaVinculos)) === chaveAlvo,
+    });
+  }
+
+  async function salvarAuditor(nomeTransportadora, auditorNome, { transferirAbertas = false, atualizarEncerradasAgora = false } = {}) {
+    const existente = carteiraDaTransportadora(nomeTransportadora);
+    const auditorAntigoNome = existente?.auditor_nome || null;
+    const auditorAntigoEmail = existente?.auditor_email || '';
     const carteira = {
       id: existente?.id,
       transportadora: nomeTransportadora,
@@ -110,6 +126,10 @@ function useVinculosEAuditores() {
       atribuidoPor: carregarSessao()?.nome || 'Gestao',
       cnpjTransportadora: carteira.cnpj_transportadora,
       matchesTransportadora: (nomeFatura) => normalizarChave(aplicarVinculoTransportadora(nomeFatura, mapaVinculos)) === chaveAlvo,
+      transferirAbertas,
+      atualizarEncerradasAgora,
+      auditorAntigoNome,
+      auditorAntigoEmail,
     });
   }
 
@@ -147,6 +167,7 @@ function useVinculosEAuditores() {
     vinculosDaTransportadora,
     carteiraDaTransportadora,
     salvarAuditor,
+    analisarAntesDeSalvar,
     recarregarVinculos,
     adicionarVinculo,
     removerVinculo,
@@ -1533,7 +1554,27 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   const [feedbackChamado, setFeedbackChamado] = useState('');
   // null = fechado; objeto = origem escolhida para mover de transportadora
   const [origemTransferindo, setOrigemTransferindo] = useState(null);
-  const { vinculosDaTransportadora, carteiraDaTransportadora, auditorNomes, salvarAuditor, recarregarVinculos, adicionarVinculo, removerVinculo } = useVinculosEAuditores();
+  const { vinculosDaTransportadora, carteiraDaTransportadora, auditorNomes, salvarAuditor, analisarAntesDeSalvar, recarregarVinculos, adicionarVinculo, removerVinculo } = useVinculosEAuditores();
+
+  // Mesma pergunta de 2 etapas que existe no Centro de Gestores, agora tambem
+  // aqui: sem isso, atribuir auditor pela tela de Transportadoras nunca
+  // perguntava nada, so preenchia faturas vazias silenciosamente.
+  const confirmarESalvarAuditor = async (nomeTransportadora, auditorNome) => {
+    const impacto = await analisarAntesDeSalvar(nomeTransportadora, auditorNome);
+    let transferirAbertas = true;
+    if (impacto.abertasComOutroAuditor > 0) {
+      transferirAbertas = window.confirm(
+        `${impacto.abertasComOutroAuditor} fatura(s) aberta(s) desta transportadora já têm outro auditor.\n\nOK = transferir todas para ${auditorNome}.\nCancelar = manter com quem já está tratando (só as novas vão para ${auditorNome}).`,
+      );
+    }
+    let atualizarEncerradasAgora = false;
+    if (transferirAbertas && impacto.encerradasSemAuditor > 0) {
+      atualizarEncerradasAgora = window.confirm(
+        `${impacto.encerradasSemAuditor} fatura(s) já encerrada(s)/paga(s) estão sem nenhum auditor.\n\nAtualizar todas agora com o auditor anterior da carteira (preenchimento provisório, até a base histórica corrigir os nomes definitivos)?`,
+      );
+    }
+    await salvarAuditor(nomeTransportadora, auditorNome, { transferirAbertas, atualizarEncerradasAgora });
+  };
   const origensBase = Array.isArray(transportadora?.origens) ? transportadora.origens : [];
   const origens = origensBase.filter((origem) => String(origem?.cidade || '').toLowerCase().includes(busca.toLowerCase()));
   const saveOrigem = (form) => {
@@ -1685,7 +1726,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
         vinculos={origemConfirmando ? vinculosDaTransportadora(transportadora.nome) : []}
         auditorAtual={origemConfirmando ? carteiraDaTransportadora(transportadora.nome)?.auditor_nome : null}
         auditorNomes={auditorNomes}
-        onSalvarAuditor={(nome) => salvarAuditor(transportadora.nome, nome)}
+        onSalvarAuditor={(nome) => confirmarESalvarAuditor(transportadora.nome, nome)}
         onRecarregarVinculos={recarregarVinculos}
         onAdicionarVinculo={(nomeCte) => adicionarVinculo(nomeCte, transportadora.nome)}
         onRemoverVinculo={removerVinculo}
