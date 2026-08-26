@@ -41,12 +41,25 @@ export async function criarProcessamentoPesado({ tipo, titulo, totalItens = 0, m
 export async function aguardarVezProcessamento(id, onStatus) {
   const supabase = cliente();
   if (!supabase || !id) return null;
+  let falhasSeguidas = 0;
   while (true) {
     const { data, error } = await supabase.rpc('tentar_iniciar_processamento_pesado', {
       p_id: id,
       p_limite_global: null,
     });
-    if (error) throw new Error(`Falha ao consultar a fila: ${error.message}`);
+    if (error) {
+      // Timeout/erro transitorio do banco (ex: pico de uso) nao deve derrubar
+      // a tarefa do usuario direto — tenta mais algumas vezes antes de desistir.
+      const transitorio = /timeout|57014|connection|network/i.test(error.message || '');
+      falhasSeguidas += 1;
+      if (transitorio && falhasSeguidas <= 5) {
+        onStatus?.({ etapa: 'aguardando_fila', posicao: 1, avisoTransitorio: true });
+        await esperar(INTERVALO_FILA_MS);
+        continue;
+      }
+      throw new Error(`Falha ao consultar a fila: ${error.message}`);
+    }
+    falhasSeguidas = 0;
     const registro = Array.isArray(data) ? data[0] : data;
     if (!registro) throw new Error('A tarefa desapareceu da fila.');
     if (registro.status === 'PROCESSANDO') return registro;

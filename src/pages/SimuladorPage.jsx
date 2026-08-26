@@ -6262,7 +6262,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
       tarefaFilaBusca = await criarProcessamentoPesado({
         tipo: 'SIMULACAO_SUPRIMENTOS',
         titulo: `Buscar CT-es / ${transportadoraRealizado}`,
-        totalItens: Number(limiteRealizado) || 0,
+        // Tamanho real só se sabe depois da busca — limiteRealizado é só o teto do filtro
+        // (pode ser 200000), não o volume de fato. Começa "desconhecido" e atualiza depois.
+        totalItens: 0,
         metadados: { etapa: 'buscar_ctes', canal: canalRealizado, transportadora: transportadoraRealizado },
       });
       if (tarefaFilaBusca) {
@@ -6390,6 +6392,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         atualizarProcessamentoUi(`Buscando CT-es realizados... ${qtd.toLocaleString('pt-BR')} carregados`, Math.min(58, 28 + Math.floor(qtd / 500)));
       });
       rowsBrutos = filtrarRowsPorOrigensRealizado(rowsBrutos, origensMarcadasFiltro);
+      if (tarefaFilaBusca) atualizarProcessamentoPesado(tarefaFilaBusca.id, { etapa: 'buscando_ctes', carregados: rowsBrutos.length, total: rowsBrutos.length });
 
       const temFiltroManualRealizado = Boolean(
         origemRealizado
