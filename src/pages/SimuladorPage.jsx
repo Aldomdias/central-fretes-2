@@ -6254,7 +6254,25 @@ export default function SimuladorPage({ transportadoras = [] }) {
     setBuscandoCtesRealizado(true);
     iniciarProcessamentoUi('Buscar CT-es do realizado', 'Carregando negociação, vínculos e CT-es...', 8);
 
+    let tarefaFilaBusca = null;
+    let heartbeatFilaBusca = null;
+    let erroExecucaoFilaBusca = null;
+
     try {
+      tarefaFilaBusca = await criarProcessamentoPesado({
+        tipo: 'SIMULACAO_SUPRIMENTOS',
+        titulo: `Buscar CT-es / ${transportadoraRealizado}`,
+        totalItens: Number(limiteRealizado) || 0,
+        metadados: { etapa: 'buscar_ctes', canal: canalRealizado, transportadora: transportadoraRealizado },
+      });
+      if (tarefaFilaBusca) {
+        await aguardarVezProcessamento(tarefaFilaBusca.id, (fila) => {
+          atualizarProcessamentoUi(`Aguardando fila · posição ${fila.posicao || 1}`, 8);
+        });
+        heartbeatFilaBusca = window.setInterval(() => {
+          atualizarProcessamentoPesado(tarefaFilaBusca.id, { etapa: 'buscando_ctes' });
+        }, 15000);
+      }
       atualizarProcessamentoUi('Carregando negociação...', 12);
       const mapaVinculos = await carregarMapaVinculosSimulador();
       // Seleção exclusiva desta execução: ajuda a localizar os CT-es que serão
@@ -6659,10 +6677,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
         100,
       );
     } catch (error) {
+      erroExecucaoFilaBusca = error;
       setBaseRealizadoCarregada(null);
       setErroSimulacao(error.message || 'Erro ao buscar CT-es do realizado.');
       finalizarProcessamentoUi('Erro ao buscar CT-es', 'Não foi possível carregar a base.', 100);
     } finally {
+      if (heartbeatFilaBusca) window.clearInterval(heartbeatFilaBusca);
+      if (tarefaFilaBusca) {
+        await finalizarProcessamentoPesado(tarefaFilaBusca.id, erroExecucaoFilaBusca ? 'ERRO' : 'CONCLUIDO', erroExecucaoFilaBusca?.message || null);
+      }
       setBuscandoCtesRealizado(false);
     }
   };
