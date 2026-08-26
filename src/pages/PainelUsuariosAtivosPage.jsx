@@ -81,18 +81,30 @@ export default function PainelUsuariosAtivosPage() {
   const consumoPorUsuario = useMemo(() => {
     const desde = Date.now() - (24 * 60 * 60 * 1000);
     const mapa = new Map();
-    processamentos.filter((item) => new Date(item.criado_em).getTime() >= desde).forEach((item) => {
-      const chave = item.usuario_id || item.usuario_email || 'sem-usuario';
-      const atual = mapa.get(chave) || { id: chave, nome: item.usuario_nome || item.usuario_email || 'Usuário', email: item.usuario_email || '', tarefas: 0, itens: 0, concluidas: 0, erros: 0, ativas: 0 };
-      atual.tarefas += 1;
-      atual.itens += Number(item.itens_processados || 0);
-      if (item.status === 'CONCLUIDO') atual.concluidas += 1;
-      if (['ERRO', 'INTERROMPIDO'].includes(item.status)) atual.erros += 1;
-      if (['AGUARDANDO', 'PROCESSANDO'].includes(item.status)) atual.ativas += 1;
-      mapa.set(chave, atual);
-    });
+    processamentos
+      .filter((item) => new Date(item.criado_em).getTime() >= desde)
+      .sort((a, b) => new Date(a.criado_em) - new Date(b.criado_em))
+      .forEach((item) => {
+        const chave = item.usuario_id || item.usuario_email || 'sem-usuario';
+        const atual = mapa.get(chave) || { id: chave, nome: item.usuario_nome || item.usuario_email || 'Usuário', email: item.usuario_email || '', tarefas: 0, itens: 0, concluidas: 0, erros: 0, ativas: 0, ultima: null };
+        atual.tarefas += 1;
+        atual.itens += Number(item.itens_processados || 0);
+        if (item.status === 'CONCLUIDO') atual.concluidas += 1;
+        if (['ERRO', 'INTERROMPIDO'].includes(item.status)) atual.erros += 1;
+        if (['AGUARDANDO', 'PROCESSANDO'].includes(item.status)) atual.ativas += 1;
+        atual.ultima = item;
+        mapa.set(chave, atual);
+      });
     return [...mapa.values()].sort((a, b) => b.itens - a.itens || b.tarefas - a.tarefas);
   }, [processamentos]);
+
+  const atividadeRecente = useMemo(
+    () => [...processamentos].sort((a, b) => new Date(b.criado_em) - new Date(a.criado_em)).slice(0, 30),
+    [processamentos],
+  );
+
+  const ROTULO_TIPO = { AUDITORIA_CTE: 'Auditoria', SIMULACAO_SUPRIMENTOS: 'Simulação', OUTRO: 'Outro' };
+  const COR_STATUS = { CONCLUIDO: '#166534', PROCESSANDO: '#166534', AGUARDANDO: '#92400e', ERRO: '#b91c1c', INTERROMPIDO: '#b91c1c', CANCELADO: '#64748b' };
 
   if (!presencaDisponivel()) {
     return (
@@ -192,14 +204,42 @@ export default function PainelUsuariosAtivosPage() {
 
       <div className="panel-title" style={{ marginTop: 24 }}>Consumo por usuário · últimas 24 horas</div>
       <table className="tabela-simples" style={{ width: '100%', marginTop: 12 }}>
-        <thead><tr><th>Usuário</th><th>Tarefas</th><th>Itens</th><th>Concluídas</th><th>Erros</th><th>Ativas</th></tr></thead>
+        <thead><tr><th>Usuário</th><th>Tarefas</th><th>Itens</th><th>Concluídas</th><th>Erros</th><th>Ativas</th><th>Última tarefa</th></tr></thead>
         <tbody>
-          {!consumoPorUsuario.length && <tr><td colSpan={6} style={{ padding: '16px 0', color: '#64748b' }}>Sem consumo registrado nas últimas 24 horas.</td></tr>}
+          {!consumoPorUsuario.length && <tr><td colSpan={7} style={{ padding: '16px 0', color: '#64748b' }}>Sem consumo registrado nas últimas 24 horas.</td></tr>}
           {consumoPorUsuario.map((item) => <tr key={item.id}>
             <td><strong>{item.nome}</strong><div style={{ fontSize: 12, color: '#64748b' }}>{item.email}</div></td>
             <td>{item.tarefas}</td><td>{item.itens.toLocaleString('pt-BR')}</td><td>{item.concluidas}</td>
             <td style={{ color: item.erros ? '#b91c1c' : undefined }}>{item.erros}</td><td>{item.ativas}</td>
+            <td>
+              {item.ultima ? <>
+                <strong style={{ color: COR_STATUS[item.ultima.status] }}>{item.ultima.titulo}</strong>
+                <div style={{ fontSize: 12, color: '#64748b' }}>{ROTULO_TIPO[item.ultima.tipo] || item.ultima.tipo} · {item.ultima.status}</div>
+              </> : '-'}
+            </td>
           </tr>)}
+        </tbody>
+      </table>
+
+      <div className="panel-title" style={{ marginTop: 24 }}>Atividade recente</div>
+      <p style={{ color: 'var(--text-muted, #64748b)', marginTop: '-8px' }}>
+        Últimas {atividadeRecente.length} tarefas pesadas (auditoria e simulação), mais recentes primeiro.
+      </p>
+      <table className="tabela-simples" style={{ width: '100%', marginTop: 12 }}>
+        <thead><tr><th>Usuário</th><th>Tarefa</th><th>Status</th><th>Itens</th><th>Quando</th></tr></thead>
+        <tbody>
+          {!atividadeRecente.length && <tr><td colSpan={5} style={{ padding: '16px 0', color: '#64748b' }}>Nenhuma tarefa registrada ainda.</td></tr>}
+          {atividadeRecente.map((item) => {
+            const total = Number(item.total_itens || 0);
+            const feitos = Number(item.itens_processados || 0);
+            return <tr key={item.id}>
+              <td><strong>{item.usuario_nome || '-'}</strong><div style={{ fontSize: 12, color: '#64748b' }}>{item.usuario_email}</div></td>
+              <td>{item.titulo}<div style={{ fontSize: 12, color: '#64748b' }}>{ROTULO_TIPO[item.tipo] || item.tipo}</div></td>
+              <td><strong style={{ color: COR_STATUS[item.status] || '#64748b' }}>{item.status}</strong></td>
+              <td>{total ? `${feitos.toLocaleString('pt-BR')}/${total.toLocaleString('pt-BR')}` : feitos.toLocaleString('pt-BR')}</td>
+              <td>{formatarDataHora(item.criado_em)}</td>
+            </tr>;
+          })}
         </tbody>
       </table>
 
