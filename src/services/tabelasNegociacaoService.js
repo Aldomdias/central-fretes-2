@@ -2980,42 +2980,51 @@ export async function aprovarGestorNegociacao(id, dados = {}) {
   const resumoAnterior = getResumoSimulacaoSeguro(tabelaAtual);
   const historicoAnterior = getHistoricoRodadas(tabelaAtual);
   const impactoAtual = calcularImpactoResultado(tabelaAtual?.resultado_simulacao_json || resumoAnterior || {}, tabelaAtual || {});
-  const canaisEsperados = canaisOperacionaisNegociacao(tabelaAtual.canal);
-  const aprovacoesAnteriores = resumoAnterior.aprovacoes_por_canal && typeof resumoAnterior.aprovacoes_por_canal === 'object'
-    ? resumoAnterior.aprovacoes_por_canal
-    : {};
-  const canalAprovacao = normalizarCanalAnalise(dados.canal || canaisEsperados.find((canal) => !aprovacoesAnteriores[canal]) || tabelaAtual.canal);
+  const rodadaAtual = inteiro(resumoAnterior.rodada_atual || 1) || 1;
+  const resumoCanais = historicoAnterior
+    .filter((item) => item?.tipo_registro === 'SIMULACAO' && inteiro(item?.rodada || 0) === rodadaAtual)
+    .reduce((acc, item) => {
+      const canal = canalRegistroSimulacao(item);
+      if (!canal) return acc;
+      const ind = item.indicadores || {};
+      const resumo = item.resumo || {};
+      acc[canal] = {
+        canal,
+        saving_mes: numero(ind.saving_mes || resumo.savingSelecionadaVsRealMes || resumo.savingSelecionadaVsReal),
+        aderencia: numero(ind.aderencia || resumo.aderenciaSelecionada),
+        faturamento_mes: numero(ind.faturamento_mes || resumo.faturamentoSelecionadaGanhadoraMes || resumo.faturamentoSelecionadaMes),
+        ctes_analisados: inteiro(resumo.ctesAnalisados || ind.qtd_registros_analisados),
+      };
+      return acc;
+    }, {});
 
   const entradaAprovacao = {
     id: `APROVACAO-GESTOR-${Date.now()}`,
     tipo_registro: 'APROVACAO_GESTOR',
     rodada: inteiro(resumoAnterior.rodada_atual || 1) || 1,
     criado_em: agora,
-    canal: canalAprovacao,
+    canal: tabelaAtual.canal,
+    resumo_canais: resumoCanais,
     data_inicio_vigencia: dados.data_inicio_vigencia || null,
     usuario_aprovacao: texto(dados.aprovador_nome || dados.usuario?.nome || dados.usuario_aprovacao),
     observacao: dados.observacao_aprovacao || dados.justificativa_aprovacao || '',
     percentual_medio_impacto: numero(dados.percentual_medio_impacto ?? impactoAtual.impactoPercentual),
   };
-  const aprovacoesPorCanal = { ...aprovacoesAnteriores, [canalAprovacao]: entradaAprovacao };
-  const canaisPendentesAprovacao = canaisEsperados.filter((canal) => !aprovacoesPorCanal[canal]);
-  const aprovacaoCompleta = canaisPendentesAprovacao.length === 0;
-
   const eventoGestao = montarEventoGestao('APROVACAO_GESTOR', tabelaAtual, {
     ...dados,
-    canal: canalAprovacao,
-    status_gestao: aprovacaoCompleta ? 'APROVADA_GESTOR' : 'AGUARDANDO_APROVACAO_GESTOR',
+    canal: tabelaAtual.canal,
+    status_gestao: 'APROVADA_GESTOR',
     observacao: dados.observacao_aprovacao || dados.justificativa_aprovacao,
   });
 
   const payload = {
     cnpj_transportadora: cnpj,
     cnpj_raiz_transportadora: obterRaizCnpj(cnpj),
-    status_gestao: aprovacaoCompleta ? 'APROVADA_GESTOR' : 'AGUARDANDO_APROVACAO_GESTOR',
-    status: aprovacaoCompleta ? 'APROVADA' : tabelaAtual.status,
-    status_aprovacao: aprovacaoCompleta ? 'APROVADA' : 'AGUARDANDO_GESTOR',
-    aprovado_em: aprovacaoCompleta ? agora : tabelaAtual.aprovado_em,
-    data_aprovacao: aprovacaoCompleta ? agora : tabelaAtual.data_aprovacao,
+    status_gestao: 'APROVADA_GESTOR',
+    status: 'APROVADA',
+    status_aprovacao: 'APROVADA',
+    aprovado_em: agora,
+    data_aprovacao: agora,
     data_inicio_vigencia: dados.data_inicio_vigencia || null,
     justificativa_aprovacao: texto(dados.justificativa_aprovacao),
     usuario_aprovacao: texto(dados.aprovador_nome || dados.usuario?.nome || dados.usuario_aprovacao),
@@ -3028,10 +3037,9 @@ export async function aprovarGestorNegociacao(id, dados = {}) {
     historico_gestao: getHistoricoGestao(tabelaAtual).concat([eventoGestao]).slice(-100),
     resumo_simulacao: {
       ...resumoAnterior,
-      aprovada_em: aprovacaoCompleta ? agora : resumoAnterior.aprovada_em,
+      aprovada_em: agora,
       ultima_aprovacao: entradaAprovacao,
-      aprovacoes_por_canal: aprovacoesPorCanal,
-      canais_pendentes_aprovacao: canaisPendentesAprovacao,
+      resumo_aprovacao_canais: resumoCanais,
       historico_rodadas: historicoAnterior.concat([entradaAprovacao]).slice(-30),
     },
   };

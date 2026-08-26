@@ -2598,11 +2598,7 @@ export default function TabelasNegociacaoPage() {
   async function abrirModalAprovacao(tabela) {
     setModalAprovacao(tabela);
     const cnpjSalvo = normalizarCnpj(tabela?.cnpj_transportadora);
-    var canaisCadastro = String(tabela?.canal || '').toUpperCase().split('+').map(function(c) { return c === 'B2B' ? 'ATACADO' : c; }).filter(Boolean);
-    var aprovacoesCanal = tabela?.resumo_simulacao?.aprovacoes_por_canal || {};
-    var canalPendente = canaisCadastro.find(function(c) { return !aprovacoesCanal[c]; }) || canaisCadastro[0] || tabela?.canal || 'ATACADO';
     setAprovacao({
-      canal: canalPendente,
       data_inicio_vigencia: hojeISO(),
       substituir_tabela_anterior: isReajusteNegociacao(tabela),
       promover_para_oficial: false,
@@ -4494,14 +4490,6 @@ export default function TabelasNegociacaoPage() {
                 : ' A negociação não irá direto para a base oficial — o gestor precisa aprovar antes da publicação.'}
             </p>
             <div className="sim-form-grid sim-grid-2" style={{ marginBottom: 12 }}>
-              <label>Canal desta aprovação
-                <select value={aprovacao.canal || ''} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { canal: e.target.value }); }); }}>
-                  {String(modalAprovacao.canal || '').toUpperCase().split('+').map(function(canal) {
-                    var valor = canal === 'B2B' ? 'ATACADO' : canal;
-                    return <option key={valor} value={valor}>{valor === 'ATACADO' ? 'B2B / Atacado' : valor}</option>;
-                  })}
-                </select>
-              </label>
               <label>CNPJ da transportadora <strong style={{ color: '#b91c1c' }}>*</strong>
                 <input
                   value={aprovacao.cnpj_transportadora}

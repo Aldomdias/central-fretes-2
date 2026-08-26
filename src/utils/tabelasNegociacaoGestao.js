@@ -229,7 +229,30 @@ export function enriquecerTabelaGestao(tabela = {}, sessao = null) {
     || {};
   const tipoNegociacao = upper(tabela.tipo_negociacao) || (upper(tabela.tipo_tabela) === 'LOTACAO' ? 'TABELA_LOTACAO' : 'NOVA_TABELA');
   const isReajuste = tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE';
-  const saving = numero(tabela.saving_projetado || ultimaSim.saving_mes || resumo.savingSelecionadaVsRealMes || 0);
+  const rodadaAtual = getRodadaAtualGestao(tabela);
+  const analisesPorCanalMap = new Map();
+  historicoRodadasTabela(tabela)
+    .filter((item) => upper(item?.tipo_registro) === 'SIMULACAO' && numero(item?.rodada || 1) === rodadaAtual)
+    .forEach((item) => {
+      let canal = upper(item.canal || item.resumo?.canal || item.resumo?.filtros?.canal);
+      if (canal === 'B2B') canal = 'ATACADO';
+      if (!canal) return;
+      const ind = item.indicadores || {};
+      const resumoCanal = item.resumo || {};
+      analisesPorCanalMap.set(canal, {
+        canal,
+        label: canal === 'ATACADO' ? 'B2B / Atacado' : canal,
+        saving: numero(ind.saving_mes || resumoCanal.savingSelecionadaVsRealMes || resumoCanal.savingSelecionadaVsReal),
+        aderencia: numero(ind.aderencia || resumoCanal.aderenciaSelecionada),
+        faturamento: numero(ind.faturamento_mes || resumoCanal.faturamentoSelecionadaGanhadoraMes || resumoCanal.faturamentoSelecionadaMes),
+        ctes: numero(resumoCanal.ctesAnalisados || ind.qtd_registros_analisados),
+      });
+    });
+  const analisesCanais = Array.from(analisesPorCanalMap.values());
+  const savingCanais = analisesCanais.reduce((total, item) => total + item.saving, 0);
+  const saving = analisesCanais.length > 1
+    ? savingCanais
+    : numero(tabela.saving_projetado || ultimaSim.saving_mes || resumo.savingSelecionadaVsRealMes || 0);
   const impacto = numero(tabela.impacto_valor || ultimaSim.impacto_valor || resumo.impacto_valor || 0);
   const rotas = numero(promocaoOficial.rotas || resumo.qtdRotas || resumo.rotas_total || tabela.qtd_rotas || 0);
   const origensDetectadas = Array.isArray(resumo.origens_detectadas) ? resumo.origens_detectadas : [];
@@ -262,6 +285,7 @@ export function enriquecerTabelaGestao(tabela = {}, sessao = null) {
     tipo_negociacao_norm: tipoNegociacao,
     is_reajuste: isReajuste,
     saving_estimado: saving,
+    analises_canais: analisesCanais,
     impacto_reajuste: isReajuste ? impacto : 0,
     qtd_rotas: rotas,
     origem_label: origemLabel,

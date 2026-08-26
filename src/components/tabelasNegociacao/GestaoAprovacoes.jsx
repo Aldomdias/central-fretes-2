@@ -62,6 +62,23 @@ export default function GestaoAprovacoes({
                 {t.is_reajuste ? <div>Impacto: {formatarMoeda(t.impacto_reajuste)}</div> : null}
               </div>
             </div>
+            {t.analises_canais?.length > 1 ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 10, marginTop: 12 }}>
+                {t.analises_canais.map((canal) => (
+                  <div key={canal.canal} style={{ border: '1px solid #dbe3ef', borderRadius: 10, padding: 11, background: '#f8fafc' }}>
+                    <strong>{canal.label}</strong>
+                    <div style={{ marginTop: 5 }}>Saving: <strong>{formatarMoeda(canal.saving)}</strong></div>
+                    <div style={{ fontSize: 12, color: '#64748b' }}>Aderência: {Number(canal.aderencia || 0).toFixed(2)}% · {Number(canal.ctes || 0).toLocaleString('pt-BR')} CT-es</div>
+                    <div style={{ fontSize: 12, color: '#64748b' }}>Faturamento/mês: {formatarMoeda(canal.faturamento)}</div>
+                  </div>
+                ))}
+                <div style={{ border: '1px solid #a7c0ef', borderRadius: 10, padding: 11, background: '#eef4ff' }}>
+                  <strong>Total para aprovação</strong>
+                  <div style={{ marginTop: 5 }}>Saving: <strong>{formatarMoeda(t.saving_estimado)}</strong></div>
+                  <div style={{ fontSize: 12, color: '#64748b' }}>Uma única aprovação para a negociação completa.</div>
+                </div>
+              </div>
+            ) : null}
             <textarea
               value={obs(t.id)}
               onChange={(e) => setObs(t.id, e.target.value)}
