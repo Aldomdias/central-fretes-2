@@ -3,8 +3,10 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { ImportarFluxoCard } from './LotacaoOperacaoPage';
 import { carregarVinculosTransportadoras, salvarVinculosTransportadoras, removerVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import SlaAuditoriaConfig from '../components/SlaAuditoriaConfig';
+import FilaProcessamentoConfig from '../components/FilaProcessamentoConfig';
 import { carregarSessao, PERFIS_USUARIO } from '../utils/authLocal';
 import { obterStatusManutencao, ativarManutencao, desativarManutencao } from '../services/manutencaoService';
+import { preencherAuditorPagasPeloHistoricoCte } from '../services/auditoriaFretesService';
 
 function normalizarNomeTransp(nome = '') {
   return String(nome || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
@@ -1355,6 +1357,23 @@ export default function FerramentasPage({ transportadoras = [] }) {
   const [abaAberta, setAbaAberta] = useState(null);
   const toggleAba = (aba) => setAbaAberta(prev => prev === aba ? null : aba);
 
+  const [preenchendoAuditorHistorico, setPreenchendoAuditorHistorico] = useState(false);
+  const [resultadoPreenchimentoAuditorHistorico, setResultadoPreenchimentoAuditorHistorico] = useState(null);
+  const [erroPreenchimentoAuditorHistorico, setErroPreenchimentoAuditorHistorico] = useState('');
+  const rodarPreenchimentoAuditorHistorico = async () => {
+    setPreenchendoAuditorHistorico(true);
+    setResultadoPreenchimentoAuditorHistorico(null);
+    setErroPreenchimentoAuditorHistorico('');
+    try {
+      const resultado = await preencherAuditorPagasPeloHistoricoCte({ usuarioNome: carregarSessao()?.nome || 'Gestao' });
+      setResultadoPreenchimentoAuditorHistorico(resultado);
+    } catch (error) {
+      setErroPreenchimentoAuditorHistorico(error.message || 'Erro ao preencher auditor pelo histórico.');
+    } finally {
+      setPreenchendoAuditorHistorico(false);
+    }
+  };
+
   // Vínculos de transportadoras (Supabase + fallback local)
   const [vinculos, setVinculos] = useState(() => {
     try { return JSON.parse(localStorage.getItem('vinculos-transportadoras') || '[]'); } catch { return []; }
@@ -1613,6 +1632,17 @@ export default function FerramentasPage({ transportadoras = [] }) {
           )}
         </div>
       )}
+
+      <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
+        <button type="button" onClick={() => toggleAba('fila-processamento')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='fila-processamento'?'1px solid var(--border-soft)':'none'}}>
+          <div>
+            <div className="panel-title" style={{margin:0}}>🚦 Fila de processamento pesado</div>
+            <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>Calibra quanta Auditoria e Simulação podem rodar ao mesmo tempo</div>
+          </div>
+          <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='fila-processamento'?'△':'▽'}</span>
+        </button>
+        {abaAberta === 'fila-processamento' && <FilaProcessamentoConfig />}
+      </div>
 
       <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
         <button type="button" onClick={() => toggleAba('historico')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='historico'?'1px solid var(--border-soft)':'none'}}>
@@ -2060,6 +2090,41 @@ export default function FerramentasPage({ transportadoras = [] }) {
               </div>
             ) : (
               <div className="hint-box compact" style={{textAlign:'center'}}>{vinculos.length === 0 ? 'Nenhum vínculo cadastrado ainda.' : 'Nenhum resultado para esse filtro.'}</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Auditor das faturas pagas antigas (histórico Verum) */}
+      <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
+        <button type="button" onClick={() => toggleAba('auditor-historico')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='auditor-historico'?'1px solid var(--border-soft)':'none'}}>
+          <div>
+            <div className="panel-title" style={{margin:0}}>🧾 Auditor das faturas pagas antigas</div>
+            <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>Passivo antigo — preenche pela base Verum, ação manual</div>
+          </div>
+          <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='auditor-historico'?'▴':'▾'}</span>
+        </button>
+        {abaAberta === 'auditor-historico' && (
+          <div style={{padding:'16px 20px',display:'grid',gap:14}}>
+            <div className="hint-box compact">
+              Faturas já encerradas (pagas/canceladas) sem nenhum auditor definido, de antes do fluxo de atribuição atual, ficam presas em
+              "sem auditor" para sempre — nada as atualiza sozinho. Essa ação busca em fatura_detalhes (base Verum importada) quem enviou
+              cada CT-e para pagamento e usa o nome mais frequente entre os CT-es da fatura. Só mexe em faturas SEM auditor — nunca troca
+              quem já está definido. É manual porque varre a base de CT-es fatura por fatura e pode pesar em bases grandes.
+            </div>
+            <div>
+              <button className="btn-primary" type="button" onClick={rodarPreenchimentoAuditorHistorico} disabled={preenchendoAuditorHistorico}>
+                {preenchendoAuditorHistorico ? 'Buscando no histórico...' : 'Preencher pagas antigas pelo histórico'}
+              </button>
+            </div>
+            {erroPreenchimentoAuditorHistorico && <div style={{color:'#9b2323',fontSize:13,padding:'8px 12px',background:'#fff1f1',borderRadius:8}}>{erroPreenchimentoAuditorHistorico}</div>}
+            {resultadoPreenchimentoAuditorHistorico && (
+              <div className="hint-box compact">
+                {resultadoPreenchimentoAuditorHistorico.corrigidas} fatura(s) preenchida(s) a partir do histórico.
+                {resultadoPreenchimentoAuditorHistorico.semUsuarioNoCte > 0
+                  ? ` ${resultadoPreenchimentoAuditorHistorico.semUsuarioNoCte} continuam sem auditor porque os CT-es delas não têm usuário registrado.`
+                  : ''}
+              </div>
             )}
           </div>
         )}

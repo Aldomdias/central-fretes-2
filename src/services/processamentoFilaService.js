@@ -44,7 +44,7 @@ export async function aguardarVezProcessamento(id, onStatus) {
   while (true) {
     const { data, error } = await supabase.rpc('tentar_iniciar_processamento_pesado', {
       p_id: id,
-      p_limite_global: LIMITE_GLOBAL_PROCESSAMENTOS,
+      p_limite_global: null,
     });
     if (error) throw new Error(`Falha ao consultar a fila: ${error.message}`);
     const registro = Array.isArray(data) ? data[0] : data;
@@ -120,4 +120,30 @@ export async function listarProcessamentosPesados({ limite = 200 } = {}) {
     .order('criado_em', { ascending: false }).limit(limite);
   if (error) throw new Error(`Nao foi possivel carregar a fila: ${error.message}`);
   return data || [];
+}
+
+export async function carregarConfiguracaoFila() {
+  const supabase = cliente();
+  if (!supabase) return { orcamentoItens: 3000, limiteTarefasGlobais: LIMITE_GLOBAL_PROCESSAMENTOS };
+  const { data, error } = await supabase.from('fila_configuracao').select('*').eq('id', 1).maybeSingle();
+  if (error) throw new Error(`Nao foi possivel carregar a configuracao da fila: ${error.message}`);
+  return {
+    orcamentoItens: data?.orcamento_itens ?? 3000,
+    limiteTarefasGlobais: data?.limite_tarefas_globais ?? LIMITE_GLOBAL_PROCESSAMENTOS,
+    atualizadoEm: data?.atualizado_em || null,
+    atualizadoPor: data?.atualizado_por || null,
+  };
+}
+
+export async function salvarConfiguracaoFila({ orcamentoItens, limiteTarefasGlobais }) {
+  const supabase = cliente();
+  if (!supabase) throw new Error('Supabase nao configurado.');
+  const usuario = sessaoObrigatoria();
+  const { error } = await supabase.from('fila_configuracao').update({
+    orcamento_itens: Math.max(1, Number(orcamentoItens) || 3000),
+    limite_tarefas_globais: Math.max(1, Math.min(20, Number(limiteTarefasGlobais) || 2)),
+    atualizado_em: new Date().toISOString(),
+    atualizado_por: usuario.nome || usuario.email || usuario.id,
+  }).eq('id', 1);
+  if (error) throw new Error(`Nao foi possivel salvar a configuracao da fila: ${error.message}`);
 }
