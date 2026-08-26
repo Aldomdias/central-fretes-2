@@ -496,7 +496,43 @@ export async function registrarHistoricoCarteiraAuditoria({ transportadora, audi
 // (mais confiavel, imune a variacao de nome/razao social), so cai pro nome
 // com vinculo manual (matchesTransportadora) quando a carteira nao tem CNPJ
 // cadastrado ou a fatura nao tem CNPJ pra comparar.
-export async function propagarAuditorParaFaturas({ auditorNome, auditorEmail, atribuidoPor, matchesTransportadora, cnpjTransportadora }) {
+function raizBateComCarteira(fatura, raizCarteira, cnpjCarteiraValido, matchesTransportadora) {
+  if (cnpjCarteiraValido) {
+    const raizFatura = obterRaizCnpj(fatura.cnpj_transportadora);
+    if (raizCnpjValida(raizFatura)) return raizFatura === raizCarteira;
+  }
+  return matchesTransportadora(fatura.transportadora);
+}
+
+// Le as faturas da transportadora antes de decidir o que propagar — usado
+// pra saber se precisa perguntar (tem fatura aberta com OUTRO auditor? tem
+// encerrada sem nenhum?) antes de chamar propagarAuditorParaFaturas. Mesmo
+// casamento em 2 etapas (CNPJ, depois nome+vinculo) do propagar.
+export async function analisarImpactoAuditor({ novoAuditorNome, matchesTransportadora, cnpjTransportadora }) {
+  if (!isSupabaseConfigured() || typeof matchesTransportadora !== 'function') return { abertasComOutroAuditor: 0, encerradasSemAuditor: 0 };
+  const client = getSupabaseClient();
+  const { data, error } = await client.from('faturas').select('id, transportadora, cnpj_transportadora, status, auditor_nome');
+  if (error) return { abertasComOutroAuditor: 0, encerradasSemAuditor: 0 };
+  const raizCarteira = obterRaizCnpj(cnpjTransportadora);
+  const cnpjCarteiraValido = raizCnpjValida(raizCarteira);
+  const daTransportadora = (data || []).filter((f) => raizBateComCarteira(f, raizCarteira, cnpjCarteiraValido, matchesTransportadora));
+  return {
+    abertasComOutroAuditor: daTransportadora.filter((f) => !ENCERRADOS.has(f.status) && f.auditor_nome && f.auditor_nome !== novoAuditorNome).length,
+    encerradasSemAuditor: daTransportadora.filter((f) => ENCERRADOS.has(f.status) && !f.auditor_nome).length,
+  };
+}
+
+// `transferirAbertas`: faturas abertas com OUTRO auditor tambem mudam pro
+// novo (default false = so preenche o que estava vazio, comportamento
+// seguro de sempre). `atualizarEncerradasAgora`: faturas ja encerradas
+// (pagas/canceladas) sem nenhum auditor recebem `auditorAntigoNome` (o dono
+// anterior da carteira, preenchimento provisorio ate a base historica
+// entrar) ou o novo auditor se nunca teve um antes. Encerrada que JA TEM
+// auditor nunca muda, em nenhum caso — preserva a metrica de delegacao.
+export async function propagarAuditorParaFaturas({
+  auditorNome, auditorEmail, atribuidoPor, matchesTransportadora, cnpjTransportadora,
+  transferirAbertas = false, atualizarEncerradasAgora = false, auditorAntigoNome = null, auditorAntigoEmail = '',
+}) {
   if (!isSupabaseConfigured() || !auditorNome || typeof matchesTransportadora !== 'function') return { atualizadas: 0 };
   const client = getSupabaseClient();
   const { data, error } = await client.from('faturas').select('id, transportadora, cnpj_transportadora, status, auditor_nome');
@@ -506,26 +542,87 @@ export async function propagarAuditorParaFaturas({ auditorNome, auditorEmail, at
   }
   const raizCarteira = obterRaizCnpj(cnpjTransportadora);
   const cnpjCarteiraValido = raizCnpjValida(raizCarteira);
-  const alvo = (data || []).filter((f) => {
-    if (ENCERRADOS.has(f.status) || f.auditor_nome) return false;
-    if (cnpjCarteiraValido) {
-      const raizFatura = obterRaizCnpj(f.cnpj_transportadora);
-      if (raizCnpjValida(raizFatura)) return raizFatura === raizCarteira;
+  const daTransportadora = (data || []).filter((f) => raizBateComCarteira(f, raizCarteira, cnpjCarteiraValido, matchesTransportadora));
+
+  const preenchimentoEncerradas = auditorAntigoNome
+    ? { auditor_nome: auditorAntigoNome, auditor_email: auditorAntigoEmail || '' }
+    : { auditor_nome: auditorNome, auditor_email: auditorEmail || '' };
+
+  const alvo = [];
+  daTransportadora.forEach((f) => {
+    if (ENCERRADOS.has(f.status)) {
+      if (f.auditor_nome || !atualizarEncerradasAgora) return;
+      alvo.push({ id: f.id, ...preenchimentoEncerradas, descricao: `Preenchimento provisorio (${preenchimentoEncerradas.auditor_nome}) ao atribuir carteira a ${auditorNome}.` });
+      return;
     }
-    return matchesTransportadora(f.transportadora);
+    if (f.auditor_nome && f.auditor_nome !== auditorNome && !transferirAbertas) return;
+    alvo.push({ id: f.id, auditor_nome: auditorNome, auditor_email: auditorEmail || '', descricao: `Carteira atribuida a ${auditorNome}.` });
   });
   if (!alvo.length) return { atualizadas: 0 };
   const agora = new Date().toISOString();
-  await safeUpsert('faturas', alvo.map((f) => ({ id: f.id, auditor_nome: auditorNome, auditor_email: auditorEmail || '', updated_at: agora })));
+  await safeUpsert('faturas', alvo.map((f) => ({ id: f.id, auditor_nome: f.auditor_nome, auditor_email: f.auditor_email, updated_at: agora })));
   try {
     await inserirHistorico('auditoria_fatura_historico', alvo.map((f) => ({
       id: uid('hist'), fatura_id: f.id, created_at: agora,
-      acao: 'AUDITOR_ATRIBUIDO', descricao: `Carteira atribuida a ${auditorNome}.`, usuario_nome: atribuidoPor || 'Gestao',
+      acao: 'AUDITOR_ATRIBUIDO', descricao: f.descricao, usuario_nome: atribuidoPor || 'Gestao',
     })));
   } catch (histError) {
     console.warn('Não foi possível registrar histórico de atribuição em massa.', histError.message || histError);
   }
   return { atualizadas: alvo.length };
+}
+
+// Passivo antigo: faturas ja encerradas (pagas/canceladas/etc) sem nenhum
+// auditor, de antes do fluxo atual de atribuicao existir. Usa o campo
+// `usuario` da base Verum (fatura_detalhes — quem enviou cada CT-e pro
+// pagamento) como fonte real do auditor da epoca, em vez de um chute.
+// Acao manual, chamada sob demanda (nao roda sozinha) — varre a base de
+// CT-es fatura por fatura e pode pesar em bases grandes.
+export async function preencherAuditorPagasPeloHistoricoCte({ usuarioNome } = {}) {
+  if (!isSupabaseConfigured()) return { corrigidas: 0, semUsuarioNoCte: 0 };
+  const client = getSupabaseClient();
+  const { data: faturas, error } = await client.from('faturas').select('id, status, auditor_nome');
+  if (error) throw new Error(error.message || 'Erro ao carregar faturas.');
+  const pendentes = (faturas || []).filter((f) => ENCERRADOS.has(f.status) && !f.auditor_nome);
+  if (!pendentes.length) return { corrigidas: 0, semUsuarioNoCte: 0 };
+
+  const usuarioPorFatura = new Map();
+  const CHUNK = 300;
+  for (let inicio = 0; inicio < pendentes.length; inicio += CHUNK) {
+    const lote = pendentes.slice(inicio, inicio + CHUNK).map((f) => f.id);
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error: errDetalhes } = await client.from('fatura_detalhes').select('fatura_id, usuario').in('fatura_id', lote);
+    if (errDetalhes) throw new Error(errDetalhes.message || 'Erro ao consultar histórico de CT-es.');
+    (data || []).forEach((linha) => {
+      const nome = String(linha.usuario || '').trim();
+      if (!nome) return;
+      const contagem = usuarioPorFatura.get(linha.fatura_id) || new Map();
+      contagem.set(nome, (contagem.get(nome) || 0) + 1);
+      usuarioPorFatura.set(linha.fatura_id, contagem);
+    });
+  }
+
+  const alvo = pendentes
+    .map((f) => {
+      const contagem = usuarioPorFatura.get(f.id);
+      if (!contagem || !contagem.size) return null;
+      const nomeMaisFrequente = [...contagem.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      return { id: f.id, auditor_nome: nomeMaisFrequente };
+    })
+    .filter(Boolean);
+  if (!alvo.length) return { corrigidas: 0, semUsuarioNoCte: pendentes.length };
+
+  const agora = new Date().toISOString();
+  await safeUpsert('faturas', alvo.map((f) => ({ id: f.id, auditor_nome: f.auditor_nome, auditor_email: '', updated_at: agora })));
+  try {
+    await inserirHistorico('auditoria_fatura_historico', alvo.map((f) => ({
+      id: uid('hist'), fatura_id: f.id, created_at: agora,
+      acao: 'AUDITOR_ATRIBUIDO', descricao: 'Preenchido a partir do histórico Verum (usuário que enviou o CT-e para pagamento).', usuario_nome: usuarioNome || 'Gestao',
+    })));
+  } catch (histError) {
+    console.warn('Não foi possível registrar histórico de preenchimento retroativo.', histError.message || histError);
+  }
+  return { corrigidas: alvo.length, semUsuarioNoCte: pendentes.length - alvo.length };
 }
 
 // Lista leve de carteiras (transportadora -> auditor), sem o resto do estado
