@@ -59,11 +59,24 @@ export default function GestaoListaNegociacoes({
                 <td><span style={gestaoStyles.badgeStatus(t.status_gestao_cor)}>{t.status_gestao_label}</span></td>
                 <td>{t.negociador_display}</td>
                 <td>{t.criado_por_display}</td>
-                <td>{t.canal}</td>
+                <td>
+                  {(t.analises_canais || []).length > 1 ? (t.analises_canais || []).map((analise) => (
+                    <div key={analise.canal} style={{ fontSize: 11, marginBottom: 3 }}>
+                      <strong>{analise.label}</strong> · analisado
+                    </div>
+                  )) : t.canal}
+                </td>
                 <td>{t.origem_label}</td>
                 <td>
                   <div style={{ fontSize: 12 }}>
-                    <div>Saving: {formatarMoeda(t.saving_estimado)}</div>
+                    {(t.analises_canais || []).length > 1 ? (
+                      <>
+                        {(t.analises_canais || []).map((analise) => (
+                          <div key={analise.canal}>{analise.label}: {formatarMoeda(analise.saving)}</div>
+                        ))}
+                        <div style={{ marginTop: 3 }}><strong>Total: {formatarMoeda(t.saving_estimado)}</strong></div>
+                      </>
+                    ) : <div>Saving: {formatarMoeda(t.saving_estimado)}</div>}
                     {t.is_reajuste ? <div>Impacto: {formatarMoeda(t.impacto_reajuste)}</div> : null}
                   </div>
                 </td>

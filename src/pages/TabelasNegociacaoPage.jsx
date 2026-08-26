@@ -217,12 +217,32 @@ function getVinculoRevisao(tabela) {
     revisaoAbertaId: (tabela || {}).revisao_aberta_id || doJson.revisao_aberta_id || '',
   };
 }
-function getIndicadoresTabela(tabela) {
-  var resumo = getResumoTabela(tabela);
-  var ultimaSim = resumo.ultima_simulacao && resumo.ultima_simulacao.indicadores ? resumo.ultima_simulacao.indicadores : {};
-  var savingMes = Number(tabela.saving_projetado || ultimaSim.saving_mes || resumo.savingSelecionadaVsRealMes || resumo.savingSelecionadaVsReal || 0);
+function getCanalRegistroSimulacao(registro) {
+  var canal = String((registro || {}).canal || (registro || {}).resumo?.canal || (registro || {}).resumo?.filtros?.canal || '').toUpperCase();
+  return canal === 'B2B' ? 'ATACADO' : canal;
+}
+function getSimulacoesRodadaAtualPorCanal(tabela) {
+  var rodadaAtual = getRodadaAtualTabela(tabela);
+  var porCanal = new Map();
+  getHistoricoRodadasTabela(tabela).forEach(function(registro) {
+    if (String(registro.tipo_registro || 'SIMULACAO').toUpperCase() !== 'SIMULACAO') return;
+    if (Number(registro.rodada || 1) !== rodadaAtual) return;
+    var canal = getCanalRegistroSimulacao(registro);
+    if (!canal) return;
+    porCanal.set(canal, registro);
+  });
+  return Array.from(porCanal.values());
+}
+function getIndicadoresTabela(tabela, simulacaoCanal) {
+  var tabelaBase = simulacaoCanal ? {} : tabela;
+  var resumo = simulacaoCanal && simulacaoCanal.resumo ? simulacaoCanal.resumo : getResumoTabela(tabela);
+  var ultimaSim = simulacaoCanal && simulacaoCanal.indicadores
+    ? simulacaoCanal.indicadores
+    : (resumo.ultima_simulacao && resumo.ultima_simulacao.indicadores ? resumo.ultima_simulacao.indicadores : {});
+  var canal = simulacaoCanal ? getCanalRegistroSimulacao(simulacaoCanal) : '';
+  var savingMes = Number(tabelaBase.saving_projetado || ultimaSim.saving_mes || resumo.savingSelecionadaVsRealMes || resumo.savingSelecionadaVsReal || 0);
   var savingAno = Number(ultimaSim.saving_ano || resumo.savingSelecionadaVsRealAno || (savingMes * 12) || 0);
-  var faturamentoMes = Number(tabela.faturamento_projetado || ultimaSim.faturamento_mes || resumo.faturamentoSelecionadaGanhadoraMes || resumo.faturamentoSelecionadaMes || resumo.freteSelecionada || 0);
+  var faturamentoMes = Number(tabelaBase.faturamento_projetado || ultimaSim.faturamento_mes || resumo.faturamentoSelecionadaGanhadoraMes || resumo.faturamentoSelecionadaMes || resumo.freteSelecionada || 0);
   var faturamentoAno = Number(ultimaSim.faturamento_ano || resumo.faturamentoSelecionadaGanhadoraAno || resumo.faturamentoSelecionadaAno || (faturamentoMes * 12) || 0);
   var tipoNegociacao = getTipoNegociacaoTabela(tabela);
   var diasResumo = Math.max(1, Number(resumo.dias || resumo.diasBase || 0) || 1);
@@ -239,24 +259,26 @@ function getIndicadoresTabela(tabela) {
   var volumesMes = volumesDia * 22;
   var volumesAno = volumesMes * 12;
   var percentualReal = Number(ultimaSim.percentual_frete_realizado || resumo.percentualFreteRealizado || 0);
-  var percentualTabela = Number(tabela.percentual_frete_projetado || ultimaSim.percentual_frete_simulado || resumo.percentualFreteTabelaGanharia || resumo.percentualFreteSelecionada || 0);
-  var valorAtualRealizado = Number(tabela.valor_atual_realizado || ultimaSim.valor_atual_realizado || resumo.valor_atual_realizado || resumo.freteRealizadoComTabelaSelecionada || resumo.freteRealizado || 0);
-  var valorSimuladoNovaTabela = Number(tabela.valor_simulado_nova_tabela || ultimaSim.valor_simulado_nova_tabela || resumo.valor_simulado_nova_tabela || resumo.freteSelecionada || 0);
-  var impactoValor = Number(tabela.impacto_valor || ultimaSim.impacto_valor || resumo.impacto_valor || (valorSimuladoNovaTabela - valorAtualRealizado) || 0);
-  var impactoPercentual = Number(tabela.impacto_percentual || ultimaSim.impacto_percentual || resumo.impacto_percentual || (valorAtualRealizado ? (impactoValor / valorAtualRealizado) * 100 : 0));
-  var impactoMensal = Number(tabela.impacto_mensal || ultimaSim.impacto_mensal || resumo.impacto_mensal || impactoValor || 0);
-  var impactoAnual = Number(tabela.impacto_anual || ultimaSim.impacto_anual || resumo.impacto_anual || (impactoMensal * 12) || 0);
-  var fretePctAtual = Number(tabela.frete_percentual_nf_atual || ultimaSim.frete_percentual_nf_atual || resumo.frete_percentual_nf_atual || resumo.percentualFreteRealizadoComTabela || percentualReal || 0);
-  var fretePctSimulado = Number(tabela.frete_percentual_nf_simulado || ultimaSim.frete_percentual_nf_simulado || resumo.frete_percentual_nf_simulado || resumo.percentualFreteSelecionadaComTabela || percentualTabela || 0);
-  var qtdAnalisados = Number(tabela.qtd_registros_analisados || tabela.ctes_analisados || ultimaSim.qtd_registros_analisados || resumo.qtd_registros_analisados || resumo.ctesAnalisados || 0);
-  var qtdComTabela = Number(tabela.qtd_registros_com_tabela || tabela.ctes_atendidos || ultimaSim.qtd_registros_com_tabela || resumo.qtd_registros_com_tabela || resumo.ctesComTabelaSelecionada || 0);
+  var percentualTabela = Number(tabelaBase.percentual_frete_projetado || ultimaSim.percentual_frete_simulado || resumo.percentualFreteTabelaGanharia || resumo.percentualFreteSelecionada || 0);
+  var valorAtualRealizado = Number(tabelaBase.valor_atual_realizado || ultimaSim.valor_atual_realizado || resumo.valor_atual_realizado || resumo.freteRealizadoComTabelaSelecionada || resumo.freteRealizado || 0);
+  var valorSimuladoNovaTabela = Number(tabelaBase.valor_simulado_nova_tabela || ultimaSim.valor_simulado_nova_tabela || resumo.valor_simulado_nova_tabela || resumo.freteSelecionada || 0);
+  var impactoValor = Number(tabelaBase.impacto_valor || ultimaSim.impacto_valor || resumo.impacto_valor || (valorSimuladoNovaTabela - valorAtualRealizado) || 0);
+  var impactoPercentual = Number(tabelaBase.impacto_percentual || ultimaSim.impacto_percentual || resumo.impacto_percentual || (valorAtualRealizado ? (impactoValor / valorAtualRealizado) * 100 : 0));
+  var impactoMensal = Number(tabelaBase.impacto_mensal || ultimaSim.impacto_mensal || resumo.impacto_mensal || impactoValor || 0);
+  var impactoAnual = Number(tabelaBase.impacto_anual || ultimaSim.impacto_anual || resumo.impacto_anual || (impactoMensal * 12) || 0);
+  var fretePctAtual = Number(tabelaBase.frete_percentual_nf_atual || ultimaSim.frete_percentual_nf_atual || resumo.frete_percentual_nf_atual || resumo.percentualFreteRealizadoComTabela || percentualReal || 0);
+  var fretePctSimulado = Number(tabelaBase.frete_percentual_nf_simulado || ultimaSim.frete_percentual_nf_simulado || resumo.frete_percentual_nf_simulado || resumo.percentualFreteSelecionadaComTabela || percentualTabela || 0);
+  var qtdAnalisados = Number(tabelaBase.qtd_registros_analisados || tabelaBase.ctes_analisados || ultimaSim.qtd_registros_analisados || resumo.qtd_registros_analisados || resumo.ctesAnalisados || 0);
+  var qtdComTabela = Number(tabelaBase.qtd_registros_com_tabela || tabelaBase.ctes_atendidos || ultimaSim.qtd_registros_com_tabela || resumo.qtd_registros_com_tabela || resumo.ctesComTabelaSelecionada || 0);
   return {
     tipoNegociacao: tipoNegociacao,
     isReajuste: tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE',
     isLotacao: tipoNegociacao === 'TABELA_LOTACAO',
-    temSimulacao: Boolean(resumo.ultima_simulacao || resumo.salvo_em || tabela.aderencia_projetada || tabela.saving_projetado || tabela.faturamento_projetado || tabela.impacto_valor || tabela.valor_simulado_nova_tabela),
+    canal: canal,
+    canalLabel: canal === 'ATACADO' ? 'B2B / Atacado' : canal,
+    temSimulacao: Boolean(simulacaoCanal || resumo.ultima_simulacao || resumo.salvo_em || tabela.aderencia_projetada || tabela.saving_projetado || tabela.faturamento_projetado || tabela.impacto_valor || tabela.valor_simulado_nova_tabela),
     rodada: getRodadaAtualTabela(tabela),
-    aderencia: Number(tabela.aderencia_projetada || ultimaSim.aderencia || resumo.aderenciaSelecionada || 0),
+    aderencia: Number(tabelaBase.aderencia_projetada || ultimaSim.aderencia || resumo.aderenciaSelecionada || 0),
     savingMes: savingMes, savingAno: savingAno, faturamentoMes: faturamentoMes, faturamentoAno: faturamentoAno,
     pedidosDia: pedidosDia, pedidosMes: pedidosMes, pedidosAno: pedidosAno,
     volumesDia: volumesDia, volumesMes: volumesMes, volumesAno: volumesAno,
@@ -266,7 +288,7 @@ function getIndicadoresTabela(tabela) {
     impactoValor: impactoValor, impactoPercentual: impactoPercentual, impactoMensal: impactoMensal, impactoAnual: impactoAnual,
     ctesAnalisados: qtdAnalisados,
     ctesAtendidos: qtdComTabela,
-    rotasSemCobertura: Number(tabela.rotas_sem_cobertura || resumo.ctesSemTabelaSelecionada || 0),
+    rotasSemCobertura: Number(tabelaBase.rotas_sem_cobertura || resumo.ctesSemTabelaSelecionada || 0),
     rotasComGanho: Number(ultimaSim.rotas_com_ganho || resumo.qtdRotasComGanhoSelecionada || 0),
     rotasGanhas: Number(ultimaSim.rotas_ganhas || resumo.qtdRotasGanhasSelecionada || 0),
     rotasParciais: Number(ultimaSim.rotas_parciais || resumo.qtdRotasParciaisSelecionada || 0),
@@ -3279,10 +3301,58 @@ export default function TabelasNegociacaoPage() {
 
           {selecionada ? (function() {
             var ind = getIndicadoresTabela(selecionada);
+            var simulacoesPorCanal = getSimulacoesRodadaAtualPorCanal(selecionada);
+            var indicadoresPorCanal = simulacoesPorCanal.map(function(simulacao) {
+              return getIndicadoresTabela(selecionada, simulacao);
+            });
+            var exibirSeparadoPorCanal = indicadoresPorCanal.length > 1;
+            var indicadoresExibidos = exibirSeparadoPorCanal ? indicadoresPorCanal : [ind];
+            var savingConsolidado = indicadoresPorCanal.reduce(function(total, item) { return total + item.savingMes; }, 0);
+            var faturamentoConsolidado = indicadoresPorCanal.reduce(function(total, item) { return total + item.faturamentoMes; }, 0);
+            var ctesConsolidados = indicadoresPorCanal.reduce(function(total, item) { return total + item.ctesAnalisados; }, 0);
             var laudos = getLaudosTabela(selecionada);
             return ind.temSimulacao ? (
               <>
               {ind.isReajuste ? <PainelAnaliseReajuste analise={ind.analiseReajuste} /> : null}
+              {exibirSeparadoPorCanal ? (
+                <div className="sim-parametros-box" style={{ marginBottom: 18, borderColor: '#93c5fd', background: '#eff6ff' }}>
+                  <div className="sim-parametros-header">
+                    <div>
+                      <strong>Negociação com {indicadoresPorCanal.length} canais analisados nesta rodada</strong>
+                      <p style={{ margin: '4px 0 0', color: '#475569', fontSize: 12 }}>
+                        {indicadoresPorCanal.map(function(item) { return item.canalLabel; }).join(' + ')} foram salvos separadamente e permanecem dentro desta mesma negociação.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', marginTop: 12 }}>
+                    {indicadoresPorCanal.map(function(item) {
+                      return (
+                        <div className="summary-card" key={'canal-consolidado-' + item.canal}>
+                          <span>{item.canalLabel}</span>
+                          <strong>{formatMoney(item.savingMes)}</strong>
+                          <small>Saving mês · Faturamento {formatMoney(item.faturamentoMes)} · {formatNumber(item.ctesAnalisados, 0)} CT-es</small>
+                        </div>
+                      );
+                    })}
+                    <div className="summary-card" style={{ borderColor: '#2563eb' }}>
+                      <span>Total dos canais</span>
+                      <strong>{formatMoney(savingConsolidado)}</strong>
+                      <small>Faturamento {formatMoney(faturamentoConsolidado)} · {formatNumber(ctesConsolidados, 0)} CT-es analisados</small>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              {indicadoresExibidos.map(function(indCanal, indiceCanal) {
+                var ind = indCanal;
+                var chaveCanal = ind.canal || ('geral-' + indiceCanal);
+                return (
+                <section key={'resumo-negociacao-' + chaveCanal} style={exibirSeparadoPorCanal ? { marginBottom: 24 } : undefined}>
+                {exibirSeparadoPorCanal ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '2px 0 10px' }}>
+                    <h3 style={{ margin: 0 }}>Análise {ind.canalLabel}</h3>
+                    <span className="sim-badge">Rodada {ind.rodada}</span>
+                  </div>
+                ) : null}
               <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', marginBottom: 18 }}>
                 {(ind.isReajuste || ind.isLotacao) ? (
                   <>
@@ -3329,10 +3399,14 @@ export default function TabelasNegociacaoPage() {
                     {(ind.transportadorasPerda || []).slice(0, 6).map(function(item) {
                       return <div key={'neg-perda-' + item.transportadora}><strong>{item.transportadora}</strong> · {formatMoney(item.freteCedidoSelecionada || 0)} · {formatNumber(item.ctesCedidosSelecionada || 0, 0)} CT-es</div>;
                     })}
-                    {!(ind.transportadorasPerda || []).length ? <div>Nenhuma perda de transportadora salva nesta simulação.</div> : null}
+                    {!(ind.transportadorasPerda || []).length && ind.freteCapturado > 0 ? <div>Há {formatMoney(ind.freteCapturado)} capturados, mas o detalhamento por transportadora não foi salvo nesta análise.</div> : null}
+                    {!(ind.transportadorasPerda || []).length && !(ind.freteCapturado > 0) ? <div>Nenhuma perda de transportadora salva nesta simulação.</div> : null}
                   </div>
                 </div>
               </div>
+              </section>
+                );
+              })}
               {(laudos.executivo || laudos.transportador) ? (
                 <div className="sim-parametros-box" style={{ marginTop: -4, marginBottom: 18 }}>
                   <div className="sim-parametros-header">
