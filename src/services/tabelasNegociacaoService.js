@@ -2215,6 +2215,10 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
   const agora = dataISO();
   const impacto = calcularImpactoResultado(resultado, tabelaAtual);
   const canalAnalise = normalizarCanalAnalise(resultado.canal || resultado.filtros?.canal || tabelaAtual.canal);
+  const canaisTabela = canaisOperacionaisNegociacao(tabelaAtual.canal);
+  if (canaisTabela.length > 1 && !['ATACADO', 'B2C'].includes(canalAnalise)) {
+    throw new Error('Não foi possível identificar com segurança se esta análise é B2C ou B2B/Atacado. Selecione o canal, busque os CT-es novamente e refaça a simulação. Nada foi substituído.');
+  }
   const diasOperacionais = Math.max(1, numero(resultado.dias || 0) || 1);
   const ehReajusteResultado = impacto.tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE';
   const volumesProjetadosNegociacao = ehReajusteResultado
@@ -2435,7 +2439,21 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     },
   };
 
-  const historicoSemRegistroVazioDaRodada = historicoAnterior.filter((item) => {
+  // Cópia redundante e endereçável por rodada+canal. O histórico é usado pela
+  // interface; este mapa impede que uma regravação do histórico elimine o outro
+  // canal silenciosamente e permite reconstruí-lo antes de persistir.
+  const chaveSimulacaoCanal = `${rodadaAtual}:${canalAnalise}`;
+  const simulacoesPorCanalAnterior = resumoAnterior.simulacoes_por_canal && typeof resumoAnterior.simulacoes_por_canal === 'object'
+    ? resumoAnterior.simulacoes_por_canal
+    : {};
+  const simulacoesPorCanal = { ...simulacoesPorCanalAnterior, [chaveSimulacaoCanal]: entradaRodada };
+  const simulacoesRedundantes = Object.values(simulacoesPorCanal).filter(Boolean);
+  const idsHistoricoAnterior = new Set(historicoAnterior.map((item) => item?.id).filter(Boolean));
+  const historicoComRedundancia = historicoAnterior.concat(
+    simulacoesRedundantes.filter((item) => item?.id && !idsHistoricoAnterior.has(item.id))
+  );
+
+  const historicoSemRegistroVazioDaRodada = historicoComRedundancia.filter((item) => {
     const mesmaRodada = inteiro(item?.rodada || 0) === rodadaAtual;
     const tipoRegistro = String(item?.tipo_registro || '').toUpperCase();
     const origemRegistro = String(item?.origem_importacao || '').toUpperCase();
@@ -2558,6 +2576,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
       rodada_atual: rodadaAtual,
       ultima_simulacao_em: agora,
       ultima_simulacao: entradaRodada,
+      simulacoes_por_canal: simulacoesPorCanal,
       canais_analisados_rodada: [...canaisAnalisadosNaRodada],
       canais_pendentes_rodada: canaisPendentes,
       laudos: resultado.laudos || resumoAnterior.laudos || null,
@@ -2586,6 +2605,28 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
   const rodadaConfirmada = historicoConfirmado.some((item) => item?.id === entradaRodada.id);
   if (!rodadaConfirmada) {
     throw new Error('O Supabase respondeu, mas não confirmou a nova rodada no histórico da negociação.');
+  }
+  const canaisQueJaExistiam = new Set(
+    Object.values(simulacoesPorCanalAnterior).map(canalRegistroSimulacao).filter(Boolean)
+  );
+  const canaisConfirmados = new Set(
+    historicoConfirmado
+      .filter((item) => inteiro(item?.rodada || 0) === rodadaAtual && item?.tipo_registro === 'SIMULACAO')
+      .map(canalRegistroSimulacao)
+      .filter(Boolean)
+  );
+  const canalPreservado = [...canaisQueJaExistiam].every((canal) => canaisConfirmados.has(canal));
+  if (!canalPreservado) {
+    await atualizarNegociacaoPersistencia(supabase, id, {
+      resumo_simulacao: resumoAnterior,
+      resultado_simulacao_json: tabelaAtual.resultado_simulacao_json || null,
+      saving_projetado: tabelaAtual.saving_projetado || 0,
+      aderencia_projetada: tabelaAtual.aderencia_projetada || 0,
+      faturamento_projetado: tabelaAtual.faturamento_projetado || 0,
+      impacto_projetado: tabelaAtual.impacto_projetado || 0,
+      incluir_simulacao: tabelaAtual.incluir_simulacao,
+    }, 'id');
+    throw new Error('A gravação não confirmou a preservação do outro canal e foi desfeita automaticamente. Atualize a negociação antes de tentar novamente.');
   }
 
   return data;

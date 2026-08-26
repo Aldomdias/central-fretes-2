@@ -8969,7 +8969,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
             )}
             <label>
               Canal
-              <select value={canalRealizado} onChange={(event) => { setCanalRealizado(event.target.value); setOrigemRealizado(''); setOrigensRealizadoMarcadas([]); }}>
+              <select value={canalRealizado} onChange={(event) => {
+                setCanalRealizado(event.target.value);
+                setOrigemRealizado('');
+                setOrigensRealizadoMarcadas([]);
+                setBaseRealizadoCarregada(null);
+                setResultadoRealizado(null);
+                setErroSimulacao('Canal alterado. Busque os CT-es novamente antes de simular para garantir o recorte correto.');
+              }}>
                 {canais.map((canal) => <option key={canal} value={canal}>{canal}</option>)}
               </select>
             </label>
