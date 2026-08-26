@@ -27,6 +27,7 @@ import { carregarGradeFrete, salvarGradeFrete } from '../utils/gradeFreteConfig'
 import { carregarGradeFreteCentralizada, salvarGradeFreteCentralizada, restaurarGradeFreteCentralizadaPadrao } from '../services/gradeFreteSupabaseService';
 import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, carregarOrigensTransportadoraDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { aguardarVezProcessamento, atualizarProcessamentoPesado, criarProcessamentoPesado, finalizarProcessamentoPesado } from '../services/processamentoFilaService';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import {
   carregarSimulacaoRealizadoMensal,
@@ -3572,7 +3573,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
   } = estado;
 
   const linhasParaSimular = rows || [];
-  const CHUNK_SIMULACAO_REALIZADO = 500;
+  const CHUNK_SIMULACAO_REALIZADO = 200;
   for (let indiceLinha = 0; indiceLinha < linhasParaSimular.length; indiceLinha += 1) {
     const row = linhasParaSimular[indiceLinha];
     if (indiceLinha > 0 && indiceLinha % CHUNK_SIMULACAO_REALIZADO === 0) {
@@ -6691,10 +6692,27 @@ export default function SimuladorPage({ transportadoras = [] }) {
     setParcelasSimulacaoInfo(null);
     simulacaoRealizadoEmCursoRef.current = true;
     setCarregandoSimulacao(true);
+    let tarefaFila = null;
+    let erroExecucaoFila = null;
+    let heartbeatFila = null;
     iniciarProcessamentoUi('Simulação do realizado', `Simulando ${rowsBase.length.toLocaleString('pt-BR')} CT-es filtrados...`, 20);
 
     // Permite que o botão e o painel de progresso apareçam antes do cálculo pesado.
     try {
+      tarefaFila = await criarProcessamentoPesado({
+        tipo: 'SIMULACAO_SUPRIMENTOS',
+        titulo: `Simulação / ${transportadoraRealizado || 'realizado'}`,
+        totalItens: rowsBase.length,
+        metadados: { canal: canalRealizado, transportadora: transportadoraRealizado || null },
+      });
+      if (tarefaFila) {
+        await aguardarVezProcessamento(tarefaFila.id, (fila) => {
+          atualizarProcessamentoUi(`Aguardando fila · posição ${fila.posicao || 1}`, 10);
+        });
+        heartbeatFila = window.setInterval(() => {
+          atualizarProcessamentoPesado(tarefaFila.id, { etapa: 'simulando', total: rowsBase.length });
+        }, 15000);
+      }
       await new Promise((resolve) => setTimeout(resolve, 50));
       const ehReajusteSelecionado = ctx.ehReajusteSelecionado;
       const transportadoraBaseReajuste = ctx.transportadoraBaseReajuste;
@@ -6907,6 +6925,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
         cidadePorIbge: mapaCidades,
         gradePorCanal: grade,
         municipioPorCidade,
+        onProgress: (progresso) => {
+          const processados = Number(progresso?.processados || 0);
+          const total = Number(progresso?.total || rowsFiltrados.length);
+          atualizarProcessamentoUi(`Simulando lote ${Math.max(1, Math.ceil(processados / 200))}/${Math.max(1, Math.ceil(total / 200))} · ${processados.toLocaleString('pt-BR')}/${total.toLocaleString('pt-BR')} CT-es`, Math.min(96, 88 + Math.floor((processados / Math.max(total, 1)) * 8)));
+          if (tarefaFila) atualizarProcessamentoPesado(tarefaFila.id, { etapa: 'simulando', carregados: processados, total });
+        },
       };
 
       // Aplica o resultado final na tela (mesmo bloco para passada única e parcelas).
@@ -7149,10 +7173,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       finalizarProcessamentoUi('Simulação do realizado concluída', 'Dossiê gerado com projeção, saving e rotas prioritárias.', 100);
     } catch (error) {
+      erroExecucaoFila = error;
       console.error('[simulador/realizado] a simulação quebrou', error);
       setErroSimulacao(error.message || String(error) || 'Erro ao simular realizado.');
       finalizarProcessamentoUi('Erro na simulação do realizado', 'Não foi possível gerar o dossiê.', 100);
     } finally {
+      if (heartbeatFila) window.clearInterval(heartbeatFila);
+      if (tarefaFila) {
+        await finalizarProcessamentoPesado(tarefaFila.id, erroExecucaoFila ? 'ERRO' : 'CONCLUIDO', erroExecucaoFila?.message || null);
+      }
       simulacaoRealizadoEmCursoRef.current = false;
       setCarregandoSimulacao(false);
     }

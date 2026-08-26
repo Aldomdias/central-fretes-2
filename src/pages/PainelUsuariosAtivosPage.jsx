@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { assinarUsuariosAtivos, listarHistoricoAcessos, presencaDisponivel } from '../services/presencaService';
+import { listarProcessamentosPesados } from '../services/processamentoFilaService';
 
 function formatarDataHora(valor) {
   if (!valor) return '-';
@@ -25,6 +26,8 @@ export default function PainelUsuariosAtivosPage() {
   const [, forcarAtualizacao] = useState(0);
   const [historico, setHistorico] = useState([]);
   const [carregandoHistorico, setCarregandoHistorico] = useState(false);
+  const [processamentos, setProcessamentos] = useState([]);
+  const [erroFila, setErroFila] = useState('');
 
   useEffect(() => {
     const cancelar = assinarUsuariosAtivos(setUsuarios);
@@ -34,6 +37,21 @@ export default function PainelUsuariosAtivosPage() {
   useEffect(() => {
     const timer = window.setInterval(() => forcarAtualizacao((valor) => valor + 1), 30000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let ativo = true;
+    const carregarFila = async () => {
+      try {
+        const linhas = await listarProcessamentosPesados({ limite: 300 });
+        if (ativo) { setProcessamentos(linhas); setErroFila(''); }
+      } catch (error) {
+        if (ativo) setErroFila(error.message || 'Fila indisponível.');
+      }
+    };
+    carregarFila();
+    const timer = window.setInterval(carregarFila, 10000);
+    return () => { ativo = false; window.clearInterval(timer); };
   }, []);
 
   useEffect(() => {
@@ -58,6 +76,23 @@ export default function PainelUsuariosAtivosPage() {
     });
     return [...contagem.entries()].sort((a, b) => b[1] - a[1]);
   }, [usuarios]);
+
+  const filaAtiva = useMemo(() => processamentos.filter((item) => ['AGUARDANDO', 'PROCESSANDO'].includes(item.status)), [processamentos]);
+  const consumoPorUsuario = useMemo(() => {
+    const desde = Date.now() - (24 * 60 * 60 * 1000);
+    const mapa = new Map();
+    processamentos.filter((item) => new Date(item.criado_em).getTime() >= desde).forEach((item) => {
+      const chave = item.usuario_id || item.usuario_email || 'sem-usuario';
+      const atual = mapa.get(chave) || { id: chave, nome: item.usuario_nome || item.usuario_email || 'Usuário', email: item.usuario_email || '', tarefas: 0, itens: 0, concluidas: 0, erros: 0, ativas: 0 };
+      atual.tarefas += 1;
+      atual.itens += Number(item.itens_processados || 0);
+      if (item.status === 'CONCLUIDO') atual.concluidas += 1;
+      if (['ERRO', 'INTERROMPIDO'].includes(item.status)) atual.erros += 1;
+      if (['AGUARDANDO', 'PROCESSANDO'].includes(item.status)) atual.ativas += 1;
+      mapa.set(chave, atual);
+    });
+    return [...mapa.values()].sort((a, b) => b.itens - a.itens || b.tarefas - a.tarefas);
+  }, [processamentos]);
 
   if (!presencaDisponivel()) {
     return (
@@ -121,6 +156,50 @@ export default function PainelUsuariosAtivosPage() {
               <td>{formatarDuracao(usuario.entrouEm)}</td>
             </tr>
           ))}
+        </tbody>
+      </table>
+
+      <div className="panel-title" style={{ marginTop: 24 }}>Fila de tarefas pesadas</div>
+      <p style={{ color: 'var(--text-muted, #64748b)', marginTop: '-8px' }}>
+        Auditorias e simulações compartilham 2 posições. Atualização automática a cada 10 segundos.
+      </p>
+      {erroFila && <div style={{ padding: 10, borderRadius: 8, background: '#fef2f2', color: '#b91c1c' }}>{erroFila}</div>}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '12px 0' }}>
+        <span style={{ padding: '5px 10px', borderRadius: 999, background: '#dcfce7', color: '#166534', fontWeight: 700 }}>
+          {filaAtiva.filter((item) => item.status === 'PROCESSANDO').length}/2 processando
+        </span>
+        <span style={{ padding: '5px 10px', borderRadius: 999, background: '#fef3c7', color: '#92400e', fontWeight: 700 }}>
+          {filaAtiva.filter((item) => item.status === 'AGUARDANDO').length} aguardando
+        </span>
+      </div>
+      <table className="tabela-simples" style={{ width: '100%', marginTop: 12 }}>
+        <thead><tr><th>Estado</th><th>Usuário</th><th>Tarefa</th><th>Progresso</th><th>Início</th></tr></thead>
+        <tbody>
+          {!filaAtiva.length && <tr><td colSpan={5} style={{ padding: '16px 0', color: '#64748b' }}>Nenhuma tarefa pesada ativa.</td></tr>}
+          {filaAtiva.map((item) => {
+            const total = Number(item.total_itens || 0);
+            const feitos = Number(item.itens_processados || 0);
+            return <tr key={item.id}>
+              <td><strong style={{ color: item.status === 'PROCESSANDO' ? '#166534' : '#92400e' }}>{item.status}</strong></td>
+              <td><strong>{item.usuario_nome || '-'}</strong><div style={{ fontSize: 12, color: '#64748b' }}>{item.usuario_email}</div></td>
+              <td>{item.titulo}<div style={{ fontSize: 12, color: '#64748b' }}>{item.tipo}</div></td>
+              <td>{total ? `${feitos.toLocaleString('pt-BR')}/${total.toLocaleString('pt-BR')}` : feitos.toLocaleString('pt-BR')}<div style={{ fontSize: 12, color: '#64748b' }}>lote {item.lote_atual || 0}/{item.total_lotes || '?'}</div></td>
+              <td>{formatarDataHora(item.iniciado_em || item.criado_em)}</td>
+            </tr>;
+          })}
+        </tbody>
+      </table>
+
+      <div className="panel-title" style={{ marginTop: 24 }}>Consumo por usuário · últimas 24 horas</div>
+      <table className="tabela-simples" style={{ width: '100%', marginTop: 12 }}>
+        <thead><tr><th>Usuário</th><th>Tarefas</th><th>Itens</th><th>Concluídas</th><th>Erros</th><th>Ativas</th></tr></thead>
+        <tbody>
+          {!consumoPorUsuario.length && <tr><td colSpan={6} style={{ padding: '16px 0', color: '#64748b' }}>Sem consumo registrado nas últimas 24 horas.</td></tr>}
+          {consumoPorUsuario.map((item) => <tr key={item.id}>
+            <td><strong>{item.nome}</strong><div style={{ fontSize: 12, color: '#64748b' }}>{item.email}</div></td>
+            <td>{item.tarefas}</td><td>{item.itens.toLocaleString('pt-BR')}</td><td>{item.concluidas}</td>
+            <td style={{ color: item.erros ? '#b91c1c' : undefined }}>{item.erros}</td><td>{item.ativas}</td>
+          </tr>)}
         </tbody>
       </table>
 

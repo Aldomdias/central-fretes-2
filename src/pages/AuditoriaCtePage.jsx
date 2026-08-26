@@ -25,11 +25,13 @@ import {
   carregarResumoAuditoriaMensal,
   carregarOpcoesPreFiltroAuditoria,
   enriquecerCtesComFaturas,
+  enriquecerCtesComFaturasEmLotes,
   processarESalvarAuditoriaMes,
   resimularRegistros,
   invalidarCacheBaseFreteAuditoriaCte,
   buscarResultadosAuditoriaPorIdentificadores,
 } from '../services/auditoriaCteProcessamentoService';
+import { executarComFila, TAMANHO_LOTE_PESADO } from '../services/processamentoFilaService';
 import {
   prepararArquivoLaudoAuditoriaCtes,
   baixarArquivoPreparado,
@@ -367,6 +369,7 @@ function BarraProgresso({ progresso }) {
   const etapaLabel = ETAPA_LABEL_AUDITORIA;
   const carregados = Number(progresso.carregados || 0);
   const total = Number(progresso.total || 0);
+  const aguardandoFila = progresso.etapa === 'aguardando_fila';
   const determinada = total > 0;
   const pct = determinada ? Math.min(100, Math.round((carregados / total) * 100)) : 0;
   const etapa = etapaLabel[progresso.etapa]
@@ -377,7 +380,9 @@ function BarraProgresso({ progresso }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: '#1d4ed8' }}>{etapa}…</span>
         <span style={{ fontSize: 12, color: '#475569' }}>
-          {determinada
+          {aguardandoFila
+            ? `posição ${Number(progresso.posicao || 1)} na fila`
+            : determinada
             ? `${carregados.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} · ${pct}%`
             : 'aguardando resposta do banco'}
         </span>
@@ -1074,14 +1079,24 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     const antes = assertividadeDe(alvo);
 
     try {
-      const novos = await resimularRegistros({
-        registros: alvo,
-        transportadorasAlvo: transportadoraEmTratamento ? [transportadoraEmTratamento] : filtroTransps,
-        onProgress: setProgressoProcessamento,
-        ignorarCubagem: usarPesoCteAuditoria,
-        percentualContingenciaPeso: percentualContingenciaPesoAuditoria,
-        apenasDadosCompletos: apenasDadosCompletosAuditoria,
-      });
+      const novos = await executarComFila({
+        tipo: 'AUDITORIA_CTE',
+        titulo: `Resimular auditoria${transportadoraEmTratamento ? ` / ${transportadoraEmTratamento}` : ''}`,
+        totalItens: alvo.length,
+        metadados: { acao: 'resimular', transportadora: transportadoraEmTratamento || null },
+      }, async ({ atualizar }) => resimularRegistros({
+          registros: alvo,
+          transportadorasAlvo: transportadoraEmTratamento ? [transportadoraEmTratamento] : filtroTransps,
+          onProgress: (progresso) => {
+            setProgressoProcessamento(progresso);
+            atualizar(progresso);
+          },
+          ignorarCubagem: usarPesoCteAuditoria,
+          percentualContingenciaPeso: percentualContingenciaPesoAuditoria,
+          apenasDadosCompletos: apenasDadosCompletosAuditoria,
+        }), (fila) => setProgressoProcessamento({
+          etapa: 'aguardando_fila', carregados: 0, total: alvo.length, posicao: fila.posicao,
+        }));
       const mapa = new Map();
       alvo.forEach((orig, i) => mapa.set(orig, novos[i]));
       setRegistros((prev) => prev.map((r) => mapa.get(r) || r));
@@ -1482,15 +1497,37 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     setProgressoProcessamento(null);
 
     try {
-      const dados = await carregarResultadosAuditoriaMes({
-        competencia,
-        dataInicio: dataInicioTeste || undefined,
-        dataFim: dataFimTeste || undefined,
-        canais: canaisPreCarga.length ? canaisPreCarga : undefined,
-        transportadoras: [transportadoraEmTratamento],
-        onProgress: setProgressoProcessamento,
-      });
-      setRegistros(await enriquecerCtesComFaturas(dados || []));
+      const totalPrevisto = porTransportadoraCompleto.find((item) => item.transportadora === transportadoraEmTratamento)?.total || 0;
+      if (totalPrevisto > TAMANHO_LOTE_PESADO) {
+        setSucesso(`${totalPrevisto.toLocaleString('pt-BR')} CT-es encontrados. Serão carregados em ${Math.ceil(totalPrevisto / TAMANHO_LOTE_PESADO)} lotes de até ${TAMANHO_LOTE_PESADO}.`);
+      }
+      const dados = await executarComFila({
+        tipo: 'AUDITORIA_CTE',
+        titulo: `Carregar auditoria / ${transportadoraEmTratamento}`,
+        totalItens: totalPrevisto,
+        metadados: { acao: 'carregar_transportadora', transportadora: transportadoraEmTratamento },
+      }, async ({ atualizar }) => {
+        const progresso = (valor) => {
+          setProgressoProcessamento(valor);
+          atualizar(valor);
+        };
+        const carregados = await carregarResultadosAuditoriaMes({
+          competencia,
+          dataInicio: dataInicioTeste || undefined,
+          dataFim: dataFimTeste || undefined,
+          canais: canaisPreCarga.length ? canaisPreCarga : undefined,
+          transportadoras: [transportadoraEmTratamento],
+          tamanhoPagina: TAMANHO_LOTE_PESADO,
+          onProgress: progresso,
+        });
+        return enriquecerCtesComFaturasEmLotes(carregados || [], {
+          tamanhoLote: TAMANHO_LOTE_PESADO,
+          onProgress: progresso,
+        });
+      }, (fila) => setProgressoProcessamento({
+        etapa: 'aguardando_fila', carregados: 0, total: totalPrevisto, posicao: fila.posicao,
+      }));
+      setRegistros(dados || []);
       setModoPreLista(false);
       setFonteAuditoria({
         id: 'auditoria_cte_resultados_transportadora',

@@ -1389,7 +1389,20 @@ export async function enriquecerCtesComFaturas(registros = []) {
   });
 }
 
-export async function carregarResultadosAuditoriaMes({ competencia, dataInicio, dataFim, limite, canais, transportadoras, colunas = '*', onProgress } = {}) {
+export async function enriquecerCtesComFaturasEmLotes(registros = [], { tamanhoLote = 200, onProgress } = {}) {
+  const resultado = [];
+  const tamanho = Math.max(1, Math.min(Number(tamanhoLote) || 200, 500));
+  for (let inicio = 0; inicio < registros.length; inicio += tamanho) {
+    const lote = registros.slice(inicio, inicio + tamanho);
+    resultado.push(...await enriquecerCtesComFaturas(lote));
+    const carregados = Math.min(inicio + lote.length, registros.length);
+    onProgress?.({ etapa: 'enriquecendo_faturas', carregados, total: registros.length });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return resultado;
+}
+
+export async function carregarResultadosAuditoriaMes({ competencia, dataInicio, dataFim, limite, canais, transportadoras, colunas = '*', onProgress, tamanhoPagina = PAGE_SIZE } = {}) {
   const temPeriodo = Boolean(dataInicio || dataFim);
   if (!competencia && !temPeriodo) {
     throw new Error('Informe a competência ou um período para carregar o resultado salvo.');
@@ -1399,6 +1412,7 @@ export async function carregarResultadosAuditoriaMes({ competencia, dataInicio, 
   const acumulado = [];
   let from = 0;
   const teto = Number(limite) > 0 ? Number(limite) : Infinity;
+  const pagina = Math.max(1, Math.min(Number(tamanhoPagina) || PAGE_SIZE, PAGE_SIZE));
 
   while (true) {
     let query = supabase
@@ -1420,7 +1434,7 @@ export async function carregarResultadosAuditoriaMes({ competencia, dataInicio, 
 
     const { data, error } = await query
       .order('data_emissao', { ascending: true, nullsFirst: false })
-      .range(from, from + PAGE_SIZE - 1);
+      .range(from, from + pagina - 1);
 
     if (error) throw new Error(`Erro ao carregar auditoria salva: ${error.message}`);
 
@@ -1428,8 +1442,8 @@ export async function carregarResultadosAuditoriaMes({ competencia, dataInicio, 
     acumulado.push(...lote);
     onProgress?.({ etapa: 'carregando_resultado_salvo', carregados: acumulado.length, total: null });
 
-    if (lote.length < PAGE_SIZE || acumulado.length >= teto) break;
-    from += PAGE_SIZE;
+    if (lote.length < pagina || acumulado.length >= teto) break;
+    from += pagina;
   }
 
   let resultado = teto !== Infinity ? acumulado.slice(0, teto) : acumulado;
