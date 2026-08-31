@@ -2108,9 +2108,10 @@ export default function FerramentasPage({ transportadoras = [] }) {
           <div style={{padding:'16px 20px',display:'grid',gap:14}}>
             <div className="hint-box compact">
               Faturas já encerradas (pagas/canceladas) sem nenhum auditor definido, de antes do fluxo de atribuição atual, ficam presas em
-              "sem auditor" para sempre — nada as atualiza sozinho. Essa ação busca em fatura_detalhes (base Verum importada) quem enviou
-              cada CT-e para pagamento e usa o nome mais frequente entre os CT-es da fatura. Só mexe em faturas SEM auditor — nunca troca
-              quem já está definido. É manual porque varre a base de CT-es fatura por fatura e pode pesar em bases grandes.
+              "sem auditor" para sempre — nada as atualiza sozinho. Essa ação tenta em duas fontes, nessa ordem: 1) fatura_detalhes (base
+              Verum) — quem enviou cada CT-e para pagamento; 2) se o CT-e não tiver essa informação, a trilha de eventos da própria fatura
+              (quem mexeu nela em algum momento, ignorando nomes genéricos como "Sistema"/"Gestão"). Só mexe em faturas SEM auditor — nunca
+              troca quem já está definido. É manual porque varre a base fatura por fatura e pode pesar em bases grandes.
             </div>
             <div>
               <button className="btn-primary" type="button" onClick={rodarPreenchimentoAuditorHistorico} disabled={preenchendoAuditorHistorico}>

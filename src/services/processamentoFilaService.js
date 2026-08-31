@@ -3,7 +3,8 @@ import { carregarSessao } from '../utils/authLocal';
 
 export const TAMANHO_LOTE_PESADO = 200;
 export const LIMITE_GLOBAL_PROCESSAMENTOS = 2;
-const INTERVALO_FILA_MS = 2500;
+const INTERVALO_FILA_MS = 10000;
+const LIMITE_FALHAS_TRANSITORIAS = 6;
 
 const esperar = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -41,6 +42,8 @@ export async function criarProcessamentoPesado({ tipo, titulo, totalItens = 0, m
 export async function aguardarVezProcessamento(id, onStatus) {
   const supabase = cliente();
   if (!supabase || !id) return null;
+  let falhasTransitorias = 0;
+  let ciclos = 0;
   while (true) {
     const { data, error } = await supabase.rpc('tentar_iniciar_processamento_pesado', {
       p_id: id,
@@ -52,27 +55,40 @@ export async function aguardarVezProcessamento(id, onStatus) {
       // erro real (nao-transitorio) interrompe a espera.
       const transitorio = /timeout|57014|connection|network|fetch/i.test(error.message || '');
       if (transitorio) {
+        falhasTransitorias += 1;
         onStatus?.({ etapa: 'aguardando_fila', posicao: 1, avisoTransitorio: true });
+        if (falhasTransitorias >= LIMITE_FALHAS_TRANSITORIAS) {
+          throw new Error('A fila esta temporariamente indisponivel. Aguarde a base estabilizar e tente novamente.');
+        }
         await esperar(INTERVALO_FILA_MS);
         continue;
       }
       throw new Error(`Falha ao consultar a fila: ${error.message}`);
     }
     const registro = Array.isArray(data) ? data[0] : data;
+    falhasTransitorias = 0;
+    ciclos += 1;
     if (!registro) throw new Error('A tarefa desapareceu da fila.');
     if (registro.status === 'PROCESSANDO') return registro;
     if (['CANCELADO', 'ERRO', 'INTERROMPIDO'].includes(registro.status)) {
       throw new Error(registro.erro || `Tarefa encerrada com status ${registro.status}.`);
     }
-    const { count } = await supabase.from('processamentos_pesados')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'AGUARDANDO')
-      .or(`prioridade.lt.${registro.prioridade},and(prioridade.eq.${registro.prioridade},criado_em.lt.${registro.criado_em})`);
-    const { data: emAndamento } = await supabase.from('processamentos_pesados')
-      .select('titulo,tipo,usuario_nome,total_itens,itens_processados,etapa,heartbeat_em')
-      .eq('status', 'PROCESSANDO')
-      .order('iniciado_em', { ascending: true });
-    onStatus?.({ ...registro, posicao: (count || 0) + 1, emAndamento: emAndamento || [] });
+    let posicao = 1;
+    let emAndamento = [];
+    // Os detalhes visuais deixam de gerar duas consultas extras a cada ciclo.
+    if (ciclos === 1 || ciclos % 3 === 0) {
+      const { count } = await supabase.from('processamentos_pesados')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'AGUARDANDO')
+        .or(`prioridade.lt.${registro.prioridade},and(prioridade.eq.${registro.prioridade},criado_em.lt.${registro.criado_em})`);
+      const { data } = await supabase.from('processamentos_pesados')
+        .select('titulo,tipo,usuario_nome,total_itens,itens_processados,etapa,heartbeat_em')
+        .eq('status', 'PROCESSANDO')
+        .order('iniciado_em', { ascending: true });
+      posicao = (count || 0) + 1;
+      emAndamento = data || [];
+    }
+    onStatus?.({ ...registro, posicao, emAndamento });
     await esperar(INTERVALO_FILA_MS);
   }
 }

@@ -5,6 +5,7 @@ import {
   listarHistoricoCarteirasTodas,
   listarLancamentosDescontosObtidos,
   listarResumoDescontosObtidos,
+  obterUltimaAtualizacaoDescontosObtidos,
 } from '../services/descontosObtidosService';
 import { baixarLaudoDescontosObtidosHtml } from '../utils/laudoDescontosObtidosHtml';
 import {
@@ -66,6 +67,15 @@ function formatDataBr(iso) {
   if (!iso) return '—';
   const [ano, mes, dia] = String(iso).split('-');
   return `${dia}/${mes}/${ano}`;
+}
+
+function formatDataHoraBr(data) {
+  if (!data) return '';
+  return new Intl.DateTimeFormat('pt-BR', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+    timeZone: 'America/Sao_Paulo',
+  }).format(new Date(data));
 }
 
 function anoAtual() {
@@ -359,6 +369,7 @@ function AbaAnoAno() {
   const [linhas, setLinhas] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState('');
+  const [ultimaAtualizacao, setUltimaAtualizacao] = useState(null);
 
   useEffect(() => {
     let cancelado = false;
@@ -934,8 +945,11 @@ export default function PainelDescontosObtidosPage() {
   }
 
   useEffect(() => {
-    listarAnosDisponiveis()
-      .then((anos) => setAnosDisponiveis(anos.length ? anos : [anoAtual()]))
+    Promise.all([listarAnosDisponiveis(), obterUltimaAtualizacaoDescontosObtidos()])
+      .then(([anos, atualizadoEm]) => {
+        setAnosDisponiveis(anos.length ? anos : [anoAtual()]);
+        setUltimaAtualizacao(atualizadoEm);
+      })
       .catch(() => setAnosDisponiveis([anoAtual()]));
   }, []);
 
@@ -1047,6 +1061,14 @@ export default function PainelDescontosObtidosPage() {
         <div className="page-header">
           <div className="amd-mini-brand">AMD Log • Descontos Obtidos (SAP)</div>
           <h1>Painel de Descontos Obtidos</h1>
+          {ultimaAtualizacao ? (
+            <div
+              role="status"
+              style={{ marginTop: 6, fontSize: 12, color: TINTA_SECUNDARIA }}
+            >
+              Última atualização da base: <strong>{formatDataHoraBr(ultimaAtualizacao)}</strong>
+            </div>
+          ) : null}
           <p>Clique num mês para ver as transportadoras daquele mês, ou numa transportadora para ver a evolução dela mês a mês.</p>
         </div>
         <div className="actions-right wrap">

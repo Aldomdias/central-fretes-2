@@ -628,7 +628,15 @@ function contextoOrigemOficial(origem = {}) {
 }
 
 function itemRotaDaBaseOficial(rota = {}, origem = {}, indice = 0) {
-  const ibgeDestino = pareceIbge(rota.ibgeDestino || rota.ibge_destino);
+  const ibgeDestino = pareceIbge(
+    rota.ibgeDestino
+    || rota.ibge_destino
+    || rota.codigoIbgeDestino
+    || rota.codigo_ibge_destino
+    || rota.codigoMunicipioDestino
+    || rota.codigo_municipio_destino
+    || rota.cod_mun_destino
+  );
   if (!ibgeDestino) return null;
 
   const nomeRota = texto(rota.nomeRota || rota.rota) || `IBGE ${ibgeDestino}`;

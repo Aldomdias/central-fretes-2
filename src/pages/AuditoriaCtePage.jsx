@@ -1518,32 +1518,22 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       if (totalPrevisto > TAMANHO_LOTE_PESADO) {
         setSucesso(`${totalPrevisto.toLocaleString('pt-BR')} CT-es encontrados. Serão carregados em ${Math.ceil(totalPrevisto / TAMANHO_LOTE_PESADO)} lotes de até ${TAMANHO_LOTE_PESADO}.`);
       }
-      const dados = await executarComFila({
-        tipo: 'AUDITORIA_CTE',
-        titulo: `Carregar auditoria / ${transportadoraEmTratamento}`,
-        totalItens: totalPrevisto,
-        metadados: { acao: 'carregar_transportadora', transportadora: transportadoraEmTratamento },
-      }, async ({ atualizar }) => {
-        const progresso = (valor) => {
-          setProgressoProcessamento(valor);
-          atualizar(valor);
-        };
-        const carregados = await carregarResultadosAuditoriaMes({
-          competencia,
-          dataInicio: dataInicioTeste || undefined,
-          dataFim: dataFimTeste || undefined,
-          canais: canaisPreCarga.length ? canaisPreCarga : undefined,
-          transportadoras: [transportadoraEmTratamento],
-          tamanhoPagina: TAMANHO_LOTE_PESADO,
-          onProgress: progresso,
-        });
-        return enriquecerCtesComFaturasEmLotes(carregados || [], {
-          tamanhoLote: TAMANHO_LOTE_PESADO,
-          onProgress: progresso,
-        });
-      }, (fila) => setProgressoProcessamento({
-        etapa: 'aguardando_fila', carregados: 0, total: totalPrevisto, posicao: fila.posicao,
-      }));
+      // Carregar dados e uma operacao paginada de leitura. Ela nao disputa a
+      // fila reservada aos calculos pesados; filtros e lotes limitam a carga.
+      const progresso = (valor) => setProgressoProcessamento(valor);
+      const carregados = await carregarResultadosAuditoriaMes({
+        competencia,
+        dataInicio: dataInicioTeste || undefined,
+        dataFim: dataFimTeste || undefined,
+        canais: canaisPreCarga.length ? canaisPreCarga : undefined,
+        transportadoras: [transportadoraEmTratamento],
+        tamanhoPagina: TAMANHO_LOTE_PESADO,
+        onProgress: progresso,
+      });
+      const dados = await enriquecerCtesComFaturasEmLotes(carregados || [], {
+        tamanhoLote: TAMANHO_LOTE_PESADO,
+        onProgress: progresso,
+      });
       setRegistros(dados || []);
       setModoPreLista(false);
       setFonteAuditoria({

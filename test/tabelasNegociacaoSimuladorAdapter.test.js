@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { converterTabelaNegociacaoParaSimulador } from '../src/utils/tabelasNegociacaoSimuladorAdapter.js';
+import {
+  converterTabelaNegociacaoParaSimulador,
+  converterTransportadoraOficialParaNegociacao,
+} from '../src/utils/tabelasNegociacaoSimuladorAdapter.js';
 
 function tabelaComGrupoCompartilhado() {
   const destinos = ['2927408', '2910800', '2933307', '2900306'];
@@ -62,4 +65,29 @@ test('sem nome de grupo no item, cai no nome por destino (comportamento anterior
 
   assert.equal(origem.rotas.length, 2);
   assert.equal(origem.cotacoes.length, 2, 'sem nome de grupo, cada destino continua com sua própria cotação');
+});
+
+test('copia o IBGE destino da rota oficial para a revisão mesmo quando vem em alias legado', () => {
+  const resultado = converterTransportadoraOficialParaNegociacao({
+    nome: 'Transportadora Oficial',
+    origens: [{
+      cidade: 'Itajai',
+      uf: 'SC',
+      canal: 'ATACADO',
+      rotas: [{
+        nomeRota: 'Salvador / BA',
+        codigoIbgeDestino: '2927408',
+        prazoEntregaDias: 4,
+      }],
+      cotacoes: [],
+      taxasEspeciais: [],
+      generalidades: {},
+    }],
+  }, { canal: 'ATACADO', origem: 'Itajai' });
+
+  assert.equal(resultado.itens.length, 1);
+  assert.equal(resultado.itens[0].tipo_item, 'ROTA');
+  assert.equal(resultado.itens[0].ibge_destino, '2927408');
+  assert.equal(resultado.itens[0].cidade_destino, 'Salvador');
+  assert.equal(resultado.itens[0].uf_destino, 'BA');
 });

@@ -470,11 +470,16 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
     ? origensBusca.map((origem) => ({ origem, origens: [] }))
     : [{ origem: filtros.origem || origensBusca[0] || '', origens: [] }];
 
-  for (const recorte of recortesOrigem) {
-  for (const janela of janelas) {
+  // Um mês é quebrado em dias para as consultas usarem o índice de data e não
+  // estourarem timeout. Executar os 31 dias em série, porém, fazia um filtro
+  // como Itajaí/julho/B2C levar quase um minuto. Quatro janelas simultâneas
+  // reduzem a espera sem disparar uma rajada grande contra o Supabase.
+  const CONCORRENCIA_JANELAS = 1;
+  const buscarJanela = async (recorte, janela) => {
+    const linhasJanela = [];
     let from = 0;
 
-    while (allRows.length < totalMax) {
+    while (linhasJanela.length < totalMax) {
       const to = Math.min(from + PAGE_SIZE - 1, totalMax - 1);
       const filtrosJanela = { ...filtros, ...recorte, inicio: janela.inicio, fim: janela.fim };
       let query = supabase
@@ -488,20 +493,30 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
       const contextoJanela = janela.inicio && janela.fim
         ? `${janela.inicio}${janela.inicio !== janela.fim ? ` a ${janela.fim}` : ''}`
         : 'periodo completo';
-      const resposta = await executarQueryRealizadoComRetry(async () => query, `Erro ao buscar realizado_local_ctes (${contextoJanela}, ${paginaInicio}-${paginaFim})`);
+      const resposta = await executarQueryRealizadoComRetry(
+        async () => query,
+        `Erro ao buscar realizado_local_ctes (${contextoJanela}, ${paginaInicio}-${paginaFim})`,
+      );
       const { data, error } = resposta || {};
       if (error) throw new Error('Erro ao buscar realizado_local_ctes: ' + error.message);
-      if (!data || data.length === 0) break;
+      if (!data?.length) break;
 
-      allRows = allRows.concat(data);
-      if (onProgresso) onProgresso(allRows.length);
+      linhasJanela.push(...data);
       if (data.length < PAGE_SIZE) break;
       from += PAGE_SIZE;
     }
 
-    if (allRows.length >= totalMax) break;
-  }
-  if (allRows.length >= totalMax) break;
+    return linhasJanela;
+  };
+
+  for (const recorte of recortesOrigem) {
+    for (let inicioLote = 0; inicioLote < janelas.length && allRows.length < totalMax; inicioLote += CONCORRENCIA_JANELAS) {
+      const loteJanelas = janelas.slice(inicioLote, inicioLote + CONCORRENCIA_JANELAS);
+      const resultadosLote = await Promise.all(loteJanelas.map((janela) => buscarJanela(recorte, janela)));
+      allRows.push(...resultadosLote.flat());
+      if (allRows.length > totalMax) allRows = allRows.slice(0, totalMax);
+      if (onProgresso) onProgresso(allRows.length);
+    }
   }
 
   const rows = allRows.slice(0, totalMax);
@@ -4810,17 +4825,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
       mensagem,
       percentual: percentualInicial,
     });
-
-    timerProcessamentoRef.current = setInterval(() => {
-      setProcessamentoUi((prev) => {
-        if (!prev.ativo) return prev;
-        const incremento = prev.percentual < 45 ? 6 : prev.percentual < 75 ? 3 : 1;
-        return {
-          ...prev,
-          percentual: Math.min(prev.percentual + incremento, 92),
-        };
-      });
-    }, 400);
   };
 
   const atualizarProcessamentoUi = (mensagem, percentual = null) => {
@@ -6266,27 +6270,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     setBuscandoCtesRealizado(true);
     iniciarProcessamentoUi('Buscar CT-es do realizado', 'Carregando negociação, vínculos e CT-es...', 8);
 
-    let tarefaFilaBusca = null;
-    let heartbeatFilaBusca = null;
-    let erroExecucaoFilaBusca = null;
-
     try {
-      tarefaFilaBusca = await criarProcessamentoPesado({
-        tipo: 'SIMULACAO_SUPRIMENTOS',
-        titulo: `Buscar CT-es / ${transportadoraRealizado}`,
-        // Tamanho real só se sabe depois da busca — limiteRealizado é só o teto do filtro
-        // (pode ser 200000), não o volume de fato. Começa "desconhecido" e atualiza depois.
-        totalItens: 0,
-        metadados: { etapa: 'buscar_ctes', canal: canalRealizado, transportadora: transportadoraRealizado },
-      });
-      if (tarefaFilaBusca) {
-        await aguardarVezProcessamento(tarefaFilaBusca.id, (fila) => {
-          atualizarProcessamentoUi(mensagemAguardandoFila(fila), 8);
-        });
-        heartbeatFilaBusca = window.setInterval(() => {
-          atualizarProcessamentoPesado(tarefaFilaBusca.id, { etapa: 'buscando_ctes' });
-        }, 15000);
-      }
       atualizarProcessamentoUi('Carregando negociação...', 12);
       const mapaVinculos = await carregarMapaVinculosSimulador();
       // Seleção exclusiva desta execução: ajuda a localizar os CT-es que serão
@@ -6320,7 +6304,28 @@ export default function SimuladorPage({ transportadoras = [] }) {
       let baseSelecionada = [];
 
       if (ehNegociacaoSelecionada) {
-        const capaNegociacao = negociacaoRealizadoAtual;
+        let capaNegociacao = negociacaoRealizadoAtual;
+        const resumoCapa = capaNegociacao?.resumo_simulacao || capaNegociacao?.resumo_capa || {};
+        const totalItensCapa = Number(
+          resumoCapa?.totais_itens?.total
+          || resumoCapa?.ultima_importacao?.itens_salvos_apos_importacao?.total
+          || 0,
+        );
+        const capaTemItens = Boolean(
+          capaNegociacao?.tabelas_negociacao_itens?.length
+          || capaNegociacao?.itens?.length,
+        );
+
+        // A capa leve não traz rotas/UFs. Em negociações moderadas, carrega a
+        // malha antes dos CT-es para impedir a busca ampla por origem/canal.
+        if (capaNegociacao?.id && !capaTemItens && totalItensCapa > 0 && totalItensCapa <= 5000) {
+          atualizarProcessamentoUi(
+            `Carregando ${totalItensCapa.toLocaleString('pt-BR')} itens da negociação para limitar os destinos...`,
+            18,
+          );
+          capaNegociacao = await carregarDetalhesNegociacaoParaSimulacao(capaNegociacao);
+          negociacaoRealizadoAtual = capaNegociacao;
+        }
         const negociacoesConvertidas = capaNegociacao
           ? converterTabelasNegociacaoParaSimulador([capaNegociacao], { canal: canalRealizado })
           : transportadorasNegociacaoRealizado;
@@ -6388,6 +6393,21 @@ export default function SimuladorPage({ transportadoras = [] }) {
       const ufOrigemEfetivaRealizado = ufOrigemRealizado
         || (ehNegociacaoSelecionada ? extrairUfOrigemCapaNegociacao(negociacaoRealizadoAtual) : '');
 
+      // Uma negociação sem destinos conhecidos nunca pode virar uma consulta
+      // irrestrita por origem/canal. Para tabelas grandes, exige um recorte de
+      // UF e carrega os itens somente depois que os CT-es forem encontrados.
+      if (ehNegociacaoSelecionada && !ufsDestinoEfetivasRealizado.length && !destinoRealizado) {
+        const resumoCapaBusca = negociacaoRealizadoAtual?.resumo_simulacao || negociacaoRealizadoAtual?.resumo_capa || {};
+        const totalItensBusca = Number(resumoCapaBusca?.totais_itens?.total || 0);
+        setErroSimulacao(
+          totalItensBusca > 5000
+            ? `A negociação tem ${totalItensBusca.toLocaleString('pt-BR')} itens. Selecione ao menos uma UF de destino para buscar somente o recorte necessário.`
+            : 'Não foi possível identificar os destinos da negociação. Atualize a negociação ou selecione ao menos uma UF de destino.',
+        );
+        finalizarProcessamentoUi('Escolha uma UF de destino', 'A busca ampla foi bloqueada para não sobrecarregar a base.', 100);
+        return;
+      }
+
       atualizarProcessamentoUi('Buscando CT-es realizados — página 1...', 28);
       let rowsBrutos = await buscarRealizadoLocalCtesExpandido({
         canal: canalRealizado,
@@ -6404,8 +6424,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
         atualizarProcessamentoUi(`Buscando CT-es realizados... ${qtd.toLocaleString('pt-BR')} carregados`, Math.min(58, 28 + Math.floor(qtd / 500)));
       });
       rowsBrutos = filtrarRowsPorOrigensRealizado(rowsBrutos, origensMarcadasFiltro);
-      if (tarefaFilaBusca) atualizarProcessamentoPesado(tarefaFilaBusca.id, { etapa: 'buscando_ctes', carregados: rowsBrutos.length, total: rowsBrutos.length });
-
       const temFiltroManualRealizado = Boolean(
         origemRealizado
         || origensMarcadasFiltro.length
@@ -6692,15 +6710,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
         100,
       );
     } catch (error) {
-      erroExecucaoFilaBusca = error;
       setBaseRealizadoCarregada(null);
       setErroSimulacao(error.message || 'Erro ao buscar CT-es do realizado.');
       finalizarProcessamentoUi('Erro ao buscar CT-es', 'Não foi possível carregar a base.', 100);
     } finally {
-      if (heartbeatFilaBusca) window.clearInterval(heartbeatFilaBusca);
-      if (tarefaFilaBusca) {
-        await finalizarProcessamentoPesado(tarefaFilaBusca.id, erroExecucaoFilaBusca ? 'ERRO' : 'CONCLUIDO', erroExecucaoFilaBusca?.message || null);
-      }
       setBuscandoCtesRealizado(false);
     }
   };

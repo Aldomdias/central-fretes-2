@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import BaseCtesStatus, { invalidarStatusBaseCtes } from '../components/BaseCtesStatus';
+import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import { parseRealizadoCtesFile } from '../utils/realizadoCtes';
 import {
   competenciaPrecisaEnxuta,
@@ -639,11 +640,22 @@ async function executarQuerySupabaseComRetry(montarQuery, contexto = 'consulta S
 function aplicarFiltros(query, filtros = {}, opcoes = {}) {
   if (filtros.ufOrigem) query = query.eq('uf_origem', filtros.ufOrigem);
   if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
-  if (filtros.transportadoraRealizada) query = query.ilike('transportadora', `%${filtros.transportadoraRealizada}%`);
+  // Prefixos preservam o uso de indice. O curinga no inicio fazia o banco
+  // varrer a tabela inteira mesmo com transportadora, origem e periodo.
+  if (filtros.transportadoraRealizada) query = query.ilike('transportadora', `${filtros.transportadoraRealizada}%`);
   if (filtros.origem) query = query.ilike('cidade_origem', `${filtros.origem}%`);
   if (filtros.destino) query = query.ilike('cidade_destino', `${filtros.destino}%`);
   if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
   if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
+  // Antes o canal era aplicado apenas no navegador, depois de baixar todo o
+  // recorte. Limita a consulta no banco sem perder as variantes conhecidas.
+  if (filtros.canal === 'B2C') {
+    query = query.or('canal.ilike.B2C%,canal.ilike.%ECOMMERCE%,canal.ilike.%MARKETPLACE%');
+  } else if (filtros.canal === 'ATACADO') {
+    query = query.or('canal.ilike.ATACADO%,canal.ilike.B2B%');
+  } else if (filtros.canal) {
+    query = query.ilike('canal', `${filtros.canal}%`);
+  }
 
   const chaveExata = extrairChaveCteExata(filtros.buscaDocumento);
   if (chaveExata) {
@@ -661,6 +673,21 @@ function aplicarFiltroCanalNormalizado(rows = [], filtros = {}) {
   return (rows || []).filter((row) => getCanal(row) === filtros.canal);
 }
 
+async function consultarCtesOtimizado(supabase, filtros, limite, offset = 0) {
+  return supabase.rpc('buscar_realizado_local_ctes_otimizado', {
+    p_transportadora: filtros.transportadoraRealizada || '',
+    p_origem: filtros.origem || '',
+    p_destino: filtros.destino || '',
+    p_canal: filtros.canal || '',
+    p_uf_origem: filtros.ufOrigem || '',
+    p_uf_destino: filtros.ufDestino || '',
+    p_inicio: filtros.inicio || null,
+    p_fim: filtros.fim || null,
+    p_limite: limite,
+    p_offset: offset,
+  });
+}
+
 async function buscarCtesPagina(filtros = {}, pagina = 1) {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado. Verifique o .env.');
   if (!temFiltroAtivo(filtros)) {
@@ -672,6 +699,9 @@ async function buscarCtesPagina(filtros = {}, pagina = 1) {
   const fim = inicio + PAGE_SIZE - 1;
 
   let resposta = await executarQuerySupabaseComRetry(async () => {
+    if (!filtros.buscaDocumento) {
+      return consultarCtesOtimizado(supabase, filtros, PAGE_SIZE + 1, inicio);
+    }
     let query = supabase
       .from(TABELA)
       .select('*')
@@ -720,9 +750,12 @@ async function buscarCtesParaAnalise(filtros = {}, onProgress) {
     const fim = inicio + ANALISE_BATCH_SIZE - 1;
 
     let resposta = await executarQuerySupabaseComRetry(async () => {
+      if (!filtros.buscaDocumento) {
+        return consultarCtesOtimizado(supabase, filtros, ANALISE_BATCH_SIZE, inicio);
+      }
       let query = supabase
         .from(TABELA)
-        .select('*', inicio === 0 ? { count: 'exact' } : undefined)
+        .select('*')
         .order('data_emissao', { ascending: false, nullsFirst: false })
         .range(inicio, fim);
 
@@ -735,7 +768,7 @@ async function buscarCtesParaAnalise(filtros = {}, onProgress) {
       resposta = await executarQuerySupabaseComRetry(async () => {
         let query = supabase
           .from(TABELA)
-          .select('*', inicio === 0 ? { count: 'exact' } : undefined)
+          .select('*')
           .order('data_emissao', { ascending: false, nullsFirst: false })
           .range(inicio, fim);
 
@@ -2806,7 +2839,7 @@ export default function CtePage() {
   const buscar = async (paginaSolicitada = 1, filtrosBusca = filtros) => {
     setCarregando(true);
     setCarregandoAnalise(true);
-    setProgressoAnalise(null);
+    setProgressoAnalise({ etapa: 'buscando_ctes', carregados: 0, total: null });
     setErro('');
     limparFiltrosInterativos();
     setUltimaBuscaTemFiltro(temFiltroAtivo(filtrosBusca));
@@ -2816,6 +2849,7 @@ export default function CtePage() {
       setRows(paginaResposta.data);
       setTemProximaPagina(paginaResposta.hasNext);
       setPagina(paginaResposta.pagina);
+      setProgressoAnalise({ etapa: 'carregando_ctes_analise', carregados: 0, total: null });
     } catch (error) {
       setErro(error.message || String(error));
       setRows(null);
@@ -3019,6 +3053,11 @@ export default function CtePage() {
 
   return (
     <div className="page-shell cte-page">
+      <AmdProcessingOverlay
+        ativo={(carregando || carregandoAnalise) && progressoAnalise?.etapa === 'buscando_ctes'}
+        progresso={progressoAnalise || { etapa: 'buscando_ctes', carregados: 0, total: null }}
+        mensagemRodape="Buscando somente o recorte informado. Bases maiores são carregadas em lotes."
+      />
       <div className="page-top between">
         <div className="page-header">
           <h1>CT-e</h1>
@@ -4212,7 +4251,7 @@ export default function CtePage() {
 
       {(carregando || carregandoAnalise) && !rows && (
         <div className="panel-card" style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>
-          Buscando no Supabase...
+          Buscando a primeira página de CT-es no Supabase...
         </div>
       )}
 
@@ -4270,8 +4309,8 @@ export default function CtePage() {
 
           {carregandoAnalise && (
             <div className="sim-alert info">
-              Montando painel de gestão com os CT-es filtrados...
-              {progressoAnalise ? ` ${fmtN(progressoAnalise.carregados)}${totalProgressoAnalise !== null ? ` de ${fmtN(totalProgressoAnalise)}` : ''} carregados para análise.` : ''}
+              Carregando CT-es para montar o painel de gestão...
+              {progressoAnalise ? ` ${fmtN(progressoAnalise.carregados)}${totalProgressoAnalise !== null ? ` de ${fmtN(totalProgressoAnalise)}` : ''} CT-e(s) recebidos.` : ''}
             </div>
           )}
 

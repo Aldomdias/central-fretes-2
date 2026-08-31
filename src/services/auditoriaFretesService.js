@@ -602,14 +602,45 @@ export async function preencherAuditorPagasPeloHistoricoCte({ usuarioNome } = {}
     });
   }
 
-  const alvo = pendentes
+  const alvoCte = pendentes
     .map((f) => {
       const contagem = usuarioPorFatura.get(f.id);
       if (!contagem || !contagem.size) return null;
       const nomeMaisFrequente = [...contagem.entries()].sort((a, b) => b[1] - a[1])[0][0];
-      return { id: f.id, auditor_nome: nomeMaisFrequente };
+      return { id: f.id, auditor_nome: nomeMaisFrequente, descricao: 'Preenchido a partir do histórico Verum (usuário que enviou o CT-e para pagamento).' };
     })
     .filter(Boolean);
+
+  // Sobrou sem usuario no CT-e: tenta pela trilha de eventos da fatura
+  // (auditoria_fatura_historico) — nomes genericos ('Sistema', 'Gestao',
+  // vazio) nao contam, só quem realmente mexeu na fatura em algum momento.
+  const idsResolvidosCte = new Set(alvoCte.map((f) => f.id));
+  const semUsuarioCte = pendentes.filter((f) => !idsResolvidosCte.has(f.id));
+  const NOMES_GENERICOS = new Set(['', 'SISTEMA', 'GESTAO', 'GESTÃO', 'USUARIO LOCAL', 'FINANCEIRO']);
+  const usuarioPorFaturaHistorico = new Map();
+  for (let inicio = 0; inicio < semUsuarioCte.length; inicio += CHUNK) {
+    const lote = semUsuarioCte.slice(inicio, inicio + CHUNK).map((f) => f.id);
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error: errHistorico } = await client.from('auditoria_fatura_historico').select('fatura_id, usuario_nome').in('fatura_id', lote);
+    if (errHistorico) throw new Error(errHistorico.message || 'Erro ao consultar histórico de eventos da fatura.');
+    (data || []).forEach((linha) => {
+      const nome = String(linha.usuario_nome || '').trim();
+      if (NOMES_GENERICOS.has(nome.toUpperCase())) return;
+      const contagem = usuarioPorFaturaHistorico.get(linha.fatura_id) || new Map();
+      contagem.set(nome, (contagem.get(nome) || 0) + 1);
+      usuarioPorFaturaHistorico.set(linha.fatura_id, contagem);
+    });
+  }
+  const alvoHistorico = semUsuarioCte
+    .map((f) => {
+      const contagem = usuarioPorFaturaHistorico.get(f.id);
+      if (!contagem || !contagem.size) return null;
+      const nomeMaisFrequente = [...contagem.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      return { id: f.id, auditor_nome: nomeMaisFrequente, descricao: 'Preenchido a partir da trilha de eventos da fatura (histórico de atendimento).' };
+    })
+    .filter(Boolean);
+
+  const alvo = [...alvoCte, ...alvoHistorico];
   if (!alvo.length) return { corrigidas: 0, semUsuarioNoCte: pendentes.length };
 
   const agora = new Date().toISOString();
@@ -617,7 +648,7 @@ export async function preencherAuditorPagasPeloHistoricoCte({ usuarioNome } = {}
   try {
     await inserirHistorico('auditoria_fatura_historico', alvo.map((f) => ({
       id: uid('hist'), fatura_id: f.id, created_at: agora,
-      acao: 'AUDITOR_ATRIBUIDO', descricao: 'Preenchido a partir do histórico Verum (usuário que enviou o CT-e para pagamento).', usuario_nome: usuarioNome || 'Gestao',
+      acao: 'AUDITOR_ATRIBUIDO', descricao: f.descricao, usuario_nome: usuarioNome || 'Gestao',
     })));
   } catch (histError) {
     console.warn('Não foi possível registrar histórico de preenchimento retroativo.', histError.message || histError);

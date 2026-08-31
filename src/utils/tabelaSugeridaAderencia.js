@@ -66,8 +66,8 @@ export function planejarAjustesParaAderencia(resultado = {}, meta = 0, margemCom
   const margemValida = Math.min(50, Math.max(0, Number(margemCompetitiva) || 0));
   const ganhosNecessarios = Math.ceil((metaValida / 100) * ctesComTabela);
   const detalhes = (resultado.ctesAjusteRotaExcel || []).map((item) => {
-    const tabela = Number(item.tabelaSimulacao || item.tabelaRpa || 0);
-    const referencia = Number(item.freteCobrado || item.freteBaseComparativa || 0);
+    const tabela = Number(item.tabelaSimulacao || item.tabelaRpa || item.freteSelecionada || item.freteTabela || 0);
+    const referencia = Number(item.freteCobrado || item.freteBaseComparativa || item.freteRealizado || 0);
     return {
       ...item, tabela, referencia,
       perdiaOriginalmente: tabela > referencia,

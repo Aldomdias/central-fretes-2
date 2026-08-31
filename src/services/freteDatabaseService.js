@@ -243,10 +243,21 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
       taxaEmergencial: generalidade?.taxa_emergencial ?? 0,
     },
     rotas: rotas.map((item) => ({
+      ...(item.extra || {}),
       id: item.id,
-      nomeRota: item.nome_rota || '',
-      ibgeOrigem: item.ibge_origem || '',
-      ibgeDestino: onlyDigitsDb(item.ibge_destino).slice(0, 7) || item.ibge_destino || '',
+      nomeRota: item.nome_rota || item.extra?.nomeRota || item.extra?.rota || '',
+      ibgeOrigem: item.ibge_origem || item.extra?.ibgeOrigem || item.extra?.ibge_origem || '',
+      // A coluna oficial deve prevalecer sobre `extra`. Importações antigas podem
+      // ter gravado em extra um ibgeDestino vazio, que antes sobrescrevia aqui o
+      // IBGE válido e fazia a revisão chegar em Negociações sem o destino.
+      ibgeDestino: onlyDigitsDb(
+        item.ibge_destino
+        || item.extra?.ibgeDestino
+        || item.extra?.ibge_destino
+        || item.extra?.codigoIbgeDestino
+        || item.extra?.codigo_ibge_destino
+        || item.extra?.codigoMunicipioDestino
+      ).slice(0, 7),
       canal: item.canal || origem.canal || 'ATACADO',
       prazoEntregaDias: item.prazo_entrega_dias ?? 0,
       valorMinimoFrete: item.valor_minimo_frete ?? 0,
@@ -256,7 +267,6 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
       metodoEnvio: item.metodo_envio || '',
       inicioVigencia: item.inicio_vigencia || '',
       fimVigencia: item.fim_vigencia || '',
-      ...(item.extra || {}),
     })),
     cotacoes: cotacoes.map((item) => ({
       id: item.id,

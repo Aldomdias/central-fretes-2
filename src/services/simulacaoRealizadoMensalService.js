@@ -2,7 +2,9 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
 const TABELA = 'simulacao_realizado_mensal';
 const MAX_CTES_DETALHES_SALVOS = 800;
-const MAX_CTES_AJUSTE_ROTA_SALVOS = 1200;
+// A simulação mantém até 3.000 CT-es de detalhe. Salvar menos que isso fazia a
+// consolidação de parcelas perder justamente os CT-es usados na projeção.
+const MAX_CTES_AJUSTE_ROTA_SALVOS = 3000;
 const MAX_ITENS_AMOSTRA_ROTA_SALVOS = 50;
 
 function ensureSupabase() {
@@ -39,16 +41,27 @@ function compactarDetalheCte(item = {}) {
 function compactarCteAjusteRota(item = {}) {
   return {
     cte: item.cte,
+    chaveCte: item.chaveCte,
+    data: item.data,
+    origem: item.origem,
+    ufOrigem: item.ufOrigem,
     destino: item.destino,
+    ufDestino: item.ufDestino,
     canal: item.canal,
     rota: item.rota,
     faixaPeso: item.faixaPeso || item.faixa,
     peso: item.peso,
     valorNF: item.valorNF,
     volumes: item.volumes,
-    freteRealizado: item.freteRealizado,
-    freteSelecionada: item.freteSelecionada,
-    tabelaRpa: item.tabelaRpa,
+    // Estes dois valores formam a comparação CT-e a CT-e usada pelo laudo de
+    // projeção. Sem eles, a análise unificada preservava as contagens, mas
+    // zerava rotas ajustáveis, faturamento e saving.
+    freteCobrado: item.freteCobrado ?? item.freteBaseComparativa ?? item.freteRealizado,
+    freteBaseComparativa: item.freteBaseComparativa ?? item.freteCobrado ?? item.freteRealizado,
+    tabelaSimulacao: item.tabelaSimulacao ?? item.tabelaRpa ?? item.freteSelecionada ?? item.freteTabela,
+    freteRealizado: item.freteRealizado ?? item.freteCobrado ?? item.freteBaseComparativa,
+    freteSelecionada: item.freteSelecionada ?? item.tabelaSimulacao ?? item.tabelaRpa ?? item.freteTabela,
+    tabelaRpa: item.tabelaRpa ?? item.tabelaSimulacao ?? item.freteSelecionada ?? item.freteTabela,
     freteTabela: item.freteTabela,
     percentualBase: item.percentualBase,
     percentualCobrado: item.percentualCobrado,

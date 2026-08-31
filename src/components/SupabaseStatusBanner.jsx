@@ -22,7 +22,7 @@ export default function SupabaseStatusBanner() {
       setVerificando(false);
       if (online) setEstado('recuperado');
     };
-    const timer = window.setInterval(conferir, 10000);
+    const timer = window.setInterval(conferir, 30000);
     void conferir();
     return () => window.clearInterval(timer);
   }, [estado]);

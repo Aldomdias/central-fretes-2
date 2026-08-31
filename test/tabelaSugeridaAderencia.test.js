@@ -50,6 +50,24 @@ test('aplica margem abaixo do ganhador e nao aceita apenas empate', () => {
   assert.doesNotMatch(html, /Frete ganhador/);
 });
 
+test('calcula a projeção com aliases financeiros de análises salvas', () => {
+  const legado = {
+    ...resultado,
+    ctesAjusteRotaExcel: resultado.ctesAjusteRotaExcel.map((item) => ({
+      ...item,
+      freteSelecionada: item.tabelaRpa,
+      freteRealizado: item.freteCobrado,
+      tabelaRpa: undefined,
+      freteCobrado: undefined,
+    })),
+  };
+
+  const plano = planejarAjustesParaAderencia(legado, 70);
+  assert.equal(plano.aderenciaProjetada, 70);
+  assert.equal(plano.ajustes.length, 1);
+  assert.ok(plano.faturamentoProjetadoNasGanhas > 0);
+});
+
 test('preserva colunas originais e reduz somente preco da rota escolhida', () => {
   const negociacao = { itens: [
     { faixa_peso: '0-10', dados_originais: { rota: 'Rota A', faixa: '0-10', destino: 'X', percentual: 10 } },

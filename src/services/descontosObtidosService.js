@@ -131,6 +131,20 @@ export async function listarAnosDisponiveis() {
   return Array.from(new Set(data.map((r) => r.ano))).sort((a, b) => b - a);
 }
 
+export async function obterUltimaAtualizacaoDescontosObtidos() {
+  const client = exigirClient();
+
+  const { data, error } = await client
+    .from(TABELA)
+    .select('criado_em')
+    .order('criado_em', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`Erro ao consultar a última atualização: ${error.message}`);
+  return data?.criado_em || null;
+}
+
 // Histórico de qual auditor era responsável por cada transportadora, em cada
 // data (auditoria_carteiras_historico é populado pela tela de Ferramentas/
 // Transportadoras ao atribuir carteira). Usado para atribuir cada lançamento
