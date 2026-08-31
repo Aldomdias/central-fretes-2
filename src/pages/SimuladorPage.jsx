@@ -6318,7 +6318,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
         // A capa leve não traz rotas/UFs. Em negociações moderadas, carrega a
         // malha antes dos CT-es para impedir a busca ampla por origem/canal.
-        if (capaNegociacao?.id && !capaTemItens && totalItensCapa > 0 && totalItensCapa <= 5000) {
+        if (capaNegociacao?.id && !capaTemItens && totalItensCapa > 0) {
           atualizarProcessamentoUi(
             `Carregando ${totalItensCapa.toLocaleString('pt-BR')} itens da negociação para limitar os destinos...`,
             18,
