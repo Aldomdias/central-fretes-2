@@ -224,15 +224,18 @@ function montarMapeamento(cabecalhos) {
   }, {});
 }
 
-function extrairLinhasPlanilha(workbook) {
+function extrairAbasPlanilha(workbook, arquivoNome) {
   const abas = workbook.SheetNames || [];
-  const linhas = [];
-  abas.forEach((aba) => {
+  return abas.map((aba) => {
     const ws = workbook.Sheets[aba];
     const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
-    rows.forEach((row) => linhas.push({ __aba: aba, ...row }));
+    return {
+      chave: `${arquivoNome}::${aba}`,
+      arquivoNome,
+      nome: aba,
+      linhas: rows.map((row) => ({ __aba: aba, ...row })),
+    };
   });
-  return linhas;
 }
 
 async function lerArquivoTabela(arquivo) {
@@ -240,15 +243,16 @@ async function lerArquivoTabela(arquivo) {
   if (!TIPOS_ARQUIVO_LEITURA_DIRETA.includes(ext)) {
     return {
       tipo: 'anexo_ia',
-      linhas: [],
-      mensagem: 'Arquivo anexado para leitura por IA/OCR. A leitura direta local suporta Excel e CSV.',
+      abas: [],
+      mensagem: `${arquivo.name}: anexado para leitura por IA/OCR. A leitura direta local suporta Excel e CSV.`,
     };
   }
 
   const buffer = await arquivo.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array' });
-  const linhas = extrairLinhasPlanilha(workbook);
-  return { tipo: 'planilha', linhas, mensagem: `${linhas.length.toLocaleString('pt-BR')} linha(s) lidas em ${workbook.SheetNames.length} aba(s).` };
+  const abas = extrairAbasPlanilha(workbook, arquivo.name);
+  const totalLinhas = abas.reduce((soma, aba) => soma + aba.linhas.length, 0);
+  return { tipo: 'planilha', abas, mensagem: `${arquivo.name}: ${totalLinhas.toLocaleString('pt-BR')} linha(s) lidas em ${abas.length} aba(s).` };
 }
 
 function valor(row, coluna) {
@@ -343,8 +347,9 @@ function statusCampo(coluna) {
 
 export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
   const inputRef = useRef(null);
-  const [arquivo, setArquivo] = useState(null);
-  const [linhas, setLinhas] = useState([]);
+  const [arquivos, setArquivos] = useState([]);
+  const [abasDisponiveis, setAbasDisponiveis] = useState([]);
+  const [abasSelecionadas, setAbasSelecionadas] = useState([]);
   const [mapeamento, setMapeamento] = useState({});
   const [transportadora, setTransportadora] = useState('');
   const [canal, setCanal] = useState('B2C');
@@ -356,6 +361,13 @@ export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
   const [resultadoIa, setResultadoIa] = useState(null);
   const [processandoIa, setProcessandoIa] = useState(false);
   const [salvando, setSalvando] = useState(false);
+
+  const nomeArquivos = arquivos.map((a) => a.name).join(', ');
+
+  const linhas = useMemo(
+    () => abasDisponiveis.filter((aba) => abasSelecionadas.includes(aba.chave)).flatMap((aba) => aba.linhas),
+    [abasDisponiveis, abasSelecionadas],
+  );
 
   const cabecalhos = useMemo(() => {
     const set = new Set();
@@ -395,28 +407,47 @@ export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
       `Transportadora: ${transportadora || '[nao informado]'}`,
       `Canal: ${canal}`,
       `Vigencia sugerida: ${inicioVigencia || '[nao informado]'} a ${fimVigencia || '[nao informado]'}`,
-      `Arquivo: ${arquivo?.name || '[nao anexado]'}`,
+      `Arquivo: ${nomeArquivos || '[nao anexado]'}`,
       `Colunas detectadas: ${cabecalhos.join(', ') || '[nenhuma]'}`,
       `Mapeamento sugerido pela tela: ${JSON.stringify(mapeamento, null, 2)}`,
       'Amostra extraida do arquivo:',
       JSON.stringify(amostra, null, 2),
     ].join('\n\n');
-  }, [arquivo?.name, cabecalhos, canal, fimVigencia, inicioVigencia, linhas, mapeamento, transportadora]);
+  }, [nomeArquivos, cabecalhos, canal, fimVigencia, inicioVigencia, linhas, mapeamento, transportadora]);
+
+  function pareceAbaTabular(aba) {
+    if (aba.linhas.length < 2) return false;
+    const chaves = Object.keys(aba.linhas[0]).filter((k) => k !== '__aba');
+    if (!chaves.length) return false;
+    const vazias = chaves.filter((k) => /^__EMPTY/.test(k)).length;
+    return vazias / chaves.length < 0.3;
+  }
+
+  function recalcularMapeamento(abasTodas, chavesSelecionadas) {
+    const linhasSelecionadas = abasTodas.filter((aba) => chavesSelecionadas.includes(aba.chave)).flatMap((aba) => aba.linhas);
+    setMapeamento(montarMapeamento(Object.keys(linhasSelecionadas[0] || {})));
+  }
 
   async function selecionarArquivo(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setArquivo(file);
-    setLinhas([]);
-    setMapeamento({});
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
     setMensagem('');
     setCarregando(true);
     try {
-      const resposta = await lerArquivoTabela(file);
-      setLinhas(resposta.linhas || []);
-      const mapa = montarMapeamento(Object.keys(resposta.linhas?.[0] || {}));
-      setMapeamento(mapa);
-      setMensagem(resposta.mensagem);
+      const novasAbasPorArquivo = await Promise.all(files.map((file) => lerArquivoTabela(file)));
+      setArquivos((prev) => [...prev, ...files]);
+      setAbasDisponiveis((prev) => {
+        const abasNovas = novasAbasPorArquivo.flatMap((resposta) => resposta.abas || []);
+        const todasAbas = [...prev, ...abasNovas];
+        setAbasSelecionadas((prevSelecionadas) => {
+          const selecaoNova = abasNovas.filter(pareceAbaTabular).map((aba) => aba.chave);
+          const novaSelecao = [...prevSelecionadas, ...(selecaoNova.length ? selecaoNova : abasNovas.map((aba) => aba.chave))];
+          recalcularMapeamento(todasAbas, novaSelecao);
+          return novaSelecao;
+        });
+        return todasAbas;
+      });
+      setMensagem(novasAbasPorArquivo.map((resposta) => resposta.mensagem).join(' '));
     } catch (error) {
       setMensagem(error?.message || 'Nao foi possivel ler o arquivo.');
     } finally {
@@ -429,8 +460,24 @@ export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
     setMapeamento((prev) => ({ ...prev, [campo]: coluna }));
   }
 
+  function alternarAba(chave) {
+    setAbasSelecionadas((prev) => {
+      const novaSelecao = prev.includes(chave) ? prev.filter((c) => c !== chave) : [...prev, chave];
+      recalcularMapeamento(abasDisponiveis, novaSelecao);
+      return novaSelecao;
+    });
+  }
+
+  function limparArquivos() {
+    setArquivos([]);
+    setAbasDisponiveis([]);
+    setAbasSelecionadas([]);
+    setMapeamento({});
+    setMensagem('');
+  }
+
   async function processarComIa(motor) {
-    if (!arquivo || !linhas.length) return setMensagem('Anexe uma planilha Excel/CSV antes de processar com IA.');
+    if (!arquivos.length || !linhas.length) return setMensagem('Anexe uma planilha Excel/CSV antes de processar com IA.');
     if (!transportadora.trim()) return setMensagem('Informe a transportadora antes de processar.');
     if (!inicioVigencia || !fimVigencia) return setMensagem('Informe a vigência antes de processar.');
     setProcessandoIa(motor.nome);
@@ -461,7 +508,7 @@ export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
                 ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
               },
               body: JSON.stringify({
-                arquivo: arquivo.name,
+                arquivo: nomeArquivos,
                 linhas: loteLinhas,
                 contexto: { transportadora, canal, inicioVigencia, fimVigencia },
               }),
@@ -509,13 +556,13 @@ export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
         data_inicio_prevista: resultadoIa.vigencia?.inicio || inicioVigencia,
         origem_importacao: 'IMPORTACAO_IA_KIMI_K3',
         generalidades: resultadoIa.generalidades,
-        observacao: `Importado por IA do arquivo ${arquivo?.name || ''}. ${falhasResultado.length} possível(is) falha(s) mapeada(s).`,
+        observacao: `Importado por IA do arquivo ${nomeArquivos}. ${falhasResultado.length} possível(is) falha(s) mapeada(s).`,
         usuario,
       });
       await substituirItensTabelaNegociacao(tabela, resultadoIa.itens, {
         modo: 'total',
         origemImportacao: 'IMPORTACAO_IA_KIMI_K3',
-        arquivo: arquivo?.name,
+        arquivo: nomeArquivos,
       });
       await atualizarTabelaNegociacao(tabela.id, {
         status: 'EM TESTE',
@@ -549,13 +596,14 @@ export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
             {processandoIa === 'openai' ? 'Processando com OpenAI...' : 'Processar com IA (OpenAI)'}
           </button>
           <button className="btn-primary" type="button" onClick={() => inputRef.current?.click()} disabled={carregando}>
-            {carregando ? 'Lendo arquivo...' : 'Anexar arquivo'}
+            {carregando ? 'Lendo arquivo...' : 'Anexar arquivo(s)'}
           </button>
           <input
             ref={inputRef}
             type="file"
             accept=".xlsx,.xls,.xlsb,.csv"
             onChange={selecionarArquivo}
+            multiple
             hidden
           />
         </div>
@@ -588,12 +636,36 @@ export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
           </label>
         </div>
         <div className="inline-meta compact-top-gap">
-          <span>Arquivo: <strong>{arquivo?.name || 'nenhum'}</strong></span>
+          <span>Arquivo(s): <strong>{nomeArquivos || 'nenhum'}</strong></span>
           <span>Linhas lidas: <strong>{linhas.length.toLocaleString('pt-BR')}</strong></span>
           <span>Rotas previstas: <strong>{saida.rotas.length.toLocaleString('pt-BR')}</strong></span>
           <span>Fretes previstos: <strong>{saida.fretes.length.toLocaleString('pt-BR')}</strong></span>
         </div>
+        {arquivos.length ? (
+          <button className="btn-secondary compact-top-gap" type="button" onClick={limparArquivos}>Limpar arquivos</button>
+        ) : null}
       </section>
+
+      {abasDisponiveis.length ? (
+        <section className="panel-card formatacao-section">
+          <div className="section-header-inline">
+            <h3>Abas dos arquivos</h3>
+            <span className="muted-text">Marque só as abas que têm a tabela de tarifas/rotas. As demais (formulário, simulador, listas de apoio) ficam de fora.</span>
+          </div>
+          <div className="grid two-cols">
+            {abasDisponiveis.map((aba) => (
+              <label key={aba.chave} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={abasSelecionadas.includes(aba.chave)}
+                  onChange={() => alternarAba(aba.chave)}
+                />
+                <span>{aba.arquivoNome} — {aba.nome} ({aba.linhas.length.toLocaleString('pt-BR')} linha(s))</span>
+              </label>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {mostrarPrompt ? (
         <section className="panel-card formatacao-section">
