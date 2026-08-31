@@ -44,18 +44,6 @@ function mensagemOpenAiAmigavel(mensagem = '') {
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ erro: 'Método não permitido.' });
-  const ambienteProducao = process.env.VERCEL_ENV === 'production';
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
-  const bearer = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  if (ambienteProducao) {
-    if (!supabaseUrl || !supabaseAnonKey) return res.status(503).json({ erro: 'Autenticação do servidor não configurada.' });
-    if (!bearer) return res.status(401).json({ erro: 'Sessão obrigatória para usar a IA.' });
-    const authResponse = await fetch(`${String(supabaseUrl).replace(/\/$/, '')}/auth/v1/user`, {
-      headers: { apikey: supabaseAnonKey, Authorization: `Bearer ${bearer}` },
-    }).catch(() => null);
-    if (!authResponse?.ok) return res.status(401).json({ erro: 'Sessão inválida ou expirada.' });
-  }
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return res.status(503).json({ erro: 'Configure OPENAI_API_KEY no ambiente do servidor.' });
 
