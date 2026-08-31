@@ -129,10 +129,14 @@ function calcularTde(generalidades = {}, documentoDestinatario = '') {
 }
 
 export function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 0, pesoKg = 0, documentoDestinatario = '' }) {
-  const adValPercentual = taxaDestino.adVal ?? generalidades.adValorem ?? 0;
-  const adValMinimo = taxaDestino.adValMinimo ?? generalidades.adValoremMinimo ?? 0;
-  const grisPercentual = taxaDestino.gris ?? generalidades.gris ?? 0;
-  const grisMinimo = taxaDestino.grisMinimo ?? generalidades.grisMinimo ?? 0;
+  // Campos de taxaDestino vêm de linhas importadas por IBGE, sempre gravadas com
+  // 0 (nunca null/undefined) quando não preenchidas. Por isso 0 aqui significa
+  // "não configurado neste destino", não "zerado propositalmente" — cai para a
+  // generalidade da tabela. Só um valor > 0 no destino prevalece sobre ela.
+  const adValPercentual = toNumber(taxaDestino.adVal) > 0 ? taxaDestino.adVal : (generalidades.adValorem ?? 0);
+  const adValMinimo = toNumber(taxaDestino.adValMinimo) > 0 ? taxaDestino.adValMinimo : (generalidades.adValoremMinimo ?? 0);
+  const grisPercentual = toNumber(taxaDestino.gris) > 0 ? taxaDestino.gris : (generalidades.gris ?? 0);
+  const grisMinimo = toNumber(taxaDestino.grisMinimo) > 0 ? taxaDestino.grisMinimo : (generalidades.grisMinimo ?? 0);
 
   const adValorem = Math.max(toNumber(valorNf) * toPercent(adValPercentual), toNumber(adValMinimo));
   const gris = Math.max(toNumber(valorNf) * toPercent(grisPercentual), toNumber(grisMinimo));

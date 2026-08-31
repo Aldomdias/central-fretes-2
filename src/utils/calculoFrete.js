@@ -375,10 +375,10 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
   const valorFixo = toNumber(cotacao?.valorFixo || cotacao?.taxaAplicada || 0);
   const excesso = toNumber(cotacao?.excesso || cotacao?.excessoPeso || 0);
   const pesoMax = toNumber(cotacao?.pesoMax || cotacao?.pesoLimite || 0);
-  const grisPct = taxaDestino?.gris ?? origem?.generalidades?.gris ?? 0;
-  const adValPct = taxaDestino?.adVal ?? origem?.generalidades?.adValorem ?? 0;
-  const grisMin = taxaDestino?.grisMinimo ?? origem?.generalidades?.grisMinimo ?? 0;
-  const adValMin = taxaDestino?.adValMinimo ?? origem?.generalidades?.adValoremMinimo ?? 0;
+  const grisPct = toNumber(taxaDestino?.gris) > 0 ? taxaDestino.gris : (origem?.generalidades?.gris ?? 0);
+  const adValPct = toNumber(taxaDestino?.adVal) > 0 ? taxaDestino.adVal : (origem?.generalidades?.adValorem ?? 0);
+  const grisMin = toNumber(taxaDestino?.grisMinimo) > 0 ? taxaDestino.grisMinimo : (origem?.generalidades?.grisMinimo ?? 0);
+  const adValMin = toNumber(taxaDestino?.adValMinimo) > 0 ? taxaDestino.adValMinimo : (origem?.generalidades?.adValoremMinimo ?? 0);
 
   return {
     prazo: toNumber(rota?.prazoEntregaDias),
