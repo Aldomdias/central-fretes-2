@@ -1,8 +1,65 @@
 import { useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
+import {
+  criarTabelaNegociacao,
+  substituirItensTabelaNegociacao,
+  atualizarTabelaNegociacao,
+} from '../services/tabelasNegociacaoService';
+import { auditarResultadoIa, normalizarResultadoIa, validarResultadoIa } from '../utils/importacaoIaNegociacao';
+import { getSupabaseClient } from '../lib/supabaseClient';
 
 const CANAIS = ['B2C', 'ATACADO', 'INTERCOMPANY', 'REVERSA', 'A DEFINIR'];
 const TIPOS_ARQUIVO_LEITURA_DIRETA = ['xlsx', 'xls', 'xlsb', 'csv'];
+const LOTE_LINHAS_IA = 40;
+const CONCORRENCIA_IA = 4;
+const TIMEOUT_LOTE_IA_MS = 360000;
+
+const MOTORES_IA = {
+  kimi: { nome: 'kimi', label: 'Kimi', endpoint: '/api/importacao-ia-tabelas' },
+  openai: { nome: 'openai', label: 'OpenAI', endpoint: '/api/importacao-ia-openai' },
+};
+
+async function processarLotesComConcorrencia(lotes, concorrencia, worker, aoConcluirUm) {
+  const resultados = new Array(lotes.length);
+  let proximo = 0;
+  let concluidos = 0;
+  async function trabalhador() {
+    while (proximo < lotes.length) {
+      const indice = proximo;
+      proximo += 1;
+      resultados[indice] = await worker(lotes[indice], indice);
+      concluidos += 1;
+      aoConcluirUm?.(concluidos, lotes.length);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concorrencia, lotes.length) }, trabalhador));
+  return resultados;
+}
+
+function mesclarResultadosIa(lista) {
+  const validos = lista.filter(Boolean);
+  if (!validos.length) return {};
+  const base = validos.find((r) => r.transportadora || r.origem?.cidade) || validos[0];
+  const generalidades = validos.reduce((acc, r) => Object.assign(acc, r.generalidades || {}), {});
+  const observacoes = Array.from(new Set(validos.flatMap((r) => r.resumo?.observacoes || [])));
+  const prazosPendentes = validos.reduce((soma, r) => soma + (Number(r.resumo?.prazos_pendentes) || 0), 0);
+  const coberturas = validos.map((r) => Number(r.resumo?.cobertura_percentual)).filter((v) => Number.isFinite(v));
+  return {
+    transportadora: base.transportadora,
+    origem: base.origem,
+    vigencia: base.vigencia,
+    modelo: base.modelo,
+    rotas: validos.flatMap((r) => r.rotas || []),
+    fretes: validos.flatMap((r) => r.fretes || []),
+    generalidades,
+    gaps: validos.flatMap((r) => r.gaps || []),
+    resumo: {
+      cobertura_percentual: coberturas.length ? Math.round(coberturas.reduce((a, b) => a + b, 0) / coberturas.length) : 0,
+      prazos_pendentes: prazosPendentes,
+      observacoes,
+    },
+  };
+}
 
 const PROMPT_MESTRE_VERUM = `
 Voce e um motor de normalizacao de tabelas de frete. Recebe arquivo de transportadora em qualquer formato/layout (planilha, PDF, imagem de tabela) e devolve dois arrays JSON: fretes[] e rotas[], no padrao Verum/Central de Fretes.
@@ -198,6 +255,19 @@ function valor(row, coluna) {
   return coluna ? row[coluna] : '';
 }
 
+function deduplicarLinhasParaIa(linhas, mapeamento) {
+  const camposChave = ['origem', 'ufOrigem', 'destino', 'ufDestino', 'rota', 'pesoMin', 'pesoMax', 'taxa', 'percentual', 'freteMinimo', 'excesso', 'prazo'];
+  const vistos = new Set();
+  const unicas = [];
+  linhas.forEach((row) => {
+    const chave = camposChave.map((campo) => limpar(valor(row, mapeamento[campo])).toUpperCase()).join('|');
+    if (vistos.has(chave)) return;
+    vistos.add(chave);
+    unicas.push(row);
+  });
+  return unicas;
+}
+
 function montarSaidaPadrao({ linhas, mapeamento, transportadora, canal, inicioVigencia, fimVigencia }) {
   const rotasMap = new Map();
   const fretes = [];
@@ -271,7 +341,7 @@ function statusCampo(coluna) {
   return coluna ? 'ok' : 'pendente';
 }
 
-export default function ImportacaoIaTabelasPage() {
+export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
   const inputRef = useRef(null);
   const [arquivo, setArquivo] = useState(null);
   const [linhas, setLinhas] = useState([]);
@@ -283,6 +353,9 @@ export default function ImportacaoIaTabelasPage() {
   const [mensagem, setMensagem] = useState('');
   const [carregando, setCarregando] = useState(false);
   const [mostrarPrompt, setMostrarPrompt] = useState(false);
+  const [resultadoIa, setResultadoIa] = useState(null);
+  const [processandoIa, setProcessandoIa] = useState(false);
+  const [salvando, setSalvando] = useState(false);
 
   const cabecalhos = useMemo(() => {
     const set = new Set();
@@ -298,6 +371,12 @@ export default function ImportacaoIaTabelasPage() {
     inicioVigencia,
     fimVigencia,
   }), [linhas, mapeamento, transportadora, canal, inicioVigencia, fimVigencia]);
+
+  const falhasResultado = useMemo(() => resultadoIa
+    ? auditarResultadoIa(resultadoIa, { mapeamento, cabecalhos, totalLinhas: linhas.length })
+    : [], [resultadoIa, mapeamento, cabecalhos, linhas.length]);
+  const falhasBloqueantes = falhasResultado.filter((item) => item.severidade === 'BLOQUEANTE');
+  const falhasAlerta = falhasResultado.filter((item) => item.severidade === 'ALERTA');
 
   const camposObrigatorios = [
     ['origem', 'Origem'],
@@ -350,6 +429,109 @@ export default function ImportacaoIaTabelasPage() {
     setMapeamento((prev) => ({ ...prev, [campo]: coluna }));
   }
 
+  async function processarComIa(motor) {
+    if (!arquivo || !linhas.length) return setMensagem('Anexe uma planilha Excel/CSV antes de processar com IA.');
+    if (!transportadora.trim()) return setMensagem('Informe a transportadora antes de processar.');
+    if (!inicioVigencia || !fimVigencia) return setMensagem('Informe a vigência antes de processar.');
+    setProcessandoIa(motor.nome);
+    setResultadoIa(null);
+    setMensagem(`${motor.label} está analisando e normalizando a tabela...`);
+    try {
+      const supabase = getSupabaseClient();
+      const { data: sessaoData } = supabase ? await supabase.auth.getSession() : { data: null };
+      const accessToken = sessaoData?.session?.access_token || '';
+      const linhasUnicas = deduplicarLinhasParaIa(linhas, mapeamento);
+      const lotes = [];
+      for (let i = 0; i < linhasUnicas.length; i += LOTE_LINHAS_IA) lotes.push(linhasUnicas.slice(i, i + LOTE_LINHAS_IA));
+
+      setMensagem(`${linhasUnicas.length.toLocaleString('pt-BR')} linha(s) única(s) de ${linhas.length.toLocaleString('pt-BR')} lida(s). ${motor.label} está analisando... 0/${lotes.length} lote(s)`);
+      let ultimoModelo = '';
+      const respostasLotes = await processarLotesComConcorrencia(
+        lotes,
+        CONCORRENCIA_IA,
+        async (loteLinhas, indice) => {
+          const controlador = new AbortController();
+          const timeoutId = window.setTimeout(() => controlador.abort(), TIMEOUT_LOTE_IA_MS);
+          try {
+            const resposta = await fetch(motor.endpoint, {
+              method: 'POST',
+              signal: controlador.signal,
+              headers: {
+                'Content-Type': 'application/json',
+                ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+              },
+              body: JSON.stringify({
+                arquivo: arquivo.name,
+                linhas: loteLinhas,
+                contexto: { transportadora, canal, inicioVigencia, fimVigencia },
+              }),
+            });
+            const payload = await resposta.json().catch(() => ({}));
+            if (!resposta.ok) throw new Error(payload.erro ? `Lote ${indice + 1}/${lotes.length}: ${payload.erro}` : 'Falha ao processar com IA.');
+            ultimoModelo = payload.modelo || ultimoModelo;
+            return payload.resultado;
+          } catch (erro) {
+            if (erro?.name === 'AbortError') throw new Error(`Lote ${indice + 1}/${lotes.length}: ${motor.label} não respondeu em ${TIMEOUT_LOTE_IA_MS / 1000}s.`);
+            throw erro;
+          } finally {
+            window.clearTimeout(timeoutId);
+          }
+        },
+        (concluidos, total) => setMensagem(`${motor.label} está analisando e normalizando a tabela... ${concluidos}/${total} lote(s)`),
+      );
+
+      const resultadoBruto = mesclarResultadosIa(respostasLotes);
+      const normalizado = normalizarResultadoIa(resultadoBruto, { transportadora });
+      setResultadoIa(normalizado);
+      setMensagem(`Análise concluída com ${ultimoModelo} em ${lotes.length} lote(s): ${normalizado.rotas.length} rota(s), ${normalizado.fretes.length} frete(s) e ${normalizado.gaps.length} gap(s).`);
+    } catch (error) {
+      setMensagem(error?.message || 'Não foi possível processar a tabela com IA.');
+    } finally {
+      setProcessandoIa(false);
+    }
+  }
+
+  async function disponibilizarParaNegociacao() {
+    if (!resultadoIa) return;
+    const erros = validarResultadoIa(resultadoIa, { mapeamento, cabecalhos, totalLinhas: linhas.length });
+    if (erros.length) return setMensagem(`Revise antes de salvar: ${erros.join(' ')}`);
+    setSalvando(true);
+    setMensagem('Criando negociação e salvando rotas, fretes e generalidades...');
+    try {
+      const origem = resultadoIa.origem || {};
+      const tabela = await criarTabelaNegociacao({
+        transportadora: resultadoIa.transportadora,
+        canal,
+        tipo_negociacao: 'NOVA_TABELA',
+        tipo_tabela: 'FRACIONADO',
+        origem: origem.cidade || '',
+        uf_origem: origem.uf || '',
+        data_inicio_prevista: resultadoIa.vigencia?.inicio || inicioVigencia,
+        origem_importacao: 'IMPORTACAO_IA_KIMI_K3',
+        generalidades: resultadoIa.generalidades,
+        observacao: `Importado por IA do arquivo ${arquivo?.name || ''}. ${falhasResultado.length} possível(is) falha(s) mapeada(s).`,
+        usuario,
+      });
+      await substituirItensTabelaNegociacao(tabela, resultadoIa.itens, {
+        modo: 'total',
+        origemImportacao: 'IMPORTACAO_IA_KIMI_K3',
+        arquivo: arquivo?.name,
+      });
+      await atualizarTabelaNegociacao(tabela.id, {
+        status: 'EM TESTE',
+        incluir_simulacao: true,
+        data_inicio_vigencia: resultadoIa.vigencia?.inicio || inicioVigencia,
+        generalidades: resultadoIa.generalidades,
+      });
+      setMensagem('Tabela disponibilizada em Negociações. A publicação oficial continuará bloqueada até aprovação do gestor.');
+      window.setTimeout(() => onMudarPagina?.('tabelas-negociacao'), 900);
+    } catch (error) {
+      setMensagem(error?.message || 'Não foi possível criar a negociação.');
+    } finally {
+      setSalvando(false);
+    }
+  }
+
   return (
     <div className="page-shell formatacao-shell">
       <div className="page-top between">
@@ -360,13 +542,19 @@ export default function ImportacaoIaTabelasPage() {
         </div>
         <div className="toolbar-wrap">
           <button className="btn-secondary" type="button" onClick={() => setMostrarPrompt((v) => !v)}>Prompt IA</button>
+          <button className="btn-primary" type="button" onClick={() => processarComIa(MOTORES_IA.kimi)} disabled={!!processandoIa || !linhas.length}>
+            {processandoIa === 'kimi' ? 'Processando com Kimi...' : 'Processar com IA (Kimi)'}
+          </button>
+          <button className="btn-primary" type="button" onClick={() => processarComIa(MOTORES_IA.openai)} disabled={!!processandoIa || !linhas.length}>
+            {processandoIa === 'openai' ? 'Processando com OpenAI...' : 'Processar com IA (OpenAI)'}
+          </button>
           <button className="btn-primary" type="button" onClick={() => inputRef.current?.click()} disabled={carregando}>
             {carregando ? 'Lendo arquivo...' : 'Anexar arquivo'}
           </button>
           <input
             ref={inputRef}
             type="file"
-            accept=".xlsx,.xls,.xlsb,.csv,.pdf,.png,.jpg,.jpeg"
+            accept=".xlsx,.xls,.xlsb,.csv"
             onChange={selecionarArquivo}
             hidden
           />
@@ -414,6 +602,34 @@ export default function ImportacaoIaTabelasPage() {
             <button className="btn-secondary" type="button" onClick={() => navigator.clipboard?.writeText(promptIa)}>Copiar prompt</button>
           </div>
           <textarea value={promptIa} readOnly rows={12} style={{ width: '100%', fontFamily: 'monospace', fontSize: 12 }} />
+        </section>
+      ) : null}
+
+      {resultadoIa ? (
+        <section className="panel-card formatacao-section">
+          <div className="section-header-inline">
+            <h3>Revisão da IA</h3>
+            <button className="btn-primary" type="button" onClick={disponibilizarParaNegociacao} disabled={salvando || falhasBloqueantes.length > 0}>
+              {salvando ? 'Salvando...' : 'Disponibilizar para negociação'}
+            </button>
+          </div>
+          <div className="inline-meta">
+            <span>Rotas: <strong>{resultadoIa.rotas.length.toLocaleString('pt-BR')}</strong></span>
+            <span>Fretes: <strong>{resultadoIa.fretes.length.toLocaleString('pt-BR')}</strong></span>
+            <span>Generalidades: <strong>{Object.keys(resultadoIa.generalidades || {}).length}</strong></span>
+            <span>Bloqueantes: <strong>{falhasBloqueantes.length}</strong></span>
+            <span>Alertas: <strong>{falhasAlerta.length}</strong></span>
+          </div>
+          {falhasResultado.length ? (
+            <div className="formatacao-alert compact-top-gap">
+              {falhasResultado.slice(0, 30).map((gap, index) => (
+                <div key={`${gap.codigo || gap.tipo}-${index}`}>
+                  <strong>[{gap.severidade}] {gap.codigo || gap.tipo}:</strong> {gap.descricao}
+                </div>
+              ))}
+            </div>
+          ) : <div className="formatacao-alert compact-top-gap">Nenhuma falha estrutural encontrada.</div>}
+          {falhasBloqueantes.length ? <p className="muted-text">Corrija as falhas bloqueantes antes de disponibilizar a tabela para negociação.</p> : null}
         </section>
       ) : null}
 
