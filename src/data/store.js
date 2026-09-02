@@ -18,6 +18,7 @@ import {
 import { registrarAlteracaoTransportadora } from '../services/auditoriaTransportadorasService';
 import { normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
 import { normalizarRegrasTde } from '../utils/tde.js';
+import { usuarioEhGestorAuditoria } from '../utils/authLocal';
 
 const STORAGE_KEY = 'simulador-fretes-local-v6';
 
@@ -309,6 +310,12 @@ export function useFreteStore(sessao = null) {
     };
   }, []);
 
+  // Só Gestão e Gestor de Auditoria de Fretes podem alterar cadastros de
+  // transportadoras. Guard central: qualquer método que grave dado passa por
+  // aqui primeiro, independente de qual botão da tela chamou.
+  const podeEditarTransportadoras = () => usuarioEhGestorAuditoria(sessao);
+  const ERRO_SEM_PERMISSAO = 'Apenas Gestão ou Gestor de Auditoria de Fretes podem alterar transportadoras.';
+
   function salvarAutomaticamente(next, acao = 'alteração', secao = 'cadastros') {
     // As alterações na tela de Transportadoras ficam como rascunho local.
     // O envio ao Supabase agora acontece somente pelo botão "Salvar alterações"
@@ -357,6 +364,7 @@ export function useFreteStore(sessao = null) {
     () => ({
       transportadoras,
       syncStatus,
+      podeEditarTransportadoras: podeEditarTransportadoras(),
       async atualizarResumo() {
         if (!bancoConfigurado()) {
           setSyncStatus((prev) => ({
@@ -468,6 +476,7 @@ export function useFreteStore(sessao = null) {
         }
       },
       async importarESalvar(payload, tipo) {
+        if (!podeEditarTransportadoras()) return { ok: false, erro: new Error(ERRO_SEM_PERMISSAO) };
         const next = mergeImport(transportadoras, payload, tipo);
         const normalized = (next || []).map(normalizeTransportadora);
         setTransportadoras(normalized);
@@ -496,6 +505,7 @@ export function useFreteStore(sessao = null) {
         }
       },
       async importarLoteESalvar(payloads, tipo) {
+        if (!podeEditarTransportadoras()) return { ok: false, erro: new Error(ERRO_SEM_PERMISSAO) };
         const listaPayloads = Array.isArray(payloads) ? payloads.filter(Boolean) : [];
         if (!listaPayloads.length) return { ok: true, modo: bancoConfigurado() ? 'supabase' : 'local' };
 
@@ -584,6 +594,7 @@ export function useFreteStore(sessao = null) {
         }
       },
       async salvarTransportadoraCompleta(transportadoraId, origemId = null) {
+        if (!podeEditarTransportadoras()) return { ok: false, erro: new Error(ERRO_SEM_PERMISSAO) };
         if (!bancoConfigurado()) {
           return { ok: false, erro: new Error('Supabase não configurado. A base foi mantida apenas localmente.') };
         }
@@ -647,9 +658,11 @@ export function useFreteStore(sessao = null) {
         return this.salvarTransportadoraCompleta(transportadoraId, origemId);
       },
       resetarBase() {
+        if (!podeEditarTransportadoras()) return;
         setTransportadoras([]);
       },
       async salvarGeneralidades(transportadoraId, origemId, generalidades) {
+        if (!podeEditarTransportadoras()) return { ok: false, erro: new Error(ERRO_SEM_PERMISSAO) };
         const generalidadesAtualizadas = mergeGeneralidades(generalidades);
         const origemAnterior = (transportadoras || []).find((t) => String(t.id) === String(transportadoraId))
           ?.origens?.find((o) => String(o.id) === String(origemId));
@@ -698,6 +711,7 @@ export function useFreteStore(sessao = null) {
       // TDE por CNPJ do destinatário: valor + lista de CNPJs valem para a
       // transportadora inteira (todas as origens), não por origem.
       atualizarTde(transportadoraId, { tde, tdeCnpjs } = {}) {
+        if (!podeEditarTransportadoras()) return;
         aplicarAlteracao(
           (prev) =>
             prev.map((t) =>
@@ -716,6 +730,7 @@ export function useFreteStore(sessao = null) {
         );
       },
       salvarOrigem(transportadoraId, origem) {
+        if (!podeEditarTransportadoras()) return;
         aplicarAlteracao(
           (prev) =>
             prev.map((t) => {
@@ -734,6 +749,7 @@ export function useFreteStore(sessao = null) {
       // Marca/desmarca a origem como validada (tabela conferida via simulação/auditoria).
       // Salva direto no Supabase (não fica pendente de "Salvar alterações").
       async marcarOrigemValidada(transportadoraId, origemId, validado, usuarioNome) {
+        if (!podeEditarTransportadoras()) return { ok: false, erro: new Error(ERRO_SEM_PERMISSAO) };
         const validadoEm = validado ? new Date().toISOString() : null;
         const validadoPor = validado ? (usuarioNome || null) : null;
 
@@ -772,6 +788,7 @@ export function useFreteStore(sessao = null) {
       // Atualiza só o canal da origem (merge), preservando rotas/cotações/taxas.
       // Usado para trocar o canal direto no card, sem abrir o formulário.
       atualizarCanalOrigem(transportadoraId, origemId, canal) {
+        if (!podeEditarTransportadoras()) return;
         const canalNormalizado = String(canal || 'ATACADO').toUpperCase() === 'AMBOS' ? 'ATACADO+B2C' : canal;
         aplicarAlteracao(
           (prev) =>
@@ -788,6 +805,7 @@ export function useFreteStore(sessao = null) {
       // transportadora. Usado quando a publicacao de uma negociacao criou uma
       // transportadora separada em vez de entrar na que ja existia.
       async transferirOrigem(transportadoraId, origemId, destinoId) {
+        if (!podeEditarTransportadoras()) return { ok: false, erro: new Error(ERRO_SEM_PERMISSAO) };
         if (!destinoId || String(destinoId) === String(transportadoraId)) {
           return { ok: false, erro: 'Escolha uma transportadora de destino diferente.' };
         }
@@ -825,6 +843,7 @@ export function useFreteStore(sessao = null) {
         return { ok: true };
       },
       removerOrigem(transportadoraId, origemId) {
+        if (!podeEditarTransportadoras()) return;
         setTransportadoras((prev) =>
           (prev || []).map((t) =>
             t.id !== transportadoraId
@@ -845,6 +864,7 @@ export function useFreteStore(sessao = null) {
           .catch((error) => erroExclusao(error, 'Erro ao excluir origem no Supabase.'));
       },
       salvarTransportadora(transportadora) {
+        if (!podeEditarTransportadoras()) return;
         aplicarAlteracao(
           (prev) => {
             const normalized = normalizeTransportadora(transportadora);
@@ -858,6 +878,7 @@ export function useFreteStore(sessao = null) {
         );
       },
       async removerTransportadora(id) {
+        if (!podeEditarTransportadoras()) return { ok: false, erro: new Error(ERRO_SEM_PERMISSAO) };
         const transportadoraNome = (transportadoras || []).find((item) => item.id === id)?.nome;
         const removerDoEstado = () => {
           setTransportadoras((prev) => (prev || []).filter((item) => String(item.id) !== String(id)));
@@ -881,6 +902,7 @@ export function useFreteStore(sessao = null) {
         }
       },
       salvarLinha(transportadoraId, origemId, secao, linha) {
+        if (!podeEditarTransportadoras()) return;
         aplicarAlteracao(
           (prev) =>
             prev.map((t) =>
@@ -907,6 +929,7 @@ export function useFreteStore(sessao = null) {
         );
       },
       atualizarCampoSecaoOrigem(transportadoraId, origemId, secao, campo, valor) {
+        if (!podeEditarTransportadoras()) return;
         aplicarAlteracao(
           (prev) => prev.map((t) => t.id !== transportadoraId ? t : ({
             ...t,
@@ -923,6 +946,7 @@ export function useFreteStore(sessao = null) {
       // o problema de chamar salvarLinha em loop, onde cada chamada lê o estado
       // anterior a qualquer uma das outras e só a última sobrevive.
       reajustarSecaoOrigem(transportadoraId, origemId, secao, ajustesPercentuais = {}) {
+        if (!podeEditarTransportadoras()) return;
         const ajustes = Object.entries(ajustesPercentuais).filter(([, pct]) => Number(pct));
         if (!ajustes.length) return;
         aplicarAlteracao(
@@ -956,6 +980,7 @@ export function useFreteStore(sessao = null) {
         );
       },
       removerLinha(transportadoraId, origemId, secao, linhaId) {
+        if (!podeEditarTransportadoras()) return;
         setTransportadoras((prev) =>
           (prev || []).map((t) =>
             t.id !== transportadoraId
@@ -983,9 +1008,11 @@ export function useFreteStore(sessao = null) {
           .catch((error) => erroExclusao(error, `Erro ao excluir ${secao} no Supabase.`));
       },
       importarPayload(payload, tipo) {
+        if (!podeEditarTransportadoras()) return;
         aplicarAlteracao((prev) => mergeImport(prev, payload, tipo), tipo, tipo);
       },
       limparSecaoOrigem(transportadoraId, origemId, secao) {
+        if (!podeEditarTransportadoras()) return;
         setTransportadoras((prev) =>
           (prev || []).map((t) =>
             t.id !== transportadoraId

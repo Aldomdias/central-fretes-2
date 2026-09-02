@@ -458,10 +458,10 @@ function TdeSection({ transportadora, store }) {
         documento (CNPJ) do destinatário do CT-e está cadastrado. Cada CNPJ pode ter um valor diferente.
       </p>
       <div style={{ display: 'flex', gap: 12, alignItems: 'end', flexWrap: 'wrap' }}>
-        <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar TDEs por CNPJ</button>
+        {store.podeEditarTransportadoras ? <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar TDEs por CNPJ</button> : null}
         <button className="btn-secondary" onClick={baixarModeloCnpjs}>Baixar modelo</button>
         <button className="btn-secondary" onClick={() => exportarTdesCadastradas(regras, transportadora.nome)} disabled={!regras.length}>Exportar cadastro</button>
-        <button className="btn-danger" onClick={limparCnpjs} disabled={!regras.length}>Excluir TDEs</button>
+        {store.podeEditarTransportadoras ? <button className="btn-danger" onClick={limparCnpjs} disabled={!regras.length}>Excluir TDEs</button> : null}
         <input hidden ref={inputRef} type="file" accept=".xlsx,.xls,.csv" onChange={importarCnpjs} />
         <span style={{ fontSize: 12, color: 'var(--muted)' }}><strong>{regras.length}</strong> CNPJ(s) com TDE</span>
       </div>
@@ -486,6 +486,7 @@ function formatCoringasTaxa(taxasExtras = []) {
 }
 
 function TaxasEspeciaisTab({ origem, transportadora, store }) {
+  const podeEditar = store.podeEditarTransportadoras;
   const [form, setForm] = React.useState(TAXA_ESP_VAZIA);
   const [editando, setEditando] = React.useState(null);
   const [feedback, setFeedback] = React.useState(null);
@@ -544,8 +545,8 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
           {feedback && <span style={{ fontSize: 12, color: feedback.type === 'ok' ? '#166534' : '#b91c1c' }}>{feedback.text}</span>}
           <button className="btn-secondary" onClick={() => exportarSecao('taxas', exportRows, `${origem.cidade}-taxas.xlsx`)} disabled={!rows.length}>Exportar</button>
           <button className="btn-secondary" onClick={() => baixarModelo('taxas')}>Baixar Modelo</button>
-          <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar</button>
-          <button className="btn-danger" onClick={() => store.limparSecaoOrigem(transportadora.id, origem.id, 'taxasEspeciais')}>Excluir Tudo</button>
+          {podeEditar ? <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar</button> : null}
+          {podeEditar ? <button className="btn-danger" onClick={() => store.limparSecaoOrigem(transportadora.id, origem.id, 'taxasEspeciais')}>Excluir Tudo</button> : null}
           <input hidden ref={inputRef} type="file" accept=".xlsx,.xls,.csv" onChange={importarArquivo} />
         </div>
       </div>
@@ -559,8 +560,8 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
                 <td>{row.suframa || '—'}</td><td>{row.outras || '—'}</td><td>{row.gris || '—'}</td><td>{row.grisMinimo || '—'}</td><td>{row.adVal || '—'}</td><td>{row.adValMinimo || '—'}</td>
                 <td>{formatCoringasTaxa(row.taxasExtras)}</td>
                 <td className="row-actions">
-                  <ActionIcon onClick={() => editar(row)}>✎</ActionIcon>
-                  <ActionIcon danger onClick={() => store.removerLinha(transportadora.id, origem.id, 'taxasEspeciais', row.id)}>🗑</ActionIcon>
+                  {podeEditar ? <ActionIcon onClick={() => editar(row)}>✎</ActionIcon> : null}
+                  {podeEditar ? <ActionIcon danger onClick={() => store.removerLinha(transportadora.id, origem.id, 'taxasEspeciais', row.id)}>🗑</ActionIcon> : null}
                 </td>
               </tr>
             )) : <tr><td colSpan={11} className="empty-cell">Nenhuma taxa cadastrada.</td></tr>}
@@ -602,7 +603,7 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
         </div>
 
         <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-          <button className="btn-primary" onClick={salvar} disabled={!form.ibgeDestino}>{editando ? 'Atualizar taxa' : 'Adicionar taxa'}</button>
+          <button className="btn-primary" onClick={salvar} disabled={!form.ibgeDestino || !podeEditar}>{editando ? 'Atualizar taxa' : 'Adicionar taxa'}</button>
           {!form.ibgeDestino && <small style={{ alignSelf: 'center', color: '#b45309' }}>Informe o IBGE do destino para incluir esta taxa.</small>}
           {editando && <button className="btn-secondary" onClick={() => { setEditando(null); setForm(TAXA_ESP_VAZIA); }}>Cancelar</button>}
         </div>
@@ -1002,13 +1003,14 @@ function GeneralidadesTab({ transportadoraId, origem, store }) {
       <div className="actions-right top-space" style={{ alignItems: 'center', gap: 12 }}>
         {feedback === 'ok' ? <span style={{ color: '#166534', fontWeight: 600, fontSize: 13 }}>✓ Generalidades desta origem salvas diretamente no Supabase.</span> : null}
         {feedback.startsWith('erro:') ? <span style={{ color: '#b91c1c', fontWeight: 600, fontSize: 13 }}>{feedback.slice(5)}</span> : null}
-        <button className="btn-primary" onClick={salvar} disabled={salvando}>{salvando ? 'Salvando...' : 'Salvar Generalidades'}</button>
+        <button className="btn-primary" onClick={salvar} disabled={salvando || !store.podeEditarTransportadoras} title={!store.podeEditarTransportadoras ? 'Apenas Gestão ou Gestor de Auditoria de Fretes podem alterar transportadoras.' : undefined}>{salvando ? 'Salvando...' : 'Salvar Generalidades'}</button>
       </div>
     </div>
   );
 }
 
 function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, columns, fields, hint }) {
+  const podeEditar = store.podeEditarTransportadoras;
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [inconsistenciasOpen, setInconsistenciasOpen] = useState(false);
@@ -1100,12 +1102,12 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
         <div className="toolbar-wrap compact">
           <button className="btn-secondary" onClick={() => exportarSecao(tipoImportacao, exportRows, `${origem.cidade}-${tipoImportacao}.xlsx`)}>Exportar</button>
           <button className="btn-secondary" onClick={() => baixarModelo(tipoImportacao)}>Baixar Modelo</button>
-          <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar</button>
-          <button className="btn-secondary" onClick={() => setReajustePanelOpen((v) => !v)} disabled={!rows.length}>
+          {podeEditar ? <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar</button> : null}
+          <button className="btn-secondary" onClick={() => setReajustePanelOpen((v) => !v)} disabled={!rows.length || !podeEditar}>
             {reajustePanelOpen ? 'Fechar reajuste' : 'Reajustar em massa'}
           </button>
-          <button className="btn-danger" onClick={() => store.limparSecaoOrigem(transportadora.id, origem.id, secao)}>Excluir Tudo</button>
-          <button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Novo</button>
+          {podeEditar ? <button className="btn-danger" onClick={() => store.limparSecaoOrigem(transportadora.id, origem.id, secao)}>Excluir Tudo</button> : null}
+          {podeEditar ? <button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Novo</button> : null}
           <input hidden ref={inputRef} type="file" accept=".xlsx,.xls,.csv" onChange={importarArquivo} />
         </div>
       </div>
@@ -1119,7 +1121,7 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
               <option value="PESO_MAIS_PERCENTUAL">Excesso/peso + percentual, respeitando o frete mínimo</option>
             </select>
           </label>
-          <button className="btn-primary" onClick={salvarComposicaoGeral} disabled={!rows.length}>Aplicar em todas ({rows.length})</button>
+          <button className="btn-primary" onClick={salvarComposicaoGeral} disabled={!rows.length || !podeEditar}>Aplicar em todas ({rows.length})</button>
           <span style={{ width: '100%', fontSize: 12, color: '#64748b' }}>A regra geral vale somente para cotações do tipo percentual desta origem; faixas de peso continuam com o cálculo atual. Uma exceção definida dentro de uma linha tem prioridade.</span>
         </div>
       ) : null}
@@ -1147,7 +1149,7 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
               />
             </label>
           ))}
-          <button className="btn-primary" onClick={aplicarReajusteEmMassa} disabled={aplicandoReajuste}>
+          <button className="btn-primary" onClick={aplicarReajusteEmMassa} disabled={aplicandoReajuste || !podeEditar}>
             {aplicandoReajuste ? 'Aplicando...' : `Aplicar em ${rows.length} registro(s)`}
           </button>
           <span style={{ fontSize: 12, color: '#64748b', width: '100%' }}>
@@ -1163,8 +1165,8 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
               <tr key={row.id}>
                 {columns.map((c) => <td key={c.key}>{c.render ? c.render(row[c.key], row) : (row[c.key] ?? '—')}</td>)}
                 <td className="row-actions">
-                  <ActionIcon onClick={() => { setEditing(row); setModalOpen(true); }}>✎</ActionIcon>
-                  <ActionIcon danger onClick={() => store.removerLinha(transportadora.id, origem.id, secao, row.id)}>🗑</ActionIcon>
+                  {podeEditar ? <ActionIcon onClick={() => { setEditing(row); setModalOpen(true); }}>✎</ActionIcon> : null}
+                  {podeEditar ? <ActionIcon danger onClick={() => store.removerLinha(transportadora.id, origem.id, secao, row.id)}>🗑</ActionIcon> : null}
                 </td>
               </tr>
             )) : <tr><td colSpan={columns.length + 1} className="empty-cell">{filtroTexto ? 'Nenhum registro encontrado para o filtro.' : 'Nenhum registro cadastrado.'}</td></tr>}
@@ -1344,7 +1346,7 @@ function TransportadorasList({ items, onOpen, store }) {
               ? `Repropagando... ${progressoRepropagacao ? `${progressoRepropagacao.carregados}/${progressoRepropagacao.total}` : ''}`
               : '🔁 Repropagar auditores pendentes'}
           </button>
-          <button className="btn-secondary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Transportadora</button>
+          {store.podeEditarTransportadoras ? <button className="btn-secondary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Transportadora</button> : null}
         </div>
       </div>
       {feedbackRepropagacao && <div className="hint-box top-space compact">{feedbackRepropagacao}</div>}
@@ -1455,8 +1457,8 @@ function TransportadorasList({ items, onOpen, store }) {
                   </span>
                 ) : null}
                 <span className="status-pill dark">{item.status}</span>
-                <ActionIcon onClick={() => { setEditing(item); setModalOpen(true); }}>✎</ActionIcon>
-                <ActionIcon danger onClick={() => confirmarRemocaoTransportadora(item)}>🗑</ActionIcon>
+                {store.podeEditarTransportadoras ? <ActionIcon onClick={() => { setEditing(item); setModalOpen(true); }}>✎</ActionIcon> : null}
+                {store.podeEditarTransportadoras ? <ActionIcon danger onClick={() => confirmarRemocaoTransportadora(item)}>🗑</ActionIcon> : null}
               </div>
             </div>
           );
@@ -1564,6 +1566,8 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   const [origemTransferindo, setOrigemTransferindo] = useState(null);
   const [salvandoOrigemId, setSalvandoOrigemId] = useState(null);
   const { vinculosDaTransportadora, carteiraDaTransportadora, auditorNomes, salvarAuditor, analisarAntesDeSalvar, recarregarVinculos, adicionarVinculo, removerVinculo } = useVinculosEAuditores();
+  const podeEditar = store.podeEditarTransportadoras;
+  const tituloSemPermissao = 'Apenas Gestão ou Gestor de Auditoria de Fretes podem alterar transportadoras.';
 
   // Mesma pergunta de 2 etapas que existe no Centro de Gestores, agora tambem
   // aqui: sem isso, atribuir auditor pela tela de Transportadoras nunca
@@ -1638,7 +1642,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   return (
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← Transportadoras</button>
-      <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{origensBase.length} origem(ns)</span>{store.syncStatus?.rascunhoLocal ? <span className="status-pill light">Rascunho local</span> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={atualizarDadosTransportadora} disabled={store.syncStatus?.carregandoDetalheId === transportadora.id}>Atualizar dados</button><button className="btn-primary" onClick={salvarTransportadoraAtual} disabled={salvando || store.syncStatus?.carregandoDetalheId === transportadora.id}>{salvando ? 'Salvando...' : 'Salvar alterações'}</button><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmd({ origem: '', canal: '' })} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button><button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button></div></div>
+      <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{origensBase.length} origem(ns)</span>{store.syncStatus?.rascunhoLocal ? <span className="status-pill light">Rascunho local</span> : null}{!podeEditar ? <span className="status-pill light" title={tituloSemPermissao}>Somente leitura</span> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={atualizarDadosTransportadora} disabled={store.syncStatus?.carregandoDetalheId === transportadora.id}>Atualizar dados</button>{podeEditar ? <button className="btn-primary" onClick={salvarTransportadoraAtual} disabled={salvando || store.syncStatus?.carregandoDetalheId === transportadora.id}>{salvando ? 'Salvando...' : 'Salvar alterações'}</button> : null}<button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmd({ origem: '', canal: '' })} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button>{podeEditar ? <button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button> : null}</div></div>
       {feedbackChamado ? <div className="mini-feedback success top-space">{feedbackChamado}</div> : null}
       {store.syncStatus?.carregandoDetalheId === transportadora.id ? (
         <div className="hint-box top-space">
@@ -1681,6 +1685,8 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
                   <button
                     type="button"
                     className="btn-link inline-btn"
+                    disabled={!podeEditar}
+                    title={!podeEditar ? tituloSemPermissao : undefined}
                     onClick={() => (origem.validado
                       ? store.marcarOrigemValidada(transportadora.id, origem.id, false, sessao?.nome)
                       : setOrigemConfirmando(origem))}
@@ -1705,9 +1711,9 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
                 <select
                   value={canalOrigemValor(canaisOrigem(origem))}
                   onChange={(e) => store.atualizarCanalOrigem(transportadora.id, origem.id, e.target.value)}
-                  disabled={!transportadora.detalheCarregado}
-                  title={transportadora.detalheCarregado ? 'Canal desta origem (troca direto, sem abrir)' : 'Abra a transportadora para carregar as rotas antes de trocar o canal'}
-                  style={{ fontSize: 12, padding: '3px 6px', borderRadius: 6, border: '1px solid #cbd5e1', cursor: transportadora.detalheCarregado ? 'pointer' : 'not-allowed' }}
+                  disabled={!transportadora.detalheCarregado || !podeEditar}
+                  title={!podeEditar ? tituloSemPermissao : (transportadora.detalheCarregado ? 'Canal desta origem (troca direto, sem abrir)' : 'Abra a transportadora para carregar as rotas antes de trocar o canal')}
+                  style={{ fontSize: 12, padding: '3px 6px', borderRadius: 6, border: '1px solid #cbd5e1', cursor: transportadora.detalheCarregado && podeEditar ? 'pointer' : 'not-allowed' }}
                 >
                   <option value="ATACADO">ATACADO</option>
                   <option value="B2C">B2C</option>
@@ -1723,23 +1729,23 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
                   🎫 Chamado AMD
                 </button>
                 <span className="status-pill light">{origem.status}</span>
-                <button
+                {podeEditar ? <button
                   className="btn-link inline-btn"
                   title="Mover esta origem (com rotas, fretes e taxas) para outra transportadora"
                   onClick={() => setOrigemTransferindo(origem)}
                 >
                   ↗ Mover
-                </button>
-                <ActionIcon onClick={() => { setEditing(origem); setModalOpen(true); }}>✎</ActionIcon>
-                <ActionIcon danger onClick={() => confirmarRemocaoOrigem(origem)}>🗑</ActionIcon>
-                <button
+                </button> : null}
+                {podeEditar ? <ActionIcon onClick={() => { setEditing(origem); setModalOpen(true); }}>✎</ActionIcon> : null}
+                {podeEditar ? <ActionIcon danger onClick={() => confirmarRemocaoOrigem(origem)}>🗑</ActionIcon> : null}
+                {podeEditar ? <button
                   className="btn-primary inline-btn"
                   title="Salva só as rotas, fretes, taxas e generalidades desta origem"
                   onClick={() => salvarOrigemUnica(origem)}
                   disabled={salvandoOrigemId === origem.id || salvando}
                 >
                   {salvandoOrigemId === origem.id ? 'Salvando...' : '💾 Salvar'}
-                </button>
+                </button> : null}
               </div>
             </div>
           );
@@ -2027,6 +2033,7 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
 }
 
 function CanalTab({ transportadoraId, origem, store }) {
+  const podeEditar = store.podeEditarTransportadoras;
   const canaisAtivos = canaisOrigem(origem);
   const [selecionados, setSelecionados] = useState(canaisAtivos);
   const [novoCanal, setNovoCanal] = useState('');
@@ -2061,6 +2068,7 @@ function CanalTab({ transportadoraId, origem, store }) {
               type="checkbox"
               checked={selecionados.includes(canal)}
               onChange={() => toggle(canal)}
+              disabled={!podeEditar}
               style={{ width: 16, height: 16 }}
             />
             <span style={{ fontWeight: 600, fontSize: 14 }}>{canal}</span>
@@ -2075,7 +2083,7 @@ function CanalTab({ transportadoraId, origem, store }) {
             onKeyDown={e => e.key === 'Enter' && adicionarNovo()}
             style={{ flex: 1 }}
           />
-          <button className="btn-secondary" onClick={adicionarNovo} disabled={!novoCanal.trim()}>
+          <button className="btn-secondary" onClick={adicionarNovo} disabled={!novoCanal.trim() || !podeEditar}>
             Adicionar canal
           </button>
         </div>
@@ -2084,7 +2092,7 @@ function CanalTab({ transportadoraId, origem, store }) {
         <div style={{ fontSize: 12, color: 'var(--muted)', marginRight: 'auto' }}>
           Canal atual: <strong>{canalOrigemValor(selecionados).replace('+', ' + ')}</strong>
         </div>
-        <button className="btn-primary" onClick={salvar} disabled={!selecionados.length}>
+        <button className="btn-primary" onClick={salvar} disabled={!selecionados.length || !podeEditar} title={!podeEditar ? 'Apenas Gestão ou Gestor de Auditoria de Fretes podem alterar transportadoras.' : undefined}>
           Salvar Canal
         </button>
       </div>
@@ -2097,6 +2105,7 @@ function TabButton({ active, children, onClick }) {
 }
 
 function CadastroOrigemTab({ transportadoraId, origem, store }) {
+  const podeEditar = store.podeEditarTransportadoras;
   const [form, setForm] = useState({ cidade: origem.cidade || '', codigoCentro: origem.codigoCentro || origem.codigo_centro || '', cnpj: normalizarCnpj(origem.cnpj), status: origem.status || 'Ativa' });
   const [feedback, setFeedback] = useState('');
 
@@ -2115,16 +2124,16 @@ function CadastroOrigemTab({ transportadoraId, origem, store }) {
     <div className="panel-card">
       <div className="tab-panel-header"><p>Identificação da filial de origem usada nos vínculos por CNPJ.</p></div>
       <div className="form-grid three">
-        <div className="field"><label>Cidade *</label><input value={form.cidade} onChange={(e) => { setForm((prev) => ({ ...prev, cidade: e.target.value })); setFeedback(''); }} /></div>
-        <div className="field"><label>Centro / CD *</label><input value={form.codigoCentro} placeholder="Ex.: 4201" onChange={(e) => { setForm((prev) => ({ ...prev, codigoCentro: String(e.target.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '') })); setFeedback(''); }} /></div>
-        <div className="field"><label>CNPJ da origem *</label><input value={formatarCnpj(form.cnpj)} maxLength={18} placeholder="00.000.000/0000-00" onChange={(e) => { setForm((prev) => ({ ...prev, cnpj: normalizarCnpj(e.target.value) })); setFeedback(''); }} /></div>
+        <div className="field"><label>Cidade *</label><input value={form.cidade} disabled={!podeEditar} onChange={(e) => { setForm((prev) => ({ ...prev, cidade: e.target.value })); setFeedback(''); }} /></div>
+        <div className="field"><label>Centro / CD *</label><input value={form.codigoCentro} placeholder="Ex.: 4201" disabled={!podeEditar} onChange={(e) => { setForm((prev) => ({ ...prev, codigoCentro: String(e.target.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '') })); setFeedback(''); }} /></div>
+        <div className="field"><label>CNPJ da origem *</label><input value={formatarCnpj(form.cnpj)} maxLength={18} placeholder="00.000.000/0000-00" disabled={!podeEditar} onChange={(e) => { setForm((prev) => ({ ...prev, cnpj: normalizarCnpj(e.target.value) })); setFeedback(''); }} /></div>
         <div className="field"><label>Raiz do CNPJ</label><input value={obterRaizCnpj(form.cnpj)} readOnly placeholder="Preenchida automaticamente" /></div>
-        <div className="field"><label>Status</label><select value={form.status} onChange={(e) => { setForm((prev) => ({ ...prev, status: e.target.value })); setFeedback(''); }}><option>Ativa</option><option>Inativa</option></select></div>
+        <div className="field"><label>Status</label><select value={form.status} disabled={!podeEditar} onChange={(e) => { setForm((prev) => ({ ...prev, status: e.target.value })); setFeedback(''); }}><option>Ativa</option><option>Inativa</option></select></div>
       </div>
       {!cnpjPreenchidoValido(form.cnpj) ? <div className="mini-feedback info top-space">Informe o CNPJ completo da origem.</div> : null}
       <div className="actions-right top-space" style={{ alignItems: 'center', gap: 12 }}>
         {feedback ? <span style={{ color: '#166534', fontWeight: 600, fontSize: 13 }}>{feedback}</span> : null}
-        <button className="btn-primary" onClick={salvar} disabled={!String(form.cidade || '').trim() || !String(form.codigoCentro || '').trim() || !cnpjPreenchidoValido(form.cnpj)}>Salvar Cadastro</button>
+        <button className="btn-primary" onClick={salvar} disabled={!podeEditar || !String(form.cidade || '').trim() || !String(form.codigoCentro || '').trim() || !cnpjPreenchidoValido(form.cnpj)} title={!podeEditar ? 'Apenas Gestão ou Gestor de Auditoria de Fretes podem alterar transportadoras.' : undefined}>Salvar Cadastro</button>
       </div>
     </div>
   );
