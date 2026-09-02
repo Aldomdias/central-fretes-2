@@ -1562,6 +1562,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   const [feedbackChamado, setFeedbackChamado] = useState('');
   // null = fechado; objeto = origem escolhida para mover de transportadora
   const [origemTransferindo, setOrigemTransferindo] = useState(null);
+  const [salvandoOrigemId, setSalvandoOrigemId] = useState(null);
   const { vinculosDaTransportadora, carteiraDaTransportadora, auditorNomes, salvarAuditor, analisarAntesDeSalvar, recarregarVinculos, adicionarVinculo, removerVinculo } = useVinculosEAuditores();
 
   // Mesma pergunta de 2 etapas que existe no Centro de Gestores, agora tambem
@@ -1599,11 +1600,21 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   };
 
   const salvarTransportadoraAtual = async () => {
+    const ok = window.confirm(`Salvar TODAS as ${origensBase.length} origem(ns) de ${transportadora.nome}?\n\nEssa é uma operação pesada. Se você alterou só uma origem, use o botão "Salvar" dentro dela.`);
+    if (!ok) return;
     setSalvando(true);
-    setFeedbackSalvar('Salvando alterações no Supabase...');
+    setFeedbackSalvar('Salvando alterações no Supabase (transportadora completa)...');
     const resultado = await store.salvarTransportadoraCompleta?.(transportadora.id);
     setSalvando(false);
     setFeedbackSalvar(resultado?.ok ? (resultado.mensagem || 'Transportadora salva no Supabase.') : (resultado?.erro?.message || 'Não foi possível salvar a transportadora.'));
+  };
+
+  const salvarOrigemUnica = async (origem) => {
+    setSalvandoOrigemId(origem.id);
+    setFeedbackSalvar(`Salvando origem ${origem.cidade || ''}/${canalOrigemLabel(origem)}...`);
+    const resultado = await store.salvarTransportadoraCompleta?.(transportadora.id, origem.id);
+    setSalvandoOrigemId(null);
+    setFeedbackSalvar(resultado?.ok ? (resultado.mensagem || `Origem ${origem.cidade || ''} salva no Supabase.`) : (resultado?.erro?.message || `Não foi possível salvar a origem ${origem.cidade || ''}.`));
   };
 
   const transferirOrigem = async (origem, destinoId) => {
@@ -1721,6 +1732,14 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
                 </button>
                 <ActionIcon onClick={() => { setEditing(origem); setModalOpen(true); }}>✎</ActionIcon>
                 <ActionIcon danger onClick={() => confirmarRemocaoOrigem(origem)}>🗑</ActionIcon>
+                <button
+                  className="btn-primary inline-btn"
+                  title="Salva só as rotas, fretes, taxas e generalidades desta origem"
+                  onClick={() => salvarOrigemUnica(origem)}
+                  disabled={salvandoOrigemId === origem.id || salvando}
+                >
+                  {salvandoOrigemId === origem.id ? 'Salvando...' : '💾 Salvar'}
+                </button>
               </div>
             </div>
           );
