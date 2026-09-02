@@ -964,15 +964,20 @@ function buildResumoTransportadora(transportadora) {
 function GeneralidadesTab({ transportadoraId, origem, store }) {
   const [form, setForm] = useState({ ...DEFAULT_GENERALIDADES, ...(origem.generalidades || {}) });
   const [feedback, setFeedback] = useState('');
+  const [salvando, setSalvando] = useState(false);
   React.useEffect(() => setForm({ ...DEFAULT_GENERALIDADES, ...(origem.generalidades || {}) }), [origem]);
   const update = (field, value) => { setForm((prev) => ({ ...prev, [field]: value })); setFeedback(''); };
 
-  const salvar = () => {
+  const salvar = async () => {
+    setSalvando(true);
     try {
-      store.salvarGeneralidades(transportadoraId, origem.id, form);
+      const resultado = await store.salvarGeneralidades(transportadoraId, origem.id, form);
+      if (resultado?.ok === false) throw resultado.erro || new Error('Erro ao salvar generalidades.');
       setFeedback('ok');
     } catch (e) {
       setFeedback(`erro:${e?.message || 'Erro ao salvar generalidades.'}`);
+    } finally {
+      setSalvando(false);
     }
   };
 
@@ -995,9 +1000,9 @@ function GeneralidadesTab({ transportadoraId, origem, store }) {
         <div className="field full-span"><label>Observações</label><input value={form.observacoes} onChange={(e) => update('observacoes', e.target.value)} /></div>
       </div>
       <div className="actions-right top-space" style={{ alignItems: 'center', gap: 12 }}>
-        {feedback === 'ok' ? <span style={{ color: '#166534', fontWeight: 600, fontSize: 13 }}>✓ Generalidades salvas. Clique em “Salvar alterações” no topo para gravar no Supabase.</span> : null}
+        {feedback === 'ok' ? <span style={{ color: '#166534', fontWeight: 600, fontSize: 13 }}>✓ Generalidades desta origem salvas diretamente no Supabase.</span> : null}
         {feedback.startsWith('erro:') ? <span style={{ color: '#b91c1c', fontWeight: 600, fontSize: 13 }}>{feedback.slice(5)}</span> : null}
-        <button className="btn-primary" onClick={salvar}>Salvar Generalidades</button>
+        <button className="btn-primary" onClick={salvar} disabled={salvando}>{salvando ? 'Salvando...' : 'Salvar Generalidades'}</button>
       </div>
     </div>
   );
@@ -1305,10 +1310,13 @@ function TransportadorasList({ items, onOpen, store }) {
     setValidacaoFiltro('');
   };
 
-  const confirmarRemocaoTransportadora = (item) => {
+  const confirmarRemocaoTransportadora = async (item) => {
     const ok = window.confirm(`Tem certeza que deseja excluir a transportadora ${item?.nome || ''}? Essa ação remove o cadastro da base principal.`);
     if (!ok) return;
-    store.removerTransportadora(item.id);
+    const resultado = await store.removerTransportadora(item.id);
+    if (!resultado?.ok) {
+      window.alert(resultado?.erro?.message || 'Nao foi possivel excluir a transportadora. O cadastro foi mantido.');
+    }
   };
 
   return (

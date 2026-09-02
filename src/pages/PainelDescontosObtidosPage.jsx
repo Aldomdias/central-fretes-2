@@ -369,7 +369,6 @@ function AbaAnoAno() {
   const [linhas, setLinhas] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState('');
-  const [ultimaAtualizacao, setUltimaAtualizacao] = useState(null);
 
   useEffect(() => {
     let cancelado = false;
@@ -895,6 +894,7 @@ export default function PainelDescontosObtidosPage() {
   const [aba, setAba] = useState('mensal');
   const [ano, setAno] = useState(anoAtual());
   const [anosDisponiveis, setAnosDisponiveis] = useState([]);
+  const [ultimaAtualizacao, setUltimaAtualizacao] = useState(null);
   const [linhas, setLinhas] = useState([]);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState('');

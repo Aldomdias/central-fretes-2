@@ -53,6 +53,12 @@ const COLUNAS = [
   ['Peso Cotado (kg)', 'peso_cotado', 'numero'],
   ['Peso Faturado (kg)', 'peso_faturado', 'numero'],
   ['Diferenca de Peso (kg)', 'diferenca_peso', 'numero'],
+  ['Peso Cubado Cotado (kg)', 'peso_cubado_cotado', 'numero'],
+  ['Peso Cubado Faturado (kg)', 'peso_cubado_faturado', 'numero'],
+  ['Diferenca de Peso Cubado (kg)', 'diferenca_peso_cubado', 'numero'],
+  ['Peso Real Cotado (kg)', 'peso_real_cotado', 'numero'],
+  ['Peso Real Faturado (kg)', 'peso_real_faturado', 'numero'],
+  ['Diferenca de Peso Real (kg)', 'diferenca_peso_real', 'numero'],
   ['Cubagem Cotada (m3)', 'cubagem_cotada', 'numero'],
   ['Tem CT-e?', 'tem_cte', 'bool'],
   ['Tem CT-e Complementar?', 'tem_cte_complementar', 'bool'],
@@ -167,6 +173,17 @@ export function parseOrderSnapshotCsv(texto = '') {
       else if (tipo === 'data') registro[campo] = dataIso(valorBruto);
       else registro[campo] = String(valorBruto ?? '').trim();
     });
+    // O layout novo (ago/2026) desmembrou o peso antigo em cubado e real.
+    // Os campos legados continuam preenchidos apenas para compatibilidade de
+    // leitura; o motor novo usa peso_real_* e calcula a cubagem por candidato.
+    if (registro.peso_cotado == null) registro.peso_cotado = registro.peso_cubado_cotado;
+    if (registro.peso_faturado == null) registro.peso_faturado = registro.peso_cubado_faturado;
+    if (registro.diferenca_peso == null) registro.diferenca_peso = registro.diferenca_peso_cubado;
+    // Uma nova importacao pode alterar os pesos que dirigem o calculo. Invalida
+    // os dois cenarios para impedir que um resultado antigo seja reaproveitado.
+    registro.sim_resultado_cotado = null;
+    registro.sim_resultado_faturado = null;
+    registro.sim_status = 'pendente';
     registro.raw = raw;
     return registro;
   }).filter((registro) => registro.pedido);
@@ -506,7 +523,7 @@ export async function diagnosticarResimulacaoEcommerce(filtros = {}, { incluirSe
   return { configurado: true, elegiveis: elegiveis || 0, pendentes: pendentes || 0, ok: ok || 0 };
 }
 
-const CAMPOS_PEDIDO_RESIMULACAO = 'id, pedido, canal, uf, cidade, peso_cotado, peso_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora, cte_uf_origem, cte_cidade_origem, prazo_dias_corridos, cds_com_saldo_venda, cubagem_cotada';
+const CAMPOS_PEDIDO_RESIMULACAO = 'id, pedido, canal, uf, cidade, peso_cubado_cotado, peso_cubado_faturado, peso_real_cotado, peso_real_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora, cte_uf_origem, cte_cidade_origem, prazo_dias_corridos, cds_com_saldo_venda, cubagem_cotada';
 
 // Resolve os codigos de CD do pedido (campo texto, separado por virgula) para as
 // cidades correspondentes via cd_centros, pra restringir a resimulacao so aos CDs
@@ -872,7 +889,7 @@ export async function resimularEcommercePorIds({ ids = [], criterioB2c, pesoBase
 // de selecao criava um checkpoint/progresso novo do zero, perdendo o que ja tinha
 // sido processado (foi exatamente isso que aconteceu e travou o fechamento).
 export function assinaturaFaseamentoEcommerce({ filtros = {}, refazerTudo = false, incluirSemCruzamento = false, pesoBase = 'cotado' } = {}) {
-  return JSON.stringify({ versao: 6, filtros, refazerTudo, incluirSemCruzamento, pesoBase });
+  return JSON.stringify({ versao: 7, filtros, refazerTudo, incluirSemCruzamento, pesoBase });
 }
 
 // Recupera sessoes antigas ainda retomaveis. Antes da tela ter historico proprio,
@@ -1392,7 +1409,7 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
   while (true) {
     let query = supabase
       .from('ecommerce_order_snapshot')
-      .select('id,pedido,data_criacao,sim_status,sim_peso_base,sim_mesma_transportadora,sim_transportadora_ideal,sim_origem_ideal,sim_diferenca_vs_cte,sim_valor_ideal,sim_candidatos,cotado_status:sim_resultado_cotado->>sim_status,cotado_mesma:sim_resultado_cotado->>sim_mesma_transportadora,cotado_transportadora:sim_resultado_cotado->>sim_transportadora_ideal,cotado_origem:sim_resultado_cotado->>sim_origem_ideal,cotado_diferenca:sim_resultado_cotado->>sim_diferenca_vs_cte,cotado_valor:sim_resultado_cotado->>sim_valor_ideal,cotado_candidatos:sim_resultado_cotado->sim_candidatos,faturado_status:sim_resultado_faturado->>sim_status,faturado_mesma:sim_resultado_faturado->>sim_mesma_transportadora,faturado_transportadora:sim_resultado_faturado->>sim_transportadora_ideal,faturado_origem:sim_resultado_faturado->>sim_origem_ideal,faturado_diferenca:sim_resultado_faturado->>sim_diferenca_vs_cte,faturado_valor:sim_resultado_faturado->>sim_valor_ideal,faturado_candidatos:sim_resultado_faturado->sim_candidatos,cte_transportadora,cte_cidade_origem,cte_valor,custo_frete_transportadora,frete_tabela,possui_campanha_frete,frete_a_cobrar_marketplace,adicional_tributario_frete,desconto_campanha_frete,peso_cotado,peso_faturado,diferenca_peso,cubagem_cotada,cidade,uf,canal')
+      .select('id,pedido,data_criacao,sim_status,sim_peso_base,sim_mesma_transportadora,sim_transportadora_ideal,sim_origem_ideal,sim_diferenca_vs_cte,sim_valor_ideal,sim_candidatos,cotado_status:sim_resultado_cotado->>sim_status,cotado_mesma:sim_resultado_cotado->>sim_mesma_transportadora,cotado_transportadora:sim_resultado_cotado->>sim_transportadora_ideal,cotado_origem:sim_resultado_cotado->>sim_origem_ideal,cotado_diferenca:sim_resultado_cotado->>sim_diferenca_vs_cte,cotado_valor:sim_resultado_cotado->>sim_valor_ideal,cotado_candidatos:sim_resultado_cotado->sim_candidatos,faturado_status:sim_resultado_faturado->>sim_status,faturado_mesma:sim_resultado_faturado->>sim_mesma_transportadora,faturado_transportadora:sim_resultado_faturado->>sim_transportadora_ideal,faturado_origem:sim_resultado_faturado->>sim_origem_ideal,faturado_diferenca:sim_resultado_faturado->>sim_diferenca_vs_cte,faturado_valor:sim_resultado_faturado->>sim_valor_ideal,faturado_candidatos:sim_resultado_faturado->sim_candidatos,cte_transportadora,cte_cidade_origem,cte_valor,custo_frete_transportadora,frete_tabela,possui_campanha_frete,frete_a_cobrar_marketplace,adicional_tributario_frete,desconto_campanha_frete,peso_cubado_cotado,peso_cubado_faturado,diferenca_peso_cubado,peso_real_cotado,peso_real_faturado,diferenca_peso_real,cubagem_cotada,cidade,uf,canal')
       .order('id', { ascending: true })
       .limit(limite);
     // O painel financeiro analisa somente resultados concluidos. Ignora o filtro
@@ -1430,9 +1447,9 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
       resumo.total += 1;
       resumo.ressimulados += 1;
       const desvio = Number(sim.sim_diferenca_vs_cte || 0);
-      const pesoCotado = Number(row.peso_cotado || 0);
-      const pesoFaturado = Number(row.peso_faturado || 0);
-      const diferencaPeso = Number(row.diferenca_peso || 0);
+      const pesoCotado = Number(row.peso_real_cotado || 0);
+      const pesoFaturado = Number(row.peso_real_faturado || 0);
+      const diferencaPeso = Number(row.diferenca_peso_real || 0);
       const cubagem = Number(row.cubagem_cotada || 0);
       const pesoCubadoReferencia = cubagem * 300;
       const referenciaPeso = Math.max(pesoCotado, pesoCubadoReferencia, 0);

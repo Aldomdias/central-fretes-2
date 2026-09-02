@@ -16,6 +16,29 @@ function falha(codigo, severidade, descricao, detalhes = {}) {
   return { codigo, tipo: codigo.toLowerCase(), severidade, descricao, ...detalhes };
 }
 
+export function deduplicarLinhasParaIa(linhas = [], mapeamento = {}) {
+  const camposChave = ['origem', 'ufOrigem', 'destino', 'ufDestino', 'rota', 'pesoMin', 'pesoMax', 'taxa', 'percentual', 'freteMinimo', 'excesso', 'prazo'];
+  const vistos = new Set();
+  const unicas = [];
+
+  linhas.forEach((row = {}) => {
+    const valoresMapeados = camposChave.map((campo) => texto(row[mapeamento[campo]]).toUpperCase());
+    const possuiValorMapeado = valoresMapeados.some(Boolean);
+    const chaveLinha = possuiValorMapeado
+      ? `MAPA:${valoresMapeados.join('|')}`
+      : `BRUTA:${JSON.stringify(Object.entries(row)
+        .filter(([campo]) => campo !== '__aba')
+        .sort(([campoA], [campoB]) => campoA.localeCompare(campoB))
+        .map(([campo, valor]) => [campo, texto(valor).toUpperCase()]))}`;
+
+    if (vistos.has(chaveLinha)) return;
+    vistos.add(chaveLinha);
+    unicas.push(row);
+  });
+
+  return unicas;
+}
+
 export function auditarResultadoIa(resultado = {}, contexto = {}) {
   const falhas = [];
   const rotas = Array.isArray(resultado.rotas) ? resultado.rotas : [];

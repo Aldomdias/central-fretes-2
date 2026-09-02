@@ -1,5 +1,14 @@
 import { useEffect, useState } from 'react';
-import { carregarConfiguracaoFila, salvarConfiguracaoFila } from '../services/processamentoFilaService';
+import {
+  carregarConfiguracaoFila,
+  finalizarTarefaPesadaAdmin,
+  finalizarTarefasTravadasAdmin,
+  LIMITE_SEGURO_TAREFA_TRAVADA_MINUTOS,
+  listarProcessamentosPesados,
+  salvarConfiguracaoFila,
+  tarefaPesadaEstaTravada,
+} from '../services/processamentoFilaService';
+import { carregarSessao, usuarioPodeAdministrarUsuarios } from '../utils/authLocal';
 
 export default function FilaProcessamentoConfig() {
   const [orcamentoItens, setOrcamentoItens] = useState(3000);
@@ -9,6 +18,14 @@ export default function FilaProcessamentoConfig() {
   const [mensagem, setMensagem] = useState('');
   const [erro, setErro] = useState('');
   const [infoAtual, setInfoAtual] = useState(null);
+  const [tarefas, setTarefas] = useState([]);
+  const [finalizandoId, setFinalizandoId] = useState('');
+  const administrador = usuarioPodeAdministrarUsuarios(carregarSessao());
+
+  const carregarTarefas = async () => {
+    const linhas = await listarProcessamentosPesados({ limite: 100 });
+    setTarefas(linhas.filter((item) => ['PROCESSANDO', 'AGUARDANDO'].includes(item.status)));
+  };
 
   useEffect(() => {
     let ativo = true;
@@ -23,6 +40,43 @@ export default function FilaProcessamentoConfig() {
     });
     return () => { ativo = false; };
   }, []);
+
+  useEffect(() => {
+    let ativo = true;
+    const atualizar = () => carregarTarefas().catch((error) => { if (ativo) setErro(error.message || 'Erro ao carregar tarefas.'); });
+    atualizar();
+    const timer = window.setInterval(atualizar, 10000);
+    return () => { ativo = false; window.clearInterval(timer); };
+  }, []);
+
+  const confirmarFinalizacao = async (tarefa) => {
+    if (!administrador) return;
+    const motivo = window.prompt(`Motivo para finalizar "${tarefa.titulo}"?\n\nO histórico será preservado e a tarefa ficará como CANCELADO.`);
+    if (!motivo?.trim()) return;
+    if (!window.confirm(`Confirmar a finalização administrativa?\n\n${tarefa.titulo}\nProgresso: ${tarefa.itens_processados || 0}/${tarefa.total_itens || '?'}\nMotivo: ${motivo.trim()}\n\nA vaga e o orçamento serão liberados imediatamente.`)) return;
+    setFinalizandoId(tarefa.id); setErro(''); setMensagem('');
+    try {
+      await finalizarTarefaPesadaAdmin(tarefa.id, motivo);
+      setMensagem(`Tarefa "${tarefa.titulo}" finalizada como CANCELADO. Histórico preservado.`);
+      await carregarTarefas();
+    } catch (error) { setErro(error.message || 'Erro ao finalizar tarefa.'); }
+    finally { setFinalizandoId(''); }
+  };
+
+  const travadas = tarefas.filter((item) => tarefaPesadaEstaTravada(item));
+  const finalizarTravadas = async () => {
+    if (!administrador || !travadas.length) return;
+    const motivo = window.prompt(`Motivo para finalizar ${travadas.length} tarefa(s) sem progresso há pelo menos ${LIMITE_SEGURO_TAREFA_TRAVADA_MINUTOS} minutos?`);
+    if (!motivo?.trim()) return;
+    if (!window.confirm(`Confirmar a finalização de ${travadas.length} tarefa(s) travada(s)?\n\nElas serão marcadas como CANCELADO; nenhum histórico será apagado.`)) return;
+    setFinalizandoId('travadas'); setErro(''); setMensagem('');
+    try {
+      const finalizadas = await finalizarTarefasTravadasAdmin(motivo);
+      setMensagem(`${finalizadas.length} tarefa(s) travada(s) finalizada(s).`);
+      await carregarTarefas();
+    } catch (error) { setErro(error.message || 'Erro ao finalizar tarefas travadas.'); }
+    finally { setFinalizandoId(''); }
+  };
 
   const salvar = async () => {
     setSalvando(true);
@@ -96,6 +150,26 @@ export default function FilaProcessamentoConfig() {
         <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 10 }}>
           Último ajuste por {infoAtual.atualizadoPor}
           {infoAtual.atualizadoEm ? ` em ${new Date(infoAtual.atualizadoEm).toLocaleString('pt-BR')}` : ''}.
+        </div>
+      )}
+
+      {administrador && (
+        <div style={{ marginTop: 24, paddingTop: 18, borderTop: '1px solid var(--border-soft)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div><strong>Tarefas ativas</strong><div style={{ fontSize: 12, color: 'var(--muted)' }}>A ação cancela a tarefa e preserva seu histórico.</div></div>
+            <button type="button" onClick={finalizarTravadas} disabled={!travadas.length || Boolean(finalizandoId)} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #b91c1c', background: travadas.length ? '#fff' : '#f8fafc', color: travadas.length ? '#b91c1c' : '#94a3b8', fontWeight: 700 }}>
+              {finalizandoId === 'travadas' ? 'Finalizando...' : `Finalizar tarefas travadas (${travadas.length})`}
+            </button>
+          </div>
+          <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+            {!tarefas.length && <div style={{ color: 'var(--muted)', fontSize: 13 }}>Nenhuma tarefa processando ou aguardando.</div>}
+            {tarefas.map((tarefa) => <div key={tarefa.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: 12, border: '1px solid var(--border-soft)', borderRadius: 8 }}>
+              <div><strong>{tarefa.titulo}</strong><div style={{ fontSize: 12, color: 'var(--muted)' }}>{tarefa.status} · {Number(tarefa.itens_processados || 0).toLocaleString('pt-BR')}/{Number(tarefa.total_itens || 0).toLocaleString('pt-BR')} · {tarefa.usuario_nome || 'Usuário'}{tarefaPesadaEstaTravada(tarefa) ? ' · SEM PROGRESSO' : ''}</div></div>
+              <button type="button" onClick={() => confirmarFinalizacao(tarefa)} disabled={Boolean(finalizandoId)} style={{ padding: '7px 11px', borderRadius: 8, border: '1px solid #b91c1c', background: '#fff', color: '#b91c1c', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                {finalizandoId === tarefa.id ? 'Finalizando...' : 'Finalizar tarefa'}
+              </button>
+            </div>)}
+          </div>
         </div>
       )}
     </div>

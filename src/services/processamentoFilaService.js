@@ -1,10 +1,18 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { carregarSessao } from '../utils/authLocal';
+import { carregarSessao, usuarioPodeAdministrarUsuarios } from '../utils/authLocal';
 
 export const TAMANHO_LOTE_PESADO = 200;
 export const LIMITE_GLOBAL_PROCESSAMENTOS = 2;
 const INTERVALO_FILA_MS = 10000;
 const LIMITE_FALHAS_TRANSITORIAS = 6;
+export const LIMITE_SEGURO_TAREFA_TRAVADA_MINUTOS = 15;
+const tarefasCanceladas = new Set();
+
+export function verificarTarefaPesadaAtiva(id) {
+  if (id && tarefasCanceladas.has(id)) {
+    throw new Error('Tarefa cancelada administrativamente. O processamento foi interrompido.');
+  }
+}
 
 const esperar = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -96,33 +104,43 @@ export async function aguardarVezProcessamento(id, onStatus) {
 export async function atualizarProcessamentoPesado(id, progresso = {}) {
   const supabase = cliente();
   if (!supabase || !id) return;
+  verificarTarefaPesadaAtiva(id);
+  const temProcessados = progresso.carregados !== undefined || progresso.itensProcessados !== undefined;
   const processados = Math.max(0, Number(progresso.carregados ?? progresso.itensProcessados) || 0);
   const total = Math.max(0, Number(progresso.total) || 0);
   const patch = {
     heartbeat_em: new Date().toISOString(),
     atualizado_em: new Date().toISOString(),
-    itens_processados: processados,
-    lote_atual: processados ? Math.ceil(processados / TAMANHO_LOTE_PESADO) : 0,
     etapa: progresso.etapa || 'processando',
   };
+  if (temProcessados) {
+    patch.itens_processados = processados;
+    patch.lote_atual = processados ? Math.ceil(processados / TAMANHO_LOTE_PESADO) : 0;
+  }
   if (total) {
     patch.total_itens = total;
     patch.total_lotes = Math.ceil(total / TAMANHO_LOTE_PESADO);
   }
-  const { error } = await supabase.from('processamentos_pesados').update(patch).eq('id', id);
+  const { data, error } = await supabase.from('processamentos_pesados').update(patch)
+    .eq('id', id).eq('status', 'PROCESSANDO').select('id');
   if (error) console.warn('[Fila] Nao foi possivel atualizar o progresso:', error.message);
+  if (!error && !(data || []).length) {
+    const { data: atual } = await supabase.from('processamentos_pesados').select('status').eq('id', id).maybeSingle();
+    if (atual?.status === 'CANCELADO') tarefasCanceladas.add(id);
+  }
 }
 
 export async function finalizarProcessamentoPesado(id, status = 'CONCLUIDO', erro = null) {
   const supabase = cliente();
   if (!supabase || !id) return;
+  if (tarefasCanceladas.has(id)) return;
   const { error: falha } = await supabase.from('processamentos_pesados').update({
     status,
     erro,
     finalizado_em: new Date().toISOString(),
     heartbeat_em: new Date().toISOString(),
     atualizado_em: new Date().toISOString(),
-  }).eq('id', id);
+  }).eq('id', id).eq('status', 'PROCESSANDO');
   if (falha) console.warn('[Fila] Nao foi possivel finalizar a tarefa:', falha.message);
 }
 
@@ -134,7 +152,10 @@ export async function executarComFila(config, executor, onStatus) {
     onStatus?.({ ...tarefa, status: 'PROCESSANDO', posicao: 0 });
     const resultado = await executor({
       id: tarefa.id,
-      atualizar: (progresso) => atualizarProcessamentoPesado(tarefa.id, progresso),
+      atualizar: (progresso) => {
+        verificarTarefaPesadaAtiva(tarefa.id);
+        return atualizarProcessamentoPesado(tarefa.id, progresso);
+      },
     });
     await finalizarProcessamentoPesado(tarefa.id, 'CONCLUIDO');
     return resultado;
@@ -150,6 +171,50 @@ export async function listarProcessamentosPesados({ limite = 200 } = {}) {
   const { data, error } = await supabase.from('processamentos_pesados').select('*')
     .order('criado_em', { ascending: false }).limit(limite);
   if (error) throw new Error(`Nao foi possivel carregar a fila: ${error.message}`);
+  return data || [];
+}
+
+function administradorAtual() {
+  const usuario = sessaoObrigatoria();
+  if (!usuarioPodeAdministrarUsuarios(usuario)) {
+    throw new Error('Somente o administrador pode finalizar tarefas pesadas.');
+  }
+  return usuario;
+}
+
+export function tarefaPesadaEstaTravada(tarefa, limiteMinutos = LIMITE_SEGURO_TAREFA_TRAVADA_MINUTOS) {
+  if (!['PROCESSANDO', 'AGUARDANDO'].includes(tarefa?.status)) return false;
+  const referencia = new Date(tarefa.heartbeat_em || tarefa.criado_em || 0).getTime();
+  return Number.isFinite(referencia) && Date.now() - referencia >= Math.max(10, limiteMinutos) * 60000;
+}
+
+export async function finalizarTarefaPesadaAdmin(id, motivo) {
+  const supabase = cliente();
+  if (!supabase) throw new Error('Supabase nao configurado.');
+  const admin = administradorAtual();
+  const { data, error } = await supabase.rpc('finalizar_tarefa_pesada_admin', {
+    p_id: id,
+    p_admin_id: admin.id,
+    p_admin_email: admin.email,
+    p_motivo: String(motivo || '').trim(),
+  });
+  if (error) throw new Error(`Nao foi possivel finalizar a tarefa: ${error.message}`);
+  tarefasCanceladas.add(id);
+  return Array.isArray(data) ? data[0] : data;
+}
+
+export async function finalizarTarefasTravadasAdmin(motivo, limiteMinutos = LIMITE_SEGURO_TAREFA_TRAVADA_MINUTOS) {
+  const supabase = cliente();
+  if (!supabase) throw new Error('Supabase nao configurado.');
+  const admin = administradorAtual();
+  const { data, error } = await supabase.rpc('finalizar_tarefas_pesadas_travadas_admin', {
+    p_admin_id: admin.id,
+    p_admin_email: admin.email,
+    p_motivo: String(motivo || '').trim(),
+    p_limite_minutos: Math.max(10, Number(limiteMinutos) || LIMITE_SEGURO_TAREFA_TRAVADA_MINUTOS),
+  });
+  if (error) throw new Error(`Nao foi possivel finalizar tarefas travadas: ${error.message}`);
+  (data || []).forEach((item) => tarefasCanceladas.add(item.id));
   return data || [];
 }
 

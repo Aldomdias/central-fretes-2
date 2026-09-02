@@ -350,6 +350,7 @@ export async function salvarUsuariosAsync(usuarios = []) {
 
 export function usuarioTemAcesso(usuario, pagina) {
   if (!usuario) return false;
+  if (import.meta.env.DEV && pagina === 'importacao-ia-tabelas') return true;
   if (pagina === 'minha-senha') return true;
   if (pagina === 'usuarios' || pagina === 'usuarios-ativos') return usuarioPodeAdministrarUsuarios(usuario);
 

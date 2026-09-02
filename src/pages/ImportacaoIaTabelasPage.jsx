@@ -5,7 +5,7 @@ import {
   substituirItensTabelaNegociacao,
   atualizarTabelaNegociacao,
 } from '../services/tabelasNegociacaoService';
-import { auditarResultadoIa, normalizarResultadoIa, validarResultadoIa } from '../utils/importacaoIaNegociacao';
+import { auditarResultadoIa, deduplicarLinhasParaIa, normalizarResultadoIa, validarResultadoIa } from '../utils/importacaoIaNegociacao';
 import { getSupabaseClient } from '../lib/supabaseClient';
 
 const CANAIS = ['B2C', 'ATACADO', 'INTERCOMPANY', 'REVERSA', 'A DEFINIR'];
@@ -259,19 +259,6 @@ function valor(row, coluna) {
   return coluna ? row[coluna] : '';
 }
 
-function deduplicarLinhasParaIa(linhas, mapeamento) {
-  const camposChave = ['origem', 'ufOrigem', 'destino', 'ufDestino', 'rota', 'pesoMin', 'pesoMax', 'taxa', 'percentual', 'freteMinimo', 'excesso', 'prazo'];
-  const vistos = new Set();
-  const unicas = [];
-  linhas.forEach((row) => {
-    const chave = camposChave.map((campo) => limpar(valor(row, mapeamento[campo])).toUpperCase()).join('|');
-    if (vistos.has(chave)) return;
-    vistos.add(chave);
-    unicas.push(row);
-  });
-  return unicas;
-}
-
 function montarSaidaPadrao({ linhas, mapeamento, transportadora, canal, inicioVigencia, fimVigencia }) {
   const rotasMap = new Map();
   const fretes = [];
@@ -417,7 +404,12 @@ export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
 
   function pareceAbaTabular(aba) {
     if (aba.linhas.length < 2) return false;
-    const chaves = Object.keys(aba.linhas[0]).filter((k) => k !== '__aba');
+    const nome = normalizar(aba.nome);
+    if (/ficha|cadastro|apoio|simulador|formulario|instrucao/.test(nome)) return false;
+    if (/tabela|tarifa|frete|rota|atendimento|prazo|percentual/.test(nome)) return true;
+    const chaves = Array.from(new Set(
+      aba.linhas.slice(0, 20).flatMap((linha) => Object.keys(linha).filter((k) => k !== '__aba')),
+    ));
     if (!chaves.length) return false;
     const vazias = chaves.filter((k) => /^__EMPTY/.test(k)).length;
     return vazias / chaves.length < 0.3;
@@ -425,7 +417,10 @@ export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
 
   function recalcularMapeamento(abasTodas, chavesSelecionadas) {
     const linhasSelecionadas = abasTodas.filter((aba) => chavesSelecionadas.includes(aba.chave)).flatMap((aba) => aba.linhas);
-    setMapeamento(montarMapeamento(Object.keys(linhasSelecionadas[0] || {})));
+    const cabecalhosSelecionados = Array.from(new Set(
+      linhasSelecionadas.slice(0, 200).flatMap((linha) => Object.keys(linha).filter((k) => k !== '__aba')),
+    ));
+    setMapeamento(montarMapeamento(cabecalhosSelecionados));
   }
 
   async function selecionarArquivo(event) {
@@ -435,18 +430,17 @@ export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
     setCarregando(true);
     try {
       const novasAbasPorArquivo = await Promise.all(files.map((file) => lerArquivoTabela(file)));
+      const abasNovas = novasAbasPorArquivo.flatMap((resposta) => resposta.abas || []);
+      const todasAbas = [...abasDisponiveis, ...abasNovas];
+      const candidatas = abasNovas.filter(pareceAbaTabular);
+      const selecaoNova = (candidatas.length ? candidatas : abasNovas).map((aba) => aba.chave);
+      const novaSelecao = Array.from(new Set([...abasSelecionadas, ...selecaoNova]));
+
       setArquivos((prev) => [...prev, ...files]);
-      setAbasDisponiveis((prev) => {
-        const abasNovas = novasAbasPorArquivo.flatMap((resposta) => resposta.abas || []);
-        const todasAbas = [...prev, ...abasNovas];
-        setAbasSelecionadas((prevSelecionadas) => {
-          const selecaoNova = abasNovas.filter(pareceAbaTabular).map((aba) => aba.chave);
-          const novaSelecao = [...prevSelecionadas, ...(selecaoNova.length ? selecaoNova : abasNovas.map((aba) => aba.chave))];
-          recalcularMapeamento(todasAbas, novaSelecao);
-          return novaSelecao;
-        });
-        return todasAbas;
-      });
+      setAbasDisponiveis(todasAbas);
+      setAbasSelecionadas(novaSelecao);
+      setResultadoIa(null);
+      recalcularMapeamento(todasAbas, novaSelecao);
       setMensagem(novasAbasPorArquivo.map((resposta) => resposta.mensagem).join(' '));
     } catch (error) {
       setMensagem(error?.message || 'Nao foi possivel ler o arquivo.');
@@ -461,11 +455,15 @@ export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
   }
 
   function alternarAba(chave) {
-    setAbasSelecionadas((prev) => {
-      const novaSelecao = prev.includes(chave) ? prev.filter((c) => c !== chave) : [...prev, chave];
-      recalcularMapeamento(abasDisponiveis, novaSelecao);
-      return novaSelecao;
-    });
+    const novaSelecao = abasSelecionadas.includes(chave)
+      ? abasSelecionadas.filter((c) => c !== chave)
+      : [...abasSelecionadas, chave];
+    setAbasSelecionadas(novaSelecao);
+    setResultadoIa(null);
+    recalcularMapeamento(abasDisponiveis, novaSelecao);
+    setMensagem(novaSelecao.length
+      ? 'Selecao de abas alterada. Processe novamente para revisar o novo conjunto de linhas.'
+      : 'Selecione ao menos uma aba com tarifas ou rotas para processar.');
   }
 
   function limparArquivos() {
@@ -473,6 +471,7 @@ export default function ImportacaoIaTabelasPage({ usuario, onMudarPagina }) {
     setAbasDisponiveis([]);
     setAbasSelecionadas([]);
     setMapeamento({});
+    setResultadoIa(null);
     setMensagem('');
   }
 

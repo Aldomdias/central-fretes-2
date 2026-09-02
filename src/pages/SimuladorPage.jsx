@@ -27,7 +27,7 @@ import { carregarGradeFrete, salvarGradeFrete } from '../utils/gradeFreteConfig'
 import { carregarGradeFreteCentralizada, salvarGradeFreteCentralizada, restaurarGradeFreteCentralizadaPadrao } from '../services/gradeFreteSupabaseService';
 import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, carregarOrigensTransportadoraDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { aguardarVezProcessamento, atualizarProcessamentoPesado, criarProcessamentoPesado, finalizarProcessamentoPesado } from '../services/processamentoFilaService';
+import { aguardarVezProcessamento, atualizarProcessamentoPesado, criarProcessamentoPesado, finalizarProcessamentoPesado, verificarTarefaPesadaAtiva } from '../services/processamentoFilaService';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import {
   carregarSimulacaoRealizadoMensal,
@@ -6977,6 +6977,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         gradePorCanal: grade,
         municipioPorCidade,
         onProgress: (progresso) => {
+          verificarTarefaPesadaAtiva(tarefaFila?.id);
           const processados = Number(progresso?.processados || 0);
           const total = Number(progresso?.total || rowsFiltrados.length);
           atualizarProcessamentoUi(`Simulando lote ${Math.max(1, Math.ceil(processados / 200))}/${Math.max(1, Math.ceil(total / 200))} · ${processados.toLocaleString('pt-BR')}/${total.toLocaleString('pt-BR')} CT-es`, Math.min(96, 88 + Math.floor((processados / Math.max(total, 1)) * 8)));

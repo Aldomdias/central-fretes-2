@@ -11,10 +11,62 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Central de Fretes" />
     <title>AMD LOG | Central de Fretes</title>
-    <script type="module" crossorigin src="/assets/index-CCXl62d-.js"></script>
+    <script type="module" crossorigin src="/assets/index-CVOiTQFV.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-PdZwRNXf.css">
   <link rel="manifest" href="/manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="/registerSW.js"></script></head>
   <body>
-    <div id="root"></div>
+    <div id="root"></div>
+    <script>
+      // Recupera automaticamente uma instalação PWA que ficou apontando para
+      // assets versionados removidos por um deploy mais recente. Precisa rodar
+      // antes do módulo principal, pois esse módulo pode ser justamente o
+      // arquivo que não foi encontrado.
+      (() => {
+        const CHAVE_RECUPERACAO = 'amd-pwa-recovery-attempted';
+        let recuperando = false;
+
+        async function recuperarPwa() {
+          if (recuperando || sessionStorage.getItem(CHAVE_RECUPERACAO)) return;
+          recuperando = true;
+          sessionStorage.setItem(CHAVE_RECUPERACAO, '1');
+
+          try {
+            const registros = 'serviceWorker' in navigator
+              ? await navigator.serviceWorker.getRegistrations()
+              : [];
+            await Promise.all(registros.map((registro) => registro.unregister()));
+
+            if ('caches' in window) {
+              const nomes = await caches.keys();
+              await Promise.all(nomes.map((nome) => caches.delete(nome)));
+            }
+          } finally {
+            const url = new URL(window.location.href);
+            url.searchParams.set('_atualizar', Date.now().toString());
+            window.location.replace(url.toString());
+          }
+        }
+
+        window.addEventListener('error', (evento) => {
+          const origem = evento.target?.src || evento.filename || '';
+          if (origem.includes('/assets/') || /Loading module|dynamically imported module/i.test(evento.message || '')) {
+            recuperarPwa();
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', (evento) => {
+          const mensagem = String(evento.reason?.message || evento.reason || '');
+          if (/ChunkLoadError|Loading chunk|dynamically imported module|Failed to fetch/i.test(mensagem)) {
+            recuperarPwa();
+          }
+        });
+
+        window.addEventListener('load', () => {
+          if (document.getElementById('root')?.childElementCount) {
+            sessionStorage.removeItem(CHAVE_RECUPERACAO);
+          }
+        });
+      })();
+    </script>
   </body>
 </html>

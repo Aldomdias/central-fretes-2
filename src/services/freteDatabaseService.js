@@ -1425,6 +1425,40 @@ export async function atualizarCnpjsOrigensDb(registros = []) {
   return { atualizadas: rows.length };
 }
 
+// Atualizacao pontual: grava somente a linha de generalidades da origem editada.
+// Evita remontar e reenviar todas as rotas, cotacoes e taxas da transportadora.
+export async function salvarGeneralidadesOrigemDb(origemId, generalidades = {}, { invalidarValidacao = false } = {}) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  if (!origemId) throw new Error('Origem não informada para salvar generalidades.');
+  const row = {
+    origem_id: origemId,
+    incide_icms: toBoolean(generalidades.incideIcms),
+    aliquota_icms: toNumberOrNull(generalidades.aliquotaIcms),
+    ad_valorem: toNumberOrNull(generalidades.adValorem),
+    ad_valorem_minimo: toNumberOrNull(generalidades.adValoremMinimo),
+    pedagio: toNumberOrNull(generalidades.pedagio),
+    gris: toNumberOrNull(generalidades.gris),
+    gris_minimo: toNumberOrNull(generalidades.grisMinimo),
+    tas: toNumberOrNull(generalidades.tas),
+    ctrc: toNumberOrNull(generalidades.ctrc),
+    cubagem: toNumberOrNull(generalidades.cubagem),
+    tipo_calculo: generalidades.tipoCalculo || 'PERCENTUAL',
+    observacoes: generalidades.observacoes || '',
+    frete_minimo: toNumberOrNull(generalidades.freteMinimo),
+    regra_calculo: generalidades.regraCalculo || '',
+    taxa_emergencial: toNumberOrNull(generalidades.taxaEmergencial),
+  };
+  await upsertRows(ensureClient(), 'generalidades', [row], 'origem_id');
+  if (invalidarValidacao) {
+    const { error } = await ensureClient().from('origens').update({
+      validado: false, validado_em: null, validado_por: null,
+    }).eq('id', origemId);
+    if (error) throw new Error(`Erro ao invalidar validação da origem: ${error.message}`);
+  }
+  invalidarCacheBaseCompletaDb();
+  return { atualizadas: 1, origemId };
+}
+
 // `secao` aceita uma string ('rotas') ou um array (['rotas', 'cotacoes']) para
 // resolver os IDs existentes uma única vez e evitar N idas e vindas ao Supabase
 // quando várias seções da mesma origem precisam ser salvas juntas.
@@ -3211,6 +3245,23 @@ export async function excluirTransportadoraDb(transportadoraId) {
 
   const supabase = ensureClient();
 
+  // Estes registros sao historicos e nao devem ser apagados junto com o
+  // cadastro. Remove somente o vinculo que impediria a exclusao da
+  // transportadora; nome, CNPJ, valores e demais dados permanecem intactos.
+  for (const table of [
+    'faturas',
+    'fatura_detalhes',
+    'realizado_ctes',
+    'auditoria_cte_resultados',
+    'tabelas_negociacao',
+  ]) {
+    const { error: desvinculoError } = await supabase
+      .from(table)
+      .update({ transportadora_id: null })
+      .eq('transportadora_id', transportadoraId);
+    if (desvinculoError) throw desvinculoError;
+  }
+
   const { data: origens, error: origensError } = await supabase
     .from('origens')
     .select('id')
@@ -3230,8 +3281,18 @@ export async function excluirTransportadoraDb(transportadoraId) {
     if (origemDeleteError) throw origemDeleteError;
   }
 
-  const { error } = await supabase.from('transportadoras').delete().eq('id', transportadoraId);
+  // DELETE pode retornar sucesso com zero linhas quando a RLS nao permite a
+  // operacao. Retornar a linha excluida confirma que a remocao foi persistida.
+  const { data: transportadorasExcluidas, error } = await supabase
+    .from('transportadoras')
+    .delete()
+    .eq('id', transportadoraId)
+    .select('id');
   if (error) throw error;
+
+  if (!transportadorasExcluidas?.some((item) => String(item.id) === String(transportadoraId))) {
+    throw new Error('A transportadora nao foi excluida da base. Verifique sua permissao e tente novamente.');
+  }
 
   return { ok: true };
 }

@@ -116,8 +116,11 @@ export function resimularLotePedidosEcommerce({
 // dos campos do pedido do e-commerce. Compartilhado entre o fluxo de 1 carregamento so
 // (resimularLotePedidosEcommerce) e o fluxo por origem (calcularCandidatosOrigemEcommerce).
 function montarCteDoPedido(pedido, canal, ibgeDestino, pesoBase) {
-  const pesoFaturado = Number(pedido.peso_faturado || 0);
-  const pesoCotado = Number(pedido.peso_cotado || 0);
+  // O peso de entrada e o peso real da NF. O motor calcula separadamente o
+  // peso cubado a partir da cubagem e do fator de cada transportadora/CD, e
+  // tarifa pelo maior entre peso real e peso cubado calculado.
+  const pesoFaturado = Number(pedido.peso_real_faturado || 0);
+  const pesoCotado = Number(pedido.peso_real_cotado || 0);
   const pesoEscolhido = pesoBase === 'faturado' && pesoFaturado > 0 ? pesoFaturado : pesoCotado;
   return {
     peso: pesoEscolhido,

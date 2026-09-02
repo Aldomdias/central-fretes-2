@@ -11,6 +11,7 @@ import {
   transferirOrigemDb,
   excluirTransportadoraDb,
   limparSecaoOrigemDb,
+  salvarGeneralidadesOrigemDb,
   salvarBaseCompletaDb,
   salvarSecaoDb,
 } from '../services/freteDatabaseService';
@@ -648,22 +649,51 @@ export function useFreteStore(sessao = null) {
       resetarBase() {
         setTransportadoras([]);
       },
-      salvarGeneralidades(transportadoraId, origemId, generalidades) {
-        aplicarAlteracao(
-          (prev) =>
-            prev.map((t) =>
-              t.id !== transportadoraId
-                ? t
-                : {
-                    ...t,
-                    origens: t.origens.map((o) =>
-                      o.id !== origemId ? o : invalidarValidacaoSeNecessario({ ...o, generalidades: mergeGeneralidades(generalidades) })
-                    ),
-                  }
-            ),
-          'generalidades',
-          'generalidades'
-        );
+      async salvarGeneralidades(transportadoraId, origemId, generalidades) {
+        const generalidadesAtualizadas = mergeGeneralidades(generalidades);
+        const origemAnterior = (transportadoras || []).find((t) => String(t.id) === String(transportadoraId))
+          ?.origens?.find((o) => String(o.id) === String(origemId));
+        const next = (transportadoras || []).map((t) =>
+          String(t.id) !== String(transportadoraId)
+            ? t
+            : {
+                ...t,
+                origens: (t.origens || []).map((o) =>
+                  String(o.id) !== String(origemId)
+                    ? o
+                    : invalidarValidacaoSeNecessario({ ...o, generalidades: generalidadesAtualizadas })
+                ),
+              }
+        ).map(normalizeTransportadora);
+        setTransportadoras(next);
+        persistLocalState(next);
+
+        if (!bancoConfigurado()) {
+          salvarAutomaticamente(next, 'generalidades', 'generalidades');
+          return { ok: true, modo: 'local' };
+        }
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        try {
+          await salvarGeneralidadesOrigemDb(origemId, generalidadesAtualizadas, { invalidarValidacao: Boolean(origemAnterior?.validado) });
+          setSyncStatus((prev) => ({
+            ...prev,
+            sincronizando: false,
+            rascunhoLocal: false,
+            ultimaSincronizacao: new Date().toISOString(),
+            fonte: 'supabase-generalidade-pontual',
+            mensagemLocal: 'Generalidades salvas diretamente no Supabase.',
+          }));
+          const atual = next.find((item) => String(item.id) === String(transportadoraId));
+          registrarAlteracaoTransportadora(sessao, {
+            tipo: 'salvar_generalidades', transportadoraId, transportadoraNome: atual?.nome,
+            origemId, detalhe: 'Salvou somente as generalidades da origem editada.',
+          });
+          return { ok: true, modo: 'supabase', atualizadas: 1 };
+        } catch (error) {
+          setSyncStatus((prev) => ({ ...prev, sincronizando: false, rascunhoLocal: true, erro: error.message || 'Erro ao salvar generalidades.' }));
+          return { ok: false, erro: error };
+        }
       },
       // TDE por CNPJ do destinatário: valor + lista de CNPJs valem para a
       // transportadora inteira (todas as origens), não por origem.
@@ -827,17 +857,28 @@ export function useFreteStore(sessao = null) {
           'transportadora'
         );
       },
-      removerTransportadora(id) {
+      async removerTransportadora(id) {
         const transportadoraNome = (transportadoras || []).find((item) => item.id === id)?.nome;
-        setTransportadoras((prev) => (prev || []).filter((item) => item.id !== id));
+        const removerDoEstado = () => {
+          setTransportadoras((prev) => (prev || []).filter((item) => String(item.id) !== String(id)));
+        };
 
-        if (!bancoConfigurado()) return;
+        if (!bancoConfigurado()) {
+          removerDoEstado();
+          return { ok: true, modo: 'local' };
+        }
 
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
-        excluirTransportadoraDb(id)
-          .then(finalizarExclusao)
-          .then(() => registrarAlteracaoTransportadora(sessao, { tipo: 'exclusao_transportadora', transportadoraId: id, transportadoraNome, detalhe: 'Excluiu transportadora' }))
-          .catch((error) => erroExclusao(error, 'Erro ao excluir transportadora no Supabase.'));
+        try {
+          await excluirTransportadoraDb(id);
+          removerDoEstado();
+          await finalizarExclusao();
+          await registrarAlteracaoTransportadora(sessao, { tipo: 'exclusao_transportadora', transportadoraId: id, transportadoraNome, detalhe: 'Excluiu transportadora' });
+          return { ok: true };
+        } catch (error) {
+          erroExclusao(error, 'Erro ao excluir transportadora no Supabase.');
+          return { ok: false, erro: error };
+        }
       },
       salvarLinha(transportadoraId, origemId, secao, linha) {
         aplicarAlteracao(

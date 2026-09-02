@@ -3,3 +3,7 @@ backup/
 test-output.txt
 
 .vercel
+.env.local
+.env.*.local
+
+.env*

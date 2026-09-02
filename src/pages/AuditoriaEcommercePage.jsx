@@ -341,9 +341,12 @@ const COLUNAS_TABELA = [
   { chave: 'custo_frete_transportadora', label: 'Custo CT-e (arquivo)', tipo: 'moeda' },
   { chave: 'diferenca_tabela_cte', label: 'Dif. Tabela x CT-e', tipo: 'moeda' },
   { chave: 'frete_a_cobrar_marketplace', label: 'Frete a Cobrar Mkt', tipo: 'moeda' },
-  { chave: 'peso_cotado', label: 'Peso Cotado', tipo: 'numero2' },
-  { chave: 'peso_faturado', label: 'Peso Faturado', tipo: 'numero2' },
-  { chave: 'diferenca_peso', label: 'Dif. Peso', tipo: 'numero2' },
+  { chave: 'peso_cubado_cotado', label: 'Peso Cubado Cotado', tipo: 'numero2' },
+  { chave: 'peso_cubado_faturado', label: 'Peso Cubado Faturado', tipo: 'numero2' },
+  { chave: 'diferenca_peso_cubado', label: 'Dif. Peso Cubado', tipo: 'numero2' },
+  { chave: 'peso_real_cotado', label: 'Peso Real Cotado', tipo: 'numero2' },
+  { chave: 'peso_real_faturado', label: 'Peso da Nota', tipo: 'numero2' },
+  { chave: 'diferenca_peso_real', label: 'Dif. Peso Real', tipo: 'numero2' },
   { chave: 'tem_cte', label: 'Tem CT-e? (relatorio mkt)', tipo: 'bool' },
   { chave: 'possui_campanha_frete', label: 'Campanha?', tipo: 'bool' },
   { chave: 'divergencia_origem', label: 'Div. Origem?', tipo: 'bool' },
@@ -1988,14 +1991,14 @@ export default function AuditoriaEcommercePage() {
               setOrigensMapeadas(null);
               setForcarFechamentoParcial(false);
             }}>
-              <option value="cotado">Peso cotado (venda)</option>
-              <option value="faturado">Peso faturado (transportadora)</option>
-              <option value="ambos">Cotado + faturado na mesma rodada (mais pesado)</option>
+              <option value="cotado">Peso real cotado da NF</option>
+              <option value="faturado">Peso real faturado da NF</option>
+              <option value="ambos">Pesos reais da NF: cotado + faturado</option>
             </select>
             <small>
               {pesoBase === 'ambos'
-                ? 'Calcula e atualiza os dois cenarios.'
-                : `Atualiza somente o cenario ${pesoBase}, sem apagar o outro cenario ja calculado.`}
+                ? 'Calcula os dois cenarios e compara cada peso real com o peso cubado calculado.'
+                : `Usa o peso real ${pesoBase} e compara com o peso cubado calculado pela cubagem.`}
             </small>
           </label>
           <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>

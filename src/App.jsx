@@ -188,7 +188,7 @@ export default function App() {
     importacao: <ImportacaoPage store={store} transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />,
     formatacao: <FormatacaoPage store={store} transportadoras={transportadorasMemo} />,
     'importar-template': <ImportarTemplatePage store={store} transportadoras={transportadorasMemo} />,
-    'importacao-ia-tabelas': <ImportacaoIaTabelasPage />,
+    'importacao-ia-tabelas': <ImportacaoIaTabelasPage usuario={sessao} onMudarPagina={mudarPagina} />,
     tracking: <TrackingPage />,
     'auditoria-ecommerce': <AuditoriaEcommercePage />,
     'torre-controle': <TorreControlePage />,

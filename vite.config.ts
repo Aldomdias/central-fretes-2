@@ -31,7 +31,12 @@ export default defineConfig({
       workbox: {
         // App autenticado com dados em tempo real: não cachear chamadas de API/Supabase,
         // só os assets estáticos do próprio build.
-        navigateFallbackDenylist: [/^\/api/],
+        // O sistema depende de conexão para consultar os dados. Deixar o
+        // service worker responder navegações com index.html em cache pode
+        // misturar HTML antigo com assets de um deploy novo e gerar tela
+        // branca. Assets estáticos continuam no precache, mas toda navegação
+        // busca o HTML atual na hospedagem.
+        navigateFallbackDenylist: [/./],
         runtimeCaching: [],
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
       },
