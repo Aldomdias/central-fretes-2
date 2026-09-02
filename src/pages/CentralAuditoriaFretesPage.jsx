@@ -2516,15 +2516,24 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
 
       let atualizado = state;
       let faturasAtualizadas = 0;
+      const faturasComErro = [];
       for (const [faturaId, detalhesFat] of detalhesPorFatura.entries()) {
         faturasAtualizadas += 1;
         setProgressoLote({ etapa: 'atualizando_faturas', carregados: faturasAtualizadas, total: detalhesPorFatura.size });
         const faturaObj = atualizado.faturas.find((item) => item.id === faturaId);
         if (!faturaObj) continue;
-        atualizado = await reauditarFatura(atualizado, faturaObj, detalhesFat, sessao?.nome || sessao?.email || 'Usuario local');
+        try {
+          atualizado = await reauditarFatura(atualizado, faturaObj, detalhesFat, sessao?.nome || sessao?.email || 'Usuario local');
+        } catch (erroFatura) {
+          faturasComErro.push(faturaObj.numero || faturaObj.id);
+        }
       }
       onState(atualizado);
-      setMensagemImportacao(`Recalculo concluido: ${amdCalculados} CT-e(s) com status AMD calculado em ${faturasAtualizadas} fatura(s).`);
+      const sucesso = faturasAtualizadas - faturasComErro.length;
+      const sufixoErro = faturasComErro.length
+        ? ` ${faturasComErro.length} fatura(s) falharam ao atualizar e precisam ser recalculadas novamente: ${faturasComErro.join(', ')}.`
+        : '';
+      setMensagemImportacao(`Recalculo concluido: ${amdCalculados} CT-e(s) com status AMD calculado em ${sucesso} fatura(s).${sufixoErro}`);
       setSelecionadasIds([]);
     } catch (error) {
       setMensagemImportacao(`Erro ao recalcular em lote: ${error.message}`);
