@@ -688,7 +688,28 @@ export function useFreteStore(sessao = null) {
 
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
         try {
-          await salvarGeneralidadesOrigemDb(origemId, generalidadesAtualizadas, { invalidarValidacao: Boolean(origemAnterior?.validado) });
+          const atual = next.find((item) => String(item.id) === String(transportadoraId));
+          const resultadoPersistencia = await salvarGeneralidadesOrigemDb(origemId, generalidadesAtualizadas, {
+            invalidarValidacao: Boolean(origemAnterior?.validado),
+            transportadoraId,
+            transportadoraNome: atual?.nome || '',
+            cidade: origemAnterior?.cidade || '',
+            canal: origemAnterior?.canal || '',
+          });
+          if (String(resultadoPersistencia.origemId) !== String(origemId)) {
+            setTransportadoras((prev) => (prev || []).map((transportadora) =>
+              String(transportadora.id) !== String(transportadoraId)
+                ? transportadora
+                : {
+                    ...transportadora,
+                    origens: (transportadora.origens || []).map((origem) =>
+                      String(origem.id) === String(origemId)
+                        ? { ...origem, id: resultadoPersistencia.origemId }
+                        : origem
+                    ),
+                  }
+            ));
+          }
           setSyncStatus((prev) => ({
             ...prev,
             sincronizando: false,
@@ -697,7 +718,6 @@ export function useFreteStore(sessao = null) {
             fonte: 'supabase-generalidade-pontual',
             mensagemLocal: 'Generalidades salvas diretamente no Supabase.',
           }));
-          const atual = next.find((item) => String(item.id) === String(transportadoraId));
           registrarAlteracaoTransportadora(sessao, {
             tipo: 'salvar_generalidades', transportadoraId, transportadoraNome: atual?.nome,
             origemId, detalhe: 'Salvou somente as generalidades da origem editada.',

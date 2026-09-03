@@ -1427,11 +1427,43 @@ export async function atualizarCnpjsOrigensDb(registros = []) {
 
 // Atualizacao pontual: grava somente a linha de generalidades da origem editada.
 // Evita remontar e reenviar todas as rotas, cotacoes e taxas da transportadora.
-export async function salvarGeneralidadesOrigemDb(origemId, generalidades = {}, { invalidarValidacao = false } = {}) {
+async function resolverOrigemIdParaGravacao(origemId, contexto = {}) {
+  const idInformado = String(origemId || '').trim();
+  if (UUID_REGEX.test(idInformado)) return idInformado;
+
+  const transportadora = await carregarTransportadoraCompletaDb(
+    UUID_REGEX.test(String(contexto.transportadoraId || '').trim()) ? contexto.transportadoraId : '',
+    contexto.transportadoraNome || ''
+  );
+  const cidadeEsperada = normalizarCidadeFiltroDb(contexto.cidade);
+  const canalEsperado = String(contexto.canal || 'ATACADO').trim().toUpperCase();
+  const candidatas = (transportadora?.origens || []).filter((origem) =>
+    normalizarCidadeFiltroDb(origem.cidade) === cidadeEsperada
+    && String(origem.canal || 'ATACADO').trim().toUpperCase() === canalEsperado
+  );
+
+  if (candidatas.length !== 1 || !UUID_REGEX.test(String(candidatas[0]?.id || ''))) {
+    throw new Error(
+      `A origem ${contexto.cidade || idInformado} está com um identificador antigo e não pôde ser reconciliada no Supabase. Recarregue a página e tente novamente.`
+    );
+  }
+  return candidatas[0].id;
+}
+
+export async function salvarGeneralidadesOrigemDb(origemId, generalidades = {}, {
+  invalidarValidacao = false,
+  transportadoraId = '',
+  transportadoraNome = '',
+  cidade = '',
+  canal = '',
+} = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
   if (!origemId) throw new Error('Origem não informada para salvar generalidades.');
+  const origemIdPersistencia = await resolverOrigemIdParaGravacao(origemId, {
+    transportadoraId, transportadoraNome, cidade, canal,
+  });
   const row = {
-    origem_id: origemId,
+    origem_id: origemIdPersistencia,
     incide_icms: toBoolean(generalidades.incideIcms),
     aliquota_icms: toNumberOrNull(generalidades.aliquotaIcms),
     ad_valorem: toNumberOrNull(generalidades.adValorem),
@@ -1452,11 +1484,11 @@ export async function salvarGeneralidadesOrigemDb(origemId, generalidades = {}, 
   if (invalidarValidacao) {
     const { error } = await ensureClient().from('origens').update({
       validado: false, validado_em: null, validado_por: null,
-    }).eq('id', origemId);
+    }).eq('id', origemIdPersistencia);
     if (error) throw new Error(`Erro ao invalidar validação da origem: ${error.message}`);
   }
   invalidarCacheBaseCompletaDb();
-  return { atualizadas: 1, origemId };
+  return { atualizadas: 1, origemId: origemIdPersistencia };
 }
 
 // `secao` aceita uma string ('rotas') ou um array (['rotas', 'cotacoes']) para
