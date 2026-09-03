@@ -7,6 +7,8 @@ export const ABAS_GESTAO_URL = [
   'negociacoes',
   'transportadora',
   'aprovacoes',
+  'savings-aprovados',
+  'saving-simulado',
   'historico',
 ];
 

@@ -3316,6 +3316,49 @@ export async function salvarSavingPosAprovacaoCache(id, detalhe = {}) {
   return data;
 }
 
+// Salva o resultado de "Confirmar por tabela" (simulação contra a malha) sob
+// uma chave (rota+faixa[+competência], ou "GERAL" pra negociação inteira),
+// mesclando com o que já existia — cada confirmação não apaga as outras.
+export async function salvarConfirmacaoTabelaSaving(id, chave, resultado) {
+  const supabase = supabaseOrThrow();
+  const tabelaAtual = await obterTabelaNegociacao(id);
+  const cacheAtual = tabelaAtual.confirmacao_tabela_saving && typeof tabelaAtual.confirmacao_tabela_saving === 'object'
+    ? tabelaAtual.confirmacao_tabela_saving
+    : {};
+  const proximo = {
+    ...cacheAtual,
+    [chave]: { ...resultado, calculadoEm: new Date().toISOString() },
+  };
+  const { data, error } = await supabase
+    .from('tabelas_negociacao')
+    .update({ confirmacao_tabela_saving: proximo })
+    .eq('id', id)
+    .select('id, confirmacao_tabela_saving')
+    .single();
+  if (error) throw new Error(error.message || 'Erro ao salvar a confirmação por tabela.');
+  return data;
+}
+
+// Descarta uma confirmação por tabela (por chave) e volta a negociação a
+// depender só do histórico pra essa rota/negociação/competência.
+export async function removerConfirmacaoTabelaSaving(id, chave) {
+  const supabase = supabaseOrThrow();
+  const tabelaAtual = await obterTabelaNegociacao(id);
+  const cacheAtual = tabelaAtual.confirmacao_tabela_saving && typeof tabelaAtual.confirmacao_tabela_saving === 'object'
+    ? tabelaAtual.confirmacao_tabela_saving
+    : {};
+  if (!(chave in cacheAtual)) return { id, confirmacao_tabela_saving: cacheAtual };
+  const { [chave]: _removida, ...proximo } = cacheAtual;
+  const { data, error } = await supabase
+    .from('tabelas_negociacao')
+    .update({ confirmacao_tabela_saving: Object.keys(proximo).length ? proximo : null })
+    .eq('id', id)
+    .select('id, confirmacao_tabela_saving')
+    .single();
+  if (error) throw new Error(error.message || 'Erro ao descartar a confirmação por tabela.');
+  return data;
+}
+
 export async function marcarAprovadaNegociador(id, dados = {}) {
   return aplicarTransicaoGestao(id, {
     tipo: 'APROVACAO_NEGOCIADOR',

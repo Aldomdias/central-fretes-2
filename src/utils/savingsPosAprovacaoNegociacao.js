@@ -96,18 +96,26 @@ function numero(valor) {
   return Number(valor || 0) || 0;
 }
 
+// Classifica uma linha RAW de realizado na mesma chave rota+faixa usada no
+// agrupamento do saving pós-aprovação — usado tanto pra agrupar quanto pra
+// filtrar os CT-es de uma rota específica (ex.: confirmar por tabela).
+export function classificarRotaFaixaCte(row = {}, { grade = GRADE_FRETE_PADRAO, canalPadrao = '' } = {}) {
+  const rota = rotuloRota(row);
+  const faixa = classificarCteNaGrade(
+    { peso: row.peso ?? row.pesoDeclarado ?? row.pesoCubado, canal: row.canal, valorNF: row.valorNF },
+    grade,
+    canalPadrao
+  ).peso;
+  return { rota, faixa };
+}
+
 // Agrupa linhas RAW de realizado (CT-e a CT-e) por rota (UF origem-destino) + faixa de peso
 // da grade de frete, somando frete/NF/peso/CT-es de cada grupo.
 export function agruparRealizadoPorRotaFaixa(rows = [], { grade = GRADE_FRETE_PADRAO, canalPadrao = '' } = {}) {
   const mapa = new Map();
   (rows || []).forEach((row) => {
     if (!canalCompativelSaving(row.canal, canalPadrao)) return;
-    const rota = rotuloRota(row);
-    const faixa = classificarCteNaGrade(
-      { peso: row.peso ?? row.pesoDeclarado ?? row.pesoCubado, canal: row.canal, valorNF: row.valorNF },
-      grade,
-      canalPadrao
-    ).peso;
+    const { rota, faixa } = classificarRotaFaixaCte(row, { grade, canalPadrao });
     const chave = `${rota}||${faixa}`;
     const atual = mapa.get(chave) || { rota, faixa, ctes: 0, valorCte: 0, valorNF: 0, peso: 0 };
     atual.ctes += 1;
@@ -121,8 +129,10 @@ export function agruparRealizadoPorRotaFaixa(rows = [], { grade = GRADE_FRETE_PA
 
 // Compara os grupos rota+faixa da janela "base" (histórico) com os da janela "atual",
 // calculando o percentual de frete/NF de cada janela, a variação e o saving (diferença
-// de percentual x valor de NF atual). Só considera rota+faixa presentes na janela atual
-// (é lá que o saving se realiza) e que também têm histórico base pra comparar.
+// de percentual x valor de NF atual). Considera toda rota+faixa presente na janela atual
+// (é lá que o saving se realiza); quando não há histórico base pra comparar, a linha
+// entra marcada como `semHistorico` (saving null, não soma no total) em vez de sumir —
+// esses casos, junto com os negativos, são os que a confirmação por tabela cobre.
 export function calcularSavingPorRotaFaixa(linhasBase = [], linhasAtual = [], opcoes = {}) {
   const gruposBase = agruparRealizadoPorRotaFaixa(linhasBase, opcoes);
   const gruposAtual = agruparRealizadoPorRotaFaixa(linhasAtual, opcoes);
@@ -130,7 +140,24 @@ export function calcularSavingPorRotaFaixa(linhasBase = [], linhasAtual = [], op
   const linhas = [];
   gruposAtual.forEach((atual, chave) => {
     const base = gruposBase.get(chave);
-    if (!base || base.valorNF <= 0 || atual.valorNF <= 0) return;
+    const semHistorico = !base || base.valorNF <= 0 || atual.valorNF <= 0;
+    if (semHistorico) {
+      linhas.push({
+        rota: atual.rota,
+        faixa: atual.faixa,
+        ctesBase: base?.ctes || 0,
+        ctesAtual: atual.ctes,
+        valorNFAtual: atual.valorNF,
+        valorCteBase: base?.valorCte || 0,
+        valorCteAtual: atual.valorCte,
+        pctBase: null,
+        pctAtual: atual.valorNF > 0 ? atual.valorCte / atual.valorNF : null,
+        diffPct: null,
+        saving: null,
+        semHistorico: true,
+      });
+      return;
+    }
     const pctBase = base.valorCte / base.valorNF;
     const pctAtual = atual.valorCte / atual.valorNF;
     const diffPct = pctBase - pctAtual;
@@ -147,23 +174,26 @@ export function calcularSavingPorRotaFaixa(linhasBase = [], linhasAtual = [], op
       pctAtual,
       diffPct,
       saving,
+      semHistorico: false,
     });
   });
 
-  linhas.sort((a, b) => b.saving - a.saving);
+  linhas.sort((a, b) => (b.saving ?? -Infinity) - (a.saving ?? -Infinity));
 
-  const totais = linhas.reduce((acc, item) => {
+  const linhasComHistorico = linhas.filter((item) => !item.semHistorico);
+  const totais = linhasComHistorico.reduce((acc, item) => {
     acc.saving += item.saving;
     acc.valorNFAtual += item.valorNFAtual;
     acc.valorCteBase += item.valorCteBase;
     acc.valorCteAtual += item.valorCteAtual;
     return acc;
   }, { saving: 0, valorNFAtual: 0, valorCteBase: 0, valorCteAtual: 0 });
-  const somaNfBaseComparavel = linhas.reduce((acc, item) => acc + (item.pctBase ? item.valorNFAtual : 0), 0);
+  const somaNfBaseComparavel = linhasComHistorico.reduce((acc, item) => acc + (item.pctBase ? item.valorNFAtual : 0), 0);
   totais.pctBaseMedio = somaNfBaseComparavel > 0
-    ? linhas.reduce((acc, item) => acc + item.pctBase * item.valorNFAtual, 0) / somaNfBaseComparavel
+    ? linhasComHistorico.reduce((acc, item) => acc + item.pctBase * item.valorNFAtual, 0) / somaNfBaseComparavel
     : 0;
   totais.pctAtualMedio = totais.valorNFAtual > 0 ? totais.valorCteAtual / totais.valorNFAtual : 0;
+  totais.semHistorico = linhas.filter((item) => item.semHistorico).length;
 
   return { linhas, totais };
 }

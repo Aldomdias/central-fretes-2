@@ -272,12 +272,12 @@ export async function buscarReferenciaCtes(chaves = []) {
     const lote = normalizadas.slice(inicio, inicio + 200);
     let { data, error } = await client
       .from('auditoria_cte_resultados')
-      .select('chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, detalhes_calculo')
+      .select('chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, detalhes_calculo, updated_at')
       .in('chave_cte', lote);
     if (error && String(error.message || '').includes('detalhes_calculo')) {
       ({ data, error } = await client
         .from('auditoria_cte_resultados')
-        .select('chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo')
+        .select('chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at')
         .in('chave_cte', lote));
     }
     if (error) break;
@@ -374,19 +374,26 @@ export async function reauditarFatura(state, fatura, detalhes, usuarioNome = 'Us
     const lote = chaves.slice(inicio, inicio + 200);
     let { data, error } = await client
       .from('auditoria_cte_resultados')
-      .select('chave_cte, numero_cte, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, competencia, status_calculo, motivo_sem_calculo, detalhes_calculo')
+      .select('chave_cte, numero_cte, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, competencia, status_calculo, motivo_sem_calculo, detalhes_calculo, updated_at')
       .in('chave_cte', lote);
     if (error && String(error.message || '').includes('detalhes_calculo')) {
       ({ data, error } = await client
         .from('auditoria_cte_resultados')
-        .select('chave_cte, numero_cte, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, competencia, status_calculo, motivo_sem_calculo')
+        .select('chave_cte, numero_cte, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, competencia, status_calculo, motivo_sem_calculo, updated_at')
         .in('chave_cte', lote));
     }
     if (error) throw new Error(`Erro ao consultar a base reauditada: ${error.message}`);
     for (const row of data || []) {
-      resultados.set(normalizarChaveCte(row.chave_cte), row);
+      const guardarMaisRecente = (chave) => {
+        if (!chave) return;
+        const anterior = resultados.get(chave);
+        const dataAnterior = new Date(anterior?.updated_at || 0).getTime();
+        const dataAtual = new Date(row.updated_at || 0).getTime();
+        if (!anterior || dataAtual >= dataAnterior) resultados.set(chave, row);
+      };
+      guardarMaisRecente(normalizarChaveCte(row.chave_cte));
       const numero = normalizarChaveCte(row.numero_cte);
-      if (numero) resultados.set(numero, row);
+      guardarMaisRecente(numero);
     }
   }
 

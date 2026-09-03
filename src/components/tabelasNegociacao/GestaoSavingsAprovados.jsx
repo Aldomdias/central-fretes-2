@@ -3,10 +3,11 @@ import { gestaoStyles } from './GestaoStyles';
 import { formatarData } from '../../utils/tabelasNegociacaoGestao';
 import { buscarPrimeiroCteSaving, calcularSavingPosAprovacaoAgregado, listarFaixasPesoNegociacao, listarRealizadoLocalCtesParaSimulacao, listarTransportadorasRealizadoReajustes } from '../../services/freteDatabaseService';
 import { carregarCargasLotacaoSupabase } from '../../services/lotacaoSupabaseService';
-import { atualizarDataReferenciaSaving, atualizarOrigemRealizadoSaving, atualizarVinculoTransportadoraSaving, salvarSavingPosAprovacaoCache } from '../../services/tabelasNegociacaoService';
+import { atualizarDataReferenciaSaving, atualizarOrigemRealizadoSaving, atualizarVinculoTransportadoraSaving, removerConfirmacaoTabelaSaving, salvarConfirmacaoTabelaSaving, salvarSavingPosAprovacaoCache } from '../../services/tabelasNegociacaoService';
 import { normalizarTextoReajuste } from '../../utils/reajustesLocal';
 import { calcularJanelasSaving, calcularSavingLotacaoPorFluxo, calcularSavingPorRotaFaixa, MESES_BASE_SAVING_PADRAO } from '../../utils/savingsPosAprovacaoNegociacao';
 import { GRADE_FRETE_PADRAO, normalizarCanalGrade } from '../../utils/gradeFreteConfig';
+import { calcularSavingSimuladoPorTabela, calcularSavingSimuladoPorRota } from '../../utils/savingSimuladoMalha';
 
 // Faixas com fim acima deste valor são "abertas" (ex.: 0–999999 de tabela por percentual)
 // e não representam segmentação real de peso.
@@ -33,7 +34,7 @@ function formatPercent(value) {
 }
 
 const STATUS_ELEGIVEIS = ['APROVADA_GESTOR', 'PUBLICADA_OFICIAL'];
-const VERSAO_METRICA_SAVING = 7;
+const VERSAO_METRICA_SAVING = 8;
 
 function nomeArquivoSeguro(v) {
   return String(v || 'relatorio')
@@ -181,29 +182,41 @@ function nomeMesSaving(valor) {
   return nome.charAt(0).toUpperCase() + nome.slice(1);
 }
 
-function gerarHtmlLaudoSavingsExecutivo(tabelas = [], negociacoes = [], resultados = {}) {
+function gerarHtmlLaudoSavingsExecutivo(tabelas = [], negociacoes = [], resultados = {}, { apenasMesesFechados = false } = {}) {
   const calculadas = negociacoes.filter((item) => resultados[item.id]);
   const aguardando = negociacoes.filter((item) => !resultados[item.id]);
   const emAndamento = (tabelas || []).filter((t) => !['APROVADA_GESTOR', 'PUBLICADA_OFICIAL', 'RECUSADA', 'CANCELADA', 'SUBSTITUIDA'].includes(t.status_gestao));
   const savingRealizado = calculadas.reduce((acc, item) => acc + Number(resultados[item.id]?.totais?.saving || 0), 0);
   const savingProjetado = negociacoes.reduce((acc, item) => acc + Number(item.savingProjetado || 0), 0);
   const savingProjetadoIniciado = calculadas.reduce((acc, item) => acc + Number(item.savingProjetado || 0), 0);
-  const competenciaAtual = `${new Date().toISOString().slice(0, 7)}-01`;
+  // Mês corrente sempre vem incompleto (CT-es ainda entrando) — "meses fechados"
+  // usa o mês anterior como referência de "Realizado no mês", pra não misturar
+  // um mês parcial com os outros já fechados na mesma tabela.
+  // Tudo normalizado pra "AAAA-MM" — negociações diferentes podem gravar a
+  // competência em formatos ligeiramente distintos (com ou sem timestamp), e
+  // comparar a string inteira faz o mês "sumir" silenciosamente pra algumas.
+  const mesCorrenteISO = new Date().toISOString().slice(0, 7);
+  const mesFechadoISO = new Date(Date.UTC(Number(mesCorrenteISO.slice(0, 4)), Number(mesCorrenteISO.slice(5, 7)) - 2, 1)).toISOString().slice(0, 7);
+  const competenciaAtualYYYYMM = apenasMesesFechados ? mesFechadoISO : mesCorrenteISO;
+  const competenciaAtual = `${competenciaAtualYYYYMM}-01`;
   const primeiroCteGeral = calculadas.map((item) => resultados[item.id]?.primeiroCte).filter(Boolean).sort()[0] || '';
   const porMes = new Map();
   calculadas.forEach((item) => {
-    (resultados[item.id]?.mensal || []).forEach((mes) => {
-      const atual = porMes.get(mes.competencia) || { competencia: mes.competencia, saving: 0, ctes: 0, iniciadas: 0 };
-      atual.saving += Number(mes.saving || 0);
-      atual.ctes += Number(mes.ctesAtual || 0);
-      porMes.set(mes.competencia, atual);
-    });
+    (resultados[item.id]?.mensal || [])
+      .filter((mes) => !apenasMesesFechados || String(mes.competencia).slice(0, 7) < mesCorrenteISO)
+      .forEach((mes) => {
+        const chaveMes = String(mes.competencia).slice(0, 7);
+        const atual = porMes.get(chaveMes) || { competencia: `${chaveMes}-01`, saving: 0, ctes: 0, iniciadas: 0 };
+        atual.saving += Number(mes.saving || 0);
+        atual.ctes += Number(mes.ctesAtual || 0);
+        porMes.set(chaveMes, atual);
+      });
     const primeiro = resultados[item.id]?.primeiroCte;
-    if (primeiro) {
-      const competencia = `${primeiro.slice(0, 7)}-01`;
-      const atual = porMes.get(competencia) || { competencia, saving: 0, ctes: 0, iniciadas: 0 };
+    if (primeiro && (!apenasMesesFechados || primeiro.slice(0, 7) < mesCorrenteISO)) {
+      const chaveMes = primeiro.slice(0, 7);
+      const atual = porMes.get(chaveMes) || { competencia: `${chaveMes}-01`, saving: 0, ctes: 0, iniciadas: 0 };
       atual.iniciadas += 1;
-      porMes.set(competencia, atual);
+      porMes.set(chaveMes, atual);
     }
   });
   const meses = [...porMes.values()].sort((a, b) => a.competencia.localeCompare(b.competencia));
@@ -216,25 +229,32 @@ function gerarHtmlLaudoSavingsExecutivo(tabelas = [], negociacoes = [], resultad
     }, 0);
     mes.atingimento = mes.projetado ? mes.saving / mes.projetado : 0;
   });
-  const realizadoMesAtual = meses.find((mes) => mes.competencia === competenciaAtual)?.saving || 0;
+  const realizadoMesAtual = meses.find((mes) => mes.competencia.slice(0, 7) === competenciaAtualYYYYMM)?.saving || 0;
   const maiorSavingMes = Math.max(1, ...meses.map((mes) => Math.abs(mes.saving)));
   const porTransportadora = new Map();
   negociacoes.forEach((item) => {
     const resultado = resultados[item.id];
     const chave = item.transportadora;
-    const atual = porTransportadora.get(chave) || { transportadora: chave, aprovadas: 0, iniciadas: 0, projetado: 0, realizado: 0, realizadoMes: 0, primeiroCte: '', ctes: 0 };
+    const atual = porTransportadora.get(chave) || { transportadora: chave, aprovadas: 0, iniciadas: 0, projetado: 0, projetadoIniciadas: 0, realizado: 0, realizadoMes: 0, primeiroCte: '', ctes: 0 };
     atual.aprovadas += 1;
     atual.projetado += Number(item.savingProjetado || 0);
     if (resultado) {
       atual.iniciadas += 1;
+      atual.projetadoIniciadas += Number(item.savingProjetado || 0);
       atual.realizado += Number(resultado.totais?.saving || 0);
-      atual.realizadoMes += Number((resultado.mensal || []).find((mes) => mes.competencia === competenciaAtual)?.saving || 0);
+      atual.realizadoMes += Number((resultado.mensal || []).find((mes) => String(mes.competencia).slice(0, 7) === competenciaAtualYYYYMM)?.saving || 0);
       atual.ctes += Number(resultado.ctesAtual || 0);
       if (resultado.primeiroCte && (!atual.primeiroCte || resultado.primeiroCte < atual.primeiroCte)) atual.primeiroCte = resultado.primeiroCte;
     }
     porTransportadora.set(chave, atual);
   });
   const ranking = [...porTransportadora.values()].sort((a, b) => b.realizado - a.realizado);
+  const confirmadasPorTabela = calculadas.filter((item) => resultados[item.id]?.confirmadoPorTabela);
+  const mesInicial = meses[0]?.competencia;
+  const mesFinal = meses[meses.length - 1]?.competencia;
+  const periodoLabel = mesInicial && mesFinal
+    ? (mesInicial === mesFinal ? nomeMesSaving(mesInicial) : `${nomeMesSaving(mesInicial)} a ${nomeMesSaving(mesFinal)}`)
+    : '';
   const cards = [
     ['Em negociação', emAndamento.length, '#2563eb'],
     ['Aprovadas', negociacoes.length, '#0f766e'],
@@ -242,8 +262,9 @@ function gerarHtmlLaudoSavingsExecutivo(tabelas = [], negociacoes = [], resultad
     ['Aguardando início / integração', aguardando.length, '#b45309'],
     ['Projetado mensal · aprovadas', formatMoney(savingProjetado), '#475569'],
     ['Projetado mensal · já iniciadas', formatMoney(savingProjetadoIniciado), '#2563eb'],
-    ['Realizado no mês · até hoje', formatMoney(realizadoMesAtual), realizadoMesAtual >= 0 ? '#087f3f' : '#c1121f'],
-    ['Realizado acumulado · desde o início', formatMoney(savingRealizado), savingRealizado >= 0 ? '#087f3f' : '#c1121f'],
+    [`Realizado no mês · ${nomeMesSaving(competenciaAtual)}`, formatMoney(realizadoMesAtual), realizadoMesAtual >= 0 ? '#087f3f' : '#c1121f'],
+    ['Realizado acumulado · desde o início', formatMoney(savingRealizado), savingRealizado >= 0 ? '#087f3f' : '#c1121f', periodoLabel],
+    ['Confirmadas por tabela (negativos/sem histórico)', confirmadasPorTabela.length, '#7c3aed'],
   ];
   const funil = [
     ['Em negociação', emAndamento.length, '#60a5fa'], ['Aprovadas', negociacoes.length, '#2dd4bf'],
@@ -257,7 +278,8 @@ function gerarHtmlLaudoSavingsExecutivo(tabelas = [], negociacoes = [], resultad
     <tr><td style="padding:28px;background:#06265c;color:#fff"><div style="font-size:12px;letter-spacing:1.4px;text-transform:uppercase;color:#93c5fd">Central de Fretes · Gestão de Negociações</div><h1 style="margin:8px 0 6px;font-size:28px">Laudo executivo mensal</h1><div style="color:#dbeafe;font-size:13px">Acompanhamento do negociado versus realizado · Gerado em ${new Date().toLocaleString('pt-BR')}</div></td></tr>
     <tr><td style="padding:24px">
       <table role="presentation" width="100%" cellspacing="8" cellpadding="0"><tr>${cards.slice(0, 4).map(([label, valor, cor]) => `<td width="25%" style="border:1px solid #dbe4f0;border-radius:10px;padding:14px"><div style="font-size:11px;color:#64748b">${label}</div><div style="font-size:24px;font-weight:800;color:${cor};margin-top:6px">${valor}</div></td>`).join('')}</tr></table>
-      <table role="presentation" width="100%" cellspacing="8" cellpadding="0"><tr>${cards.slice(4).map(([label, valor, cor]) => `<td width="25%" style="border:1px solid #dbe4f0;border-radius:10px;padding:16px"><div style="font-size:11px;color:#64748b">${label}</div><div style="font-size:21px;font-weight:800;color:${cor};margin-top:6px">${valor}</div></td>`).join('')}</tr></table>
+      <table role="presentation" width="100%" cellspacing="8" cellpadding="0"><tr>${cards.slice(4, 8).map(([label, valor, cor, sublabel]) => `<td width="25%" style="border:1px solid #dbe4f0;border-radius:10px;padding:16px"><div style="font-size:11px;color:#64748b">${label}</div><div style="font-size:21px;font-weight:800;color:${cor};margin-top:6px">${valor}</div>${sublabel ? `<div style="font-size:10px;color:#94a3b8;margin-top:3px">${sublabel}</div>` : ''}</td>`).join('')}</tr></table>
+      <table role="presentation" width="100%" cellspacing="8" cellpadding="0"><tr>${cards.slice(8).map(([label, valor, cor]) => `<td width="25%" style="border:1px solid #dbe4f0;border-radius:10px;padding:16px"><div style="font-size:11px;color:#64748b">${label}</div><div style="font-size:21px;font-weight:800;color:${cor};margin-top:6px">${valor}</div></td>`).join('')}</tr></table>
       <div style="margin:22px 0 8px;font-size:18px;font-weight:800;color:#06265c">Andamento das negociações</div>
       ${funil.map(([label, valor, cor]) => `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:7px 0"><tr><td width="190" style="font-size:12px">${label}</td><td><div style="height:18px;background:#e8eef6;border-radius:9px;overflow:hidden"><div style="height:18px;width:${Math.max(3, (valor / maxFunil) * 100)}%;background:${cor};border-radius:9px"></div></div></td><td width="45" align="right" style="font-weight:800">${valor}</td></tr></table>`).join('')}
       <div style="margin:22px 0 8px;font-size:18px;font-weight:800;color:#06265c">Evolução mês a mês</div>
@@ -265,20 +287,25 @@ function gerarHtmlLaudoSavingsExecutivo(tabelas = [], negociacoes = [], resultad
       ${meses.map((mes) => `<tr><td style="border-bottom:1px solid #e2e8f0"><strong>${nomeMesSaving(mes.competencia)}</strong></td><td align="right" style="border-bottom:1px solid #e2e8f0">${mes.iniciadas}</td><td align="right" style="border-bottom:1px solid #e2e8f0">${mes.ctes.toLocaleString('pt-BR')}</td><td align="right" style="border-bottom:1px solid #e2e8f0">${formatMoney(mes.projetado)}</td><td align="right" style="border-bottom:1px solid #e2e8f0;color:${mes.saving >= 0 ? '#087f3f' : '#c1121f'}"><strong>${formatMoney(mes.saving)}</strong></td><td align="right" style="border-bottom:1px solid #e2e8f0"><strong>${formatPercent(mes.atingimento)}</strong></td><td style="border-bottom:1px solid #e2e8f0"><div style="width:${Math.max(2, Math.abs(mes.saving) / maiorSavingMes * 100)}%;height:10px;border-radius:5px;background:${mes.saving >= 0 ? '#22c55e' : '#ef4444'}"></div></td></tr>`).join('') || '<tr><td colspan="7" style="padding:16px;color:#64748b">Ainda não há realizado mensal calculado.</td></tr>'}
       </tbody></table>
       <div style="margin:22px 0 8px;font-size:18px;font-weight:800;color:#06265c">Projetado versus realizado por transportadora</div>
-      <table width="100%" cellspacing="0" cellpadding="8" style="border-collapse:collapse;font-size:12px"><thead><tr style="background:#f1f5f9;color:#06265c"><th align="left">Transportadora</th><th align="right">Aprovadas</th><th align="right">Iniciadas</th><th align="left">Primeiro CT-e</th><th align="right">Projetado mensal</th><th align="right">Realizado no mês</th><th align="right">Realizado acumulado</th></tr></thead><tbody>
-      ${ranking.map((t) => `<tr><td style="border-bottom:1px solid #e2e8f0"><strong>${escapeHtmlSaving(t.transportadora)}</strong></td><td align="right" style="border-bottom:1px solid #e2e8f0">${t.aprovadas}</td><td align="right" style="border-bottom:1px solid #e2e8f0">${t.iniciadas}</td><td style="border-bottom:1px solid #e2e8f0">${t.primeiroCte ? formatarData(t.primeiroCte) : 'Aguardando início'}</td><td align="right" style="border-bottom:1px solid #e2e8f0">${formatMoney(t.projetado)}</td><td align="right" style="border-bottom:1px solid #e2e8f0;color:${t.realizadoMes >= 0 ? '#087f3f' : '#c1121f'}"><strong>${formatMoney(t.realizadoMes)}</strong></td><td align="right" style="border-bottom:1px solid #e2e8f0">${formatMoney(t.realizado)}</td></tr>`).join('')}
+      <table width="100%" cellspacing="0" cellpadding="8" style="border-collapse:collapse;font-size:12px"><thead><tr style="background:#f1f5f9;color:#06265c"><th align="left">Transportadora</th><th align="right">Aprovadas</th><th align="right">Iniciadas</th><th align="left">Primeiro CT-e</th><th align="right">Projetado (todas aprovadas)</th><th align="right">Projetado (só iniciadas)</th><th align="right">Realizado no mês</th><th align="right">Realizado acumulado</th></tr></thead><tbody>
+      ${ranking.map((t) => `<tr><td style="border-bottom:1px solid #e2e8f0"><strong>${escapeHtmlSaving(t.transportadora)}</strong></td><td align="right" style="border-bottom:1px solid #e2e8f0">${t.aprovadas}</td><td align="right" style="border-bottom:1px solid #e2e8f0">${t.iniciadas}</td><td style="border-bottom:1px solid #e2e8f0">${t.primeiroCte ? formatarData(t.primeiroCte) : 'Aguardando início'}</td><td align="right" style="border-bottom:1px solid #e2e8f0;color:#64748b">${formatMoney(t.projetado)}</td><td align="right" style="border-bottom:1px solid #e2e8f0">${formatMoney(t.projetadoIniciadas)}</td><td align="right" style="border-bottom:1px solid #e2e8f0;color:${t.realizadoMes >= 0 ? '#087f3f' : '#c1121f'}"><strong>${formatMoney(t.realizadoMes)}</strong></td><td align="right" style="border-bottom:1px solid #e2e8f0">${formatMoney(t.realizado)}</td></tr>`).join('')}
       </tbody></table>
       <div style="margin:22px 0 8px;font-size:18px;font-weight:800;color:#06265c">Acompanhamento individual</div>
       <table width="100%" cellspacing="0" cellpadding="7" style="border-collapse:collapse;font-size:11px"><thead><tr style="background:#f1f5f9;color:#06265c"><th align="left">Transportadora / origem</th><th align="left">Canal</th><th align="left">Início considerado</th><th align="left">Critério da data</th><th align="left">Situação</th><th align="right">Saving</th></tr></thead><tbody>
-      ${negociacoes.map((item) => { const r = resultados[item.id]; const inicio = r?.primeiroCte || item.dataReferenciaSalva || item.aprovadoEm; const criterio = r?.primeiroCte ? 'Primeiro CT-e' : item.dataReferenciaSalva ? 'Data de referência' : 'Data de aprovação (fallback)'; return `<tr><td style="border-bottom:1px solid #e2e8f0"><strong>${escapeHtmlSaving(item.transportadora)}</strong><br><span style="color:#64748b">${escapeHtmlSaving(item.origem || 'Todas')}</span></td><td style="border-bottom:1px solid #e2e8f0">${escapeHtmlSaving(item.canal)}</td><td style="border-bottom:1px solid #e2e8f0"><strong>${formatarData(inicio)}</strong></td><td style="border-bottom:1px solid #e2e8f0;color:#64748b">${criterio}</td><td style="border-bottom:1px solid #e2e8f0;color:${r ? '#087f3f' : '#b45309'}"><strong>${r ? 'Iniciada no realizado' : 'Aguardando início / integração'}</strong></td><td align="right" style="border-bottom:1px solid #e2e8f0;color:${Number(r?.totais?.saving || 0) >= 0 ? '#087f3f' : '#c1121f'}">${r ? `<strong>${formatMoney(r.totais.saving)}</strong>` : '—'}</td></tr>`; }).join('')}
+      ${negociacoes.map((item) => {
+        const r = resultados[item.id];
+        const inicio = r?.primeiroCte || item.dataReferenciaSalva || item.aprovadoEm;
+        const criterio = r?.primeiroCte ? 'Primeiro CT-e' : item.dataReferenciaSalva ? 'Data de referência' : 'Data de aprovação (fallback)';
+        return `<tr><td style="border-bottom:1px solid #e2e8f0"><strong>${escapeHtmlSaving(item.transportadora)}</strong><br><span style="color:#64748b">${escapeHtmlSaving(item.origem || 'Todas')}</span></td><td style="border-bottom:1px solid #e2e8f0">${escapeHtmlSaving(item.canal)}</td><td style="border-bottom:1px solid #e2e8f0"><strong>${formatarData(inicio)}</strong></td><td style="border-bottom:1px solid #e2e8f0;color:#64748b">${criterio}</td><td style="border-bottom:1px solid #e2e8f0;color:${r ? '#087f3f' : '#b45309'}"><strong>${r ? 'Iniciada no realizado' : 'Aguardando início / integração'}</strong></td><td align="right" style="border-bottom:1px solid #e2e8f0;color:${Number(r?.totais?.saving || 0) >= 0 ? '#087f3f' : '#c1121f'}">${r ? `<strong>${formatMoney(r.totais.saving)}</strong>` : '—'}</td></tr>`;
+      }).join('')}
       </tbody></table>
-      <div style="margin-top:20px;padding:13px;background:#eff6ff;border-left:4px solid #2563eb;font-size:11px;color:#334155"><strong>Critério:</strong> uma negociação é considerada iniciada quando há CT-e após a data de referência. O saving compara o realizado com o histórico anterior na mesma rota e na faixa de peso da tabela negociada. Primeiro CT-e geral identificado: ${primeiroCteGeral ? formatarData(primeiroCteGeral) : 'ainda não identificado'}.</div>
+      <div style="margin-top:20px;padding:13px;background:#eff6ff;border-left:4px solid #2563eb;font-size:11px;color:#334155"><strong>Critério:</strong> uma negociação é considerada iniciada quando há CT-e após a data de referência. O saving compara o realizado com o histórico anterior na mesma rota e na faixa de peso da tabela negociada. Primeiro CT-e geral identificado: ${primeiroCteGeral ? formatarData(primeiroCteGeral) : 'ainda não identificado'}.<br><strong>Projetado:</strong> "todas aprovadas" soma a estimativa de toda negociação aprovada da transportadora, mesmo a que ainda não começou a rodar no realizado; "só iniciadas" soma só as que já têm CT-e — compare o Realizado com essa coluna, não com a primeira.${apenasMesesFechados ? `<br><strong>Meses fechados:</strong> ${nomeMesSaving(mesCorrenteISO + '-01')} (mês corrente, ainda incompleto) foi excluído da evolução mensal e do "Realizado no mês" — a referência usada é ${nomeMesSaving(competenciaAtual)}.` : ''}</div>
     </td></tr>
   </table></td></tr></table></body></html>`;
 }
 
-function baixarLaudoSavings(tabelas, negociacoes, resultados) {
-  const html = gerarHtmlLaudoSavingsExecutivo(tabelas, negociacoes, resultados);
+function baixarLaudoSavings(tabelas, negociacoes, resultados, opcoes = {}) {
+  const html = gerarHtmlLaudoSavingsExecutivo(tabelas, negociacoes, resultados, opcoes);
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
@@ -293,8 +320,8 @@ function base64Utf8Saving(valor) {
   return btoa(unescape(encodeURIComponent(valor)));
 }
 
-function baixarEmailSavings(tabelas, negociacoes, resultados) {
-  const html = gerarHtmlLaudoSavingsExecutivo(tabelas, negociacoes, resultados);
+function baixarEmailSavings(tabelas, negociacoes, resultados, opcoes = {}) {
+  const html = gerarHtmlLaudoSavingsExecutivo(tabelas, negociacoes, resultados, opcoes);
   const assunto = `Laudo mensal de negociações e savings - ${new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}`;
   const base64 = base64Utf8Saving(html).replace(/(.{76})/g, '$1\r\n');
   const eml = ['MIME-Version: 1.0', `Subject: ${assunto}`, 'Content-Type: text/html; charset="utf-8"', 'Content-Transfer-Encoding: base64', '', base64, ''].join('\r\n');
@@ -336,6 +363,30 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
   // do mesmo canal com a mesma janela reaproveitam a mesma busca em vez de repetir
   // uma consulta pesada (empresa inteira) pra cada transportadora em "Calcular todas".
   const cacheBaseRef = useRef(new Map());
+  // Confirmação por tabela: reroda o CT-e a CT-e contra a malha oficial pra
+  // validar o saving apurado pelo método histórico (útil sobretudo nos negativos).
+  const [confirmMalhaResultados, setConfirmMalhaResultados] = useState({});
+  const [confirmMalhaCarregando, setConfirmMalhaCarregando] = useState({});
+  const [confirmMalhaErros, setConfirmMalhaErros] = useState({});
+  const [confirmMalhaProgresso, setConfirmMalhaProgresso] = useState({});
+  const [painelConfirmarAberto, setPainelConfirmarAberto] = useState(false);
+  const [selecionadosConfirmar, setSelecionadosConfirmar] = useState({});
+  const [confirmandoSelecionados, setConfirmandoSelecionados] = useState(false);
+  // Confirmação por tabela, escopada só na rota+faixa que deu negativa no histórico.
+  const [confirmRotaResultados, setConfirmRotaResultados] = useState({});
+  const [confirmRotaCarregando, setConfirmRotaCarregando] = useState({});
+  const [confirmRotaErros, setConfirmRotaErros] = useState({});
+  const [confirmRotaProgresso, setConfirmRotaProgresso] = useState({});
+  // Flag geral: quando ligada (padrão), o saving mostrado troca as linhas negativas
+  // e sem histórico pelo valor confirmado por tabela (quando já calculado). Desligada,
+  // volta a mostrar só o % histórico puro, sem nenhum valor de tabela.
+  const [usarConfirmacaoTabela, setUsarConfirmacaoTabela] = useState(true);
+  // Laudo/e-mail: exclui o mês corrente (sempre parcial) do "Realizado no mês"
+  // e da evolução mensal, usando o último mês fechado como referência.
+  const [apenasMesesFechados, setApenasMesesFechados] = useState(true);
+  // Confirmação de período antes de gerar laudo/e-mail: null = fechado; senão
+  // guarda qual ação ('laudo' | 'email' | 'recorte') está pendente de confirmar.
+  const [laudoPendente, setLaudoPendente] = useState(null);
 
   const negociacoesAprovadas = useMemo(() => {
     return (tabelas || [])
@@ -363,6 +414,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         savingProjetado: Number(t.saving_estimado || t.saving_projetado || 0),
         savingCache: t.saving_pos_aprovacao_detalhe?.porCanal?.[canal] || (canais.length === 1 ? t.saving_pos_aprovacao_detalhe : null),
         savingCacheCalculadoEm: t.saving_pos_aprovacao_calculado_em || '',
+        confirmacaoTabelaSalva: t.confirmacao_tabela_saving || null,
       }));
       })
       .sort((a, b) => String(b.aprovadoEm).localeCompare(String(a.aprovadoEm)));
@@ -390,6 +442,65 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
       return mudou ? next : prev;
     });
   }, [negociacoesAprovadas]);
+
+  // Hidrata a confirmação por tabela a partir do cache salvo no banco, pra
+  // competência atualmente selecionada — sem sobrescrever um resultado já
+  // calculado nesta sessão (esse pode estar mais atualizado que o salvo).
+  // Na visão "todo período", se não existir confirmação do período inteiro,
+  // usa a confirmação de mês mais recente como fallback (marcada como parcial)
+  // em vez de mostrar "—" escondendo um dado que existe.
+  useEffect(() => {
+    const sufixo = competenciaFiltro === 'TODAS' ? '' : `::${competenciaFiltro}`;
+    setConfirmMalhaResultados((prev) => {
+      let mudou = false;
+      const next = { ...prev };
+      negociacoesAprovadas.forEach((item) => {
+        const chaveLocal = `${item.id}${sufixo}`;
+        if (next[chaveLocal]) return;
+        const cache = item.confirmacaoTabelaSalva;
+        if (!cache) return;
+        let salvo = cache[`GERAL${sufixo}`];
+        let competenciaParcial = '';
+        if (!salvo && competenciaFiltro === 'TODAS') {
+          // Sem confirmação do período inteiro: soma as confirmações por mês já
+          // feitas (ex.: julho + agosto + setembro, uma a uma) — melhor
+          // aproximação do total do que só pegar o mês mais recente.
+          const candidatos = Object.entries(cache).filter(([k]) => k.startsWith('GERAL::'));
+          if (candidatos.length) {
+            const somaveis = ['totalCtes', 'simulados', 'semCobertura', 'vencedores', 'naoVencedores', 'semAlternativa', 'saving', 'savingVitorias', 'valorVencedor', 'valorAlternativa', 'divergenciaCobrada', 'oportunidadePerdida'];
+            salvo = candidatos.reduce((acc, [, valor]) => {
+              somaveis.forEach((campo) => { acc[campo] = (acc[campo] || 0) + Number(valor?.[campo] || 0); });
+              acc.vencedoresDetalhe = [...(acc.vencedoresDetalhe || []), ...(valor?.vencedoresDetalhe || [])];
+              acc.naoVencedoresDetalhe = [...(acc.naoVencedoresDetalhe || []), ...(valor?.naoVencedoresDetalhe || [])];
+              return acc;
+            }, {});
+            competenciaParcial = candidatos.map(([k]) => k.slice('GERAL::'.length)).sort().join(', ');
+          }
+        }
+        if (salvo) { next[chaveLocal] = competenciaParcial ? { ...salvo, competenciaParcial } : salvo; mudou = true; }
+      });
+      return mudou ? next : prev;
+    });
+    setConfirmRotaResultados((prev) => {
+      let mudou = false;
+      const next = { ...prev };
+      negociacoesAprovadas.forEach((item) => {
+        const cache = item.confirmacaoTabelaSalva;
+        if (!cache) return;
+        Object.entries(cache).forEach(([chaveSalva, valor]) => {
+          if (chaveSalva === `GERAL${sufixo}`) return;
+          const dentroDoEscopo = sufixo ? chaveSalva.endsWith(sufixo) : !chaveSalva.includes('::');
+          if (!dentroDoEscopo) return;
+          const rotaFaixa = sufixo ? chaveSalva.slice(0, -sufixo.length) : chaveSalva;
+          const chaveLocal = `${item.id}||${rotaFaixa}${sufixo}`;
+          if (next[chaveLocal]) return;
+          next[chaveLocal] = valor;
+          mudou = true;
+        });
+      });
+      return mudou ? next : prev;
+    });
+  }, [negociacoesAprovadas, competenciaFiltro]);
 
   useEffect(() => {
     setCarregandoNomes(true);
@@ -689,6 +800,8 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
       setResultados((prev) => ({ ...prev, [item.id]: resultadoCompleto }));
       atualizarProgressoItem(item.id, 100, 'Concluído');
       if (abrirDepois) setAbertos((prev) => ({ ...prev, [item.id]: true }));
+      // Não bloqueia o cálculo histórico: roda em paralelo, por fora.
+      autoConfirmarPendentes(item, resultadoCompleto).catch(() => {});
       // Salva o resultado no banco pra sobreviver a um F5 — se der erro (ex: migration
       // ainda não aplicada), o cálculo em tela continua valendo, só não persiste.
       const cacheSalvo = await salvarSavingPosAprovacaoCache(negociacaoId(item), { ...resultadoCompleto, canal: item.canal });
@@ -724,6 +837,122 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     }
     setProgressoTodas(null);
     setCalculandoTodas(false);
+  }
+
+  // Sufixo que carrega a competência atual na chave de cache (memória e banco).
+  // "Todo o período" usa a chave crua (GERAL / rota||faixa); um mês específico
+  // usa uma chave à parte — confirmar setembro não mistura com agosto nem com
+  // o período inteiro, e cada visão mostra o que foi confirmado nela.
+  function sufixoCompetencia() {
+    return competenciaFiltro === 'TODAS' ? '' : `::${competenciaFiltro}`;
+  }
+
+  async function confirmarPorMalha(item) {
+    const tabelaOriginal = tabelas.find((t) => t.id === negociacaoId(item));
+    if (!tabelaOriginal) return;
+    const chave = `${item.id}${sufixoCompetencia()}`;
+    const competencia = competenciaFiltro === 'TODAS' ? undefined : competenciaFiltro;
+    setConfirmMalhaCarregando((prev) => ({ ...prev, [chave]: true }));
+    setConfirmMalhaErros((prev) => ({ ...prev, [chave]: '' }));
+    setConfirmMalhaProgresso((prev) => ({ ...prev, [chave]: { pct: 5, etapa: 'Iniciando' } }));
+    try {
+      const resultado = await calcularSavingSimuladoPorTabela(tabelaOriginal, tabelas, {
+        competencia,
+        onProgress: ({ pct, etapa }) => setConfirmMalhaProgresso((prev) => ({ ...prev, [chave]: { pct, etapa } })),
+      });
+      setConfirmMalhaResultados((prev) => ({ ...prev, [chave]: resultado }));
+      salvarConfirmacaoTabelaSaving(negociacaoId(item), `GERAL${sufixoCompetencia()}`, resultado).catch(() => {});
+    } catch (e) {
+      setConfirmMalhaErros((prev) => ({ ...prev, [chave]: e?.message || 'Erro ao confirmar por tabela.' }));
+    } finally {
+      setConfirmMalhaCarregando((prev) => ({ ...prev, [chave]: false }));
+    }
+  }
+
+  // Descarta a confirmação por tabela dessa negociação (na visão atual) e
+  // volta a depender só do histórico. Some as chaves salvas envolvidas — se
+  // for a soma de vários meses, apaga cada um; se for direta, apaga só ela.
+  async function descartarConfirmacaoMalha(item) {
+    const chave = `${item.id}${sufixoCompetencia()}`;
+    const confMalha = confirmMalhaResultados[chave];
+    const chavesParaRemover = confMalha?.competenciaParcial
+      ? confMalha.competenciaParcial.split(', ').map((comp) => `GERAL::${comp}`)
+      : [`GERAL${sufixoCompetencia()}`];
+    setConfirmMalhaResultados((prev) => { const next = { ...prev }; delete next[chave]; return next; });
+    setConfirmMalhaErros((prev) => { const next = { ...prev }; delete next[chave]; return next; });
+    for (const chaveSalva of chavesParaRemover) {
+      // eslint-disable-next-line no-await-in-loop
+      await removerConfirmacaoTabelaSaving(negociacaoId(item), chaveSalva).catch(() => {});
+    }
+  }
+
+  async function confirmarSelecionadosPorMalha(lista) {
+    setConfirmandoSelecionados(true);
+    for (const item of lista) {
+      // eslint-disable-next-line no-await-in-loop
+      await confirmarPorMalha(item);
+    }
+    setConfirmandoSelecionados(false);
+  }
+
+  async function confirmarRotaPorMalha(item, linha) {
+    const tabelaOriginal = tabelas.find((t) => t.id === negociacaoId(item));
+    if (!tabelaOriginal) return;
+    const chave = `${item.id}||${linha.rota}||${linha.faixa}${sufixoCompetencia()}`;
+    const competencia = competenciaFiltro === 'TODAS' ? undefined : competenciaFiltro;
+    setConfirmRotaCarregando((prev) => ({ ...prev, [chave]: true }));
+    setConfirmRotaErros((prev) => ({ ...prev, [chave]: '' }));
+    setConfirmRotaProgresso((prev) => ({ ...prev, [chave]: { pct: 5, etapa: 'Iniciando' } }));
+    try {
+      const resultado = await calcularSavingSimuladoPorRota(tabelaOriginal, tabelas, { rota: linha.rota, faixa: linha.faixa, competencia }, {
+        onProgress: ({ pct, etapa }) => setConfirmRotaProgresso((prev) => ({ ...prev, [chave]: { pct, etapa } })),
+      });
+      setConfirmRotaResultados((prev) => ({ ...prev, [chave]: resultado }));
+      salvarConfirmacaoTabelaSaving(negociacaoId(item), `${linha.rota}||${linha.faixa}${sufixoCompetencia()}`, resultado).catch(() => {});
+    } catch (e) {
+      setConfirmRotaErros((prev) => ({ ...prev, [chave]: e?.message || 'Erro ao confirmar rota por tabela.' }));
+    } finally {
+      setConfirmRotaCarregando((prev) => ({ ...prev, [chave]: false }));
+    }
+  }
+
+  // Negativo ou sem histórico: são os casos que a confirmação por tabela precisa
+  // cobrir. Roda sozinha assim que o histórico é calculado, sem precisar clicar.
+  function linhasQuePrecisamTabela(resultado) {
+    if (!resultado || resultado.tipoCalculo === 'LOTACAO_FLUXO') return [];
+    return (resultado.linhas || []).filter((linha) => linha.semHistorico || linha.saving < 0);
+  }
+
+  async function autoConfirmarPendentes(item, resultado) {
+    const pendentes = linhasQuePrecisamTabela(resultado);
+    for (const linha of pendentes) {
+      const chave = `${item.id}||${linha.rota}||${linha.faixa}${sufixoCompetencia()}`;
+      // Só pula se já está carregando — um resultado antigo em cache não é
+      // motivo pra pular, porque os CT-es podem ter mudado desde então.
+      if (confirmRotaCarregando[chave]) continue;
+      // eslint-disable-next-line no-await-in-loop
+      await confirmarRotaPorMalha(item, linha);
+    }
+  }
+
+  // Saving negociação inteira já trocando negativos/sem-histórico pelo valor
+  // confirmado por tabela (quando disponível) — usado quando o flag está ligado.
+  function savingCombinadoComTabela(item) {
+    const resultado = resultados[item.id];
+    if (!resultado) return 0;
+    // Confirmação da negociação inteira (painel "Confirmar por tabela") tem
+    // prioridade: se o usuário confirmou a tabela toda, esse é o valor final —
+    // não fica remendado por trás com a confirmação automática por rota.
+    const confMalha = confirmMalhaResultados[item.id];
+    if (confMalha) return confMalha.saving;
+    if (resultado.tipoCalculo === 'LOTACAO_FLUXO') return Number(resultado.totais?.saving || 0);
+    return (resultado.linhas || []).reduce((acc, linha) => {
+      if (!linha.semHistorico && linha.saving >= 0) return acc + linha.saving;
+      const chave = `${item.id}||${linha.rota}||${linha.faixa}${sufixoCompetencia()}`;
+      const malha = confirmRotaResultados[chave];
+      if (malha) return acc + malha.saving;
+      return acc + (linha.saving ?? 0);
+    }, 0);
   }
 
   // Atualiza só as negociações que já têm CT-e naquela competência, em vez de
@@ -768,14 +997,53 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
   function savingNoEscopo(item) {
     const resultado = resultados[item.id];
     if (!resultado) return 0;
-    if (competenciaFiltro === 'TODAS') return Number(resultado.totais?.saving || 0);
+    if (competenciaFiltro === 'TODAS') {
+      return usarConfirmacaoTabela ? savingCombinadoComTabela(item) : Number(resultado.totais?.saving || 0);
+    }
+    // Se a negociação inteira já foi confirmada por tabela NESSA competência
+    // (confirmação também rodou recortada pro mês), usa esse valor no lugar
+    // do histórico puro do mês.
+    if (usarConfirmacaoTabela) {
+      const confMalhaMes = confirmMalhaResultados[`${item.id}${sufixoCompetencia()}`];
+      if (confMalhaMes) return confMalhaMes.saving;
+    }
     return (resultado.mensal || [])
       .filter((mes) => String(mes.competencia).startsWith(competenciaFiltro))
       .reduce((acc, mes) => acc + Number(mes.saving || 0), 0);
   }
   const savingTotal = negociacoesCalculadas.reduce((acc, item) => acc + savingNoEscopo(item), 0);
+  // Versão dos resultados com o saving já trocado pelo valor "com tabela" (quando o
+  // flag está ligado) — usada nos laudos/e-mail pra não divergir do que os cards mostram.
+  // Carrega também o histórico puro e se houve substituição, pro laudo poder marcar
+  // explicitamente quais negociações foram confirmadas por tabela (não só o número).
+  // Quebra mensal já trocando cada mês que tiver confirmação por tabela salva
+  // pra aquele mês específico — assim TODO controle que olha "por mês" (não só
+  // o total) segue o mesmo toggle, em vez de só o acumulado.
+  function mensalComTabela(item) {
+    const mensal = resultados[item.id]?.mensal || [];
+    if (!usarConfirmacaoTabela) return mensal;
+    return mensal.map((mes) => {
+      const chave = `${item.id}::${String(mes.competencia).slice(0, 7)}`;
+      const confMes = confirmMalhaResultados[chave];
+      if (!confMes) return mes;
+      return { ...mes, saving: confMes.saving, savingHistoricoPuro: Number(mes.saving || 0), confirmadoPorTabela: true };
+    });
+  }
+  const resultadosExibidos = usarConfirmacaoTabela
+    ? Object.fromEntries(negociacoesCalculadas.map((item) => {
+      const savingHistoricoPuro = Number(resultados[item.id].totais?.saving || 0);
+      const savingCombinado = savingCombinadoComTabela(item);
+      return [item.id, {
+        ...resultados[item.id],
+        totais: { ...resultados[item.id].totais, saving: savingCombinado },
+        mensal: mensalComTabela(item),
+        savingHistoricoPuro,
+        confirmadoPorTabela: Math.abs(savingCombinado - savingHistoricoPuro) > 0.005,
+      }];
+    }))
+    : resultados;
   const savingMensal = [...negociacoesCalculadas.reduce((mapa, item) => {
-    (resultados[item.id]?.mensal || []).filter((mes) => competenciaFiltro === 'TODAS' || String(mes.competencia).startsWith(competenciaFiltro)).forEach((mes) => {
+    mensalComTabela(item).filter((mes) => competenciaFiltro === 'TODAS' || String(mes.competencia).startsWith(competenciaFiltro)).forEach((mes) => {
       const atual = mapa.get(mes.competencia) || { competencia: mes.competencia, saving: 0, ctesAtual: 0, transportadoras: new Set() };
       atual.saving += Number(mes.saving || 0);
       atual.ctesAtual += Number(mes.ctesAtual || 0);
@@ -848,8 +1116,42 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     onDevolver(item, observacao);
   }
 
+  const competenciasNoRecorte = [...new Set(negociacoesCalculadas.flatMap((item) => mensalComTabela(item).map((mes) => String(mes.competencia).slice(0, 7))))].sort();
+  const mesCorrenteAtualISO = new Date().toISOString().slice(0, 7);
+
+  function confirmarEBaixarLaudo() {
+    const acao = laudoPendente;
+    setLaudoPendente(null);
+    if (acao === 'email') { baixarEmailSavings(tabelas, negociacoesFiltradas, resultadosExibidos, { apenasMesesFechados }); return; }
+    baixarLaudoSavings(tabelas, negociacoesFiltradas, resultadosExibidos, { apenasMesesFechados });
+  }
+
   return (
     <section className="sim-card">
+      {laudoPendente ? (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }} onClick={() => setLaudoPendente(null)}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 22, maxWidth: 460, width: '90%', boxShadow: '0 20px 50px rgba(0,0,0,0.25)' }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 4px' }}>Confirmar período do {laudoPendente === 'email' ? 'e-mail' : 'laudo'}</h3>
+            <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 14px' }}>{negociacoesFiltradas.length} negociação(ões) no recorte atual (filtros de canal/transportadora/competência aplicados na tela).</p>
+            <div style={{ fontSize: 13, marginBottom: 10 }}>
+              <strong>Meses com dado calculado:</strong> {competenciasNoRecorte.length ? competenciasNoRecorte.map((c) => nomeMesSaving(`${c}-01`)).join(', ') : 'nenhum ainda'}
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 6, padding: '8px 10px', background: '#f8fafc', borderRadius: 8 }}>
+              <input type="checkbox" checked={apenasMesesFechados} onChange={(e) => setApenasMesesFechados(e.target.checked)} />
+              Só meses fechados (exclui {nomeMesSaving(`${mesCorrenteAtualISO}-01`)}, ainda incompleto)
+            </label>
+            <p style={{ fontSize: 11, color: '#94a3b8', margin: '0 0 16px' }}>
+              {apenasMesesFechados
+                ? `"Realizado no mês" e a evolução mensal vão até ${nomeMesSaving(`${new Date(Date.UTC(Number(mesCorrenteAtualISO.slice(0, 4)), Number(mesCorrenteAtualISO.slice(5, 7)) - 2, 1)).toISOString().slice(0, 7)}-01`)}.`
+                : `"Realizado no mês" vai considerar ${nomeMesSaving(`${mesCorrenteAtualISO}-01`)}, mesmo incompleto.`}
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button type="button" className="sim-tab" onClick={() => setLaudoPendente(null)}>Cancelar</button>
+              <button type="button" style={{ background: '#001f4f', color: '#fff', border: 0, borderRadius: 6, padding: '7px 14px', fontWeight: 700, cursor: 'pointer' }} onClick={confirmarEBaixarLaudo}>Confirmar e baixar</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <h2 style={{ marginTop: 0 }}>Savings pós-aprovação</h2>
       <p style={{ color: '#64748b' }}>
         Acompanha o resultado das negociações aprovadas no realizado. Atacado e B2C comparam frete/NF por rota e faixa;
@@ -931,7 +1233,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
             <button
               type="button"
               className="sim-tab"
-              onClick={() => baixarLaudoSavings(tabelas, negociacoesFiltradas, resultados)}
+              onClick={() => setLaudoPendente('laudo')}
               disabled={!negociacoesCalculadas.length}
               title={!negociacoesCalculadas.length ? 'Calcule ao menos uma negociação para gerar o laudo' : ''}
             >
@@ -940,12 +1242,29 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
             <button
               type="button"
               className="sim-tab"
-              onClick={() => baixarEmailSavings(tabelas, negociacoesFiltradas, resultados)}
+              onClick={() => setLaudoPendente('email')}
               disabled={!negociacoesCalculadas.length}
               title="Baixa um arquivo .eml com o resumo formatado no corpo do e-mail"
             >
               Baixar e-mail mensal
             </button>
+            <button
+              type="button"
+              className="sim-tab"
+              onClick={() => setPainelConfirmarAberto((v) => !v)}
+              disabled={!negociacoesCalculadas.length}
+              title="Reroda o CT-e a CT-e contra a malha oficial pra confirmar o saving apurado pelo histórico"
+            >
+              {painelConfirmarAberto ? 'Ocultar confirmar por tabela' : 'Confirmar por tabela'}
+            </button>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#334155' }} title="Ligado: troca os negativos e as rotas sem histórico pelo valor confirmado por tabela (quando já calculado). Desligado: mostra só o % histórico puro.">
+              <input type="checkbox" checked={usarConfirmacaoTabela} onChange={(e) => setUsarConfirmacaoTabela(e.target.checked)} />
+              Considerar confirmação por tabela
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#334155' }} title="No laudo/e-mail: ignora o mês corrente (sempre incompleto, CT-es ainda entrando) no 'Realizado no mês' e na evolução mensal, usando o último mês fechado como referência.">
+              <input type="checkbox" checked={apenasMesesFechados} onChange={(e) => setApenasMesesFechados(e.target.checked)} />
+              Laudo só com meses fechados
+            </label>
             {progressoTodas ? (
               <div style={{ display: 'grid', gap: 4, minWidth: 310, padding: '7px 10px', border: '1px solid #bfdbfe', borderRadius: 8, background: '#eff6ff' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 11, color: '#1e3a8a' }}>
@@ -961,6 +1280,120 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
               </div>
             ) : null}
           </div>
+
+          {painelConfirmarAberto ? (() => {
+            const negativos = negociacoesCalculadas.filter((item) => savingNoEscopo(item) < 0);
+            const selecionados = negociacoesCalculadas.filter((item) => selecionadosConfirmar[item.id]);
+            return (
+              <div style={{ marginTop: 12, border: '1px solid #dbe4f0', borderRadius: 12, padding: 14, background: '#f8fafc' }}>
+                <div style={{ marginBottom: 10 }}>
+                  <strong>Confirmar por tabela</strong>
+                  <p style={{ margin: '2px 0 0', fontSize: 12, color: '#64748b' }}>Reroda cada CT-e carregado contra a malha oficial (só concorrentes já em negociação na origem/canal, aprovados até o início do período) pra validar o saving do método histórico. Fica salvo e sobrevive a um F5.</p>
+                  <p style={{ margin: '2px 0 0', fontSize: 12, color: competenciaFiltro === 'TODAS' ? '#64748b' : '#001f4f', fontWeight: competenciaFiltro === 'TODAS' ? 400 : 700 }}>
+                    Recorte: {competenciaFiltro === 'TODAS' ? 'período inteiro (3 meses)' : `só ${competenciaFiltro} — confirma rápido só os CT-es novos desse mês`}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginBottom: 10 }}>
+                  <button type="button" className="sim-tab" style={{ fontSize: 11, padding: '4px 8px' }} onClick={() => setSelecionadosConfirmar(Object.fromEntries(negativos.map((item) => [item.id, true])))}>Marcar negativos ({negativos.length})</button>
+                  <button type="button" className="sim-tab" style={{ fontSize: 11, padding: '4px 8px' }} onClick={() => setSelecionadosConfirmar(Object.fromEntries(negociacoesCalculadas.map((item) => [item.id, true])))}>Marcar todos ({negociacoesCalculadas.length})</button>
+                  <button type="button" className="sim-tab" style={{ fontSize: 11, padding: '4px 8px' }} onClick={() => setSelecionadosConfirmar({})}>Limpar seleção</button>
+                  <button
+                    type="button"
+                    style={{ fontSize: 12, padding: '6px 12px', fontWeight: 700, background: '#001f4f', color: '#fff', border: 0, borderRadius: 6, cursor: selecionados.length ? 'pointer' : 'not-allowed' }}
+                    disabled={confirmandoSelecionados || !selecionados.length}
+                    onClick={() => confirmarSelecionadosPorMalha(selecionados)}
+                  >
+                    {confirmandoSelecionados ? 'Confirmando…' : `Confirmar selecionados (${selecionados.length})`}
+                  </button>
+                </div>
+                <div style={{ maxHeight: 360, overflow: 'auto' }}>
+                  <table className="sim-table" style={{ minWidth: 760 }}>
+                    <thead><tr>
+                      <th>
+                        <input
+                          type="checkbox"
+                          checked={negociacoesCalculadas.length > 0 && selecionados.length === negociacoesCalculadas.length}
+                          ref={(el) => { if (el) el.indeterminate = selecionados.length > 0 && selecionados.length < negociacoesCalculadas.length; }}
+                          onChange={(e) => setSelecionadosConfirmar(e.target.checked ? Object.fromEntries(negociacoesCalculadas.map((item) => [item.id, true])) : {})}
+                        />
+                      </th>
+                      <th>Transportadora</th><th>Origem</th><th>Canal</th><th>Saving histórico</th><th>Saving por tabela</th><th>Diferença</th><th>Oportunidade perdida</th><th></th>
+                    </tr></thead>
+                    <tbody>
+                      {negociacoesCalculadas.map((item) => {
+                        // Histórico puro (nunca o combinado com tabela) — senão a
+                        // coluna de comparação vira ela mesma e a Diferença some.
+                        const resultadoItem = resultados[item.id];
+                        const savingHist = competenciaFiltro === 'TODAS'
+                          ? Number(resultadoItem?.totais?.saving || 0)
+                          : (resultadoItem?.mensal || []).filter((mes) => String(mes.competencia).startsWith(competenciaFiltro)).reduce((acc, mes) => acc + Number(mes.saving || 0), 0);
+                        const chaveMalhaItem = `${item.id}${sufixoCompetencia()}`;
+                        const confMalha = confirmMalhaResultados[chaveMalhaItem];
+                        const confErro = confirmMalhaErros[chaveMalhaItem];
+                        const confCarregando = confirmMalhaCarregando[chaveMalhaItem];
+                        const confProg = confirmMalhaProgresso[chaveMalhaItem];
+                        return (
+                          <tr key={item.id}>
+                            <td><input type="checkbox" checked={Boolean(selecionadosConfirmar[item.id])} onChange={(e) => setSelecionadosConfirmar((prev) => ({ ...prev, [item.id]: e.target.checked }))} /></td>
+                            <td><strong>{item.transportadora}</strong></td>
+                            <td>{item.origem || '—'}</td>
+                            <td>{item.canal || '—'}</td>
+                            <td style={{ color: savingHist >= 0 ? '#087f3f' : '#c1121f', fontWeight: 700 }}>{formatMoney(savingHist)}</td>
+                            <td>
+                              {confCarregando ? <span style={{ fontSize: 11, color: '#64748b' }}>{confProg?.etapa || 'Calculando…'} ({confProg?.pct || 0}%)</span>
+                                : confErro ? <span style={{ fontSize: 11, color: '#c1121f' }}>{confErro}</span>
+                                : confMalha ? (
+                                  <div>
+                                    <span style={{ color: confMalha.saving >= 0 ? '#087f3f' : '#c1121f', fontWeight: 700 }}>{formatMoney(confMalha.saving)}</span>
+                                    <div style={{ fontSize: 10, color: '#64748b' }}>{confMalha.vencedores}/{confMalha.simulados} vitórias · {confMalha.semCobertura} sem cobertura na malha</div>
+                                    {confMalha.competenciaParcial ? (
+                                      <div style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700 }}>{confMalha.competenciaParcial.includes(',') ? `Soma de ${confMalha.competenciaParcial}` : `Parcial: só confirmado em ${confMalha.competenciaParcial}`} — se faltar mês, confirme-o também; ou clique em Recalcular pra confirmar o período inteiro de uma vez.</div>
+                                    ) : null}
+                                    {confMalha.simulados === 0 || confMalha.semCobertura === confMalha.totalCtes ? (
+                                      <div style={{ fontSize: 10, color: '#b45309', fontWeight: 700 }}>⚠ Nenhum CT-e encontrou comparação — não confie neste valor, é falta de cobertura, não desempenho.</div>
+                                    ) : null}
+                                  </div>
+                                )
+                                : <span style={{ color: '#94a3b8' }}>—</span>}
+                            </td>
+                            <td>{confMalha ? (() => {
+                              // Se a confirmação é parcial (só alguns meses), compara só
+                              // com o histórico desses mesmos meses — comparar um mês
+                              // contra o período inteiro dá um número enganoso.
+                              const savingHistComparavel = confMalha.competenciaParcial
+                                ? confMalha.competenciaParcial.split(', ').reduce((acc, comp) => acc + (resultadoItem?.mensal || [])
+                                    .filter((mes) => String(mes.competencia).startsWith(comp))
+                                    .reduce((s, mes) => s + Number(mes.saving || 0), 0), 0)
+                                : savingHist;
+                              const diferenca = confMalha.saving - savingHistComparavel;
+                              return (
+                                <div>
+                                  <span style={{ color: diferenca >= 0 ? '#087f3f' : '#c1121f', fontWeight: 700 }}>{diferenca >= 0 ? '+' : ''}{formatMoney(diferenca)}</span>
+                                  {confMalha.competenciaParcial ? <div style={{ fontSize: 10, color: '#94a3b8' }}>vs histórico só de {confMalha.competenciaParcial}</div> : null}
+                                </div>
+                              );
+                            })() : '—'}</td>
+                            <td>{confMalha ? <span style={{ color: '#c1121f' }}>{formatMoney(confMalha.oportunidadePerdida)}</span> : '—'}</td>
+                            <td>
+                              <div style={{ display: 'flex', gap: 4 }}>
+                                <button type="button" className="sim-tab" style={{ fontSize: 11, padding: '3px 8px' }} disabled={confCarregando} onClick={() => confirmarPorMalha(item)}>{confMalha ? 'Recalcular' : 'Confirmar'}</button>
+                                {confMalha ? (
+                                  <button type="button" className="sim-tab" style={{ fontSize: 11, padding: '3px 8px', color: '#c1121f' }} disabled={confCarregando} onClick={() => descartarConfirmacaoMalha(item)} title="Remove a confirmação por tabela e volta a usar só o histórico">
+                                    Descartar
+                                  </button>
+                                ) : null}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })() : null}
+
           {visaoAnalitica === 'dashboard' && negociacoesCalculadas.length ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(310px, 1fr))', gap: 14, marginTop: 14 }}>
               <div style={{ border: '1px solid #dbe4f0', borderRadius: 12, padding: 14 }}>
@@ -996,7 +1429,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                     <h3 style={{ margin: '5px 0 4px', fontSize: 23 }}>Performance de savings pós-aprovação</h3>
                     <div style={{ fontSize: 12, opacity: 0.8 }}>Recorte atual: {canalFiltro === 'TODOS' ? 'todos os canais' : canalFiltro} · {competenciaFiltro === 'TODAS' ? 'todo o período' : nomeMesSaving(`${competenciaFiltro}-01`)}</div>
                   </div>
-                  <button type="button" className="sim-tab" onClick={() => baixarLaudoSavings(tabelas, negociacoesFiltradas, resultados)} disabled={!negociacoesCalculadas.length} style={{ background: '#fff', color: '#001f4f', padding: '7px 11px' }}>Exportar este recorte</button>
+                  <button type="button" className="sim-tab" onClick={() => setLaudoPendente('recorte')} disabled={!negociacoesCalculadas.length} style={{ background: '#fff', color: '#001f4f', padding: '7px 11px' }}>Exportar este recorte</button>
                 </div>
               </header>
 
@@ -1223,7 +1656,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                       )}
                     </td>
                     <td>{r ? r.linhas.length : '—'}</td>
-                    <td style={{ fontWeight: 700, color: r ? (r.totais.saving >= 0 ? '#087f3f' : '#c1121f') : '#94a3b8' }}>
+                    <td style={{ fontWeight: 700, color: r ? (savingNoEscopo(item) >= 0 ? '#087f3f' : '#c1121f') : '#94a3b8' }}>
                       {r ? formatMoney(savingNoEscopo(item)) : '—'}
                     </td>
                     <td>
@@ -1365,9 +1798,18 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
                   {resultado ? (
                     <>
-                      <strong style={{ color: resultado.totais.saving >= 0 ? '#087f3f' : '#c1121f' }}>
-                        Saving: {formatMoney(resultado.totais.saving)}
-                      </strong>
+                      {(() => {
+                        const savingExibido = usarConfirmacaoTabela ? savingCombinadoComTabela(item) : Number(resultado.totais?.saving || 0);
+                        return (
+                          <strong style={{ color: savingExibido >= 0 ? '#087f3f' : '#c1121f' }}>
+                            Saving: {formatMoney(savingExibido)}
+                            {usarConfirmacaoTabela ? <span style={{ fontWeight: 400, fontSize: 10, color: '#64748b' }}> (com tabela)</span> : null}
+                          </strong>
+                        );
+                      })()}
+                      {usarConfirmacaoTabela && Number(resultado.totais?.saving || 0) !== savingCombinadoComTabela(item) ? (
+                        <span style={{ fontSize: 10, color: '#94a3b8' }}>Histórico puro: {formatMoney(resultado.totais.saving)}</span>
+                      ) : null}
                       <span style={{ fontSize: 10, color: '#94a3b8' }}>
                         {resultado.deCache
                           ? `salvo em ${formatarData(item.savingCacheCalculadoEm)}`
@@ -1395,7 +1837,38 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                         Recalcular
                       </button>
                     ) : null}
+                    {resultado ? (
+                      <button
+                        type="button"
+                        className="sim-tab"
+                        style={{ padding: '3px 8px', fontSize: 11 }}
+                        onClick={() => confirmarPorMalha(item)}
+                        disabled={Boolean(confirmMalhaCarregando[`${item.id}${sufixoCompetencia()}`])}
+                        title={`Reroda esses CT-es contra a malha oficial pra confirmar o saving histórico${competenciaFiltro !== 'TODAS' ? ` (só ${competenciaFiltro})` : ''}`}
+                      >
+                        {confirmMalhaCarregando[`${item.id}${sufixoCompetencia()}`] ? `Confirmando… ${confirmMalhaProgresso[`${item.id}${sufixoCompetencia()}`]?.pct || 0}%` : confirmMalhaResultados[`${item.id}${sufixoCompetencia()}`] ? 'Confirmar de novo' : 'Confirmar por tabela'}
+                      </button>
+                    ) : null}
+                    {confirmMalhaResultados[`${item.id}${sufixoCompetencia()}`] ? (
+                      <button
+                        type="button"
+                        className="sim-tab"
+                        style={{ padding: '3px 8px', fontSize: 11, color: '#c1121f' }}
+                        onClick={() => descartarConfirmacaoMalha(item)}
+                        disabled={Boolean(confirmMalhaCarregando[`${item.id}${sufixoCompetencia()}`])}
+                        title="Remove a confirmação por tabela e volta a usar só o histórico"
+                      >
+                        Descartar
+                      </button>
+                    ) : null}
                   </div>
+                  {confirmMalhaResultados[`${item.id}${sufixoCompetencia()}`] ? (
+                    <span style={{ fontSize: 11, color: '#64748b', textAlign: 'right' }}>
+                      Por tabela: <strong style={{ color: confirmMalhaResultados[`${item.id}${sufixoCompetencia()}`].saving >= 0 ? '#087f3f' : '#c1121f' }}>{formatMoney(confirmMalhaResultados[`${item.id}${sufixoCompetencia()}`].saving)}</strong>
+                      {' '}({confirmMalhaResultados[`${item.id}${sufixoCompetencia()}`].vencedores} vitórias, oportunidade perdida {formatMoney(confirmMalhaResultados[`${item.id}${sufixoCompetencia()}`].oportunidadePerdida)})
+                    </span>
+                  ) : null}
+                  {confirmMalhaErros[`${item.id}${sufixoCompetencia()}`] ? <span style={{ fontSize: 11, color: '#c1121f', textAlign: 'right' }}>{confirmMalhaErros[`${item.id}${sufixoCompetencia()}`]}</span> : null}
                 </div>
               </div>
 
@@ -1451,22 +1924,57 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                             <th>Diferença</th>
                             <th>{resultado.tipoCalculo === 'LOTACAO_FLUXO' ? 'Frete atual' : 'Valor NF atual'}</th>
                             <th>Saving</th>
+                            {resultado.tipoCalculo !== 'LOTACAO_FLUXO' ? <th>Confirmar por tabela</th> : null}
                           </tr>
                         </thead>
                         <tbody>
-                          {resultado.linhas.map((linha) => (
-                            <tr key={`${linha.rota}||${linha.faixa}`}>
-                              <td>{linha.rota}</td>
-                              <td>{linha.faixa}</td>
-                              <td>{resultado.tipoCalculo === 'LOTACAO_FLUXO' ? formatMoney(linha.pctBase) : formatPercent(linha.pctBase)}</td>
-                              <td>{resultado.tipoCalculo === 'LOTACAO_FLUXO' ? formatMoney(linha.pctAtual) : formatPercent(linha.pctAtual)}</td>
-                              <td style={{ color: linha.diffPct >= 0 ? '#087f3f' : '#c1121f', fontWeight: 700 }}>
-                                {resultado.tipoCalculo === 'LOTACAO_FLUXO' ? formatMoney(linha.diffPct) : formatPercent(linha.diffPct)}
-                              </td>
-                              <td>{formatMoney(linha.valorNFAtual)}</td>
-                              <td style={{ fontWeight: 700 }}>{formatMoney(linha.saving)}</td>
-                            </tr>
-                          ))}
+                          {resultado.linhas.map((linha) => {
+                            const negativa = linha.saving < 0;
+                            const semHistorico = Boolean(linha.semHistorico);
+                            const chaveRota = `${item.id}||${linha.rota}||${linha.faixa}${sufixoCompetencia()}`;
+                            const rotaResultado = confirmRotaResultados[chaveRota];
+                            const rotaCarregando = confirmRotaCarregando[chaveRota];
+                            const rotaErro = confirmRotaErros[chaveRota];
+                            const rotaProg = confirmRotaProgresso[chaveRota];
+                            const corFundo = semHistorico ? '#fffbeb' : negativa ? '#fef2f2' : undefined;
+                            return (
+                              <tr key={`${linha.rota}||${linha.faixa}`} style={corFundo ? { background: corFundo } : undefined}>
+                                <td>{linha.rota}</td>
+                                <td>{linha.faixa}</td>
+                                <td>{linha.pctBase == null ? '—' : (resultado.tipoCalculo === 'LOTACAO_FLUXO' ? formatMoney(linha.pctBase) : formatPercent(linha.pctBase))}</td>
+                                <td>{linha.pctAtual == null ? '—' : (resultado.tipoCalculo === 'LOTACAO_FLUXO' ? formatMoney(linha.pctAtual) : formatPercent(linha.pctAtual))}</td>
+                                <td style={{ color: linha.diffPct == null ? undefined : (linha.diffPct >= 0 ? '#087f3f' : '#c1121f'), fontWeight: 700 }}>
+                                  {linha.diffPct == null ? '—' : (resultado.tipoCalculo === 'LOTACAO_FLUXO' ? formatMoney(linha.diffPct) : formatPercent(linha.diffPct))}
+                                </td>
+                                <td>{formatMoney(linha.valorNFAtual)}</td>
+                                <td style={{ fontWeight: 700, color: semHistorico ? '#b45309' : negativa ? '#c1121f' : undefined }}>
+                                  {semHistorico ? 'Sem histórico' : formatMoney(linha.saving)}
+                                </td>
+                                {resultado.tipoCalculo !== 'LOTACAO_FLUXO' ? (
+                                  <td>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
+                                      <button
+                                        type="button"
+                                        className="sim-tab"
+                                        style={{ fontSize: 11, padding: '3px 8px' }}
+                                        disabled={Boolean(rotaCarregando)}
+                                        onClick={() => confirmarRotaPorMalha(item, linha)}
+                                      >
+                                        {rotaCarregando ? `${rotaProg?.etapa || 'Calculando…'} ${rotaProg?.pct || 0}%` : rotaResultado ? 'Recalcular' : 'Confirmar'}
+                                      </button>
+                                      {rotaResultado ? (
+                                        <span style={{ fontSize: 10, color: '#64748b' }}>
+                                          Por tabela: <strong style={{ color: rotaResultado.saving >= 0 ? '#087f3f' : '#c1121f' }}>{formatMoney(rotaResultado.saving)}</strong>
+                                          {' '}({rotaResultado.vencedores}/{rotaResultado.simulados} vitórias)
+                                        </span>
+                                      ) : null}
+                                      {rotaErro ? <span style={{ fontSize: 10, color: '#c1121f' }}>{rotaErro}</span> : null}
+                                    </div>
+                                  </td>
+                                ) : null}
+                              </tr>
+                            );
+                          })}
                         </tbody>
                         <tfoot>
                           <tr>

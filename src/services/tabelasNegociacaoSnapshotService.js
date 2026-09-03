@@ -37,7 +37,7 @@ const COLUNAS_LISTAGEM_NEGOCIACAO = [
   'ctes_analisados', 'ctes_atendidos', 'rotas_sem_cobertura',
   'data_referencia_saving', 'vinculo_transportadoras_saving', 'origem_realizado_saving',
   'saving_pos_aprovacao_valor', 'saving_pos_aprovacao_calculado_em',
-  'saving_pos_aprovacao_detalhe',
+  'saving_pos_aprovacao_detalhe', 'confirmacao_tabela_saving',
   'substituir_tabela_anterior', 'tabela_base_id', 'transportadora_base_nome',
   'percentual_medio_impacto', 'impacto_valor', 'valor_atual_realizado',
   'valor_simulado_nova_tabela', 'impacto_mensal', 'impacto_anual',
