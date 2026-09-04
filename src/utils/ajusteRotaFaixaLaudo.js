@@ -335,9 +335,11 @@ export function montarDadosAjusteRotaFaixa(resultado = {}) {
   // quantos a Tabela RPA ganharia do realizado. Mesma formula da "Aderencia
   // rota" de cada linha — "Sem calculo" ja aparece em card separado pra
   // mostrar a cobertura.
-  const aderenciaTotal = r.aderenciaSelecionada !== undefined
-    ? Number(r.aderenciaSelecionada || 0)
-    : (ctesComCalculoTotal > 0 ? (totais.ctesGanharia / ctesComCalculoTotal) * 100 : 0);
+  // Sempre recalculada aqui, nunca lida de r.aderenciaSelecionada: esse campo
+  // fica desatualizado em simulacoes antigas carregadas do banco (a regra de
+  // vencedor foi corrigida depois que elas foram salvas, sem recalcular o
+  // campo), o que fazia o laudo mostrar uma aderencia muito acima da real.
+  const aderenciaTotal = ctesComCalculoTotal > 0 ? (totais.ctesGanharia / ctesComCalculoTotal) * 100 : 0;
   const reduzirTotal = r.reducaoMediaNecessaria !== undefined
     ? Number(r.reducaoMediaNecessaria || 0)
     : (pctTabelaTotal > pctRealizadoTotal && pctTabelaTotal > 0
