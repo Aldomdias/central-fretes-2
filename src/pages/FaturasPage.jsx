@@ -116,6 +116,37 @@ function parseFaturaDetalhe(row, faturaId, numeroFatura, serieFatura) {
   };
 }
 
+// Campos do cabeçalho que definem se a fatura mudou de fato (ignora
+// metadados de importação e o id).
+const CAMPOS_HEADER_COMPARAVEIS = [
+  'transportadora', 'cnpj_transportadora', 'data_envio', 'data_emissao', 'data_vencimento',
+  'numero_fatura', 'serie_fatura', 'ctes_totais', 'ctes_vinculados', 'valor_fatura',
+  'valor_icms', 'valor_calculado', 'diferenca', 'banco', 'status', 'status_fatura',
+  'status_pagamento', 'cnpj_tomador', 'nome_tomador', 'enviado_para_pagamento',
+];
+
+// Campos do detalhe (CT-e) que definem se ele mudou de fato — ignora
+// id/fatura_id e os campos de cálculo (AMD é recalculado à parte).
+const CAMPOS_DETALHE_COMPARAVEIS = [
+  'transportadora', 'cnpj_transportadora', 'chave_cte', 'numero_cte', 'serie_cte',
+  'mes_ano_emissao_cte', 'cnpj_emissor', 'cnpj_tomador', 'nome_tomador', 'valor_frete',
+  'custo_frete', 'preco_frete', 'status_conciliacao', 'status_processamento',
+  'cte_integrado_erp', 'status', 'codigo_tratativa', 'tratativa', 'observacao',
+  'usuario', 'justificativa_inativacao',
+];
+
+function houveDivergencia(novo, antigo, campos) {
+  if (!antigo) return true;
+  return campos.some((campo) => {
+    const a = novo[campo];
+    const b = antigo[campo];
+    if (typeof a === 'number' || typeof b === 'number') {
+      return Number(a || 0) !== Number(b || 0);
+    }
+    return String(a ?? '') !== String(b ?? '');
+  });
+}
+
 function excelDateToISO(val) {
   if (!val) return null;
   if (typeof val === 'string') {
@@ -242,6 +273,7 @@ function DetalhesFatura({ faturaId, onFechar }) {
 export default function FaturasPage() {
   const sessao = carregarSessao();
   const fileRef = useRef(null);
+  const pastaRef = useRef(null);
 
   const [faturas, setFaturas] = useState([]);
   const [carregando, setCarregando] = useState(false);
@@ -277,7 +309,118 @@ export default function FaturasPage() {
 
   useEffect(() => { carregar(); }, []);
 
-  // ── Importar arquivo xlsx ────────────────────────────────────────────────
+  // ── Processa um workbook (um arquivo) e acumula estatísticas ────────────
+  const processarWorkbook = async (wb, stats) => {
+    // Aba "Faturas"
+    const wsFaturas = wb.Sheets[wb.SheetNames.find((n) => n.toLowerCase().includes('fatura')) || wb.SheetNames[0]];
+    const rowsFaturas = XLSX.utils.sheet_to_json(wsFaturas, { defval: '' });
+
+    // Aba "Detalhes"
+    const wsDetalhes = wb.Sheets[wb.SheetNames.find((n) => n.toLowerCase().includes('detalhe')) || wb.SheetNames[1]];
+    const rowsDetalhes = wsDetalhes ? XLSX.utils.sheet_to_json(wsDetalhes, { defval: '' }) : [];
+
+    for (const row of rowsFaturas) {
+      const header = parseFaturaHeader(row);
+      if (!header.numero_fatura && !header.transportadora) continue;
+
+      // Casa pela identidade real (nº fatura + série + transportadora), não
+      // por um id aleatório — senão reimportar duplica a fatura inteira.
+      const existente = await buscarFaturaExistenteSupabase({
+        numeroFatura: header.numero_fatura,
+        serieFatura: header.serie_fatura,
+        transportadora: header.transportadora,
+      });
+
+      // Fatura já auditada/aprovada/paga/cancelada: não mexe em nada dela.
+      if (existente && STATUS_FATURA_PROTEGIDOS.includes(existente.status)) {
+        stats.faturasProtegidasPuladas++;
+        continue;
+      }
+
+      // Fatura idêntica à já gravada: não há divergência, não faz nada.
+      if (existente && !houveDivergencia(header, existente, CAMPOS_HEADER_COMPARAVEIS)) {
+        stats.faturasIdenticasPuladas++;
+        continue;
+      }
+
+      if (existente) header.id = existente.id;
+      header.importado_por = sessao?.nome || sessao?.email || '';
+      header.importado_em = new Date().toISOString();
+
+      const resultado = await salvarFaturaSupabase(header);
+      if (!resultado.ok) continue;
+      stats.faturasSalvas++;
+      const faturaId = resultado.id;
+
+      // Filtrar detalhes desta fatura
+      const detalhesLinhas = rowsDetalhes.filter((d) => {
+        const { numero, serie } = numeroSerieDaLinha(d);
+        return numero === String(header.numero_fatura) && serie === String(header.serie_fatura);
+      });
+
+      if (detalhesLinhas.length > 0 && faturaId) {
+        const detalhesExistentes = existente ? await carregarDetalhesFaturaSupabase(faturaId) : [];
+        const mapaExistentes = new Map(detalhesExistentes.map((d) => [d.chave_cte, d]));
+
+        const paraSalvar = [];
+        detalhesLinhas.forEach((d) => {
+          const novo = parseFaturaDetalhe(d, faturaId, header.numero_fatura, header.serie_fatura);
+          const antigo = novo.chave_cte ? mapaExistentes.get(novo.chave_cte) : null;
+
+          if (!antigo) {
+            paraSalvar.push(novo);
+            stats.detalhesInseridos++;
+            return;
+          }
+          // Já tem valor lançado — só sobrescreve se algo realmente mudou
+          // (evita perder ajuste manual/auditoria já feita nesse CT-e à toa).
+          if (Number(antigo.valor_frete || 0) !== 0) {
+            if (!houveDivergencia(novo, antigo, CAMPOS_DETALHE_COMPARAVEIS)) {
+              stats.detalhesMantidos++;
+              return;
+            }
+            paraSalvar.push({ ...novo, id: antigo.id });
+            stats.detalhesAtualizados++;
+            return;
+          }
+          // Sem valor: preenche com o valor novo, recalculando a diferença
+          // em cima do calculado_frete (AMD) já existente — o AMD em si não
+          // muda, só a comparação valor x calculado.
+          const calculado = Number(antigo.calculado_frete || 0);
+          paraSalvar.push({
+            ...novo,
+            id: antigo.id,
+            calculado_frete: antigo.calculado_frete,
+            calculado_frete_verum: antigo.calculado_frete_verum,
+            diferenca: calculado > 0 ? Number((novo.valor_frete - calculado).toFixed(2)) : novo.diferenca,
+          });
+          stats.detalhesAtualizados++;
+        });
+
+        if (paraSalvar.length) await salvarDetalhesFaturaSupabase(paraSalvar);
+      }
+    }
+
+    return { totalFaturasNoArquivo: rowsFaturas.length, totalDetalhesNoArquivo: rowsDetalhes.length };
+  };
+
+  const novasStats = () => ({
+    faturasSalvas: 0,
+    faturasProtegidasPuladas: 0,
+    faturasIdenticasPuladas: 0,
+    detalhesInseridos: 0,
+    detalhesAtualizados: 0,
+    detalhesMantidos: 0,
+  });
+
+  const resumoStats = (stats, arquivos) => (
+    `✓ Importação concluída` + (arquivos ? ` (${arquivos} arquivo(s))` : '') + `: ${stats.faturasSalvas} fatura(s) gravada(s) com divergência` +
+    (stats.faturasIdenticasPuladas ? `, ${stats.faturasIdenticasPuladas} sem alteração (ignorada)` : '') +
+    (stats.faturasProtegidasPuladas ? `, ${stats.faturasProtegidasPuladas} pulada(s) por já estarem auditadas/pagas` : '') +
+    `. CT-es: ${stats.detalhesInseridos} novo(s), ${stats.detalhesAtualizados} atualizado(s) por divergência, ${stats.detalhesMantidos} mantido(s) (sem alteração).`
+  );
+
+  // ── Importar um único arquivo xlsx ───────────────────────────────────────
   const handleImportar = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -289,105 +432,51 @@ export default function FaturasPage() {
     try {
       const buffer = await file.arrayBuffer();
       const wb = XLSX.read(buffer, { type: 'array', cellDates: false });
-
-      // Aba "Faturas"
-      const wsFaturas = wb.Sheets[wb.SheetNames.find((n) => n.toLowerCase().includes('fatura')) || wb.SheetNames[0]];
-      const rowsFaturas = XLSX.utils.sheet_to_json(wsFaturas, { defval: '' });
-
-      // Aba "Detalhes"
-      const wsDetalhes = wb.Sheets[wb.SheetNames.find((n) => n.toLowerCase().includes('detalhe')) || wb.SheetNames[1]];
-      const rowsDetalhes = wsDetalhes ? XLSX.utils.sheet_to_json(wsDetalhes, { defval: '' }) : [];
-
-      setMensagem(`Processando ${rowsFaturas.length} faturas e ${rowsDetalhes.length} CT-es...`);
-
-      let faturasSalvas = 0;
-      let faturasProtegidasPuladas = 0;
-      let detalhesInseridos = 0;
-      let detalhesAtualizados = 0;
-      let detalhesMantidos = 0;
-
-      for (const row of rowsFaturas) {
-        const header = parseFaturaHeader(row);
-        if (!header.numero_fatura && !header.transportadora) continue;
-
-        // Casa pela identidade real (nº fatura + série + transportadora), não
-        // por um id aleatório — senão reimportar duplica a fatura inteira.
-        const existente = await buscarFaturaExistenteSupabase({
-          numeroFatura: header.numero_fatura,
-          serieFatura: header.serie_fatura,
-          transportadora: header.transportadora,
-        });
-
-        // Fatura já auditada/aprovada/paga/cancelada: não mexe em nada dela.
-        if (existente && STATUS_FATURA_PROTEGIDOS.includes(existente.status)) {
-          faturasProtegidasPuladas++;
-          continue;
-        }
-
-        if (existente) header.id = existente.id;
-        header.importado_por = sessao?.nome || sessao?.email || '';
-        header.importado_em = new Date().toISOString();
-
-        const resultado = await salvarFaturaSupabase(header);
-        if (!resultado.ok) continue;
-        faturasSalvas++;
-        const faturaId = resultado.id;
-
-        // Filtrar detalhes desta fatura
-        const detalhesLinhas = rowsDetalhes.filter((d) => {
-          const { numero, serie } = numeroSerieDaLinha(d);
-          return numero === String(header.numero_fatura) && serie === String(header.serie_fatura);
-        });
-
-        if (detalhesLinhas.length > 0 && faturaId) {
-          const detalhesExistentes = existente ? await carregarDetalhesFaturaSupabase(faturaId) : [];
-          const mapaExistentes = new Map(detalhesExistentes.map((d) => [d.chave_cte, d]));
-
-          const paraSalvar = [];
-          detalhesLinhas.forEach((d) => {
-            const novo = parseFaturaDetalhe(d, faturaId, header.numero_fatura, header.serie_fatura);
-            const antigo = novo.chave_cte ? mapaExistentes.get(novo.chave_cte) : null;
-
-            if (!antigo) {
-              paraSalvar.push(novo);
-              detalhesInseridos++;
-              return;
-            }
-            // Já tem valor lançado — nunca sobrescreve (evita perder ajuste
-            // manual/auditoria já feita em cima desse CT-e).
-            if (Number(antigo.valor_frete || 0) !== 0) {
-              detalhesMantidos++;
-              return;
-            }
-            // Sem valor: preenche com o valor novo, recalculando a diferença
-            // em cima do calculado_frete (AMD) já existente — o AMD em si não
-            // muda, só a comparação valor x calculado.
-            const calculado = Number(antigo.calculado_frete || 0);
-            paraSalvar.push({
-              ...novo,
-              id: antigo.id,
-              calculado_frete: antigo.calculado_frete,
-              calculado_frete_verum: antigo.calculado_frete_verum,
-              diferenca: calculado > 0 ? Number((novo.valor_frete - calculado).toFixed(2)) : novo.diferenca,
-            });
-            detalhesAtualizados++;
-          });
-
-          if (paraSalvar.length) await salvarDetalhesFaturaSupabase(paraSalvar);
-        }
-      }
-
-      setMensagem(
-        `✓ Importação concluída: ${faturasSalvas} fatura(s) gravada(s)` +
-          (faturasProtegidasPuladas ? `, ${faturasProtegidasPuladas} pulada(s) por já estarem auditadas/pagas` : '') +
-          `. CT-es: ${detalhesInseridos} novo(s), ${detalhesAtualizados} atualizado(s) (sem valor antes), ${detalhesMantidos} mantido(s) (já tinham valor).`
-      );
+      const stats = novasStats();
+      const { totalFaturasNoArquivo, totalDetalhesNoArquivo } = await processarWorkbook(wb, stats);
+      setMensagem(`Processadas ${totalFaturasNoArquivo} faturas e ${totalDetalhesNoArquivo} CT-es do arquivo...`);
+      setMensagem(resumoStats(stats));
       await carregar();
     } catch (err) {
       setMensagem(`Erro na importação: ${err.message}`);
     } finally {
       setImportando(false);
     }
+  };
+
+  // ── Importar todos os arquivos de uma pasta ──────────────────────────────
+  const handleImportarPasta = async (e) => {
+    const arquivos = Array.from(e.target.files || []).filter((f) =>
+      /\.(xlsx|xls|csv)$/i.test(f.name)
+    );
+    e.target.value = '';
+    if (!arquivos.length) {
+      setMensagem('Nenhum arquivo .xlsx/.xls/.csv encontrado na pasta selecionada.');
+      return;
+    }
+
+    setImportando(true);
+    const stats = novasStats();
+    let arquivosComErro = 0;
+
+    for (let i = 0; i < arquivos.length; i++) {
+      const file = arquivos[i];
+      setMensagem(`Processando arquivo ${i + 1}/${arquivos.length}: ${file.name}...`);
+      try {
+        const buffer = await file.arrayBuffer();
+        const wb = XLSX.read(buffer, { type: 'array', cellDates: false });
+        await processarWorkbook(wb, stats);
+      } catch (err) {
+        arquivosComErro++;
+      }
+    }
+
+    setMensagem(
+      resumoStats(stats, arquivos.length) +
+        (arquivosComErro ? ` ${arquivosComErro} arquivo(s) com erro (ignorado).` : '')
+    );
+    await carregar();
+    setImportando(false);
   };
 
   // ── Resumos ──────────────────────────────────────────────────────────────
@@ -424,6 +513,23 @@ export default function FaturasPage() {
               accept=".xlsx,.xls,.csv"
               style={{ display: 'none' }}
               onChange={handleImportar}
+            />
+            <button
+              className="btn-secondary"
+              onClick={() => pastaRef.current?.click()}
+              disabled={importando}
+              title="Seleciona uma pasta e importa todos os arquivos nela — reprocessa a pasta inteira e só grava o que mudou (novo ou com divergência)."
+            >
+              {importando ? 'Importando...' : '📁 Mapear pasta'}
+            </button>
+            <input
+              ref={pastaRef}
+              type="file"
+              webkitdirectory=""
+              directory=""
+              multiple
+              style={{ display: 'none' }}
+              onChange={handleImportarPasta}
             />
             <button className="btn-primary" onClick={carregar} disabled={carregando}>
               {carregando ? 'Carregando...' : 'Atualizar'}
@@ -574,8 +680,12 @@ export default function FaturasPage() {
       )}
 
       <div className="hint-box compact" style={{ marginTop: '1rem' }}>
-        <strong>Como importar:</strong> O arquivo deve ter duas abas: "Faturas" e "Detalhes", no layout padrão Verum.
+        <strong>Como importar:</strong> Cada arquivo deve ter duas abas: "Faturas" e "Detalhes", no layout padrão Verum.
         Colunas obrigatórias: Transportadora, Numero Fatura, Data Vencimento, Valor Fatura, Chave CTe, Valor Frete.
+        <br />
+        <strong>Mapear pasta:</strong> selecione uma pasta com vários arquivos — todos são lidos de uma vez e só é
+        gravado o que for novo ou tiver alguma diferença em relação ao que já está salvo (fatura idêntica é ignorada).
+        Útil para rodar semanalmente e garantir que nenhuma fatura ficou de fora.
       </div>
     </div>
   );

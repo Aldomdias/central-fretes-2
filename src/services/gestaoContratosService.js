@@ -6,8 +6,8 @@ function client() {
   return getSupabaseClient();
 }
 
-export async function carregarGestaoContratos(competencia) {
-  const { data, error } = await client().rpc('rpc_gestao_contratos_pareto', { p_competencia: competencia, p_percentual_alvo: 80 });
+export async function carregarGestaoContratos(competencia, criterio = 'quantidade') {
+  const { data, error } = await client().rpc('rpc_gestao_contratos_pareto', { p_competencia: competencia, p_percentual_alvo: 80, p_criterio: criterio });
   if (error) throw new Error(`Não foi possível calcular a cobertura: ${error.message}`);
   return data || [];
 }
