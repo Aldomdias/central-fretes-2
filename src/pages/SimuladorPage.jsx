@@ -8367,6 +8367,25 @@ export default function SimuladorPage({ transportadoras = [] }) {
     downloadCsv(nomeArquivo, csv);
   };
 
+  // A aderencia salva em `resultadoRealizado.aderenciaSelecionada` pode ficar
+  // desatualizada em simulacoes antigas carregadas do banco (a regra de
+  // vencedor foi corrigida depois que elas foram salvas, e o campo nao e
+  // recalculado no load/unificacao). Por isso o card "Aderência da tabela" e
+  // o texto "Vencedor/Perdedor vs realizado" sempre derivam do mesmo par
+  // vencedor/perdedor aqui, pra nunca mostrar numeros diferentes entre si.
+  const temContagemCompletaRealizadoUi = Boolean(resultadoRealizado) && (
+    Number.isFinite(resultadoRealizado.ctesVencedorVsRealizado)
+    || Number.isFinite(resultadoRealizado.ctesPerdedorVsRealizado)
+  );
+  const vencedorRealizadoUi = temContagemCompletaRealizadoUi
+    ? Number(resultadoRealizado.ctesVencedorVsRealizado || 0)
+    : Number(resultadoRealizado?.ctesGanhariaSelecionada || 0);
+  const perdedorRealizadoUi = temContagemCompletaRealizadoUi
+    ? Number(resultadoRealizado.ctesPerdedorVsRealizado || 0)
+    : Number(resultadoRealizado?.ctesPerdidosSelecionada || 0);
+  const totalComparadoRealizadoUi = vencedorRealizadoUi + perdedorRealizadoUi;
+  const aderenciaRealizadoUi = totalComparadoRealizadoUi ? (vencedorRealizadoUi / totalComparadoRealizadoUi) * 100 : 0;
+
   return (
     <div className="simulador-shell">
       <div className="simulador-header compact-top">
@@ -9804,7 +9823,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>Perderia</span><strong style={{color:'#dc2626'}}>{resultadoRealizado.ctesPerdidosSelecionada}</strong></div>
                 <div>
                   <span>Aderência da tabela</span>
-                  <strong>{resultadoRealizado.ctesComTabelaSelecionada ? formatPercent(resultadoRealizado.aderenciaSelecionada) : 'Sem base calculável'}</strong>
+                  <strong>{totalComparadoRealizadoUi ? formatPercent(aderenciaRealizadoUi) : 'Sem base calculável'}</strong>
                 </div>
                 <div><span>Saving mensal</span><strong>{formatMoney(resultadoRealizado.savingSelecionadaVsRealMes || 0)}</strong></div>
               </div>
@@ -9870,16 +9889,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
               {(resultadoRealizado.ctesDetalhes || []).length > 0 && (() => {
                 const detalhesStatus = resultadoRealizado.ctesDetalhes || [];
                 if (!resultadoRealizado.compararConcorrentes) {
-                  // Conta sobre TODOS os CT-es analisados, nao so os que sobraram na
-                  // amostra de ctesDetalhes (limitada a 3000 e enviesada pra perdas/
-                  // outliers de auditoria) — senao a aderencia sai zerada em bases grandes.
-                  const temContagemCompleta = Number.isFinite(resultadoRealizado.ctesVencedorVsRealizado)
-                    || Number.isFinite(resultadoRealizado.ctesPerdedorVsRealizado);
-                  const vencedor = temContagemCompleta
-                    ? Number(resultadoRealizado.ctesVencedorVsRealizado || 0)
+                  // Mesma contagem do card "Aderência da tabela" acima
+                  // (aderenciaRealizadoUi), pra nunca divergir do que essa caixa
+                  // mostra. Fallback pra amostra de ctesDetalhes só quando a
+                  // contagem completa (ctesVencedorVsRealizado/ctesPerdedorVsRealizado)
+                  // não veio no resultado.
+                  const vencedor = temContagemCompletaRealizadoUi
+                    ? vencedorRealizadoUi
                     : detalhesStatus.filter((i) => Number(i.freteSelecionada || 0) > 0 && i.ganhouRealizado).length;
-                  const perdedor = temContagemCompleta
-                    ? Number(resultadoRealizado.ctesPerdedorVsRealizado || 0)
+                  const perdedor = temContagemCompletaRealizadoUi
+                    ? perdedorRealizadoUi
                     : detalhesStatus.filter((i) => Number(i.freteSelecionada || 0) > 0 && !i.ganhouRealizado).length;
                   const total = vencedor + perdedor;
                   const aderencia = total ? (vencedor / total) * 100 : 0;
