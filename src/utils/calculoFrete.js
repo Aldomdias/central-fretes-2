@@ -261,7 +261,16 @@ function rotaCapitalPorCodigoCurto(rotaNome = '') {
   return match ? `${match[1]} CAPITAL` : '';
 }
 
-function getCotacaoPorRota(origem, rotaNome, peso) {
+function cepDentroDaFaixa(cepDestino, cepInicial, cepFinal) {
+  if (!cepDestino || !cepInicial || !cepFinal) return false;
+  const cep = Number(String(cepDestino).replace(/\D/g, ''));
+  const ini = Number(cepInicial);
+  const fim = Number(cepFinal);
+  if (!Number.isFinite(cep) || !Number.isFinite(ini) || !Number.isFinite(fim)) return false;
+  return cep >= ini && cep <= fim;
+}
+
+function getCotacaoPorRota(origem, rotaNome, peso, destinoCep = '') {
   const cotacoes = origem.cotacoes || [];
   const rotaNorm = normalizeText(rotaNome);
   const dentroDoPeso = (item) => {
@@ -271,8 +280,22 @@ function getCotacaoPorRota(origem, rotaNome, peso) {
     return peso >= pesoMin && peso <= pesoMax;
   };
 
-  const exata = cotacoes.find((item) => normalizeText(item.rota) === rotaNorm && dentroDoPeso(item));
-  if (exata) return exata;
+  const escolherEntreCandidatas = (candidatas) => {
+    if (candidatas.length <= 1) return candidatas[0];
+    // Mais de uma cotação pro mesmo nome de rota + peso só acontece quando a
+    // tabela tem faixas de CEP diferentes (ver montarCotacao/adicionarRotaECotacao).
+    // Com CEP de destino informado, usa a faixa que contém o CEP. Sem CEP (ex.:
+    // Simulador do Realizado, que não tem CEP no CT-e) ou sem faixa cadastrada
+    // na cotação, mantém o comportamento de sempre: pega a primeira.
+    if (destinoCep) {
+      const porCep = candidatas.find((item) => cepDentroDaFaixa(destinoCep, item.cepInicial, item.cepFinal));
+      if (porCep) return porCep;
+    }
+    return candidatas.find((item) => !item.cepInicial || !item.cepFinal) || candidatas[0];
+  };
+
+  const exatas = cotacoes.filter((item) => normalizeText(item.rota) === rotaNorm && dentroDoPeso(item));
+  if (exatas.length) return escolherEntreCandidatas(exatas);
 
   // Algumas tabelas legadas usam codigo curto na aba Rotas (ex.: CEC) e nome
   // longo na Cotacao (ex.: CE-CAPITAL). Este fallback cobre apenas capitais,
@@ -280,7 +303,8 @@ function getCotacaoPorRota(origem, rotaNome, peso) {
   // consistente para nao escolher INT1/INT2/etc. errado.
   const capitalNorm = normalizeCompare(rotaCapitalPorCodigoCurto(rotaNome));
   if (!capitalNorm) return undefined;
-  return cotacoes.find((item) => normalizeCompare(item.rota) === capitalNorm && dentroDoPeso(item));
+  const candidatasCapital = cotacoes.filter((item) => normalizeCompare(item.rota) === capitalNorm && dentroDoPeso(item));
+  return escolherEntreCandidatas(candidatasCapital);
 }
 
 
@@ -386,6 +410,10 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
       tipoCalculo: calculo.tipoCalculo,
       rotaNome: rota?.nomeRota || rota?.rota || null,
       faixaPeso: cotacao ? `${toNumber(cotacao.pesoMin)} até ${cotacao.pesoMax ?? cotacao.pesoLimite ?? 'sem limite'}` : 'Sem cotação',
+      // Só vem preenchido quando a cotação escolhida tem faixa de CEP cadastrada
+      // (ver getCotacaoPorRota) — prova visível de que o motor usou CEP em vez
+      // de só IBGE pra escolher essa cotação entre as candidatas.
+      cepFaixaAplicada: cotacao?.cepInicial && cotacao?.cepFinal ? `${cotacao.cepInicial}-${cotacao.cepFinal}` : '',
       percentualAplicado: percentual,
       rsKgAplicado: rsKg,
       valorFixoAplicado: valorFixo,
@@ -464,7 +492,7 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
   };
 }
 
-function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal, ignorarCubagem = false, documentoDestinatario = '', inverterIcms = false }) {
+export function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal, ignorarCubagem = false, documentoDestinatario = '', inverterIcms = false, destinoCep = '' }) {
   const gradeLinha = getLinhaGradeMaisProxima(gradeCanal, peso);
   const fatoresCubagem = [
     origem?.generalidades?.cubagem,
@@ -473,7 +501,7 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0
   ].map(toNumber);
   const fatorCubagem = fatoresCubagem.find((valor) => valor > 0) || 0;
   const pesosAplicados = calcularPesosComCubagem({ pesoInformado: peso, cubagemInformada: cubagem, gradeLinha, fatorCubagem, ignorarCubagem });
-  const cotacao = getCotacaoPorRota(origem, rota.nomeRota, pesosAplicados.pesoConsiderado);
+  const cotacao = getCotacaoPorRota(origem, rota.nomeRota, pesosAplicados.pesoConsiderado, destinoCep);
   if (!cotacao) return null;
 
   const valorNFManualInformado = toNumber(valorNF);
@@ -575,7 +603,7 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indic
       .filter(({ origem }) => canalCompativel(origem.canal, filtros.canal))
       .filter(({ origem }) => origemCompativel(origem.cidade, filtros.origem))
       .map(({ transportadora, origem, rota }) => {
-        const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem, inverterIcms: filtros.inverterIcms });
+        const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem, inverterIcms: filtros.inverterIcms, destinoCep: filtros.destinoCep });
         return itemComCanalSimulado(item, filtros.canal);
       })
       .filter(Boolean);
@@ -593,7 +621,7 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indic
             return String(rota.ibgeDestino) === filtros.destinoCodigo || cidade === destinoNormalizado;
           })
           .map((rota) => {
-            const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem, inverterIcms: filtros.inverterIcms });
+            const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem, inverterIcms: filtros.inverterIcms, destinoCep: filtros.destinoCep });
             return itemComCanalSimulado(item, filtros.canal);
           })
           .filter(Boolean),
@@ -601,8 +629,8 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indic
   );
 }
 
-export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, cidadePorIbge, gradeCanal = [], indicePorDestino, ignorarCubagem = false, inverterIcms = false }) {
-  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, gradeCanal, ignorarCubagem, inverterIcms }, cidadePorIbge, indicePorDestino);
+export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, destinoCep = '', cidadePorIbge, gradeCanal = [], indicePorDestino, ignorarCubagem = false, inverterIcms = false }) {
+  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, destinoCep, gradeCanal, ignorarCubagem, inverterIcms }, cidadePorIbge, indicePorDestino);
   return rankearPorChave(resultados)
     .filter((item) => origemCompativel(item.origem, origem) && String(item.ibgeDestino) === String(destinoCodigo))
     .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
@@ -623,6 +651,54 @@ export function simularPorTransportadora({ transportadoras, nomeTransportadora, 
   return rankearPorChave(resultados)
     .filter((item) => transportadoraCompativel(item.transportadora, nomeTransportadora))
     .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
+}
+
+// Explica por que uma transportadora ATIVA (que já roda cargas de verdade)
+// não apareceu no resultado de um CT-e — usado no laudo de diagnóstico do
+// Simulador do Realizado. Só é chamada quando a transportadora já não venceu
+// a linha (custo extra é 1 chamada a mais por CT-e sem cobertura, não por
+// todas), então reaproveita a mesma malha (indicePorDestino) e o mesmo
+// getCotacaoPorRota/calcularItem do caminho normal — o motivo é só uma leitura
+// extra em cima do que já seria calculado de qualquer forma.
+export function diagnosticarAusenciaTransportadora({
+  transportadoras = [], nomeTransportadora, origem = '', canal = '', destinoCodigo = '',
+  peso = 0, valorNF = 0, cubagem = 0, cidadePorIbge, gradeCanal = [], ignorarCubagem = false,
+  indicePorDestino,
+}) {
+  const destinoNormalizado = normalizeText(destinoCodigo);
+  let candidatos = [];
+  if (indicePorDestino && destinoNormalizado) {
+    candidatos = indicePorDestino.get(destinoNormalizado) || [];
+  } else {
+    (transportadoras || []).forEach((transportadora) => {
+      (transportadora.origens || []).forEach((origemItem) => {
+        (origemItem.rotas || []).forEach((rota) => {
+          if (String(rota.ibgeDestino) === String(destinoCodigo)) candidatos.push({ transportadora, origem: origemItem, rota });
+        });
+      });
+    });
+  }
+
+  const candidatosTransportadora = candidatos.filter(({ transportadora }) => transportadoraCompativel(transportadora?.nome, nomeTransportadora));
+  if (!candidatosTransportadora.length) {
+    return { motivo: 'SEM_COBERTURA_DESTINO' };
+  }
+
+  const candidatosCanalOrigem = candidatosTransportadora.filter(
+    ({ origem: origemItem }) => canalCompativel(origemItem.canal, canal) && origemCompativel(origemItem.cidade, origem),
+  );
+  if (!candidatosCanalOrigem.length) {
+    return { motivo: 'SEM_COBERTURA_DESTINO' };
+  }
+
+  for (const { transportadora, origem: origemItem, rota } of candidatosCanalOrigem) {
+    const item = calcularItem({ transportadora, origem: origemItem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal, ignorarCubagem });
+    if (item) {
+      return { motivo: 'PERDEU_PRECO', valorCalculado: item.total, rotaNome: rota.nomeRota };
+    }
+  }
+
+  return { motivo: 'SEM_FAIXA_PESO', rotaNome: candidatosCanalOrigem[0]?.rota?.nomeRota || '' };
 }
 
 export function analisarTransportadoraPorGrade({ transportadoras, nomeTransportadora, canal, origem = '', ufDestino = '', grade, cidadePorIbge }) {

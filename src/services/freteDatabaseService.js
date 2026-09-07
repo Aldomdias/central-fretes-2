@@ -280,6 +280,12 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
       freteMinimo: item.frete_minimo ?? 0,
       tipoCalculo: item.tipo_calculo || item.tipoCalculo || '',
       regraCalculo: item.regra_calculo || item.regraCalculo || '',
+      // `cotacoes` não tem coluna própria de CEP (diferente de `rotas`, que já
+      // tem cep_inicial/cep_final). Se algum dia precisarmos desempatar preço
+      // por faixa de CEP igual fizemos em tabelas_negociacao_itens, dá pra
+      // gravar cepInicial/cepFinal aqui dentro de `extra` sem migration — o
+      // motor (getCotacaoPorRota em calculoFrete.js) já lê esses campos de
+      // qualquer cotação, oficial ou de negociação.
       ...(item.extra || {}),
     })),
     taxasEspeciais: taxasEspeciais.map((item) => ({
@@ -3865,7 +3871,10 @@ function montarQueryRealizadoLocalParaSimulacao(supabase, filtros = {}) {
 }
 
 export async function listarRealizadoLocalCtesParaSimulacao(filtros = {}) {
-  const limit = Math.max(1, Math.min(Number(filtros.limit || 50000) || 50000, 100000));
+  // O seletor do simulador oferece 200 mil para o mês completo. Manter o teto
+  // antigo de 100 mil truncava a base silenciosamente e fazia o laudo parecer
+  // integral quando metade dos CT-es podia ter ficado de fora.
+  const limit = Math.max(1, Math.min(Number(filtros.limit || 50000) || 50000, 200000));
 
   if (!isSupabaseConfigured()) {
     return [];

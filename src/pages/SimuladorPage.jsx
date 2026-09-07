@@ -17,6 +17,7 @@ import {
   analisarTransportadoraPorGrade,
   buildDestinoIndex,
   buildLookupTables,
+  diagnosticarAusenciaTransportadora,
   exportarLinhasCsv,
   getCidadeByIbge,
   getUfByIbge,
@@ -487,6 +488,7 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
         .select(COLUNAS_REALIZADO_LOCAL_CTES_SIMULADOR)
         .range(from, to);
       query = aplicarFiltrosRealizadoQuery(query, filtrosJanela);
+      if (filtros.signal) query = query.abortSignal(filtros.signal);
 
       const paginaInicio = from + 1;
       const paginaFim = to + 1;
@@ -1076,6 +1078,9 @@ function ResultadoCard({ item }) {
               <div>Tipo de cálculo: <strong>{item.detalhes?.frete?.tipoCalculo}</strong></div>
               <div>Prazo: <strong>{item.detalhes?.prazo} dia(s)</strong></div>
               <div>Rota/cotação: <strong>{item.detalhes?.frete?.rotaNome || '—'}</strong></div>
+              {item.detalhes?.frete?.cepFaixaAplicada ? (
+                <div>Escolhido por faixa de CEP: <strong>{item.detalhes.frete.cepFaixaAplicada}</strong></div>
+              ) : null}
               <div>Faixa aplicada: <strong>{item.detalhes?.frete?.faixaPeso}</strong></div>
               <div>Peso informado: <strong>{item.detalhes?.frete?.pesoInformado} kg</strong></div>
               <div>Peso da grade: <strong>{item.detalhes?.frete?.pesoGrade} kg</strong></div>
@@ -3491,6 +3496,11 @@ function criarEstadoSimulacaoRealizado({ rows = [], filtros = {} } = {}) {
       origensUsadas: new Map(),
       destinosSemResultado: new Map(),
       vencedorDivergente: new Map(),
+      // Laudo de diagnóstico ("por que essa transportadora não ganhou?"),
+      // só preenchido quando filtros.diagnosticoAusenciaAtivo está ligado.
+      ausenciaPorMotivo: new Map(),
+      ausenciaDestinosPorMotivo: new Map(),
+      ausenciaPioresCasosPreco: [],
     },
   };
   CAMPOS_ESCALARES_SIMULACAO_REALIZADO.forEach((campo) => { estado[campo] = 0; });
@@ -3524,6 +3534,9 @@ function serializarEstadoSimulacaoRealizado(estado) {
       origensUsadas: [...estado.diagnostico.origensUsadas.entries()],
       destinosSemResultado: [...estado.diagnostico.destinosSemResultado.entries()],
       vencedorDivergente: [...estado.diagnostico.vencedorDivergente.entries()],
+      ausenciaPorMotivo: [...(estado.diagnostico.ausenciaPorMotivo || new Map()).entries()],
+      ausenciaDestinosPorMotivo: [...(estado.diagnostico.ausenciaDestinosPorMotivo || new Map()).entries()].map(([motivo, mapa]) => [motivo, [...mapa.entries()]]),
+      ausenciaPioresCasosPreco: estado.diagnostico.ausenciaPioresCasosPreco || [],
     },
     ctesDetalhes: estado.ctesDetalhes.map((item) => ({
       ...item,
@@ -3561,6 +3574,9 @@ function desserializarEstadoSimulacaoRealizado(texto) {
     origensUsadas: new Map(dados.diagnostico?.origensUsadas || []),
     destinosSemResultado: new Map(dados.diagnostico?.destinosSemResultado || []),
     vencedorDivergente: new Map(dados.diagnostico?.vencedorDivergente || []),
+    ausenciaPorMotivo: new Map(dados.diagnostico?.ausenciaPorMotivo || []),
+    ausenciaDestinosPorMotivo: new Map((dados.diagnostico?.ausenciaDestinosPorMotivo || []).map(([motivo, entradas]) => [motivo, new Map(entradas)])),
+    ausenciaPioresCasosPreco: Array.isArray(dados.diagnostico?.ausenciaPioresCasosPreco) ? dados.diagnostico.ausenciaPioresCasosPreco : [],
   };
   estado.ctesDetalhes = Array.isArray(dados.ctesDetalhes) ? dados.ctesDetalhes : [];
   return estado;
@@ -3702,6 +3718,47 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     if (!itemSelecionada && vencedor) {
       const nomeVencedorDiag = String(vencedor.transportadora || 'SEM NOME') || 'SEM NOME';
       diagnostico.vencedorDivergente.set(nomeVencedorDiag, (diagnostico.vencedorDivergente.get(nomeVencedorDiag) || 0) + 1);
+
+      // Laudo "por que essa transportadora não ganhou?" — só roda quando o
+      // usuário liga o flag e só pra CT-es onde ela já não venceu (custo
+      // extra é 1 diagnóstico a mais por linha perdida, não por todas).
+      if (filtros.diagnosticoAusenciaAtivo) {
+        const diagAusencia = diagnosticarAusenciaTransportadora({
+          transportadoras: baseOnline,
+          nomeTransportadora: transportadoraSelecionada,
+          origem: origemUsada,
+          canal,
+          destinoCodigo: destino,
+          peso: pesoLinha,
+          valorNF: nf,
+          cidadePorIbge,
+          gradeCanal,
+          ignorarCubagem: filtros.ignorarCubagem,
+          indicePorDestino,
+        });
+        diagnostico.ausenciaPorMotivo.set(diagAusencia.motivo, (diagnostico.ausenciaPorMotivo.get(diagAusencia.motivo) || 0) + 1);
+        const destinoLabelAusencia = `${row.cidadeDestino || ''}/${row.ufDestino || ''} ${destino}`.trim();
+        if (!diagnostico.ausenciaDestinosPorMotivo.has(diagAusencia.motivo)) {
+          diagnostico.ausenciaDestinosPorMotivo.set(diagAusencia.motivo, new Map());
+        }
+        const mapaDestinosMotivo = diagnostico.ausenciaDestinosPorMotivo.get(diagAusencia.motivo);
+        mapaDestinosMotivo.set(destinoLabelAusencia, (mapaDestinosMotivo.get(destinoLabelAusencia) || 0) + 1);
+        if (diagAusencia.motivo === 'PERDEU_PRECO') {
+          diagnostico.ausenciaPioresCasosPreco.push({
+            destino: destinoLabelAusencia,
+            rota: diagAusencia.rotaNome || '',
+            valorCalculado: diagAusencia.valorCalculado || 0,
+            valorVencedor: vencedor.total || 0,
+            diferenca: (diagAusencia.valorCalculado || 0) - (vencedor.total || 0),
+          });
+          // Evita crescer sem limite em bases grandes: mantém só os piores
+          // casos (maior diferença de preço), que é o que interessa no laudo.
+          if (diagnostico.ausenciaPioresCasosPreco.length > 500) {
+            diagnostico.ausenciaPioresCasosPreco.sort((a, b) => b.diferenca - a.diferenca);
+            diagnostico.ausenciaPioresCasosPreco.length = 200;
+          }
+        }
+      }
     }
     // Valor da TABELA ATUAL (calculada separadamente, pela tabela oficial
     // vigente carregada à parte — não pela "resultado" acima, que só tem a
@@ -4405,6 +4462,20 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
       destinosSemResultado: [...diagnostico.destinosSemResultado.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12),
       vencedorDivergente: [...diagnostico.vencedorDivergente.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8),
     },
+    // Laudo "por que essa transportadora não ganhou?" — vazio quando o flag
+    // não foi ligado (ausenciaPorMotivo fica sem entradas nesse caso).
+    diagnosticoAusencia: {
+      porMotivo: [...(diagnostico.ausenciaPorMotivo || new Map()).entries()].sort((a, b) => b[1] - a[1]),
+      destinosPorMotivo: Object.fromEntries(
+        [...(diagnostico.ausenciaDestinosPorMotivo || new Map()).entries()].map(([motivo, mapa]) => [
+          motivo,
+          [...mapa.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10),
+        ]),
+      ),
+      pioresCasosPreco: [...(diagnostico.ausenciaPioresCasosPreco || [])]
+        .sort((a, b) => b.diferenca - a.diferenca)
+        .slice(0, 15),
+    },
   };
 
   return {
@@ -4479,6 +4550,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const capasNegociacaoCarregadasRef = useRef(false);
   const [incluirNegociacoesRealizado, setIncluirNegociacoesRealizado] = useState(false);
   const [compararConcorrentesRealizado, setCompararConcorrentesRealizado] = useState(false);
+  const [diagnosticoAusenciaAtivo, setDiagnosticoAusenciaAtivo] = useState(false);
   const [incluirCpsLogRealizado, setIncluirCpsLogRealizado] = useState(false);
   const [incluirCpComercialRealizado, setIncluirCpComercialRealizado] = useState(
     () => carregarConfiguracaoBaseCte().incluirCpComercial,
@@ -4797,6 +4869,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [parcelasSimulacaoInfo, setParcelasSimulacaoInfo] = useState(null);
   const parcelasSimulacaoRef = useRef(null);
   const simulacaoRealizadoEmCursoRef = useRef(false);
+  const buscaRealizadoAbortRef = useRef(null);
   const timerProcessamentoRef = useRef(null);
   const hideProcessamentoRef = useRef(null);
   const [processamentoUi, setProcessamentoUi] = useState({
@@ -4865,6 +4938,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
       mensagem: '',
       percentual: 0,
     });
+  };
+
+  const cancelarBuscaRealizado = () => {
+    if (buscaRealizadoAbortRef.current) {
+      buscaRealizadoAbortRef.current.abort();
+      buscaRealizadoAbortRef.current = null;
+    }
+    simulacaoRealizadoEmCursoRef.current = false;
+    setBuscandoCtesRealizado(false);
+    setCarregandoSimulacao(false);
+    limparProcessamentoUi();
+    setErroSimulacao('Processamento cancelado pelo usuário. Nenhum resultado parcial foi salvo.');
   };
 
   const origensPorCanalSimples = useMemo(() => {
@@ -5995,6 +6080,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
       ...baseOnline,
       ...baseNegociacoes,
     ];
+    // Se o usuário digitou um CEP (8 dígitos), guarda pra desempatar tabelas
+    // que têm preços diferentes por faixa de CEP dentro do mesmo IBGE (ver
+    // getCotacaoPorRota em calculoFrete.js). Sem CEP cadastrado na tabela, não
+    // muda nada — continua casando só por IBGE.
+    const digitosDestino = String(destinoCodigo || '').replace(/\D/g, '');
+    const destinoCepInformado = digitosDestino.length === 8 ? digitosDestino : '';
+
     setResultadoSimples(simularSimples({
       transportadoras: baseSimplesComNegoc,
       origem: origemSimples,
@@ -6002,6 +6094,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       peso: Number(pesoSimples || 0),
       valorNF: Number(nfSimples || 0),
       destinoCodigo: destinoFinal,
+      destinoCep: destinoCepInformado,
       cidadePorIbge: mapaCidades,
       gradeCanal: grade[canalSimples] || grade.ATACADO || [],
     }));
@@ -6254,6 +6347,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // Não roda simulação; apenas busca/normaliza/enriquece os CT-es e guarda o
   // contexto necessário para a etapa 2 simular somente o que estiver na tela.
   const onBuscarCtesRealizado = async () => {
+    if (buscaRealizadoAbortRef.current) buscaRealizadoAbortRef.current.abort();
+    const controladorBusca = new AbortController();
+    buscaRealizadoAbortRef.current = controladorBusca;
     simulacaoRealizadoEmCursoRef.current = false;
     setResultadoRealizado(null);
     if (!transportadoraRealizado) {
@@ -6305,27 +6401,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       if (ehNegociacaoSelecionada) {
         let capaNegociacao = negociacaoRealizadoAtual;
-        const resumoCapa = capaNegociacao?.resumo_simulacao || capaNegociacao?.resumo_capa || {};
-        const totalItensCapa = Number(
-          resumoCapa?.totais_itens?.total
-          || resumoCapa?.ultima_importacao?.itens_salvos_apos_importacao?.total
-          || 0,
-        );
-        const capaTemItens = Boolean(
-          capaNegociacao?.tabelas_negociacao_itens?.length
-          || capaNegociacao?.itens?.length,
-        );
 
-        // A capa leve não traz rotas/UFs. Em negociações moderadas, carrega a
-        // malha antes dos CT-es para impedir a busca ampla por origem/canal.
-        if (capaNegociacao?.id && !capaTemItens && totalItensCapa > 0) {
-          atualizarProcessamentoUi(
-            `Carregando ${totalItensCapa.toLocaleString('pt-BR')} itens da negociação para limitar os destinos...`,
-            18,
-          );
-          capaNegociacao = await carregarDetalhesNegociacaoParaSimulacao(capaNegociacao);
-          negociacaoRealizadoAtual = capaNegociacao;
-        }
+        // Nunca hidrate a negociação inteira antes de buscar o realizado. Uma
+        // importação pode ter centenas de milhares de itens e derrubar a aba
+        // mesmo quando o usuário pediu poucos dias. A capa fornece a origem; os
+        // itens/rotas serão carregados abaixo, já recortados pelos CT-es reais.
         const negociacoesConvertidas = capaNegociacao
           ? converterTabelasNegociacaoParaSimulador([capaNegociacao], { canal: canalRealizado })
           : transportadorasNegociacaoRealizado;
@@ -6396,7 +6476,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
       // Uma negociação sem destinos conhecidos nunca pode virar uma consulta
       // irrestrita por origem/canal. Para tabelas grandes, exige um recorte de
       // UF e carrega os itens somente depois que os CT-es forem encontrados.
-      if (ehNegociacaoSelecionada && !ufsDestinoEfetivasRealizado.length && !destinoRealizado) {
+      if (
+        ehNegociacaoSelecionada
+        && !ufsDestinoEfetivasRealizado.length
+        && !destinoRealizado
+        && !origemRealizado
+        && !origensFiltroEfetivo.length
+      ) {
         const resumoCapaBusca = negociacaoRealizadoAtual?.resumo_simulacao || negociacaoRealizadoAtual?.resumo_capa || {};
         const totalItensBusca = Number(resumoCapaBusca?.totais_itens?.total || 0);
         setErroSimulacao(
@@ -6420,6 +6506,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         fim: fimRealizado,
         limit: limiteRealizado,
         somenteDadosCompletos: apenasDadosCompletosRealizado,
+        signal: controladorBusca.signal,
       }, (qtd) => {
         atualizarProcessamentoUi(`Buscando CT-es realizados... ${qtd.toLocaleString('pt-BR')} carregados`, Math.min(58, 28 + Math.floor(qtd / 500)));
       });
@@ -6448,6 +6535,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           fim: fimRealizado,
           limit: limiteRealizado,
           somenteDadosCompletos: apenasDadosCompletosRealizado,
+          signal: controladorBusca.signal,
         }, (qtd) => {
           atualizarProcessamentoUi(`Buscando CT-es sem o recorte da malha oficial... ${qtd.toLocaleString('pt-BR')} carregados`, Math.min(68, 60 + Math.floor(qtd / 500)));
         });
@@ -6516,6 +6604,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           fim: fimRealizado,
           limit: limiteRealizado,
           somenteDadosCompletos: apenasDadosCompletosRealizado,
+          signal: controladorBusca.signal,
         }, (qtd) => {
           atualizarProcessamentoUi(`Buscando CT-es sem o recorte da malha oficial... ${qtd.toLocaleString('pt-BR')} carregados`, Math.min(88, 84 + Math.floor(qtd / 500)));
         });
@@ -6559,7 +6648,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
       }
 
       if (ehNegociacaoSelecionada && negociacaoRealizadoAtual?.id && linhasEnriquecidasFiltradas.length) {
-        const recorteNegociacao = montarRecorteNegociacaoRealizado(linhasEnriquecidasFiltradas);
+        const recorteNegociacao = {
+          ...montarRecorteNegociacaoRealizado(linhasEnriquecidasFiltradas),
+          signal: controladorBusca.signal,
+        };
         const totalDestinosRecorte = recorteNegociacao.ibgesDestino.length || recorteNegociacao.ufsDestino.length;
         atualizarProcessamentoUi(
           totalDestinosRecorte
@@ -6711,10 +6803,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
       );
     } catch (error) {
       setBaseRealizadoCarregada(null);
-      setErroSimulacao(error.message || 'Erro ao buscar CT-es do realizado.');
-      finalizarProcessamentoUi('Erro ao buscar CT-es', 'Não foi possível carregar a base.', 100);
+      if (controladorBusca.signal.aborted) {
+        setErroSimulacao('Processamento cancelado pelo usuário. Nenhum resultado parcial foi salvo.');
+        limparProcessamentoUi();
+      } else {
+        setErroSimulacao(error.message || 'Erro ao buscar CT-es do realizado.');
+        finalizarProcessamentoUi('Erro ao buscar CT-es', 'Não foi possível carregar a base.', 100);
+      }
     } finally {
-      setBuscandoCtesRealizado(false);
+      if (buscaRealizadoAbortRef.current === controladorBusca) {
+        buscaRealizadoAbortRef.current = null;
+        setBuscandoCtesRealizado(false);
+      }
     }
   };
 
@@ -6972,6 +7072,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           origemTabelaAtualReajuste: origemAtualReajusteOverride,
           ignorarCubagem: usarPesoCteRealizado,
           percentualContingenciaPeso: percentualContingenciaPesoRealizado,
+          diagnosticoAusenciaAtivo,
         },
         cidadePorIbge: mapaCidades,
         gradePorCanal: grade,
@@ -8467,6 +8568,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </div>
               <em>{processamentoUi.percentual}%</em>
               <small>Essa análise pode levar mais tempo quando houver muitas rotas, destinos e concorrentes.</small>
+              {buscandoCtesRealizado ? (
+                <button className="danger" type="button" onClick={cancelarBuscaRealizado}>
+                  Cancelar processamento
+                </button>
+              ) : null}
             </div>
           </div>
         </>
@@ -9516,6 +9622,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   Comparar com tabelas oficiais/concorrentes
                 </label>
 
+                <label className="sim-flag">
+                  <input
+                    type="checkbox"
+                    checked={diagnosticoAusenciaAtivo}
+                    onChange={(event) => setDiagnosticoAusenciaAtivo(event.target.checked)}
+                  />
+                  Modo diagnóstico: por que essa transportadora não ganhou?
+                </label>
+
                 <small style={{ color: '#64748b' }}>
                   Padrão recomendado: simular somente CT-es com Tracking vinculado, mantendo NF, volumes e cubagem rastreáveis. Em qualquer modo, o sistema mantém tomadores CPX, ITR e GP PNEUS, exclui EBAZAR, CPS LOG e CP COMERCIAL por padrão. Marque "Incluir todos os tomadores" quando a origem tiver CT-es de tomadores fora dessa lista (ex.: operações novas) e a simulação retornar zero por causa do filtro padrão.
                 </small>
@@ -9884,6 +9999,54 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   {' '}<strong>{resultadoRealizado.diagnostico.vencedorDivergente.map(([nome, qtd]) => `${nome} (${qtd}x)`).join(', ')}</strong>
                 </div>
               )}
+
+              {(resultadoRealizado.diagnosticoAusencia?.porMotivo || []).length > 0 && (() => {
+                const laudo = resultadoRealizado.diagnosticoAusencia;
+                const rotulosMotivo = {
+                  SEM_COBERTURA_DESTINO: 'Sem cobertura pro destino',
+                  SEM_FAIXA_PESO: 'Sem faixa de peso cadastrada',
+                  PERDEU_PRECO: 'Perdeu no preço',
+                };
+                const totalAusencia = laudo.porMotivo.reduce((soma, [, qtd]) => soma + qtd, 0);
+                return (
+                  <div className="sim-parametros-card" style={{ marginTop: 12 }}>
+                    <div className="sim-parametros-header">
+                      <div>
+                        <strong>Laudo de diagnóstico — por que "{transportadoraRealizado}" não ganhou</strong>
+                        <p>{totalAusencia.toLocaleString('pt-BR')} CT-e(s) analisado(s) nesse laudo.</p>
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', marginTop: 8 }}>
+                      {laudo.porMotivo.map(([motivo, qtd]) => (
+                        <div key={motivo} className="sim-resumo-card">
+                          <span>{rotulosMotivo[motivo] || motivo}</span>
+                          <strong>{qtd.toLocaleString('pt-BR')}</strong>
+                        </div>
+                      ))}
+                    </div>
+                    {Object.entries(laudo.destinosPorMotivo || {}).map(([motivo, destinos]) => (
+                      destinos.length ? (
+                        <div key={motivo} style={{ marginTop: 10 }}>
+                          <strong>{rotulosMotivo[motivo] || motivo} — principais destinos:</strong>{' '}
+                          {destinos.map(([destino, qtd]) => `${destino} (${qtd}x)`).join(', ')}
+                        </div>
+                      ) : null
+                    ))}
+                    {(laudo.pioresCasosPreco || []).length > 0 && (
+                      <div style={{ marginTop: 10 }}>
+                        <strong>Piores casos de "perdeu no preço" (maior diferença pro vencedor):</strong>
+                        <div style={{ display: 'grid', gap: 4, marginTop: 6 }}>
+                          {laudo.pioresCasosPreco.slice(0, 8).map((caso, idx) => (
+                            <div key={idx}>
+                              {caso.destino} · rota {caso.rota || '—'} · calculado {formatMoney(caso.valorCalculado)} vs vencedor {formatMoney(caso.valorVencedor)} (+{formatMoney(caso.diferenca)})
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* 4 estados */}
               {(resultadoRealizado.ctesDetalhes || []).length > 0 && (() => {

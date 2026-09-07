@@ -302,7 +302,13 @@ function normalizarDestinoItem(item = {}) {
   const cidadeDestino = pareceIbge(cidadeRaw) ? '' : cidadeRaw;
   const ufDestino = upper(item.uf_destino || item.ufDestino || dados.ufDestino || dados.uf_destino) || ufPorIbge(ibge);
 
-  return { ibgeDestino: ibge, cidadeDestino, ufDestino };
+  // Opcional: só existe em algumas importações (ex.: TAM, Total Express) onde
+  // o mesmo IBGE tem preços diferentes por faixa de CEP. Quando ausente
+  // (a maioria das tabelas), fica '' e o motor casa só por IBGE, como sempre.
+  const cepInicial = texto(item.cep_inicial || dados.cepInicial || dados.cep_inicial).replace(/\D/g, '');
+  const cepFinal = texto(item.cep_final || dados.cepFinal || dados.cep_final).replace(/\D/g, '');
+
+  return { ibgeDestino: ibge, cidadeDestino, ufDestino, cepInicial, cepFinal };
 }
 
 function normalizarOrigemItem(item = {}, tabela = {}) {
@@ -370,9 +376,17 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
     0
   ) || valorExcedente || excessoKg;
 
+  // Opcional (ver normalizarDestinoItem): quando presente, o motor só usa essa
+  // cotação se o CEP de destino simulado cair nessa faixa; ausente = casa por
+  // nome de rota + peso, como sempre.
+  const cepInicial = texto(item.cep_inicial || dados.cepInicial || dados.cep_inicial).replace(/\D/g, '');
+  const cepFinal = texto(item.cep_final || dados.cepFinal || dados.cep_final).replace(/\D/g, '');
+
   return {
     id: item.id || `cotacao-neg-${indice}`,
     rota: nomeRota,
+    cepInicial,
+    cepFinal,
     faixaPeso: texto(item.faixa_peso),
     pesoMin: pesoInicial,
     pesoMax: pesoFinalInformado > 0 ? pesoFinalInformado : 999999999,
@@ -416,6 +430,8 @@ function criarRotaDeItem(item = {}, tabela = {}, indice = 0) {
     ibgeDestino: destino.ibgeDestino,
     cidadeDestino: destino.cidadeDestino,
     ufDestino: destino.ufDestino,
+    cepInicial: destino.cepInicial,
+    cepFinal: destino.cepFinal,
     prazoEntregaDias: numero(item.prazo),
     valorMinimoFrete: numero(item.frete_minimo),
     origemNegociacao: true,
@@ -464,6 +480,11 @@ function adicionarOrigem(origensMap, tabela, origemInfo, generalidades, taxas) {
     taxasEspeciais: taxas.map(montarTaxaDestino).filter((taxa) => taxa.ibgeDestino || taxa.cidadeDestino),
     rotas: [],
     cotacoes: [],
+    // Sets pra checar duplicata em O(1) em vez de Array.some() (que reescaneia
+    // a lista inteira a cada chamada — some das duas listas crescendo até
+    // milhares de itens deixa negociações grandes muito lentas de converter).
+    __rotaKeysVistas: new Set(),
+    __cotacaoKeysVistas: new Set(),
     origemNegociacao: true,
   };
 
@@ -482,7 +503,8 @@ function adicionarRotaECotacao({ origensMap, tabela, item, rota, generalidades, 
   const origem = adicionarOrigem(origensMap, tabela, origemInfo, generalidades, taxas);
 
   const rotaKey = [rota.ibgeDestino, rota.nomeRota].join('|');
-  if (!origem.rotas.some((r) => r.__rotaKey === rotaKey)) {
+  if (!origem.__rotaKeysVistas.has(rotaKey)) {
+    origem.__rotaKeysVistas.add(rotaKey);
     origem.rotas.push({
       ...rota,
       __rotaKey: rotaKey,
@@ -493,8 +515,18 @@ function adicionarRotaECotacao({ origensMap, tabela, item, rota, generalidades, 
   // mesmo grupo de tarifa (ex.: todas as cidades da BA a 3%) devem reaproveitar UMA
   // cotação só, como nas tabelas cadastradas manualmente — senão duplica uma linha
   // idêntica por destino e a tabela fica pesada pra simular.
-  const cotacaoKey = [rota.nomeRota, numero(item.peso_inicial), numero(item.peso_final)].join('|');
-  if (origem.cotacoes.some((cotacao) => cotacao.__cotacaoKey === cotacaoKey)) return;
+  // Exceção: quando o item traz faixa de CEP (algumas tabelas usam preços
+  // diferentes por CEP dentro do mesmo nome de rota/IBGE), o CEP entra na
+  // chave pra não perder as cotações distintas — sem isso, sobraria só uma.
+  const temFaixaCep = texto(item.cep_inicial) && texto(item.cep_final);
+  const cotacaoKey = [
+    rota.nomeRota,
+    numero(item.peso_inicial),
+    numero(item.peso_final),
+    temFaixaCep ? `${texto(item.cep_inicial)}-${texto(item.cep_final)}` : '',
+  ].join('|');
+  if (origem.__cotacaoKeysVistas.has(cotacaoKey)) return;
+  origem.__cotacaoKeysVistas.add(cotacaoKey);
 
   origem.cotacoes.push({
     ...montarCotacao({
@@ -531,8 +563,23 @@ export function converterTabelaNegociacaoParaSimulador(tabela = {}) {
 
   const origensMap = new Map();
 
+  // Índice por nome exato pra não comparar cada cotação contra TODAS as
+  // rotasTecnicas (uma negociação grande pode ter milhares de cada — 4.590
+  // cotações x 33.027 rotas já vira ~150 milhões de comparações e trava o
+  // simulador). rotaCombinaComCotacao ainda aceita nome parcial (substring)
+  // como fallback; isso só cobre o caso comum (nome exato), que é a grande
+  // maioria. Sem match exato, cai pro scan completo (raro).
+  const rotasTecnicasPorNome = new Map();
+  rotasTecnicas.forEach((rota) => {
+    const chave = normalizarChave(rota.__nomeCotacao || rota.nomeRota);
+    if (!rotasTecnicasPorNome.has(chave)) rotasTecnicasPorNome.set(chave, []);
+    rotasTecnicasPorNome.get(chave).push(rota);
+  });
+
   cotacoes.forEach(({ item, indice }) => {
-    const matches = rotasTecnicas.filter((rota) => rotaCombinaComCotacao(rota, item));
+    const nomeCotacao = normalizarChave(nomeCotacaoItem(item));
+    const candidatas = rotasTecnicasPorNome.get(nomeCotacao);
+    const matches = (candidatas || rotasTecnicas).filter((rota) => rotaCombinaComCotacao(rota, item));
     if (matches.length) {
       matches.forEach((rota, idx) => {
         adicionarRotaECotacao({
@@ -555,11 +602,14 @@ export function converterTabelaNegociacaoParaSimulador(tabela = {}) {
     }
   });
 
-  const origens = Array.from(origensMap.values()).map((origem) => ({
-    ...origem,
-    rotas: origem.rotas.map(({ __rotaKey, __nomeCotacao, __ufDestino, ...rota }) => rota),
-    cotacoes: origem.cotacoes.map(({ __cotacaoKey, ...cotacao }) => cotacao),
-  })).filter((origem) => origem.rotas.length && origem.cotacoes.length);
+  const origens = Array.from(origensMap.values()).map((origem) => {
+    const { __rotaKeysVistas, __cotacaoKeysVistas, ...origemLimpa } = origem;
+    return {
+      ...origemLimpa,
+      rotas: origem.rotas.map(({ __rotaKey, __nomeCotacao, __ufDestino, ...rota }) => rota),
+      cotacoes: origem.cotacoes.map(({ __cotacaoKey, ...cotacao }) => cotacao),
+    };
+  }).filter((origem) => origem.rotas.length && origem.cotacoes.length);
 
   return {
     id: `neg-${tabela.id}`,

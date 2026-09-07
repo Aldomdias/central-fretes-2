@@ -534,43 +534,9 @@ function normalizarChaveImportacaoNegociacao(valor) {
     .toUpperCase();
 }
 
-function freteCombinaComRotaNegociacao(frete, rota) {
-  var origemFrete = normalizarChaveImportacaoNegociacao(frete.origem);
-  var origemRota = normalizarChaveImportacaoNegociacao(rota.origem || rota.cidadeOrigem);
-  var ufFrete = normalizarChaveImportacaoNegociacao(frete.ufDestino);
-  var ufRota = normalizarChaveImportacaoNegociacao(rota.ufDestino);
-  var baseFrete = normalizarChaveImportacaoNegociacao(frete.cotacaoBase || frete.cotacao || frete.cotacaoFinal);
-  var baseRota = normalizarChaveImportacaoNegociacao(rota.cotacaoBase || rota.cotacao || rota.cotacaoFinal);
-
-  if (origemFrete && origemRota && origemFrete !== origemRota) return false;
-  if (ufFrete && ufRota && ufFrete !== ufRota) return false;
-  if (!baseFrete || !baseRota) return false;
-  return baseFrete === baseRota || baseRota.includes(baseFrete) || baseFrete.includes(baseRota);
-}
-
-function expandirFretesPorRotasNegociacao(fretes, rotas) {
-  return (fretes || []).flatMap(function(frete) {
-    var matches = (rotas || []).filter(function(rota) {
-      return freteCombinaComRotaNegociacao(frete, rota);
-    });
-    if (!matches.length) return [frete];
-
-    return matches.map(function(rota) {
-      return Object.assign({}, frete, {
-        cotacao: rota.cotacaoFinal || rota.cotacao || frete.cotacao,
-        cotacaoFinal: rota.cotacaoFinal || rota.cotacao || frete.cotacaoFinal,
-        cotacaoBase: rota.cotacaoBase || frete.cotacaoBase,
-        origem: frete.origem || rota.origem || rota.cidadeOrigem || '',
-        ufOrigem: frete.ufOrigem || rota.ufOrigem || '',
-        cidadeDestino: rota.cidadeDestino || frete.cidadeDestino || '',
-        ufDestino: rota.ufDestino || frete.ufDestino || '',
-        ibgeDestino: rota.ibgeDestino || frete.ibgeDestino || '',
-        prazo: rota.prazo || frete.prazo || '',
-      });
-    });
-  });
-}
-
+// Rotas e cotações NÃO são cruzadas (expandidas) aqui — ver comentário em
+// montarLinhasFormatadas. O motor do simulador junta pelo nome na hora de
+// calcular.
 function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigencia, fimVigencia, origemFallback, ufOrigemFallback }) {
   const nomeT = normalizarTexto(transportadora);
   const c = normalizarTexto(canal || 'ATACADO').toUpperCase();
@@ -582,21 +548,24 @@ function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigenc
       cidadeOrigem: origemFallback || item.origem || '',
       ufOrigem: ufOrigemFallback || item.ufOrigem || '',
       ibgeDestino: item.ibgeDestino || '', cidadeDestino: item.cidadeDestino || '', ufDestino: item.ufDestino || '',
+      cepInicial: item.cepInicial || '', cepFinal: item.cepFinal || '',
       canal: c, prazoEntregaDias: item.prazo || '', cotacaoBase: item.cotacaoBase || '',
       cotacaoFinal: item.cotacaoFinal || item.cotacao || '', inicioVigencia: inicioVigencia, fimVigencia: fimVigencia,
     };
   });
-  const fretesExpandidos = expandirFretesPorRotasNegociacao(resultado.fretes || [], resultado.rotas || []);
-  const cotacoes = fretesExpandidos.map(function(item) {
+  // Não expande frete x rota aqui (uma linha por combinação de peso x CEP
+  // explodia pra milhões de linhas — 4.592 fretes x 33.029 rotas já vira 1,8
+  // milhão). O motor do simulador já sabe juntar rota (destino) e cotação
+  // (preço) pelo nome na hora de calcular (rotaCombinaComCotacao, igual às
+  // tabelas cadastradas manualmente) — inclusive escolhendo a rota certa por
+  // CEP quando existem várias com o mesmo nome. Aqui só formatamos cada preço
+  // como cotação "solta", sem destino próprio.
+  const cotacoes = (resultado.fretes || []).map(function(item) {
     return {
       id: gerarId('cotacao'),
-      // rota = nome limpo da cotação (após expansão, já sem prefixo UF)
       rota: item.cotacaoFinal || item.cotacao || (item.origem + ' - ' + item.ufDestino + ' - ' + item.cotacaoBase),
       origem: origemFallback || item.origem || '',
       ufOrigem: ufOrigemFallback || item.ufOrigem || '',
-      cidadeDestino: item.cidadeDestino || '',
-      ufDestino: item.ufDestino || '',
-      ibgeDestino: item.ibgeDestino || '',
       cotacaoBase: item.cotacaoBase || '', faixaPeso: item.faixaPeso || '',
       pesoMin: item.pesoInicial != null ? item.pesoInicial : '',
       pesoMax: item.pesoFinal != null ? item.pesoFinal : '',

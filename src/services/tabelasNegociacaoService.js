@@ -403,20 +403,78 @@ function dividirEmLotes(lista = [], tamanho = 200) {
   return lotes;
 }
 
-async function listarTodosItensTabelaNegociacao(tabelaId) {
+// A importação Verum pode materializar a mesma cotação muitas vezes para
+// um destino (cada ocorrência recebe um UUID diferente). Para o motor, linhas
+// operacionalmente idênticas são a mesma opção de frete. Mantê-las na base
+// recortada consome centenas de MB e pode travar/derrubar a aba.
+//
+// Sabemos que uma minoria de transportadoras (ex.: TAM, Total Express) usa
+// faixas de CEP diferentes dentro do mesmo IBGE de destino com preços
+// diferentes — essa chave não distingue isso (ainda não importamos CEP) e
+// vai tratar essas linhas como duplicata, ficando com uma só. É uma perda de
+// precisão aceita por ora nesses poucos casos: a maioria das transportadoras
+// usa a faixa de CEP padrão do IBGE, então considerar só o IBGE já é
+// assertivo. Quando a importação de CEP for feita, essa chave passa a
+// incluir a faixa de CEP e para de colapsar esses casos.
+function chaveOperacionalItemNegociacao(item = {}) {
+  const original = item.dados_originais || {};
+  return JSON.stringify([
+    normalizarTipoItem(item),
+    upper(item.canal),
+    upper(item.cidade_origem),
+    upper(item.uf_origem),
+    texto(item.ibge_origem),
+    upper(item.cidade_destino),
+    upper(item.uf_destino),
+    texto(item.ibge_destino),
+    upper(item.faixa_peso),
+    numero(item.peso_inicial),
+    numero(item.peso_final),
+    numero(item.frete_minimo),
+    numero(item.taxa_aplicada),
+    numero(item.frete_percentual),
+    numero(item.excesso_kg),
+    numero(item.valor_excedente),
+    inteiro(item.prazo),
+    upper(item.tipo_veiculo),
+    numero(item.valor_lotacao),
+    numero(item.gris),
+    numero(item.advalorem),
+    numero(item.pedagio),
+    numero(item.tas),
+    numero(item.tda),
+    numero(item.tde),
+    numero(item.outras_taxas),
+    upper(item.observacao),
+    texto(original.inicioVigencia || original.inicio_vigencia),
+    texto(original.fimVigencia || original.fim_vigencia),
+    upper(original.cotacaoBase || original.cotacao_base),
+  ]);
+}
+
+async function listarTodosItensTabelaNegociacao(tabelaId, signal = null) {
   const supabase = supabaseOrThrow();
   // Páginas menores deixam cada consulta leve (passa longe do statement_timeout),
   // sem perder linhas: o loop continua até buscar a malha inteira.
   const pageSize = 500;
   let cursor = null;
   const todos = [];
+  const vistos = new Set();
+  let paginasSemNovidade = 0;
 
   // Paginação por keyset (seek) em vez de OFFSET: cada página é uma leitura
   // indexada por id (`id > cursor`), de custo constante. Com OFFSET (`.range`)
   // as últimas páginas de negociações grandes (16k+ itens) varriam e descartavam
   // milhares de linhas e estouravam o statement_timeout do Postgres
   // ("canceling statement due to statement timeout").
+  //
+  // Também deduplica por chave operacional e para cedo se várias páginas
+  // seguidas não trouxerem item novo: algumas importações duplicam a mesma
+  // faixa de peso centenas/milhares de vezes (ex.: ~940 combinações reais
+  // viraram ~190 mil linhas), e sem esse corte o carregamento trava minutos
+  // varrendo só duplicatas já vistas.
   while (true) {
+    if (signal?.aborted) break;
     let query = supabase
       .from('tabelas_negociacao_itens')
       .select(COLUNAS_ITENS_NEGOCIACAO_SIMULACAO)
@@ -424,14 +482,25 @@ async function listarTodosItensTabelaNegociacao(tabelaId) {
       .order('id', { ascending: true })
       .limit(pageSize);
     if (cursor != null) query = query.gt('id', cursor);
+    if (signal) query = query.abortSignal(signal);
 
     const { data, error } = await query;
 
     if (error) throw new Error(error.message || 'Erro ao listar itens atuais da negociação.');
 
     const lote = data || [];
-    todos.push(...lote);
+    let novosNoLote = 0;
+    lote.forEach((item) => {
+      const chave = chaveOperacionalItemNegociacao(item);
+      if (!vistos.has(chave)) {
+        vistos.add(chave);
+        todos.push(item);
+        novosNoLote += 1;
+      }
+    });
     if (lote.length < pageSize) break;
+    paginasSemNovidade = novosNoLote === 0 ? paginasSemNovidade + 1 : 0;
+    if (paginasSemNovidade >= 3) break;
     cursor = lote[lote.length - 1].id;
   }
 
@@ -447,12 +516,24 @@ async function listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte = {}, onP
   }
 
   const supabase = supabaseOrThrow();
-  const pageSize = 250;
+  // O PostgREST entrega até 1.000 linhas por resposta. Usar 250 transformava
+  // um recorte grande (ex.: Total Express) em mais de 700 chamadas sequenciais.
+  // O keyset por id mantém cada página indexada e permite usar o teto seguro.
+  const pageSize = 1000;
   const todos = [];
   const vistos = new Set();
 
+  // Algumas importações duplicam a mesma faixa de peso centenas/milhares de
+  // vezes para um único destino (ex.: uma negociação real com ~940 combinações
+  // de peso virou ~190 mil linhas). Como a paginação varre por id até a página
+  // vir vazia, isso trava minutos varrendo só duplicatas já vistas. Depois de
+  // algumas páginas seguidas sem nenhum item novo, paramos essa busca: o resto
+  // é ruído da mesma faixa já capturada.
+  const PAGINAS_SEM_NOVIDADE_LIMITE = 3;
+
   const buscarPorFiltro = async (aplicarFiltro) => {
     let cursor = null;
+    let paginasSemNovidade = 0;
     while (true) {
       let query = supabase
         .from('tabelas_negociacao_itens')
@@ -462,18 +543,24 @@ async function listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte = {}, onP
         .limit(pageSize);
       query = aplicarFiltro(query);
       if (cursor != null) query = query.gt('id', cursor);
+      if (recorte.signal) query = query.abortSignal(recorte.signal);
 
       const { data, error } = await query;
       if (error) throw new Error(error.message || 'Erro ao listar itens atuais da negociaÃ§Ã£o.');
 
       const lote = data || [];
+      let novosNoLote = 0;
       lote.forEach((item) => {
-        if (!vistos.has(item.id)) {
-          vistos.add(item.id);
+        const chave = chaveOperacionalItemNegociacao(item);
+        if (!vistos.has(chave)) {
+          vistos.add(chave);
           todos.push(item);
+          novosNoLote += 1;
         }
       });
       if (lote.length < pageSize) break;
+      paginasSemNovidade = novosNoLote === 0 ? paginasSemNovidade + 1 : 0;
+      if (paginasSemNovidade >= PAGINAS_SEM_NOVIDADE_LIMITE) break;
       cursor = lote[lote.length - 1].id;
     }
   };
@@ -495,6 +582,14 @@ async function listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte = {}, onP
       if (onProgresso) onProgresso(Math.min(processados, ufsDestino.length), ufsDestino.length);
     }
   }
+
+  // As cotações (preço por faixa de peso, tipo "COTACAO"/faixa_peso <> 'ROTA')
+  // não têm destino próprio — o destino vem só das rotas, casadas pelo nome na
+  // hora de simular. Filtrar por ibge_destino/uf_destino nunca bate nelas
+  // (ficam sempre vazias) e o recorte acima as excluía inteiras, zerando o
+  // cálculo. Sem destino pra recortar, busca todas — são bem menos linhas que
+  // as rotas.
+  await buscarPorFiltro((query) => query.neq('faixa_peso', 'ROTA'));
 
   return todos;
 }
@@ -1735,7 +1830,7 @@ export async function aprovarTabelaNegociacao(id, dados = {}) {
   return data;
 }
 
-async function listarTodasTaxasDestinoTabela(tabelaId) {
+async function listarTodasTaxasDestinoTabela(tabelaId, signal = null) {
   const supabase = supabaseOrThrow();
   const pageSize = 500;
   let cursor = null;
@@ -1743,7 +1838,10 @@ async function listarTodasTaxasDestinoTabela(tabelaId) {
 
   // Mesmo padrão keyset dos itens: paginação por `id > cursor` (ordenada),
   // evitando o custo crescente do OFFSET e tornando a paginação determinística.
+  // Precisa do mesmo `signal` de cancelamento dos itens: sem ele, cancelar a
+  // busca na tela deixava esse loop rodando sozinho em segundo plano até o fim.
   while (true) {
+    if (signal?.aborted) break;
     let query = supabase
       .from('tabelas_negociacao_taxas_destino')
       .select(COLUNAS_TAXAS_DESTINO_NEGOCIACAO_SIMULACAO)
@@ -1751,6 +1849,7 @@ async function listarTodasTaxasDestinoTabela(tabelaId) {
       .order('id', { ascending: true })
       .limit(pageSize);
     if (cursor != null) query = query.gt('id', cursor);
+    if (signal) query = query.abortSignal(signal);
 
     const { data, error } = await query;
 
@@ -1774,10 +1873,10 @@ async function listarTaxasDestinoTabelaPorRecorte(tabelaId, recorte = {}) {
   const ufsDestino = normalizarUfsRecorte(recorte.ufsDestino || recorte.ufDestino);
 
   if (!ibgesDestino.length && !ufsDestino.length) {
-    return listarTodasTaxasDestinoTabela(tabelaId);
+    return listarTodasTaxasDestinoTabela(tabelaId, recorte.signal);
   }
 
-  const todas = await listarTodasTaxasDestinoTabela(tabelaId);
+  const todas = await listarTodasTaxasDestinoTabela(tabelaId, recorte.signal);
   const ibgesSet = new Set(ibgesDestino);
   const ufsSet = new Set(ufsDestino);
 
@@ -1831,9 +1930,10 @@ export async function carregarDetalhesNegociacaoParaSimulacao(tabela, recorte = 
   if (!tabelaId) throw new Error('Negociação inválida para carregar detalhes.');
 
   const usarRecorte = recorte && typeof recorte === 'object';
+  const signal = usarRecorte ? recorte.signal : null;
   const [itens, taxasDestino] = await Promise.all([
-    usarRecorte ? listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte, onProgresso) : listarTodosItensTabelaNegociacao(tabelaId),
-    usarRecorte ? listarTaxasDestinoTabelaPorRecorte(tabelaId, recorte) : listarTodasTaxasDestinoTabela(tabelaId),
+    usarRecorte ? listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte, onProgresso) : listarTodosItensTabelaNegociacao(tabelaId, signal),
+    usarRecorte ? listarTaxasDestinoTabelaPorRecorte(tabelaId, recorte) : listarTodasTaxasDestinoTabela(tabelaId, signal),
   ]);
 
   const base = capa || { id: tabelaId };

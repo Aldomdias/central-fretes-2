@@ -380,6 +380,25 @@ function normalizarRota(linha, indice) {
     'Dias',
   ]), '');
 
+  // Opcional: algumas planilhas distinguem destinos por faixa de CEP em vez
+  // de (ou além de) cidade/IBGE — várias rotas com o mesmo IBGE mas faixas de
+  // CEP diferentes. Quando ausente, o item cai no comportamento de sempre
+  // (casa só por ibge_destino).
+  const cepInicial = limparTexto(valorPorAlias(mapa, [
+    'CEP Inicial',
+    'CEP_INICIAL',
+    'CEP Ini',
+    'CEP De',
+  ]));
+
+  const cepFinal = limparTexto(valorPorAlias(mapa, [
+    'CEP Final',
+    'CEP_FINAL',
+    'CEP Fim',
+    'CEP Até',
+    'CEP Ate',
+  ]));
+
   const rota = {
     id: `rota-${indice + 1}`,
     origem,
@@ -390,6 +409,8 @@ function normalizarRota(linha, indice) {
     ufDestino: ufDestino || ufPorIbge(ibgeDestino),
     ibgeOrigem,
     ibgeDestino,
+    cepInicial,
+    cepFinal,
     prazo,
     cotacaoBase,
     cotacao: cotacaoFinal || cotacaoBase || montarNomeRota({
