@@ -1313,6 +1313,19 @@ export async function carregarOpcoesPreFiltroAuditoria() {
   };
 }
 
+async function consultarLotesComConcorrencia(itens, tamanhoLote, concorrencia, consultar) {
+  const lotes = [];
+  for (let inicio = 0; inicio < itens.length; inicio += tamanhoLote) {
+    lotes.push(itens.slice(inicio, inicio + tamanhoLote));
+  }
+  const resultados = [];
+  for (let inicio = 0; inicio < lotes.length; inicio += concorrencia) {
+    const grupo = lotes.slice(inicio, inicio + concorrencia);
+    resultados.push(...await Promise.all(grupo.map(consultar)));
+  }
+  return resultados;
+}
+
 export async function enriquecerCtesComFaturas(registros = []) {
   if (!registros.length) return registros;
   const supabase = ensureSupabase();
@@ -1320,20 +1333,21 @@ export async function enriquecerCtesComFaturas(registros = []) {
   const chaves = [...new Set(registros.map((r) => somenteDigitos(r.chave_cte)).filter(Boolean))];
   const numeros = [...new Set(registros.filter((r) => !somenteDigitos(r.chave_cte)).map((r) => somenteDigitos(r.numero_cte)).filter(Boolean))];
   const detalhes = [];
-  for (let inicio = 0; inicio < chaves.length; inicio += 100) {
-    const { data, error } = await supabase.from('fatura_detalhes').select('fatura_id,chave_cte,numero_cte').in('chave_cte', chaves.slice(inicio, inicio + 100));
-    if (!error) detalhes.push(...(data || []));
-  }
-  for (let inicio = 0; inicio < numeros.length; inicio += 100) {
-    const { data, error } = await supabase.from('fatura_detalhes').select('fatura_id,chave_cte,numero_cte').in('numero_cte', numeros.slice(inicio, inicio + 100));
-    if (!error) detalhes.push(...(data || []));
-  }
+  const paginasChaves = await consultarLotesComConcorrencia(chaves, 100, 20, (lote) => (
+    supabase.from('fatura_detalhes').select('fatura_id,chave_cte,numero_cte').in('chave_cte', lote)
+  ));
+  paginasChaves.forEach(({ data, error }) => { if (!error) detalhes.push(...(data || [])); });
+
+  const paginasNumeros = await consultarLotesComConcorrencia(numeros, 100, 20, (lote) => (
+    supabase.from('fatura_detalhes').select('fatura_id,chave_cte,numero_cte').in('numero_cte', lote)
+  ));
+  paginasNumeros.forEach(({ data, error }) => { if (!error) detalhes.push(...(data || [])); });
   const ids = [...new Set(detalhes.map((item) => item.fatura_id).filter(Boolean))];
   const faturas = [];
-  for (let inicio = 0; inicio < ids.length; inicio += 100) {
-    const { data, error } = await supabase.from('faturas').select('id,numero_fatura,status').in('id', ids.slice(inicio, inicio + 100));
-    if (!error) faturas.push(...(data || []));
-  }
+  const paginasFaturas = await consultarLotesComConcorrencia(ids, 100, 20, (lote) => (
+    supabase.from('faturas').select('id,numero_fatura,status').in('id', lote)
+  ));
+  paginasFaturas.forEach(({ data, error }) => { if (!error) faturas.push(...(data || [])); });
   const porId = new Map(faturas.map((fatura) => [fatura.id, fatura]));
   const normalizarNome = (valor) => String(valor || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
   const [{ data: transportadoras }, { data: origens }, { data: vinculos }, { data: carteiras }] = await Promise.all([
@@ -1413,37 +1427,33 @@ export async function carregarResultadosAuditoriaMes({ competencia, dataInicio, 
   let from = 0;
   const teto = Number(limite) > 0 ? Number(limite) : Infinity;
   const pagina = Math.max(1, Math.min(Number(tamanhoPagina) || PAGE_SIZE, PAGE_SIZE));
+  const concorrenciaPaginas = teto === Infinity ? 8 : Math.max(1, Math.min(8, Math.ceil(teto / pagina)));
 
   while (true) {
-    let query = supabase
-      .from(TABELA_RESULTADOS)
-      .select(colunas);
+    const inicios = Array.from({ length: concorrenciaPaginas }, (_, indice) => from + indice * pagina);
+    const paginas = await Promise.all(inicios.map((inicioPagina) => {
+      let query = supabase.from(TABELA_RESULTADOS).select(colunas);
+      if (temPeriodo) {
+        if (dataInicio) query = query.gte('data_emissao', dataInicio);
+        if (dataFim) query = query.lte('data_emissao', dataFim);
+      } else {
+        query = query.eq('competencia', competencia);
+      }
+      if (transportadoras?.length) query = query.in('transportadora', transportadoras);
+      return query
+        .order('data_emissao', { ascending: true, nullsFirst: false })
+        .order('id', { ascending: true })
+        .range(inicioPagina, inicioPagina + pagina - 1);
+    }));
 
-    // Por período (datas), consulta direto por data_emissao e ignora a competência
-    // (pode cruzar meses). Sem período, filtra pela competência do mês.
-    if (temPeriodo) {
-      if (dataInicio) query = query.gte('data_emissao', dataInicio);
-      if (dataFim) query = query.lte('data_emissao', dataFim);
-    } else {
-      query = query.eq('competencia', competencia);
-    }
+    const paginaComErro = paginas.find((item) => item.error);
+    if (paginaComErro) throw new Error(`Erro ao carregar auditoria salva: ${paginaComErro.error.message}`);
 
-    if (transportadoras?.length) {
-      query = query.in('transportadora', transportadoras);
-    }
-
-    const { data, error } = await query
-      .order('data_emissao', { ascending: true, nullsFirst: false })
-      .range(from, from + pagina - 1);
-
-    if (error) throw new Error(`Erro ao carregar auditoria salva: ${error.message}`);
-
-    const lote = data || [];
-    acumulado.push(...lote);
+    paginas.forEach((item) => acumulado.push(...(item.data || [])));
     onProgress?.({ etapa: 'carregando_resultado_salvo', carregados: acumulado.length, total: null });
 
-    if (lote.length < pagina || acumulado.length >= teto) break;
-    from += pagina;
+    if (paginas.some((item) => (item.data || []).length < pagina) || acumulado.length >= teto) break;
+    from += pagina * concorrenciaPaginas;
   }
 
   let resultado = teto !== Infinity ? acumulado.slice(0, teto) : acumulado;

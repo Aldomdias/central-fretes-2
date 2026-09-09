@@ -534,7 +534,7 @@ function ResumoMensalAuditoria({ resumoMensal = [] }) {
     <section className="sim-card">
       <h2>Resumo mensal salvo</h2>
       <p style={{ color: '#64748b', marginTop: -4 }}>
-        Comparativo mês a mês carregado da tabela <code>auditoria_cte_resumo_mensal</code>.
+        Comparativo mês a mês carregado dos snapshots em <code>auditoria_cte_resumo_mensal</code>.
       </p>
       <div className="sim-analise-tabela-wrap">
         <table className="sim-analise-tabela">
@@ -1604,19 +1604,18 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       return;
     }
 
-    // Se há CT-es carregados na tela, faz merge: atualiza só esses CT-es (por
-    // chave/número) e preserva o resto do mês já salvo. Sem nada carregado, cai
-    // no modo antigo: rebusca e substitui o mês inteiro da base.
+    // Se há CT-es carregados na tela, salva exatamente esse recorte no snapshot
+    // mensal. Os detalhes são atualizados por chave/número sem apagar o histórico.
     const salvarRecorte = registrosFiltro.length > 0;
     const qtd = salvarRecorte ? registrosFiltro.length : 0;
 
     const avisoFiltro = salvarRecorte && (filtrosAtivos || excluidasSet.size)
-      ? `\n\nVocê tem filtros/exclusões ativos. Serão atualizados apenas os ${qtd.toLocaleString('pt-BR')} CT-e(s) do recorte atual — o restante do mês salvo permanece como está.`
+      ? `\n\nVocê tem filtros/exclusões ativos. O snapshot mensal será composto somente pelos ${qtd.toLocaleString('pt-BR')} CT-e(s) visíveis neste recorte.`
       : '';
 
     const confirmar = window.confirm(
       (salvarRecorte
-        ? `Salvar os ${qtd.toLocaleString('pt-BR')} CT-e(s) que estão na tela como a auditoria de ${competencia}? Eles serão atualizados/inseridos em auditoria_cte_resultados; o resto do mês já salvo NÃO é afetado. O resumo mensal é recalculado com o mês inteiro.`
+        ? `Salvar os ${qtd.toLocaleString('pt-BR')} CT-e(s) visíveis como o snapshot da auditoria de ${competencia}? O resumo mensal refletirá exatamente este recorte filtrado.`
         : `Salvar a auditoria de ${competencia}? Nada está carregado na tela, então o mês inteiro será buscado da base. O resultado salvo e o resumo mensal serão substituídos.`)
       + avisoFiltro
     );
@@ -1634,6 +1633,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         ? await salvarRecorteCarregadoAuditoria({
           competencia,
           registros: registrosFiltro,
+          usarRecorteComoResumo: true,
           onProgress: setProgressoProcessamento,
         })
         : await salvarMesCarregadoAuditoria({
@@ -1648,13 +1648,15 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         tabela: 'auditoria_cte_resultados',
         label: 'Auditoria salva / auditoria_cte_resultados',
       });
-      // O que foi salvo já é a base inteira agora — zera filtros pra não esconder.
+      // O retorno do salvamento explícito já contém exatamente o recorte salvo.
       limparFiltrosFoco();
 
       const resumo = await carregarResumoAuditoriaMensal();
       setResumoMensal(resumo || []);
 
-      setSucesso(`${dados.length.toLocaleString('pt-BR')} CT-e(s) salvos na auditoria e resumo mensal atualizado para ${competencia}.`);
+      setSucesso(salvarRecorte
+        ? `Snapshot de ${competencia} salvo com os ${dados.length.toLocaleString('pt-BR')} CT-e(s) do recorte visível.`
+        : `${dados.length.toLocaleString('pt-BR')} CT-e(s) salvos na auditoria e resumo mensal atualizado para ${competencia}.`);
     } catch (error) {
       setErro(error.message || 'Erro ao salvar mês carregado.');
     } finally {

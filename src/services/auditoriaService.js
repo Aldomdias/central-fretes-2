@@ -13,6 +13,7 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
 import { filtrarCpComercialCte } from './cteBasePolicy';
+import { carregarResultadosSalvosCompetenciaPaginados } from '../utils/auditoriaResumoMensalPaginacao';
 
 export const DIVERGENCIA_THRESHOLD = 0.05;
 export const META_STORAGE_KEY = 'central_fretes_auditoria_meta_v1';
@@ -271,39 +272,38 @@ function montarResumoFonte({ fonte, filtro, data = [], error = null, parcial = f
 async function consultarFontePaginada({ supabase, fonte, competencia, datas, filtro = 'competencia', transportadoras, onProgress }) {
   const registros = [];
   let from = 0;
+  const concorrenciaPaginas = 3;
 
   while (from < MAX_REGISTROS_POR_COMPETENCIA) {
-    let query = supabase.from(fonte.tabela).select('*');
+    const inicios = Array.from(
+      { length: concorrenciaPaginas },
+      (_, indice) => from + indice * PAGE_SIZE,
+    ).filter((inicio) => inicio < MAX_REGISTROS_POR_COMPETENCIA);
+    const paginas = await Promise.all(inicios.map((inicioPagina) => {
+      let query = supabase.from(fonte.tabela).select('*');
+      if (filtro === 'competencia') {
+        query = query.eq('competencia', competencia);
+      } else {
+        query = query.gte(fonte.campoData, datas.inicio).lte(fonte.campoData, datas.fim);
+      }
+      if (transportadoras?.length) query = query.in('transportadora', transportadoras);
+      // realizado_local_ctes possui índice (data_emissao, id). Manter a mesma
+      // direção do índice evita sort/offset caros e statement_timeout.
+      if (fonte.campoData) query = query.order(fonte.campoData, { ascending: true, nullsFirst: false });
+      return query.order('id', { ascending: true }).range(inicioPagina, inicioPagina + PAGE_SIZE - 1);
+    }));
 
-    if (filtro === 'competencia') {
-      query = query.eq('competencia', competencia);
-    } else {
-      query = query.gte(fonte.campoData, datas.inicio).lte(fonte.campoData, datas.fim);
-    }
-
-    if (transportadoras?.length) {
-      query = query.in('transportadora', transportadoras);
-    }
-
-    query = query.range(from, from + PAGE_SIZE - 1);
-
-    if (fonte.campoData) {
-      query = query.order(fonte.campoData, { ascending: false, nullsFirst: false });
-    }
-
-    const { data, error } = await query;
-
-    if (error) {
+    const paginaComErro = paginas.find((item) => item.error);
+    if (paginaComErro) {
       return {
         data: registros,
-        error,
+        error: paginaComErro.error,
         parcial: registros.length > 0,
         limiteAtingido: false,
       };
     }
 
-    const lote = data || [];
-    registros.push(...lote);
+    paginas.forEach((item) => registros.push(...(item.data || [])));
 
     onProgress?.({
       etapa: `carregando_${fonte.tabela}_${filtro}`,
@@ -311,8 +311,8 @@ async function consultarFontePaginada({ supabase, fonte, competencia, datas, fil
       total: null,
     });
 
-    if (lote.length < PAGE_SIZE) break;
-    from += PAGE_SIZE;
+    if (paginas.some((item) => (item.data || []).length < PAGE_SIZE)) break;
+    from += PAGE_SIZE * concorrenciaPaginas;
   }
 
   return {
@@ -356,7 +356,10 @@ export async function carregarDadosAuditoria({ competencia = '', dataInicio = ''
 
   for (const fonte of FONTES_AUDITORIA) {
     // No modo período, pula a consulta por competência e vai direto pela data.
-    if (!temPeriodo) {
+    // A fonte principal tem índice por data_emissao + id e pode ter mais de
+    // 150 mil linhas num mês. Ir direto pela data evita a varredura cara por
+    // competencia; fontes legadas continuam usando o fallback anterior.
+    if (!temPeriodo && fonte.id !== 'realizado_local_ctes') {
       const porCompetencia = await consultarFontePaginada({
         supabase,
         fonte,
@@ -687,7 +690,12 @@ async function executarComConcorrenciaAuditoria(itens, concorrencia, tarefa) {
 // aplicados pelo componente), mas SEM apagar o resto do mês: faz merge —
 // atualiza (por chave_cte/numero_cte) quem já existia e insere quem é novo.
 // O resto da competência que não está no recorte permanece intocado.
-export async function salvarRecorteCarregadoAuditoria({ competencia = '', registros = [], onProgress } = {}) {
+export async function salvarRecorteCarregadoAuditoria({
+  competencia = '',
+  registros = [],
+  usarRecorteComoResumo = false,
+  onProgress,
+} = {}) {
   if (!isSupabaseConfigured()) {
     throw new Error('Supabase não configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
   }
@@ -700,6 +708,33 @@ export async function salvarRecorteCarregadoAuditoria({ competencia = '', regist
 
   const supabase = getSupabaseClient();
   const linhasResultado = registros.map((row) => montarLinhaResultadoDireto(row, competencia));
+
+  // O salvamento explícito do recorte é um snapshot consolidado. Os CT-es já
+  // estão carregados na memória e não precisam ser regravados um a um: isso
+  // transformava uma operação de uma linha em até centenas de milhares de
+  // UPDATEs. Alterações pontuais/resimulações usam o fluxo detalhado abaixo.
+  if (usarRecorteComoResumo) {
+    onProgress?.({ etapa: 'salvando_resumo_mensal', carregados: 0, total: 1 });
+    const resumo = montarResumoMensalAuditoria(linhasResultado, competencia);
+    const { error: resumoError } = await supabase
+      .from('auditoria_cte_resumo_mensal')
+      .upsert(resumo, { onConflict: 'competencia' });
+    if (resumoError) {
+      throw new Error(`Erro ao salvar snapshot mensal da auditoria: ${resumoError.message}`);
+    }
+    onProgress?.({ etapa: 'concluido', carregados: 1, total: 1 });
+    return {
+      registros,
+      resumo,
+      atualizados: 0,
+      inseridos: 0,
+      fonte: {
+        id: 'auditoria_cte_resumo_mensal',
+        tabela: 'auditoria_cte_resumo_mensal',
+        label: 'Snapshot do recorte / auditoria_cte_resumo_mensal',
+      },
+    };
+  }
 
   onProgress?.({ etapa: 'localizando_existentes', carregados: 0, total: linhasResultado.length });
 
@@ -761,15 +796,16 @@ export async function salvarRecorteCarregadoAuditoria({ competencia = '', regist
     }
   }
 
-  // Resumo mensal recalculado sobre o mês inteiro salvo (não só o recorte),
-  // pra não deixar o resumo desatualizado/incompleto em relação ao restante do mês.
-  const { data: mesCompleto, error: erroMes } = await supabase
-    .from('auditoria_cte_resultados')
-    .select('*')
-    .eq('competencia', competencia);
+  // Atualizações pontuais continuam recalculando o mês salvo inteiro para não
+  // reduzirem o snapshot a um único CT-e.
+  const { data: mesCompleto, error: erroMes } = await carregarResultadosSalvosCompetenciaPaginados(
+    supabase,
+    competencia,
+  );
   if (erroMes) throw new Error(`Erro ao recarregar o mês completo para atualizar o resumo: ${erroMes.message}`);
+  const registrosResumo = mesCompleto || [];
 
-  const resumo = montarResumoMensalAuditoria(mesCompleto || [], competencia);
+  const resumo = montarResumoMensalAuditoria(registrosResumo, competencia);
   const { error: resumoError } = await supabase
     .from('auditoria_cte_resumo_mensal')
     .upsert(resumo, { onConflict: 'competencia' });
@@ -780,7 +816,7 @@ export async function salvarRecorteCarregadoAuditoria({ competencia = '', regist
   onProgress?.({ etapa: 'concluido', carregados: linhasResultado.length, total: linhasResultado.length });
 
   return {
-    registros: mesCompleto || [],
+    registros: registrosResumo,
     resumo,
     atualizados,
     inseridos: paraInserir.length,
