@@ -250,11 +250,6 @@ function normalizeFiltroStatus(value) {
   return normalizeText(value).replace(/\s+/g, ' ');
 }
 
-function pickIbgeFromRecord(record) {
-  const value = record?.ibgeDestino ?? record?.ibge_destino ?? record?.Destino ?? record?.destino ?? record?.['IBGE Destino'] ?? record?.ibge;
-  return String(value || '').replace(/\D/g, '');
-}
-
 function calcularResumoCoberturaDetalhada(transportadora) {
   const origens = transportadora?.origens || [];
   let totalRotas = 0;
@@ -269,11 +264,13 @@ function calcularResumoCoberturaDetalhada(transportadora) {
     totalRotas += rotas.length;
     totalCotacoes += cotacoes.length;
 
-    const rotasSet = new Set(rotas.map(pickIbgeFromRecord).filter(Boolean));
-    const cotacoesSet = new Set(cotacoes.map(pickIbgeFromRecord).filter(Boolean));
-
-    const semFreteOrigem = [...rotasSet].filter((ibge) => !cotacoesSet.has(ibge)).length;
-    const semRotaOrigem = [...cotacoesSet].filter((ibge) => !rotasSet.has(ibge)).length;
+    // Cotação não tem campo de IBGE — ela casa com a rota pelo NOME
+    // (cotacao.rota === rota.nomeRota), igual o modal "Ver inconsistências"
+    // (analisarCoberturaOrigem). Usar IBGE aqui fazia o card sempre marcar
+    // quase todas as rotas como "sem frete", mesmo quando estava tudo certo.
+    const analise = analisarCoberturaOrigem(origem);
+    const semFreteOrigem = analise.rotasSemCotacao.length;
+    const semRotaOrigem = analise.cotacoesSemRota.length;
 
     faltandoFrete += semFreteOrigem;
     faltandoRota += semRotaOrigem;
