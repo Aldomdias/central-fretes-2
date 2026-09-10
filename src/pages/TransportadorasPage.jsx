@@ -525,7 +525,7 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
     try {
       const parsed = await parseFileToRows(file, 'taxas');
       const payload = buildImportPayload(parsed, 'taxas', { transportadora: transportadora.nome, origem: origem.cidade, canal: origem.canal });
-      const aplicado = store.importarPayload(payload, 'taxas');
+      const aplicado = store.importarPayload(payload, 'taxas', null, { transportadoraId: transportadora.id, origemId: origem.id });
       if (!aplicado) {
         setFeedback({ type: 'error', text: 'Importação não foi salva: você não tem permissão para editar transportadoras (ou sua sessão expirou). Recarregue a página e tente de novo.' });
       } else {
@@ -1107,7 +1107,7 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
     try {
       const parsed = await parseFileToRows(file, tipoImportacao);
       const payload = buildImportPayload(parsed, tipoImportacao, { transportadora: transportadora.nome, origem: origem.cidade, canal: origem.canal });
-      const aplicado = store.importarPayload(payload, tipoImportacao, grupoTabelaAlternativa || null);
+      const aplicado = store.importarPayload(payload, tipoImportacao, grupoTabelaAlternativa || null, { transportadoraId: transportadora.id, origemId: origem.id });
       if (!aplicado) {
         setFeedback({ type: 'error', text: 'Importação não foi salva: você não tem permissão para editar transportadoras (ou sua sessão expirou). Recarregue a página e tente de novo.' });
       } else {

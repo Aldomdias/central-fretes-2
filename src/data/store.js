@@ -131,14 +131,30 @@ function sameOrigem(current, imported) {
   );
 }
 
-function mergeImport(prev, payload, tipo, grupoTabelaAlternativa = null) {
+function mergeImport(prev, payload, tipo, grupoTabelaAlternativa = null, alvo = null) {
   const next = clone(prev).map(normalizeTransportadora);
 
   payload.transportadoras.forEach((item) => {
-    let transportadora = next.find(
-      (current) =>
-        String(current.nome || '').toLowerCase() === String(item.nome || '').toLowerCase()
-    );
+    // Quando o import parte da tela de uma origem específica (CrudTab), `alvo`
+    // traz o id exato da transportadora/origem em edição. Isso evita casar por
+    // nome/cidade — que quebra com nomes duplicados (ex.: "PSS LOGISTICA" e
+    // "PSS LOGISTICA " com espaço sobrando) ou variações de acentuação — e faz
+    // o import cair silenciosamente numa transportadora/origem diferente da
+    // que o usuário está vendo na tela.
+    let transportadora = alvo?.transportadoraId
+      ? next.find((current) => String(current.id) === String(alvo.transportadoraId))
+      : next.find(
+          (current) =>
+            String(current.nome || '').toLowerCase() === String(item.nome || '').toLowerCase()
+        );
+
+    if (alvo?.transportadoraId && !transportadora) {
+      // Import feito a partir da tela de uma origem específica, mas o id da
+      // transportadora não existe mais no estado atual (ex.: aba ficou aberta
+      // depois de a transportadora ser excluída em outra aba). Não criar uma
+      // transportadora nova do zero — isso esconderia o problema.
+      throw new Error('Não foi possível localizar a transportadora desta tela para salvar o import. Recarregue a página e tente de novo.');
+    }
 
     if (!transportadora) {
       transportadora = normalizeTransportadora({
@@ -149,7 +165,13 @@ function mergeImport(prev, payload, tipo, grupoTabelaAlternativa = null) {
       next.push(transportadora);
     }
 
-    let origem = (transportadora.origens || []).find((current) => sameOrigem(current, item.origem));
+    if (alvo?.origemId && !(transportadora.origens || []).some((current) => String(current.id) === String(alvo.origemId))) {
+      throw new Error('Não foi possível localizar esta origem para salvar o import. Recarregue a página e tente de novo.');
+    }
+
+    let origem = alvo?.origemId
+      ? (transportadora.origens || []).find((current) => String(current.id) === String(alvo.origemId))
+      : (transportadora.origens || []).find((current) => sameOrigem(current, item.origem));
 
     if (!origem) {
       origem = normalizeOrigem({
@@ -1040,9 +1062,9 @@ export function useFreteStore(sessao = null) {
           .then(() => registrarAlteracaoTransportadora(sessao, { tipo: 'exclusao_linha', transportadoraId, origemId, secao, detalhe: `Excluiu item de ${secao}` }))
           .catch((error) => erroExclusao(error, `Erro ao excluir ${secao} no Supabase.`));
       },
-      importarPayload(payload, tipo, grupoTabelaAlternativa = null) {
+      importarPayload(payload, tipo, grupoTabelaAlternativa = null, alvo = null) {
         if (!podeEditarTransportadoras()) return false;
-        aplicarAlteracao((prev) => mergeImport(prev, payload, tipo, grupoTabelaAlternativa), tipo, tipo);
+        aplicarAlteracao((prev) => mergeImport(prev, payload, tipo, grupoTabelaAlternativa, alvo), tipo, tipo);
         return true;
       },
       // Remove de uma vez as rotas e cotações de uma tabela alternativa
