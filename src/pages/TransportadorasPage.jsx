@@ -525,8 +525,12 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
     try {
       const parsed = await parseFileToRows(file, 'taxas');
       const payload = buildImportPayload(parsed, 'taxas', { transportadora: transportadora.nome, origem: origem.cidade, canal: origem.canal });
-      store.importarPayload(payload, 'taxas');
-      setFeedback({ type: payload.erros.length ? 'warn' : 'ok', text: `${payload.inseridos} registro(s) importado(s)${payload.erros.length ? ` · ${payload.erros.length} erro(s)` : ''}` });
+      const aplicado = store.importarPayload(payload, 'taxas');
+      if (!aplicado) {
+        setFeedback({ type: 'error', text: 'Importação não foi salva: você não tem permissão para editar transportadoras (ou sua sessão expirou). Recarregue a página e tente de novo.' });
+      } else {
+        setFeedback({ type: payload.erros.length ? 'warn' : 'ok', text: `${payload.inseridos} registro(s) importado(s)${payload.erros.length ? ` · ${payload.erros.length} erro(s)` : ''}` });
+      }
     } catch (error) {
       setFeedback({ type: 'error', text: error.message || 'Erro ao importar.' });
     }
@@ -1103,8 +1107,12 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
     try {
       const parsed = await parseFileToRows(file, tipoImportacao);
       const payload = buildImportPayload(parsed, tipoImportacao, { transportadora: transportadora.nome, origem: origem.cidade, canal: origem.canal });
-      store.importarPayload(payload, tipoImportacao, grupoTabelaAlternativa || null);
-      setFeedback({ type: payload.erros.length ? 'warn' : 'ok', text: `${payload.inseridos} registro(s) importado(s)${payload.erros.length ? ` · ${payload.erros.length} erro(s)` : ''}` });
+      const aplicado = store.importarPayload(payload, tipoImportacao, grupoTabelaAlternativa || null);
+      if (!aplicado) {
+        setFeedback({ type: 'error', text: 'Importação não foi salva: você não tem permissão para editar transportadoras (ou sua sessão expirou). Recarregue a página e tente de novo.' });
+      } else {
+        setFeedback({ type: payload.erros.length ? 'warn' : 'ok', text: `${payload.inseridos} registro(s) importado(s)${payload.erros.length ? ` · ${payload.erros.length} erro(s)` : ''}` });
+      }
     } catch (error) {
       setFeedback({ type: 'error', text: error.message || 'Erro ao importar arquivo.' });
     }

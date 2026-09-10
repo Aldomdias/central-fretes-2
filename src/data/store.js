@@ -1041,8 +1041,9 @@ export function useFreteStore(sessao = null) {
           .catch((error) => erroExclusao(error, `Erro ao excluir ${secao} no Supabase.`));
       },
       importarPayload(payload, tipo, grupoTabelaAlternativa = null) {
-        if (!podeEditarTransportadoras()) return;
+        if (!podeEditarTransportadoras()) return false;
         aplicarAlteracao((prev) => mergeImport(prev, payload, tipo, grupoTabelaAlternativa), tipo, tipo);
+        return true;
       },
       // Remove de uma vez as rotas e cotações de uma tabela alternativa
       // (grupoTabelaAlternativa) desta origem, sem afetar a tabela principal
