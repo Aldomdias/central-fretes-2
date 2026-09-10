@@ -450,6 +450,19 @@ function inferirAliquotaIcmsAuditoria(origem = {}, rota = {}, cte = {}, transpor
   return { aliquota: 12, origem: 'legislacao_interestadual_12', ufOrigem, ufDestino };
 }
 
+function origemTemIcmsAtivoAuditoria(origem = {}) {
+  const generalidades = origem.generalidades || {};
+  return toBooleanFlag(
+    generalidades.incideIcms ??
+    generalidades.incide_icms ??
+    generalidades.icms ??
+    generalidades.aplicaIcms ??
+    generalidades.aplica_icms ??
+    origem.incideIcms ??
+    origem.incide_icms
+  );
+}
+
 export function normalizarTransportadoras(transportadoras = []) {
   return (transportadoras || []).map((transportadora) => ({
     ...transportadora,
@@ -463,6 +476,78 @@ export function normalizarTransportadoras(transportadoras = []) {
       taxasEspeciais: origem.taxasEspeciais || [],
     })),
   }));
+}
+
+// ─── Tabelas alternativas na estrutura OFICIAL (rotas/cotacoes) ───────────
+// Uma origem pode ter, dentro dela mesma, rotas/cotações marcadas com
+// `grupoTabelaAlternativa` (rótulo livre, ex.: "OTR / Fora de estrada",
+// "Rodas") — ver migration 20260909130000_rotas_cotacoes_grupo_alternativo.sql.
+// Nulo = rota/cotação da tabela principal (comportamento padrão).
+//
+// A lógica de comparação (agruparTabelasAlternativasPorTransportadora /
+// calcularValorParaTabelaEspecifica / montarComparativoTabelas mais abaixo)
+// já sabe operar sobre um array `transportadoras` onde cada tabela alternativa
+// é uma ENTRADA separada (nome igual, `tabelaAlternativaDe`/`negociacaoId`
+// preenchidos) — convenção usada originalmente por
+// converterTabelaNegociacaoParaSimulador (tabelasNegociacaoSimuladorAdapter.js).
+// Esta função reaproveita essa mesma convenção, mas a partir da estrutura
+// oficial: para cada transportadora com algum grupo alternativo cadastrado,
+// gera uma entrada sintética por grupo (mesma transportadora, origens
+// filtradas para só aquele grupo) e restringe a entrada original a apenas
+// as rotas/cotações SEM grupo (tabela principal) — sem alternativas
+// cadastradas, o resultado é idêntico ao array de entrada.
+function filtrarOrigemPorGrupoAlternativo(origem = {}, grupo) {
+  const pertenceAoGrupo = (item) => {
+    const valor = item?.grupoTabelaAlternativa || null;
+    return grupo === null ? !valor : valor === grupo;
+  };
+  return {
+    ...origem,
+    rotas: (origem.rotas || []).filter(pertenceAoGrupo),
+    cotacoes: (origem.cotacoes || []).filter(pertenceAoGrupo),
+  };
+}
+
+function coletarGruposAlternativosTransportadora(transportadora = {}) {
+  const grupos = new Set();
+  (transportadora.origens || []).forEach((origem) => {
+    [...(origem.rotas || []), ...(origem.cotacoes || [])].forEach((item) => {
+      if (item?.grupoTabelaAlternativa) grupos.add(String(item.grupoTabelaAlternativa));
+    });
+  });
+  return Array.from(grupos);
+}
+
+export function expandirTabelasAlternativasOficiais(transportadoras = []) {
+  const expandido = [];
+  (transportadoras || []).forEach((transportadora) => {
+    const grupos = coletarGruposAlternativosTransportadora(transportadora);
+    if (!grupos.length) {
+      expandido.push(transportadora);
+      return;
+    }
+
+    const idPrincipal = transportadora.id || transportadora.nome;
+    expandido.push({
+      ...transportadora,
+      negociacaoId: idPrincipal,
+      tabelaAlternativaDe: null,
+      varianteTabela: null,
+      origens: (transportadora.origens || []).map((origem) => filtrarOrigemPorGrupoAlternativo(origem, null)),
+    });
+
+    grupos.forEach((grupo) => {
+      expandido.push({
+        ...transportadora,
+        id: `${idPrincipal}::alt::${grupo}`,
+        negociacaoId: `${idPrincipal}::alt::${grupo}`,
+        tabelaAlternativaDe: idPrincipal,
+        varianteTabela: grupo,
+        origens: (transportadora.origens || []).map((origem) => filtrarOrigemPorGrupoAlternativo(origem, grupo)),
+      });
+    });
+  });
+  return expandido;
 }
 
 function nomesTransportadorasRegistros(registros = [], mapaVinculos = null) {
@@ -508,10 +593,10 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
   const routeKeys = routeKeysRegistros(registros);
   if (routeKeys.length > 0 && routeKeys.length <= 2500 && !(transportadorasAlvo || []).length) {
     onProgress?.({ etapa: 'carregando_tabelas_rotas', carregados: 0, total: routeKeys.length });
-    const baseRotas = normalizarTransportadoras(await buscarBaseSimulacaoPorRotasDb({
+    const baseRotas = expandirTabelasAlternativasOficiais(normalizarTransportadoras(await buscarBaseSimulacaoPorRotasDb({
       routeKeys,
       onProgress: (carregados, total) => onProgress?.({ etapa: 'carregando_tabelas_rotas', carregados, total }),
-    }));
+    })));
     // Encontrar alguma tabela para as rotas nao basta: a consulta enxuta pode
     // trazer concorrentes e deixar de fora justamente a transportadora do CT-e
     // (especialmente quando a origem real e liberada por equivalencia). Nesse
@@ -532,13 +617,13 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
     const cacheKey = nomes.map((nome) => normalizeTransportadoraCompare(nome)).sort().join('|');
     if (!_cacheBaseFretePorTransportadora.has(cacheKey)) {
       onProgress?.({ etapa: 'carregando_tabelas_transportadora', carregados: 0, total: nomes.length });
-      const base = normalizarTransportadoras(await carregarBaseTransportadorasDb(nomes));
+      const base = expandirTabelasAlternativasOficiais(normalizarTransportadoras(await carregarBaseTransportadorasDb(nomes)));
       if (base.length) {
         _cacheBaseFretePorTransportadora.set(cacheKey, base);
       } else {
         onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
         if (!_cacheBaseFrete) {
-          _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb(onProgress));
+          _cacheBaseFrete = expandirTabelasAlternativasOficiais(normalizarTransportadoras(await carregarBaseCompletaDb(onProgress)));
         }
         return _cacheBaseFrete;
       }
@@ -548,7 +633,7 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
 
   onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: registros.length });
   if (!_cacheBaseFrete) {
-    _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb(onProgress));
+    _cacheBaseFrete = expandirTabelasAlternativasOficiais(normalizarTransportadoras(await carregarBaseCompletaDb(onProgress)));
   }
   return _cacheBaseFrete;
 }
@@ -789,11 +874,127 @@ function cteParaLinhaSimulador(cte = {}, transportadoraSimulada = '', canalOverr
   };
 }
 
+// ─── Tabelas alternativas (mesma transportadora, tabela_alternativa_de) ────
+// Uma transportadora+origem pode ter mais de uma tabela vigente: a
+// "principal" (uso geral) e uma ou mais "alternativas" (ex.: OTR/fora de
+// estrada, rodas). Cada tabela vira uma entrada separada no array
+// `transportadoras` (uma por negociação — ver converterTabelaNegociacaoParaSimulador),
+// então aqui só precisamos agrupá-las pela mesma transportadora e, dentro do
+// grupo, escolher a que mais se aproxima do valor pago no CT-e.
+
+// Pura e testável: dado um conjunto de candidatos já calculados
+// ({ valorCalculado, ... }) e o valor pago no CT-e, devolve o candidato com
+// menor divergência absoluta (ou null se nenhum candidato for calculável).
+export function escolherMelhorTabela(candidatos = [], valorReferencia = 0) {
+  const validos = (candidatos || []).filter((c) => c && Number.isFinite(Number(c.valorCalculado)) && Number(c.valorCalculado) > 0);
+  if (!validos.length) return null;
+  const valorRef = toNumber(valorReferencia);
+  return validos
+    .map((c) => ({ ...c, divergencia: Math.abs(valorRef - toNumber(c.valorCalculado)) }))
+    .sort((a, b) => a.divergencia - b.divergencia)[0];
+}
+
+// Agrupa as entradas do array `transportadoras` (uma por tabela/negociação)
+// que pertencem à mesma transportadora, juntando cada alternativa (
+// tabelaAlternativaDe preenchido) com sua tabela principal correspondente.
+// Retorna um array de grupos (cada grupo é um array com >= 1 entrada); só
+// grupos com mais de 1 entrada representam de fato tabela principal + alternativas.
+function agruparTabelasAlternativasPorTransportadora(transportadoras = [], transportadoraNome = '') {
+  const doGrupo = (transportadoras || []).filter((t) => nomeCompativel(t.nome, transportadoraNome) || t.nome === transportadoraNome);
+  if (doGrupo.length <= 1) return [];
+
+  const porNegociacaoId = new Map();
+  doGrupo.forEach((t) => { if (t.negociacaoId) porNegociacaoId.set(String(t.negociacaoId), t); });
+
+  const grupos = new Map();
+  doGrupo.forEach((t) => {
+    let raizId = String(t.negociacaoId || t.id);
+    if (t.tabelaAlternativaDe && porNegociacaoId.has(String(t.tabelaAlternativaDe))) {
+      raizId = String(t.tabelaAlternativaDe);
+    }
+    if (!grupos.has(raizId)) grupos.set(raizId, []);
+    grupos.get(raizId).push(t);
+  });
+
+  return Array.from(grupos.values()).filter((lista) => lista.length > 1);
+}
+
+// Roda o motor simulador isolando UMA única tabela (transportadora-entrada),
+// pra medir o valor que ela daria pro mesmo CT-e — usado pra comparar tabela
+// principal x alternativas.
+function calcularValorParaTabelaEspecifica(cte, tabelaEntry, canaisTentativa, cidadePorIbge, opcoes) {
+  const tentativasCte = [cte, inverterOrigemDestinoCte(cte)];
+  for (let tentativaIndex = 0; tentativaIndex < tentativasCte.length; tentativaIndex += 1) {
+    const cteTentativa = tentativasCte[tentativaIndex];
+    for (const canal of canaisTentativa) {
+      const linha = cteParaLinhaSimulador(cteTentativa, tabelaEntry.nome, canal);
+      const resultado = simularRealizadoPorTransportadora({
+        transportadoras: [tabelaEntry],
+        realizados: [linha],
+        nomeTransportadora: tabelaEntry.nome,
+        filtros: {
+          canal: linha.canal,
+          ignorarCubagem: opcoes.ignorarCubagem,
+          percentualContingenciaPeso: opcoes.percentualContingenciaPeso,
+        },
+        cidadePorIbge,
+      });
+      const detalhe = resultado?.detalhes?.[0] || null;
+      if (detalhe) return detalhe;
+    }
+  }
+  return null;
+}
+
+// Calcula o comparativo entre a tabela vencedora (que já gerou `detalheVencedor`)
+// e suas tabelas alternativas (se houver), pra Auditoria sugerir a mais próxima
+// do valor pago no CT-e sem perder a possibilidade de escolha manual na UI.
+function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, detalheVencedor, canaisTentativa, cidadePorIbge, opcoes) {
+  const grupos = agruparTabelasAlternativasPorTransportadora(transportadoras, transportadoraTabela);
+  if (!grupos.length) return null;
+
+  // Só existe uma transportadora envolvida aqui (transportadoraTabela), então
+  // na prática há no máximo um grupo relevante; se houver mais de um (várias
+  // origens com famílias diferentes), usamos o primeiro — a granularidade fina
+  // por origem é refinamento futuro, não muda o comportamento sem alternativas.
+  const grupoAlvo = grupos[0];
+  if (!grupoAlvo || grupoAlvo.length <= 1) return null;
+
+  const valorCtePago = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
+  const candidatos = grupoAlvo.map((entrada) => {
+    const detalhe = calcularValorParaTabelaEspecifica(cte, entrada, canaisTentativa, cidadePorIbge, opcoes);
+    if (!detalhe) return null;
+    const valorCalculado = toNumber(detalhe.valorSimulado);
+    return {
+      tabelaId: entrada.negociacaoId || entrada.id,
+      variante: entrada.varianteTabela || (entrada.tabelaAlternativaDe ? 'Alternativa' : 'Principal'),
+      principal: !entrada.tabelaAlternativaDe,
+      transportadoraNome: entrada.nome,
+      valorCalculado,
+      divergencia: Math.abs(valorCtePago - valorCalculado),
+      detalhe,
+    };
+  }).filter(Boolean);
+
+  if (candidatos.length <= 1) return null;
+
+  const melhor = escolherMelhorTabela(candidatos, valorCtePago);
+  return { candidatos, melhor };
+}
+
 function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '', opcoes = {}) {
   const transportadoraTabela = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
   if (!transportadoraTabela) return null;
 
-  const { cidadePorIbge } = buildLookupTables(transportadoras);
+  // O cálculo principal só deve considerar as entradas "de verdade" — as
+  // sintéticas de tabela alternativa (expandirTabelasAlternativasOficiais)
+  // têm o MESMO nome de transportadora e, se entrassem aqui, criariam
+  // ambiguidade na busca por origem/rota (duas cenários pra transportadora
+  // "alvo" na mesma origem). As alternativas só são usadas mais abaixo, em
+  // montarComparativoTabelas, isoladas uma a uma.
+  const transportadorasPrincipais = (transportadoras || []).filter((t) => !t?.tabelaAlternativaDe);
+
+  const { cidadePorIbge } = buildLookupTables(transportadorasPrincipais);
   const canalOriginal = normalizarCanalResultado(pick(cte, ['canal', 'canal_original']));
   const canaisTentativa = canalOriginal === 'A DEFINIR'
     ? ['ATACADO', 'B2C', '']
@@ -807,7 +1008,7 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
     for (const canal of canaisTentativa) {
       const linha = cteParaLinhaSimulador(cteTentativa, transportadoraTabela, canal);
       const resultado = simularRealizadoPorTransportadora({
-        transportadoras,
+        transportadoras: transportadorasPrincipais,
         realizados: [linha],
         nomeTransportadora: transportadoraTabela,
         filtros: {
@@ -857,13 +1058,73 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
   const diferencaAbs = Math.abs(diferenca);
   const percentualDiferenca = valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0;
 
-  return {
+  const resultado = {
     ...base,
     valor_calculado: valorCalculado,
     diferenca,
     diferenca_abs: diferencaAbs,
     percentual_diferenca: percentualDiferenca,
     motivo_sem_calculo: '',
+  };
+
+  // Tabela principal + alternativa(s) vigentes pra mesma transportadora: calcula
+  // com todas e sugere (sem forçar) a mais próxima do valor pago no CT-e. Só
+  // roda quando existe de fato mais de uma tabela pra transportadora — CT-e sem
+  // alternativas cadastradas sai byte-a-byte igual a antes desta mudança.
+  const comparativoTabelas = montarComparativoTabelas(cte, transportadoras, transportadoraTabela, detalhe, canaisTentativa, cidadePorIbge, opcoes);
+  if (!comparativoTabelas) return resultado;
+
+  const { candidatos, melhor } = comparativoTabelas;
+  const candidatosResumo = candidatos.map((c) => ({
+    tabela_id: c.tabelaId,
+    variante: c.variante,
+    principal: c.principal,
+    valor_calculado: c.valorCalculado,
+    divergencia: c.divergencia,
+  }));
+
+  const diferencaAtual = diferencaAbs;
+  const usarMelhor = melhor && melhor.detalhe && melhor.divergencia + 0.0001 < diferencaAtual;
+  if (!usarMelhor) {
+    return {
+      ...resultado,
+      detalhes_calculo: {
+        ...resultado.detalhes_calculo,
+        comparativo_tabelas: candidatosResumo,
+        melhor_comparativo_tabela: melhor?.variante || '',
+        tabela_alternativa_aplicada: '',
+      },
+    };
+  }
+
+  const detalheMelhor = melhor.detalhe;
+  const valorCalculadoMelhor = toNumber(detalheMelhor.valorSimulado);
+  const diferencaMelhor = base.valor_cte - valorCalculadoMelhor;
+
+  return {
+    ...resultado,
+    transportadora_tabela: detalheMelhor.transportadoraSimulada || transportadoraTabela,
+    tipo_calculo: detalheMelhor.detalhes?.frete?.tipoCalculo || resultado.tipo_calculo,
+    valor_calculado: valorCalculadoMelhor,
+    diferenca: diferencaMelhor,
+    diferenca_abs: Math.abs(diferencaMelhor),
+    percentual_diferenca: valorCalculadoMelhor > 0 ? (diferencaMelhor / valorCalculadoMelhor) * 100 : 0,
+    detalhes_calculo: {
+      ...resultado.detalhes_calculo,
+      origem_cidade: detalheMelhor.origem || resultado.detalhes_calculo.origem_cidade,
+      rota_nome: detalheMelhor.detalhes?.frete?.rotaNome || detalheMelhor.detalhes?.rotaNome || resultado.detalhes_calculo.rota_nome,
+      peso_considerado: detalheMelhor.detalhes?.frete?.pesoConsiderado ?? detalheMelhor.peso ?? resultado.detalhes_calculo.peso_considerado,
+      valor_base: detalheMelhor.detalhes?.frete?.valorBase,
+      subtotal: detalheMelhor.detalhes?.frete?.subtotal,
+      icms: detalheMelhor.detalhes?.frete?.icms,
+      aliquota_icms: detalheMelhor.detalhes?.frete?.aliquotaIcms,
+      taxas: detalheMelhor.detalhes?.taxas,
+      componentes_base: detalheMelhor.detalhes?.frete,
+      componente_base: detalheMelhor.detalhes?.frete?.componenteBase,
+      comparativo_tabelas: candidatosResumo,
+      melhor_comparativo_tabela: melhor.variante || '',
+      tabela_alternativa_aplicada: melhor.variante || '',
+    },
   };
 }
 
@@ -1048,6 +1309,7 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
   const documentoDestinatario = pickDigits(cteCalculo, ['documento_destinatario', 'documentoDestinatario', 'cnpj_destinatario'], 14);
   const generalidades = {
     ...(origem.generalidades || {}),
+    incideIcms: origemTemIcmsAtivoAuditoria(origem),
     aliquotaIcms: icmsInfo.aliquota,
     tde: transportadora?.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora?.tdeCnpjs) ? transportadora.tdeCnpjs : [],
@@ -1586,7 +1848,7 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
     let _tick = 0;
     const _hb = setInterval(() => { _tick += 1; onProgress?.({ etapa: 'carregando_tabelas', carregados: _tick, total: null }); }, 600);
     try {
-      _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb(onProgress));
+      _cacheBaseFrete = expandirTabelasAlternativasOficiais(normalizarTransportadoras(await carregarBaseCompletaDb(onProgress)));
     } finally {
       clearInterval(_hb);
     }

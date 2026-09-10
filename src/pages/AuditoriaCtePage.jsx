@@ -1204,6 +1204,53 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     }
   }
 
+  // Espelha montarRegistroComAlternativaPeso para tabelas alternativas
+  // (principal x OTR/rodas/etc.): troca manual do candidato aplicado no CT-e,
+  // marcando `tabela_alternativa_override_manual` pra distinguir de uma troca
+  // automática (auto-sugestão feita no processamento).
+  function montarRegistroComAlternativaTabela(row, alternativa) {
+    const valorCalculado = Number(alternativa.valor_calculado || 0);
+    const valorPago = Number(row.valor_cte || 0);
+    const diferenca = valorPago - valorCalculado;
+    return {
+      ...row,
+      valor_calculado: valorCalculado,
+      diferenca,
+      diferenca_abs: Math.abs(diferenca),
+      percentual_diferenca: valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0,
+      detalhes_calculo: {
+        ...(row.detalhes_calculo || {}),
+        melhor_comparativo_tabela: alternativa.variante,
+        tabela_alternativa_aplicada: alternativa.variante,
+        tabela_alternativa_override_manual: true,
+      },
+    };
+  }
+
+  async function aplicarAlternativaTabela(row, alternativa) {
+    if (!row || !alternativa) return;
+    const atualizado = montarRegistroComAlternativaTabela(row, alternativa);
+    setRegistros((prev) => prev.map((item) => (item === row ? atualizado : item)));
+    setResimuladoInfo(`Tabela "${alternativa.variante}" aplicada no CT-e ${row.numero_cte || row.chave_cte || ''}. Salvando auditoria...`);
+    try {
+      if (atualizado.competencia) {
+        await salvarRecorteCarregadoAuditoria({
+          competencia: atualizado.competencia,
+          registros: [atualizado],
+          onProgress: setProgressoProcessamento,
+        });
+        setSucesso(`CT-e ${row.numero_cte || row.chave_cte || ''} atualizado e salvo com a tabela "${alternativa.variante}".`);
+        setResimuladoInfo('');
+      } else {
+        setResimuladoInfo(`Tabela "${alternativa.variante}" aplicada no CT-e ${row.numero_cte || row.chave_cte || ''}, mas não salvei porque a linha não tem competência.`);
+      }
+    } catch (error) {
+      setErro(error.message || 'Erro ao salvar a auditoria com a tabela alternativa.');
+    } finally {
+      setProgressoProcessamento(null);
+    }
+  }
+
   async function aplicarPesosDentroToleranciaFiltro() {
     const alvo = registrosFiltro;
     if (!alvo.length) {
@@ -3884,6 +3931,34 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                                           {linhaDetalhe('Frete recalculado', fmtMaybe(alt.valor_calculado))}
                                           {linhaDetalhe('Diferença vs pago', fmtMaybe(alt.diferenca), alt.nome === det.melhor_comparativo_peso)}
                                         </div>
+                                        );
+                                      })}
+                                    </div>
+                                  ) : null}
+                                  {Array.isArray(det.comparativo_tabelas) && det.comparativo_tabelas.length > 1 ? (
+                                    <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
+                                      <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Comparativo de tabelas (principal x alternativa)</div>
+                                      {det.comparativo_tabelas.map((alt) => {
+                                        const aplicada = alt.variante === det.tabela_alternativa_aplicada
+                                          || (!det.tabela_alternativa_aplicada && alt.principal);
+                                        return (
+                                          <div key={alt.tabela_id || alt.variante} style={{ borderTop: '1px solid #e2e8f0', marginTop: 8, paddingTop: 8 }}>
+                                            {linhaDetalhe(alt.principal ? `${alt.variante} (principal)` : alt.variante, fmtMaybe(alt.valor_calculado), aplicada)}
+                                            {linhaDetalhe('Divergência vs pago', fmtMaybe(alt.divergencia))}
+                                            <button
+                                              className="sim-tab"
+                                              type="button"
+                                              disabled={aplicada}
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                aplicarAlternativaTabela(r, alt);
+                                              }}
+                                              title={`Usar a tabela "${alt.variante}" para este CT-e`}
+                                              style={{ padding: '2px 8px', fontSize: 11, marginTop: 4 }}
+                                            >
+                                              {aplicada ? 'Em uso' : `usar tabela "${alt.variante}"`}
+                                            </button>
+                                          </div>
                                         );
                                       })}
                                     </div>

@@ -131,7 +131,7 @@ function sameOrigem(current, imported) {
   );
 }
 
-function mergeImport(prev, payload, tipo) {
+function mergeImport(prev, payload, tipo, grupoTabelaAlternativa = null) {
   const next = clone(prev).map(normalizeTransportadora);
 
   payload.transportadoras.forEach((item) => {
@@ -172,6 +172,7 @@ function mergeImport(prev, payload, tipo) {
       const enriched = (item.origem.rotas || []).map((row) => ({
         ...row,
         id: row.id ?? safeRandomId(),
+        grupoTabelaAlternativa: grupoTabelaAlternativa || null,
       }));
       origem.rotas = [...(origem.rotas || []), ...enriched];
     }
@@ -180,6 +181,7 @@ function mergeImport(prev, payload, tipo) {
       const enriched = (item.origem.cotacoes || []).map((row) => ({
         ...row,
         id: row.id ?? safeRandomId(),
+        grupoTabelaAlternativa: grupoTabelaAlternativa || null,
       }));
       origem.cotacoes = [...(origem.cotacoes || []), ...enriched];
     }
@@ -948,14 +950,21 @@ export function useFreteStore(sessao = null) {
           secao
         );
       },
-      atualizarCampoSecaoOrigem(transportadoraId, origemId, secao, campo, valor) {
+      // `grupoTabelaAlternativa` (opcional): quando informado (incluindo null
+      // explícito para "tabela principal"), só as linhas daquele grupo são
+      // afetadas — usado pela aba de tabela alternativa em Transportadoras
+      // pra não vazar uma alteração pra outros grupos da mesma origem.
+      // `undefined` (omitido) mantém o comportamento antigo, afetando tudo.
+      atualizarCampoSecaoOrigem(transportadoraId, origemId, secao, campo, valor, grupoTabelaAlternativa) {
         if (!podeEditarTransportadoras()) return;
+        const pertenceAoGrupo = (item) =>
+          grupoTabelaAlternativa === undefined || (item.grupoTabelaAlternativa || null) === (grupoTabelaAlternativa || null);
         aplicarAlteracao(
           (prev) => prev.map((t) => t.id !== transportadoraId ? t : ({
             ...t,
             origens: t.origens.map((o) => o.id !== origemId ? o : invalidarValidacaoSeNecessario({
               ...o,
-              [secao]: (o[secao] || []).map((item) => ({ ...item, [campo]: valor })),
+              [secao]: (o[secao] || []).map((item) => (pertenceAoGrupo(item) ? { ...item, [campo]: valor } : item)),
             })),
           })),
           secao,
@@ -965,10 +974,13 @@ export function useFreteStore(sessao = null) {
       // Reajusta várias linhas de uma só vez (um único aplicarAlteracao) — evita
       // o problema de chamar salvarLinha em loop, onde cada chamada lê o estado
       // anterior a qualquer uma das outras e só a última sobrevive.
-      reajustarSecaoOrigem(transportadoraId, origemId, secao, ajustesPercentuais = {}) {
+      // `grupoTabelaAlternativa`: mesma semântica do método acima.
+      reajustarSecaoOrigem(transportadoraId, origemId, secao, ajustesPercentuais = {}, grupoTabelaAlternativa) {
         if (!podeEditarTransportadoras()) return;
         const ajustes = Object.entries(ajustesPercentuais).filter(([, pct]) => Number(pct));
         if (!ajustes.length) return;
+        const pertenceAoGrupo = (item) =>
+          grupoTabelaAlternativa === undefined || (item.grupoTabelaAlternativa || null) === (grupoTabelaAlternativa || null);
         aplicarAlteracao(
           (prev) =>
             prev.map((t) =>
@@ -982,6 +994,7 @@ export function useFreteStore(sessao = null) {
                       return invalidarValidacaoSeNecessario({
                         ...o,
                         [secao]: lista.map((item) => {
+                          if (!pertenceAoGrupo(item)) return item;
                           const novo = { ...item };
                           ajustes.forEach(([campo, pct]) => {
                             const atual = Number(novo[campo]);
@@ -1027,9 +1040,66 @@ export function useFreteStore(sessao = null) {
           .then(() => registrarAlteracaoTransportadora(sessao, { tipo: 'exclusao_linha', transportadoraId, origemId, secao, detalhe: `Excluiu item de ${secao}` }))
           .catch((error) => erroExclusao(error, `Erro ao excluir ${secao} no Supabase.`));
       },
-      importarPayload(payload, tipo) {
+      importarPayload(payload, tipo, grupoTabelaAlternativa = null) {
         if (!podeEditarTransportadoras()) return;
-        aplicarAlteracao((prev) => mergeImport(prev, payload, tipo), tipo, tipo);
+        aplicarAlteracao((prev) => mergeImport(prev, payload, tipo, grupoTabelaAlternativa), tipo, tipo);
+      },
+      // Remove de uma vez as rotas e cotações de uma tabela alternativa
+      // (grupoTabelaAlternativa) desta origem, sem afetar a tabela principal
+      // nem outras alternativas. Usado pelo botão "Excluir esta tabela
+      // alternativa" — evita ter que limpar rotas e cotações separadamente.
+      excluirGrupoTabelaAlternativa(transportadoraId, origemId, grupoTabelaAlternativa) {
+        if (!podeEditarTransportadoras() || !grupoTabelaAlternativa) return;
+        const transportadora = (transportadoras || []).find((t) => t.id === transportadoraId);
+        const origem = transportadora?.origens.find((o) => o.id === origemId);
+        const idsRemovidos = [
+          ...(origem?.rotas || []),
+          ...(origem?.cotacoes || []),
+        ]
+          .filter((item) => String(item.grupoTabelaAlternativa || '') === String(grupoTabelaAlternativa))
+          .map((item) => item.id);
+
+        setTransportadoras((prev) =>
+          (prev || []).map((t) =>
+            t.id !== transportadoraId
+              ? t
+              : {
+                  ...t,
+                  origens: t.origens.map((o) => {
+                    if (o.id !== origemId) return o;
+                    const pertence = (item) => String(item.grupoTabelaAlternativa || '') === String(grupoTabelaAlternativa);
+                    return invalidarValidacaoSeNecessario({
+                      ...o,
+                      rotas: (o.rotas || []).filter((item) => !pertence(item)),
+                      cotacoes: (o.cotacoes || []).filter((item) => !pertence(item)),
+                    });
+                  }),
+                }
+          )
+        );
+
+        if (!bancoConfigurado() || !idsRemovidos.length) return;
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        Promise.all([
+          ...(origem?.rotas || [])
+            .filter((item) => String(item.grupoTabelaAlternativa || '') === String(grupoTabelaAlternativa))
+            .map((item) => excluirLinhaSecaoDb('rotas', item.id)),
+          ...(origem?.cotacoes || [])
+            .filter((item) => String(item.grupoTabelaAlternativa || '') === String(grupoTabelaAlternativa))
+            .map((item) => excluirLinhaSecaoDb('cotacoes', item.id)),
+        ])
+          .then(finalizarExclusao)
+          .then(() =>
+            registrarAlteracaoTransportadora(sessao, {
+              tipo: 'exclusao_grupo_tabela_alternativa',
+              transportadoraId,
+              origemId,
+              secao: 'rotas+cotacoes',
+              detalhe: `Excluiu a tabela alternativa "${grupoTabelaAlternativa}"`,
+            })
+          )
+          .catch((error) => erroExclusao(error, 'Erro ao excluir tabela alternativa no Supabase.'));
       },
       limparSecaoOrigem(transportadoraId, origemId, secao) {
         if (!podeEditarTransportadoras()) return;

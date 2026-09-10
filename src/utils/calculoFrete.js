@@ -40,6 +40,30 @@ function toNumber(value) {
   return Number(normalized.replace(/[^0-9.-]/g, '')) || 0;
 }
 
+function toBooleanFlag(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (['true', '1', 'sim', 's', 'yes', 'y'].includes(normalized)) return true;
+    if (['false', '0', 'nao', 'n', 'no'].includes(normalized)) return false;
+  }
+  return Boolean(value);
+}
+
+function origemTemIcmsAtivo(origem = {}) {
+  const generalidades = origem.generalidades || {};
+  return toBooleanFlag(
+    generalidades.incideIcms ??
+    generalidades.incide_icms ??
+    generalidades.icms ??
+    generalidades.aplicaIcms ??
+    generalidades.aplica_icms ??
+    origem.incideIcms ??
+    origem.incide_icms
+  );
+}
+
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -513,6 +537,9 @@ export function calcularItem({ transportadora, origem, rota, peso, valorNF, cuba
   const icmsInfo = inferirAliquotaIcms(origem, rota, cidadePorIbge, transportadora?.nome || transportadora?.transportadora || '', inverterIcms);
   const generalidadesCalculadas = {
     ...(origem.generalidades || {}),
+    // Bases antigas e adaptadores podem trazer a flag em snake_case ou no
+    // nivel da origem. Normalize antes de chamar o motor compartilhado.
+    incideIcms: origemTemIcmsAtivo(origem),
     aliquotaIcms: icmsInfo.aliquota,
     tde: transportadora?.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora?.tdeCnpjs) ? transportadora.tdeCnpjs : [],

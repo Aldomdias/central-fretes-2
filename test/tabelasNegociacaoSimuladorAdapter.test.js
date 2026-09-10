@@ -91,3 +91,33 @@ test('copia o IBGE destino da rota oficial para a revisão mesmo quando vem em a
   assert.equal(resultado.itens[0].cidade_destino, 'Salvador');
   assert.equal(resultado.itens[0].uf_destino, 'BA');
 });
+
+test('normaliza flag e aliquota de ICMS legadas sem transformar "false" em verdadeiro', () => {
+  const base = tabelaComGrupoCompartilhado();
+  base.generalidades = { incide_icms: 'false', aliquota_icms: '12,5' };
+
+  const desativado = converterTabelaNegociacaoParaSimulador(base);
+  assert.equal(desativado.origens[0].generalidades.incideIcms, false);
+  assert.equal(desativado.origens[0].generalidades.aliquotaIcms, 12.5);
+
+  base.generalidades.incide_icms = 'sim';
+  const ativado = converterTabelaNegociacaoParaSimulador(base);
+  assert.equal(ativado.origens[0].generalidades.incideIcms, true);
+});
+
+test('carrega tabela_alternativa_de e variante_tabela para o objeto do simulador', () => {
+  const base = tabelaComGrupoCompartilhado();
+  base.tabela_alternativa_de = 'id-tabela-principal';
+  base.variante_tabela = 'OTR / Fora de estrada';
+
+  const resultado = converterTabelaNegociacaoParaSimulador(base);
+  assert.equal(resultado.tabelaAlternativaDe, 'id-tabela-principal');
+  assert.equal(resultado.varianteTabela, 'OTR / Fora de estrada');
+});
+
+test('tabela principal (sem alternativa) mantém os campos nulos — comportamento padrão preservado', () => {
+  const base = tabelaComGrupoCompartilhado();
+  const resultado = converterTabelaNegociacaoParaSimulador(base);
+  assert.equal(resultado.tabelaAlternativaDe, null);
+  assert.equal(resultado.varianteTabela, null);
+});

@@ -56,7 +56,17 @@ export default function GestaoListaNegociacoes({
                 <td><strong>{t.nome_negociacao}</strong></td>
                 <td>{t.transportadora}</td>
                 <td>{t.is_reajuste ? 'Reajuste' : t.tipo_negociacao_norm === 'TABELA_LOTACAO' ? 'Lotação' : 'Nova'}</td>
-                <td><span style={gestaoStyles.badgeStatus(t.status_gestao_cor)}>{t.status_gestao_label}</span></td>
+                <td>
+                  <span style={gestaoStyles.badgeStatus(t.status_gestao_cor)}>{t.status_gestao_label}</span>
+                  {t.tabela_alternativa_de ? (
+                    <span
+                      title="Tabela alternativa de outra tabela principal (mesma transportadora+origem)"
+                      style={{ display: 'inline-block', marginLeft: 6, marginTop: 4, fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 999, background: '#ede9fe', color: '#5b21b6' }}
+                    >
+                      Alternativa{t.variante_tabela ? `: ${t.variante_tabela}` : ''}
+                    </span>
+                  ) : null}
+                </td>
                 <td>{t.negociador_display}</td>
                 <td>{t.criado_por_display}</td>
                 <td>

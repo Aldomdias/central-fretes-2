@@ -267,6 +267,9 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
       metodoEnvio: item.metodo_envio || '',
       inicioVigencia: item.inicio_vigencia || '',
       fimVigencia: item.fim_vigencia || '',
+      // Rótulo livre da tabela alternativa (ex.: "OTR / Fora de estrada",
+      // "Rodas") dentro da mesma origem. Nulo = rota da tabela principal.
+      grupoTabelaAlternativa: item.grupo_tabela_alternativa || null,
     })),
     cotacoes: cotacoes.map((item) => ({
       id: item.id,
@@ -280,6 +283,9 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
       freteMinimo: item.frete_minimo ?? 0,
       tipoCalculo: item.tipo_calculo || item.tipoCalculo || '',
       regraCalculo: item.regra_calculo || item.regraCalculo || '',
+      // Mesmo rótulo de rotas.grupoTabelaAlternativa — cotação faz parte da
+      // tabela principal (nulo) ou de um conjunto alternativo da origem.
+      grupoTabelaAlternativa: item.grupo_tabela_alternativa || null,
       // `cotacoes` não tem coluna própria de CEP (diferente de `rotas`, que já
       // tem cep_inicial/cep_final). Se algum dia precisarmos desempatar preço
       // por faixa de CEP igual fizemos em tabelas_negociacao_itens, dá pra
@@ -374,7 +380,7 @@ function mapBaseToTables(transportadoras) {
         const {
           id, nomeRota, ibgeOrigem, ibgeDestino, canal, prazoEntregaDias,
           valorMinimoFrete, codigoUnidade, cepInicial, cepFinal, metodoEnvio,
-          inicioVigencia, fimVigencia, ...extra
+          inicioVigencia, fimVigencia, grupoTabelaAlternativa, ...extra
         } = item || {};
 
         rotasRows.push({
@@ -392,12 +398,13 @@ function mapBaseToTables(transportadoras) {
           metodo_envio: metodoEnvio || '',
           inicio_vigencia: inicioVigencia || '',
           fim_vigencia: fimVigencia || '',
+          grupo_tabela_alternativa: grupoTabelaAlternativa || null,
           extra,
         });
       });
 
       (origem.cotacoes || []).forEach((item) => {
-        const { id, rota, pesoMin, pesoMax, rsKg, excesso, percentual, valorFixo, ...extra } =
+        const { id, rota, pesoMin, pesoMax, rsKg, excesso, percentual, valorFixo, grupoTabelaAlternativa, ...extra } =
           item || {};
 
         cotacoesRows.push({
@@ -410,6 +417,7 @@ function mapBaseToTables(transportadoras) {
           excesso: toNumberOrNull(excesso),
           percentual: toNumberOrNull(percentual),
           valor_fixo: toNumberOrNull(valorFixo),
+          grupo_tabela_alternativa: grupoTabelaAlternativa || null,
           extra,
         });
       });

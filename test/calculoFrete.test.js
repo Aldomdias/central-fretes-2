@@ -163,3 +163,25 @@ test('TDR nao entra no total de taxas mesmo se vier preenchido na taxa especial'
   assert.equal(resultado.length, 1);
   assert.equal(resultado[0].detalhes.taxas.tdr, 0);
 });
+
+test('ICMS incide no motor compartilhado quando a flag legada esta no nivel da origem', () => {
+  const transportadora = tabela('TRANSPORTES NACIONAL', 'ATACADO', 100);
+  const origem = transportadora.origens[0];
+  origem.incide_icms = 'sim';
+  origem.generalidades.aliquotaIcms = 20;
+
+  const resultado = simularSimples({
+    transportadoras: [transportadora],
+    origem: 'Itajai',
+    canal: 'ATACADO',
+    peso: 10,
+    valorNF: 1000,
+    destinoCodigo: '3518800',
+    cidadePorIbge: new Map([['3518800', 'Guarulhos/SP']]),
+  });
+
+  assert.equal(resultado.length, 1);
+  assert.equal(resultado[0].detalhes.frete.subtotal, 100);
+  assert.equal(resultado[0].detalhes.frete.icms, 25);
+  assert.equal(resultado[0].total, 125);
+});

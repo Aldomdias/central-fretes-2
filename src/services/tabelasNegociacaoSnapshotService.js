@@ -41,7 +41,7 @@ const COLUNAS_LISTAGEM_NEGOCIACAO = [
   'substituir_tabela_anterior', 'tabela_base_id', 'transportadora_base_nome',
   'percentual_medio_impacto', 'impacto_valor', 'valor_atual_realizado',
   'valor_simulado_nova_tabela', 'impacto_mensal', 'impacto_anual',
-  'resumo_capa',
+  'resumo_capa', 'tabela_alternativa_de', 'variante_tabela',
   COLUNAS_VINCULO_AMD,
   COLUNAS_GESTAO,
 ].join(',');
@@ -68,6 +68,20 @@ function removerColunasAmdDoSelect(selectCols = '') {
     .split(',')
     .map((col) => col.trim())
     .filter((col) => col && col !== 'numero_amd' && col !== 'solicitacao_amd_id')
+    .join(',');
+}
+
+function erroColunaAlternativaAusente(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return (msg.includes('schema cache') || msg.includes('column'))
+    && (msg.includes('tabela_alternativa_de') || msg.includes('variante_tabela'));
+}
+
+function removerColunasAlternativaDoSelect(selectCols = '') {
+  return String(selectCols || '')
+    .split(',')
+    .map((col) => col.trim())
+    .filter((col) => col && col !== 'tabela_alternativa_de' && col !== 'variante_tabela')
     .join(',');
 }
 
@@ -116,6 +130,18 @@ export async function listarNegociacoesResumo(filtros = {}) {
 
   if (error && erroColunaAmdAusente(error)) {
     const fallbackCols = removerColunasAmdDoSelect(COLUNAS_LISTAGEM_NEGOCIACAO);
+    query = supabase.from('tabelas_negociacao').select(fallbackCols).order('criado_em', { ascending: false });
+    if (filtros.status) query = query.eq('status', filtros.status);
+    if (filtros.tipoTabela) query = query.eq('tipo_tabela', filtros.tipoTabela);
+    if (filtros.tipoNegociacao) query = query.eq('tipo_negociacao', filtros.tipoNegociacao);
+    if (filtros.canal) query = query.eq('canal', filtros.canal);
+    if (filtros.transportadora) query = query.ilike('transportadora', `%${filtros.transportadora}%`);
+    if (filtros.somenteSimulacao) query = query.eq('incluir_simulacao', true);
+    ({ data, error } = await query);
+  }
+
+  if (error && erroColunaAlternativaAusente(error)) {
+    const fallbackCols = removerColunasAlternativaDoSelect(COLUNAS_LISTAGEM_NEGOCIACAO);
     query = supabase.from('tabelas_negociacao').select(fallbackCols).order('criado_em', { ascending: false });
     if (filtros.status) query = query.eq('status', filtros.status);
     if (filtros.tipoTabela) query = query.eq('tipo_tabela', filtros.tipoTabela);

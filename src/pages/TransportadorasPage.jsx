@@ -1009,7 +1009,7 @@ function GeneralidadesTab({ transportadoraId, origem, store }) {
   );
 }
 
-function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, columns, fields, hint }) {
+function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, columns, fields, hint, grupoTabelaAlternativa = null }) {
   const podeEditar = store.podeEditarTransportadoras;
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -1020,7 +1020,16 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
   const [reajustePanelOpen, setReajustePanelOpen] = useState(false);
   const [reajustePercentuais, setReajustePercentuais] = useState({});
   const [aplicandoReajuste, setAplicandoReajuste] = useState(false);
-  const rows = origem[secao] || [];
+  // `todasAsLinhas` é o array completo (principal + todas as alternativas) da
+  // origem — precisa dele intacto pra gerar IDs novos sem colidir com linhas
+  // de outro grupo (nextId olha só pro grupo filtrado poderia repetir um id já
+  // usado por uma rota/cotação alternativa). `rows` é só o recorte exibido e
+  // editado nesta aba: tabela principal (grupo nulo) ou a alternativa escolhida.
+  const todasAsLinhas = origem[secao] || [];
+  const rows = useMemo(
+    () => todasAsLinhas.filter((item) => (item.grupoTabelaAlternativa || null) === (grupoTabelaAlternativa || null)),
+    [todasAsLinhas, grupoTabelaAlternativa]
+  );
   const inputRef = useRef(null);
   const [filtroTexto, setFiltroTexto] = useState('');
   const composicaoAtualDasLinhas = rows.length && rows.every((item) => (item.composicaoFrete || '') === (rows[0].composicaoFrete || ''))
@@ -1033,7 +1042,7 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
   }, [origem.id, composicaoAtualDasLinhas]);
 
   const salvarComposicaoGeral = () => {
-    store.atualizarCampoSecaoOrigem(transportadora.id, origem.id, secao, 'composicaoFrete', composicaoGeral);
+    store.atualizarCampoSecaoOrigem(transportadora.id, origem.id, secao, 'composicaoFrete', composicaoGeral, grupoTabelaAlternativa || null);
     setFeedback({ type: 'ok', text: `Composição aplicada às ${rows.length} cotações desta tabela.` });
   };
 
@@ -1063,7 +1072,7 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
 
     setAplicandoReajuste(true);
     try {
-      store.reajustarSecaoOrigem(transportadora.id, origem.id, secao, Object.fromEntries(ajustes));
+      store.reajustarSecaoOrigem(transportadora.id, origem.id, secao, Object.fromEntries(ajustes), grupoTabelaAlternativa || null);
       setFeedback({ type: 'ok', text: `Reajuste aplicado em ${rows.length} registro(s).` });
       setReajustePercentuais({});
       setReajustePanelOpen(false);
@@ -1073,7 +1082,14 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
   };
 
   const save = (form) => {
-    const row = { ...editing, ...form, id: editing?.id ?? nextId(rows) };
+    const row = {
+      ...editing,
+      ...form,
+      id: editing?.id ?? nextId(todasAsLinhas),
+      // Linha nova entra no grupo que está sendo editado (nulo = tabela
+      // principal). Editar uma linha existente preserva o grupo dela.
+      grupoTabelaAlternativa: editing ? (editing.grupoTabelaAlternativa || null) : (grupoTabelaAlternativa || null),
+    };
     store.salvarLinha(transportadora.id, origem.id, secao, row);
     setModalOpen(false);
     setEditing(null);
@@ -1087,7 +1103,7 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
     try {
       const parsed = await parseFileToRows(file, tipoImportacao);
       const payload = buildImportPayload(parsed, tipoImportacao, { transportadora: transportadora.nome, origem: origem.cidade, canal: origem.canal });
-      store.importarPayload(payload, tipoImportacao);
+      store.importarPayload(payload, tipoImportacao, grupoTabelaAlternativa || null);
       setFeedback({ type: payload.erros.length ? 'warn' : 'ok', text: `${payload.inseridos} registro(s) importado(s)${payload.erros.length ? ` · ${payload.erros.length} erro(s)` : ''}` });
     } catch (error) {
       setFeedback({ type: 'error', text: error.message || 'Erro ao importar arquivo.' });
@@ -1106,7 +1122,24 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
           <button className="btn-secondary" onClick={() => setReajustePanelOpen((v) => !v)} disabled={!rows.length || !podeEditar}>
             {reajustePanelOpen ? 'Fechar reajuste' : 'Reajustar em massa'}
           </button>
-          {podeEditar ? <button className="btn-danger" onClick={() => store.limparSecaoOrigem(transportadora.id, origem.id, secao)}>Excluir Tudo</button> : null}
+          {podeEditar ? (
+            <button
+              className="btn-danger"
+              onClick={() => {
+                // Fora de um grupo alternativo, comportamento igual a sempre
+                // (limpa a seção inteira). Dentro de um grupo alternativo,
+                // remove só as linhas daquele grupo — não pode apagar a
+                // tabela principal nem as outras alternativas da origem.
+                if (!grupoTabelaAlternativa) {
+                  store.limparSecaoOrigem(transportadora.id, origem.id, secao);
+                } else {
+                  rows.forEach((row) => store.removerLinha(transportadora.id, origem.id, secao, row.id));
+                }
+              }}
+            >
+              Excluir Tudo
+            </button>
+          ) : null}
           {podeEditar ? <button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Novo</button> : null}
           <input hidden ref={inputRef} type="file" accept=".xlsx,.xls,.csv" onChange={importarArquivo} />
         </div>
@@ -2139,11 +2172,47 @@ function CadastroOrigemTab({ transportadoraId, origem, store }) {
   );
 }
 
+// Rótulos de tabela alternativa cadastrados em rotas/cotações desta origem
+// (grupoTabelaAlternativa preenchido). Nulo/vazio = tabela principal, não
+// entra na lista — a lista é só das alternativas existentes.
+function gruposAlternativosDaOrigem(origem) {
+  const grupos = new Set();
+  [...(origem?.rotas || []), ...(origem?.cotacoes || [])].forEach((item) => {
+    if (item?.grupoTabelaAlternativa) grupos.add(String(item.grupoTabelaAlternativa));
+  });
+  return Array.from(grupos).sort((a, b) => a.localeCompare(b));
+}
+
 function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
   const [aba, setAba] = useState('cadastro');
   const [inconsistenciasOpen, setInconsistenciasOpen] = useState(false);
   const [chamadoAmdOpen, setChamadoAmdOpen] = useState(false);
   const [feedbackChamado, setFeedbackChamado] = useState('');
+  // null = tabela principal; string = rótulo da tabela alternativa em edição.
+  // Só é relevante nas abas Rotas/Cotações — reseta ao trocar de origem.
+  const [grupoAtivo, setGrupoAtivo] = useState(null);
+  const [novoGrupoNome, setNovoGrupoNome] = useState('');
+  const gruposComDados = useMemo(() => gruposAlternativosDaOrigem(origem), [origem]);
+  // Inclui o grupo em edição mesmo antes de ter rotas/cotações salvas —
+  // senão o botão "desaparece" ao trocar de aba até a primeira linha ser gravada.
+  const gruposExistentes = useMemo(() => {
+    if (grupoAtivo && !gruposComDados.includes(grupoAtivo)) {
+      return [...gruposComDados, grupoAtivo].sort((a, b) => a.localeCompare(b));
+    }
+    return gruposComDados;
+  }, [gruposComDados, grupoAtivo]);
+
+  React.useEffect(() => {
+    setGrupoAtivo(null);
+    setNovoGrupoNome('');
+  }, [origem.id]);
+
+  const criarNovoGrupo = () => {
+    const rotulo = novoGrupoNome.trim();
+    if (!rotulo) return;
+    setGrupoAtivo(rotulo);
+    setNovoGrupoNome('');
+  };
   const rotasColumns = [
     { key: 'nomeRota', label: 'Nome da Rota' }, { key: 'ibgeOrigem', label: 'IBGE Origem' }, { key: 'ibgeDestino', label: 'IBGE Destino' }, { key: 'canal', label: 'Canal' }, { key: 'prazoEntregaDias', label: 'Prazo' }, { key: 'valorMinimoFrete', label: 'Mínimo' },
   ];
@@ -2170,14 +2239,46 @@ function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
   return (
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← {transportadora.nome}</button>
-      <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{canalOrigemLabel(origem)}</strong> · {origem.rotas.length} rota(s)</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmdOpen(true)} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button><span className="status-pill dark">{origem.status}</span></div></div>
+      <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{canalOrigemLabel(origem)}</strong> · {origem.rotas.length} rota(s){gruposExistentes.length ? <> · <span className="status-pill dark" title="Tabelas alternativas cadastradas nesta origem">{gruposExistentes.length} tabela(s) alternativa(s)</span></> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmdOpen(true)} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button><span className="status-pill dark">{origem.status}</span></div></div>
       {feedbackChamado ? <div className="mini-feedback success top-space">{feedbackChamado}</div> : null}
       <div className="tabs-row"><TabButton active={aba === 'cadastro'} onClick={() => setAba('cadastro')}>Cadastro</TabButton><TabButton active={aba === 'canal'} onClick={() => setAba('canal')}>Canal</TabButton><TabButton active={aba === 'generalidades'} onClick={() => setAba('generalidades')}>Generalidades</TabButton><TabButton active={aba === 'rotas'} onClick={() => setAba('rotas')}>Rotas</TabButton><TabButton active={aba === 'cotacoes'} onClick={() => setAba('cotacoes')}>Cotações</TabButton><TabButton active={aba === 'taxas'} onClick={() => setAba('taxas')}>Taxas Especiais</TabButton></div>
+      {(aba === 'rotas' || aba === 'cotacoes') ? (
+        <div className="hint-box" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <strong style={{ fontSize: 12, color: '#64748b' }}>Tabela em edição:</strong>
+          <button className={grupoAtivo === null ? 'tab-btn active' : 'tab-btn'} onClick={() => setGrupoAtivo(null)}>Tabela principal</button>
+          {gruposExistentes.map((grupo) => (
+            <button key={grupo} className={grupoAtivo === grupo ? 'tab-btn active' : 'tab-btn'} onClick={() => setGrupoAtivo(grupo)}>{grupo}</button>
+          ))}
+          <input
+            type="text"
+            value={novoGrupoNome}
+            onChange={(e) => setNovoGrupoNome(e.target.value)}
+            placeholder="Rótulo da nova tabela alternativa (ex.: OTR/Fora de estrada)"
+            style={{ minWidth: 260 }}
+          />
+          <button className="btn-secondary" onClick={criarNovoGrupo} disabled={!novoGrupoNome.trim()}>+ Adicionar tabela alternativa</button>
+          {grupoAtivo ? (
+            <button
+              className="btn-danger"
+              onClick={() => {
+                if (!window.confirm(`Excluir a tabela alternativa "${grupoAtivo}" (todas as rotas e cotações dela)?`)) return;
+                store.excluirGrupoTabelaAlternativa(transportadora.id, origem.id, grupoAtivo);
+                setGrupoAtivo(null);
+              }}
+            >
+              Excluir esta tabela alternativa
+            </button>
+          ) : null}
+          <span style={{ width: '100%', fontSize: 12, color: '#64748b' }}>
+            Rotas e cotações cadastradas aqui valem só pra esta origem e só pra esta tabela ({grupoAtivo || 'principal'}). Sem nenhuma alternativa cadastrada, o comportamento é idêntico ao de sempre.
+          </span>
+        </div>
+      ) : null}
       {aba === 'cadastro' && <CadastroOrigemTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'canal' && <CanalTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'generalidades' && <GeneralidadesTab transportadoraId={transportadora.id} origem={origem} store={store} />}
-      {aba === 'rotas' && <CrudTab title="Rota" secao="rotas" tipoImportacao="rotas" origem={origem} transportadora={transportadora} store={store} columns={rotasColumns} fields={rotasFields} hint={<>Use <strong>Baixar Modelo</strong> para subir rotas no padrão do seu arquivo real. Também há <strong>Exportar</strong> e <strong>Excluir Tudo</strong>.</>} />}
-      {aba === 'cotacoes' && <CrudTab title="Cotação" secao="cotacoes" tipoImportacao="cotacoes" origem={origem} transportadora={transportadora} store={store} columns={cotacoesColumns} fields={cotacoesFields} hint={<>Fretes/cotações aceitam importação no modelo com <strong>Rota do frete</strong>, pesos, excesso, taxa aplicada e percentual.</>} />}
+      {aba === 'rotas' && <CrudTab title="Rota" secao="rotas" tipoImportacao="rotas" origem={origem} transportadora={transportadora} store={store} columns={rotasColumns} fields={rotasFields} grupoTabelaAlternativa={grupoAtivo} hint={<>Use <strong>Baixar Modelo</strong> para subir rotas no padrão do seu arquivo real. Também há <strong>Exportar</strong> e <strong>Excluir Tudo</strong>.</>} />}
+      {aba === 'cotacoes' && <CrudTab title="Cotação" secao="cotacoes" tipoImportacao="cotacoes" origem={origem} transportadora={transportadora} store={store} columns={cotacoesColumns} fields={cotacoesFields} grupoTabelaAlternativa={grupoAtivo} hint={<>Fretes/cotações aceitam importação no modelo com <strong>Rota do frete</strong>, pesos, excesso, taxa aplicada e percentual.</>} />}
       {aba === 'taxas' && <TaxasEspeciaisTab origem={origem} transportadora={transportadora} store={store} />}
       <InconsistenciasModal open={inconsistenciasOpen} title="Inconsistências da origem" transportadora={transportadora} origem={origem} onClose={() => setInconsistenciasOpen(false)} />
       <ModalChamadoAmdTabela

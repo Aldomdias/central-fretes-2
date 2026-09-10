@@ -50,6 +50,7 @@ import {
   garantirNegociadorAoAbrir,
   buscarCnpjTransportadoraCadastro,
   listarTransportadorasCadastro,
+  buscarTabelasPrincipaisDisponiveis,
 } from '../services/tabelasNegociacaoService';
 import { cnpjPreenchidoValido, formatarCnpj, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
 import { LaudoNegociacaoTemplate, LaudoRodadasNegociacaoTemplate } from '../components/laudos';
@@ -478,6 +479,10 @@ const FORM_VAZIO = {
   data_inicio_prevista: '', incluir_simulacao: false, observacao: '',
   numero_amd: '', solicitacao_amd_id: '',
   saving_projetado: '', aderencia_projetada: '',
+  // Tabela alternativa (ex.: OTR/fora de estrada, rodas) de uma tabela
+  // principal já cadastrada, mesma transportadora+origem. Vazio = tabela
+  // principal normal, sem mudar nada do fluxo padrão.
+  tabela_alternativa_de: '', variante_tabela: '',
 };
 const NOVA_ORIGEM_VAZIA = {
   origem: '', uf_origem: '', uf_destino: '', descricao: '', observacao: '',
@@ -976,6 +981,11 @@ export default function TabelasNegociacaoPage() {
   const [sucesso, setSucesso] = useState('');
   const [filtros, setFiltros] = useState({ status: '', tipoTabela: '', tipoNegociacao: '', canal: '', transportadora: '' });
   const [form, setForm] = useState(Object.assign({}, FORM_VAZIO));
+  // Tabela alternativa: quando marcado, o formulário exige escolher qual
+  // tabela principal (mesma transportadora+origem) esta linha é alternativa.
+  const [ehTabelaAlternativa, setEhTabelaAlternativa] = useState(false);
+  const [tabelasPrincipaisDisponiveis, setTabelasPrincipaisDisponiveis] = useState([]);
+  const [carregandoTabelasPrincipais, setCarregandoTabelasPrincipais] = useState(false);
   const [criandoSolicitacaoAmd, setCriandoSolicitacaoAmd] = useState(false);
   const inputTaxasDestinoRef = useRef(null);
 
@@ -3062,6 +3072,52 @@ export default function TabelasNegociacaoPage() {
             <input type="checkbox" checked={form.incluir_simulacao} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { incluir_simulacao: e.target.checked }); }); }} />
             Incluir nas simulações
           </label>
+        </div>
+        <div className="sim-form-grid sim-grid-5" style={{ marginTop: 12 }}>
+          <label className="sim-flag">
+            <input
+              type="checkbox"
+              checked={ehTabelaAlternativa}
+              onChange={function(e) {
+                var marcado = e.target.checked;
+                setEhTabelaAlternativa(marcado);
+                if (!marcado) {
+                  setForm(function(p) { return Object.assign({}, p, { tabela_alternativa_de: '', variante_tabela: '' }); });
+                  setTabelasPrincipaisDisponiveis([]);
+                  return;
+                }
+                if (!normalizarTexto(form.transportadora)) return;
+                setCarregandoTabelasPrincipais(true);
+                buscarTabelasPrincipaisDisponiveis({ transportadora: form.transportadora, origem: form.origem })
+                  .then(function(lista) { setTabelasPrincipaisDisponiveis(lista || []); })
+                  .catch(function() { setTabelasPrincipaisDisponiveis([]); })
+                  .finally(function() { setCarregandoTabelasPrincipais(false); });
+              }}
+            />
+            Esta é uma tabela alternativa (ex.: OTR, rodas)
+          </label>
+          {ehTabelaAlternativa ? (
+            <React.Fragment>
+              <label>Tabela principal
+                <select
+                  value={form.tabela_alternativa_de}
+                  onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { tabela_alternativa_de: e.target.value }); }); }}
+                >
+                  <option value="">{carregandoTabelasPrincipais ? 'Carregando…' : 'Selecione a tabela principal'}</option>
+                  {tabelasPrincipaisDisponiveis.map(function(t) {
+                    return <option key={t.id} value={t.id}>{t.transportadora} — {t.origem || 'sem origem'} ({t.status_gestao || t.status})</option>;
+                  })}
+                </select>
+              </label>
+              <label>Rótulo da variante
+                <input
+                  value={form.variante_tabela}
+                  onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { variante_tabela: e.target.value }); }); }}
+                  placeholder='Ex: "OTR / Fora de estrada", "Rodas"'
+                />
+              </label>
+            </React.Fragment>
+          ) : null}
         </div>
         {form.tipo_negociacao === 'REAJUSTE_TABELA_EXISTENTE' ? (
           <div className="sim-form-grid sim-grid-5" style={{ marginTop: 12 }}>

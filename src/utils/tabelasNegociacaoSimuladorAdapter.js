@@ -70,6 +70,15 @@ function numero(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function booleano(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  const normalizado = semAcento(value).toLowerCase();
+  if (['true', '1', 'sim', 's', 'yes', 'y'].includes(normalizado)) return true;
+  if (['false', '0', 'nao', 'n', 'no', ''].includes(normalizado)) return false;
+  return Boolean(value);
+}
+
 function apenasDigitos(value) {
   return texto(value).replace(/\D/g, '');
 }
@@ -200,8 +209,8 @@ export function labelTabelaNegociacaoSimulador(tabela = {}) {
 
 function montarGeneralidades(generalidades = {}) {
   return {
-    incideIcms: Boolean(generalidades.incideIcms),
-    aliquotaIcms: numero(generalidades.aliquotaIcms),
+    incideIcms: booleano(generalidades.incideIcms ?? generalidades.incide_icms),
+    aliquotaIcms: numero(generalidades.aliquotaIcms ?? generalidades.aliquota_icms),
     adValorem: numero(generalidades.adValorem),
     adValoremMinimo: numero(generalidades.adValoremMinimo),
     pedagio: numero(generalidades.pedagio),
@@ -623,6 +632,12 @@ export function converterTabelaNegociacaoParaSimulador(tabela = {}) {
     status: tabela.status,
     origemNegociacao: true,
     incluirSimulacao: Boolean(tabela.incluir_simulacao),
+    // Tabela "alternativa" da mesma transportadora+origem (ex.: OTR/rodas):
+    // quando preenchido, tabelaAlternativaDe aponta pro id da tabela
+    // principal e varianteTabela traz o rótulo livre. Nulo = tabela principal
+    // normal (comportamento padrão, sem alternativas).
+    tabelaAlternativaDe: texto(tabela.tabela_alternativa_de || tabela.tabelaAlternativaDe) || null,
+    varianteTabela: texto(tabela.variante_tabela || tabela.varianteTabela) || null,
     origens,
   };
 }

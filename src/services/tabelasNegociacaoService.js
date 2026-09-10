@@ -731,6 +731,11 @@ const COLUNAS_OPCIONAIS_TABELAS_NEGOCIACAO = [
   'revisao_de_id',
   'revisao_numero',
   'revisao_aberta_id',
+  // Tabela alternativa (migration 20260909120000): mesma transportadora+origem
+  // pode ter mais de uma tabela vigente (ex.: OTR/rodas). Enquanto a migration
+  // nao roda, o insert cai no fallback sem essas colunas.
+  'tabela_alternativa_de',
+  'variante_tabela',
 ];
 
 function erroColunaGestaoAusente(error) {
@@ -922,6 +927,8 @@ export async function criarTabelaNegociacao(payload = {}) {
     status_aprovacao: 'PENDENTE',
     revisao_de_id: texto(payload.revisao_de_id || payload.revisaoDeId) || null,
     revisao_numero: payload.revisao_numero !== undefined ? inteiro(payload.revisao_numero) : null,
+    tabela_alternativa_de: texto(payload.tabela_alternativa_de || payload.tabelaAlternativaDe) || null,
+    variante_tabela: texto(payload.variante_tabela || payload.varianteTabela) || null,
     historico_gestao: [{
       id: `CRIACAO-${Date.now()}`,
       tipo: 'CRIACAO',
@@ -1001,6 +1008,8 @@ export async function atualizarTabelaNegociacao(id, payload = {}) {
     revisao_de_id:             payload.revisao_de_id !== undefined ? texto(payload.revisao_de_id) || null : undefined,
     revisao_numero:            payload.revisao_numero !== undefined ? inteiro(payload.revisao_numero) : undefined,
     revisao_aberta_id:         payload.revisao_aberta_id !== undefined ? texto(payload.revisao_aberta_id) || null : undefined,
+    tabela_alternativa_de:     payload.tabela_alternativa_de !== undefined || payload.tabelaAlternativaDe !== undefined ? texto(payload.tabela_alternativa_de || payload.tabelaAlternativaDe) || null : undefined,
+    variante_tabela:           payload.variante_tabela !== undefined || payload.varianteTabela !== undefined ? texto(payload.variante_tabela || payload.varianteTabela) || null : undefined,
     percentual_medio_impacto:  payload.percentual_medio_impacto !== undefined ? numero(payload.percentual_medio_impacto) : undefined,
     origem_importacao:         payload.origem_importacao !== undefined ? texto(payload.origem_importacao) : undefined,
     generalidades:             payload.generalidades !== undefined ? payload.generalidades : undefined,
@@ -1428,6 +1437,38 @@ export async function listarNegociacoesDaTransportadora({ transportadora, canal,
     encerradas: lista.filter(negociacaoEncerrada),
     total: lista.length,
   };
+}
+
+// Candidatas a "tabela principal" para marcar uma nova tabela como alternativa
+// dela: mesma transportadora + mesma origem, que ainda não seja ela própria
+// uma alternativa (tabela_alternativa_de is null). Usado no formulário de
+// cadastro para popular o dropdown "esta é alternativa de qual tabela?".
+export async function buscarTabelasPrincipaisDisponiveis({ transportadora, origem, excluirId } = {}) {
+  const supabase = supabaseOrThrow();
+  const nome = texto(transportadora);
+  if (!nome) return [];
+
+  let query = supabase
+    .from('tabelas_negociacao')
+    .select('id,transportadora,canal,origem,uf_origem,status,status_gestao,variante_tabela,tabela_alternativa_de,criado_em')
+    .ilike('transportadora', nome)
+    .is('tabela_alternativa_de', null)
+    .order('criado_em', { ascending: false })
+    .limit(200);
+
+  const { data, error } = await query;
+  if (error) {
+    // Coluna ainda não existe (migration pendente): sem candidatas, sem quebrar a tela.
+    if (String(error.message || '').toLowerCase().includes('column')) return [];
+    throw new Error(error.message || 'Erro ao buscar tabelas principais disponíveis.');
+  }
+
+  const origemNorm = upper(texto(origem));
+  return (data || []).filter((tabela) => {
+    if (excluirId && tabela.id === excluirId) return false;
+    if (origemNorm && upper(texto(tabela.origem)) !== origemNorm) return false;
+    return true;
+  });
 }
 
 // Revisão de uma tabela JÁ PUBLICADA (ex.: transportadora que já está
@@ -1889,7 +1930,16 @@ async function listarTaxasDestinoTabelaPorRecorte(tabelaId, recorte = {}) {
 }
 
 const COLUNAS_CAPA_NEGOCIACAO_SIMULACAO =
-  'id,transportadora,canal,tipo_tabela,tipo_negociacao,status,descricao,regiao,origem,uf_origem,uf_destino,data_recebimento,data_inicio_prevista,data_inicio_vigencia,incluir_simulacao,observacao,origem_importacao,generalidades,resumo_capa,criado_em,atualizado_em,saving_projetado,aderencia_projetada,faturamento_projetado,impacto_projetado,percentual_frete_projetado,volumetria_dia,ctes_analisados,ctes_atendidos,rotas_sem_cobertura,substituir_tabela_anterior,tabela_base_id,transportadora_base_nome,percentual_medio_impacto';
+  'id,transportadora,canal,tipo_tabela,tipo_negociacao,status,descricao,regiao,origem,uf_origem,uf_destino,data_recebimento,data_inicio_prevista,data_inicio_vigencia,incluir_simulacao,observacao,origem_importacao,generalidades,resumo_capa,criado_em,atualizado_em,saving_projetado,aderencia_projetada,faturamento_projetado,impacto_projetado,percentual_frete_projetado,volumetria_dia,ctes_analisados,ctes_atendidos,rotas_sem_cobertura,substituir_tabela_anterior,tabela_base_id,transportadora_base_nome,percentual_medio_impacto,tabela_alternativa_de,variante_tabela';
+
+// Removidos junto do fallback de resumo_capa quando as colunas de alternativa
+// (migration 20260909120000) ainda não existem no banco.
+function removerColunasAlternativaDoSelect(cols) {
+  return cols
+    .split(',')
+    .filter((coluna) => coluna !== 'tabela_alternativa_de' && coluna !== 'variante_tabela')
+    .join(',');
+}
 
 // Lista LEVE: apenas as capas das negociações elegíveis à simulação.
 // Não carrega itens/rotas/taxas — é uma única query rápida usada para
@@ -1914,6 +1964,12 @@ export async function listarCapasNegociacaoParaSimulacao(filtros = {}) {
   // Fallback: ambiente sem a coluna resumo_capa (migration nao rodada).
   if (error && erroColunaResumoCapaAusente(error)) {
     ({ data, error } = await montarQuery(removerResumoCapaDoSelect(COLUNAS_CAPA_NEGOCIACAO_SIMULACAO)));
+  }
+
+  // Fallback: ambiente sem tabela_alternativa_de/variante_tabela (migration
+  // 20260909120000 ainda nao rodada nesse banco).
+  if (error && String(error.message || '').toLowerCase().includes('column')) {
+    ({ data, error } = await montarQuery(removerColunasAlternativaDoSelect(COLUNAS_CAPA_NEGOCIACAO_SIMULACAO)));
   }
 
   if (error) throw new Error(error.message || 'Erro ao buscar lista de negociações para simulação.');
