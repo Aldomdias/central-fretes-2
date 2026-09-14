@@ -1742,7 +1742,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         </label>
       </div>
       <table className="sim-analise-tabela">
-        <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th>Peso</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Motivo</th><th>Status</th></tr></thead>
+        <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th>Peso</th><th>Valor NF</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Motivo</th><th>Status</th></tr></thead>
         <tbody>
           {lista.map((item) => {
             const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte))
@@ -1764,6 +1764,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base ? <small>{base.cidade_origem || '?'}/{base.uf_origem || '?'} → {base.cidade_destino || '?'}/{base.uf_destino || '?'}</small> : <small className="error-text">Fora da base</small>}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base?.canal || '-'}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base?.peso || item.peso ? Number(base?.peso || item.peso).toLocaleString('pt-BR') : '-'}</td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{numeroValorNfAuditoria(item, base) > 0 ? dinheiro(numeroValorNfAuditoria(item, base)) : '-'}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{dinheiro(item.valor_frete)}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{Number(item.calculado_frete_verum || 0) ? dinheiro(item.calculado_frete_verum) : 'Sem calculo'}</td>
                   <td style={{ cursor: 'pointer' }} className={Number(item.diferenca_verum || 0) ? 'negativo' : ''} onClick={() => alternarDetalheCte(item)}>{Number(item.calculado_frete_verum || 0) ? dinheiro(item.diferenca_verum) : '-'}</td>
@@ -1774,7 +1775,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                 </tr>
                 {expandido && (
                   <tr>
-                    <td colSpan="13" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
+                    <td colSpan="14" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
                       <div className="hint-box compact" style={{ marginBottom: 10, borderColor: semValorNf ? '#fdba74' : '#dbe3ef', background: semValorNf ? '#fff7ed' : '#f8fafc' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                           <strong>{semValorNf ? 'CT-e sem valor NF identificado.' : 'Ajustes manuais do CT-e'}</strong>
