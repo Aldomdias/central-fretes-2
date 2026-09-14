@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { assinarUsuariosAtivos, listarHistoricoAcessos, presencaDisponivel } from '../services/presencaService';
-import { listarProcessamentosPesados, carregarConfiguracaoFila } from '../services/processamentoFilaService';
+import {
+  carregarConfiguracaoFila,
+  finalizarTarefaPesadaAdmin,
+  listarProcessamentosPesados,
+} from '../services/processamentoFilaService';
 
 function formatarDataHora(valor) {
   if (!valor) return '-';
@@ -28,7 +32,15 @@ export default function PainelUsuariosAtivosPage() {
   const [carregandoHistorico, setCarregandoHistorico] = useState(false);
   const [processamentos, setProcessamentos] = useState([]);
   const [erroFila, setErroFila] = useState('');
+  const [mensagemFila, setMensagemFila] = useState('');
+  const [cancelandoId, setCancelandoId] = useState('');
   const [configFila, setConfigFila] = useState({ orcamentoItens: null, limiteTarefasGlobais: 2 });
+
+  const carregarFila = async () => {
+    const linhas = await listarProcessamentosPesados({ limite: 300 });
+    setProcessamentos(linhas);
+    setErroFila('');
+  };
 
   useEffect(() => {
     const cancelar = assinarUsuariosAtivos(setUsuarios);
@@ -42,7 +54,7 @@ export default function PainelUsuariosAtivosPage() {
 
   useEffect(() => {
     let ativo = true;
-    const carregarFila = async () => {
+    const atualizarFila = async () => {
       try {
         const linhas = await listarProcessamentosPesados({ limite: 300 });
         if (ativo) { setProcessamentos(linhas); setErroFila(''); }
@@ -50,10 +62,32 @@ export default function PainelUsuariosAtivosPage() {
         if (ativo) setErroFila(error.message || 'Fila indisponível.');
       }
     };
-    carregarFila();
-    const timer = window.setInterval(carregarFila, 10000);
+    atualizarFila();
+    const timer = window.setInterval(atualizarFila, 10000);
     return () => { ativo = false; window.clearInterval(timer); };
   }, []);
+
+  const cancelarProcesso = async (tarefa) => {
+    const motivo = window.prompt(
+      `Motivo para cancelar "${tarefa.titulo}"?\n\nO histórico será preservado e a vaga da fila será liberada.`,
+      'Processo encerrado pelo administrador',
+    );
+    if (!motivo?.trim()) return;
+    if (!window.confirm(`Cancelar este processo agora?\n\n${tarefa.titulo}\nUsuário: ${tarefa.usuario_nome || tarefa.usuario_email || '-'}\nProgresso: ${tarefa.itens_processados || 0}/${tarefa.total_itens || '?'}\n\nO status ficará como CANCELADO.`)) return;
+
+    setCancelandoId(tarefa.id);
+    setErroFila('');
+    setMensagemFila('');
+    try {
+      await finalizarTarefaPesadaAdmin(tarefa.id, motivo);
+      setMensagemFila(`Processo "${tarefa.titulo}" cancelado. A vaga da fila foi liberada.`);
+      await carregarFila();
+    } catch (error) {
+      setErroFila(error.message || 'Não foi possível cancelar o processo.');
+    } finally {
+      setCancelandoId('');
+    }
+  };
 
   useEffect(() => {
     let ativo = true;
@@ -188,6 +222,7 @@ export default function PainelUsuariosAtivosPage() {
         Atualização automática a cada 10 segundos. Ajuste em Ferramentas → Fila de processamento pesado.
       </p>
       {erroFila && <div style={{ padding: 10, borderRadius: 8, background: '#fef2f2', color: '#b91c1c' }}>{erroFila}</div>}
+      {mensagemFila && <div style={{ padding: 10, borderRadius: 8, background: '#dcfce7', color: '#166534', marginTop: 8 }}>{mensagemFila}</div>}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '12px 0' }}>
         <span style={{ padding: '5px 10px', borderRadius: 999, background: '#dcfce7', color: '#166534', fontWeight: 700 }}>
           {filaAtiva.filter((item) => item.status === 'PROCESSANDO').length}/{configFila.limiteTarefasGlobais} processando
@@ -197,9 +232,9 @@ export default function PainelUsuariosAtivosPage() {
         </span>
       </div>
       <table className="tabela-simples" style={{ width: '100%', marginTop: 12 }}>
-        <thead><tr><th>Estado</th><th>Usuário</th><th>Tarefa</th><th>Progresso</th><th>Início</th></tr></thead>
+        <thead><tr><th>Estado</th><th>Usuário</th><th>Tarefa</th><th>Progresso</th><th>Início</th><th>Ação</th></tr></thead>
         <tbody>
-          {!filaAtiva.length && <tr><td colSpan={5} style={{ padding: '16px 0', color: '#64748b' }}>Nenhuma tarefa pesada ativa.</td></tr>}
+          {!filaAtiva.length && <tr><td colSpan={6} style={{ padding: '16px 0', color: '#64748b' }}>Nenhuma tarefa pesada ativa.</td></tr>}
           {filaAtiva.map((item) => {
             const total = Number(item.total_itens || 0);
             const feitos = Number(item.itens_processados || 0);
@@ -209,6 +244,16 @@ export default function PainelUsuariosAtivosPage() {
               <td>{item.titulo}<div style={{ fontSize: 12, color: '#64748b' }}>{item.tipo}</div></td>
               <td>{total ? `${feitos.toLocaleString('pt-BR')}/${total.toLocaleString('pt-BR')}` : feitos.toLocaleString('pt-BR')}<div style={{ fontSize: 12, color: '#64748b' }}>lote {item.lote_atual || 0}/{item.total_lotes || '?'}</div></td>
               <td>{formatarDataHora(item.iniciado_em || item.criado_em)}</td>
+              <td>
+                <button
+                  type="button"
+                  onClick={() => cancelarProcesso(item)}
+                  disabled={Boolean(cancelandoId)}
+                  style={{ padding: '7px 11px', borderRadius: 8, border: '1px solid #b91c1c', background: '#fff', color: '#b91c1c', fontWeight: 700, whiteSpace: 'nowrap', cursor: cancelandoId ? 'default' : 'pointer', opacity: cancelandoId && cancelandoId !== item.id ? 0.55 : 1 }}
+                >
+                  {cancelandoId === item.id ? 'Cancelando...' : 'Cancelar processo'}
+                </button>
+              </td>
             </tr>;
           })}
         </tbody>

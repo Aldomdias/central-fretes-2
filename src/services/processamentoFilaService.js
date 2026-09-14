@@ -192,13 +192,40 @@ export async function finalizarTarefaPesadaAdmin(id, motivo) {
   const supabase = cliente();
   if (!supabase) throw new Error('Supabase nao configurado.');
   const admin = administradorAtual();
+  const motivoLimpo = String(motivo || '').trim();
   const { data, error } = await supabase.rpc('finalizar_tarefa_pesada_admin', {
     p_id: id,
     p_admin_id: admin.id,
     p_admin_email: admin.email,
-    p_motivo: String(motivo || '').trim(),
+    p_motivo: motivoLimpo,
   });
-  if (error) throw new Error(`Nao foi possivel finalizar a tarefa: ${error.message}`);
+  if (error) {
+    const rpcAusente = error.code === 'PGRST202'
+      || /could not find the function|schema cache/i.test(error.message || '');
+    if (!rpcAusente) throw new Error(`Nao foi possivel finalizar a tarefa: ${error.message}`);
+
+    // Compatibilidade com ambientes em que a migration da RPC administrativa
+    // ainda nao foi aplicada. A tabela original ja permite update e estas
+    // colunas existem desde a criacao da fila.
+    const agora = new Date().toISOString();
+    const { data: atualizada, error: erroUpdate } = await supabase
+      .from('processamentos_pesados')
+      .update({
+        status: 'CANCELADO',
+        erro: `Finalizada administrativamente: ${motivoLimpo}`,
+        finalizado_em: agora,
+        heartbeat_em: agora,
+        atualizado_em: agora,
+      })
+      .eq('id', id)
+      .in('status', ['PROCESSANDO', 'AGUARDANDO'])
+      .select('*')
+      .maybeSingle();
+    if (erroUpdate) throw new Error(`Nao foi possivel cancelar a tarefa: ${erroUpdate.message}`);
+    if (!atualizada) throw new Error('A tarefa nao esta mais ativa. Atualize a pagina para conferir o status.');
+    tarefasCanceladas.add(id);
+    return atualizada;
+  }
   tarefasCanceladas.add(id);
   return Array.isArray(data) ? data[0] : data;
 }
