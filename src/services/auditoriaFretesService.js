@@ -270,16 +270,14 @@ export async function buscarReferenciaCtes(chaves = []) {
   const client = getSupabaseClient();
   for (let inicio = 0; inicio < normalizadas.length; inicio += 200) {
     const lote = normalizadas.slice(inicio, inicio + 200);
-    let { data, error } = await client
+    const { data, error } = await client
       .from('auditoria_cte_resultados')
-      .select('chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, detalhes_calculo, updated_at')
+      // A listagem precisa apenas do resumo. `detalhes_calculo` pode conter a
+      // memória completa e comparativos de tabelas; transferi-lo para todos os
+      // CT-es fazia até uma fatura de 6 itens exceder 12 s. O JSON completo é
+      // buscado sob demanda quando o usuário abre o detalhe de um CT-e.
+      .select('chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at')
       .in('chave_cte', lote);
-    if (error && String(error.message || '').includes('detalhes_calculo')) {
-      ({ data, error } = await client
-        .from('auditoria_cte_resultados')
-        .select('chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at')
-        .in('chave_cte', lote));
-    }
     if (error) break;
     // Podem existir registros duplicados pra mesma chave/competencia (recalculos
     // antigos que inseriram em vez de atualizar) — sempre ficar com o mais
