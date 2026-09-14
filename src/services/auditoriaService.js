@@ -694,6 +694,7 @@ export async function salvarRecorteCarregadoAuditoria({
   competencia = '',
   registros = [],
   usarRecorteComoResumo = false,
+  atualizarResumoMensal = true,
   onProgress,
 } = {}) {
   if (!isSupabaseConfigured()) {
@@ -772,7 +773,10 @@ export async function salvarRecorteCarregadoAuditoria({
   let atualizados = 0;
   let processados = 0;
 
-  await executarComConcorrenciaAuditoria(linhasResultado, 10, async (linha) => {
+  // Evita rajadas de UPDATEs concorrentes contra o PostgREST/Supabase. Três
+  // gravações simultâneas mantêm vazão sem disputar conexões com simulações e
+  // outras auditorias abertas por usuários diferentes.
+  await executarComConcorrenciaAuditoria(linhasResultado, 3, async (linha) => {
     const idExistente = (linha.chave_cte && existentesPorChave.get(`${linha.chave_cte}|${linha.competencia}`))
       || (!linha.chave_cte && linha.numero_cte ? existentesPorNumero.get(`${linha.numero_cte}|${linha.competencia}`) : null);
     if (idExistente) {
@@ -794,6 +798,25 @@ export async function salvarRecorteCarregadoAuditoria({
     if (error) {
       throw new Error(`Erro ao inserir novos registros da auditoria: ${error.message}`);
     }
+  }
+
+  // Ao recalcular uma unica fatura, os resultados detalhados precisam ser
+  // persistidos imediatamente, mas reler todo o mes (que pode ter centenas de
+  // milhares de CT-es) deixa a tela parada em 100%. O resumo mensal pode ser
+  // atualizado no fluxo mensal; a fatura usa apenas os registros detalhados.
+  if (!atualizarResumoMensal) {
+    onProgress?.({ etapa: 'concluido', carregados: linhasResultado.length, total: linhasResultado.length });
+    return {
+      registros: linhasResultado,
+      resumo: null,
+      atualizados,
+      inseridos: paraInserir.length,
+      fonte: {
+        id: 'auditoria_cte_resultados',
+        tabela: 'auditoria_cte_resultados',
+        label: 'Auditoria salva (merge da fatura) / auditoria_cte_resultados',
+      },
+    };
   }
 
   // Atualizações pontuais continuam recalculando o mês salvo inteiro para não

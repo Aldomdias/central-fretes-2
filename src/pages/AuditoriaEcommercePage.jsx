@@ -1086,7 +1086,7 @@ export default function AuditoriaEcommercePage() {
     setCarregando(true);
     setErro('');
     setMensagem('');
-    setProgressoAmd({ etapa: 'verificando_existentes', carregados: 0, total: null });
+    setProgressoAmd({ etapa: 'verificando_pedidos_existentes', carregados: 0, total: null });
     const totalAntes = diagnostico.total || 0;
     try {
       const texto = await arquivo.text();

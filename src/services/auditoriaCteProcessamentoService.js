@@ -225,15 +225,12 @@ export async function buscarResultadoAuditoriaPorChave(chaveCte) {
   const { data, error } = await supabase
     .from(TABELA_RESULTADOS)
     .select('*')
-    .eq('chave_cte', chave);
+    .eq('chave_cte', chave)
+    .order('updated_at', { ascending: false })
+    .limit(1);
   if (error) throw new Error(`Erro ao buscar resultado da auditoria: ${error.message}`);
   if (!data || !data.length) return null;
-  return data.reduce((maisRecente, atual) => {
-    if (!maisRecente) return atual;
-    const tAtual = new Date(atual.updated_at || 0).getTime();
-    const tRecente = new Date(maisRecente.updated_at || 0).getTime();
-    return tAtual >= tRecente ? atual : maisRecente;
-  }, null);
+  return data[0];
 }
 
 export async function buscarResultadosAuditoriaPorIdentificadores(identificadores = [], onProgress) {
@@ -359,33 +356,34 @@ function getCotacaoPorRota(origem, rota, peso, cte = {}) {
   const ibgeDestino = pickDigits(cte, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino', 'ibge_corrigido_destino']) || onlyDigits(rota?.ibgeDestino).slice(0, 7);
   const ibgePrefixo = ibgeDestino.slice(0, 2);
   const pesoFinal = toNumber(peso);
-
-  const cotacoes = (origem?.cotacoes || []).filter((item) => {
-    const rotaCotacao = normalizeCompare(item.rota);
-    const rotaOk = !rotaCotacao
-      || rotaCotacao === rotaNorm
-      || rotaCotacao.includes(rotaNorm)
-      || rotaNorm.includes(rotaCotacao)
-      || (ufDestinoNorm && rotaCotacao === ufDestinoNorm)
-      || (ibgePrefixo && rotaCotacao === ibgePrefixo);
-
-    if (!rotaOk) return false;
-
+  const dentroDoPeso = (item) => {
     const pesoMin = toNumber(item.pesoMin ?? item.peso_min ?? 0);
     const pesoMaxRaw = item.pesoMax ?? item.pesoLimite ?? item.peso_max ?? item.peso_limite;
     const pesoMax = pesoMaxRaw === '' || pesoMaxRaw === null || pesoMaxRaw === undefined
       ? Number.POSITIVE_INFINITY
       : toNumber(pesoMaxRaw);
-
     return pesoFinal >= pesoMin && pesoFinal <= (pesoMax || Number.POSITIVE_INFINITY);
-  });
-
-  if (!cotacoes.length) return null;
-
-  return cotacoes.sort((a, b) => (
+  };
+  const ordenarPorFaixa = (cotacoes) => [...cotacoes].sort((a, b) => (
     toNumber(a.pesoMax ?? a.pesoLimite ?? a.peso_max ?? a.peso_limite)
     - toNumber(b.pesoMax ?? b.pesoLimite ?? b.peso_max ?? b.peso_limite)
-  ))[0];
+  ))[0] || null;
+  const cotacoesNoPeso = (origem?.cotacoes || []).filter(dentroDoPeso);
+
+  // A rota nominal exata sempre vence. Isso impede SUL II de fornecer o
+  // percentual para SUL III e impede uma cotacao generica de passar na frente.
+  const exatas = cotacoesNoPeso.filter((item) => normalizeCompare(item.rota) === rotaNorm);
+  if (exatas.length) return ordenarPorFaixa(exatas);
+
+  const porCodigoDestino = cotacoesNoPeso.filter((item) => {
+    const rotaCotacao = normalizeCompare(item.rota);
+    return (ufDestinoNorm && rotaCotacao === ufDestinoNorm)
+      || (ibgePrefixo && rotaCotacao === ibgePrefixo);
+  });
+  if (porCodigoDestino.length) return ordenarPorFaixa(porCodigoDestino);
+
+  const genericas = cotacoesNoPeso.filter((item) => !normalizeCompare(item.rota));
+  return ordenarPorFaixa(genericas);
 }
 
 function getTipoCalculo(origem = {}, cotacao = {}) {
@@ -894,11 +892,9 @@ export function escolherMelhorTabela(candidatos = [], valorReferencia = 0) {
     .sort((a, b) => a.divergencia - b.divergencia)[0];
 }
 
-// Agrupa as entradas do array `transportadoras` (uma por tabela/negociação)
-// que pertencem à mesma transportadora, juntando cada alternativa (
-// tabelaAlternativaDe preenchido) com sua tabela principal correspondente.
-// Retorna um array de grupos (cada grupo é um array com >= 1 entrada); só
-// grupos com mais de 1 entrada representam de fato tabela principal + alternativas.
+// Agrupa SOMENTE tabelas explicitamente vinculadas como principal/alternativa.
+// Ter o mesmo nome de transportadora não cria vínculo: cadastros independentes
+// não podem participar do mesmo cálculo nem do seletor de alternativas.
 function agruparTabelasAlternativasPorTransportadora(transportadoras = [], transportadoraNome = '') {
   const doGrupo = (transportadoras || []).filter((t) => nomeCompativel(t.nome, transportadoraNome) || t.nome === transportadoraNome);
   if (doGrupo.length <= 1) return [];
@@ -922,8 +918,11 @@ function agruparTabelasAlternativasPorTransportadora(transportadoras = [], trans
 // Roda o motor simulador isolando UMA única tabela (transportadora-entrada),
 // pra medir o valor que ela daria pro mesmo CT-e — usado pra comparar tabela
 // principal x alternativas.
-function calcularValorParaTabelaEspecifica(cte, tabelaEntry, canaisTentativa, cidadePorIbge, opcoes) {
-  const tentativasCte = [cte, inverterOrigemDestinoCte(cte)];
+function calcularValorParaTabelaEspecifica(cte, tabelaEntry, canaisTentativa, cidadePorIbge, opcoes, usarRotaInvertida = false) {
+  // Uma alternativa sem a rota direta não pode virar candidata usando a rota
+  // contrária. A inversão só é válida quando o cálculo principal já confirmou
+  // que este CT-e está sendo tratado pelo fluxo de devolução.
+  const tentativasCte = [usarRotaInvertida ? inverterOrigemDestinoCte(cte) : cte];
   for (let tentativaIndex = 0; tentativaIndex < tentativasCte.length; tentativaIndex += 1) {
     const cteTentativa = tentativasCte[tentativaIndex];
     for (const canal of canaisTentativa) {
@@ -949,25 +948,35 @@ function calcularValorParaTabelaEspecifica(cte, tabelaEntry, canaisTentativa, ci
 // Calcula o comparativo entre a tabela vencedora (que já gerou `detalheVencedor`)
 // e suas tabelas alternativas (se houver), pra Auditoria sugerir a mais próxima
 // do valor pago no CT-e sem perder a possibilidade de escolha manual na UI.
-function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, detalheVencedor, canaisTentativa, cidadePorIbge, opcoes) {
+function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, detalheVencedor, canaisTentativa, cidadePorIbge, opcoes, usarRotaInvertida = false) {
   const grupos = agruparTabelasAlternativasPorTransportadora(transportadoras, transportadoraTabela);
   if (!grupos.length) return null;
 
-  // Só existe uma transportadora envolvida aqui (transportadoraTabela), então
-  // na prática há no máximo um grupo relevante; se houver mais de um (várias
-  // origens com famílias diferentes), usamos o primeiro — a granularidade fina
-  // por origem é refinamento futuro, não muda o comportamento sem alternativas.
-  const grupoAlvo = grupos[0];
+  // Pode haver mais de uma família vinculada para o mesmo nome. Compara apenas
+  // a família da tabela que realmente venceu o cálculo principal.
+  const tabelaVencedoraId = String(
+    detalheVencedor?.tabelaId
+      || detalheVencedor?.detalhes?.tabelaId
+      || detalheVencedor?.detalhes?.frete?.tabelaId
+      || '',
+  );
+  const grupoAlvo = grupos.find((grupo) => grupo.some((entrada) => (
+    String(entrada.negociacaoId || entrada.id || '') === tabelaVencedoraId
+  ))) || (grupos.length === 1 ? grupos[0] : null);
   if (!grupoAlvo || grupoAlvo.length <= 1) return null;
 
   const valorCtePago = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
   const candidatos = grupoAlvo.map((entrada) => {
-    const detalhe = calcularValorParaTabelaEspecifica(cte, entrada, canaisTentativa, cidadePorIbge, opcoes);
+    const detalhe = calcularValorParaTabelaEspecifica(cte, entrada, canaisTentativa, cidadePorIbge, opcoes, usarRotaInvertida);
     if (!detalhe) return null;
     const valorCalculado = toNumber(detalhe.valorSimulado);
     return {
       tabelaId: entrada.negociacaoId || entrada.id,
-      variante: entrada.varianteTabela || (entrada.tabelaAlternativaDe ? 'Alternativa' : 'Principal'),
+      variante: entrada.varianteTabela
+        || entrada.tabelaNome
+        || entrada.nomeTabela
+        || entrada.descricaoTabela
+        || (entrada.tabelaAlternativaDe ? 'Alternativa' : 'Principal'),
       principal: !entrada.tabelaAlternativaDe,
       transportadoraNome: entrada.nome,
       valorCalculado,
@@ -1032,6 +1041,9 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
     transportadora_tabela: detalhe.transportadoraSimulada || transportadoraTabela,
     tipo_calculo: detalhe.detalhes?.frete?.tipoCalculo || null,
     detalhes_calculo: {
+      tabela_id_aplicada: detalhe.tabelaId || null,
+      tabela_nome_aplicada: detalhe.tabelaNome || 'Principal',
+      tabela_principal_aplicada: detalhe.tabelaPrincipal !== false,
       origem_cidade: detalhe.origem || null,
       rota_nome: detalhe.detalhes?.frete?.rotaNome || detalhe.detalhes?.rotaNome || null,
       rota_prazo: detalhe.detalhes?.prazo ?? null,
@@ -1071,7 +1083,7 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
   // com todas e sugere (sem forçar) a mais próxima do valor pago no CT-e. Só
   // roda quando existe de fato mais de uma tabela pra transportadora — CT-e sem
   // alternativas cadastradas sai byte-a-byte igual a antes desta mudança.
-  const comparativoTabelas = montarComparativoTabelas(cte, transportadoras, transportadoraTabela, detalhe, canaisTentativa, cidadePorIbge, opcoes);
+  const comparativoTabelas = montarComparativoTabelas(cte, transportadoras, transportadoraTabela, detalhe, canaisTentativa, cidadePorIbge, opcoes, calculoInvertido);
   if (!comparativoTabelas) return resultado;
 
   const { candidatos, melhor } = comparativoTabelas;
@@ -1079,8 +1091,24 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
     tabela_id: c.tabelaId,
     variante: c.variante,
     principal: c.principal,
+    transportadora_tabela: c.detalhe?.transportadoraSimulada || c.transportadoraNome,
+    tabela_nome: c.detalhe?.tabelaNome || c.variante,
+    tipo_calculo: c.detalhe?.detalhes?.frete?.tipoCalculo || null,
     valor_calculado: c.valorCalculado,
     divergencia: c.divergencia,
+    origem_cidade: c.detalhe?.origem || null,
+    rota_nome: c.detalhe?.detalhes?.frete?.rotaNome || c.detalhe?.detalhes?.rotaNome || null,
+    peso_considerado: c.detalhe?.detalhes?.frete?.pesoConsiderado ?? c.detalhe?.peso,
+    valor_base: c.detalhe?.detalhes?.frete?.valorBase,
+    subtotal: c.detalhe?.detalhes?.frete?.subtotal,
+    icms: c.detalhe?.detalhes?.frete?.icms,
+    aliquota_icms: c.detalhe?.detalhes?.frete?.aliquotaIcms,
+    origem_aliquota_icms: c.detalhe?.detalhes?.frete?.origemAliquotaIcms,
+    uf_origem_icms: c.detalhe?.detalhes?.frete?.ufOrigem,
+    uf_destino_icms: c.detalhe?.detalhes?.frete?.ufDestino,
+    taxas: c.detalhe?.detalhes?.taxas,
+    componentes_base: c.detalhe?.detalhes?.frete,
+    componente_base: c.detalhe?.detalhes?.frete?.componenteBase,
   }));
 
   const diferencaAtual = diferencaAbs;
@@ -1121,6 +1149,9 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
       taxas: detalheMelhor.detalhes?.taxas,
       componentes_base: detalheMelhor.detalhes?.frete,
       componente_base: detalheMelhor.detalhes?.frete?.componenteBase,
+      tabela_id_aplicada: melhor.tabelaId || detalheMelhor.tabelaId || null,
+      tabela_nome_aplicada: melhor.variante || detalheMelhor.tabelaNome || 'Principal',
+      tabela_principal_aplicada: melhor.principal,
       comparativo_tabelas: candidatosResumo,
       melhor_comparativo_tabela: melhor.variante || '',
       tabela_alternativa_aplicada: melhor.variante || '',
@@ -1320,10 +1351,24 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
       ? calcularFreteFaixaPeso({ rota, cotacao, generalidades, taxaDestino, pesoKg: peso, valorNf, documentoDestinatario })
       : calcularFretePercentual({ rota, cotacao, generalidades, taxaDestino, pesoKg: peso, valorNf, documentoDestinatario });
 
+    const tabelaIdAplicada = transportadora.negociacaoId || transportadora.id || null;
+    const tabelaNomeAplicada = transportadora.varianteTabela
+      || transportadora.tabelaNome
+      || transportadora.nomeTabela
+      || transportadora.descricaoTabela
+      || (transportadora.tabelaAlternativaDe ? 'Alternativa' : 'Principal');
+    const percentualCotacao = toNumber(cotacao.percentual || cotacao.fretePercentual);
+    const valorPercentualCalculado = toNumber(calculo.componentesBase?.valorPercentual);
+    const percentualAplicado = percentualCotacao > 0
+      ? percentualCotacao
+      : (valorNf > 0 && valorPercentualCalculado > 0 ? (valorPercentualCalculado / valorNf) * 100 : 0);
     const base = montarResultadoBase(cte, 'CALCULADO', '', {
       transportadora_tabela: transportadora.nome,
       tipo_calculo: tipoCalculo,
       detalhes_calculo: {
+        tabela_id_aplicada: tabelaIdAplicada,
+        tabela_nome_aplicada: tabelaNomeAplicada,
+        tabela_principal_aplicada: !transportadora.tabelaAlternativaDe,
         origem_id: origem.id || null,
         origem_cidade: origem.cidade || null,
         rota_id: rota.id || null,
@@ -1345,6 +1390,14 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
         // taxa emergencial, so o motor simulador salvava.
         componentes_base: {
           ...calculo.componentesBase,
+          tipoCalculo,
+          percentualAplicado,
+          valorPercentualCalculado,
+          rsKgAplicado: toNumber(cotacao.rsKg || cotacao.excesso || cotacao.excessoPeso),
+          valorFixoAplicado: toNumber(cotacao.valorFixo || cotacao.taxaAplicada),
+          valorNFInformado: valorNf,
+          pesoConsiderado: peso,
+          rotaNome: rota.nomeRota || null,
           subtotalSemEmergencial: calculo.subtotalSemEmergencial,
           taxaEmergencialPct: calculo.taxaEmergencialPct,
           valorEmergencial: calculo.valorEmergencial,
@@ -1363,13 +1416,73 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
     const diferencaAbs = Math.abs(diferenca);
     const percentualDiferenca = valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0;
 
-    return {
+    const resultadoDireto = {
       ...base,
       valor_calculado: valorCalculado,
       diferenca,
       diferenca_abs: diferencaAbs,
       percentual_diferenca: percentualDiferenca,
       motivo_sem_calculo: '',
+    };
+
+    // O motor de contingencia (usado inclusive quando o CT-e vem sem peso)
+    // tambem precisa comparar cada tabela da mesma transportadora isoladamente.
+    // Chamar processarCte com uma unica entrada nao recursa: nao ha comparativo
+    // quando o array possui apenas uma tabela.
+    const nomeAlvo = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
+    const gruposVinculados = agruparTabelasAlternativasPorTransportadora(transportadoras, nomeAlvo);
+    const tabelaAtualId = String(transportadora.negociacaoId || transportadora.id || '');
+    const entradasVinculadas = gruposVinculados.find((grupo) => grupo.some((entrada) => (
+      String(entrada.negociacaoId || entrada.id || '') === tabelaAtualId
+    )));
+    if (!entradasVinculadas?.length) return resultadoDireto;
+
+    const candidatos = entradasVinculadas.map((entrada) => {
+      const calculadoTabela = processarCte(cteCalculo, [entrada], mapaVinculos, entrada.nome, opcoes);
+      if (calculadoTabela?.status_calculo !== 'CALCULADO' || !(Number(calculadoTabela.valor_calculado) > 0)) return null;
+      if (calculadoTabela.detalhes_calculo?.calculo_devolucao_invertida) return null;
+      const detalhesTabela = calculadoTabela.detalhes_calculo || {};
+      const nomeTabela = detalhesTabela.tabela_nome_aplicada
+        || entrada.varianteTabela
+        || entrada.tabelaNome
+        || entrada.nomeTabela
+        || entrada.descricaoTabela
+        || (entrada.tabelaAlternativaDe ? 'Alternativa' : 'Principal');
+      return {
+        tabela_id: detalhesTabela.tabela_id_aplicada || entrada.negociacaoId || entrada.id,
+        tabela_nome: nomeTabela,
+        variante: nomeTabela,
+        principal: !entrada.tabelaAlternativaDe,
+        valor_calculado: Number(calculadoTabela.valor_calculado),
+        divergencia: Math.abs(Number(cte.valor_cte ?? cte.valorCte ?? cte.valor_frete ?? 0) - Number(calculadoTabela.valor_calculado)),
+        origem_cidade: detalhesTabela.origem_cidade,
+        rota_nome: detalhesTabela.rota_nome,
+        peso_considerado: detalhesTabela.peso_considerado,
+        valor_base: detalhesTabela.valor_base,
+        subtotal: detalhesTabela.subtotal,
+        icms: detalhesTabela.icms,
+        aliquota_icms: detalhesTabela.aliquota_icms,
+        origem_aliquota_icms: detalhesTabela.origem_aliquota_icms,
+        uf_origem_icms: detalhesTabela.uf_origem_icms,
+        uf_destino_icms: detalhesTabela.uf_destino_icms,
+        taxas: detalhesTabela.taxas,
+        componentes_base: detalhesTabela.componentes_base,
+        componente_base: detalhesTabela.componente_base,
+        resultado: calculadoTabela,
+      };
+    }).filter(Boolean);
+    if (candidatos.length <= 1) return resultadoDireto;
+
+    const melhor = candidatos.toSorted((a, b) => a.divergencia - b.divergencia)[0];
+    const escolhido = melhor?.resultado || resultadoDireto;
+    return {
+      ...escolhido,
+      detalhes_calculo: {
+        ...(escolhido.detalhes_calculo || {}),
+        comparativo_tabelas: candidatos.map(({ resultado: _resultado, ...resumo }) => resumo),
+        melhor_comparativo_tabela: melhor?.tabela_nome || '',
+        tabela_alternativa_aplicada: escolhido.detalhes_calculo?.tabela_nome_aplicada || '',
+      },
     };
   } catch (error) {
     return montarResultadoBase(cte, 'ERRO_CALCULO', error.message || 'Erro ao calcular frete.', {
@@ -1956,6 +2069,14 @@ export async function buscarCtesPorIdentificadores(chaves = [], onProgress) {
 
 export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
   const opcoesCalculo = { ignorarCubagem: true, ...opcoes };
+  const verificarCancelamento = () => {
+    if (opcoesCalculo.deveCancelar?.()) {
+      const erro = new Error('Processamento cancelado pelo usuário. Nenhum resultado parcial foi salvo.');
+      erro.codigo = 'PROCESSAMENTO_CANCELADO';
+      throw erro;
+    }
+  };
+  verificarCancelamento();
   const normalizadas = [...new Set((chaves || []).map((c) => onlyDigits(c)).filter(Boolean))];
   if (!normalizadas.length) return { registros: [], encontrados: 0, naoEncontrados: 0 };
   const chavesCte = normalizadas.filter((valor) => valor.length >= 20);
@@ -1966,22 +2087,29 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
   // Sincroniza antes do calculo para nao usar uma copia antiga do localStorage
   // e deixar de aplicar excecoes cadastradas no Supabase.
   await carregarMatrizIcmsUfCentralizada();
+  verificarCancelamento();
   const mapaVinculos = await carregarMapaVinculosAuditoria();
+  verificarCancelamento();
   await precarregarEquivalenciasOrigemAuditoria();
+  verificarCancelamento();
 
   const ctes = [];
   for (let inicio = 0; inicio < chavesCte.length; inicio += 200) {
+    verificarCancelamento();
     const lote = chavesCte.slice(inicio, inicio + 200);
     const { data, error } = await supabase.from(TABELA_CTES).select('*').in('chave_cte', lote);
     if (error) throw new Error(`Erro ao buscar CT-es por chave: ${error.message}`);
+    verificarCancelamento();
     ctes.push(...(data || []));
     onProgress?.({ etapa: 'buscando_ctes', carregados: ctes.length, total: normalizadas.length });
   }
 
   for (let inicio = 0; inicio < numerosCte.length; inicio += 200) {
+    verificarCancelamento();
     const lote = numerosCte.slice(inicio, inicio + 200);
     const { data, error } = await supabase.from(TABELA_CTES).select('*').in('numero_cte', lote);
     if (error) throw new Error(`Erro ao buscar CT-es por numero: ${error.message}`);
+    verificarCancelamento();
     ctes.push(...(data || []));
     onProgress?.({ etapa: 'buscando_ctes', carregados: ctes.length, total: normalizadas.length });
   }
@@ -1996,6 +2124,7 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
 
   onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: null });
   const transportadoras = await carregarBaseFreteParaRegistros(ctesUnicos, onProgress, [], mapaVinculos);
+  verificarCancelamento();
   if (!transportadoras.length) {
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para recalcular.');
   }
@@ -2011,6 +2140,7 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
   const ctesParaCalculo = deveConsultarTracking
     ? await enriquecerCtesComTrackingAoVivo(ctesUnicos, onProgress)
     : ctesUnicos.map((cte) => ({ ...cte, trackingNaoConsultado: opcoesCalculo.apenasDadosCompletos === false }));
+  verificarCancelamento();
   if (typeof window !== 'undefined') {
     ctesParaCalculo.forEach((cte) => {
       const numero = onlyDigits(pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']));
@@ -2031,6 +2161,7 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
 
   const registros = [];
   for (let index = 0; index < ctesUnicos.length; index += 1) {
+    verificarCancelamento();
     const cteBase = ctesParaCalculo[index] || ctesUnicos[index];
     const chaveCte = onlyDigits(pick(cteBase, ['chave_cte', 'chaveCte', 'chave']));
     const numeroCte = onlyDigits(pick(cteBase, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']));
@@ -2137,10 +2268,12 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
     } else {
       registros.push(registro);
     }
-    if (index % 25 === 0 || index === ctesUnicos.length - 1) {
-      onProgress?.({ etapa: 'calculando_amd', carregados: index + 1, total: ctesUnicos.length });
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
+    // Comparar varias tabelas para um mesmo transportador aumenta bastante o
+    // trabalho por CT-e. Devolver o controle ao navegador a cada registro
+    // mantém a interface e o botao Cancelar responsivos durante lotes grandes.
+    onProgress?.({ etapa: 'calculando_amd', carregados: index + 1, total: ctesUnicos.length });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    verificarCancelamento();
   }
   return { registros, encontrados: ctesUnicos.length, naoEncontrados: Math.max(0, normalizadas.length - ctesUnicos.length) };
 }

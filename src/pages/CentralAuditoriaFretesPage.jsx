@@ -211,7 +211,9 @@ function detalhesCalculoHtmlFatura(item = {}, opts = {}) {
     <div class="calc-box"><h4>Resumo do calculo</h4>
       ${detalheLinhaHtmlAuditoria('Motor', det.motor || 'Auditoria')}
       ${detalheLinhaHtmlAuditoria('Tipo', item.tipo_calculo || det.tipo_calculo || frete.tipoCalculo || '-')}
-      ${detalheLinhaHtmlAuditoria('Tabela usada', item.transportadora_tabela || det.transportadora_tabela || item.transportadora || '-')}
+      ${detalheLinhaHtmlAuditoria('Transportadora', item.transportadora_tabela || det.transportadora_tabela || item.transportadora || '-')}
+      ${detalheLinhaHtmlAuditoria('Tabela especifica', det.tabela_nome_aplicada || det.tabela_alternativa_aplicada || (det.tabela_id_aplicada ? `Tabela ${det.tabela_id_aplicada}` : 'Principal'))}
+      ${det.tabela_id_aplicada ? detalheLinhaHtmlAuditoria('ID da tabela', det.tabela_id_aplicada) : ''}
       ${detalheLinhaHtmlAuditoria('Canal', item.canal || det.canal || '-')}
       ${detalheLinhaHtmlAuditoria('Origem tabela', det.origem_cidade || det.origem_tabela || item.cidade_origem || '-')}
       ${detalheLinhaHtmlAuditoria('Tabela validada?', det.origem_validada ? `Sim${det.origem_validado_por ? ` (${det.origem_validado_por})` : ''}` : 'Nao')}
@@ -223,7 +225,7 @@ function detalhesCalculoHtmlFatura(item = {}, opts = {}) {
       ${detalheLinhaHtmlAuditoria('Diferenca', formatarDinheiroHtmlAuditoria(diffFinal))}
     </div>
     <div class="calc-box"><h4>Base do frete</h4>
-      ${detalheLinhaHtmlAuditoria('Percentual aplicado', pctFmt(frete.percentualAplicado ?? frete.percentual_aplicado ?? det.percentual_aplicado))}
+      ${detalheLinhaHtmlAuditoria('Percentual aplicado', pctFmt(percentualAplicadoAuditoria(frete, det, item)))}
       ${detalheLinhaHtmlAuditoria('Valor percentual', formatarDinheiroHtmlAuditoria(frete.valorPercentualCalculado ?? frete.valorPercentual ?? det.valor_percentual))}
       ${detalheLinhaHtmlAuditoria('R$/kg aplicado', formatarDinheiroHtmlAuditoria(frete.rsKgAplicado ?? det.valor_kg_aplicado))}
       ${detalheLinhaHtmlAuditoria('Frete minimo rota', formatarDinheiroHtmlAuditoria(frete.minimoRota ?? det.frete_minimo_rota))}
@@ -297,7 +299,7 @@ function mesclarDetalheComReferenciaAuditoria(item = {}, referenciaCtes = new Ma
     uf_destino: item.uf_destino || base.uf_destino || '',
     ibge_origem: item.ibge_origem || base.ibge_origem || '',
     ibge_destino: item.ibge_destino || base.ibge_destino || '',
-    peso: Number(item.peso || base.peso || 0),
+    peso: numeroPesoAuditoria(item, base),
     valor_frete: valor,
     valor_nf: numeroValorNfAuditoria(item, base) || item.valor_nf || base.valor_nf || base.valorNF || 0,
     // base e o resultado fresco da auditoria (auditoria_cte_resultados) —
@@ -333,6 +335,18 @@ function numeroFlexAuditoria(valor) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function percentualAplicadoAuditoria(frete = {}, detalhes = {}, resultado = {}) {
+  const informado = numeroFlexAuditoria(
+    frete.percentualAplicado ?? frete.percentual_aplicado ?? detalhes.percentual_aplicado,
+  );
+  if (informado > 0) return informado;
+  const valorPercentual = numeroFlexAuditoria(
+    frete.valorPercentualCalculado ?? frete.valorPercentual ?? detalhes.valor_percentual,
+  );
+  const valorNf = numeroValorNfAuditoria(resultado);
+  return valorPercentual > 0 && valorNf > 0 ? (valorPercentual / valorNf) * 100 : 0;
+}
+
 function numeroValorNfAuditoria(item = {}, base = null) {
   const detalhes = parseDetalhesCalculoAuditoria(item.detalhes_calculo || base?.detalhes_calculo);
   const candidatos = [
@@ -340,10 +354,16 @@ function numeroValorNfAuditoria(item = {}, base = null) {
     item.valorNF,
     item.nf_venda,
     item.valor_nota,
+    item.valor_mercadoria,
+    item.valorMercadoria,
+    item.valor_produtos,
+    item.valorProdutos,
     base?.valor_nf,
     base?.valorNF,
     base?.nf_venda,
     base?.valor_nota,
+    base?.valor_mercadoria,
+    base?.valorMercadoria,
     detalhes.valor_nf,
     detalhes.valorNF,
     detalhes.valorNf,
@@ -356,6 +376,34 @@ function numeroValorNfAuditoria(item = {}, base = null) {
     detalhes.frete?.valorNFInformado,
     detalhes.frete?.valorNf,
     detalhes.frete?.valor_nf,
+  ];
+  for (const candidato of candidatos) {
+    const n = numeroFlexAuditoria(candidato);
+    if (n > 0) return n;
+  }
+  return 0;
+}
+
+function numeroPesoAuditoria(item = {}, base = null) {
+  const detalhes = parseDetalhesCalculoAuditoria(item.detalhes_calculo || base?.detalhes_calculo);
+  const candidatos = [
+    item.peso,
+    item.peso_declarado,
+    item.pesoDeclarado,
+    item.peso_final,
+    item.pesoFinal,
+    item.peso_total,
+    item.pesoTotal,
+    item.peso_kg,
+    base?.peso,
+    base?.peso_declarado,
+    base?.pesoDeclarado,
+    base?.peso_final,
+    base?.pesoFinal,
+    detalhes.peso_considerado,
+    detalhes.peso_declarado_cte,
+    detalhes.componentes_base?.pesoConsiderado,
+    detalhes.frete?.pesoConsiderado,
   ];
   for (const candidato of candidatos) {
     const n = numeroFlexAuditoria(candidato);
@@ -542,7 +590,45 @@ function linhaDetalhe(label, value, destaque = false) {
 
 // Painel de detalhe do calculo (mesmo layout da Auditoria CT-e), reaproveitado
 // aqui pra permitir ver o detalhamento de um CT-e direto na tela de Faturas.
-function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras }) {
+function montarResultadoComTabelaAuditoria(resultado, alternativa) {
+  const valorCalculado = Number(alternativa?.valor_calculado || 0);
+  const valorPago = Number(resultado?.valor_cte ?? resultado?.valor_frete ?? 0);
+  const diferenca = valorPago - valorCalculado;
+  const detAtual = parseDetalhesCalculoAuditoria(resultado?.detalhes_calculo);
+  return {
+    ...resultado,
+    transportadora_tabela: alternativa.transportadora_tabela || resultado.transportadora_tabela,
+    tipo_calculo: alternativa.tipo_calculo || resultado.tipo_calculo,
+    valor_calculado: valorCalculado,
+    calculado_frete: valorCalculado,
+    diferenca,
+    diferenca_abs: Math.abs(diferenca),
+    percentual_diferenca: valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0,
+    detalhes_calculo: {
+      ...detAtual,
+      origem_cidade: alternativa.origem_cidade ?? detAtual.origem_cidade,
+      rota_nome: alternativa.rota_nome ?? detAtual.rota_nome,
+      peso_considerado: alternativa.peso_considerado ?? detAtual.peso_considerado,
+      valor_base: alternativa.valor_base ?? detAtual.valor_base,
+      subtotal: alternativa.subtotal ?? detAtual.subtotal,
+      icms: alternativa.icms ?? detAtual.icms,
+      aliquota_icms: alternativa.aliquota_icms ?? detAtual.aliquota_icms,
+      origem_aliquota_icms: alternativa.origem_aliquota_icms ?? detAtual.origem_aliquota_icms,
+      uf_origem_icms: alternativa.uf_origem_icms ?? detAtual.uf_origem_icms,
+      uf_destino_icms: alternativa.uf_destino_icms ?? detAtual.uf_destino_icms,
+      taxas: alternativa.taxas ?? detAtual.taxas,
+      componentes_base: alternativa.componentes_base ?? detAtual.componentes_base,
+      componente_base: alternativa.componente_base ?? detAtual.componente_base,
+      tabela_id_aplicada: alternativa.tabela_id || null,
+      tabela_nome_aplicada: alternativa.tabela_nome || alternativa.variante || (alternativa.principal ? 'Principal' : 'Alternativa'),
+      tabela_principal_aplicada: Boolean(alternativa.principal),
+      tabela_alternativa_aplicada: alternativa.variante || (alternativa.principal ? 'Principal' : ''),
+      tabela_alternativa_override_manual: true,
+    },
+  };
+}
+
+function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras, onSelecionarTabela, selecionandoTabela = false }) {
   const [ocultarZeradas, setOcultarZeradas] = useState(false);
   if (!resultado) return <span>Sem detalhe de calculo para este CT-e.</span>;
   const det = (() => {
@@ -563,6 +649,15 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
     return linhaDetalhe(label, dinheiroMaybe(valorNumero), extra);
   };
   const comparativoPesos = Array.isArray(det.comparativo_pesos) ? det.comparativo_pesos : [];
+  const comparativoTabelas = Array.isArray(det.comparativo_tabelas) ? det.comparativo_tabelas : [];
+  const valorNfDetalhe = numeroValorNfAuditoria(resultado);
+  const pesoDetalhe = numeroFlexAuditoria(
+    det.peso_considerado ?? frete.pesoConsiderado ?? resultado.peso ?? resultado.peso_declarado,
+  );
+  const tabelaAplicada = comparativoTabelas.find((alt) => (
+    det.tabela_id_aplicada && String(det.tabela_id_aplicada) === String(alt.tabela_id)
+  )) || comparativoTabelas.find((alt) => alt.variante === det.tabela_alternativa_aplicada)
+    || comparativoTabelas.find((alt) => alt.principal);
 
   return (
     <>
@@ -599,14 +694,16 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
           <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Resumo do calculo</div>
           {linhaDetalhe('Motor', det.motor === 'simulador_realizado' ? 'Simulador realizado' : 'Auditoria')}
           {linhaDetalhe('Tipo', resultado.tipo_calculo || det.tipo_calculo || frete.tipoCalculo || '-')}
-          {linhaDetalhe('Tabela usada', resultado.transportadora_tabela || det.transportadora_tabela || '-')}
+          {linhaDetalhe('Transportadora', resultado.transportadora_tabela || det.transportadora_tabela || '-')}
+          {linhaDetalhe('Tabela específica', det.tabela_nome_aplicada || det.tabela_alternativa_aplicada || (det.tabela_id_aplicada ? `Tabela ${det.tabela_id_aplicada}` : 'Principal'), true)}
+          {det.tabela_id_aplicada ? linhaDetalhe('ID da tabela', det.tabela_id_aplicada) : null}
           {linhaDetalhe('Canal', resultado.canal || det.canal || '-')}
           {linhaDetalhe('Origem tabela', det.origem_cidade || '-')}
           {linhaDetalhe('Tabela validada?', det.origem_validada ? `Sim${det.origem_validado_por ? ` (${det.origem_validado_por})` : ''}` : 'Não')}
           {det.calculo_devolucao_invertida ? linhaDetalhe('Regra devolucao', det.observacao_devolucao || 'Calculado pela rota de ida equivalente.', true) : null}
           {linhaDetalhe('Rota/cotacao', det.rota_nome || '-')}
-          {linhaDetalhe('Peso considerado', `${numeroFmt(det.peso_considerado ?? frete.pesoConsiderado ?? resultado.peso, 3)} kg`)}
-          {linhaDetalhe('Valor NF', dinheiroMaybe(resultado.valor_nf), true)}
+          {linhaDetalhe('Peso considerado', pesoDetalhe > 0 ? `${numeroFmt(pesoDetalhe, 3)} kg` : '-', true)}
+          {linhaDetalhe('Valor NF', valorNfDetalhe > 0 ? dinheiroMaybe(valorNfDetalhe) : '-', true)}
           {linhaDetalhe('Frete pago', dinheiroMaybe(resultado.valor_cte), true)}
           {linhaDetalhe('Calculado Verum', dinheiroMaybe(resultado.valor_calculado_verum), true)}
           {linhaDetalhe('Calculo AMD/local', dinheiroMaybe(resultado.valor_calculado), true)}
@@ -614,7 +711,7 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
         </div>
         <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
           <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Base do frete</div>
-          {linhaDetalhe('Percentual aplicado', pctFmt(frete.percentualAplicado))}
+          {linhaDetalhe('Percentual aplicado', pctFmt(percentualAplicadoAuditoria(frete, det, resultado)), true)}
           {linhaDetalhe('Valor percentual', dinheiroMaybe(frete.valorPercentualCalculado ?? frete.valorPercentual))}
           {linhaDetalhe('R$/kg aplicado', dinheiroMaybe(frete.rsKgAplicado))}
           {linhaDetalhe('Valor kg garantia', dinheiroMaybe(frete.valorKgGarantia ?? frete.valorKg))}
@@ -643,6 +740,42 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
                 {linhaDetalhe('Diferença vs pago', dinheiroMaybe(alt.diferenca), alt.nome === det.melhor_comparativo_peso)}
               </div>
             ))}
+          </div>
+        ) : null}
+        {comparativoTabelas.length > 1 ? (
+          <div style={{ border: '1px solid #93c5fd', borderRadius: 8, background: '#eff6ff', padding: 12 }}>
+            <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 4 }}>Tabela de frete aplicada</div>
+            <p className="compact" style={{ marginTop: 0 }}>Todas as tabelas compatíveis foram calculadas. Selecione qual deve valer para este CT-e.</p>
+            <select
+              value={String(tabelaAplicada?.tabela_id || '')}
+              disabled={selecionandoTabela || !onSelecionarTabela}
+              onChange={(event) => {
+                const escolhida = comparativoTabelas.find((alt) => String(alt.tabela_id) === event.target.value);
+                if (escolhida) onSelecionarTabela?.(escolhida);
+              }}
+              onClick={(event) => event.stopPropagation()}
+              style={{ width: '100%', marginBottom: 8 }}
+              aria-label="Selecionar tabela de frete para este CT-e"
+            >
+              {comparativoTabelas.map((alt) => (
+                <option key={alt.tabela_id || alt.variante} value={String(alt.tabela_id || '')}>
+                  {alt.variante || (alt.principal ? 'Principal' : 'Alternativa')} — {dinheiroMaybe(alt.valor_calculado)}
+                </option>
+              ))}
+            </select>
+            {comparativoTabelas.map((alt) => {
+              const aplicadaPorId = det.tabela_id_aplicada && String(det.tabela_id_aplicada) === String(alt.tabela_id);
+              const aplicadaPorNome = !det.tabela_id_aplicada && alt.variante === det.tabela_alternativa_aplicada;
+              const aplicada = aplicadaPorId || aplicadaPorNome || (!det.tabela_alternativa_aplicada && !det.tabela_id_aplicada && alt.principal);
+              const rotulo = alt.principal ? `${alt.variante || 'Principal'} (principal)` : (alt.variante || 'Alternativa');
+              return (
+                <div key={alt.tabela_id || rotulo} style={{ borderTop: '1px solid #bfdbfe', marginTop: 8, paddingTop: 8 }}>
+                  {linhaDetalhe(rotulo, dinheiroMaybe(alt.valor_calculado), aplicada)}
+                  {alt.tabela_id ? linhaDetalhe('ID da tabela', alt.tabela_id) : null}
+                  {linhaDetalhe('Diferença vs pago', dinheiroMaybe(alt.divergencia))}
+                </div>
+              );
+            })}
           </div>
         ) : null}
         <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
@@ -861,12 +994,15 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [novaFaturaId, setNovaFaturaId] = useState('');
   const [reauditando, setReauditando] = useState(false);
   const [recalculando, setRecalculando] = useState(false);
+  const [cancelandoRecalculo, setCancelandoRecalculo] = useState(false);
+  const cancelarRecalculoRef = useRef(false);
   const [infoRecalculo, setInfoRecalculo] = useState('');
   const [progressoRecalculo, setProgressoRecalculo] = useState(null);
   const [referenciaCtes, setReferenciaCtes] = useState(new Map());
   const [cteExpandido, setCteExpandido] = useState(null);
   const [resultadosDetalhe, setResultadosDetalhe] = useState(new Map());
   const [carregandoDetalheCte, setCarregandoDetalheCte] = useState(null);
+  const [selecionandoTabelaCte, setSelecionandoTabelaCte] = useState(null);
   const [correcaoEndereco, setCorrecaoEndereco] = useState({});
   const [salvandoCorrecaoEndereco, setSalvandoCorrecaoEndereco] = useState(null);
   const [correcaoCanal, setCorrecaoCanal] = useState({});
@@ -1205,6 +1341,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   // auditoria_cte_resultados e, na sequência, reauditar a fatura pra puxar os
   // valores recém-calculados pros detalhes e agregados da fatura.
   const recalcular = async () => {
+    cancelarRecalculoRef.current = false;
+    setCancelandoRecalculo(false);
     setRecalculando(true);
     setErroDetalhes('');
     setInfoRecalculo('');
@@ -1217,16 +1355,23 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       const chaves = alvo.map((item) => item.chave_cte).filter(Boolean);
       if (!chaves.length) throw new Error('Esta fatura não possui CT-es com chave para recalcular.');
 
-      // Garante que tabelas de frete editadas/importadas ha pouco (na mesma
-      // sessao do navegador) entrem no recalculo, em vez de usar cache antigo.
-      invalidarCacheBaseFreteAuditoriaCte();
       const valorNfOverridePorChave = {};
       const trackingOverridePorChave = {};
       const reentregaPorChave = {};
       alvo.forEach((item) => {
         const chave = normalizarChaveCte(item.chave_cte) || normalizarChaveCte(item.numero_cte);
         if (!chave) return;
-        if (Number(item.valor_nf || 0) > 0) valorNfOverridePorChave[chave] = Number(item.valor_nf || 0);
+        const valorNfPreservado = numeroValorNfAuditoria(item);
+        const pesoPreservado = numeroPesoAuditoria(item);
+        if (valorNfPreservado > 0) valorNfOverridePorChave[chave] = valorNfPreservado;
+        if (pesoPreservado > 0 || valorNfPreservado > 0) {
+          trackingOverridePorChave[chave] = {
+            ...trackingOverridePorChave[chave],
+            valorNF: valorNfPreservado,
+            peso: pesoPreservado,
+            pesoDeclarado: pesoPreservado,
+          };
+        }
         if (item.tracking_manual_nf) {
           trackingOverridePorChave[chave] = {
             ...trackingOverridePorChave[chave],
@@ -1269,26 +1414,42 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         valorNfOverridePorChave,
         trackingOverridePorChave,
         reentregaPorChave,
+        deveCancelar: () => cancelarRecalculoRef.current,
       });
+      if (cancelarRecalculoRef.current) throw new Error('Processamento cancelado pelo usuário. Nenhum resultado parcial foi salvo.');
       if (registros.length) {
         const competenciaRef = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
-        await salvarRecorteCarregadoAuditoria({ competencia: competenciaRef, registros });
+        await salvarRecorteCarregadoAuditoria({
+          competencia: competenciaRef,
+          registros,
+          atualizarResumoMensal: false,
+          onProgress: setProgressoRecalculo,
+        });
       }
 
+      setProgressoRecalculo({ etapa: 'atualizando_faturas', carregados: 0, total: 1 });
       const next = await reauditarFatura(state, fatura, detalhes, sessao?.nome || sessao?.email || 'Usuario local');
       onState(next);
       // Refaz a referência com TODOS os CT-es da fatura (não só os recalculados
       // agora), senão perde a referência de quem ficou fora da seleção.
       const referencia = await buscarReferenciaCtes(detalhes.map((item) => item.chave_cte));
       setReferenciaCtes(referencia);
+      setProgressoRecalculo({ etapa: 'concluido', carregados: 1, total: 1 });
       const escopo = selecionados.length ? `${selecionados.length} CT-e(s) selecionado(s)` : 'todos os CT-es da fatura';
       setInfoRecalculo(`Recalculado ${escopo}: ${encontrados} encontrado(s) e salvo(s)${naoEncontrados ? `, ${naoEncontrados} não encontrado(s) na base de CT-es.` : '.'}`);
     } catch (error) {
       setErroDetalhes(error.message || String(error));
     } finally {
       setRecalculando(false);
+      setCancelandoRecalculo(false);
       setProgressoRecalculo(null);
     }
+  };
+
+  const cancelarRecalculo = () => {
+    cancelarRecalculoRef.current = true;
+    setCancelandoRecalculo(true);
+    setInfoRecalculo('Cancelamento solicitado. Encerrando a etapa atual com segurança...');
   };
 
   const vincularSubstituta = async () => {
@@ -1469,11 +1630,52 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     setCarregandoDetalheCte(item.chave_cte);
     try {
       const resultado = await buscarResultadoAuditoriaPorChave(item.chave_cte);
-      setResultadosDetalhe((atual) => new Map(atual).set(item.chave_cte, resultado));
+      const mesclado = resultado ? {
+        ...resultado,
+        valor_nf: numeroValorNfAuditoria(resultado, item),
+        peso: numeroPesoAuditoria(resultado, item),
+        valor_cte: numeroFlexAuditoria(resultado.valor_cte) || numeroFlexAuditoria(item.valor_frete),
+        valor_calculado_verum: numeroFlexAuditoria(resultado.valor_calculado_verum) || numeroFlexAuditoria(item.calculado_frete_verum),
+      } : null;
+      setResultadosDetalhe((atual) => new Map(atual).set(item.chave_cte, mesclado));
     } catch (error) {
       setResultadosDetalhe((atual) => new Map(atual).set(item.chave_cte, null));
+      setErroDetalhes(error.message || 'Erro ao carregar o detalhe do cálculo.');
     } finally {
       setCarregandoDetalheCte(null);
+    }
+  };
+
+  const selecionarTabelaCteFatura = async (item, alternativa) => {
+    const chave = item.chave_cte;
+    const resultadoAtual = resultadosDetalhe.get(chave);
+    if (!chave || !resultadoAtual || !alternativa) return;
+    const atualizado = montarResultadoComTabelaAuditoria(resultadoAtual, alternativa);
+    setSelecionandoTabelaCte(chave);
+    setErroDetalhes('');
+    setResultadosDetalhe((atual) => new Map(atual).set(chave, atualizado));
+    setReferenciaCtes((atual) => {
+      const proximo = new Map(atual);
+      proximo.set(normalizarChaveCte(chave), atualizado);
+      return proximo;
+    });
+    setDetalhes((atual) => atual.map((detalhe) => (
+      detalhe.id === item.id
+        ? { ...detalhe, calculado_frete: atualizado.valor_calculado, diferenca: atualizado.diferenca, detalhes_calculo: atualizado.detalhes_calculo }
+        : detalhe
+    )));
+    try {
+      const competenciaRef = atualizado.competencia || new Date().toISOString().slice(0, 7);
+      await salvarRecorteCarregadoAuditoria({
+        competencia: competenciaRef,
+        registros: [atualizado],
+        atualizarResumoMensal: false,
+      });
+      setInfoRecalculo(`Tabela "${alternativa.variante || 'Principal'}" aplicada e salva no CT-e ${item.numero_cte || chave}.`);
+    } catch (error) {
+      setErroDetalhes(error.message || 'Erro ao salvar a tabela escolhida para o CT-e.');
+    } finally {
+      setSelecionandoTabelaCte(null);
     }
   };
 
@@ -1708,7 +1910,11 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                       </div>
                       {carregandoDetalheCte === (item.chave_cte || item.id)
                         ? <span>Carregando detalhe do calculo...</span>
-                        : <PainelDetalheCalculo resultado={resultadosDetalhe.get(item.chave_cte)} />}
+                        : <PainelDetalheCalculo
+                            resultado={resultadosDetalhe.get(item.chave_cte)}
+                            onSelecionarTabela={(alternativa) => selecionarTabelaCteFatura(item, alternativa)}
+                            selecionandoTabela={selecionandoTabelaCte === item.chave_cte}
+                          />}
                     </td>
                   </tr>
                 )}
@@ -1828,7 +2034,13 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         </div>
       )}
 
-      <AmdProcessingOverlay ativo={recalculando} progresso={progressoRecalculo} mensagemRodape="Pode levar mais tempo em faturas com muitos CT-es." />
+      <AmdProcessingOverlay
+        ativo={recalculando}
+        progresso={progressoRecalculo}
+        mensagemRodape={cancelandoRecalculo ? 'Cancelamento solicitado. Aguarde a etapa atual encerrar.' : 'Pode levar mais tempo em faturas com muitos CT-es.'}
+        onCancelar={cancelarRecalculo}
+        cancelando={cancelandoRecalculo}
+      />
       {infoRecalculo && <div className="hint-box compact">{infoRecalculo}</div>}
       <OpcoesLaudoTransportador opcoes={opcoesLaudoTransportador} onMudar={setOpcoesLaudoTransportador} />
       <div className="audit-action-bar">
@@ -2382,7 +2594,6 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     setCteAvulsoExpandido(null);
     setMensagemImportacao('');
     try {
-      invalidarCacheBaseFreteAuditoriaCte();
       const valorNfOverridePorChave = {};
       const trackingOverridePorChave = {};
       const reentregaPorChave = {};
@@ -2503,9 +2714,6 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         return;
       }
 
-      // Garante que tabelas de frete editadas/importadas ha pouco (na mesma
-      // sessao do navegador) entrem no recalculo, em vez de usar cache antigo.
-      invalidarCacheBaseFreteAuditoriaCte();
       const { registros } = await processarCtesPorChave(todasChaves, setProgressoLote, { ignorarCubagem: true });
       let amdCalculados = 0;
       if (registros.length) {
@@ -2540,6 +2748,24 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     } finally {
       setRecalculandoLote(false);
       setProgressoLote(null);
+    }
+  };
+
+  const aplicarTabelaAlternativaAvulsa = async (row, alternativa) => {
+    const chaveAlvo = chaveResultadoAuditoria(row);
+    if (!chaveAlvo || !alternativa) return;
+    const atualizado = montarResultadoComTabelaAuditoria(row, alternativa);
+    setResultadoCtesAvulsos((prev) => prev.map((item) => (chaveResultadoAuditoria(item) === chaveAlvo ? atualizado : item)));
+    setResultadoCtesAvulsosSalvos(false);
+    setAuditandoCtesAvulsos(true);
+    try {
+      await salvarAuditoriaAvulsa([atualizado]);
+      setResultadoCtesAvulsosSalvos(true);
+      setMensagemImportacao(`Tabela "${alternativa.variante || 'Principal'}" aplicada e salva no CT-e ${row.numero_cte || row.chave_cte || ''}.`);
+    } catch (error) {
+      setMensagemImportacao(`Erro ao aplicar tabela no CT-e: ${error.message}`);
+    } finally {
+      setAuditandoCtesAvulsos(false);
     }
   };
 
@@ -4127,7 +4353,13 @@ ${portaisLaudo.length ? `
                                 <p className="compact">NF vinculada manualmente pelo Tracking. Valor NF: <strong>{dinheiro(row.valor_nf)}</strong>; peso: <strong>{numeroFmt(row.peso, 3)} kg</strong>.</p>
                               ) : null}
                             </div>
-                            <PainelDetalheCalculo resultado={row} onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />
+                            <PainelDetalheCalculo
+                              resultado={row}
+                              onMudarPagina={onMudarPagina}
+                              onAbrirTransportadoras={onAbrirTransportadoras}
+                              onSelecionarTabela={(alternativa) => aplicarTabelaAlternativaAvulsa(row, alternativa)}
+                              selecionandoTabela={auditandoCtesAvulsos}
+                            />
                           </td></tr>
                         )}
                       </Fragment>

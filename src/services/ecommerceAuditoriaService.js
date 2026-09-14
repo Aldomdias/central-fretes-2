@@ -197,15 +197,23 @@ function chunks(lista = [], tamanho = 300) {
 
 // Descobre quais numeros de Pedido do arquivo ja existem na base, pra poder
 // informar no resumo pos-importacao quantos sao novos x atualizacao.
-async function buscarPedidosExistentes(supabase, numerosPedido = []) {
+async function buscarPedidosExistentes(supabase, numerosPedido = [], onProgress) {
   const existentes = new Set();
-  for (const grupo of chunks(numerosPedido, 300)) {
+  const grupos = chunks(numerosPedido, 300);
+  let verificados = 0;
+  for (const grupo of grupos) {
     const { data, error } = await supabase
       .from('ecommerce_order_snapshot')
       .select('pedido')
       .in('pedido', grupo);
     if (error) throw error;
     (data || []).forEach((row) => existentes.add(row.pedido));
+    verificados += grupo.length;
+    onProgress?.({
+      etapa: 'verificando_pedidos_existentes',
+      carregados: verificados,
+      total: numerosPedido.length,
+    });
   }
   return existentes;
 }
@@ -214,9 +222,9 @@ export async function importarEcommerceOrderSnapshot(registros = [], { onProgres
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
   const supabase = getSupabaseClient();
 
-  onProgress?.({ etapa: 'verificando_existentes', carregados: 0, total: registros.length });
+  onProgress?.({ etapa: 'verificando_pedidos_existentes', carregados: 0, total: registros.length });
   const numerosPedido = registros.map((r) => r.pedido).filter(Boolean);
-  const existentes = await buscarPedidosExistentes(supabase, numerosPedido);
+  const existentes = await buscarPedidosExistentes(supabase, numerosPedido, onProgress);
   const novos = numerosPedido.filter((p) => !existentes.has(p)).length;
   const atualizados = numerosPedido.length - novos;
 

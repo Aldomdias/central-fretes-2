@@ -13,6 +13,7 @@ export const ETAPA_LABEL_AUDITORIA = {
   carregando_ctes_analise: 'Carregando CT-es para análise',
   salvando_faturas: 'Gravando faturas e CT-es',
   verificando_existentes: 'Verificando faturas já existentes',
+  verificando_pedidos_existentes: 'Verificando pedidos já existentes',
   calculando_amd: 'Calculando status AMD',
   atualizando_faturas: 'Atualizando status AMD nas faturas',
   salvando_resultado_detalhado: 'Salvando resultados',
@@ -36,7 +37,13 @@ export function rotuloEtapaAuditoria(progresso) {
 // Overlay central com a logo AMD LOG — mostra etapa atual e percentual por
 // cima do resto da tela enquanto processa. Usado no Simulador, Auditoria CTe
 // e na importação de Faturas.
-export default function AmdProcessingOverlay({ ativo, progresso, mensagemRodape = 'Pode levar mais tempo em bases grandes.' }) {
+export default function AmdProcessingOverlay({
+  ativo,
+  progresso,
+  mensagemRodape = 'Pode levar mais tempo em bases grandes.',
+  onCancelar = null,
+  cancelando = false,
+}) {
   if (!ativo) return null;
 
   const progressoOrigemDeterminado = Number(progresso?.totalPedidosOrigem || 0) > 0;
@@ -76,6 +83,17 @@ export default function AmdProcessingOverlay({ ativo, progresso, mensagemRodape 
         </div>
         <em>{percentual}%</em>
         <small>{mensagemRodape}</small>
+        {onCancelar && (
+          <button
+            type="button"
+            className="danger"
+            onClick={onCancelar}
+            disabled={cancelando}
+            style={{ marginTop: 14, padding: '9px 16px', borderRadius: 8, border: '1px solid #dc2626', background: '#fff', color: '#dc2626', fontWeight: 700, cursor: cancelando ? 'default' : 'pointer', opacity: cancelando ? 0.7 : 1 }}
+          >
+            {cancelando ? 'Cancelando...' : 'Cancelar processamento'}
+          </button>
+        )}
       </div>
     </div>
   );

@@ -27,6 +27,7 @@ import {
 } from '../utils/tabelasNegociacaoGestao';
 import { atualizarSolicitacaoCentralNegociacao, concluirSolicitacaoCentral } from './centralSolicitacoesService';
 import { cnpjPreenchidoValido, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
+import { montarResumoInicialRevisao } from '../utils/tabelasNegociacaoRevisao';
 
 export const STATUS_TABELA_NEGOCIACAO = [
   'EM NEGOCIAÇÃO',
@@ -919,6 +920,7 @@ export async function criarTabelaNegociacao(payload = {}) {
     aderencia_projetada: numero(payload.aderencia_projetada),
     origem_importacao: texto(payload.origem_importacao),
     generalidades: payload.generalidades || DEFAULT_GENERALIDADES,
+    resumo_simulacao: payload.resumo_simulacao,
     criado_por: texto(payload.criado_por || payload.usuario?.id),
     criado_por_nome: texto(payload.criado_por_nome || payload.usuario?.nome || payload.usuario_nome),
     negociador_id: texto(payload.negociador_id || payload.usuario?.id),
@@ -940,6 +942,8 @@ export async function criarTabelaNegociacao(payload = {}) {
       status_novo: payload.status_gestao || 'EM_NEGOCIACAO',
     }],
   };
+
+  if (novo.resumo_simulacao === undefined) delete novo.resumo_simulacao;
 
   if (!novo.transportadora) throw new Error('Informe a transportadora.');
   if (!TIPOS_TABELA_NEGOCIACAO.includes(novo.tipo_tabela)) throw new Error('Tipo de tabela inválido.');
@@ -1416,7 +1420,7 @@ export async function listarNegociacoesDaTransportadora({ transportadora, canal,
 
   let query = supabase
     .from('tabelas_negociacao')
-    .select('id,transportadora,canal,origem,uf_origem,status,status_gestao,modalidade,criado_em,atualizado_em')
+    .select('id,transportadora,canal,origem,uf_origem,status,status_gestao,modalidade,criado_em,atualizado_em,resumo_simulacao')
     .ilike('transportadora', nome)
     .order('criado_em', { ascending: false })
     .limit(200);
@@ -1515,6 +1519,13 @@ export async function abrirRevisaoNegociacaoPublicada(id, dados = {}) {
   const origem = texto(original.origem);
 
   const existentes = await listarNegociacoesDaTransportadora({ transportadora, canal, origem });
+  const revisaoJaAberta = existentes.abertas.find((candidata) => {
+    const vinculo = getResumoSimulacaoSeguro(candidata).revisao || {};
+    return texto(vinculo.revisao_de_id) === texto(original.id);
+  });
+  if (revisaoJaAberta && !dados.forcar) {
+    return { ja_existe: true, revisao_id: revisaoJaAberta.id };
+  }
   const numeroRevisao = (existentes.total || 0) + 1;
 
   const oficial = await carregarTransportadoraCompletaDb(
@@ -1564,17 +1575,15 @@ export async function abrirRevisaoNegociacaoPublicada(id, dados = {}) {
     periodo_realizado_fim: original.periodo_realizado_fim || null,
     revisao_de_id: original.id,
     revisao_numero: numeroRevisao,
+    resumo_simulacao: montarResumoInicialRevisao(vinculoRevisao),
     usuario: dados.usuario,
     criado_por: dados.usuario?.id,
     criado_por_nome: dados.usuario?.nome,
   });
 
-  // Espelho no JSON: se a migration das colunas de revisão ainda não rodou, o
-  // insert cai no fallback que descarta essas colunas e o vínculo se perderia.
-  const resumoNova = getResumoSimulacaoSeguro(nova);
-  await atualizarTabelaNegociacao(nova.id, {
-    resumo_simulacao: { ...resumoNova, revisao: vinculoRevisao },
-  });
+  // O espelho no JSON precisa nascer no mesmo INSERT. Alguns perfis podem criar
+  // a negociação, mas não atualizar imediatamente a linha retornada; nesse caso
+  // um UPDATE separado deixava uma revisão órfã e o PostgREST respondia PGRST116.
 
   // Vínculos de saving e base de comparação: campos sem passagem em
   // atualizarTabelaNegociacao, gravados direto. Se a coluna não existir no
@@ -1602,18 +1611,29 @@ export async function abrirRevisaoNegociacaoPublicada(id, dados = {}) {
   }
 
   const resumoOriginal = getResumoSimulacaoSeguro(original);
-  const atualizada = await atualizarTabelaNegociacao(original.id, {
-    revisao_aberta_id: nova.id,
-    resumo_simulacao: {
-      ...resumoOriginal,
-      revisao: {
-        ...(resumoOriginal.revisao || {}),
-        revisao_aberta_id: nova.id,
-        revisao_numero: numeroRevisao,
-        revisao_aberta_em: agora,
-      },
+  const marcaRevisao = {
+    ...resumoOriginal,
+    revisao: {
+      ...(resumoOriginal.revisao || {}),
+      revisao_aberta_id: nova.id,
+      revisao_numero: numeroRevisao,
+      revisao_aberta_em: agora,
     },
-  });
+  };
+  let atualizada = { ...original, revisao_aberta_id: nova.id, resumo_simulacao: marcaRevisao };
+  try {
+    atualizada = await atualizarTabelaNegociacao(original.id, {
+      revisao_aberta_id: nova.id,
+      resumo_simulacao: marcaRevisao,
+    });
+  } catch (error) {
+    // A revisão já está criada e contém o vínculo de volta para a publicada.
+    // Não transformar uma falha secundária do ponteiro inverso em nova tentativa
+    // de criação (que foi o que gerou as revisões órfãs observadas na CAMPELO).
+    avisoImportacao = [avisoImportacao, `A revisão foi aberta, mas a tabela publicada não pôde ser marcada automaticamente: ${error.message || error}`]
+      .filter(Boolean)
+      .join(' ');
+  }
 
   return {
     revisao: { ...nova, revisao_de_id: original.id, revisao_numero: numeroRevisao },

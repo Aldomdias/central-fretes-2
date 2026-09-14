@@ -1214,14 +1214,32 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     const diferenca = valorPago - valorCalculado;
     return {
       ...row,
+      transportadora_tabela: alternativa.transportadora_tabela || row.transportadora_tabela,
+      tipo_calculo: alternativa.tipo_calculo || row.tipo_calculo,
       valor_calculado: valorCalculado,
       diferenca,
       diferenca_abs: Math.abs(diferenca),
       percentual_diferenca: valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0,
       detalhes_calculo: {
         ...(row.detalhes_calculo || {}),
+        origem_cidade: alternativa.origem_cidade ?? row.detalhes_calculo?.origem_cidade,
+        rota_nome: alternativa.rota_nome ?? row.detalhes_calculo?.rota_nome,
+        peso_considerado: alternativa.peso_considerado ?? row.detalhes_calculo?.peso_considerado,
+        valor_base: alternativa.valor_base ?? row.detalhes_calculo?.valor_base,
+        subtotal: alternativa.subtotal ?? row.detalhes_calculo?.subtotal,
+        icms: alternativa.icms ?? row.detalhes_calculo?.icms,
+        aliquota_icms: alternativa.aliquota_icms ?? row.detalhes_calculo?.aliquota_icms,
+        origem_aliquota_icms: alternativa.origem_aliquota_icms ?? row.detalhes_calculo?.origem_aliquota_icms,
+        uf_origem_icms: alternativa.uf_origem_icms ?? row.detalhes_calculo?.uf_origem_icms,
+        uf_destino_icms: alternativa.uf_destino_icms ?? row.detalhes_calculo?.uf_destino_icms,
+        taxas: alternativa.taxas ?? row.detalhes_calculo?.taxas,
+        componentes_base: alternativa.componentes_base ?? row.detalhes_calculo?.componentes_base,
+        componente_base: alternativa.componente_base ?? row.detalhes_calculo?.componente_base,
         melhor_comparativo_tabela: alternativa.variante,
         tabela_alternativa_aplicada: alternativa.variante,
+        tabela_id_aplicada: alternativa.tabela_id || null,
+        tabela_nome_aplicada: alternativa.tabela_nome || alternativa.variante || (alternativa.principal ? 'Principal' : 'Alternativa'),
+        tabela_principal_aplicada: Boolean(alternativa.principal),
         tabela_alternativa_override_manual: true,
       },
     };
@@ -3886,7 +3904,9 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                                     <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Resumo do calculo</div>
                                     {linhaDetalhe('Motor', det.motor === 'simulador_realizado' ? 'Simulador realizado' : 'Auditoria')}
                                     {linhaDetalhe('Tipo', r.tipo_calculo || det.tipo_calculo || frete.tipoCalculo || '-')}
-                                    {linhaDetalhe('Tabela usada', r.transportadora_tabela || det.transportadora_tabela || '-')}
+                                    {linhaDetalhe('Transportadora', r.transportadora_tabela || det.transportadora_tabela || '-')}
+                                    {linhaDetalhe('Tabela específica', det.tabela_nome_aplicada || det.tabela_alternativa_aplicada || (det.tabela_id_aplicada ? `Tabela ${det.tabela_id_aplicada}` : 'Principal'), true)}
+                                    {det.tabela_id_aplicada ? linhaDetalhe('ID da tabela', det.tabela_id_aplicada) : null}
                                     {linhaDetalhe('Origem tabela', det.origem_cidade || '-')}
                                     {linhaDetalhe('Tabela validada?', det.origem_validada ? `Sim${det.origem_validado_por ? ` (${det.origem_validado_por})` : ''}` : 'Não')}
                                     {linhaDetalhe('Rota/cotacao', det.rota_nome || '-')}
@@ -3943,8 +3963,9 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                                           || (!det.tabela_alternativa_aplicada && alt.principal);
                                         return (
                                           <div key={alt.tabela_id || alt.variante} style={{ borderTop: '1px solid #e2e8f0', marginTop: 8, paddingTop: 8 }}>
-                                            {linhaDetalhe(alt.principal ? `${alt.variante} (principal)` : alt.variante, fmtMaybe(alt.valor_calculado), aplicada)}
-                                            {linhaDetalhe('Divergência vs pago', fmtMaybe(alt.divergencia))}
+                                             {linhaDetalhe(alt.principal ? `${alt.variante} (principal)` : alt.variante, fmtMaybe(alt.valor_calculado), aplicada)}
+                                             {alt.tabela_id ? linhaDetalhe('ID da tabela', alt.tabela_id) : null}
+                                             {linhaDetalhe('Divergência vs pago', fmtMaybe(alt.divergencia))}
                                             <button
                                               className="sim-tab"
                                               type="button"

@@ -419,6 +419,10 @@ function calcularPesosComCubagem({ pesoInformado, cubagemInformada = 0, gradeLin
 
 function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calculo, gradeLinha, fatorCubagem, pesosAplicados, valorNFManualInformado, valorNFOrigem, icmsInfo }) {
   const percentual = toNumber(cotacao?.percentual || cotacao?.fretePercentual || 0);
+  const valorPercentualCalculado = toNumber(calculo.componentesBase?.valorPercentual);
+  const percentualEfetivo = percentual > 0
+    ? percentual
+    : (toNumber(valorNF) > 0 && valorPercentualCalculado > 0 ? (valorPercentualCalculado / toNumber(valorNF)) * 100 : 0);
   const rsKg = toNumber(cotacao?.rsKg || 0);
   const valorFixo = toNumber(cotacao?.valorFixo || cotacao?.taxaAplicada || 0);
   const excesso = toNumber(cotacao?.excesso || cotacao?.excessoPeso || 0);
@@ -438,7 +442,7 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
       // (ver getCotacaoPorRota) — prova visível de que o motor usou CEP em vez
       // de só IBGE pra escolher essa cotação entre as candidatas.
       cepFaixaAplicada: cotacao?.cepInicial && cotacao?.cepFinal ? `${cotacao.cepInicial}-${cotacao.cepFinal}` : '',
-      percentualAplicado: percentual,
+      percentualAplicado: percentualEfetivo,
       rsKgAplicado: rsKg,
       valorFixoAplicado: valorFixo,
       excessoKg: excesso,
@@ -466,7 +470,7 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
       freteMinimoGeneralidade: toNumber(origem?.generalidades?.freteMinimo ?? origem?.generalidades?.frete_minimo ?? origem?.generalidades?.minimo),
       minimoAplicavel: toNumber(calculo.componentesBase?.minimoAplicavel),
       valorKgGarantia: toNumber(calculo.componentesBase?.valorKg),
-      valorPercentualCalculado: toNumber(calculo.componentesBase?.valorPercentual),
+      valorPercentualCalculado,
       valorPesoMaisPercentual: toNumber(calculo.componentesBase?.valorPesoMaisPercentual),
       composicaoFrete: calculo.componentesBase?.composicaoFrete || 'MAIOR_VALOR',
       componenteBase: calculo.componenteBase || '',
@@ -555,6 +559,13 @@ export function calcularItem({ transportadora, origem, rota, peso, valorNF, cuba
   return {
     transportadora: transportadora.nome,
     transportadoraId: transportadora.id,
+    tabelaId: transportadora.negociacaoId || transportadora.id,
+    tabelaNome: transportadora.varianteTabela
+      || transportadora.tabelaNome
+      || transportadora.nomeTabela
+      || transportadora.descricaoTabela
+      || 'Principal',
+    tabelaPrincipal: !transportadora.tabelaAlternativaDe,
     origem: origem.cidade,
     origemId: origem.id,
     canal: origem.canal,
@@ -1564,6 +1575,9 @@ function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo
     emissao: row.emissao || '',
     transportadoraRealizada: row.transportadora || '',
     transportadoraSimulada: candidato.transportadora,
+    tabelaId: candidato.tabelaId || candidato.transportadoraId || null,
+    tabelaNome: candidato.tabelaNome || 'Principal',
+    tabelaPrincipal: candidato.tabelaPrincipal !== false,
     origem: origemCidade || candidato.origem,
     cidadeDestino: destinoInfo.cidade || candidato.cidadeDestino,
     ibgeDestino: destinoInfo.ibge || candidato.ibgeDestino,
