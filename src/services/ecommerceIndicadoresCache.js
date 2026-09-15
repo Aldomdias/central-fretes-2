@@ -14,7 +14,10 @@ const VERSAO_DB = 1;
 // adicional tributario), competencias salvas antes nao tem esse campo e mostrariam
 // zero - subir a versao faz a tela marcar essas competencias como desatualizadas
 // em vez de exibir numero errado.
-export const VERSAO_ITENS = 3;
+// v4: referencia financeira passou a ser Frete Cobrado e a classificacao da
+// transportadora pode ser reconstruida depois do cruzamento. Snapshots v3
+// manteriam perdas zeradas mesmo com a grade ja corrigida.
+export const VERSAO_ITENS = 4;
 
 function abrirDb() {
   return new Promise((resolve, reject) => {

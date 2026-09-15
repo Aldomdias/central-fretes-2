@@ -1,7 +1,7 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient.js';
 import { carregarBaseCompletaDb, carregarBaseFiltradaPorCidadesOrigemDb, carregarBaseFiltradaPorDestinosDb, carregarBaseFiltradaPorOrigemEDestinosDb, carregarMunicipiosIbgeDb } from './freteDatabaseService.js';
 import { montarMapasIbge, resolverIbgeLocal, categoriaCanalRealizado } from '../utils/realizadoLocalEngine.js';
-import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from './vinculosTransportadorasService.js';
+import { aplicarVinculoTransportadora, carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from './vinculosTransportadorasService.js';
 import { construirIndiceResimulacaoEcommerce, calcularCandidatosOrigemEcommerce, calcularResultadoFinalEcommerce } from '../utils/ecommerceResimulacaoEngine.js';
 import { calcularImpactoCampanhaNaEscolha, deduplicarCandidatosEcommerce, isTransportadoraEbazarEcommerce, normalizarNomeCidade } from '../utils/ecommerceAuditoriaPuro.js';
 
@@ -269,12 +269,48 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
   let totalOk = 0;
   let totalSemTracking = 0;
   let totalSemCte = 0;
+  let ultimoId = null;
+  let mapaTrackingDireto = null;
+
+  // A tabela auxiliar foi criada como snapshot e cargas novas de Tracking nao
+  // a atualizam. Quando ela falhar, percorre somente o periodo relevante da
+  // tracking_rows e monta o mapa atual em memoria, sem alterar a simulacao.
+  async function carregarMapaTrackingAtual() {
+    const mapa = new Map();
+    let from = 0;
+    const pagina = 1000;
+    const inicio = filtros.dataInicio || null;
+    let fim = filtros.dataFim || null;
+    if (fim) {
+      const limite = new Date(`${fim}T12:00:00Z`);
+      limite.setUTCDate(limite.getUTCDate() + 45);
+      fim = limite.toISOString().slice(0, 10);
+    }
+    for (;;) {
+      let query = supabase.from('tracking_rows').select('raw,chave_cte');
+      if (inicio) query = query.gte('data', inicio);
+      if (fim) query = query.lte('data', fim);
+      const { data, error } = await query.range(from, from + pagina - 1);
+      if (error) throw error;
+      const rows = data || [];
+      rows.forEach((row) => {
+        const pedido = String(row.raw?.['Pedido Marketplace'] || '').trim();
+        const chave = String(row.chave_cte || '').trim();
+        if (pedido && chave && !mapa.has(pedido)) mapa.set(pedido, chave);
+      });
+      onProgress?.({ etapa: 'indexando_tracking', carregados: from + rows.length, total: null });
+      if (rows.length < pagina) break;
+      from += pagina;
+    }
+    return mapa;
+  }
 
   for (;;) {
     let queryPendentes = supabase
       .from('ecommerce_order_snapshot')
       .select('id, pedido')
-      .eq('cruzamento_status', 'pendente')
+      .in('cruzamento_status', ['pendente', 'sem_tracking', 'sem_cte'])
+      .order('id', { ascending: true })
       .limit(limitePorLote);
     // O alvo da barra ja era calculado pelo recorte da tela, mas a consulta
     // processava pendencias da base inteira. Em bases grandes, o periodo
@@ -284,11 +320,13 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
       cruzamentoStatus: null,
       simStatus: null,
     });
+    if (ultimoId) queryPendentes = queryPendentes.gt('id', ultimoId);
     const { data: pendentes, error: erroPendentes } = await queryPendentes;
     if (erroPendentes) throw erroPendentes;
     if (!pendentes || !pendentes.length) break;
 
-    const pedidos = pendentes.map((p) => p.pedido);
+    ultimoId = pendentes[pendentes.length - 1]?.id || ultimoId;
+    const pedidos = pendentes.map((p) => String(p.pedido || '').trim());
     const mapaTracking = new Map();
     const pedidosFalhaInfra = new Set();
     for (const grupo of chunks(pedidos, 200)) {
@@ -325,6 +363,15 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
           }
         }
       }
+    }
+
+    const faltantesNoSnapshot = pedidos.filter((pedido) => !mapaTracking.has(pedido));
+    if (faltantesNoSnapshot.length) {
+      if (!mapaTrackingDireto) mapaTrackingDireto = await carregarMapaTrackingAtual();
+      faltantesNoSnapshot.forEach((pedido) => {
+        const chave = mapaTrackingDireto.get(pedido);
+        if (chave) mapaTracking.set(pedido, chave);
+      });
     }
 
     const chavesCte = [...new Set([...mapaTracking.values()].filter(Boolean))];
@@ -1424,6 +1471,7 @@ export async function listarEcommerceOrderSnapshot({ limit = 500, filtros = {} }
 export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso = 'cotado', onProgress } = {}) {
   if (!isSupabaseConfigured()) return null;
   const supabase = getSupabaseClient();
+  const mapaVinculos = criarMapaVinculosTransportadoras(await carregarVinculosTransportadoras());
   const resumo = {
     total: 0, ressimulados: 0, mesmaTransportadora: 0, outraTransportadora: 0,
     comparacaoIndefinida: 0, casosPagoAMais: 0, valorPagoAMais: 0,
@@ -1478,6 +1526,10 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
       const desvio = referenciaFinanceira > 0 && Number(sim.sim_valor_ideal) > 0
         ? Number((referenciaFinanceira - Number(sim.sim_valor_ideal)).toFixed(2))
         : Number(sim.sim_diferenca_vs_cte || 0);
+      const nomeUsada = aplicarVinculoTransportadora(row.cte_transportadora, mapaVinculos);
+      const mesmaTransportadora = nomeUsada && sim.sim_transportadora_ideal
+        ? String(nomeUsada).trim().toUpperCase() === String(sim.sim_transportadora_ideal).trim().toUpperCase()
+        : sim.sim_mesma_transportadora;
       const pesoCotado = Number(row.peso_real_cotado || 0);
       const pesoFaturado = Number(row.peso_real_faturado || 0);
       const diferencaPeso = Number(row.diferenca_peso_real || 0);
@@ -1489,7 +1541,7 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
       const valorPago = referenciaFinanceira;
       const impactoCampanhaEscolha = calcularImpactoCampanhaNaEscolha({
         possuiCampanha: Boolean(row.possui_campanha_frete),
-        mesmaTransportadora: sim.sim_mesma_transportadora,
+        mesmaTransportadora,
         freteTabela: Number(row.frete_tabela || 0),
         descontoCampanha: Number(row.desconto_campanha_frete || 0),
         valorIdeal: Number(sim.sim_valor_ideal || 0),
@@ -1507,8 +1559,8 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
         destino: [row.cidade, row.uf].filter(Boolean).join('/'),
         canal: row.canal || '',
         uf: row.uf || '',
-        mesmaTransportadora: sim.sim_mesma_transportadora,
-        perda: sim.sim_mesma_transportadora === false && desvio > 0.009 ? desvio : 0,
+        mesmaTransportadora,
+        perda: mesmaTransportadora === false && desvio > 0.009 ? desvio : 0,
         campanha: Boolean(row.possui_campanha_frete),
         taxaMarketplace: Number(row.frete_a_cobrar_marketplace || 0),
         adicionalTributario: Number(row.adicional_tributario_frete || 0),
@@ -1526,13 +1578,13 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
         valorPago,
         impactoCampanhaEscolha,
       });
-      if (sim.sim_mesma_transportadora === true) resumo.mesmaTransportadora += 1;
-      else if (sim.sim_mesma_transportadora === false) resumo.outraTransportadora += 1;
+      if (mesmaTransportadora === true) resumo.mesmaTransportadora += 1;
+      else if (mesmaTransportadora === false) resumo.outraTransportadora += 1;
       else resumo.comparacaoIndefinida += 1;
       // "Pago a mais" exige outra transportadora E uma alternativa mais barata.
       // Uma diferenca positiva na mesma transportadora nao representa desvio de
       // roteirizacao e fica fora deste indicador.
-      if (sim.sim_mesma_transportadora !== false || desvio <= 0.009) continue;
+      if (mesmaTransportadora !== false || desvio <= 0.009) continue;
       resumo.casosPagoAMais += 1;
       resumo.valorPagoAMais += desvio;
       resumo.maiorDesvio = Math.max(resumo.maiorDesvio, desvio);
