@@ -367,7 +367,7 @@ const COLUNAS_TABELA = [
   { chave: 'sim_origem_validada', label: 'Tabela validada?', tipo: 'bool' },
   { chave: 'sim_valor_ideal', label: 'Valor ideal', tipo: 'moeda' },
   { chave: 'sim_prazo_ideal', label: 'Prazo ideal (dias)', tipo: 'numero2' },
-  { chave: 'sim_diferenca_vs_cte', label: 'Dif. Ideal x CT-e real', tipo: 'moeda' },
+  { chave: 'sim_diferenca_vs_cte', label: 'Dif. Frete cobrado x ideal', tipo: 'moeda' },
   { chave: 'sim_mesma_transportadora', label: 'Mesma transp.?', tipo: 'bool' },
   { chave: 'cds_com_saldo_venda', label: 'CDs c/ Saldo', tipo: 'texto' },
   { chave: 'sim_candidatos', label: 'Opcoes simuladas', tipo: 'acao' },
@@ -485,7 +485,14 @@ function celula(row, coluna) {
     sim_peso_cubado: detalheVencedor?.pesoCubadoCalculado ?? detalheVencedor?.pesoCubado,
     sim_peso_considerado: detalheVencedor?.pesoConsiderado,
   };
-  const valor = row[coluna.chave] ?? valoresCalculados[coluna.chave];
+  // A diferenca pode ser reconstruida sem refazer a simulacao: o valor ideal
+  // ja esta salvo e o Frete Cobrado pertence ao snapshot original.
+  const diferencaFreteCobrado = Number(row.frete_cobrado) > 0 && Number(row.sim_valor_ideal) > 0
+    ? Number((Number(row.frete_cobrado) - Number(row.sim_valor_ideal)).toFixed(2))
+    : null;
+  const valor = coluna.chave === 'sim_diferenca_vs_cte'
+    ? (diferencaFreteCobrado ?? row.sim_diferenca_vs_cte)
+    : (row[coluna.chave] ?? valoresCalculados[coluna.chave]);
   if (coluna.tipo === 'acao') return '';
   if (coluna.tipo === 'moeda') return formatarMoeda(valor);
   if (coluna.tipo === 'numero2') return formatarNumero(valor, 2);
@@ -1125,6 +1132,7 @@ export default function AuditoriaEcommercePage() {
     try {
       const resultado = await cruzarEcommerceComTrackingECte({
         totalAlvo,
+        filtros: filtrosParaQuery(filtrosServidor),
         onProgress: (evt) => setProgressoAmd(evt),
       });
       setMensagem(`Cruzamento concluido. OK: ${formatarNumero(resultado.totalOk)} - Sem tracking: ${formatarNumero(resultado.totalSemTracking)} - Sem CT-e: ${formatarNumero(resultado.totalSemCte)}`);

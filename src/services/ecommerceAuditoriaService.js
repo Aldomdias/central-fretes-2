@@ -261,7 +261,7 @@ export async function diagnosticarEcommerceOrderSnapshot(filtros = {}) {
 // tracking_rows.pedido e o pedido ERP interno (nao bate com o pedido do marketplace); o numero
 // real do marketplace fica em raw->>'Pedido Marketplace', pre-extraido na tabela de mapeamento
 // tracking_pedido_marketplace_map (ver migration 20260728_001) pra nao precisar mexer na tabela grande.
-export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, totalAlvo = null, onProgress } = {}) {
+export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, totalAlvo = null, filtros = {}, onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
   const supabase = getSupabaseClient();
 
@@ -271,11 +271,20 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
   let totalSemCte = 0;
 
   for (;;) {
-    const { data: pendentes, error: erroPendentes } = await supabase
+    let queryPendentes = supabase
       .from('ecommerce_order_snapshot')
       .select('id, pedido')
       .eq('cruzamento_status', 'pendente')
       .limit(limitePorLote);
+    // O alvo da barra ja era calculado pelo recorte da tela, mas a consulta
+    // processava pendencias da base inteira. Em bases grandes, o periodo
+    // escolhido podia nunca ser alcancado.
+    queryPendentes = aplicarFiltrosEcommerce(queryPendentes, {
+      ...filtros,
+      cruzamentoStatus: null,
+      simStatus: null,
+    });
+    const { data: pendentes, error: erroPendentes } = await queryPendentes;
     if (erroPendentes) throw erroPendentes;
     if (!pendentes || !pendentes.length) break;
 
@@ -453,6 +462,15 @@ function aplicarFiltroJaFeitoCenario(query, pesoBase = 'cotado') {
   return query.not(coluna, 'is', null);
 }
 
+// "Incluir sem cruzamento" abrange somente casos ja diagnosticados como
+// sem_tracking/sem_cte. Enquanto estiver pendente, o pedido pode ter CT-e e
+// deve ser cruzado antes para preservar a comparacao financeira.
+function aplicarFiltroCruzamentoResimulacao(query, incluirSemCruzamento = false) {
+  return incluirSemCruzamento
+    ? query.neq('cruzamento_status', 'pendente')
+    : query.eq('cruzamento_status', 'ok');
+}
+
 // Cadastro de referencia codigo do Centro/CD -> cidade (tabela cd_centros), usado para
 // exibir e filtrar a coluna 'CDs com Saldo na Venda' por cidade em vez de codigo cru.
 export async function carregarMapaCdCentros() {
@@ -488,7 +506,7 @@ export async function contarElegiveisResimulacaoEcommerce(filtros = {}, { refaze
   let query = supabase
     .from('ecommerce_order_snapshot')
     .select('id', { count: 'exact', head: true });
-  if (!incluirSemCruzamento) query = query.eq('cruzamento_status', 'ok');
+  query = aplicarFiltroCruzamentoResimulacao(query, incluirSemCruzamento);
   if (!refazerTudo) query = aplicarFiltroPendenteCenario(query, pesoBase);
   query = aplicarFiltrosEcommerce(query, filtros);
   const { count, error } = await query;
@@ -531,7 +549,7 @@ export async function diagnosticarResimulacaoEcommerce(filtros = {}, { incluirSe
   return { configurado: true, elegiveis: elegiveis || 0, pendentes: pendentes || 0, ok: ok || 0 };
 }
 
-const CAMPOS_PEDIDO_RESIMULACAO = 'id, pedido, canal, uf, cidade, peso_cubado_cotado, peso_cubado_faturado, peso_real_cotado, peso_real_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora, cte_uf_origem, cte_cidade_origem, prazo_dias_corridos, cds_com_saldo_venda, cubagem_cotada';
+const CAMPOS_PEDIDO_RESIMULACAO = 'id, pedido, canal, uf, cidade, peso_cubado_cotado, peso_cubado_faturado, peso_real_cotado, peso_real_faturado, valor_pedido, valor_faturado, frete_cobrado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora, cte_uf_origem, cte_cidade_origem, prazo_dias_corridos, cds_com_saldo_venda, cubagem_cotada';
 
 // Resolve os codigos de CD do pedido (campo texto, separado por virgula) para as
 // cidades correspondentes via cd_centros, pra restringir a resimulacao so aos CDs
@@ -1417,7 +1435,7 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
   while (true) {
     let query = supabase
       .from('ecommerce_order_snapshot')
-      .select('id,pedido,data_criacao,sim_status,sim_peso_base,sim_mesma_transportadora,sim_transportadora_ideal,sim_origem_ideal,sim_diferenca_vs_cte,sim_valor_ideal,sim_candidatos,cotado_status:sim_resultado_cotado->>sim_status,cotado_mesma:sim_resultado_cotado->>sim_mesma_transportadora,cotado_transportadora:sim_resultado_cotado->>sim_transportadora_ideal,cotado_origem:sim_resultado_cotado->>sim_origem_ideal,cotado_diferenca:sim_resultado_cotado->>sim_diferenca_vs_cte,cotado_valor:sim_resultado_cotado->>sim_valor_ideal,cotado_candidatos:sim_resultado_cotado->sim_candidatos,faturado_status:sim_resultado_faturado->>sim_status,faturado_mesma:sim_resultado_faturado->>sim_mesma_transportadora,faturado_transportadora:sim_resultado_faturado->>sim_transportadora_ideal,faturado_origem:sim_resultado_faturado->>sim_origem_ideal,faturado_diferenca:sim_resultado_faturado->>sim_diferenca_vs_cte,faturado_valor:sim_resultado_faturado->>sim_valor_ideal,faturado_candidatos:sim_resultado_faturado->sim_candidatos,cte_transportadora,cte_cidade_origem,cte_valor,custo_frete_transportadora,frete_tabela,possui_campanha_frete,frete_a_cobrar_marketplace,adicional_tributario_frete,desconto_campanha_frete,peso_cubado_cotado,peso_cubado_faturado,diferenca_peso_cubado,peso_real_cotado,peso_real_faturado,diferenca_peso_real,cubagem_cotada,cidade,uf,canal')
+      .select('id,pedido,data_criacao,sim_status,sim_peso_base,sim_mesma_transportadora,sim_transportadora_ideal,sim_origem_ideal,sim_diferenca_vs_cte,sim_valor_ideal,sim_candidatos,cotado_status:sim_resultado_cotado->>sim_status,cotado_mesma:sim_resultado_cotado->>sim_mesma_transportadora,cotado_transportadora:sim_resultado_cotado->>sim_transportadora_ideal,cotado_origem:sim_resultado_cotado->>sim_origem_ideal,cotado_diferenca:sim_resultado_cotado->>sim_diferenca_vs_cte,cotado_valor:sim_resultado_cotado->>sim_valor_ideal,cotado_candidatos:sim_resultado_cotado->sim_candidatos,faturado_status:sim_resultado_faturado->>sim_status,faturado_mesma:sim_resultado_faturado->>sim_mesma_transportadora,faturado_transportadora:sim_resultado_faturado->>sim_transportadora_ideal,faturado_origem:sim_resultado_faturado->>sim_origem_ideal,faturado_diferenca:sim_resultado_faturado->>sim_diferenca_vs_cte,faturado_valor:sim_resultado_faturado->>sim_valor_ideal,faturado_candidatos:sim_resultado_faturado->sim_candidatos,cte_transportadora,cte_cidade_origem,cte_valor,frete_cobrado,custo_frete_transportadora,frete_tabela,possui_campanha_frete,frete_a_cobrar_marketplace,adicional_tributario_frete,desconto_campanha_frete,peso_cubado_cotado,peso_cubado_faturado,diferenca_peso_cubado,peso_real_cotado,peso_real_faturado,diferenca_peso_real,cubagem_cotada,cidade,uf,canal')
       .order('id', { ascending: true })
       .limit(limite);
     // O painel financeiro analisa somente resultados concluidos. Ignora o filtro
@@ -1454,7 +1472,12 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
       const outroResultado = resultadoPorPrefixo(cenarioPeso === 'faturado' ? 'cotado' : 'faturado');
       resumo.total += 1;
       resumo.ressimulados += 1;
-      const desvio = Number(sim.sim_diferenca_vs_cte || 0);
+      // Reconstroi o comparativo a partir da simulacao ja salva. Assim uma
+      // mudanca da referencia financeira nao exige apagar/refazer a rodada.
+      const referenciaFinanceira = Number(row.frete_cobrado || row.custo_frete_transportadora || row.cte_valor || 0);
+      const desvio = referenciaFinanceira > 0 && Number(sim.sim_valor_ideal) > 0
+        ? Number((referenciaFinanceira - Number(sim.sim_valor_ideal)).toFixed(2))
+        : Number(sim.sim_diferenca_vs_cte || 0);
       const pesoCotado = Number(row.peso_real_cotado || 0);
       const pesoFaturado = Number(row.peso_real_faturado || 0);
       const diferencaPeso = Number(row.diferenca_peso_real || 0);
@@ -1463,7 +1486,7 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
       const referenciaPeso = Math.max(pesoCotado, pesoCubadoReferencia, 0);
       const pesoPossivelmenteInconsistente = pesoFaturado > 0 && referenciaPeso > 0
         && pesoFaturado > referenciaPeso * 1.5 && pesoFaturado - referenciaPeso > 10;
-      const valorPago = Number(row.custo_frete_transportadora || row.cte_valor || 0);
+      const valorPago = referenciaFinanceira;
       const impactoCampanhaEscolha = calcularImpactoCampanhaNaEscolha({
         possuiCampanha: Boolean(row.possui_campanha_frete),
         mesmaTransportadora: sim.sim_mesma_transportadora,

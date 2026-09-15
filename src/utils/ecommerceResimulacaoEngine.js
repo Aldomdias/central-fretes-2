@@ -199,7 +199,10 @@ function finalizarResultadoPedido(pedido, calculados, canal, { criterioB2c, peso
 
   const ordenados = ordenarCalculadosPorCriterio(calculadosComOriginal, canal, criterioB2c);
   const vencedor = ordenados[0];
-  const custoReal = Number(pedido.custo_frete_transportadora || pedido.cte_valor || 0);
+  // Na auditoria e-commerce, a referencia financeira solicitada pela operacao
+  // e o "Frete Cobrado" do OrderSnapshot. CT-e/custo do arquivo ficam apenas
+  // como fallback para bases antigas que nao trazem essa coluna.
+  const custoReal = Number(pedido.frete_cobrado || pedido.custo_frete_transportadora || pedido.cte_valor || 0);
 
   // Guarda as N melhores opcoes simuladas (nao so a vencedora), com o detalhe
   // do calculo de cada uma, pra poder mostrar na tela e o usuario conferir
