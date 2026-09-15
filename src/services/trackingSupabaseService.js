@@ -540,8 +540,11 @@ export async function pesquisarTrackingSupabase({ chaveNfe, chaveCte, cteNumero,
   if (chaveCteDigitos) query = query.eq('chave_cte', chaveCteDigitos);
   if (String(cteNumero || '').trim()) query = query.ilike('cte_numero', `%${String(cteNumero).trim()}%`);
   if (String(notaFiscal || '').trim()) query = query.ilike('nota_fiscal', `%${String(notaFiscal).trim()}%`);
-  if (String(pedido || '').trim()) query = query.ilike('pedido', `%${String(pedido).trim()}%`);
-  if (String(pedidoErp || '').trim()) query = query.ilike('pedido_erp', `%${String(pedidoErp).trim()}%`);
+  // eq (nao ilike com curinga nas duas pontas): pedido/pedido_erp tem indice
+  // para igualdade, mas o curinga aberto forca varredura da tabela inteira
+  // (milhoes de linhas) e estoura timeout no Supabase.
+  if (String(pedido || '').trim()) query = query.eq('pedido', String(pedido).trim());
+  if (String(pedidoErp || '').trim()) query = query.eq('pedido_erp', String(pedidoErp).trim());
   if (!chaveNfeDigitos && !chaveCteDigitos && !String(cteNumero || '').trim()
     && !String(notaFiscal || '').trim() && !String(pedido || '').trim() && !String(pedidoErp || '').trim()) {
     return { rows: [], erro: 'Informe ao menos um campo de busca.' };

@@ -1,0 +1,23 @@
+
+> plataforma-gestao-fretes@0.1.0 dev
+> vite --host 127.0.0.1
+
+
+  [32m[1mVITE[22m v5.4.21[39m  [2mready in [0m[1m648[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5173[22m/[39m
+[2m10:49:14[22m [36m[1m[vite][22m[39m [32mpage reload [39m[2mindex.html[22m
+[2m10:49:14[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+[2m10:49:14[22m [36m[1m[vite][22m[39m server restarted.
+[2m10:59:33[22m [36m[1m[vite][22m[39m [32m.env.local changed, restarting server...[39m
+[2m10:59:33[22m [36m[1m[vite][22m[39m server restarted.
+[2m11:00:27[22m [36m[1m[vite][22m[39m [32m.env.local changed, restarting server...[39m
+[2m11:00:27[22m [36m[1m[vite][22m[39m server restarted.
+[2m11:00:28[22m [36m[1m[vite][22m[39m [32m.env.local changed, restarting server...[39m
+[2m11:00:28[22m [36m[1m[vite][22m[39m server restarted.
+[2m11:00:28[22m [36m[1m[vite][22m[39m [32m.env.local changed, restarting server...[39m
+[2m11:00:29[22m [36m[1m[vite][22m[39m server restarted.
+[2m11:00:32[22m [36m[1m[vite][22m[39m [32m.env.local changed, restarting server...[39m
+[2m11:00:32[22m [36m[1m[vite][22m[39m server restarted.
+[2m11:01:13[22m [36m[1m[vite][22m[39m [32m.env.local changed, restarting server...[39m
+[2m11:01:13[22m [36m[1m[vite][22m[39m server restarted.

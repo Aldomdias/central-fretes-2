@@ -1,0 +1,10 @@
+<claude-code-hint v="1" type="plugin" value="vercel@claude-plugins-official" />
+Vercel CLI 59.10.0 (Node.js 24.16.0)
+Retrieving project…
+> Running Dev Command “vite --port $PORT”
+> Ready! Available at http://127.0.0.1:3000
+[BABEL] Note: The code generator has deoptimised the styling of C:\Users\aldom\OneDrive\Documentos\GitHub\central-fretes-2\src\pages\SimuladorPage.jsx as it exceeds the max of 500KB.
+[BABEL] Note: The code generator has deoptimised the styling of C:\Users\aldom\OneDrive\Documentos\GitHub\central-fretes-2\src\pages\SimuladorPage.jsx as it exceeds the max of 500KB.
+Error: An unexpected error occurred!
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)

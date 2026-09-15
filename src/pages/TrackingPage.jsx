@@ -12,6 +12,7 @@ import {
   importarTrackingSupabase,
   listarTrackingSupabase,
   pesquisarTrackingSupabase,
+  pesquisarTrackingPorPedidoAmpliado,
   resumirTrackingSupabase,
 } from '../services/trackingSupabaseService';
 import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
@@ -92,6 +93,7 @@ export default function TrackingPage() {
   const [buscaChaveCte, setBuscaChaveCte] = useState('');
   const [buscaCteNumero, setBuscaCteNumero] = useState('');
   const [buscaNotaFiscal, setBuscaNotaFiscal] = useState('');
+  const [buscaPedido, setBuscaPedido] = useState('');
   const [pesquisando, setPesquisando] = useState(false);
   const [resultadoPesquisa, setResultadoPesquisa] = useState(null);
   const [erroPesquisa, setErroPesquisa] = useState('');
@@ -263,12 +265,15 @@ export default function TrackingPage() {
     setErroPesquisa('');
     setResultadoPesquisa(null);
     try {
-      const resultado = await pesquisarTrackingSupabase({
-        chaveNfe: buscaChaveNfe,
-        chaveCte: buscaChaveCte,
-        cteNumero: buscaCteNumero,
-        notaFiscal: buscaNotaFiscal,
-      });
+      const pedido = String(buscaPedido || '').trim();
+      const resultado = pedido
+        ? await pesquisarTrackingPorPedidoAmpliado(pedido)
+        : await pesquisarTrackingSupabase({
+          chaveNfe: buscaChaveNfe,
+          chaveCte: buscaChaveCte,
+          cteNumero: buscaCteNumero,
+          notaFiscal: buscaNotaFiscal,
+        });
       if (resultado.erro) {
         setErroPesquisa(resultado.erro);
       }
@@ -285,6 +290,7 @@ export default function TrackingPage() {
     setBuscaChaveCte('');
     setBuscaCteNumero('');
     setBuscaNotaFiscal('');
+    setBuscaPedido('');
     setResultadoPesquisa(null);
     setErroPesquisa('');
   }
@@ -411,7 +417,11 @@ export default function TrackingPage() {
             <p>Confira se um CT-e ou NF já tem tracking vinculado, antes de gerar o DOCCOB ou de sair procurando na base. Preencha um ou mais campos.</p>
           </div>
         </div>
-        <div className="form-grid" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
+        <div className="form-grid" style={{ gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 10 }}>
+          <label className="field">
+            Pedido
+            <input value={buscaPedido} onChange={(e) => setBuscaPedido(e.target.value)} placeholder="Pedido ERP, Marketplace ou Lojista" />
+          </label>
           <label className="field">
             Chave NF (44 dígitos)
             <input value={buscaChaveNfe} onChange={(e) => setBuscaChaveNfe(e.target.value)} placeholder="Chave de acesso da NF-e" />
@@ -429,6 +439,7 @@ export default function TrackingPage() {
             <input value={buscaNotaFiscal} onChange={(e) => setBuscaNotaFiscal(e.target.value)} placeholder="Ex.: 999" />
           </label>
         </div>
+        <p className="hint-box compact" style={{ marginTop: 8 }}>Buscar por Pedido ignora os outros campos e procura o número como Pedido ERP, Pedido Marketplace ou Pedido Lojista.</p>
         <div className="actions-right" style={{ marginTop: 10, gap: 8 }}>
           <button className="btn-primary" type="button" onClick={pesquisarTracking} disabled={pesquisando}>
             {pesquisando ? 'Pesquisando...' : 'Pesquisar'}

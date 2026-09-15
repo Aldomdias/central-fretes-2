@@ -428,6 +428,8 @@ function chaveOperacionalItemNegociacao(item = {}) {
     upper(item.cidade_destino),
     upper(item.uf_destino),
     texto(item.ibge_destino),
+    texto(item.cep_inicial || original.cep_inicial || original.cepInicial),
+    texto(item.cep_final || original.cep_final || original.cepFinal),
     upper(item.faixa_peso),
     numero(item.peso_inicial),
     numero(item.peso_final),
@@ -451,6 +453,15 @@ function chaveOperacionalItemNegociacao(item = {}) {
     texto(original.fimVigencia || original.fim_vigencia),
     upper(original.cotacaoBase || original.cotacao_base),
   ]);
+}
+
+export function deduplicarItensTabelaNegociacao(itens = []) {
+  const unicos = new Map();
+  (Array.isArray(itens) ? itens : []).forEach((item) => {
+    const chave = chaveOperacionalItemNegociacao(item);
+    if (!unicos.has(chave)) unicos.set(chave, item);
+  });
+  return [...unicos.values()];
 }
 
 async function listarTodosItensTabelaNegociacao(tabelaId, signal = null) {
@@ -1132,7 +1143,10 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
   if (!tabela?.id) throw new Error('Tabela de negociação inválida.');
   const onProgress = typeof opcoes.onProgress === 'function' ? opcoes.onProgress : null;
 
-  const itensEntrada = Array.isArray(itens) ? itens : [];
+  // Impede que arquivos com linhas materializadas repetidamente voltem a
+  // inflar a tabela física e todos os seus índices. A chave inclui CEP para
+  // preservar preços distintos dentro do mesmo município/IBGE.
+  const itensEntrada = deduplicarItensTabelaNegociacao(itens);
   const modo = opcoes.modo || 'porTipo';
 
   if (!itensEntrada.length && !opcoes.limparQuandoVazio) {

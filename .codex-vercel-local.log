@@ -1,0 +1,38 @@
+
+  [32m[1mVITE[22m v5.4.21[39m  [2mready in [0m[1m966[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m3000[22m/[39m
+[2m  [32m➜[39m  [1mNetwork[22m[2m: use [22m[1m--host[22m[2m to expose[22m
+[2m13:30:31[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SimuladorPage.jsx[22m
+[2m13:30:52[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SimuladorPage.jsx[22m
+[2m13:31:58[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SimuladorPage.jsx[22m
+[2m13:32:00[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SimuladorPage.jsx[22m
+[2m13:44:43[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/PainelControleAuditoriaPage.jsx, /src/pages/SimularSaidaTransportadoraPage.jsx, /src/pages/OportunidadeOrigemPage.jsx, /src/pages/OportunidadeTransportadoraPage.jsx, /src/pages/AuditoriaCtePage.jsx, /src/pages/CentralAuditoriaFretesPage.jsx, /src/pages/SimuladorReversaPage.jsx, /src/pages/SimuladorPage.jsx, /src/pages/PerdaRealizadoPage.jsx, /src/pages/AuditoriaEcommercePage.jsx[22m
+[2m13:44:49[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SimuladorReversaPage.jsx, /src/pages/PainelControleAuditoriaPage.jsx, /src/pages/SimularSaidaTransportadoraPage.jsx, /src/pages/OportunidadeOrigemPage.jsx, /src/pages/OportunidadeTransportadoraPage.jsx, /src/pages/AuditoriaCtePage.jsx, /src/pages/CentralAuditoriaFretesPage.jsx, /src/pages/SimuladorPage.jsx[22m
+[2m15:21:19[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:21:37[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:21:42[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:22:08[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:22:25[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:23:08[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:23:24[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:23:48[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:24:08[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:24:33[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:24:44[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:24:56[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:25:01[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:25:13[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:25:44[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:33:57[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/PainelControleAuditoriaPage.jsx, /src/pages/SimularSaidaTransportadoraPage.jsx, /src/pages/OportunidadeOrigemPage.jsx, /src/pages/OportunidadeTransportadoraPage.jsx, /src/pages/AuditoriaCtePage.jsx, /src/pages/CentralAuditoriaFretesPage.jsx, /src/pages/SimuladorReversaPage.jsx, /src/pages/SimuladorPage.jsx, /src/pages/PerdaRealizadoPage.jsx, /src/pages/AuditoriaEcommercePage.jsx[22m
+[2m15:33:57[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SimuladorReversaPage.jsx, /src/pages/PainelControleAuditoriaPage.jsx, /src/pages/SimularSaidaTransportadoraPage.jsx, /src/pages/OportunidadeOrigemPage.jsx, /src/pages/OportunidadeTransportadoraPage.jsx, /src/pages/AuditoriaCtePage.jsx, /src/pages/CentralAuditoriaFretesPage.jsx, /src/pages/SimuladorPage.jsx[22m
+[2m15:33:57[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:34:36[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:34:36[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/PainelControleAuditoriaPage.jsx, /src/pages/SimularSaidaTransportadoraPage.jsx, /src/pages/OportunidadeOrigemPage.jsx, /src/pages/OportunidadeTransportadoraPage.jsx, /src/pages/AuditoriaCtePage.jsx, /src/pages/CentralAuditoriaFretesPage.jsx, /src/pages/SimuladorReversaPage.jsx, /src/pages/SimuladorPage.jsx, /src/pages/PerdaRealizadoPage.jsx, /src/pages/AuditoriaEcommercePage.jsx[22m
+[2m15:34:36[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SimuladorReversaPage.jsx, /src/pages/PainelControleAuditoriaPage.jsx, /src/pages/SimularSaidaTransportadoraPage.jsx, /src/pages/OportunidadeOrigemPage.jsx, /src/pages/OportunidadeTransportadoraPage.jsx, /src/pages/AuditoriaCtePage.jsx, /src/pages/CentralAuditoriaFretesPage.jsx, /src/pages/SimuladorPage.jsx[22m
+[2m15:58:11[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:59:34[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m15:59:34[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ImportacaoIaTabelasPage.jsx[22m
+[2m16:45:36[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/PainelDescontosObtidosPage.jsx[22m
+[2m16:45:37[22m [36m[1m[vite][22m[39m [33mhmr invalidate [39m[2m/src/pages/PainelDescontosObtidosPage.jsx[22m Could not Fast Refresh ("normalizarNomeTransportadora" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m16:45:37[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.jsx[22m
