@@ -250,11 +250,18 @@ export async function diagnosticarEcommerceOrderSnapshot(filtros = {}) {
     filtros
   );
   if (error) throw error;
-  const { count: cruzados } = await aplicarFiltrosEcommerce(
-    supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true }).neq('cruzamento_status', 'pendente'),
-    filtros
-  );
-  return { configurado: true, total: count || 0, cruzados: cruzados || 0 };
+  const contarStatus = async (status) => {
+    const { count: totalStatus, error: erroStatus } = await aplicarFiltrosEcommerce(
+      supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true }).eq('cruzamento_status', status),
+      { ...filtros, cruzamentoStatus: null }
+    );
+    if (erroStatus) throw erroStatus;
+    return totalStatus || 0;
+  };
+  const [cruzados, semTracking, semCte, pendentes] = await Promise.all([
+    contarStatus('ok'), contarStatus('sem_tracking'), contarStatus('sem_cte'), contarStatus('pendente'),
+  ]);
+  return { configurado: true, total: count || 0, cruzados, semTracking, semCte, pendentes };
 }
 
 // Cruza pedidos ainda pendentes: pedido -> tracking_pedido_marketplace_map -> chave_cte -> realizado_local_ctes.chave_cte.
@@ -287,7 +294,13 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
       fim = limite.toISOString().slice(0, 10);
     }
     for (;;) {
-      let query = supabase.from('tracking_rows').select('raw,chave_cte');
+      let query = supabase
+        .from('tracking_rows')
+        .select('id,data,raw,chave_cte')
+        // OFFSET/RANGE sem ordem deterministica repetia e pulava linhas entre
+        // paginas. data+id possui indice e garante que todo o periodo seja lido.
+        .order('data', { ascending: true })
+        .order('id', { ascending: true });
       if (inicio) query = query.gte('data', inicio);
       if (fim) query = query.lte('data', fim);
       const { data, error } = await query.range(from, from + pagina - 1);

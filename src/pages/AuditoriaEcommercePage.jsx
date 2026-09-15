@@ -2105,7 +2105,7 @@ export default function AuditoriaEcommercePage() {
 
       <div className="summary-strip lotacao-summary-mini">
         <div className="summary-card"><span>Pedidos na base</span><strong>{formatarNumero(diagnostico.total)}</strong></div>
-        <div className="summary-card"><span>Ja cruzados</span><strong>{formatarNumero(diagnostico.cruzados)}</strong><small>Pendentes: {formatarNumero((diagnostico.total || 0) - (diagnostico.cruzados || 0))}</small></div>
+        <div className="summary-card"><span>CT-es encontrados</span><strong>{formatarNumero(diagnostico.cruzados)}</strong><small>Sem Tracking: {formatarNumero(diagnostico.semTracking || 0)} · Sem CT-e: {formatarNumero(diagnostico.semCte || 0)} · Pendentes: {formatarNumero(diagnostico.pendentes || 0)}</small></div>
         <div className="summary-card"><span>Elegiveis p/ resimular</span><strong>{formatarNumero(diagnosticoSim.elegiveis)}</strong><small>Com CT-e casado</small></div>
         <div className="summary-card"><span>Resimulados</span><strong>{formatarNumero(diagnosticoSim.ok)}</strong><small>Pendentes: {formatarNumero(diagnosticoSim.pendentes)}</small></div>
       </div>
