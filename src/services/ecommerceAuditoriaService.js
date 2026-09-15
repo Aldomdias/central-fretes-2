@@ -278,12 +278,14 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
   let totalSemCte = 0;
   let ultimoId = null;
   let mapaTrackingDireto = null;
+  let pedidosTrackingDireto = null;
 
   // A tabela auxiliar foi criada como snapshot e cargas novas de Tracking nao
   // a atualizam. Quando ela falhar, percorre somente o periodo relevante da
   // tracking_rows e monta o mapa atual em memoria, sem alterar a simulacao.
   async function carregarMapaTrackingAtual() {
     const mapa = new Map();
+    const presentes = new Set();
     let from = 0;
     const pagina = 1000;
     const inicio = filtros.dataInicio || null;
@@ -309,13 +311,14 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
       rows.forEach((row) => {
         const pedido = String(row.raw?.['Pedido Marketplace'] || '').trim();
         const chave = String(row.chave_cte || '').trim();
+        if (pedido) presentes.add(pedido);
         if (pedido && chave && !mapa.has(pedido)) mapa.set(pedido, chave);
       });
       onProgress?.({ etapa: 'indexando_tracking', carregados: from + rows.length, total: null });
       if (rows.length < pagina) break;
       from += pagina;
     }
-    return mapa;
+    return { mapa, presentes };
   }
 
   for (;;) {
@@ -341,6 +344,7 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
     ultimoId = pendentes[pendentes.length - 1]?.id || ultimoId;
     const pedidos = pendentes.map((p) => String(p.pedido || '').trim());
     const mapaTracking = new Map();
+    const pedidosComTracking = new Set();
     const pedidosFalhaInfra = new Set();
     for (const grupo of chunks(pedidos, 200)) {
       // pedido_marketplace agora e indexado (ver migration 20260728_001), entao isso deveria
@@ -353,6 +357,7 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
           .in('pedido_marketplace', grupo);
         if (erroTracking) throw erroTracking;
         (trackingRows || []).forEach((row) => {
+          if (row.pedido_marketplace) pedidosComTracking.add(String(row.pedido_marketplace).trim());
           if (row.pedido_marketplace && row.chave_cte && !mapaTracking.has(row.pedido_marketplace)) {
             mapaTracking.set(row.pedido_marketplace, row.chave_cte);
           }
@@ -365,6 +370,7 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
               .select('pedido_marketplace, chave_cte')
               .in('pedido_marketplace', subGrupo);
             (trackingRows || []).forEach((row) => {
+              if (row.pedido_marketplace) pedidosComTracking.add(String(row.pedido_marketplace).trim());
               if (row.pedido_marketplace && row.chave_cte && !mapaTracking.has(row.pedido_marketplace)) {
                 mapaTracking.set(row.pedido_marketplace, row.chave_cte);
               }
@@ -380,8 +386,13 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
 
     const faltantesNoSnapshot = pedidos.filter((pedido) => !mapaTracking.has(pedido));
     if (faltantesNoSnapshot.length) {
-      if (!mapaTrackingDireto) mapaTrackingDireto = await carregarMapaTrackingAtual();
+      if (!mapaTrackingDireto) {
+        const direto = await carregarMapaTrackingAtual();
+        mapaTrackingDireto = direto.mapa;
+        pedidosTrackingDireto = direto.presentes;
+      }
       faltantesNoSnapshot.forEach((pedido) => {
+        if (pedidosTrackingDireto?.has(pedido)) pedidosComTracking.add(pedido);
         const chave = mapaTrackingDireto.get(pedido);
         if (chave) mapaTracking.set(pedido, chave);
       });
@@ -404,7 +415,7 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
       const chaveCte = mapaTracking.get(pendente.pedido) || null;
       const cte = chaveCte ? mapaCte.get(chaveCte) : null;
       let status = 'sem_tracking';
-      if (chaveCte && !cte) status = 'sem_cte';
+      if (pedidosComTracking.has(String(pendente.pedido || '').trim()) || chaveCte) status = 'sem_cte';
       if (chaveCte && cte) status = 'ok';
 
       if (status === 'sem_tracking') totalSemTracking += 1;
@@ -1573,7 +1584,9 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
         canal: row.canal || '',
         uf: row.uf || '',
         mesmaTransportadora,
-        perda: mesmaTransportadora === false && desvio > 0.009 ? desvio : 0,
+        // O desvio financeiro da auditoria e Frete Cobrado x Ideal. Ele nao
+        // depende do vinculo do CT-e nem de troca de transportadora.
+        perda: desvio > 0.009 ? desvio : 0,
         campanha: Boolean(row.possui_campanha_frete),
         taxaMarketplace: Number(row.frete_a_cobrar_marketplace || 0),
         adicionalTributario: Number(row.adicional_tributario_frete || 0),
@@ -1594,10 +1607,7 @@ export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso =
       if (mesmaTransportadora === true) resumo.mesmaTransportadora += 1;
       else if (mesmaTransportadora === false) resumo.outraTransportadora += 1;
       else resumo.comparacaoIndefinida += 1;
-      // "Pago a mais" exige outra transportadora E uma alternativa mais barata.
-      // Uma diferenca positiva na mesma transportadora nao representa desvio de
-      // roteirizacao e fica fora deste indicador.
-      if (mesmaTransportadora !== false || desvio <= 0.009) continue;
+      if (desvio <= 0.009) continue;
       resumo.casosPagoAMais += 1;
       resumo.valorPagoAMais += desvio;
       resumo.maiorDesvio = Math.max(resumo.maiorDesvio, desvio);

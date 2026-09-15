@@ -17,7 +17,7 @@ const VERSAO_DB = 1;
 // v4: referencia financeira passou a ser Frete Cobrado e a classificacao da
 // transportadora pode ser reconstruida depois do cruzamento. Snapshots v3
 // manteriam perdas zeradas mesmo com a grade ja corrigida.
-export const VERSAO_ITENS = 4;
+export const VERSAO_ITENS = 5;
 
 function abrirDb() {
   return new Promise((resolve, reject) => {
