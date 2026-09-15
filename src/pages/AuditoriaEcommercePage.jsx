@@ -1127,7 +1127,10 @@ export default function AuditoriaEcommercePage() {
     // desatualizado - ex: pedidos resetados pra 'pendente' via SQL direto no banco,
     // sem passar pela tela) - senao o alvo da barra de progresso fica errado.
     const diagAtual = await diagnosticarEcommerceOrderSnapshot(filtrosParaQuery(filtrosServidor));
-    const totalAlvo = Math.max((diagAtual.total || 0) - (diagAtual.cruzados || 0), 1);
+    const totalAlvo = Math.max(
+      (diagAtual.semTracking || 0) + (diagAtual.semCte || 0) + (diagAtual.pendentes || 0),
+      1
+    );
     setProgressoAmd({ etapa: 'cruzando_tracking', carregados: 0, total: totalAlvo });
     try {
       const resultado = await cruzarEcommerceComTrackingECte({

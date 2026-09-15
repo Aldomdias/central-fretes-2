@@ -7,6 +7,7 @@ export const ETAPA_LABEL_AUDITORIA = {
   carregando_tabelas_completas_fallback: 'Carregando base completa de tabelas',
   processando_ctes: 'Recalculando CT-es',
   cruzando_tracking: 'Cruzando CT-es com o Tracking',
+  indexando_tracking: 'Indexando a base atualizada de Tracking',
   localizando_existentes: 'Localizando CT-es já salvos',
   resimulando: 'Resimulando recorte',
   buscando_ctes: 'Buscando CT-es',
