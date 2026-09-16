@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
+import { opcoesTaxasVerum, VERUM_VERSAO_SEM_TAXA_PADRAO, excessoVerum } from '../utils/verumTaxas';
 import { analisarCoberturaOrigem, baixarModelo, buildImportPayload, exportarInconsistenciasExcel, exportarSecao, gerarArquivosVerum, parseFileToRows } from '../utils/importacao';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import ModalChamadoAmdTabela from '../components/ModalChamadoAmdTabela';
@@ -483,12 +484,27 @@ function formatCoringasTaxa(taxasExtras = []) {
 }
 
 function TaxasEspeciaisTab({ origem, transportadora, store }) {
+  const [configVerumOpen, setConfigVerumOpen] = useState(false);
+  const [configVerum, setConfigVerum] = useState({});
   const podeEditar = store.podeEditarTransportadoras;
   const [form, setForm] = React.useState(TAXA_ESP_VAZIA);
   const [editando, setEditando] = React.useState(null);
   const [feedback, setFeedback] = React.useState(null);
   const inputRef = React.useRef(null);
   const rows = origem.taxasEspeciais || [];
+  const opcoesVerum = opcoesTaxasVerum(rows);
+
+  function abrirConfigVerum() {
+    const configSalva = rows.find((row) => row.verumVersaoSemTaxa)?.verumVersaoSemTaxa || {};
+    setConfigVerum({ ...VERUM_VERSAO_SEM_TAXA_PADRAO, ...configSalva });
+    setConfigVerumOpen(true);
+  }
+
+  function salvarConfigVerum() {
+    store.salvarOrigem(transportadora.id, { ...origem, taxasEspeciais: rows.map((row) => ({ ...row, verumVersaoSemTaxa: { ...configVerum } })) });
+    setConfigVerumOpen(false);
+    setFeedback({ type: 'ok', text: 'Configuração do Verum atualizada. Salve a origem para gravar no cadastro.' });
+  }
 
   function upd(field, val) { setForm((p) => ({ ...p, [field]: val })); }
   function updCoringa(idx, field, val) {
@@ -544,6 +560,7 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
         <span>Por IBGE destino, o sistema prioriza <strong>GRIS</strong> e <strong>Ad Valorem</strong> específicos; se estiverem em branco, usa as generalidades da origem.</span>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {feedback && <span style={{ fontSize: 12, color: feedback.type === 'ok' ? '#166534' : '#b91c1c' }}>{feedback.text}</span>}
+          <button className="btn-secondary" onClick={abrirConfigVerum} disabled={!opcoesVerum.length}>Configurar taxas no Verum</button>
           <button className="btn-secondary" onClick={() => exportarSecao('taxas', exportRows, `${origem.cidade}-taxas.xlsx`)} disabled={!rows.length}>Exportar</button>
           <button className="btn-secondary" onClick={() => baixarModelo('taxas')}>Baixar Modelo</button>
           {podeEditar ? <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar</button> : null}
@@ -551,6 +568,21 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
           <input hidden ref={inputRef} type="file" accept=".xlsx,.xls,.csv" onChange={importarArquivo} />
         </div>
       </div>
+      <Modal open={configVerumOpen} title="Configurar taxas no Verum" onClose={() => setConfigVerumOpen(false)}>
+        <p>Cada combinação de taxas e valores gera uma cotação própria. Destinos com a mesma combinação compartilham as faixas de frete.</p>
+        <p>Marque as taxas para também gerar versões sem elas. Taxas desmarcadas permanecem nas combinações em que foram cadastradas.</p>
+        <table>
+          <thead><tr><th>Taxa cadastrada</th><th>Gerar versão sem esta taxa</th></tr></thead>
+          <tbody>{opcoesVerum.map((opcao) => <tr key={opcao.id}>
+            <td>{opcao.nome}</td>
+            <td><input type="checkbox" aria-label={`Gerar versão sem ${opcao.nome}`} checked={configVerum[opcao.id] === true} disabled={!podeEditar} onChange={(e) => setConfigVerum((prev) => ({ ...prev, [opcao.id]: e.target.checked }))} /></td>
+          </tr>)}</tbody>
+        </table>
+        <div className="actions-right gap-row top-space">
+          <button className="btn-secondary" onClick={() => setConfigVerumOpen(false)}>Cancelar</button>
+          {podeEditar ? <button className="btn-primary" onClick={salvarConfigVerum}>Aplicar configuração</button> : null}
+        </div>
+      </Modal>
       <div className="table-card" style={{ marginTop: 12 }}>
         <table>
           <thead><tr><th>IBGE</th><th>TDA</th><th>TRT</th><th>SUFRAMA</th><th>Outras</th><th>GRIS%</th><th>GRIS min.</th><th>AdVal%</th><th>AdVal min.</th><th>Coringas</th><th></th></tr></thead>
@@ -2225,12 +2257,14 @@ function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
     { name: 'nomeRota', label: 'Nome da Rota' }, { name: 'ibgeOrigem', label: 'IBGE Origem' }, { name: 'ibgeDestino', label: 'IBGE Destino' }, { name: 'canal', label: 'Canal', type: 'select', options: ['ATACADO', 'B2C'] }, { name: 'prazoEntregaDias', label: 'Prazo (dias)' }, { name: 'valorMinimoFrete', label: 'Mínimo (R$)' },
   ];
   const cotacoesColumns = [
-    { key: 'rota', label: 'Rota' }, { key: 'pesoMin', label: 'Peso Mín (kg)' }, { key: 'pesoMax', label: 'Peso Máx (kg)' }, { key: 'valorFixo', label: 'Taxa Aplicada' }, { key: 'excesso', label: 'Excesso' }, { key: 'percentual', label: '% Frete' }, { key: 'freteMinimo', label: 'Frete Mín.' }, { key: 'composicaoFrete', label: 'Composição efetiva', render: (value) => {
+    { key: 'rsKg', label: 'R$/kg (garantia)' },
+    { key: 'rota', label: 'Rota' }, { key: 'pesoMin', label: 'Peso Mín (kg)' }, { key: 'pesoMax', label: 'Peso Máx (kg)' }, { key: 'valorFixo', label: 'Taxa Aplicada' }, { key: 'excesso', label: 'Excesso / R$/kg', render: (_value, row) => excessoVerum(row) }, { key: 'percentual', label: '% Frete' }, { key: 'freteMinimo', label: 'Frete Mín.' }, { key: 'composicaoFrete', label: 'Composição efetiva', render: (value) => {
       const regra = value || '';
       return regra === 'PESO_MAIS_PERCENTUAL' ? 'Peso + % ou mínimo' : 'Padrão (maior valor)';
     } },
   ];
   const cotacoesFields = [
+    { name: 'rsKg', label: 'R$/kg (garantia sobre o peso total)' },
     { name: 'rota', label: 'Rota' }, { name: 'pesoMin', label: 'Peso Mín (kg)' }, { name: 'pesoMax', label: 'Peso Máx (kg)' }, { name: 'valorFixo', label: 'Taxa Aplicada / Faixa' }, { name: 'excesso', label: 'Excesso por kg' }, { name: 'percentual', label: '% Frete' }, { name: 'freteMinimo', label: 'Frete Mínimo' },
     { name: 'composicaoFrete', label: 'Exceção individual de composição', type: 'select', full: true, options: [{ value: '', label: 'Usar regra geral da tabela' }, { value: 'MAIOR_VALOR', label: 'Padrão — maior entre peso, percentual e mínimo' }, { value: 'PESO_MAIS_PERCENTUAL', label: 'Excesso/peso + percentual, respeitando o frete mínimo' }] },
   ];

@@ -1,3 +1,4 @@
+import { gerarDadosVerum, excessoVerum } from './verumTaxas.js';
 import * as XLSX from 'xlsx';
 
 function normalizeHeader(value) {
@@ -28,51 +29,6 @@ function toNumber(value) {
         .replace(',', '.')
         .replace(/[^0-9.-]/g, '')
     ) || 0
-  );
-}
-
-function formatTaxValue(value) {
-  const number = toNumber(value);
-  if (!number) return '';
-  return String(number).replace('.', ',');
-}
-
-function formatPercentValue(value) {
-  const number = toNumber(value);
-  if (!number) return '';
-  return `${String(number).replace('.', ',')}%`;
-}
-
-function buildTaxDescription(taxa = {}) {
-  const partes = [];
-  if (toNumber(taxa.tda)) partes.push(`TDA ${formatTaxValue(taxa.tda)}`);
-  if (toNumber(taxa.trt)) partes.push(`TRT ${formatTaxValue(taxa.trt)}`);
-  if (toNumber(taxa.suframa)) partes.push(`SUFR ${formatTaxValue(taxa.suframa)}`);
-  if (toNumber(taxa.outras)) partes.push(`OUT ${formatTaxValue(taxa.outras)}`);
-  if (toNumber(taxa.gris)) partes.push(`GR ${formatPercentValue(taxa.gris)}`);
-  if (toNumber(taxa.grisMinimo)) partes.push(`GR MIN ${formatTaxValue(taxa.grisMinimo)}`);
-  if (toNumber(taxa.adVal)) partes.push(`ADV ${formatPercentValue(taxa.adVal)}`);
-  if (toNumber(taxa.adValMinimo)) partes.push(`ADV MIN ${formatTaxValue(taxa.adValMinimo)}`);
-  return partes.join(' - ');
-}
-
-function buildVerumRouteName(baseName, taxa = {}) {
-  const nomeBase = String(baseName || '').trim();
-  const complemento = buildTaxDescription(taxa);
-  return complemento ? `${nomeBase} - ${complemento}` : nomeBase;
-}
-
-function findTaxaForRota(origem, rota) {
-  const ibgeDestino = String(rota?.ibgeDestino || '').trim();
-  if (!ibgeDestino) return null;
-  return (origem?.taxasEspeciais || []).find(
-    (item) => String(item?.ibgeDestino || '').trim() === ibgeDestino
-  ) || null;
-}
-
-function hasSpecialTax(taxa = {}) {
-  return ['tda', 'trt', 'suframa', 'outras', 'gris', 'grisMinimo', 'adVal', 'adValMinimo'].some(
-    (key) => toNumber(taxa?.[key])
   );
 }
 
@@ -149,63 +105,7 @@ export function exportarInconsistenciasExcel({
 }
 
 export function gerarArquivosVerum(transportadora, origem = null) {
-  const origens = origem ? [origem] : transportadora?.origens || [];
-  const rotasVerum = [];
-  const cotacoesBase = [];
-  const cotacoesDerivadas = [];
-
-  origens.forEach((origemItem) => {
-    const rotas = Array.isArray(origemItem?.rotas) ? origemItem.rotas : [];
-    const cotacoes = Array.isArray(origemItem?.cotacoes) ? origemItem.cotacoes : [];
-
-    const cotacoesPorRota = cotacoes.reduce((acc, cotacao) => {
-      const chave = normalizeRouteName(cotacao?.rota || cotacao?.nomeRota || cotacao?.cotacao);
-      if (!chave) return acc;
-      if (!acc.has(chave)) acc.set(chave, []);
-      acc.get(chave).push(cotacao);
-      return acc;
-    }, new Map());
-
-    rotas.forEach((rota) => {
-      const nomeBase = String(rota?.cotacao || rota?.nomeRota || '').trim();
-      const taxa = findTaxaForRota(origemItem, rota);
-      const nomeVerum =
-        taxa && hasSpecialTax(taxa) ? buildVerumRouteName(nomeBase, taxa) : nomeBase;
-
-      rotasVerum.push({
-        ...rota,
-        transportadora: transportadora?.nome || '',
-        origem: origemItem?.cidade || '',
-        canal: rota?.canal || origemItem?.canal || '',
-        nomeRota: nomeVerum,
-        cotacao: nomeVerum,
-      });
-
-      if (taxa && hasSpecialTax(taxa)) {
-        const faixas = cotacoesPorRota.get(normalizeRouteName(nomeBase)) || [];
-        faixas.forEach((cotacao) => {
-          cotacoesDerivadas.push({
-            ...cotacao,
-            transportadora: transportadora?.nome || '',
-            origem: origemItem?.cidade || '',
-            canal: cotacao?.canal || origemItem?.canal || '',
-            rota: nomeVerum,
-          });
-        });
-      }
-    });
-
-    cotacoes.forEach((cotacao) => {
-      cotacoesBase.push({
-        ...cotacao,
-        transportadora: transportadora?.nome || '',
-        origem: origemItem?.cidade || '',
-        canal: cotacao?.canal || origemItem?.canal || '',
-      });
-    });
-  });
-
-  const cotacoesVerum = [...cotacoesBase, ...cotacoesDerivadas];
+  const { rotas: rotasVerum, cotacoes: cotacoesVerum } = gerarDadosVerum(transportadora, origem);
   const baseName = origem
     ? `${transportadora?.nome || 'transportadora'}-${origem?.cidade || 'origem'}-verum`
     : `${transportadora?.nome || 'transportadora'}-verum`;
@@ -245,7 +145,7 @@ function sheetRowsForTipoVerum(tipo, rows = []) {
       'Rota do frete': item.rota || '',
       'Peso mínimo': item.pesoMin ?? '',
       'Peso limite': item.pesoMax ?? '',
-      'Excesso de peso': item.excesso ?? '',
+      'Excesso de peso': excessoVerum(item),
       'Taxa aplicada': item.valorFixo ?? '',
       'Frete percentual': item.percentual ?? '',
       'Frete mínimo': item.freteMinimo ?? '',
@@ -606,7 +506,7 @@ function sheetRowsForTipo(tipo, rows = []) {
       'Rota do frete': item.rota || '',
       'Peso mínimo': item.pesoMin ?? '',
       'Peso limite': item.pesoMax ?? '',
-      'Excesso de peso': item.excesso ?? '',
+      'Excesso de peso': excessoVerum(item),
       'Taxa aplicada': item.valorFixo ?? '',
       'Frete percentual': item.percentual ?? '',
       'Frete mínimo': item.freteMinimo ?? '',

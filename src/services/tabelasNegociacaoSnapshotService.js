@@ -18,6 +18,7 @@ const COLUNAS_VINCULO_AMD = [
 ].join(',');
 
 const COLUNAS_EDITOR_TIPO = [
+  'cnpj_transportadora', 'cnpj_raiz_transportadora',
   'id', 'transportadora', 'tipo_negociacao', 'tipo_tabela', 'canal', 'status',
   'descricao', 'regiao', 'origem', 'uf_origem', 'uf_destino',
   'transportadora_base_nome', 'tabela_base_id', 'comparar_com_proprio_realizado',
@@ -27,6 +28,7 @@ const COLUNAS_EDITOR_TIPO = [
 ].join(',');
 
 const COLUNAS_LISTAGEM_NEGOCIACAO = [
+  'cnpj_transportadora', 'cnpj_raiz_transportadora',
   'id', 'transportadora', 'canal', 'tipo_tabela', 'tipo_negociacao', 'status',
   'descricao', 'regiao', 'origem', 'uf_origem', 'uf_destino',
   'data_recebimento', 'data_inicio_prevista', 'data_inicio_vigencia',
@@ -46,7 +48,7 @@ const COLUNAS_LISTAGEM_NEGOCIACAO = [
   COLUNAS_GESTAO,
 ].join(',');
 
-const COLUNAS_CAPA_DETALHE = [
+export const COLUNAS_CAPA_DETALHE = [
   ...COLUNAS_LISTAGEM_NEGOCIACAO.split(','),
   'generalidades', 'modalidade', 'tipo_veiculo',
   'periodo_realizado_inicio', 'periodo_realizado_fim',

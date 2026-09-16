@@ -7,6 +7,7 @@ import {
 } from '../utils/tabelasNegociacaoResumoCapa';
 import {
   carregarHistoricoGestaoNegociacoes,
+  COLUNAS_CAPA_DETALHE,
   carregarLaudoTransportadoraConsolidado,
   carregarResumoCompletoNegociacao,
   listarNegociacoesCapaEditor,
@@ -802,13 +803,13 @@ async function inserirTabelaNegociacaoComFallback(supabase, payload) {
   return result.data;
 }
 
-async function atualizarTabelaNegociacaoComFallback(supabase, id, payload) {
-  let result = await supabase.from('tabelas_negociacao').update(payload).eq('id', id).select().single();
+async function atualizarTabelaNegociacaoComFallback(supabase, id, payload, selectCols = '*') {
+  let result = await atualizarNegociacaoPersistencia(supabase, id, payload, selectCols);
   if (result.error && erroColunaOpcionalAusente(result.error)) {
-    result = await supabase.from('tabelas_negociacao').update(semColunasOpcionais(payload)).eq('id', id).select().single();
+    result = await atualizarNegociacaoPersistencia(supabase, id, semColunasOpcionais(payload), selectCols);
   }
   if (result.error && erroColunaGestaoAusente(result.error)) {
-    result = await supabase.from('tabelas_negociacao').update(semColunasGestao(payload)).eq('id', id).select().single();
+    result = await atualizarNegociacaoPersistencia(supabase, id, semColunasGestao(payload), selectCols);
   }
   if (result.error) throw new Error(result.error.message || 'Erro ao atualizar tabela em negociação.');
   return result.data;
@@ -963,7 +964,7 @@ export async function criarTabelaNegociacao(payload = {}) {
   return inserirTabelaNegociacaoComFallback(supabase, novo);
 }
 
-export async function atualizarTabelaNegociacao(id, payload = {}) {
+export async function atualizarTabelaNegociacao(id, payload = {}, opcoes = {}) {
   const supabase = supabaseOrThrow();
   const tipoNegociacao = payload.tipo_negociacao !== undefined || payload.tipoNegociacao !== undefined || payload.tipo_tabela !== undefined
     ? normalizarTipoNegociacao(payload)
@@ -1046,7 +1047,7 @@ export async function atualizarTabelaNegociacao(id, payload = {}) {
     if (atualizacao[key] === undefined) delete atualizacao[key];
   });
 
-  const atualizada = await atualizarTabelaNegociacaoComFallback(supabase, id, atualizacao);
+  const atualizada = await atualizarTabelaNegociacaoComFallback(supabase, id, atualizacao, opcoes.respostaLeve ? COLUNAS_CAPA_DETALHE : '*');
   const syncCentral = await sincronizarCentralNegociacaoSeVinculada(atualizada, payload);
   return syncCentral ? { ...atualizada, sync_central_solicitacoes: syncCentral } : atualizada;
 }
@@ -1743,6 +1744,7 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
 
   const tabelaCompleta = {
     ...tabela,
+    cnpj_transportadora: normalizarCnpj(dados.cnpj_transportadora || tabela.cnpj_transportadora),
     transportadora: texto(dados.transportadora_oficial_nome || dados.transportadoraOficialNome) || tabela.transportadora,
     tabelas_negociacao_itens: itens,
     tabelas_negociacao_taxas_destino: taxasDestino,
@@ -3112,15 +3114,9 @@ async function aplicarTransicaoGestao(id, transicao = {}) {
     if (payload[key] === undefined) delete payload[key];
   });
 
-  const { data, error } = await supabase
-    .from('tabelas_negociacao')
-    .update(payload)
-    .eq('id', id)
-    .select()
-    .single();
-
+  const { data, error } = await atualizarNegociacaoPersistencia(supabase, id, payload, COLUNAS_CAPA_DETALHE);
   if (error) throw new Error(error.message || 'Erro ao atualizar gestão da negociação.');
-  return data;
+  return mesclarResumoCapaNaTabela(data);
 }
 
 export async function enviarParaAprovacaoGestor(id, dados = {}) {
@@ -3234,15 +3230,9 @@ export async function aprovarGestorNegociacao(id, dados = {}) {
     },
   };
 
-  const { data, error } = await supabase
-    .from('tabelas_negociacao')
-    .update(payload)
-    .eq('id', id)
-    .select()
-    .single();
-
+  const { data, error } = await atualizarNegociacaoPersistencia(supabase, id, payload, COLUNAS_CAPA_DETALHE);
   if (error) throw new Error(error.message || 'Erro ao aprovar negociação pelo gestor.');
-  return data;
+  return mesclarResumoCapaNaTabela(data);
 }
 
 export async function recusarGestorNegociacao(id, dados = {}) {
@@ -3286,7 +3276,7 @@ export async function publicarNegociacaoNaBaseOficial(id, dados = {}) {
     throw new Error('Somente negociações aprovadas pelo gestor podem ser publicadas na base oficial.');
   }
 
-  const promocaoOficial = await promoverTabelaNegociacaoParaOficialInterno(id, dados);
+  const promocaoOficial = await promoverTabelaNegociacaoParaOficialInterno(id, { ...dados, cnpj_transportadora: cnpj });
   const agora = dataISO();
 
   const atualizada = await aplicarTransicaoGestao(id, {
@@ -3330,7 +3320,7 @@ export async function publicarNegociacaoNaBaseOficial(id, dados = {}) {
     incluir_simulacao: false,
     nova_tabela_aprovada_snapshot: promocaoOficial,
     resumo_simulacao: resumoFinal,
-  });
+  }, { respostaLeve: true });
 
   if (texto(tabela.numero_amd || publicada.numero_amd)) {
     try {

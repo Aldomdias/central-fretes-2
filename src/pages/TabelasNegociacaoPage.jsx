@@ -1040,6 +1040,7 @@ export default function TabelasNegociacaoPage() {
   const [carregandoResumoCompleto, setCarregandoResumoCompleto] = useState(false);
   const [simulandoLotacao, setSimulandoLotacao] = useState(false);
   const [salvandoGestao, setSalvandoGestao] = useState(false);
+  const [processamentoPublicacao, setProcessamentoPublicacao] = useState(null);
   const [telaAtiva, setTelaAtiva] = useState(function() {
     return lerEstadoUrlNegociacao().negociacaoId ? 'negociacao' : 'central';
   });
@@ -2742,7 +2743,7 @@ export default function TabelasNegociacaoPage() {
     var sugestao = '';
     try {
       var cadastro = await buscarCnpjTransportadoraCadastro(tabela?.transportadora);
-      if (cadastro?.cnpj) sugestao = formatarCnpj(cadastro.cnpj);
+      if (cnpjPreenchidoValido(cadastro?.cnpj)) return normalizarCnpj(cadastro.cnpj);
     } catch {
       // sugestão é auxiliar; segue com o campo vazio
     }
@@ -2795,6 +2796,7 @@ export default function TabelasNegociacaoPage() {
     if (destinoOficial === null) return;
     var ok = window.confirm('Aprovar e publicar ' + tabela.transportadora + ' dentro de "' + destinoOficial + '" na base oficial agora? A tabela operacional será movida para a base oficial e os itens pesados serão limpos da negociação.');
     if (!ok) return;
+    setProcessamentoPublicacao({ etapa: 'Aprovando negociação', transportadora: tabela.transportadora });
     setSalvandoGestao(true); setErro(''); setSucesso('');
     try {
       var aprovada = await aprovarGestorNegociacao(tabela.id, {
@@ -2805,6 +2807,7 @@ export default function TabelasNegociacaoPage() {
         observacao_aprovacao: obs,
         justificativa_aprovacao: obs || 'Aprovada pelo gestor',
       });
+      setProcessamentoPublicacao({ etapa: 'Publicando na base oficial', transportadora: tabela.transportadora });
       var publicada = await publicarNegociacaoNaBaseOficial(aprovada.id, {
         usuario: sessao,
         cnpj_transportadora: cnpjPublicacao,
@@ -2817,7 +2820,7 @@ export default function TabelasNegociacaoPage() {
       if (selecionada && selecionada.id === publicada.id) setSelecionada(publicada);
       setSucesso('Aprovada, publicada na base oficial e dados operacionais da negociação arquivados.');
     } catch (e) { setErro(e.message || 'Erro ao aprovar e publicar.'); }
-    finally { setSalvandoGestao(false); }
+    finally { setSalvandoGestao(false); setProcessamentoPublicacao(null); }
   }
 
   async function handleRecusarGestor(tabela, obs) {
@@ -2857,6 +2860,7 @@ export default function TabelasNegociacaoPage() {
     if (destinoPublicacao === null) return;
     var ok = window.confirm('Publicar ' + tabela.transportadora + ' dentro de "' + destinoPublicacao + '" na base oficial? Esta ação só é permitida após aprovação do gestor.');
     if (!ok) return;
+    setProcessamentoPublicacao({ etapa: 'Publicando na base oficial', transportadora: tabela.transportadora });
     setSalvandoGestao(true); setErro(''); setSucesso('');
     try {
       var at = await publicarNegociacaoNaBaseOficial(tabela.id, {
@@ -2869,7 +2873,7 @@ export default function TabelasNegociacaoPage() {
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
       setSucesso('Publicada na base oficial.');
     } catch (e) { setErro(e.message || 'Erro ao publicar.'); }
-    finally { setSalvandoGestao(false); }
+    finally { setSalvandoGestao(false); setProcessamentoPublicacao(null); }
   }
 
   async function abrirNegociacaoGestao(tabelaOuId) {
@@ -2945,6 +2949,16 @@ export default function TabelasNegociacaoPage() {
 
   return (
     <div className="simulador-shell">
+      {processamentoPublicacao ? renderModalPortal(
+        <div className="brand-processing-overlay" role="status" aria-live="polite" aria-atomic="true" aria-busy="true">
+          <div className="brand-processing-card">
+            <span className="loading-spinner" aria-hidden="true" />
+            <strong>{processamentoPublicacao.etapa}…</strong>
+            <span>{processamentoPublicacao.transportadora}</span>
+            <small>Aguarde a conclusão. Mantenha esta tela aberta.</small>
+          </div>
+        </div>
+      ) : null}
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {sucesso ? <div className="sim-alert success">{sucesso}</div> : null}
 
