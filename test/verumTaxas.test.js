@@ -82,3 +82,15 @@ test('destino sem taxas mantém cotação base e destino com taxa aponta para a 
   assert.match(resultado.rotas[1].cotacao, /GRIS/);
   assert.equal(resultado.cotacoes.length, 4);
 });
+
+test('faixas de peso duplicadas na base (mesma rota/peso/valor) não são exportadas em dobro', () => {
+  const transportadora = base([{ ibgeDestino: '1' }]);
+  transportadora.origens[0].cotacoes = [
+    { rota: 'SC', pesoMin: 0, pesoMax: 10, valorFixo: 20 },
+    { rota: 'SC', pesoMin: 0, pesoMax: 10, valorFixo: 20 },
+    { rota: 'SC', pesoMin: 10, pesoMax: 20, valorFixo: 30 },
+    { rota: 'SC', pesoMin: 10, pesoMax: 20, valorFixo: 30 },
+  ];
+  const resultado = gerarDadosVerum(transportadora);
+  assert.equal(resultado.cotacoes.length, 2);
+});

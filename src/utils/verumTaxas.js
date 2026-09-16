@@ -51,8 +51,15 @@ export function gerarDadosVerum(transportadora, origem = null) {
       taxas.forEach((taxaItem) => {
         if ((taxa.verumVersaoSemTaxa?.[taxaItem.id] ?? config[taxaItem.id]) === true) combinacoes = [...combinacoes, ...combinacoes.map((itens) => itens.filter((t) => t.id !== taxaItem.id))];
       });
+      const faixasChaves = new Set();
       const faixas = (origemItem.cotacoes || []).filter((c) => chaveNome(c.rota || c.nomeRota || c.cotacao) === chaveNome(base)
-        && (c.grupoTabelaAlternativa || null) === (rota.grupoTabelaAlternativa || null));
+        && (c.grupoTabelaAlternativa || null) === (rota.grupoTabelaAlternativa || null))
+        .filter((c) => {
+          const chaveFaixa = JSON.stringify(['pesoMin', 'pesoMax', 'valorFixo', 'percentual', 'freteMinimo', 'rsKg', 'excesso', 'composicaoFrete', 'tipoCalculo'].map((campo) => c[campo] ?? ''));
+          if (faixasChaves.has(chaveFaixa)) return false;
+          faixasChaves.add(chaveFaixa);
+          return true;
+        });
       combinacoes.forEach((itens) => {
         const nomeRota = nome(itens);
         const chave = JSON.stringify([rota.grupoTabelaAlternativa || null, nomeRota]);
