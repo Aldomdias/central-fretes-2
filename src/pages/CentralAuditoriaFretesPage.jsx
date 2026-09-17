@@ -138,6 +138,7 @@ const OPCOES_LAUDO_TRANSPORTADOR_PADRAO = {
   mostrarCobrancaMenor: false,
   mostrarTolerancia: false,
   mostrarSemCalculo: true,
+  descontarSemCalculo: false,
 };
 
 const DOCCOB_FORM_PADRAO = {
@@ -170,18 +171,19 @@ function prepararLinhaLaudoTransportador(item = {}, opts = OPCOES_LAUDO_TRANSPOR
     || (cobrancaMenorFora && !opts.mostrarCobrancaMenor)
     || (cobrancaMaiorFora && !opts.mostrarCobrancaMaior)
   );
-  const statusPublico = semCalculo ? nomeStatus(item.status || 'SEM_CALCULO') : masked ? 'OK' : nomeStatus(item.status || '-');
-  const diffPublico = masked ? 0 : diferenca;
+  const descontoSemTabela = semCalculo && Boolean(opts?.descontarSemCalculo);
+  const statusPublico = descontoSemTabela ? 'SEM TABELA NEGOCIADA' : semCalculo ? nomeStatus(item.status || 'SEM_CALCULO') : masked ? 'OK' : nomeStatus(item.status || '-');
+  const diffPublico = descontoSemTabela ? Math.max(0, Number(item.valor_frete || 0)) : masked ? 0 : diferenca;
   const calculadoPublico = masked ? Number(item.valor_frete || 0) : calculado;
-  return { statusPublico, diffPublico, calculadoPublico, masked, semCalculo };
+  return { statusPublico, diffPublico, calculadoPublico, masked, semCalculo, descontoSemTabela };
 }
 
 // Aplica a mascara acima numa lista inteira, pra que os cards/resumo do laudo
 // publico batam exatamente com o que aparece nas linhas/detalhe.
 function aplicarMascaraLaudoTransportador(linhas = [], opts = OPCOES_LAUDO_TRANSPORTADOR_PADRAO, tolerancia = TOLERANCIA_PADRAO) {
-  if (!opts?.transportador) return linhas;
   return linhas.map((item) => {
-    const { masked, diffPublico, calculadoPublico } = prepararLinhaLaudoTransportador(item, opts, tolerancia);
+    const { masked, diffPublico, calculadoPublico, descontoSemTabela } = prepararLinhaLaudoTransportador(item, opts, tolerancia);
+    if (descontoSemTabela) return { ...item, diferenca: diffPublico, desconto_sem_tabela: true };
     if (!masked) return item;
     return { ...item, diferenca: diffPublico, calculado_frete: calculadoPublico, status: 'OK' };
   });
@@ -198,6 +200,12 @@ function detalhesCalculoHtmlFatura(item = {}, opts = {}) {
         ${detalheLinhaHtmlAuditoria('Status', 'OK')}
       </div>
     </div>`;
+  }
+  if (opts.descontoSemTabela) {
+    return `<div class="calc-box"><h4>Sem tabela negociada</h4>
+      ${detalheLinhaHtmlAuditoria('Frete pago', dinheiro(item.valor_frete))}
+      ${detalheLinhaHtmlAuditoria('Valor incluído no desconto', dinheiro(diffPublico))}
+      <p>Frete integral incluído no desconto por opção do usuário antes da geração do laudo. Não foi realizado cálculo AMD.</p></div>`;
   }
   const det = parseDetalhesCalculoAuditoria(item.detalhes_calculo);
   if (!det || !Object.keys(det).length) return '<div class="calc-empty">Sem detalhe de calculo salvo para este CT-e.</div>';
@@ -478,6 +486,7 @@ function resumirDetalhesAuditoria(lista = [], tolerancia = TOLERANCIA_PADRAO) {
   const calculoAmd = lista.reduce((acc, item) => acc + Number(item.calculado_frete || 0), 0);
   const cobrancaAcima = lista.reduce((acc, item) => {
     const dif = Number(item.diferenca || 0);
+    if (item.desconto_sem_tabela) return acc + Math.max(dif, 0);
     if (Number(item.calculado_frete || 0) <= 0 || dentroDaToleranciaAuditoria(dif, tolerancia)) return acc;
     return acc + Math.max(dif, 0);
   }, 0);
@@ -932,6 +941,10 @@ function OpcoesLaudoTransportador({ opcoes, onMudar }) {
       <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <input type="checkbox" checked={opcoes.mostrarSemCalculo} onChange={marcar('mostrarSemCalculo')} /> Sem calculo (destacado)
       </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <input type="checkbox" checked={Boolean(opcoes.descontarSemCalculo)} onChange={marcar('descontarSemCalculo')} /> Incluir CT-es sem cálculo no desconto (frete integral)
+      </label>
+      {opcoes.descontarSemCalculo && <span>Esses CT-es sairão no laudo como “Sem tabela negociada”.</span>}
     </div>
   );
 }
@@ -1493,7 +1506,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       const rota = origem || destino
         ? `${origem || '-'}/${base?.uf_origem || ''} -> ${destino || '-'}/${base?.uf_destino || ''}`
         : '-';
-      const { statusPublico, diffPublico, calculadoPublico, masked } = prepararLinhaLaudoTransportador(item, opts, toleranciaLaudo);
+      const { statusPublico, diffPublico, calculadoPublico, masked, descontoSemTabela } = prepararLinhaLaudoTransportador(item, opts, toleranciaLaudo);
       const detalheId = `cte-${escapeHtmlAuditoria(item.numero_cte || item.id || '')}-${Math.random().toString(36).slice(2)}`;
       const pesoLinha = Number(item.peso || base?.peso || 0);
       return `
@@ -1508,7 +1521,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
           <td>${dinheiro(diffPublico)}</td>
           <td>${escapeHtmlAuditoria(statusPublico)}</td>
         </tr>
-        <tr id="${detalheId}" class="detail-row"><td colspan="9">${detalhesCalculoHtmlFatura(item, { masked, calculadoPublico, diffPublico })}</td></tr>`;
+        <tr id="${detalheId}" class="detail-row"><td colspan="9">${detalhesCalculoHtmlFatura(item, { masked, calculadoPublico, diffPublico, descontoSemTabela })}</td></tr>`;
     }).join('');
     const html = `<!doctype html>
 <html lang="pt-BR">
@@ -3615,7 +3628,7 @@ ${portaisLaudo.length ? `
             <td>${dinheiro(linha.diffPublico)}</td>
             <td>${escapeHtmlAuditoria(linha.statusPublico)}</td>
           </tr>
-          <tr id="${detalheId}" class="detail-row"><td colspan="9">${detalhesCalculoHtmlFatura(item, { masked: linha.masked, calculadoPublico: linha.calculadoPublico, diffPublico: linha.diffPublico })}</td></tr>`;
+          <tr id="${detalheId}" class="detail-row"><td colspan="9">${detalhesCalculoHtmlFatura(item, { masked: linha.masked, calculadoPublico: linha.calculadoPublico, diffPublico: linha.diffPublico, descontoSemTabela: linha.descontoSemTabela })}</td></tr>`;
         }).join('');
         return `
         <tr class="main-row" onclick="toggleDetail('${grupoId}')">
