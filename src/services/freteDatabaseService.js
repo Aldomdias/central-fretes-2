@@ -1288,8 +1288,12 @@ export async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [] } =
     if (!nomeNorm) return false;
     // "F P TRANSPORTES" x "FP TRANSPORTES": compara tambem sem espacos.
     const nomeCompacto = nomeNorm.replace(/s+/g, '');
-    return alvoNorm.some((alvo) => alvo && (nomeNorm === alvo || nomeNorm.includes(alvo) || alvo.includes(nomeNorm)
-      || nomeCompacto === alvo.replace(/s+/g, '')));
+    // "contem" so com nomes de 4+ letras: "fp" nao pode puxar toda transportadora
+    // que tenha "fp" no meio do nome (cada uma traz a malha inteira).
+    return alvoNorm.some((alvo) => alvo && (nomeNorm === alvo
+      || nomeCompacto === alvo.replace(/s+/g, '')
+      || (alvo.length >= 4 && nomeNorm.includes(alvo))
+      || (nomeNorm.length >= 4 && alvo.includes(nomeNorm))));
   });
 
   const transportadoraIds = transportadoras.map((item) => item.id).filter(Boolean);
