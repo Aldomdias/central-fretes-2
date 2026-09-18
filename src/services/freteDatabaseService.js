@@ -1261,12 +1261,13 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
   }));
 }
 
-export async function carregarBaseTransportadorasDb(nomes = []) {
+export async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [] } = {}) {
   const nomesLimpos = Array.from(new Set(
     (nomes || []).map((nome) => String(nome || '').trim()).filter(Boolean)
   ));
+  const raizesAlvo = new Set((cnpjs || []).map((cnpj) => onlyDigitsDb(cnpj).slice(0, 8)).filter((raiz) => raiz.length === 8));
 
-  if (!nomesLimpos.length) return carregarBaseCompletaDb();
+  if (!nomesLimpos.length && !raizesAlvo.size) return carregarBaseCompletaDb();
 
   if (!isSupabaseConfigured()) {
     const base = await carregarBaseCompletaDb();
@@ -1281,8 +1282,14 @@ export async function carregarBaseTransportadorasDb(nomes = []) {
   const todasTransportadoras = await fetchAllRows(supabase, 'transportadoras', 'nome', true);
   const alvoNorm = nomesLimpos.map((nome) => normalizeTransportadoraBuscaDb(nome));
   const transportadoras = (todasTransportadoras || []).filter((transportadora) => {
+    const raiz = onlyDigitsDb(transportadora.cnpj_raiz || transportadora.cnpj).slice(0, 8);
+    if (raiz && raizesAlvo.has(raiz)) return true;
     const nomeNorm = normalizeTransportadoraBuscaDb(transportadora.nome || '');
-    return alvoNorm.some((alvo) => nomeNorm === alvo || nomeNorm.includes(alvo) || alvo.includes(nomeNorm));
+    if (!nomeNorm) return false;
+    // "F P TRANSPORTES" x "FP TRANSPORTES": compara tambem sem espacos.
+    const nomeCompacto = nomeNorm.replace(/s+/g, '');
+    return alvoNorm.some((alvo) => alvo && (nomeNorm === alvo || nomeNorm.includes(alvo) || alvo.includes(nomeNorm)
+      || nomeCompacto === alvo.replace(/s+/g, '')));
   });
 
   const transportadoraIds = transportadoras.map((item) => item.id).filter(Boolean);

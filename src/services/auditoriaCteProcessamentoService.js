@@ -326,6 +326,7 @@ function nomeCompativel(nomeTabela, nomeCte) {
   if (!tabela || !cte) return false;
 
   return tabela === cte
+    || tabela.replace(/s+/g, '') === cte.replace(/s+/g, '')
     || (tabela.length >= 5 && cte.includes(tabela))
     || (cte.length >= 5 && tabela.includes(cte));
 }
@@ -338,6 +339,7 @@ function cidadeCompativel(cidadeTabela, cidadeCte) {
   if (!tabela) return false;
 
   return tabela === cte
+    || tabela.replace(/s+/g, '') === cte.replace(/s+/g, '')
     || (tabela.length >= 5 && cte.includes(tabela))
     || (cte.length >= 5 && tabela.includes(cte));
 }
@@ -615,16 +617,12 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
     const cacheKey = nomes.map((nome) => normalizeTransportadoraCompare(nome)).sort().join('|');
     if (!_cacheBaseFretePorTransportadora.has(cacheKey)) {
       onProgress?.({ etapa: 'carregando_tabelas_transportadora', carregados: 0, total: nomes.length });
-      const base = expandirTabelasAlternativasOficiais(normalizarTransportadoras(await carregarBaseTransportadorasDb(nomes)));
-      if (base.length) {
-        _cacheBaseFretePorTransportadora.set(cacheKey, base);
-      } else {
-        onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
-        if (!_cacheBaseFrete) {
-          _cacheBaseFrete = expandirTabelasAlternativasOficiais(normalizarTransportadoras(await carregarBaseCompletaDb(onProgress)));
-        }
-        return _cacheBaseFrete;
-      }
+      const cnpjs = (registros || []).map((cte) => pick(cte, ['cnpj_transportadora', 'cnpjTransportadora', 'cnpj_transportador'])).filter(Boolean);
+      const base = expandirTabelasAlternativasOficiais(normalizarTransportadoras(await carregarBaseTransportadorasDb(nomes, { cnpjs })));
+      // Sem tabela para a transportadora (nem por nome nem por CNPJ): nao adianta
+      // baixar a base inteira (~1M linhas) para uma fatura de poucos CT-es — o
+      // resultado seria o mesmo "sem tabela", so que minutos depois.
+      _cacheBaseFretePorTransportadora.set(cacheKey, base);
     }
     return _cacheBaseFretePorTransportadora.get(cacheKey);
   }
