@@ -73,46 +73,48 @@ test('linha sem chave NF cancela o arquivo inteiro antes de gravar', async () =>
   assert.equal(app.gravacoes(), 0);
 });
 
-function prepararLimpeza(registros, permitirExcluir = true) {
+function prepararLimpeza(registros, permitirExcluir = true, timeoutInicial = false) {
   let base = registros.map((r) => ({ ...r }));
-  const client = { from() {
-    let filtro, ids, limite = Infinity, excluir = false, contar = false;
+  const limites = [];
+  const client = { rpc(nome, params) {
+    const excluir = nome === 'limpar_tracking_competencia_nf_lote';
+    assert.ok(excluir || nome === 'contar_tracking_competencia_nf');
+    const mes = params.p_competencia.slice(2).replace('-', '');
     const query = {
-      select(_campos, options) { contar = options?.head || false; return query; },
-      or(f) { filtro = f; return query; },
-      order() { return query; }, limit(n) { limite = n; return query; },
-      in(_campo, v) { ids = v; return query; }, delete() { excluir = true; return query; },
       setHeader(nome, valor) { assert.equal(nome, 'x-client-info'); assert.equal(valor, 'tracking-limpeza/2026-09'); return query; },
       then(resolve) {
-        if (excluir && ids.reduce((total, id) => total + encodeURIComponent(id).length + 6, 0) > 5000) {
-          return Promise.resolve({ data: null, error: { message: 'Bad Request: URL muito longa' } }).then(resolve);
+        if (excluir) limites.push(params.p_limite);
+        if (excluir && timeoutInicial && limites.length === 1) {
+          return Promise.resolve({ data: null, error: { code: '57014', message: 'statement timeout' } }).then(resolve);
         }
-        const candidatos = base.filter((row) => filtro.split(',').some((parte) => {
-          const [campo, , padrao] = parte.split('.');
-          return new RegExp(`^${padrao.replace(/_/g, '.')}$`).test(row[campo] || '');
-        }) && (!ids || ids.includes(row.id))).slice(0, limite);
+        const candidatos = base.filter((row) =>
+          (row.chave_nfe?.length === 44 && row.chave_nfe.slice(2, 6) === mes)
+          || (row.id.length === 47 && row.id.startsWith('nf-') && row.id.slice(5, 9) === mes)
+        ).slice(0, excluir ? params.p_limite : Infinity);
         if (excluir && permitirExcluir) base = base.filter((r) => !candidatos.includes(r));
-        return Promise.resolve({ data: excluir && !permitirExcluir ? [] : candidatos, count: contar ? candidatos.length : null, error: null }).then(resolve);
+        return Promise.resolve({ data: excluir && !permitirExcluir ? 0 : candidatos.length, error: null }).then(resolve);
       },
     };
     return query;
   } };
   const context = vm.createContext({ getSupabaseClient: () => client, isSupabaseConfigured: () => true, setTimeout });
   vm.runInContext(source, context);
-  return { contar: context.contarTrackingCompetencia, limpar: context.limparTrackingCompetencia, base: () => base };
+  return { contar: context.contarTrackingCompetencia, limpar: context.limparTrackingCompetencia, base: () => base, limites };
 }
 
 test('limpeza usa emissão NF, exclui duplicados em lotes e preserva demais meses', async () => {
   const setembro = `322609${'1'.repeat(38)}`;
   const agosto = `322608${'1'.repeat(38)}`;
   const app = prepararLimpeza([
-    ...Array.from({ length: 501 }, (_, i) => ({ id: `cte-nf-${'2'.repeat(44)}-${String(i).padStart(44, '0')}`, chave_nfe: setembro, data: '2026-10-01' })),
+    ...Array.from({ length: 2501 }, (_, i) => ({ id: `cte-nf-${'2'.repeat(44)}-${String(i).padStart(44, '0')}`, chave_nfe: setembro, data: '2026-10-01' })),
     { id: `nf-${setembro}`, chave_nfe: '' },
     { id: 'agosto', chave_nfe: agosto, data: '2026-09-01' },
     { id: 'sem-chave', chave_nfe: '', data: '2026-09-01' },
   ]);
-  assert.equal(await app.contar('2026-09'), 502);
-  assert.equal((await app.limpar('2026-09')).excluidos, 502);
+  assert.equal(await app.contar('2026-09'), 2502);
+  const progresso = [];
+  assert.equal((await app.limpar('2026-09', ({ excluidos }) => progresso.push(excluidos))).excluidos, 2502);
+  assert.deepEqual(progresso, [2000, 2502]);
   assert.equal(await app.contar('2026-09'), 0);
   assert.deepEqual(app.base().map((r) => r.id), ['agosto', 'sem-chave']);
 });
@@ -122,6 +124,12 @@ test('limpeza valida competência e interrompe quando exclusão não tem permiss
   for (const competencia of ['', '2026-00', '2026-13', '26-09']) {
     await assert.rejects(app.limpar(competencia), /competência válida/);
   }
-  await assert.rejects(app.limpar('2026-09'), /permissão de exclusão/);
+  await assert.rejects(app.limpar('2026-09'), /Ainda há registros/);
   assert.equal(app.base().length, 1);
+});
+
+test('timeout reduz o lote e continua sem perder a contagem', async () => {
+  const app = prepararLimpeza([{ id: 'a', chave_nfe: `322609${'1'.repeat(38)}` }], true, true);
+  assert.equal((await app.limpar('2026-09')).excluidos, 1);
+  assert.deepEqual(app.limites, [2000, 1000, 1000]);
 });

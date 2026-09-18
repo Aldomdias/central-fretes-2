@@ -382,47 +382,43 @@ function filtroEmissaoNf(competencia) {
 }
 
 export async function contarTrackingCompetencia(competencia) {
-  const filtro = filtroEmissaoNf(competencia);
+  filtroEmissaoNf(competencia);
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
-  const { count, error } = await getSupabaseClient().from(TABELA_TRACKING)
-    .select('id', { count: 'exact', head: true }).or(filtro);
+  const { data, error } = await getSupabaseClient().rpc('contar_tracking_competencia_nf', { p_competencia: competencia });
   if (error) throw new Error(`Erro ao consultar competência: ${error.message}`);
-  return Number(count || 0);
+  return Number(data || 0);
 }
 
 export async function limparTrackingCompetencia(competencia, onProgress) {
-  const filtro = filtroEmissaoNf(competencia);
+  filtroEmissaoNf(competencia);
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
   const supabase = getSupabaseClient();
   let excluidos = 0;
+  let limite = 2000;
   try {
     for (;;) {
-      const { data, error } = await supabase.from(TABELA_TRACKING)
-        .select('id').or(filtro).order('id').limit(500);
-      if (error) throw error;
-      if (!data?.length) break;
-      for (let inicio = 0; inicio < data.length;) {
-      // IDs combinados de CT-e/NF chegam a 96 caracteres. Uma lista de 500
-      // excede o limite da URL do gateway e retorna HTTP 400 antes da exclusão.
-      const ids = [];
-      let tamanhoLista = 0;
-      for (const row of data.slice(inicio)) {
-        const tamanhoId = encodeURIComponent(row.id).length + 6;
-        if (ids.length && tamanhoLista + tamanhoId > 5000) break;
-        ids.push(row.id);
-        tamanhoLista += tamanhoId;
+      const { data, error } = await supabase.rpc('limpar_tracking_competencia_nf_lote', {
+        p_competencia: competencia, p_limite: limite,
+      }).setHeader('x-client-info', `tracking-limpeza/${competencia}`);
+      if (error) {
+        if ((error.code === '57014' || /statement timeout/i.test(error.message)) && limite > 125) {
+          limite = Math.max(125, Math.floor(limite / 2));
+          continue;
+        }
+        throw error;
       }
-      const resultado = await supabase.from(TABELA_TRACKING).delete()
-        .or(filtro).in('id', ids)
-        .setHeader('x-client-info', `tracking-limpeza/${competencia}`).select('id');
-      if (resultado.error) throw resultado.error;
-      excluidos += resultado.data?.length || 0;
-      if (resultado.data?.length !== ids.length) {
-        throw new Error('Nem todos os registros foram excluídos. Verifique a permissão de exclusão e tente novamente.');
+      const quantidade = Number(data);
+      if (data === null || !Number.isInteger(quantidade) || quantidade < 0 || quantidade > limite) {
+        throw new Error('O banco retornou uma contagem de exclusão inválida.');
       }
+      if (!quantidade) {
+        if (await contarTrackingCompetencia(competencia)) {
+          throw new Error('Ainda há registros nessa competência. A limpeza não foi concluída; tente novamente.');
+        }
+        break;
+      }
+      excluidos += quantidade;
       onProgress?.({ excluidos });
-      inicio += ids.length;
-      }
     }
   } catch (error) {
     throw new Error(`Limpeza interrompida: ${excluidos} registro(s) excluído(s) da competência ${competencia}. ${error.message}`);
