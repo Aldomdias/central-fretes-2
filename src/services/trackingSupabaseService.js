@@ -401,14 +401,27 @@ export async function limparTrackingCompetencia(competencia, onProgress) {
         .select('id').or(filtro).order('id').limit(500);
       if (error) throw error;
       if (!data?.length) break;
+      for (let inicio = 0; inicio < data.length;) {
+      // IDs combinados de CT-e/NF chegam a 96 caracteres. Uma lista de 500
+      // excede o limite da URL do gateway e retorna HTTP 400 antes da exclusão.
+      const ids = [];
+      let tamanhoLista = 0;
+      for (const row of data.slice(inicio)) {
+        const tamanhoId = encodeURIComponent(row.id).length + 6;
+        if (ids.length && tamanhoLista + tamanhoId > 5000) break;
+        ids.push(row.id);
+        tamanhoLista += tamanhoId;
+      }
       const resultado = await supabase.from(TABELA_TRACKING).delete()
-        .or(filtro).in('id', data.map((row) => row.id)).select('id');
+        .or(filtro).in('id', ids).select('id');
       if (resultado.error) throw resultado.error;
       excluidos += resultado.data?.length || 0;
-      if (resultado.data?.length !== data.length) {
+      if (resultado.data?.length !== ids.length) {
         throw new Error('Nem todos os registros foram excluídos. Verifique a permissão de exclusão e tente novamente.');
       }
       onProgress?.({ excluidos });
+      inicio += ids.length;
+      }
     }
   } catch (error) {
     throw new Error(`Limpeza interrompida: ${excluidos} registro(s) excluído(s) da competência ${competencia}. ${error.message}`);

@@ -83,6 +83,9 @@ function prepararLimpeza(registros, permitirExcluir = true) {
       order() { return query; }, limit(n) { limite = n; return query; },
       in(_campo, v) { ids = v; return query; }, delete() { excluir = true; return query; },
       then(resolve) {
+        if (excluir && ids.reduce((total, id) => total + encodeURIComponent(id).length + 6, 0) > 5000) {
+          return Promise.resolve({ data: null, error: { message: 'Bad Request: URL muito longa' } }).then(resolve);
+        }
         const candidatos = base.filter((row) => filtro.split(',').some((parte) => {
           const [campo, , padrao] = parte.split('.');
           return new RegExp(`^${padrao.replace(/_/g, '.')}$`).test(row[campo] || '');
@@ -102,7 +105,7 @@ test('limpeza usa emissão NF, exclui duplicados em lotes e preserva demais mese
   const setembro = `322609${'1'.repeat(38)}`;
   const agosto = `322608${'1'.repeat(38)}`;
   const app = prepararLimpeza([
-    ...Array.from({ length: 501 }, (_, i) => ({ id: `dup-${i}`, chave_nfe: setembro, data: '2026-10-01' })),
+    ...Array.from({ length: 501 }, (_, i) => ({ id: `cte-nf-${'2'.repeat(44)}-${String(i).padStart(44, '0')}`, chave_nfe: setembro, data: '2026-10-01' })),
     { id: `nf-${setembro}`, chave_nfe: '' },
     { id: 'agosto', chave_nfe: agosto, data: '2026-09-01' },
     { id: 'sem-chave', chave_nfe: '', data: '2026-09-01' },
