@@ -294,12 +294,52 @@ export async function importarTrackingSupabase({
 
 export async function subirTrackingSupabase(rows = [], onProgress) {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  if (rows.some((row) => !getChaveNfeLookup(row))) {
+    throw new Error('Envio cancelado: há linhas sem chave da NF. Complete essas chaves para atualizar sem risco de duplicação.');
+  }
   const supabase = getSupabaseClient();
+  const existentesPorNf = new Map();
+  const chaves = [...new Set(rows.map((row) => getChaveNfeLookup(row)).filter(Boolean))];
+  // Reutiliza o ID persistido: a chegada da chave CT-e não cria outra NF.
+  for (let i = 0; i < chaves.length; i += CHAVE_NFE_LOOKUP_CHUNK) {
+    const parte = chaves.slice(i, i + CHAVE_NFE_LOOKUP_CHUNK);
+    for (const campo of ['chave_nfe', 'id']) {
+      const valores = campo === 'id' ? parte.map((chave) => `nf-${chave}`) : parte;
+      for (let offset = 0; ; offset += 500) {
+        const { data, error } = await supabase.from(TABELA_TRACKING)
+          .select('id,chave_nfe,chave_cte,cte_numero,data_entrega,previsao_cliente,previsao_transportadora,data_transporte')
+          .in(campo, valores).order('id').range(offset, offset + 499);
+        if (error) throw new Error(`Não foi possível verificar NFs existentes. Envio cancelado para evitar duplicação: ${error.message}`);
+        for (const registro of data || []) {
+          const chave = extrairChaveNfeRegistro(registro);
+          if (!chave) continue;
+          const anterior = existentesPorNf.get(chave);
+          if (anterior && anterior.id !== registro.id) {
+            throw new Error(`A NF de chave ${chave} já possui mais de um registro na base. Envio cancelado; revise os registros existentes.`);
+          }
+          existentesPorNf.set(chave, registro);
+        }
+        if ((data || []).length < 500) break;
+      }
+    }
+    onProgress?.({ mensagem: `Verificando NFs para atualizar sem duplicar: ${Math.min(i + parte.length, chaves.length)} de ${chaves.length}...` });
+  }
   const payload = [];
   const ids = new Set();
   let duplicadosIgnorados = 0;
   (rows || []).forEach((row) => {
     const item = toDbRow(row);
+    const chave = getChaveNfeLookup(row);
+    const existente = existentesPorNf.get(chave);
+    if (existente) {
+      item.id = existente.id;
+      // Arquivo ainda sem entrega/CT-e não deve apagar dados já conhecidos.
+      for (const campo of ['chave_cte', 'cte_numero', 'data_entrega', 'previsao_cliente', 'previsao_transportadora', 'data_transporte']) {
+        if (!item[campo] && existente[campo]) item[campo] = existente[campo];
+      }
+    } else if (chave) {
+      item.id = `nf-${chave}`.slice(0, 240);
+    }
     if (ids.has(item.id)) {
       duplicadosIgnorados += 1;
       return;

@@ -341,15 +341,15 @@ export default function TrackingPage() {
             <span>
               <strong>Complementar (só novos)</strong>
               <br />
-              <small>Compara pela <strong>chave da NF</strong> e envia apenas linhas que ainda não estão no Supabase. Ideal para atualização semanal.</small>
+              <small>Compara pela <strong>chave da NF</strong> e envia apenas linhas novas. Não atualiza CT-e, previsões ou entrega de NFs já cadastradas.</small>
             </span>
           </label>
           <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: 12, borderRadius: 12, background: modoImportacao === 'substituir' ? '#fff7ed' : '#f8fafc', border: `1px solid ${modoImportacao === 'substituir' ? '#fdba74' : '#e2e8f0'}`, cursor: 'pointer' }}>
             <input type="radio" name="modo-importacao-tracking" value="substituir" checked={modoImportacao === 'substituir'} onChange={() => setModoImportacao('substituir')} disabled={carregando} style={{ marginTop: 3 }} />
             <span>
-              <strong>Substituir / regravar arquivo inteiro</strong>
+              <strong>Atualizar existentes e incluir novos</strong>
               <br />
-              <small>Faz upsert de todas as linhas do arquivo, atualizando registros com a mesma chave NF.</small>
+              <small>Localiza pela chave da NF e atualiza o mesmo registro, incluindo CT-e e entrega. Inclui NFs novas e preserva CT-e e datas já conhecidos quando esses campos vierem vazios.</small>
             </span>
           </label>
         </div>
