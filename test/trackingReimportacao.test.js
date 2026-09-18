@@ -82,6 +82,7 @@ function prepararLimpeza(registros, permitirExcluir = true) {
       or(f) { filtro = f; return query; },
       order() { return query; }, limit(n) { limite = n; return query; },
       in(_campo, v) { ids = v; return query; }, delete() { excluir = true; return query; },
+      setHeader(nome, valor) { assert.equal(nome, 'x-client-info'); assert.equal(valor, 'tracking-limpeza/2026-09'); return query; },
       then(resolve) {
         if (excluir && ids.reduce((total, id) => total + encodeURIComponent(id).length + 6, 0) > 5000) {
           return Promise.resolve({ data: null, error: { message: 'Bad Request: URL muito longa' } }).then(resolve);

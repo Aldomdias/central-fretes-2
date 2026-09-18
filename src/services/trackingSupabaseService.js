@@ -413,7 +413,8 @@ export async function limparTrackingCompetencia(competencia, onProgress) {
         tamanhoLista += tamanhoId;
       }
       const resultado = await supabase.from(TABELA_TRACKING).delete()
-        .or(filtro).in('id', ids).select('id');
+        .or(filtro).in('id', ids)
+        .setHeader('x-client-info', `tracking-limpeza/${competencia}`).select('id');
       if (resultado.error) throw resultado.error;
       excluidos += resultado.data?.length || 0;
       if (resultado.data?.length !== ids.length) {
