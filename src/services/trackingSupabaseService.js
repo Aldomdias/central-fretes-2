@@ -277,7 +277,8 @@ export async function importarTrackingSupabase({
   const resultado = await subirTrackingSupabase(registros, (event) => {
     onProgress?.({
       ...event,
-      etapa: 'envio',
+      // Eventos só com mensagem vêm da verificação prévia, sem lote/percentual.
+      etapa: event.percentual === undefined ? 'verificacao' : 'envio',
       complementar: statsComplementar,
     });
   });
