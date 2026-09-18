@@ -72,3 +72,52 @@ test('linha sem chave NF cancela o arquivo inteiro antes de gravar', async () =>
   await assert.rejects(app.enviar([{ chaveNfe: chave }, { id: 'sem-chave' }]), /sem chave da NF/);
   assert.equal(app.gravacoes(), 0);
 });
+
+function prepararLimpeza(registros, permitirExcluir = true) {
+  let base = registros.map((r) => ({ ...r }));
+  const client = { from() {
+    let filtro, ids, limite = Infinity, excluir = false, contar = false;
+    const query = {
+      select(_campos, options) { contar = options?.head || false; return query; },
+      or(f) { filtro = f; return query; },
+      order() { return query; }, limit(n) { limite = n; return query; },
+      in(_campo, v) { ids = v; return query; }, delete() { excluir = true; return query; },
+      then(resolve) {
+        const candidatos = base.filter((row) => filtro.split(',').some((parte) => {
+          const [campo, , padrao] = parte.split('.');
+          return new RegExp(`^${padrao.replace(/_/g, '.')}$`).test(row[campo] || '');
+        }) && (!ids || ids.includes(row.id))).slice(0, limite);
+        if (excluir && permitirExcluir) base = base.filter((r) => !candidatos.includes(r));
+        return Promise.resolve({ data: excluir && !permitirExcluir ? [] : candidatos, count: contar ? candidatos.length : null, error: null }).then(resolve);
+      },
+    };
+    return query;
+  } };
+  const context = vm.createContext({ getSupabaseClient: () => client, isSupabaseConfigured: () => true, setTimeout });
+  vm.runInContext(source, context);
+  return { contar: context.contarTrackingCompetencia, limpar: context.limparTrackingCompetencia, base: () => base };
+}
+
+test('limpeza usa emissão NF, exclui duplicados em lotes e preserva demais meses', async () => {
+  const setembro = `322609${'1'.repeat(38)}`;
+  const agosto = `322608${'1'.repeat(38)}`;
+  const app = prepararLimpeza([
+    ...Array.from({ length: 501 }, (_, i) => ({ id: `dup-${i}`, chave_nfe: setembro, data: '2026-10-01' })),
+    { id: `nf-${setembro}`, chave_nfe: '' },
+    { id: 'agosto', chave_nfe: agosto, data: '2026-09-01' },
+    { id: 'sem-chave', chave_nfe: '', data: '2026-09-01' },
+  ]);
+  assert.equal(await app.contar('2026-09'), 502);
+  assert.equal((await app.limpar('2026-09')).excluidos, 502);
+  assert.equal(await app.contar('2026-09'), 0);
+  assert.deepEqual(app.base().map((r) => r.id), ['agosto', 'sem-chave']);
+});
+
+test('limpeza valida competência e interrompe quando exclusão não tem permissão', async () => {
+  const app = prepararLimpeza([{ id: 'a', chave_nfe: `322609${'1'.repeat(38)}` }], false);
+  for (const competencia of ['', '2026-00', '2026-13', '26-09']) {
+    await assert.rejects(app.limpar(competencia), /competência válida/);
+  }
+  await assert.rejects(app.limpar('2026-09'), /permissão de exclusão/);
+  assert.equal(app.base().length, 1);
+});

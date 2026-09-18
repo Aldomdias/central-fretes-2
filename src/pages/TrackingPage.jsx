@@ -14,6 +14,8 @@ import {
   pesquisarTrackingSupabase,
   pesquisarTrackingPorPedidoAmpliado,
   resumirTrackingSupabase,
+  contarTrackingCompetencia,
+  limparTrackingCompetencia,
 } from '../services/trackingSupabaseService';
 import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 
@@ -78,6 +80,7 @@ function resumirArquivosSelecionados(arquivos = []) {
 export default function TrackingPage() {
   const [arquivos, setArquivos] = useState([]);
   const [modoImportacao, setModoImportacao] = useState('complementar');
+  const [competenciaLimpeza, setCompetenciaLimpeza] = useState('');
   const [carregando, setCarregando] = useState(false);
   const [mensagem, setMensagem] = useState('');
   const [erro, setErro] = useState('');
@@ -295,6 +298,38 @@ export default function TrackingPage() {
     setErroPesquisa('');
   }
 
+  async function limparCompetencia() {
+    const competencia = competenciaLimpeza;
+    setCarregando(true);
+    setErro('');
+    setMensagem('Consultando registros da competência pela emissão da NF...');
+    setProgresso(null);
+    try {
+      const total = await contarTrackingCompetencia(competencia);
+      if (!total) {
+        setMensagem(`Nenhum registro identificado pela chave NF na competência ${competencia}.`);
+        return;
+      }
+      if (!window.confirm(`Excluir ${formatarNumero(total)} registros de Tracking da competência ${competencia}, pelo mês de emissão da NF?\n\nA exclusão é definitiva. Tenha o arquivo completo desse mês para reenviar. As outras competências serão preservadas.`)) {
+        setMensagem('Limpeza cancelada.');
+        return;
+      }
+      const resultado = await limparTrackingCompetencia(competencia, ({ excluidos }) => {
+        setMensagem(`Limpando ${competencia}: ${formatarNumero(excluidos)} registro(s) excluído(s)...`);
+      });
+      setResultadoPesquisa(null);
+      setModoImportacao('substituir');
+      setMensagem(`Competência ${competencia} limpa: ${formatarNumero(resultado.excluidos)} registro(s) excluído(s). Reenvie o arquivo completo desse mês usando “Atualizar existentes e incluir novos”.`);
+      await atualizarTela();
+    } catch (error) {
+      setErro(error.message || 'Erro ao limpar competência.');
+      setMensagem('');
+      await atualizarTela();
+    } finally {
+      setCarregando(false);
+    }
+  }
+
   async function limparBase() {
     if (!window.confirm('Deseja limpar a base local de Tracking deste navegador?')) return;
     setCarregando(true);
@@ -322,6 +357,20 @@ export default function TrackingPage() {
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {mensagem ? <div className="sim-alert info">{mensagem}</div> : null}
+
+      <section className="panel-card">
+        <div className="panel-title">Limpar competência do Tracking online</div>
+        <p>Exclui os registros do mês de emissão da NF, identificado pelo ano e mês na chave NF-e. Inclui duplicados desse mês e preserva as outras competências. Tenha o arquivo completo para reenviar após a limpeza.</p>
+        <p className="compact">Registros sem chave NF-e válida não são incluídos nesta limpeza. A base local deste navegador permanece disponível para conferência.</p>
+        <div className="actions-right" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <label className="field">Competência de emissão da NF
+            <input type="month" min="2000-01" max="2099-12" value={competenciaLimpeza} onChange={(event) => setCompetenciaLimpeza(event.target.value)} disabled={carregando} />
+          </label>
+          <button className="btn-secondary" type="button" onClick={limparCompetencia} disabled={carregando || atualizandoResumo || !competenciaLimpeza}>
+            Limpar competência online…
+          </button>
+        </div>
+      </section>
 
       <section className="panel-card">
         <div className="section-row compact-top">

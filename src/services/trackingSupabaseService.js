@@ -372,6 +372,50 @@ export async function subirTrackingSupabase(rows = [], onProgress) {
   return { enviados, total: payload.length, duplicadosIgnorados };
 }
 
+function filtroEmissaoNf(competencia) {
+  if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(competencia || '')) {
+    throw new Error('Selecione uma competência válida (AAAA-MM).');
+  }
+  // A chave NF-e tem 44 dígitos: UF (2), ano/mês de emissão (4), demais (38).
+  const padrao = `__${competencia.slice(2, 4)}${competencia.slice(5, 7)}${'_'.repeat(38)}`;
+  return `chave_nfe.like.${padrao},id.like.nf-${padrao}`;
+}
+
+export async function contarTrackingCompetencia(competencia) {
+  const filtro = filtroEmissaoNf(competencia);
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  const { count, error } = await getSupabaseClient().from(TABELA_TRACKING)
+    .select('id', { count: 'exact', head: true }).or(filtro);
+  if (error) throw new Error(`Erro ao consultar competência: ${error.message}`);
+  return Number(count || 0);
+}
+
+export async function limparTrackingCompetencia(competencia, onProgress) {
+  const filtro = filtroEmissaoNf(competencia);
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  const supabase = getSupabaseClient();
+  let excluidos = 0;
+  try {
+    for (;;) {
+      const { data, error } = await supabase.from(TABELA_TRACKING)
+        .select('id').or(filtro).order('id').limit(500);
+      if (error) throw error;
+      if (!data?.length) break;
+      const resultado = await supabase.from(TABELA_TRACKING).delete()
+        .or(filtro).in('id', data.map((row) => row.id)).select('id');
+      if (resultado.error) throw resultado.error;
+      excluidos += resultado.data?.length || 0;
+      if (resultado.data?.length !== data.length) {
+        throw new Error('Nem todos os registros foram excluídos. Verifique a permissão de exclusão e tente novamente.');
+      }
+      onProgress?.({ excluidos });
+    }
+  } catch (error) {
+    throw new Error(`Limpeza interrompida: ${excluidos} registro(s) excluído(s) da competência ${competencia}. ${error.message}`);
+  }
+  return { excluidos, competencia };
+}
+
 export async function diagnosticarTrackingSupabase() {
   if (!isSupabaseConfigured()) {
     return { configurado: false, total: 0, periodoInicio: '', periodoFim: '', ultimaAtualizacao: '', erro: 'Supabase nao configurado.' };
