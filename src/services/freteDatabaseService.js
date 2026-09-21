@@ -1287,11 +1287,11 @@ export async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [] } =
     const nomeNorm = normalizeTransportadoraBuscaDb(transportadora.nome || '');
     if (!nomeNorm) return false;
     // "F P TRANSPORTES" x "FP TRANSPORTES": compara tambem sem espacos.
-    const nomeCompacto = nomeNorm.replace(/s+/g, '');
+    const nomeCompacto = nomeNorm.replace(/\s+/g, '');
     // "contem" so com nomes de 4+ letras: "fp" nao pode puxar toda transportadora
     // que tenha "fp" no meio do nome (cada uma traz a malha inteira).
     return alvoNorm.some((alvo) => alvo && (nomeNorm === alvo
-      || nomeCompacto === alvo.replace(/s+/g, '')
+      || nomeCompacto === alvo.replace(/\s+/g, '')
       || (alvo.length >= 4 && nomeNorm.includes(alvo))
       || (nomeNorm.length >= 4 && alvo.includes(nomeNorm))));
   });
@@ -1824,6 +1824,84 @@ async function fetchOrigensByIds(supabase, ids = []) {
     rows.push(...(data || []));
   }
   return rows;
+}
+
+// Mapeamento rápido (fase 1): quais transportadoras/origens têm tabela pro
+// destino informado, sem calcular frete ainda. Busca por ibge_destino direto
+// na tabela rotas (index seletivo) em vez de varrer todas as origens do canal
+// primeiro — é o caminho pedido pra "onde tenho opção de frete pra esse
+// destino" sem estourar o timeout de 120s quando a origem fica em branco.
+export async function listarCoberturaDestinoDb({ destinoCodigo, canal = '' } = {}) {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = ensureClient();
+  const ibge = String(destinoCodigo || '').replace(/\D/g, '').slice(0, 7);
+  if (!ibge) return [];
+
+  // Capitais passam de 25 mil rotas e o Supabase devolve no máximo 1.000 linhas
+  // por chamada; sem paginar, origens inteiras sumiam da cobertura.
+  const TAMANHO_PAGINA = 1000;
+  const { count, error: countError } = await supabase
+    .from('rotas')
+    .select('origem_id', { count: 'exact', head: true })
+    .eq('ibge_destino', ibge);
+  if (countError) throw countError;
+  const totalRotas = Number(count || 0);
+  const paginas = [];
+  for (let inicio = 0; inicio < totalRotas; inicio += TAMANHO_PAGINA) {
+    paginas.push(inicio);
+  }
+  const rotas = [];
+  const PARALELO = 6;
+  for (let i = 0; i < paginas.length; i += PARALELO) {
+    // eslint-disable-next-line no-await-in-loop
+    const respostas = await Promise.all(paginas.slice(i, i + PARALELO).map((inicio) => supabase
+      .from('rotas')
+      .select('origem_id, prazo_entrega_dias')
+      .eq('ibge_destino', ibge)
+      .order('id', { ascending: true })
+      .range(inicio, inicio + TAMANHO_PAGINA - 1)));
+    respostas.forEach(({ data, error }) => {
+      if (error) throw error;
+      rotas.push(...(data || []));
+    });
+  }
+  if (!rotas.length) return [];
+
+  const origemIds = Array.from(new Set(rotas.map((item) => item.origem_id).filter(Boolean)));
+  const origens = (await fetchOrigensByIds(supabase, origemIds))
+    .filter((item) => statusOrigemAtivoDb(item.status))
+    .filter((item) => canalCompativelDb(item.canal, canal));
+
+  const origemIdsValidos = new Set(origens.map((item) => item.id));
+  const transportadoraIds = Array.from(new Set(origens.map((item) => item.transportadora_id).filter(Boolean)));
+  const transportadoras = await fetchTransportadorasByIds(supabase, transportadoraIds);
+  const transportadoraPorId = new Map(transportadoras.map((item) => [item.id, item]));
+
+  const prazoPorOrigem = new Map();
+  rotas.forEach((rota) => {
+    if (!origemIdsValidos.has(rota.origem_id)) return;
+    const prazo = Number(rota.prazo_entrega_dias || 0);
+    const atual = prazoPorOrigem.get(rota.origem_id);
+    if (atual === undefined || prazo < atual) prazoPorOrigem.set(rota.origem_id, prazo);
+  });
+
+  const combos = origens
+    .map((origem) => {
+      const transportadora = transportadoraPorId.get(origem.transportadora_id);
+      if (!transportadora || !statusOrigemAtivoDb(transportadora.status)) return null;
+      return {
+        origemId: origem.id,
+        transportadora: transportadora.nome,
+        origem: origem.cidade,
+        codigoCentro: origem.codigo_centro || '',
+        canal: origem.canal,
+        prazo: prazoPorOrigem.get(origem.id) ?? null,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.transportadora.localeCompare(b.transportadora) || a.origem.localeCompare(b.origem));
+
+  return combos;
 }
 
 function parseRouteKeysDb(routeKeys = []) {

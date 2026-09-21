@@ -17,6 +17,8 @@ import PainelUsuariosAtivosPage from './pages/PainelUsuariosAtivosPage';
 import MinhaSenhaPage from './pages/MinhaSenhaPage';
 import FerramentasPage from './pages/FerramentasPage';
 import TrackingPage from './pages/TrackingPage';
+import TrackingPrazosPage from './pages/TrackingPrazosPage';
+import ProdutosCatalogoPage from './pages/ProdutosCatalogoPage';
 import TorreControlePage from './pages/TorreControlePage';
 import ReajustesPage from './pages/ReajustesPage';
 import AvaliacaoPrazosPage from './pages/AvaliacaoPrazosPage';
@@ -51,7 +53,7 @@ import ManutencaoOverlay from './components/ManutencaoOverlay';
 import SupabaseStatusBanner from './components/SupabaseStatusBanner';
 
 const PAGINAS_PERMITIDAS = [
-  'dashboard', 'conceito-app', 'simulador', 'simulador-reversa', 'tabelas-negociacao', 'cte', 'cte-origem-destino', 'auditoria-cte', 'tracking',
+  'dashboard', 'conceito-app', 'simulador', 'simulador-reversa', 'tabelas-negociacao', 'cte', 'cte-origem-destino', 'auditoria-cte', 'tracking', 'tracking-prazos',
   'torre-controle', 'reajustes', 'avaliacao-prazos', 'importacao', 'formatacao', 'importar-template',
   'importacao-ia-tabelas',
   'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
@@ -190,6 +192,8 @@ export default function App() {
     'importar-template': <ImportarTemplatePage store={store} transportadoras={transportadorasMemo} />,
     'importacao-ia-tabelas': <ImportacaoIaTabelasPage usuario={sessao} onMudarPagina={mudarPagina} />,
     tracking: <TrackingPage />,
+    'tracking-prazos': <TrackingPrazosPage />,
+    'produtos-catalogo': <ProdutosCatalogoPage />,
     'auditoria-ecommerce': <AuditoriaEcommercePage />,
     'torre-controle': <TorreControlePage />,
     reajustes: <ReajustesPage transportadoras={transportadorasMemo} />,

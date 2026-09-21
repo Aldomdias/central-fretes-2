@@ -16,12 +16,14 @@ export const MODULOS_SISTEMA = [
   { chave: 'conceito-app', label: 'Conceito visual', grupo: 'Geral' },
   { chave: 'simulador', label: 'Simulador', grupo: 'Fretes' },
   { chave: 'simulador-reversa', label: 'Simulador Reversa', grupo: 'Fretes' },
+  { chave: 'produtos-catalogo', label: 'Catálogo de Produtos', grupo: 'Fretes' },
   { chave: 'tabelas-negociacao', label: 'Tabelas em Negociação', grupo: 'Suprimentos' },
   { chave: 'cte', label: 'CT-e', grupo: 'Auditoria' },
   { chave: 'cte-origem-destino', label: 'CT-e Origem x Destino', grupo: 'Auditoria' },
   { chave: 'auditoria-cte', label: 'Laboratorio Auditoria CT-e', grupo: 'Auditoria' },
   { chave: 'auditoria-ecommerce', label: 'Auditoria E-commerce', grupo: 'Auditoria' },
   { chave: 'tracking', label: 'Tracking', grupo: 'Operação' },
+  { chave: 'tracking-prazos', label: 'Acompanhamento de Entregas', grupo: 'Operação' },
   { chave: 'torre-controle', label: 'Torre de Controle', grupo: 'Operação' },
   { chave: 'reajustes', label: 'Reajustes', grupo: 'Fretes' },
   { chave: 'avaliacao-prazos', label: 'Avaliação de Prazos', grupo: 'Transportadoras' },
@@ -356,6 +358,9 @@ export function usuarioTemAcesso(usuario, pagina) {
 
   const permissoes = permissoesUsuario(usuario);
   if (permissoes.includes('*')) return true;
+
+  if (pagina === 'tracking-prazos' && permissoes.includes('tracking')) return true;
+  if (pagina === 'produtos-catalogo' && permissoes.includes('simulador')) return true;
 
   return permissoes.includes(pagina);
 }

@@ -14,6 +14,7 @@ const MENU_GRUPOS = [
     itens: [
       { chave: 'simulador', label: 'Simulador' },
       { chave: 'simulador-reversa', label: 'Simulador Reversa' },
+      { chave: 'produtos-catalogo', label: 'Catalogo de produtos' },
       { chave: 'tabelas-negociacao', label: 'Negociacoes' },
       { chave: 'reajustes', label: 'Reajustes' },
       { chave: 'perda-realizado', label: 'Perda por transportadora' },
@@ -27,6 +28,7 @@ const MENU_GRUPOS = [
     titulo: 'Operacao',
     itens: [
       { chave: 'tracking', label: 'Tracking' },
+      { chave: 'tracking-prazos', label: 'Acompanhar entregas' },
       { chave: 'torre-controle', label: 'Torre de controle' },
       { chave: 'painel-operacao', label: 'Painel operacao' },
       { chave: 'lotacao', label: 'Lotacao tabelas' },
@@ -83,6 +85,7 @@ const ICONS = {
   'tabelas-negociacao': 'M7 3h7l5 5v13H7a2 2 0 01-2-2V5a2 2 0 012-2zm7 0v5h5M8 12h8M8 16h8',
   cte: 'M7 3h7l5 5v13H7a2 2 0 01-2-2V5a2 2 0 012-2zm2 10h6m-6 4h6',
   tracking: 'M12 3l8 4-8 4-8-4 8-4zm8 8l-8 4-8-4m16 4l-8 4-8-4',
+  'tracking-prazos': 'M4 19V5m0 14h16M7 15l3-3 3 2 5-7m0 0h-4m4 0v4',
   'auditoria-ecommerce': 'M3 3v18h18M7 15l4-4 3 3 5-6',
   'torre-controle': 'M5 20V9h4v11H5zm5 0V4h4v16h-4zm5 0v-7h4v7h-4z',
   reajustes: 'M4 17l6-6 4 4 6-8m0 0h-5m5 0v5',

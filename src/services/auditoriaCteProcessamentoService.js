@@ -272,6 +272,16 @@ function nomeTransportadoraCte(cte = {}, mapaVinculos = null) {
   return aplicarVinculoTransportadora(original, mapaVinculos) || original;
 }
 
+// CNPJ do emitente: campo proprio ou, na falta, as posicoes 7-20 da chave do
+// CT-e. O nome no CT-e pode diferir do cadastro ("F S P TRANSPORTADORA" x
+// "F P TRANSPORTES"), mas o CNPJ da chave e o mesmo.
+function cnpjTransportadoraCte(cte = {}) {
+  const direto = pick(cte, ['cnpj_transportadora', 'cnpjTransportadora', 'cnpj_transportador']);
+  if (direto) return direto;
+  const chave = onlyDigits(pick(cte, ['chave_cte', 'chaveCte', 'chave']));
+  return chave.length === 44 ? chave.slice(6, 20) : '';
+}
+
 function competenciaParaDatas(competencia = '') {
   if (!competencia || !/^\d{4}-\d{2}$/.test(competencia)) return null;
 
@@ -326,7 +336,7 @@ function nomeCompativel(nomeTabela, nomeCte) {
   if (!tabela || !cte) return false;
 
   return tabela === cte
-    || tabela.replace(/s+/g, '') === cte.replace(/s+/g, '')
+    || tabela.replace(/\s+/g, '') === cte.replace(/\s+/g, '')
     || (tabela.length >= 5 && cte.includes(tabela))
     || (cte.length >= 5 && tabela.includes(cte));
 }
@@ -339,7 +349,7 @@ function cidadeCompativel(cidadeTabela, cidadeCte) {
   if (!tabela) return false;
 
   return tabela === cte
-    || tabela.replace(/s+/g, '') === cte.replace(/s+/g, '')
+    || tabela.replace(/\s+/g, '') === cte.replace(/\s+/g, '')
     || (tabela.length >= 5 && cte.includes(tabela))
     || (cte.length >= 5 && tabela.includes(cte));
 }
@@ -603,7 +613,7 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
     // caso seguimos para a busca por transportadora/base completa.
     const cobreTransportadorasDosCtes = baseRotas.length > 0 && (registros || []).every((cte) => {
       const nome = nomeTransportadoraCte(cte, mapaVinculos);
-      const cnpj = pick(cte, ['cnpj_transportadora', 'cnpjTransportadora', 'cnpj_transportador']);
+      const cnpj = cnpjTransportadoraCte(cte);
       return localizarTransportadoras(baseRotas, nome, cnpj).length > 0;
     });
     if (cobreTransportadorasDosCtes) return baseRotas;
@@ -617,7 +627,7 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
     const cacheKey = nomes.map((nome) => normalizeTransportadoraCompare(nome)).sort().join('|');
     if (!_cacheBaseFretePorTransportadora.has(cacheKey)) {
       onProgress?.({ etapa: 'carregando_tabelas_transportadora', carregados: 0, total: nomes.length });
-      const cnpjs = (registros || []).map((cte) => pick(cte, ['cnpj_transportadora', 'cnpjTransportadora', 'cnpj_transportador'])).filter(Boolean);
+      const cnpjs = (registros || []).map(cnpjTransportadoraCte).filter(Boolean);
       const base = expandirTabelasAlternativasOficiais(normalizarTransportadoras(await carregarBaseTransportadorasDb(nomes, { cnpjs })));
       // Sem tabela para a transportadora (nem por nome nem por CNPJ): nao adianta
       // baixar a base inteira (~1M linhas) para uma fatura de poucos CT-es — o
@@ -734,7 +744,7 @@ function pesoCte(cte = {}, opcoes = {}) {
 
 function localizarTabelaAuditoria(transportadoras = [], cte = {}, mapaVinculos = null, transportadoraAlvo = '') {
   const transportadoraNome = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
-  const cnpjTransportadora = pick(cte, ['cnpj_transportadora', 'cnpjTransportadora', 'cnpj_transportador']);
+  const cnpjTransportadora = cnpjTransportadoraCte(cte);
   const candidatasTransportadora = localizarTransportadoras(transportadoras, transportadoraNome, cnpjTransportadora);
   if (!candidatasTransportadora.length) return { status: 'SEM_TABELA' };
 
@@ -1609,12 +1619,13 @@ async function salvarResultadosMes({ supabase, competencia, registros, resumo, o
 // nada no banco. Reaproveita o motor processarCte com as tabelas cadastradas e
 // preserva o cálculo Verum original de cada registro (processarCte o recomputaria
 // a partir de valor_calculado, que num resultado salvo é o recálculo anterior).
-export async function resimularRegistros({ registros, transportadorasAlvo, onProgress, ignorarCubagem = true, percentualContingenciaPeso = 0, apenasDadosCompletos = true } = {}) {
+export async function resimularRegistros({ registros, transportadorasAlvo, onProgress, onCheckpoint, ignorarCubagem = true, percentualContingenciaPeso = 0, apenasDadosCompletos = true } = {}) {
   if (!Array.isArray(registros) || !registros.length) return [];
 
   const registrosParaCalcular = apenasDadosCompletos
     ? registros
     : await enriquecerCtesComTrackingAoVivo(registros, onProgress);
+  await onCheckpoint?.({ etapa: 'cruzado', registros: registrosParaCalcular });
 
   const mapaVinculos = await carregarMapaVinculosAuditoria();
   await precarregarEquivalenciasOrigemAuditoria();

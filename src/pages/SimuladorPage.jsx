@@ -26,7 +26,7 @@ import {
 } from '../utils/calculoFrete';
 import { carregarGradeFrete, salvarGradeFrete } from '../utils/gradeFreteConfig';
 import { carregarGradeFreteCentralizada, salvarGradeFreteCentralizada, restaurarGradeFreteCentralizadaPadrao } from '../services/gradeFreteSupabaseService';
-import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, carregarOrigensTransportadoraDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
+import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, carregarOrigensTransportadoraDb, resolverDestinoIbgeDb, listarCoberturaDestinoDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { aguardarVezProcessamento, atualizarProcessamentoPesado, criarProcessamentoPesado, finalizarProcessamentoPesado, verificarTarefaPesadaAtiva } from '../services/processamentoFilaService';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
@@ -58,6 +58,9 @@ import { LaudoNegociacaoTemplate } from '../components/laudos';
 import amdLogo from '../assets/amd-log.png';
 import { prepararLaudosNegociacao, salvarLaudosNegociacao } from '../services/laudosNegociacaoService';
 import { CANAL_A_DEFINIR, normalizarCanalOperacional } from '../utils/canalTransportadora';
+import { listarProdutosCatalogo } from '../services/produtosCatalogoService';
+import { listarEstoquePorCodigos, listarEstoquePorCentroDoCodigo } from '../services/estoqueCatalogoService';
+import { mapaCentroParaCidade } from '../services/centrosDistribuicaoService';
 import {
   aplicarPoliticaBaseCte,
   carregarConfiguracaoBaseCte,
@@ -4679,6 +4682,67 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [resultadoSimples, setResultadoSimples] = useState([]);
   const [incluirNegociacoesSimples, setIncluirNegociacoesSimples] = useState(false);
 
+  const [origemProduto, setOrigemProduto] = useState('');
+  const [destinoCodigoProduto, setDestinoCodigoProduto] = useState('');
+  const [canalProduto, setCanalProduto] = useState(canais[0] || 'ATACADO');
+  const [buscaProduto, setBuscaProduto] = useState('');
+  // Guarda o produto inteiro (não só o id) pra seleção sobreviver quando o filtro de busca muda.
+  const [produtosSelecionadosMapa, setProdutosSelecionadosMapa] = useState(new Map());
+  const produtosSelecionadosIds = new Set(produtosSelecionadosMapa.keys());
+  const [somenteComEstoque, setSomenteComEstoque] = useState(false);
+  const [quantidadeProduto, setQuantidadeProduto] = useState('');
+  const [mapeandoOrigensComEstoque, setMapeandoOrigensComEstoque] = useState(false);
+  const [origensEstoqueProduto, setOrigensEstoqueProduto] = useState([]);
+  const [origensEstoqueSelecionadas, setOrigensEstoqueSelecionadas] = useState(new Set());
+  const [nfProduto, setNfProduto] = useState('');
+  const [usarPrazoProduto, setUsarPrazoProduto] = useState(true);
+  const [resultadoProduto, setResultadoProduto] = useState([]);
+  const [produtosCatalogo, setProdutosCatalogo] = useState([]);
+  const [carregandoProdutos, setCarregandoProdutos] = useState(false);
+  const [estoquePorCodigoProduto, setEstoquePorCodigoProduto] = useState(new Map());
+  const produtosComEstoqueInfo = produtosCatalogo.map((item) => ({
+    ...item,
+    disponivel: estoquePorCodigoProduto.get(String(item.codigo).toUpperCase())?.disponivel ?? null,
+  }));
+  const produtosListaProduto = produtosComEstoqueInfo;
+  const produtosSelecionadosBase = Array.from(produtosSelecionadosMapa.values());
+  const produtosSelecionados = somenteComEstoque
+    ? produtosSelecionadosBase.filter((item) => Number(item.disponivel) > 0)
+    : produtosSelecionadosBase;
+
+  const [coberturaProduto, setCoberturaProduto] = useState([]);
+  const [origensSelecionadasProduto, setOrigensSelecionadasProduto] = useState(new Set());
+  const [carregandoCoberturaProduto, setCarregandoCoberturaProduto] = useState(false);
+  const [erroCoberturaProduto, setErroCoberturaProduto] = useState('');
+
+  useEffect(() => {
+    if (aba !== 'produto') return;
+    let cancelado = false;
+    setCarregandoProdutos(true);
+    listarProdutosCatalogo({ busca: buscaProduto })
+      .then(async (lista) => {
+        if (cancelado) return;
+        setProdutosCatalogo(lista);
+        try {
+          setEstoquePorCodigoProduto(await listarEstoquePorCodigos(lista.map((item) => item.codigo)));
+        } catch {
+          setEstoquePorCodigoProduto(new Map());
+        }
+      })
+      .catch(() => { if (!cancelado) setProdutosCatalogo([]); })
+      .finally(() => { if (!cancelado) setCarregandoProdutos(false); });
+    return () => { cancelado = true; };
+  }, [aba, buscaProduto]);
+
+  const alternarProdutoSelecionado = (id) => {
+    const produto = produtosComEstoqueInfo.find((item) => item.id === id);
+    setProdutosSelecionadosMapa((atual) => {
+      const novo = new Map(atual);
+      if (novo.has(id)) novo.delete(id); else if (produto) novo.set(id, produto);
+      return novo;
+    });
+  };
+
   const [transportadora, setTransportadora] = useState('');
   const [canalTransportadora, setCanalTransportadora] = useState(canais[0] || 'ATACADO');
   const [origemTransportadora, setOrigemTransportadora] = useState('');
@@ -6100,6 +6164,284 @@ export default function SimuladorPage({ transportadoras = [] }) {
     }));
     finalizarProcessamentoUi('Simulação concluída', 'Resultado da simulação simples carregado.', 100);
   };
+  // Fase 1: mapeia rápido (só pela tabela rotas, filtrando por ibge_destino)
+  // quais transportadoras/origens têm tabela pro destino, sem calcular frete
+  // ainda. Evita a varredura das ~299 origens que estourava os 120s quando o
+  // usuário deixava a origem em branco.
+  const onMapearCoberturaProduto = async () => {
+    if (!destinoCodigoProduto) {
+      setErroCoberturaProduto('Informe o destino (CEP, IBGE ou cidade) para mapear as opções.');
+      return;
+    }
+    setCarregandoCoberturaProduto(true);
+    setErroCoberturaProduto('');
+    setCoberturaProduto([]);
+    try {
+      const destinoResolvido = await resolverDestinoInput(destinoCodigoProduto);
+      const destinoFinal = destinoResolvido?.ibge || destinoCodigoProduto;
+      if (!destinoResolvido?.ibge) {
+        setErroCoberturaProduto('Não foi possível identificar o destino informado na base IBGE/CEP. Use cidade, IBGE ou CEP válido.');
+        return;
+      }
+      let combos = await listarCoberturaDestinoDb({ destinoCodigo: destinoFinal, canal: canalProduto });
+      const filtroOrigem = String(origemProduto || '').trim().toLowerCase();
+      if (filtroOrigem) combos = combos.filter((item) => item.origem.toLowerCase().includes(filtroOrigem));
+      setCoberturaProduto(combos);
+      setOrigensSelecionadasProduto(new Set(combos.map((item) => item.origemId)));
+      if (!combos.length) setErroCoberturaProduto('Nenhuma transportadora tem tabela cadastrada para esse destino/canal.');
+    } catch (error) {
+      setErroCoberturaProduto(error.message || 'Erro ao mapear opções para o destino.');
+    } finally {
+      setCarregandoCoberturaProduto(false);
+    }
+  };
+
+  function normalizarNomeOrigem(valor) {
+    return String(valor || '')
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .trim().toUpperCase();
+  }
+
+  // Passo 1: lista as cidades onde o(s) produto(s) selecionado(s) têm estoque
+  // >= quantidade pedida (estoque_por_centro + mapa centro -> cidade). Ainda não
+  // consulta transportadora: o usuário escolhe as origens antes.
+  const onMapearOrigensComEstoque = async () => {
+    if (!produtosSelecionadosBase.length) {
+      setErroCoberturaProduto('Selecione ao menos um produto do catálogo para mapear origens com estoque.');
+      return;
+    }
+    const quantidadeAlvo = Number(String(quantidadeProduto).replace(',', '.')) || 0;
+    if (quantidadeAlvo <= 0) {
+      setErroCoberturaProduto('Informe a quantidade desejada para mapear as origens com estoque.');
+      return;
+    }
+    setMapeandoOrigensComEstoque(true);
+    setErroCoberturaProduto('');
+    setOrigensEstoqueProduto([]);
+    setOrigensEstoqueSelecionadas(new Set());
+    setCoberturaProduto([]);
+    setResultadoProduto([]);
+    try {
+      const mapaCentros = await mapaCentroParaCidade();
+      let porCidadeComum = null;
+      for (const produto of produtosSelecionadosBase) {
+        // eslint-disable-next-line no-await-in-loop
+        const linhasEstoque = await listarEstoquePorCentroDoCodigo(produto.codigo);
+        const porCidade = new Map();
+        linhasEstoque.forEach((linha) => {
+          const centro = String(linha.centro).trim().toUpperCase();
+          const cidade = mapaCentros.get(centro);
+          if (!cidade) return;
+          const chave = normalizarNomeOrigem(cidade);
+          const atual = porCidade.get(chave) || { chave, cidade, quantidade: 0, centros: [] };
+          atual.quantidade += Number(linha.quantidade || 0);
+          atual.centros.push(centro);
+          porCidade.set(chave, atual);
+        });
+        const suficientes = new Map(Array.from(porCidade.entries()).filter(([, item]) => item.quantidade >= quantidadeAlvo));
+        if (porCidadeComum === null) {
+          porCidadeComum = suficientes;
+        } else {
+          const intersecao = new Map();
+          porCidadeComum.forEach((item, chave) => {
+            const outro = suficientes.get(chave);
+            if (!outro) return;
+            intersecao.set(chave, {
+              ...item,
+              quantidade: Math.min(item.quantidade, outro.quantidade),
+              centros: Array.from(new Set([...item.centros, ...outro.centros])),
+            });
+          });
+          porCidadeComum = intersecao;
+        }
+      }
+      const lista = Array.from((porCidadeComum || new Map()).values()).sort((a, b) => b.quantidade - a.quantidade);
+      setOrigensEstoqueProduto(lista);
+      setOrigensEstoqueSelecionadas(new Set(lista.map((item) => item.chave)));
+      if (!lista.length) setErroCoberturaProduto('Nenhuma origem tem estoque suficiente (≥ quantidade informada) para o(s) produto(s) selecionado(s).');
+    } catch (error) {
+      setErroCoberturaProduto(error.message || 'Erro ao mapear origens com estoque.');
+    } finally {
+      setMapeandoOrigensComEstoque(false);
+    }
+  };
+
+  const alternarOrigemEstoqueSelecionada = (chave) => {
+    setOrigensEstoqueSelecionadas((atual) => {
+      const novo = new Set(atual);
+      if (novo.has(chave)) novo.delete(chave); else novo.add(chave);
+      return novo;
+    });
+  };
+
+  // Origem da tabela casa com a cidade de estoque pelo código do centro ou pelo
+  // nome — as origens costumam vir como "Itajaí X São Paulo HUB", então aceita
+  // prefixo/contém e não só igualdade.
+  function origemCasaComEstoque(combo, origensEscolhidas) {
+    const centroCombo = String(combo.codigoCentro || '').trim().toUpperCase();
+    const nomeCombo = normalizarNomeOrigem(combo.origem).replace(/\s+/g, ' ');
+    return origensEscolhidas.some((item) => {
+      if (centroCombo && item.centros.includes(centroCombo)) return true;
+      const cidade = item.chave.replace(/\s+/g, ' ');
+      return nomeCombo === cidade || nomeCombo.startsWith(`${cidade} `) || (cidade.length >= 5 && nomeCombo.includes(cidade));
+    });
+  }
+
+  // Passo 2: com as origens escolhidas, busca só as transportadoras que atendem o destino a partir delas.
+  const onBuscarTransportadorasOrigensEstoque = async () => {
+    if (!destinoCodigoProduto) {
+      setErroCoberturaProduto('Informe o destino (CEP, IBGE ou cidade) para buscar as transportadoras.');
+      return;
+    }
+    const origensEscolhidas = origensEstoqueProduto.filter((item) => origensEstoqueSelecionadas.has(item.chave));
+    if (!origensEscolhidas.length) {
+      setErroCoberturaProduto('Selecione ao menos uma origem com estoque.');
+      return;
+    }
+    setCarregandoCoberturaProduto(true);
+    setErroCoberturaProduto('');
+    setCoberturaProduto([]);
+    setResultadoProduto([]);
+    try {
+      const destinoResolvido = await resolverDestinoInput(destinoCodigoProduto);
+      if (!destinoResolvido?.ibge) {
+        setErroCoberturaProduto('Não foi possível identificar o destino informado na base IBGE/CEP. Use cidade, IBGE ou CEP válido.');
+        return;
+      }
+      const combos = (await listarCoberturaDestinoDb({ destinoCodigo: destinoResolvido.ibge, canal: canalProduto }))
+        .filter((combo) => origemCasaComEstoque(combo, origensEscolhidas));
+      setCoberturaProduto(combos);
+      setOrigensSelecionadasProduto(new Set(combos.map((item) => item.origemId)));
+      if (!combos.length) setErroCoberturaProduto('Nenhuma transportadora atende esse destino/canal a partir das origens selecionadas.');
+    } catch (error) {
+      setErroCoberturaProduto(error.message || 'Erro ao buscar transportadoras.');
+    } finally {
+      setCarregandoCoberturaProduto(false);
+    }
+  };
+
+  const alternarOrigemSelecionadaProduto = (origemId) => {
+    setOrigensSelecionadasProduto((atual) => {
+      const novo = new Set(atual);
+      if (novo.has(origemId)) novo.delete(origemId); else novo.add(origemId);
+      return novo;
+    });
+  };
+
+  // Fase 2: com as opções já mapeadas, busca a malha só das origens
+  // selecionadas (chamadas pequenas em paralelo) em vez de uma consulta única
+  // com todas as origens do canal, e calcula o frete/ranking.
+  const onSimularProduto = async () => {
+    setErroSimulacao('');
+    try {
+      await executarSimulacaoProduto();
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao simular por produto.');
+      finalizarProcessamentoUi('Falha na simulação', error.message || 'Erro ao simular por produto.', 100);
+    }
+  };
+
+  const executarSimulacaoProduto = async () => {
+    if (!produtosSelecionados.length) {
+      setErroSimulacao(somenteComEstoque
+        ? 'Nenhum produto selecionado tem estoque disponível. Desmarque o filtro ou selecione outro produto.'
+        : 'Selecione ao menos um produto do catálogo para simular.');
+      return;
+    }
+    if (!coberturaProduto.length) {
+      setErroSimulacao('Mapeie as opções para o destino antes de simular.');
+      return;
+    }
+    const combosSelecionados = coberturaProduto.filter((item) => origensSelecionadasProduto.has(item.origemId));
+    if (!combosSelecionados.length) {
+      setErroSimulacao('Selecione ao menos uma transportadora/origem para simular.');
+      return;
+    }
+
+    iniciarProcessamentoUi('Simulação por produto', 'Validando destino...', 12);
+    const destinoResolvido = await resolverDestinoInput(destinoCodigoProduto);
+    const destinoFinal = destinoResolvido?.ibge || destinoCodigoProduto;
+
+    if (destinoCodigoProduto && !destinoResolvido?.ibge) {
+      setErroSimulacao('Não foi possível identificar o destino informado na base IBGE/CEP. Use cidade, IBGE ou CEP válido.');
+      finalizarProcessamentoUi('Destino não identificado', 'Revise o destino informado e tente novamente.', 100);
+      return;
+    }
+
+    atualizarProcessamentoUi('Buscando tabela das origens selecionadas...', 42);
+    const origensUnicas = Array.from(new Set(combosSelecionados.map((item) => item.origem)));
+    const basesPorOrigem = await Promise.all(
+      origensUnicas.map((origemCidade) => carregarBaseOnline({
+        origem: origemCidade,
+        canal: canalProduto,
+        destinoCodigo: destinoFinal,
+      })),
+    );
+    // A busca por cidade traz todas as transportadoras daquela origem; restringe
+    // às combinações transportadora/origem que o usuário deixou marcadas.
+    const idsOrigensSelecionadas = new Set(combosSelecionados.map((item) => item.origemId));
+    const baseOnline = basesPorOrigem.flat()
+      .map((transportadora) => ({
+        ...transportadora,
+        origens: (transportadora.origens || []).filter((origemItem) => idsOrigensSelecionadas.has(origemItem.id)),
+      }))
+      .filter((transportadora) => transportadora.origens.length);
+
+    atualizarProcessamentoUi('Calculando fretes e comparando transportadoras...', 82);
+    const lookupOnline = buildLookupTables(baseOnline);
+    const mapaCidades = new Map(cidadePorIbgeCompleto);
+    (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
+    if (destinoResolvido?.ibge && destinoResolvido?.cidade) {
+      mapaCidades.set(destinoResolvido.ibge, destinoResolvido.uf ? `${destinoResolvido.cidade}/${destinoResolvido.uf}` : destinoResolvido.cidade);
+    }
+
+    const digitosDestino = String(destinoCodigoProduto || '').replace(/\D/g, '');
+    const destinoCepInformado = digitosDestino.length === 8 ? digitosDestino : '';
+
+    // simularSimples ranqueia separado por nome de origem ("Itajaí" vs "Itajaí X São
+    // Paulo HUB"), o que deixava todo mundo em 1º. Aqui a pergunta é "qual a opção
+    // mais barata entre todas as origens", então o ranking é refeito numa lista só.
+    const rankearGlobal = (lista) => {
+      const ordenados = [...lista].sort((a, b) => a.total - b.total || (usarPrazoProduto ? a.prazo - b.prazo : 0));
+      const lider = ordenados[0] || null;
+      return ordenados.map((item, idx) => {
+        const substituta = idx === 0 ? ordenados[1] : ordenados[idx - 1];
+        return {
+          ...item,
+          ranking: idx + 1,
+          liderTransportadora: lider?.transportadora || '',
+          liderValor: lider?.total || 0,
+          perdeuPara: idx > 0 ? (lider?.transportadora || '') : '',
+          proximaSeBloquear: substituta?.transportadora || '',
+          freteSubstituta: substituta?.total || 0,
+          diferencaLider: Math.max(item.total - (lider?.total || 0), 0),
+          reducaoNecessariaPct: item.total > (lider?.total || 0) ? ((item.total - lider.total) / item.total) * 100 : 0,
+          savingSegundo: idx === 0 && ordenados[1] ? Math.max(ordenados[1].total - item.total, 0) : 0,
+        };
+      });
+    };
+
+    const gruposPorProduto = produtosSelecionados.map((produto) => ({
+      produto,
+      resultados: rankearGlobal(simularSimples({
+        transportadoras: baseOnline,
+        origem: '',
+        canal: canalProduto,
+        peso: Number(produto.peso_kg || 0),
+        cubagem: Number(produto.cubagem_m3 || 0),
+        valorNF: Number(nfProduto || 0),
+        destinoCodigo: destinoFinal,
+        destinoCep: destinoCepInformado,
+        cidadePorIbge: mapaCidades,
+        gradeCanal: grade[canalProduto] || grade.ATACADO || [],
+        usarPrazo: usarPrazoProduto,
+      })),
+    }));
+
+    setResultadoProduto(gruposPorProduto);
+    finalizarProcessamentoUi('Simulação concluída', 'Resultado da simulação por produto carregado.', 100);
+  };
+
   const onSimularTransportadora = async () => {
     const entradas = modoLista
       ? listaCodigos.split(/\n|,|;/).map((item) => item.trim()).filter(Boolean)
@@ -8499,6 +8841,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       <div className="sim-tabs sim-tabs-polished">
         {[
           ['simples', 'Simulação simples'],
+          ['produto', 'Simulação por produto'],
           ['transportadora', 'Simulação por transportadora'],
           ['analise', 'Análise de transportadora'],
           ['origem', 'Análise por origem'],
@@ -8621,6 +8964,166 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <button className="primary" onClick={onSimularSimples} disabled={carregandoSimulacao}>{carregandoSimulacao ? "Simulando..." : "Simular"}</button>
           </div>
           <div className="sim-resultados">{resultadoSimples.map((item, idx) => <ResultadoCard key={`${item.transportadora}-${idx}`} item={item} />)}</div>
+        </section>
+      )}
+
+      {aba === 'produto' && (
+        <section className="sim-card">
+          <h2>Simulação por produto</h2>
+          <div className="sim-form-grid sim-grid-5">
+            <label>Origem
+              <input list="origens-produto-lista" value={origemProduto} onChange={(e) => setOrigemProduto(e.target.value)} placeholder="Clique ou digite a origem (opcional)" />
+              <datalist id="origens-produto-lista">
+                {origensPorCanalSimples.map((item) => <option key={item} value={item} />)}
+              </datalist>
+            </label>
+            <label>Destino (CEP ou IBGE)
+              <input list="destinos-lista-produto" value={destinoCodigoProduto} onChange={(e) => setDestinoCodigoProduto(e.target.value)} placeholder="Digite cidade, IBGE ou CEP" />
+              <datalist id="destinos-lista-produto">
+                {todosDestinosComCidade.map((item) => (
+                  <option key={item.ibge} value={item.cidade && item.uf ? `${item.cidade}/${item.uf} · ${item.ibge}` : item.ibge}>
+                    {item.ibge}
+                  </option>
+                ))}
+              </datalist>
+            </label>
+            <label>Canal
+              <select value={canalProduto} onChange={(e) => { setCanalProduto(e.target.value); setOrigemProduto(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
+            </label>
+            <label>Valor NF (opcional)
+              <input value={nfProduto} onChange={(e) => setNfProduto(e.target.value)} placeholder="Se vazio, usa a grade" />
+              <small style={{ color: '#64748b' }}>Se não informar, o simulador usa o Valor NF da grade.</small>
+            </label>
+            <label>Quantidade
+              <input value={quantidadeProduto} onChange={(e) => setQuantidadeProduto(e.target.value)} placeholder="Ex: 10" />
+              <small style={{ color: '#64748b' }}>Usada em "Mapear origens com estoque".</small>
+            </label>
+          </div>
+
+          <div className="sim-cobertura-box" style={{ marginTop: 16 }}>
+            <div className="sim-resultado-topo compact-top">
+              <strong>Produtos</strong>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input value={buscaProduto} onChange={(e) => setBuscaProduto(e.target.value)} placeholder="Filtrar por código ou nome" />
+                <button className="sim-tab" type="button" onClick={() => setProdutosSelecionadosMapa((atual) => { const novo = new Map(atual); produtosListaProduto.forEach((item) => novo.set(item.id, item)); return novo; })}>Selecionar todos</button>
+                <button className="sim-tab" type="button" onClick={() => setProdutosSelecionadosMapa(new Map())}>Limpar seleção</button>
+              </div>
+            </div>
+            <div className="tracking-prazos-table-wrap" style={{ maxHeight: 280, overflowY: 'auto' }}>
+              <table>
+                <thead><tr><th></th><th>Código</th><th>Nome</th><th>Peso (kg)</th><th>Cubagem (m³)</th><th>Disponível</th></tr></thead>
+                <tbody>
+                  {produtosListaProduto.map((item) => (
+                    <tr key={item.id}>
+                      <td><input type="checkbox" checked={produtosSelecionadosIds.has(item.id)} onChange={() => alternarProdutoSelecionado(item.id)} /></td>
+                      <td>{item.codigo}</td>
+                      <td>{item.nome}</td>
+                      <td>{Number(item.peso_kg).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                      <td>{Number(item.cubagem_m3).toLocaleString('pt-BR', { minimumFractionDigits: 6 })}</td>
+                      <td>{item.disponivel == null ? '-' : Number(item.disponivel).toLocaleString('pt-BR')}</td>
+                    </tr>
+                  ))}
+                  {!produtosListaProduto.length && !carregandoProdutos ? <tr><td colSpan="6" className="empty">Nenhum produto encontrado.</td></tr> : null}
+                </tbody>
+              </table>
+            </div>
+            <small style={{ color: '#64748b' }}>
+              {produtosSelecionadosIds.size} produto(s) selecionado(s) para simular
+              {produtosSelecionadosBase.length ? `: ${produtosSelecionadosBase.map((item) => item.codigo).join(', ')}` : ''}.
+            </small>
+          </div>
+
+          <div className="sim-actions" style={{ marginTop: 12 }}>
+            <button className="primary" onClick={onMapearOrigensComEstoque} disabled={mapeandoOrigensComEstoque || carregandoCoberturaProduto}>
+              {mapeandoOrigensComEstoque ? 'Mapeando origens...' : '1. Mapear origens com estoque'}
+            </button>
+            <button className="sim-tab" onClick={() => { setOrigensEstoqueProduto([]); setResultadoProduto([]); onMapearCoberturaProduto(); }} disabled={mapeandoOrigensComEstoque || carregandoCoberturaProduto}>
+              Ignorar estoque: mapear transportadoras de todas as origens
+            </button>
+          </div>
+          {erroCoberturaProduto ? <div className="sim-alert error">{erroCoberturaProduto}</div> : null}
+
+          {origensEstoqueProduto.length > 0 && (
+            <div className="sim-cobertura-box" style={{ marginTop: 16 }}>
+              <div className="sim-resultado-topo compact-top">
+                <strong>{origensEstoqueProduto.length} origem(ns) com estoque ≥ {quantidadeProduto}</strong>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="sim-tab" type="button" onClick={() => setOrigensEstoqueSelecionadas(new Set(origensEstoqueProduto.map((item) => item.chave)))}>Selecionar todas</button>
+                  <button className="sim-tab" type="button" onClick={() => setOrigensEstoqueSelecionadas(new Set())}>Limpar seleção</button>
+                </div>
+              </div>
+              <div className="tracking-prazos-table-wrap" style={{ maxHeight: 280, overflowY: 'auto' }}>
+                <table>
+                  <thead><tr><th></th><th>Origem</th><th>Centros</th><th>Estoque</th></tr></thead>
+                  <tbody>
+                    {origensEstoqueProduto.map((item) => (
+                      <tr key={item.chave}>
+                        <td><input type="checkbox" checked={origensEstoqueSelecionadas.has(item.chave)} onChange={() => alternarOrigemEstoqueSelecionada(item.chave)} /></td>
+                        <td>{item.cidade}</td>
+                        <td>{item.centros.join(', ')}</td>
+                        <td>{Number(item.quantidade).toLocaleString('pt-BR')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="sim-actions" style={{ marginTop: 12 }}>
+                <button className="primary" onClick={onBuscarTransportadorasOrigensEstoque} disabled={carregandoCoberturaProduto || !origensEstoqueSelecionadas.size}>
+                  {carregandoCoberturaProduto ? 'Buscando transportadoras...' : '2. Buscar transportadoras dessas origens para o destino'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {coberturaProduto.length > 0 && (
+            <div className="sim-cobertura-box" style={{ marginTop: 16 }}>
+              <div className="sim-resultado-topo compact-top">
+                <strong>{coberturaProduto.length} opção(ões) de transportadora/origem encontradas para esse destino</strong>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="sim-tab" type="button" onClick={() => setOrigensSelecionadasProduto(new Set(coberturaProduto.map((item) => item.origemId)))}>Selecionar todas</button>
+                  <button className="sim-tab" type="button" onClick={() => setOrigensSelecionadasProduto(new Set())}>Limpar seleção</button>
+                </div>
+              </div>
+              <div className="tracking-prazos-table-wrap" style={{ maxHeight: 320, overflowY: 'auto' }}>
+                <table>
+                  <thead><tr><th></th><th>Transportadora</th><th>Origem</th><th>Canal</th><th>Prazo</th></tr></thead>
+                  <tbody>
+                    {coberturaProduto.map((item) => (
+                      <tr key={item.origemId}>
+                        <td><input type="checkbox" checked={origensSelecionadasProduto.has(item.origemId)} onChange={() => alternarOrigemSelecionadaProduto(item.origemId)} /></td>
+                        <td>{item.transportadora}</td>
+                        <td>{item.origem}</td>
+                        <td>{item.canal}</td>
+                        <td>{item.prazo == null ? '-' : `${item.prazo} dia(s)`}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="sim-actions" style={{ marginTop: 12 }}>
+                <label className="sim-flag">
+                  <input type="checkbox" checked={usarPrazoProduto} onChange={(e) => setUsarPrazoProduto(e.target.checked)} />
+                  Usar preço e prazo para ordenar (desmarque para ordenar só por preço)
+                </label>
+                <label className="sim-flag">
+                  <input type="checkbox" checked={somenteComEstoque} onChange={(e) => setSomenteComEstoque(e.target.checked)} />
+                  Simular apenas produtos selecionados com estoque disponível
+                </label>
+                <button className="primary" onClick={onSimularProduto} disabled={carregandoSimulacao}>{carregandoSimulacao ? "Simulando..." : "3. Simular selecionadas"}</button>
+              </div>
+              {erroSimulacao ? <div className="sim-alert error">{erroSimulacao}</div> : null}
+            </div>
+          )}
+          {resultadoProduto.map((grupo) => (
+            <div key={grupo.produto.id} style={{ marginTop: 20 }}>
+              <h3 style={{ margin: '0 0 8px' }}>{grupo.produto.codigo} - {grupo.produto.nome}</h3>
+              <div className="sim-resultados">
+                {grupo.resultados.map((item, idx) => <ResultadoCard key={`${item.transportadora}-${idx}`} item={item} />)}
+                {!grupo.resultados.length ? <p className="empty">Nenhuma transportadora calculou frete para esse produto nas origens selecionadas.</p> : null}
+              </div>
+            </div>
+          ))}
         </section>
       )}
 

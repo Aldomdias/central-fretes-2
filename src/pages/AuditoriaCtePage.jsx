@@ -1,4 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { buscarStatusEntregaCtes, chaveEntregaRegistro, resumirEntregaPorFatura, ROTULO_ENTREGA, STATUS_ENTREGA } from '../services/auditoriaEntregaCteService';
+import * as XLSX from 'xlsx';
+import { salvarPontoAuditoria, carregarPontoAuditoria } from '../services/auditoriaRecuperacaoService';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import AmdProcessingOverlay, { ETAPA_LABEL_AUDITORIA, rotuloEtapaAuditoria } from '../components/AmdProcessingOverlay';
 import CentralAuditoriaFretesPage from './CentralAuditoriaFretesPage';
@@ -587,6 +590,84 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   const [dataInicioTeste, setDataInicioTeste] = useState('');
   const [dataFimTeste, setDataFimTeste] = useState('');
   const [registros, setRegistros] = useState([]);
+  const [pontoRecuperacao, setPontoRecuperacao] = useState(null);
+  useEffect(() => {
+    carregarPontoAuditoria().then(setPontoRecuperacao).catch(() => {});
+  }, []);
+
+  async function guardarRecuperacao(ponto) {
+    const completo = { ...ponto, competencia, ignorarCubagem: usarPesoCteAuditoria,
+      percentualContingenciaPeso: percentualContingenciaPesoAuditoria,
+      transportadorasAlvo: transportadoraEmTratamento ? [transportadoraEmTratamento] : filtroTransps };
+    await salvarPontoAuditoria(completo);
+    setPontoRecuperacao(completo);
+  }
+
+  async function importarRecuperacaoExcel(event) {
+    const arquivo = event.target.files?.[0];
+    if (!arquivo) return;
+    setErro('');
+    try {
+      const livro = XLSX.read(await arquivo.arrayBuffer(), { type: 'array' });
+      if (!livro.Sheets['CT-es']) throw new Error('Use o Excel de detalhes exportado pela auditoria.');
+      const linhas = XLSX.utils.sheet_to_json(livro.Sheets['CT-es']);
+      if (!linhas.length || linhas.some((r) => !r['Chave CT-e'] || !r['Data emissão'])) {
+        throw new Error('Arquivo sem chaves ou datas de emissão válidas.');
+      }
+      const numero = (v) => {
+        const n = Number(v || 0);
+        if (!Number.isFinite(n)) throw new Error('O Excel contém um valor numérico inválido.');
+        return n;
+      };
+      const dados = linhas.map((r) => ({
+        numero_cte: String(r['Nº CT-e'] || ''), chave_cte: String(r['Chave CT-e']),
+        data_emissao: r['Data emissão'], transportadora: r.Transportadora,
+        cidade_origem: r['Cidade origem'], uf_origem: r['UF origem'],
+        cidade_destino: r['Cidade destino'], uf_destino: r['UF destino'],
+        peso: numero(r.Peso), valor_nf: numero(r['Valor NF']), valor_cte: numero(r['Frete Pago']),
+        valor_calculado_verum: numero(r['Cálculo Verum']), diferenca_verum: numero(r['Dif. Verum']),
+        valor_calculado: numero(r['Cálculo AMD']), diferenca: numero(r['Dif. AMD']),
+        status_calculo: r.Status || '', motivo_sem_calculo: r.Motivo || '',
+      }));
+      const comp = String(dados[0].data_emissao).slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(comp)) throw new Error('Data de emissão inválida.');
+      const ponto = { etapa: 'importado', registros: dados, competencia: comp,
+        ignorarCubagem: true, percentualContingenciaPeso: 0 };
+      await salvarPontoAuditoria(ponto);
+      setPontoRecuperacao(ponto);
+      setCompetencia(comp);
+      setRegistros(dados);
+      limparFiltrosFoco();
+      setSucesso(`${fmtN(dados.length)} CT-es preservados localmente. Use Retomar para calcular sem repetir o tracking.`);
+    } catch (e) { setErro(e.message || 'Erro ao importar recuperação.'); }
+    finally { event.target.value = ''; }
+  }
+
+  async function retomarAuditoria() {
+    if (!pontoRecuperacao?.registros?.length) return;
+    setResimulando(true);
+    setErro('');
+    try {
+      const ponto = pontoRecuperacao;
+      const novos = ponto.etapa === 'calculado' ? ponto.registros : await resimularRegistros({
+        registros: ponto.registros, apenasDadosCompletos: true,
+        transportadorasAlvo: ponto.transportadorasAlvo || [],
+        ignorarCubagem: ponto.ignorarCubagem,
+        percentualContingenciaPeso: ponto.percentualContingenciaPeso,
+        onProgress: setProgressoProcessamento,
+      });
+      await salvarPontoAuditoria({ ...ponto, etapa: 'calculado', registros: novos });
+      setPontoRecuperacao({ ...ponto, etapa: 'calculado', registros: novos });
+      setRegistros(novos);
+      setCompetencia(ponto.competencia);
+      limparFiltrosFoco();
+      const salvo = await salvarRegistrosRecalculados(novos);
+      if (!salvo.gravados) throw new Error('Resultados preservados localmente, mas sem competência para gravar.');
+      setSucesso(`${fmtN(salvo.gravados)} CT-es recuperados e salvos. Tracking não foi consultado novamente.`);
+    } catch (e) {
+      setErro(`Retomada interrompida; o ponto local foi preservado. ${e.message || String(e)}`);
+    } finally { setResimulando(false); setProgressoProcessamento(null); }
+  }
   const [modoPreLista, setModoPreLista] = useState(false);
   const [fonteAuditoria, setFonteAuditoria] = useState(null);
   const [diagnostico, setDiagnostico] = useState([]);
@@ -713,6 +794,12 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   // Detalhe por CT-e: índice da linha expandida (detalhe do cálculo).
   const [cteExpandido, setCteExpandido] = useState(null);
   const [ordenacaoDetalhe, setOrdenacaoDetalhe] = useState('original');
+  const [filtroEntrega, setFiltroEntrega] = useState('todos');
+  const [entregaPorChave, setEntregaPorChave] = useState(new Map());
+  const [entregaCarregando, setEntregaCarregando] = useState(false);
+  const [entregaErro, setEntregaErro] = useState('');
+  const [mostrarTodasFaturasEntrega, setMostrarTodasFaturasEntrega] = useState(false);
+  const entregaCacheRef = useRef(new Map());
   const [limiteDetalhe, setLimiteDetalhe] = useState(200);
 
   // Ao abrir a tela, já carrega a visão mês a mês (resumo mensal) — é leve
@@ -984,7 +1071,10 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   const registrosDetalheOrdenados = useMemo(() => {
     const valorDifAmd = (r) => Math.abs(Number(r.diferenca ?? ((Number(r.valor_cte || 0) || 0) - (Number(r.valor_calculado || 0) || 0))));
     const valorDifVerum = (r) => Math.abs(Number(r.diferenca_verum ?? ((Number(r.valor_cte || 0) || 0) - (Number(r.valor_calculado_verum || 0) || 0))));
-    const lista = [...registrosFiltro];
+    const lista = filtroEntrega === 'todos' ? [...registrosFiltro] : registrosFiltro.filter((r) => {
+      const st = entregaPorChave.get(chaveEntregaRegistro(r))?.status;
+      return filtroEntrega === 'entregue' ? st === STATUS_ENTREGA.ENTREGUE : st && st !== STATUS_ENTREGA.ENTREGUE;
+    });
     const comparadores = {
       original: null,
       dif_amd_desc: (a, b) => valorDifAmd(b) - valorDifAmd(a),
@@ -997,7 +1087,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     };
     const comparador = comparadores[ordenacaoDetalhe];
     return comparador ? lista.sort(comparador) : lista;
-  }, [ordenacaoDetalhe, registrosFiltro]);
+  }, [ordenacaoDetalhe, registrosFiltro, filtroEntrega, entregaPorChave]);
 
   const registrosDetalheVisiveis = useMemo(
     () => registrosDetalheOrdenados.slice(0, limiteDetalhe),
@@ -1024,6 +1114,33 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       .catch((error) => { console.warn('Não foi possível carregar a jornada dos CT-es visíveis:', error.message || error); });
     return () => { cancelado = true; };
   }, [registrosDetalheVisiveis]);
+
+  // Status de entrega (tracking) de todo o recorte — cache por chave para não reconsultar a cada filtro.
+  useEffect(() => {
+    let cancelado = false;
+    const cache = entregaCacheRef.current;
+    const faltantes = registrosFiltro.filter((r) => {
+      const id = chaveEntregaRegistro(r);
+      return id && !cache.has(id);
+    });
+    const publicar = () => setEntregaPorChave(new Map(cache));
+    if (!faltantes.length) { publicar(); return undefined; }
+    setEntregaCarregando(true);
+    setEntregaErro('');
+    buscarStatusEntregaCtes(faltantes)
+      .then((mapa) => {
+        mapa.forEach((valor, chave) => cache.set(chave, valor));
+        if (!cancelado) publicar();
+      })
+      .catch((error) => { if (!cancelado) setEntregaErro(error.message || String(error)); })
+      .finally(() => { if (!cancelado) setEntregaCarregando(false); });
+    return () => { cancelado = true; };
+  }, [registrosFiltro]);
+
+  const resumoEntregaFaturas = useMemo(
+    () => resumirEntregaPorFatura(registrosFiltro, entregaPorChave),
+    [registrosFiltro, entregaPorChave],
+  );
 
   const transportadoraEmTratamento = filtroTransps.length === 1
     && !filtroTomadores.length
@@ -1103,6 +1220,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         metadados: { acao: 'resimular', transportadora: transportadoraEmTratamento || null },
       }, async ({ atualizar }) => resimularRegistros({
           registros: alvo,
+          onCheckpoint: guardarRecuperacao,
           transportadorasAlvo: transportadoraEmTratamento ? [transportadoraEmTratamento] : filtroTransps,
           onProgress: (progresso) => {
             setProgressoProcessamento(progresso);
@@ -1115,6 +1233,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
           etapa: 'aguardando_fila', carregados: 0, total: alvo.length, posicao: fila.posicao,
         }));
       const mapa = new Map();
+      await guardarRecuperacao({ etapa: 'calculado', registros: novos });
       alvo.forEach((orig, i) => mapa.set(orig, novos[i]));
       setRegistros((prev) => prev.map((r) => mapa.get(r) || r));
 
@@ -2147,7 +2266,9 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   async function gerarLaudoEregistrar(enviarAgora) {
     setModalLaudoAberto(false);
     setErro('');
-    const selecionados = registrosDetalheOrdenados.filter((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)));
+    const selecionados = registrosDetalheOrdenados
+      .filter((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)))
+      .map((row) => ({ ...row, entrega_status: entregaPorChave.get(chaveEntregaRegistro(row))?.status || null }));
     if (!selecionados.length) {
       setErro('Nenhum CT-e selecionado para o laudo.');
       return;
@@ -2487,6 +2608,14 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {sucesso ? <div className="sim-alert success">{sucesso}</div> : null}
+      <div className="panel-card">
+        <strong>Recuperar processo interrompido</strong>
+        <p>Importe o Excel de detalhes preservado. A retomada usa os dados exportados e o peso do CT-e; o Excel não inclui a cubagem nova do tracking.</p>
+        <input type="file" accept=".xlsx" onChange={importarRecuperacaoExcel} disabled={carregando || processando || resimulando} aria-label="Importar Excel para recuperar auditoria" />
+        {pontoRecuperacao?.registros?.length ? <button type="button" className="btn-secondary" disabled={carregando || processando || resimulando} onClick={retomarAuditoria}>
+          {pontoRecuperacao.etapa === 'calculado' ? 'Retomar salvamento' : 'Retomar sem consultar tracking'} ({fmtN(pontoRecuperacao.registros.length)})
+        </button> : null}
+      </div>
       {avisos.length > 0 ? (
         <div className="sim-alert info">
           <strong>Avisos da consulta:</strong> {avisos.join(' | ')}
@@ -3488,9 +3617,56 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
           <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '6px 10px', marginBottom: 10, fontSize: 12, color: '#166534' }}>
             💡 Para registrar a resposta da transportadora (concordou, cancelou, desconto...), clique no badge da coluna <strong>Jornada</strong> (última coluna da tabela) na linha do CT-e.
           </div>
+          <div style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, marginBottom: 12, background: '#f8fafc' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+              <strong>🚚 Entrega x pagamento de faturas</strong>
+              <span style={{ fontSize: 12, color: '#475569' }}>
+                {entregaCarregando ? 'Consultando tracking... ' : ''}
+                {entregaErro ? <span style={{ color: '#b91c1c' }}>Falha ao consultar tracking: {entregaErro} </span> : null}
+                {`${fmtN(resumoEntregaFaturas.filter((f) => f.liberada).length)} de ${fmtN(resumoEntregaFaturas.length)} fatura(s) liberada(s) para pagamento (todos os CT-es entregues).`}
+              </span>
+            </div>
+            {resumoEntregaFaturas.length ? (
+              <div className="sim-analise-tabela-wrap" style={{ maxHeight: 280, overflow: 'auto' }}>
+                <table className="sim-analise-tabela">
+                  <thead>
+                    <tr><th>Fatura</th><th>Transportadora</th><th>CT-es</th><th>Entregues</th><th>Pendentes</th><th>Valor</th><th>Pagamento</th><th>CT-es a verificar</th></tr>
+                  </thead>
+                  <tbody>
+                    {(mostrarTodasFaturasEntrega ? resumoEntregaFaturas : resumoEntregaFaturas.slice(0, 30)).map((f) => (
+                      <tr key={`${f.transportadora}|${f.fatura}`}>
+                        <td><strong>{f.fatura}</strong></td>
+                        <td>{f.transportadora}</td>
+                        <td>{fmtN(f.total)}</td>
+                        <td>{fmtN(f.entregues)}</td>
+                        <td style={{ color: f.pendentes.length ? '#b91c1c' : undefined, fontWeight: 700 }}>{fmtN(f.pendentes.length)}</td>
+                        <td>{fmt(f.valor)}</td>
+                        <td>
+                          {f.carregando ? <span style={{ color: '#94a3b8' }}>consultando...</span> : f.liberada
+                            ? <span style={{ background: '#dcfce7', color: '#166534', borderRadius: 999, padding: '3px 8px', fontSize: 11, fontWeight: 800 }}>✓ Liberada</span>
+                            : <span style={{ background: '#fee2e2', color: '#991b1b', borderRadius: 999, padding: '3px 8px', fontSize: 11, fontWeight: 800 }}>Bloqueada</span>}
+                        </td>
+                        <td style={{ fontSize: 11, maxWidth: 320 }}>{f.pendentes.slice(0, 12).join(', ')}{f.pendentes.length > 12 ? ` +${f.pendentes.length - 12}` : ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : <span style={{ fontSize: 12, color: '#64748b' }}>Nenhum CT-e com fatura no recorte.</span>}
+            {resumoEntregaFaturas.length > 30 ? (
+              <button className="sim-tab" type="button" style={{ marginTop: 6 }} onClick={() => setMostrarTodasFaturasEntrega((v) => !v)}>
+                {mostrarTodasFaturasEntrega ? 'Mostrar só as 30 primeiras' : `Mostrar todas (${fmtN(resumoEntregaFaturas.length)})`}
+              </button>
+            ) : null}
+          </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0 }}>📄 Detalhe por CT-e</h2>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <select value={filtroEntrega} onChange={(event) => setFiltroEntrega(event.target.value)} title="Filtrar pelo status de entrega (tracking)">
+                <option value="todos">Entrega: todos</option>
+                <option value="entregue">Só entregues</option>
+                <option value="nao_entregue">Não entregues / sem tracking</option>
+              </select>
               <select
                 value={ordenacaoDetalhe}
                 onChange={(event) => {
@@ -3599,6 +3775,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                   <th>Cálculo AMD</th>
                   <th>Dif. AMD</th>
                   <th>Status</th>
+                  <th title="Status de entrega pelo tracking. Fatura só deve ser paga com todos os CT-es entregues.">Entrega</th>
                   <th title="Em que fase o CT-e está na Jornada (auditoria preventiva)">Jornada</th>
                 </tr>
               </thead>
@@ -3685,6 +3862,21 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                             {semValorNf ? 'SEM VALOR NF' : (r.status_calculo || (amd > 0 ? 'CALCULADO' : 'SEM_STATUS'))}
                           </span>
                         </td>
+                        <td style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
+                          {(() => {
+                            const ent = entregaPorChave.get(chaveEntregaRegistro(r));
+                            if (!ent) return <span style={{ color: '#94a3b8' }}>{entregaCarregando ? '...' : '—'}</span>;
+                            const cores = { ENTREGUE: ['#dcfce7', '#166534'], NAO_ENTREGUE: ['#fee2e2', '#991b1b'], SEM_TRACKING: ['#fef3c7', '#92400e'] }[ent.status];
+                            return (
+                              <span
+                                title={ent.dataEntrega ? `Entregue em ${new Date(ent.dataEntrega).toLocaleDateString('pt-BR')}` : ent.status === 'SEM_TRACKING' ? 'CT-e/NF não encontrado na base de tracking' : 'No tracking, sem data de entrega'}
+                                style={{ padding: '2px 6px', borderRadius: 6, fontWeight: 700, background: cores[0], color: cores[1] }}
+                              >
+                                {ROTULO_ENTREGA[ent.status]}
+                              </span>
+                            );
+                          })()}
+                        </td>
                         <td style={{ fontSize: 11 }}>
                           {jornada ? (
                             <span
@@ -3712,7 +3904,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                       </tr>
                       {jornada && jornadaEditando === jornada.chave_cte ? (
                         <tr>
-                          <td colSpan="15" style={{ background: '#eef2ff', padding: 12 }}>
+                          <td colSpan="16" style={{ background: '#eef2ff', padding: 12 }}>
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }} onClick={(e) => e.stopPropagation()}>
                               <div>
                                 <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#3730a3' }}>Retorno da transportadora</div>
@@ -3835,7 +4027,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                       ) : null}
                       {expandida ? (
                         <tr>
-                          <td colSpan="15" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
+                          <td colSpan="16" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
                             {r.motivo_sem_calculo ? <div style={{ color: '#b45309', marginBottom: 6 }}><strong>Motivo:</strong> {r.motivo_sem_calculo}</div> : null}
                             {semValorNf ? (
                               <div style={{ background: '#fff7ed', border: '1px solid #fdba74', borderRadius: 8, padding: 10, marginBottom: 10, color: '#9a3412' }}>
@@ -4039,7 +4231,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                     </React.Fragment>
                   );
                 })}
-                {!registrosFiltro.length ? <tr><td colSpan="15" style={{ textAlign: 'center', color: '#94a3b8' }}>Nenhum CT-e no recorte atual.</td></tr> : null}
+                {!registrosFiltro.length ? <tr><td colSpan="16" style={{ textAlign: 'center', color: '#94a3b8' }}>Nenhum CT-e no recorte atual.</td></tr> : null}
               </tbody>
             </table>
           </div>

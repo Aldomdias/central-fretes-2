@@ -3488,15 +3488,19 @@ export default function TabelasNegociacaoPage() {
                       var ativo = selecionada && selecionada.id === t.id;
                       var chipLabel = origemTabelaChipLabel(t);
                       if (!chipLabel) return null;
+                      var publicada = t.status_gestao === 'PUBLICADA_OFICIAL';
+                      var estiloChip = ativo
+                        ? { background: '#dbeafe', color: '#1d4ed8', borderColor: '#93c5fd' }
+                        : (publicada ? { background: '#dcfce7', color: '#15803d', borderColor: '#86efac' } : null);
                       return (
                         <span key={t.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                           <button
                             type="button"
                             className="sim-tab"
                             onClick={function() { abrirTabela(t, { telaNegociacao: emTelaNegociacao, sincronizarUrl: emTelaNegociacao }); }}
-                            style={ativo ? { background: '#dbeafe', color: '#1d4ed8', borderColor: '#93c5fd' } : null}
+                            style={estiloChip}
                           >
-                            {chipLabel} · R{getRodadaAtualTabela(t)}
+                            {chipLabel} · R{getRodadaAtualTabela(t)}{publicada ? ' · Publicada' : ''}
                           </button>
                           {!ativo && usuarioEhGestor(sessao) && (
                             <button

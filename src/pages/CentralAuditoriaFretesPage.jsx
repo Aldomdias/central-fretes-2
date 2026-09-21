@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
+import { buscarStatusEntregaCtes, chaveEntregaRegistro, ROTULO_ENTREGA, STATUS_ENTREGA } from '../services/auditoriaEntregaCteService';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import ModalEnviarProtocoloFinanceiro from '../components/ModalEnviarProtocoloFinanceiro';
@@ -1021,6 +1022,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [correcaoCanal, setCorrecaoCanal] = useState({});
   const [salvandoCorrecaoCanal, setSalvandoCorrecaoCanal] = useState(null);
   const [chaveNfVisivel, setChaveNfVisivel] = useState({});
+  const [entregaCtes, setEntregaCtes] = useState(null);
+  const [entregaErroFatura, setEntregaErroFatura] = useState('');
+  const [filtroEntregaCte, setFiltroEntregaCte] = useState('todos');
   const [opcoesLaudoTransportador, setOpcoesLaudoTransportador] = useState(OPCOES_LAUDO_TRANSPORTADOR_PADRAO);
   const [protocoloAberto, setProtocoloAberto] = useState(false);
   const toleranciaFatura = carregarToleranciaAuditoria();
@@ -1071,6 +1075,15 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         // Cruza com a base auditada para exibir rota, peso, canal e valores de referencia.
         const referencia = await buscarReferenciaCtes(listaUnica.flatMap((item) => [item.chave_cte, item.numero_cte]));
         if (ativo) setReferenciaCtes(referencia);
+        // Status de entrega (tracking): fatura só pode ser paga com todos os CT-es entregues.
+        setEntregaCtes(null);
+        setEntregaErroFatura('');
+        buscarStatusEntregaCtes(listaUnica.map((item) => {
+          const base = referencia.get(normalizarChaveCte(item.chave_cte)) || referencia.get(normalizarChaveCte(item.numero_cte));
+          return { ...item, chave_nfe: item.chave_nfe || base?.chave_nfe };
+        }))
+          .then((mapa) => { if (ativo) setEntregaCtes(mapa); })
+          .catch((error) => { if (ativo) setEntregaErroFatura(error.message || String(error)); });
       })
       .catch((error) => {
         if (ativo) setErroDetalhes(error.message || String(error));
@@ -1523,6 +1536,10 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         </tr>
         <tr id="${detalheId}" class="detail-row"><td colspan="9">${detalhesCalculoHtmlFatura(item, { masked, calculadoPublico, diffPublico, descontoSemTabela })}</td></tr>`;
     }).join('');
+    const semEntrega = entregaCtes ? linhas.filter((item) => entregaCtes.get(chaveEntregaRegistro(item))?.status !== STATUS_ENTREGA.ENTREGUE) : [];
+    const blocoEntregaLaudo = semEntrega.length
+      ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><strong>⚠ ${semEntrega.length} CT-e(s) sem entrega comprovada — favor verificar</strong><p style="margin:6px 0 0;font-size:13px">O pagamento da fatura só é liberado quando todos os CT-es estiverem entregues. Envie o comprovante de entrega (canhoto/POD) dos CT-es: <b>${semEntrega.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtes.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p></div>`
+      : '';
     const html = `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -1557,6 +1574,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   </div>
   <div class="wrap">
     <div class="cards">${cards.map(([label, value]) => `<div class="card"><span>${escapeHtmlAuditoria(label)}</span><strong>${escapeHtmlAuditoria(value)}</strong></div>`).join('')}</div>
+    ${blocoEntregaLaudo}
     <div class="note">Clique em cima de qualquer CT-e na tabela abaixo para abrir os detalhes completos do calculo (taxas, ICMS, base do frete etc.).</div>
     <div class="filters">
       <label>Buscar<input id="filtro-busca" type="search" placeholder="CT-e, chave, rota ou canal" oninput="aplicarFiltros()"></label>
@@ -1714,6 +1732,10 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       || referenciaCtes.get(normalizarChaveCte(item.numero_cte));
     if (filtroCanalCte !== 'todos' && (item.canal || base?.canal || '') !== filtroCanalCte) return false;
     if (filtroStatusCte !== 'todos' && statusFiltroCte(item, base) !== filtroStatusCte) return false;
+    if (filtroEntregaCte !== 'todos') {
+      const st = entregaCtes?.get(chaveEntregaRegistro(item))?.status;
+      if (filtroEntregaCte === 'entregue' ? st !== STATUS_ENTREGA.ENTREGUE : (!st || st === STATUS_ENTREGA.ENTREGUE)) return false;
+    }
     if (buscaCtes.trim()) {
       const termo = buscaCtes.trim().toLowerCase();
       const alvo = [item.numero_cte, item.chave_cte, base?.cidade_origem, base?.cidade_destino, base?.uf_origem, base?.uf_destino]
@@ -1733,7 +1755,26 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
           {ctesNaBase < detalhes.length ? '; os demais continuam listados para auditoria.' : '.'}
         </p>
       )}
+      {detalhes.length > 0 && (() => {
+        if (entregaErroFatura) return <div className="hint-box compact" style={{ marginBottom: 10 }}>Não foi possível consultar a entrega no tracking: {entregaErroFatura}</div>;
+        if (!entregaCtes) return <div className="hint-box compact" style={{ marginBottom: 10 }}>Consultando entregas no tracking...</div>;
+        const pend = detalhes.filter((item) => entregaCtes.get(chaveEntregaRegistro(item))?.status !== STATUS_ENTREGA.ENTREGUE);
+        const liberada = pend.length === 0;
+        return (
+          <div className="hint-box compact" style={{ marginBottom: 10, borderColor: liberada ? '#86efac' : '#fca5a5', background: liberada ? '#f0fdf4' : '#fef2f2', color: liberada ? '#166534' : '#991b1b' }}>
+            <strong>{liberada ? '✓ Pagamento liberado: todos os CT-es entregues.' : `🚫 Pagamento bloqueado: ${pend.length} de ${detalhes.length} CT-e(s) sem entrega comprovada.`}</strong>
+            {!liberada && <div style={{ fontSize: 12, marginTop: 4 }}>Verificar: {pend.slice(0, 20).map((item) => item.numero_cte || item.chave_cte).join(', ')}{pend.length > 20 ? ` +${pend.length - 20}` : ''}</div>}
+          </div>
+        );
+      })()}
       <div className="form-grid three" style={{ marginBottom: 10 }}>
+        <label className="field">Entrega
+          <select value={filtroEntregaCte} onChange={(e) => setFiltroEntregaCte(e.target.value)}>
+            <option value="todos">Todos</option>
+            <option value="entregue">Entregues</option>
+            <option value="nao_entregue">Não entregues / sem tracking</option>
+          </select>
+        </label>
         <label className="field">Buscar (CT-e, chave, cidade, UF)
           <input value={buscaCtes} onChange={(e) => setBuscaCtes(e.target.value)} placeholder="Digite para filtrar..." />
         </label>
@@ -1755,7 +1796,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         </label>
       </div>
       <table className="sim-analise-tabela">
-        <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th>Peso</th><th>Valor NF</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Motivo</th><th>Status</th></tr></thead>
+        <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th>Peso</th><th>Valor NF</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Motivo</th><th>Status</th><th>Entrega</th></tr></thead>
         <tbody>
           {lista.map((item) => {
             const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte))
@@ -1785,10 +1826,18 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                   <td style={{ cursor: 'pointer' }} className={Number(item.diferenca || 0) ? 'negativo' : ''} onClick={() => alternarDetalheCte(item)}>{dinheiro(item.diferenca)}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{motivoAuditoriaLinha(item, semValorNf)}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}><Status value={item.status} /></td>
+                  <td style={{ whiteSpace: 'nowrap', fontSize: 11 }}>
+                    {(() => {
+                      const ent = entregaCtes?.get(chaveEntregaRegistro(item));
+                      if (!ent) return <span style={{ color: '#94a3b8' }}>{entregaCtes ? '—' : '...'}</span>;
+                      const [bg, fg] = { ENTREGUE: ['#dcfce7', '#166534'], NAO_ENTREGUE: ['#fee2e2', '#991b1b'], SEM_TRACKING: ['#fef3c7', '#92400e'] }[ent.status];
+                      return <span title={ent.dataEntrega ? `Entregue em ${new Date(ent.dataEntrega).toLocaleDateString('pt-BR')}` : ''} style={{ padding: '2px 6px', borderRadius: 6, fontWeight: 700, background: bg, color: fg }}>{ROTULO_ENTREGA[ent.status]}</span>;
+                    })()}
+                  </td>
                 </tr>
                 {expandido && (
                   <tr>
-                    <td colSpan="14" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
+                    <td colSpan="15" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
                       <div className="hint-box compact" style={{ marginBottom: 10, borderColor: semValorNf ? '#fdba74' : '#dbe3ef', background: semValorNf ? '#fff7ed' : '#f8fafc' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                           <strong>{semValorNf ? 'CT-e sem valor NF identificado.' : 'Ajustes manuais do CT-e'}</strong>
@@ -1935,7 +1984,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
               </Fragment>
             );
           })}
-          {!lista.length && <tr><td colSpan="13">Nenhum CT-e nesta visao.</td></tr>}
+          {!lista.length && <tr><td colSpan="15">Nenhum CT-e nesta visao.</td></tr>}
         </tbody>
       </table>
     </div>

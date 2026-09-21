@@ -667,11 +667,11 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indic
   );
 }
 
-export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, destinoCep = '', cidadePorIbge, gradeCanal = [], indicePorDestino, ignorarCubagem = false, inverterIcms = false }) {
+export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, destinoCep = '', cidadePorIbge, gradeCanal = [], indicePorDestino, ignorarCubagem = false, inverterIcms = false, usarPrazo = true }) {
   const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, destinoCep, gradeCanal, ignorarCubagem, inverterIcms }, cidadePorIbge, indicePorDestino);
   return rankearPorChave(resultados)
     .filter((item) => origemCompativel(item.origem, origem) && String(item.ibgeDestino) === String(destinoCodigo))
-    .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
+    .sort((a, b) => a.total - b.total || (usarPrazo ? a.prazo - b.prazo : 0));
 }
 
 export function simularPorTransportadora({ transportadoras, nomeTransportadora, canal, origem, destinoCodigos, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal = [], ignorarCubagem = false }) {
