@@ -265,6 +265,14 @@ function normalizeOrigemFromDb(origem, generalidadesRows, rotas, cotacoes, taxas
     // grupo cadastrado). Vazio = nenhuma alternativa tem generalidade
     // própria; o motor de Auditoria cai de volta na principal acima.
     generalidadesAlternativas,
+    // Indicador leve (mesmo campo que carregarResumoBaseDb calcula por
+    // query) pra listas mostrarem o badge sem precisar varrer rotas de novo.
+    temTabelaAlternativa: Boolean(
+      generalidadesAlternativas.length
+      || rotas.some((item) => item?.grupo_tabela_alternativa)
+      || cotacoes.some((item) => item?.grupo_tabela_alternativa)
+      || taxasEspeciais.some((item) => item?.grupo_tabela_alternativa)
+    ),
     rotas: rotas.map((item) => ({
       ...(item.extra || {}),
       id: item.id,
@@ -1411,6 +1419,10 @@ export async function carregarResumoBaseDb() {
     origensResponse,
     rotasCountResponse,
     cotacoesCountResponse,
+    rotasAlternativasResponse,
+    cotacoesAlternativasResponse,
+    taxasAlternativasResponse,
+    generalidadesAlternativasResponse,
   ] = await Promise.all([
     carregarTransportadorasResumoCompat(supabase),
     supabase.from('origens').select('id, transportadora_id, cidade, codigo_centro, cnpj, cnpj_raiz, canal, status, validado, validado_em, validado_por').order('cidade', { ascending: true }),
@@ -1420,12 +1432,30 @@ export async function carregarResumoBaseDb() {
     // colocar essa varredura pesada no caminho critico do login.
     supabase.from('rotas').select('id', { count: 'planned', head: true }),
     supabase.from('cotacoes').select('id', { count: 'planned', head: true }),
+    // Indicador leve de "esta origem tem tabela alternativa" pra lista de
+    // Transportadoras/Origens, sem carregar rotas/cotações inteiras aqui.
+    // Usa os índices parciais criados nas migrations de tabela alternativa.
+    supabase.from('rotas').select('origem_id').not('grupo_tabela_alternativa', 'is', null),
+    supabase.from('cotacoes').select('origem_id').not('grupo_tabela_alternativa', 'is', null),
+    supabase.from('taxas_especiais').select('origem_id').not('grupo_tabela_alternativa', 'is', null),
+    supabase.from('generalidades').select('origem_id').neq('grupo_tabela_alternativa', ''),
   ]);
 
   if (transportadorasResponse.error) throw transportadorasResponse.error;
   if (origensResponse.error) throw origensResponse.error;
   if (rotasCountResponse.error) throw rotasCountResponse.error;
   if (cotacoesCountResponse.error) throw cotacoesCountResponse.error;
+  if (rotasAlternativasResponse.error) throw rotasAlternativasResponse.error;
+  if (cotacoesAlternativasResponse.error) throw cotacoesAlternativasResponse.error;
+  if (taxasAlternativasResponse.error) throw taxasAlternativasResponse.error;
+  if (generalidadesAlternativasResponse.error) throw generalidadesAlternativasResponse.error;
+
+  const origensComTabelaAlternativa = new Set([
+    ...(rotasAlternativasResponse.data || []),
+    ...(cotacoesAlternativasResponse.data || []),
+    ...(taxasAlternativasResponse.data || []),
+    ...(generalidadesAlternativasResponse.data || []),
+  ].map((item) => String(item.origem_id)));
 
   const origensByTransportadora = new Map();
   (origensResponse.data || []).forEach((origem) => {
@@ -1446,6 +1476,7 @@ export async function carregarResumoBaseDb() {
       rotas: [],
       cotacoes: [],
       taxasEspeciais: [],
+      temTabelaAlternativa: origensComTabelaAlternativa.has(String(origem.id)),
     });
     origensByTransportadora.set(key, lista);
   });

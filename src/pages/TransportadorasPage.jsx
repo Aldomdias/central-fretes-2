@@ -1280,6 +1280,7 @@ function TransportadorasList({ items, onOpen, store }) {
   const [canalFiltro, setCanalFiltro] = useState('');
   const [coberturaFiltro, setCoberturaFiltro] = useState('');
   const [validacaoFiltro, setValidacaoFiltro] = useState('');
+  const [tabelaAlternativaFiltro, setTabelaAlternativaFiltro] = useState('');
   const [painelValidacaoOpen, setPainelValidacaoOpen] = useState(false);
   const [historicoOpen, setHistoricoOpen] = useState(false);
   const { vinculosSet, auditoresMap, repropagarTodosAuditores } = useVinculosEAuditores();
@@ -1327,9 +1328,12 @@ function TransportadorasList({ items, onOpen, store }) {
       const validacaoMatch = !validacaoFiltro || (item.origens || []).some((origem) => (
         validacaoFiltro === 'validadas' ? Boolean(origem.validado) : !origem.validado
       ));
-      return nomeMatch && cidadeMatch && canalMatch && coberturaMatch && validacaoMatch;
+      const temTabelaAlt = transportadoraTemTabelaAlternativa(item);
+      const tabelaAlternativaMatch = !tabelaAlternativaFiltro
+        || (tabelaAlternativaFiltro === 'com' ? temTabelaAlt : !temTabelaAlt);
+      return nomeMatch && cidadeMatch && canalMatch && coberturaMatch && validacaoMatch && tabelaAlternativaMatch;
     });
-  }, [items, busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro]);
+  }, [items, busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro, tabelaAlternativaFiltro]);
 
   const totalOrigens = useMemo(() => items.reduce((acc, item) => acc + (item.origens || []).length, 0), [items]);
   const totalOrigensValidadas = useMemo(
@@ -1345,7 +1349,7 @@ function TransportadorasList({ items, onOpen, store }) {
 
   useEffect(() => {
     setPagina(1);
-  }, [busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro]);
+  }, [busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro, tabelaAlternativaFiltro]);
 
   const atualizarBaseOficial = async () => {
     if (!store?.atualizarResumo || atualizandoResumo) return false;
@@ -1505,6 +1509,14 @@ function TransportadorasList({ items, onOpen, store }) {
               <option value="pendentes">Pendentes</option>
             </select>
           </div>
+          <div className="field">
+            <label>Tabela alternativa</label>
+            <select value={tabelaAlternativaFiltro} onChange={(e) => setTabelaAlternativaFiltro(e.target.value)} title="Origens que têm mais de uma tabela cadastrada (principal + alternativa)">
+              <option value="">Todas</option>
+              <option value="com">Só com tabela alternativa</option>
+              <option value="sem">Só sem tabela alternativa</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -1521,7 +1533,7 @@ function TransportadorasList({ items, onOpen, store }) {
               : 'list-card';
           return (
             <div key={item.id} className={cardClass} onClick={() => onOpen(item.id)}>
-              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>{item.nome}{(() => { const cs = [...new Set((item.origens||[]).flatMap(canaisOrigem))]; const temAtacado = cs.includes('ATACADO'); const temB2c = cs.includes('B2C'); return (<>{temAtacado&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dcfce7',color:'#166534'}}>ATACADO</span>}{temB2c&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8'}}>B2C</span>}</>); })()}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{carregandoItem ? <div className="list-meta-text" style={{ color: '#1d4ed8', fontWeight: 700 }}>⏳ Atualizando rotas, fretes, taxas e pendências...</div> : item.detalheCarregado && resumo.totalRotas !== undefined ? <div className="list-meta-text">{resumo.totalRotas} rota(s) · {resumo.totalCotacoes || 0} frete(s)</div> : <div className="list-meta-text" style={{ color: '#64748b' }}>Resumo rápido disponível · detalhes na fila de atualização</div>}{!carregandoItem && item.detalheCarregado && resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>{item.nome}{(() => { const cs = [...new Set((item.origens||[]).flatMap(canaisOrigem))]; const temAtacado = cs.includes('ATACADO'); const temB2c = cs.includes('B2C'); return (<>{temAtacado&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dcfce7',color:'#166534'}}>ATACADO</span>}{temB2c&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8'}}>B2C</span>}</>); })()}{transportadoraTemTabelaAlternativa(item) ? <span className="status-pill dark" title="Alguma origem desta transportadora tem tabela alternativa cadastrada" style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#ede9fe',color:'#6d28d9'}}>🔀 Tabela alternativa</span> : null}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{carregandoItem ? <div className="list-meta-text" style={{ color: '#1d4ed8', fontWeight: 700 }}>⏳ Atualizando rotas, fretes, taxas e pendências...</div> : item.detalheCarregado && resumo.totalRotas !== undefined ? <div className="list-meta-text">{resumo.totalRotas} rota(s) · {resumo.totalCotacoes || 0} frete(s)</div> : <div className="list-meta-text" style={{ color: '#64748b' }}>Resumo rápido disponível · detalhes na fila de atualização</div>}{!carregandoItem && item.detalheCarregado && resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 {(() => {
                   const totalOrig = (item.origens || []).length;
@@ -1774,7 +1786,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
               : 'list-card';
           return (
             <div key={origem.id} className={cardClass} onClick={() => onOpenOrigin(origem.id)}>
-              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#ede9fe':canaisOrigem(origem).includes('B2C')?'#dbeafe':'#dcfce7',color:canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#6d28d9':canaisOrigem(origem).includes('B2C')?'#1d4ed8':'#166534'}}>{canalOrigemLabel(origem)}</span></div><div className="list-subtitle">{(origem.rotas || []).length} rota(s) · {(origem.cotacoes || []).length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#ede9fe':canaisOrigem(origem).includes('B2C')?'#dbeafe':'#dcfce7',color:canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#6d28d9':canaisOrigem(origem).includes('B2C')?'#1d4ed8':'#166534'}}>{canalOrigemLabel(origem)}</span><BadgeTabelaAlternativa origem={origem} /></div><div className="list-subtitle">{(origem.rotas || []).length} rota(s) · {(origem.cotacoes || []).length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={transportadora.detalheCarregado ? analise.cobertura : 'Resumo'} severidade={transportadora.detalheCarregado ? analise.severidade : 'ok'} />
                 <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
@@ -2244,6 +2256,46 @@ function gruposAlternativosDaOrigem(origem) {
     if (item?.grupoTabelaAlternativa) grupos.add(String(item.grupoTabelaAlternativa));
   });
   return Array.from(grupos).sort((a, b) => a.localeCompare(b));
+}
+
+// Quantidade de tabelas alternativas desta origem, considerando também
+// generalidades e taxas especiais (além de rotas/cotações). Só dá pra contar
+// de verdade quando os dados completos da origem já foram carregados —
+// quando a tela ainda está em modo resumo, cai pro indicador booleano leve
+// vindo do banco (origem.temTabelaAlternativa).
+function contarTabelasAlternativasOrigem(origem) {
+  const grupos = new Set();
+  [...(origem?.rotas || []), ...(origem?.cotacoes || []), ...(origem?.taxasEspeciais || [])].forEach((item) => {
+    if (item?.grupoTabelaAlternativa) grupos.add(String(item.grupoTabelaAlternativa));
+  });
+  (origem?.generalidadesAlternativas || []).forEach((item) => {
+    if (item?.grupoTabelaAlternativa) grupos.add(String(item.grupoTabelaAlternativa));
+  });
+  return grupos.size;
+}
+
+function origemTemTabelaAlternativa(origem) {
+  return Boolean(origem?.temTabelaAlternativa) || contarTabelasAlternativasOrigem(origem) > 0;
+}
+
+function transportadoraTemTabelaAlternativa(transportadora) {
+  return (transportadora?.origens || []).some(origemTemTabelaAlternativa);
+}
+
+// Badge compacto pra listas: mostra a contagem quando os dados completos da
+// origem estão disponíveis, senão só sinaliza que existe alguma alternativa.
+function BadgeTabelaAlternativa({ origem, style }) {
+  if (!origemTemTabelaAlternativa(origem)) return null;
+  const qtd = contarTabelasAlternativasOrigem(origem);
+  return (
+    <span
+      className="status-pill dark"
+      title="Esta origem tem tabela(s) alternativa(s) cadastrada(s)"
+      style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#ede9fe', color: '#6d28d9', ...style }}
+    >
+      🔀 {qtd > 0 ? `${qtd} tabela(s) alt.` : 'Tabela alternativa'}
+    </span>
+  );
 }
 
 function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
