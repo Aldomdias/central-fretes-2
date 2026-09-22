@@ -483,7 +483,7 @@ function formatCoringasTaxa(taxasExtras = []) {
   }).join(' | ');
 }
 
-function TaxasEspeciaisTab({ origem, transportadora, store }) {
+function TaxasEspeciaisTab({ origem, transportadora, store, grupoTabelaAlternativa = null }) {
   const [configVerumOpen, setConfigVerumOpen] = useState(false);
   const [configVerum, setConfigVerum] = useState({});
   const podeEditar = store.podeEditarTransportadoras;
@@ -491,7 +491,9 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
   const [editando, setEditando] = React.useState(null);
   const [feedback, setFeedback] = React.useState(null);
   const inputRef = React.useRef(null);
-  const rows = origem.taxasEspeciais || [];
+  const rows = (origem.taxasEspeciais || []).filter(
+    (item) => (item.grupoTabelaAlternativa || null) === grupoTabelaAlternativa
+  );
   const opcoesVerum = opcoesTaxasVerum(rows);
 
   function abrirConfigVerum() {
@@ -501,7 +503,11 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
   }
 
   function salvarConfigVerum() {
-    store.salvarOrigem(transportadora.id, { ...origem, taxasEspeciais: rows.map((row) => ({ ...row, verumVersaoSemTaxa: { ...configVerum } })) });
+    const outrosGrupos = (origem.taxasEspeciais || []).filter(
+      (item) => (item.grupoTabelaAlternativa || null) !== grupoTabelaAlternativa
+    );
+    const rowsAtualizadas = rows.map((row) => ({ ...row, verumVersaoSemTaxa: { ...configVerum } }));
+    store.salvarOrigem(transportadora.id, { ...origem, taxasEspeciais: [...outrosGrupos, ...rowsAtualizadas] });
     setConfigVerumOpen(false);
     setFeedback({ type: 'ok', text: 'Configuração do Verum atualizada. Salve a origem para gravar no cadastro.' });
   }
@@ -522,7 +528,7 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
     const taxasExtras = (form.taxasExtras || [])
       .map((te) => ({ nome: String(te.nome || '').trim(), valor: Number(te.valor) || 0, pct: Number(te.pct) || 0, min: Number(te.min) || 0, valorPorPeso: Number(te.valorPorPeso) || 0, pesoBase: Number(te.pesoBase) || 0 }))
       .filter((te) => te.pct > 0 || te.valor > 0 || te.valorPorPeso > 0);
-    const row = { ...form, taxasExtras, id: editando?.id ?? ('te-' + Date.now()) };
+    const row = { ...form, taxasExtras, id: editando?.id ?? ('te-' + Date.now()), grupoTabelaAlternativa };
     store.salvarLinha(transportadora.id, origem.id, 'taxasEspeciais', row);
     setForm(TAXA_ESP_VAZIA); setEditando(null);
   }
@@ -538,7 +544,7 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
     try {
       const parsed = await parseFileToRows(file, 'taxas');
       const payload = buildImportPayload(parsed, 'taxas', { transportadora: transportadora.nome, origem: origem.cidade, canal: origem.canal });
-      const aplicado = store.importarPayload(payload, 'taxas', null, { transportadoraId: transportadora.id, origemId: origem.id });
+      const aplicado = store.importarPayload(payload, 'taxas', grupoTabelaAlternativa, { transportadoraId: transportadora.id, origemId: origem.id });
       if (!aplicado) {
         setFeedback({ type: 'error', text: 'Importação não foi salva: você não tem permissão para editar transportadoras (ou sua sessão expirou). Recarregue a página e tente de novo.' });
       } else {
@@ -564,7 +570,16 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
           <button className="btn-secondary" onClick={() => exportarSecao('taxas', exportRows, `${origem.cidade}-taxas.xlsx`)} disabled={!rows.length}>Exportar</button>
           <button className="btn-secondary" onClick={() => baixarModelo('taxas')}>Baixar Modelo</button>
           {podeEditar ? <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar</button> : null}
-          {podeEditar ? <button className="btn-danger" onClick={() => store.limparSecaoOrigem(transportadora.id, origem.id, 'taxasEspeciais')}>Excluir Tudo</button> : null}
+          {podeEditar ? <button className="btn-danger" onClick={() => {
+            if (!grupoTabelaAlternativa) {
+              store.limparSecaoOrigem(transportadora.id, origem.id, 'taxasEspeciais');
+              return;
+            }
+            const outrosGrupos = (origem.taxasEspeciais || []).filter(
+              (item) => (item.grupoTabelaAlternativa || null) !== grupoTabelaAlternativa
+            );
+            store.salvarOrigem(transportadora.id, { ...origem, taxasEspeciais: outrosGrupos });
+          }}>Excluir Tudo</button> : null}
           <input hidden ref={inputRef} type="file" accept=".xlsx,.xls,.csv" onChange={importarArquivo} />
         </div>
       </div>
@@ -995,17 +1010,25 @@ function buildResumoTransportadora(transportadora) {
   };
 }
 
-function GeneralidadesTab({ transportadoraId, origem, store }) {
-  const [form, setForm] = useState({ ...DEFAULT_GENERALIDADES, ...(origem.generalidades || {}) });
+function GeneralidadesTab({ transportadoraId, origem, store, grupoTabelaAlternativa = null }) {
+  const generalidadesDoGrupo = grupoTabelaAlternativa
+    ? (origem.generalidadesAlternativas || []).find((item) => item.grupoTabelaAlternativa === grupoTabelaAlternativa)
+    : origem.generalidades;
+  // Sem generalidade própria cadastrada, a tabela alternativa mostra (e ao
+  // salvar passa a sobrescrever) uma cópia da principal — deixa claro que,
+  // até aqui, ela está herdando os valores de lá.
+  const [form, setForm] = useState({ ...DEFAULT_GENERALIDADES, ...(generalidadesDoGrupo || origem.generalidades || {}) });
   const [feedback, setFeedback] = useState('');
   const [salvando, setSalvando] = useState(false);
-  React.useEffect(() => setForm({ ...DEFAULT_GENERALIDADES, ...(origem.generalidades || {}) }), [origem]);
+  React.useEffect(() => {
+    setForm({ ...DEFAULT_GENERALIDADES, ...(generalidadesDoGrupo || origem.generalidades || {}) });
+  }, [origem, grupoTabelaAlternativa]);
   const update = (field, value) => { setForm((prev) => ({ ...prev, [field]: value })); setFeedback(''); };
 
   const salvar = async () => {
     setSalvando(true);
     try {
-      const resultado = await store.salvarGeneralidades(transportadoraId, origem.id, form);
+      const resultado = await store.salvarGeneralidades(transportadoraId, origem.id, form, grupoTabelaAlternativa);
       if (resultado?.ok === false) throw resultado.erro || new Error('Erro ao salvar generalidades.');
       setFeedback('ok');
     } catch (e) {
@@ -1017,7 +1040,10 @@ function GeneralidadesTab({ transportadoraId, origem, store }) {
 
   return (
     <div className="tab-panel">
-      <div className="tab-panel-header"><p>Taxas e generalidades aplicadas a todas as rotas desta origem</p></div>
+      <div className="tab-panel-header">
+        <p>Taxas e generalidades aplicadas a todas as rotas desta origem{grupoTabelaAlternativa ? <> · tabela <strong>{grupoTabelaAlternativa}</strong></> : null}</p>
+        {grupoTabelaAlternativa && !generalidadesDoGrupo ? <p className="mini-feedback info">Esta tabela alternativa ainda não tem generalidades próprias — os campos abaixo mostram os valores da tabela principal. Salvar aqui cria uma generalidade específica só para "{grupoTabelaAlternativa}".</p> : null}
+      </div>
       <div className="form-grid three generalidades-grid">
         <div className="checkbox-field">
           <label>ICMS</label>
@@ -2281,7 +2307,7 @@ function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
       <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{canalOrigemLabel(origem)}</strong> · {origem.rotas.length} rota(s){gruposExistentes.length ? <> · <span className="status-pill dark" title="Tabelas alternativas cadastradas nesta origem">{gruposExistentes.length} tabela(s) alternativa(s)</span></> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmdOpen(true)} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button><span className="status-pill dark">{origem.status}</span></div></div>
       {feedbackChamado ? <div className="mini-feedback success top-space">{feedbackChamado}</div> : null}
       <div className="tabs-row"><TabButton active={aba === 'cadastro'} onClick={() => setAba('cadastro')}>Cadastro</TabButton><TabButton active={aba === 'canal'} onClick={() => setAba('canal')}>Canal</TabButton><TabButton active={aba === 'generalidades'} onClick={() => setAba('generalidades')}>Generalidades</TabButton><TabButton active={aba === 'rotas'} onClick={() => setAba('rotas')}>Rotas</TabButton><TabButton active={aba === 'cotacoes'} onClick={() => setAba('cotacoes')}>Cotações</TabButton><TabButton active={aba === 'taxas'} onClick={() => setAba('taxas')}>Taxas Especiais</TabButton></div>
-      {(aba === 'rotas' || aba === 'cotacoes') ? (
+      {(aba === 'rotas' || aba === 'cotacoes' || aba === 'generalidades' || aba === 'taxas') ? (
         <div className="hint-box" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <strong style={{ fontSize: 12, color: '#64748b' }}>Tabela em edição:</strong>
           <button className={grupoAtivo === null ? 'tab-btn active' : 'tab-btn'} onClick={() => setGrupoAtivo(null)}>Tabela principal</button>
@@ -2309,16 +2335,16 @@ function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
             </button>
           ) : null}
           <span style={{ width: '100%', fontSize: 12, color: '#64748b' }}>
-            Rotas e cotações cadastradas aqui valem só pra esta origem e só pra esta tabela ({grupoAtivo || 'principal'}). Sem nenhuma alternativa cadastrada, o comportamento é idêntico ao de sempre.
+            Rotas, cotações, generalidades e taxas especiais cadastradas aqui valem só pra esta origem e só pra esta tabela ({grupoAtivo || 'principal'}). Generalidades e taxas especiais sem cadastro próprio na tabela alternativa usam as da tabela principal. Sem nenhuma alternativa cadastrada, o comportamento é idêntico ao de sempre.
           </span>
         </div>
       ) : null}
       {aba === 'cadastro' && <CadastroOrigemTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'canal' && <CanalTab transportadoraId={transportadora.id} origem={origem} store={store} />}
-      {aba === 'generalidades' && <GeneralidadesTab transportadoraId={transportadora.id} origem={origem} store={store} />}
+      {aba === 'generalidades' && <GeneralidadesTab transportadoraId={transportadora.id} origem={origem} store={store} grupoTabelaAlternativa={grupoAtivo} />}
       {aba === 'rotas' && <CrudTab title="Rota" secao="rotas" tipoImportacao="rotas" origem={origem} transportadora={transportadora} store={store} columns={rotasColumns} fields={rotasFields} grupoTabelaAlternativa={grupoAtivo} hint={<>Use <strong>Baixar Modelo</strong> para subir rotas no padrão do seu arquivo real. Também há <strong>Exportar</strong> e <strong>Excluir Tudo</strong>.</>} />}
       {aba === 'cotacoes' && <CrudTab title="Cotação" secao="cotacoes" tipoImportacao="cotacoes" origem={origem} transportadora={transportadora} store={store} columns={cotacoesColumns} fields={cotacoesFields} grupoTabelaAlternativa={grupoAtivo} hint={<>Fretes/cotações aceitam importação no modelo com <strong>Rota do frete</strong>, pesos, excesso, taxa aplicada e percentual.</>} />}
-      {aba === 'taxas' && <TaxasEspeciaisTab origem={origem} transportadora={transportadora} store={store} />}
+      {aba === 'taxas' && <TaxasEspeciaisTab origem={origem} transportadora={transportadora} store={store} grupoTabelaAlternativa={grupoAtivo} />}
       <InconsistenciasModal open={inconsistenciasOpen} title="Inconsistências da origem" transportadora={transportadora} origem={origem} onClose={() => setInconsistenciasOpen(false)} />
       <ModalChamadoAmdTabela
         open={chamadoAmdOpen}

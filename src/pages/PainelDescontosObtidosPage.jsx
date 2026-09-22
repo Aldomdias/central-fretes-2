@@ -5,8 +5,12 @@ import {
   listarHistoricoCarteirasTodas,
   listarLancamentosDescontosObtidos,
   listarResumoDescontosObtidos,
+  listarDescontosEnviadosLegado,
+  listarDescontosRealizadosParaConciliacao,
+  listarProtocolosComDesconto,
   obterUltimaAtualizacaoDescontosObtidos,
 } from '../services/descontosObtidosService';
+import { conciliarDescontos, montarDescontosEnviados } from '../utils/conciliacaoDescontos';
 import { baixarLaudoDescontosObtidosHtml } from '../utils/laudoDescontosObtidosHtml';
 import {
   aplicarVinculoTransportadora,
@@ -890,6 +894,90 @@ function AbaPorAuditor() {
   );
 }
 
+function AbaConciliacaoDescontos() {
+  const [linhas, setLinhas] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState('');
+  const [status, setStatus] = useState('TODOS');
+  const [origem, setOrigem] = useState('PLANILHA_LEGADA');
+  const [busca, setBusca] = useState('');
+
+  useEffect(() => {
+    let cancelado = false;
+    setCarregando(true);
+    Promise.all([
+      listarProtocolosComDesconto(),
+      listarDescontosEnviadosLegado(),
+      listarDescontosRealizadosParaConciliacao(),
+    ]).then(([protocolos, legados, realizados]) => {
+      if (!cancelado) setLinhas(conciliarDescontos(montarDescontosEnviados(protocolos, legados), realizados));
+    }).catch((error) => {
+      if (!cancelado) setErro(error.message || 'Erro ao conciliar descontos.');
+    }).finally(() => {
+      if (!cancelado) setCarregando(false);
+    });
+    return () => { cancelado = true; };
+  }, []);
+
+  const linhasDaOrigem = useMemo(() => linhas.filter((row) => origem === 'TODAS' || row.origem === origem), [linhas, origem]);
+  const filtradas = useMemo(() => linhasDaOrigem.filter((row) => {
+    if (status !== 'TODOS' && row.status_conciliacao !== status) return false;
+    const alvo = `${row.numero_fatura || ''} ${row.transportadora || ''} ${row.protocolo || ''} ${row.arquivo_origem || ''}`.toLowerCase();
+    return !busca || alvo.includes(busca.toLowerCase());
+  }), [linhasDaOrigem, status, busca]);
+  const totalEnviado = linhasDaOrigem.reduce((s, row) => s + Number(row.desconto_enviado || 0), 0);
+  const realizados = linhasDaOrigem.filter((row) => row.status_conciliacao === 'REALIZADO');
+  const revisar = linhasDaOrigem.filter((row) => row.status_conciliacao === 'REVISAR');
+  const totalRealizado = realizados.reduce((s, row) => s + Number(row.desconto_realizado || 0), 0);
+  const pendentes = linhasDaOrigem.filter((row) => row.status_conciliacao === 'PENDENTE');
+
+  return (
+    <>
+      {erro ? <div className="sim-alert">{erro}</div> : null}
+      {carregando ? <div className="sim-alert info">Cruzando protocolos enviados com lançamentos realizados...</div> : null}
+      <div className="summary-strip">
+        <div className="summary-card"><span>Desconto enviado</span><strong>{formatMoeda(totalEnviado)}</strong><span>{formatInt(linhasDaOrigem.length)} solicitação(ões)</span></div>
+        <div className="summary-card"><span>Confirmado no realizado</span><strong>{formatMoeda(totalRealizado)}</strong><span>{formatInt(realizados.length)} conciliado(s)</span></div>
+        <div className="summary-card"><span>Pendente</span><strong>{formatMoeda(pendentes.reduce((s, row) => s + Number(row.desconto_enviado || 0), 0))}</strong><span>{formatInt(pendentes.length)} aguardando</span></div>
+        <div className="summary-card"><span>Requer revisão</span><strong>{formatInt(revisar.length)}</strong><span>mais de um candidato</span></div>
+      </div>
+      <section className="table-card">
+        <div className="sim-parametros-header">
+          <div><div className="panel-title">Enviado ao Financeiro × realizado no SAP</div><p>O casamento automático exige valor, transportadora e janela de data compatíveis. Casos não seguros permanecem pendentes.</p></div>
+          <div className="actions-right wrap">
+            <input value={busca} onChange={(event) => setBusca(event.target.value)} placeholder="Buscar fatura ou transportadora" />
+            <select value={origem} onChange={(event) => setOrigem(event.target.value)}>
+              <option value="PLANILHA_LEGADA">Arquivos importados</option>
+              <option value="PROTOCOLO_AUDITORIA">Protocolos da Auditoria</option>
+              <option value="TODAS">Todas as origens</option>
+            </select>
+            <select value={status} onChange={(event) => setStatus(event.target.value)}>
+              <option value="TODOS">Todos os status</option><option value="REALIZADO">Realizados</option><option value="PENDENTE">Pendentes</option><option value="REVISAR">Revisar</option>
+            </select>
+          </div>
+        </div>
+        <div className="sim-table-wrap" style={{ maxHeight: 620, overflowY: 'auto' }}>
+          <table className="sim-table">
+            <thead><tr><th>Status</th><th>Envio</th><th>Fatura</th><th>Transportadora</th><th>Enviado</th><th>Realizado</th><th>Data realizada</th><th>Origem</th></tr></thead>
+            <tbody>
+              {filtradas.map((row) => (
+                <tr key={`${row.origem}-${row.id}`}>
+                  <td><span className={`status-pill ${row.status_conciliacao === 'PENDENTE' ? 'warning' : row.status_conciliacao === 'REALIZADO' ? 'success' : ''}`}>{row.status_conciliacao === 'REALIZADO' ? 'Realizado' : row.status_conciliacao === 'REVISAR' ? 'Revisar' : 'Pendente'}</span></td>
+                  <td>{formatDataBr(row.data_envio)}</td><td>{row.numero_fatura || '—'}</td><td>{row.transportadora || '—'}</td>
+                  <td>{formatMoeda(row.desconto_enviado)}</td><td>{row.realizado ? formatMoeda(row.desconto_realizado) : '—'}</td>
+                  <td>{row.realizado ? formatDataBr(row.realizado.data_lancamento) : '—'}</td>
+                  <td>{row.origem === 'PROTOCOLO_AUDITORIA' ? row.protocolo : row.arquivo_origem}</td>
+                </tr>
+              ))}
+              {!filtradas.length && !carregando ? <tr><td colSpan={8}>Nenhum desconto encontrado para o filtro.</td></tr> : null}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </>
+  );
+}
+
 export default function PainelDescontosObtidosPage() {
   const [aba, setAba] = useState('mensal');
   const [ano, setAno] = useState(anoAtual());
@@ -1138,10 +1226,18 @@ export default function PainelDescontosObtidosPage() {
         >
           Por auditor
         </button>
+        <button
+          type="button"
+          className={aba === 'conciliacao' ? 'btn-primary' : 'btn-secondary'}
+          onClick={() => setAba('conciliacao')}
+        >
+          Enviado × realizado
+        </button>
       </div>
 
       {aba === 'anual' ? <AbaAnoAno /> : null}
       {aba === 'auditor' ? <AbaPorAuditor /> : null}
+      {aba === 'conciliacao' ? <AbaConciliacaoDescontos /> : null}
 
       {aba === 'mensal' ? (
         <>

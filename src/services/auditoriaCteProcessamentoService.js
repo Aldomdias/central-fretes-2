@@ -511,10 +511,34 @@ function filtrarOrigemPorGrupoAlternativo(origem = {}, grupo) {
     const valor = item?.grupoTabelaAlternativa || null;
     return grupo === null ? !valor : valor === grupo;
   };
+
+  // Generalidades: se a tabela alternativa tem generalidade própria
+  // cadastrada, usa ela inteira; senão cai de volta na generalidade
+  // principal da origem (comportamento anterior a esta extensão).
+  const generalidadeAlternativa = grupo === null
+    ? null
+    : (origem.generalidadesAlternativas || []).find((item) => item.grupoTabelaAlternativa === grupo);
+
+  // Taxas especiais: casam por IBGE destino, não por linha inteira como
+  // rotas/cotações. Uma tabela alternativa herda as taxas da principal e
+  // só sobrescreve os destinos em que ela mesma tiver uma taxa cadastrada —
+  // não precisa recadastrar tudo pra mudar só um destino.
+  const taxasPrincipais = (origem.taxasEspeciais || []).filter((item) => !item?.grupoTabelaAlternativa);
+  const taxasEspeciaisFiltradas = (() => {
+    if (grupo === null) return taxasPrincipais;
+    const taxasGrupo = (origem.taxasEspeciais || []).filter(pertenceAoGrupo);
+    if (!taxasGrupo.length) return taxasPrincipais;
+    const porDestino = new Map(taxasPrincipais.map((item) => [item.ibgeDestino, item]));
+    taxasGrupo.forEach((item) => porDestino.set(item.ibgeDestino, item));
+    return Array.from(porDestino.values());
+  })();
+
   return {
     ...origem,
+    generalidades: generalidadeAlternativa || origem.generalidades,
     rotas: (origem.rotas || []).filter(pertenceAoGrupo),
     cotacoes: (origem.cotacoes || []).filter(pertenceAoGrupo),
+    taxasEspeciais: taxasEspeciaisFiltradas,
   };
 }
 

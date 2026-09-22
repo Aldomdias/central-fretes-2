@@ -12,6 +12,7 @@ import {
   excluirTransportadoraDb,
   limparSecaoOrigemDb,
   salvarGeneralidadesOrigemDb,
+  excluirGeneralidadesAlternativaDb,
   salvarBaseCompletaDb,
   salvarSecaoDb,
 } from '../services/freteDatabaseService';
@@ -64,6 +65,12 @@ function normalizeOrigem(origem = {}) {
     canal: canalNormalizado,
     status: origem.status || 'Ativa',
     generalidades: mergeGeneralidades(origem.generalidades),
+    // Generalidades por tabela alternativa (grupoTabelaAlternativa), usadas
+    // hoje só pelo motor de Auditoria de CT-e/fatura. Ausência de entrada
+    // pra um grupo = cai de volta na generalidade principal acima.
+    generalidadesAlternativas: Array.isArray(origem.generalidadesAlternativas)
+      ? origem.generalidadesAlternativas.filter((item) => item?.grupoTabelaAlternativa)
+      : [],
     rotas: Array.isArray(origem.rotas)
       ? origem.rotas.map((item) => ({ ...item, id: item.id ?? safeRandomId() }))
       : [],
@@ -212,6 +219,7 @@ function mergeImport(prev, payload, tipo, grupoTabelaAlternativa = null, alvo = 
       const enriched = (item.origem.taxasEspeciais || []).map((row) => ({
         ...row,
         id: row.id ?? safeRandomId(),
+        grupoTabelaAlternativa: grupoTabelaAlternativa || null,
       }));
       origem.taxasEspeciais = [...(origem.taxasEspeciais || []), ...enriched];
     }
@@ -685,20 +693,37 @@ export function useFreteStore(sessao = null) {
         if (!podeEditarTransportadoras()) return;
         setTransportadoras([]);
       },
-      async salvarGeneralidades(transportadoraId, origemId, generalidades) {
+      // `grupoTabelaAlternativa` (opcional, mesma semântica de salvarLinha):
+      // null/omitido = generalidades da tabela principal (comportamento de
+      // sempre); um rótulo grava/atualiza a generalidade daquela tabela
+      // alternativa, sem afetar a principal nem outras alternativas.
+      async salvarGeneralidades(transportadoraId, origemId, generalidades, grupoTabelaAlternativa = null) {
         if (!podeEditarTransportadoras()) return { ok: false, erro: new Error(ERRO_SEM_PERMISSAO) };
         const generalidadesAtualizadas = mergeGeneralidades(generalidades);
         const origemAnterior = (transportadoras || []).find((t) => String(t.id) === String(transportadoraId))
           ?.origens?.find((o) => String(o.id) === String(origemId));
+        const aplicarNaOrigem = (o) => {
+          if (!grupoTabelaAlternativa) {
+            return invalidarValidacaoSeNecessario({ ...o, generalidades: generalidadesAtualizadas });
+          }
+          const outras = (o.generalidadesAlternativas || []).filter(
+            (item) => item.grupoTabelaAlternativa !== grupoTabelaAlternativa
+          );
+          return invalidarValidacaoSeNecessario({
+            ...o,
+            generalidadesAlternativas: [
+              ...outras,
+              { ...generalidadesAtualizadas, grupoTabelaAlternativa },
+            ],
+          });
+        };
         const next = (transportadoras || []).map((t) =>
           String(t.id) !== String(transportadoraId)
             ? t
             : {
                 ...t,
                 origens: (t.origens || []).map((o) =>
-                  String(o.id) !== String(origemId)
-                    ? o
-                    : invalidarValidacaoSeNecessario({ ...o, generalidades: generalidadesAtualizadas })
+                  String(o.id) !== String(origemId) ? o : aplicarNaOrigem(o)
                 ),
               }
         ).map(normalizeTransportadora);
@@ -719,6 +744,7 @@ export function useFreteStore(sessao = null) {
             transportadoraNome: atual?.nome || '',
             cidade: origemAnterior?.cidade || '',
             canal: origemAnterior?.canal || '',
+            grupoTabelaAlternativa,
           });
           if (String(resultadoPersistencia.origemId) !== String(origemId)) {
             setTransportadoras((prev) => (prev || []).map((transportadora) =>
@@ -1067,20 +1093,26 @@ export function useFreteStore(sessao = null) {
         aplicarAlteracao((prev) => mergeImport(prev, payload, tipo, grupoTabelaAlternativa, alvo), tipo, tipo);
         return true;
       },
-      // Remove de uma vez as rotas e cotações de uma tabela alternativa
-      // (grupoTabelaAlternativa) desta origem, sem afetar a tabela principal
-      // nem outras alternativas. Usado pelo botão "Excluir esta tabela
-      // alternativa" — evita ter que limpar rotas e cotações separadamente.
+      // Remove de uma vez as rotas, cotações, generalidades e taxas especiais
+      // de uma tabela alternativa (grupoTabelaAlternativa) desta origem, sem
+      // afetar a tabela principal nem outras alternativas. Usado pelo botão
+      // "Excluir esta tabela alternativa" — evita ter que limpar cada seção
+      // separadamente.
       excluirGrupoTabelaAlternativa(transportadoraId, origemId, grupoTabelaAlternativa) {
         if (!podeEditarTransportadoras() || !grupoTabelaAlternativa) return;
         const transportadora = (transportadoras || []).find((t) => t.id === transportadoraId);
         const origem = transportadora?.origens.find((o) => o.id === origemId);
+        const pertence = (item) => String(item.grupoTabelaAlternativa || '') === String(grupoTabelaAlternativa);
         const idsRemovidos = [
           ...(origem?.rotas || []),
           ...(origem?.cotacoes || []),
+          ...(origem?.taxasEspeciais || []),
         ]
-          .filter((item) => String(item.grupoTabelaAlternativa || '') === String(grupoTabelaAlternativa))
+          .filter(pertence)
           .map((item) => item.id);
+        const tinhaGeneralidadeAlternativa = (origem?.generalidadesAlternativas || []).some(
+          (item) => item.grupoTabelaAlternativa === grupoTabelaAlternativa
+        );
 
         setTransportadoras((prev) =>
           (prev || []).map((t) =>
@@ -1090,27 +1122,28 @@ export function useFreteStore(sessao = null) {
                   ...t,
                   origens: t.origens.map((o) => {
                     if (o.id !== origemId) return o;
-                    const pertence = (item) => String(item.grupoTabelaAlternativa || '') === String(grupoTabelaAlternativa);
                     return invalidarValidacaoSeNecessario({
                       ...o,
                       rotas: (o.rotas || []).filter((item) => !pertence(item)),
                       cotacoes: (o.cotacoes || []).filter((item) => !pertence(item)),
+                      taxasEspeciais: (o.taxasEspeciais || []).filter((item) => !pertence(item)),
+                      generalidadesAlternativas: (o.generalidadesAlternativas || []).filter(
+                        (item) => item.grupoTabelaAlternativa !== grupoTabelaAlternativa
+                      ),
                     });
                   }),
                 }
           )
         );
 
-        if (!bancoConfigurado() || !idsRemovidos.length) return;
+        if (!bancoConfigurado() || (!idsRemovidos.length && !tinhaGeneralidadeAlternativa)) return;
 
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
         Promise.all([
-          ...(origem?.rotas || [])
-            .filter((item) => String(item.grupoTabelaAlternativa || '') === String(grupoTabelaAlternativa))
-            .map((item) => excluirLinhaSecaoDb('rotas', item.id)),
-          ...(origem?.cotacoes || [])
-            .filter((item) => String(item.grupoTabelaAlternativa || '') === String(grupoTabelaAlternativa))
-            .map((item) => excluirLinhaSecaoDb('cotacoes', item.id)),
+          ...(origem?.rotas || []).filter(pertence).map((item) => excluirLinhaSecaoDb('rotas', item.id)),
+          ...(origem?.cotacoes || []).filter(pertence).map((item) => excluirLinhaSecaoDb('cotacoes', item.id)),
+          ...(origem?.taxasEspeciais || []).filter(pertence).map((item) => excluirLinhaSecaoDb('taxasEspeciais', item.id)),
+          ...(tinhaGeneralidadeAlternativa ? [excluirGeneralidadesAlternativaDb(origemId, grupoTabelaAlternativa)] : []),
         ])
           .then(finalizarExclusao)
           .then(() =>
@@ -1118,7 +1151,7 @@ export function useFreteStore(sessao = null) {
               tipo: 'exclusao_grupo_tabela_alternativa',
               transportadoraId,
               origemId,
-              secao: 'rotas+cotacoes',
+              secao: 'rotas+cotacoes+generalidades+taxasEspeciais',
               detalhe: `Excluiu a tabela alternativa "${grupoTabelaAlternativa}"`,
             })
           )

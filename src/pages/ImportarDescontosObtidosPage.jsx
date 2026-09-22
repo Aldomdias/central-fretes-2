@@ -1,6 +1,8 @@
 import { useMemo, useRef, useState } from 'react';
 import { parseDescontosObtidosFile } from '../utils/descontosObtidosImport';
-import { importarDescontosObtidos } from '../services/descontosObtidosService';
+import { parseProtocolosFinanceirosFile } from '../utils/descontosEnviadosImport';
+import { importarDescontosEnviadosLegado, importarDescontosObtidos } from '../services/descontosObtidosService';
+import { carregarSessao } from '../utils/authLocal';
 
 function formatMoeda(valor) {
   return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -40,6 +42,7 @@ const LABEL_REGRA = {
 };
 
 export default function ImportarDescontosObtidosPage() {
+  const [tipoBase, setTipoBase] = useState('realizados');
   const [arquivos, setArquivos] = useState([]);
   const [processando, setProcessando] = useState(false);
   const [erro, setErro] = useState('');
@@ -100,7 +103,9 @@ export default function ImportarDescontosObtidosPage() {
       const arquivo = arquivos[i];
       setFeedback(`Lendo ${i + 1} de ${arquivos.length}: ${arquivo.name}...`);
       try {
-        const dados = await parseDescontosObtidosFile(arquivo);
+        const dados = tipoBase === 'enviados'
+          ? await parseProtocolosFinanceirosFile(arquivo)
+          : await parseDescontosObtidosFile(arquivo);
         lidos.push(dados);
       } catch (error) {
         falhas.push(`${arquivo.name}: ${error.message || 'erro ao ler'}`);
@@ -110,11 +115,11 @@ export default function ImportarDescontosObtidosPage() {
     setPreviews(lidos);
     setProcessando(false);
 
-    const totalElegivel = lidos.reduce((acc, d) => acc + d.meta.linhasElegiveis, 0);
+    const totalElegivel = lidos.reduce((acc, d) => acc + (d.meta.linhasElegiveis ?? d.meta.linhasComDesconto ?? 0), 0);
     const totalOriginal = lidos.reduce((acc, d) => acc + d.meta.linhasOriginais, 0);
     const resumoFalhas = falhas.length ? ` ${falhas.length} arquivo(s) com erro: ${falhas.join('; ')}` : '';
     setFeedback(
-      `${formatInt(lidos.length)} arquivo(s) lido(s): ${formatInt(totalElegivel)} de ${formatInt(totalOriginal)} linha(s) reconhecidas como desconto obtido.${resumoFalhas}`
+      `${formatInt(lidos.length)} arquivo(s) lido(s): ${formatInt(totalElegivel)} de ${formatInt(totalOriginal)} linha(s) reconhecidas como desconto ${tipoBase === 'enviados' ? 'enviado ao Financeiro' : 'realizado'}.${resumoFalhas}`
     );
     if (falhas.length) setErro(resumoFalhas.trim());
   }
@@ -139,11 +144,17 @@ export default function ImportarDescontosObtidosPage() {
       setFeedback(`Gravando arquivo ${i + 1} de ${previews.length}: ${preview.meta.arquivo}...`);
 
       try {
-        const resposta = await importarDescontosObtidos({
-          registros: preview.registros,
-          arquivoOrigem: preview.meta.arquivo,
-          onProgress: (event) => setProgresso((atual) => ({ ...atual, ...event })),
-        });
+        const resposta = tipoBase === 'enviados'
+          ? await importarDescontosEnviadosLegado({
+            registros: preview.registros,
+            importadoPor: carregarSessao()?.nome || carregarSessao()?.email || 'Usuário local',
+            onProgress: (event) => setProgresso((atual) => ({ ...atual, ...event })),
+          })
+          : await importarDescontosObtidos({
+            registros: preview.registros,
+            arquivoOrigem: preview.meta.arquivo,
+            onProgress: (event) => setProgresso((atual) => ({ ...atual, ...event })),
+          });
         respostas.push({ arquivo: preview.meta.arquivo, ...resposta });
       } catch (error) {
         falhas.push(`${preview.meta.arquivo}: ${error.message || 'erro ao importar'}`);
@@ -183,13 +194,11 @@ export default function ImportarDescontosObtidosPage() {
     <div className="page-shell realizado-page">
       <div className="page-top between">
         <div className="page-header">
-          <div className="amd-mini-brand">AMD Log • Descontos Obtidos (SAP)</div>
-          <h1>Importar Descontos Obtidos</h1>
+          <div className="amd-mini-brand">AMD Log • Controle de descontos</div>
+          <h1>Importar descontos</h1>
           <p>
-            Importe o(s) extrato(s) contábil(is) do SAP com os descontos financeiros efetivamente concedidos pelas
-            transportadoras. Regra aplicada automaticamente: até a mudança de padrão, conta 41301002 (Desc.
-            Fin. Obtidos) restrita a centro de lucro de transporte; depois, conta 32208005 (Fretes e Carretos)
-            direto, sem filtro de centro de lucro.
+            Importe os descontos realizados no extrato contábil do SAP ou os protocolos diários enviados ao Financeiro.
+            Os novos protocolos criados pela Auditoria entram automaticamente e não precisam de planilha.
           </p>
         </div>
         <div className="actions-right wrap">
@@ -197,6 +206,15 @@ export default function ImportarDescontosObtidosPage() {
             Limpar seleção
           </button>
         </div>
+      </div>
+
+      <div className="tabs-bar" style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <button type="button" className={tipoBase === 'realizados' ? 'btn-primary' : 'btn-secondary'} onClick={() => { setTipoBase('realizados'); limparSelecao(); }}>
+          Realizados (SAP)
+        </button>
+        <button type="button" className={tipoBase === 'enviados' ? 'btn-primary' : 'btn-secondary'} onClick={() => { setTipoBase('enviados'); limparSelecao(); }}>
+          Enviados ao Financeiro
+        </button>
       </div>
 
       {erro ? <div className="sim-alert">{erro}</div> : null}
@@ -217,7 +235,7 @@ export default function ImportarDescontosObtidosPage() {
         <section className="panel-card">
           <div>
             <div className="panel-title">1. Selecionar arquivos</div>
-            <p>Exportações do SAPUI5 (.xlsx). Selecione vários arquivos de uma vez (Ctrl/Shift+clique) ou a pasta inteira.</p>
+            <p>{tipoBase === 'enviados' ? 'Protocolos diários (.xlsx), como PROTOCOLO 01-09. Apenas linhas com desconto maior que zero serão importadas.' : 'Exportações do SAPUI5 (.xlsx). Selecione vários arquivos de uma vez ou a pasta inteira.'}</p>
           </div>
 
           <div className="form-grid">
@@ -281,11 +299,13 @@ export default function ImportarDescontosObtidosPage() {
 
         <section className="panel-card">
           <div>
-            <div className="panel-title">2. Prévia por regra (todos os arquivos lidos)</div>
-            <p>Confira antes de gravar. Linhas com valor positivo ou fora dessas contas são ignoradas.</p>
+            <div className="panel-title">2. Prévia (todos os arquivos lidos)</div>
+            <p>{tipoBase === 'enviados' ? 'Confira a quantidade de descontos solicitados antes de gravar.' : 'Confira antes de gravar. Linhas com valor positivo ou fora dessas contas são ignoradas.'}</p>
           </div>
           <div className="sim-analise-resumo top-space">
-            {Object.entries(resumoRegra).length === 0 ? (
+            {tipoBase === 'enviados' && previews.length ? (
+              <div><span>Descontos enviados</span><strong>{formatInt(previews.reduce((s, p) => s + p.registros.length, 0))} linha(s) • {formatMoeda(previews.flatMap((p) => p.registros).reduce((s, r) => s + r.descontoEnviado, 0))}</strong></div>
+            ) : Object.entries(resumoRegra).length === 0 ? (
               <div><span>Nenhum arquivo lido ainda</span><strong>—</strong></div>
             ) : (
               Object.entries(resumoRegra).map(([regra, dados]) => (
@@ -321,7 +341,7 @@ export default function ImportarDescontosObtidosPage() {
                   <tr key={p.meta.arquivo}>
                     <td>{p.meta.arquivo}</td>
                     <td>{formatInt(p.meta.linhasOriginais)}</td>
-                    <td>{formatInt(p.meta.linhasElegiveis)}</td>
+                    <td>{formatInt(p.meta.linhasElegiveis ?? p.meta.linhasComDesconto ?? 0)}</td>
                   </tr>
                 ))}
               </tbody>

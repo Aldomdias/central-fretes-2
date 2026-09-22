@@ -112,12 +112,12 @@ export const PERFIS_USUARIO = {
   GESTOR_AUDITORIA_FRETES: {
     nome: 'Gestor de Auditoria de Fretes',
     descricao: 'Gestao de carteiras, produtividade, riscos, vencimentos e SLA.',
-    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'gestao-base-cte', 'icms-uf', 'prazo-pagamento'],
+    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'gestao-base-cte', 'icms-uf', 'prazo-pagamento', 'importar-descontos-obtidos', 'painel-descontos-obtidos'],
   },
   FINANCEIRO: {
     nome: 'Financeiro',
     descricao: 'Protocolos, solicitacoes, boletos, pagamentos e comprovantes.',
-    paginas: ['dashboard', 'conceito-app', 'financeiro-auditoria', 'faturas', 'tratativas', 'prazo-pagamento'],
+    paginas: ['dashboard', 'conceito-app', 'financeiro-auditoria', 'faturas', 'tratativas', 'prazo-pagamento', 'importar-descontos-obtidos', 'painel-descontos-obtidos'],
   },
   CONSULTA: {
     nome: 'Consulta',
