@@ -13,6 +13,11 @@ import { calcularSavingSimuladoPorTabela, calcularSavingSimuladoPorRota } from '
 // e não representam segmentação real de peso.
 const LIMITE_FAIXA_ABERTA = 100000;
 
+// Negociação com muitas rotas gera milhares de linhas (rota x faixa x mês) — renderizar
+// tudo isso no DOM, cada uma com botão "Confirmar por tabela", deixa a tela muito pesada.
+// Mostra só as piores (mais relevantes pra investigar) e deixa o resto pro CSV.
+const LIMITE_LINHAS_DETALHE_TELA = 200;
+
 // Filtro de transportadora é feito no cliente como reforço (não é o filtro principal):
 // ilike com wildcard nas duas pontas não usa índice em realizado_local_ctes, então a
 // consulta já filtra no servidor (ilike ou lista exata de vínculo) e isso aqui só
@@ -310,6 +315,38 @@ function baixarLaudoSavings(tabelas, negociacoes, resultados, opcoes = {}) {
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
   link.download = `${nomeArquivoSeguro('laudo-savings-pos-aprovacao')}-${new Date().toISOString().slice(0, 10)}.html`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(link.href);
+}
+
+// A tabela de detalhe por rota/faixa pode ter milhares de linhas (uma
+// negociação com muitas rotas gera uma combinação por rota+faixa+mês) —
+// renderizar tudo no DOM deixa a tela pesada. O CSV dá o detalhe completo
+// sem sobrecarregar a página; a tabela em tela mostra só uma amostra.
+function csvCelula(valor) {
+  const texto = String(valor ?? '');
+  return /[;"\n]/.test(texto) ? `"${texto.replace(/"/g, '""')}"` : texto;
+}
+
+function baixarDetalheCsvSaving(item, resultado) {
+  const linhas = resultado?.linhas || [];
+  const cabecalho = ['Rota', 'Faixa', '% antes', '% atual', 'Diferença', 'Valor NF atual', 'Saving'];
+  const corpo = linhas.map((linha) => [
+    linha.rota,
+    linha.faixa,
+    linha.pctBase == null ? '' : (linha.pctBase * 100).toFixed(2).replace('.', ','),
+    linha.pctAtual == null ? '' : (linha.pctAtual * 100).toFixed(2).replace('.', ','),
+    linha.diffPct == null ? '' : (linha.diffPct * 100).toFixed(2).replace('.', ','),
+    Number(linha.valorNFAtual || 0).toFixed(2).replace('.', ','),
+    linha.semHistorico ? 'Sem histórico' : Number(linha.saving || 0).toFixed(2).replace('.', ','),
+  ]);
+  const csv = [cabecalho, ...corpo].map((cols) => cols.map(csvCelula).join(';')).join('\r\n');
+  const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `${nomeArquivoSeguro(`detalhe-saving-${item.transportadora}-${item.origem || 'todas'}-${item.canal}`)}.csv`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -1837,6 +1874,17 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                         Recalcular
                       </button>
                     ) : null}
+                    {resultado?.linhas?.length ? (
+                      <button
+                        type="button"
+                        className="sim-tab"
+                        style={{ padding: '3px 8px', fontSize: 11 }}
+                        onClick={() => baixarDetalheCsvSaving(item, resultado)}
+                        title="Baixa todas as rotas/faixas em CSV, sem precisar carregar tudo na tela"
+                      >
+                        Baixar CSV ({resultado.linhas.length})
+                      </button>
+                    ) : null}
                     {resultado ? (
                       <button
                         type="button"
@@ -1914,6 +1962,12 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                     </div>
                   ) : (
                     <div style={gestaoStyles.tabelaWrap}>
+                      {resultado.linhas.length > LIMITE_LINHAS_DETALHE_TELA ? (
+                        <div className="sim-alert info" style={{ marginBottom: 8, fontSize: 11 }}>
+                          Mostrando as {LIMITE_LINHAS_DETALHE_TELA} rotas/faixas com pior saving, de {resultado.linhas.length} no total — a tela ficaria muito pesada com todas.
+                          {' '}Use "Baixar CSV" acima pra ver a lista completa.
+                        </div>
+                      ) : null}
                       <table className="sim-table" style={{ minWidth: 920 }}>
                         <thead>
                           <tr>
@@ -1928,7 +1982,10 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                           </tr>
                         </thead>
                         <tbody>
-                          {resultado.linhas.map((linha) => {
+                          {[...resultado.linhas]
+                            .sort((a, b) => Number(a.saving || 0) - Number(b.saving || 0))
+                            .slice(0, LIMITE_LINHAS_DETALHE_TELA)
+                            .map((linha) => {
                             const negativa = linha.saving < 0;
                             const semHistorico = Boolean(linha.semHistorico);
                             const chaveRota = `${item.id}||${linha.rota}||${linha.faixa}${sufixoCompetencia()}`;

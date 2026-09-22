@@ -6,6 +6,7 @@ import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import ModalEnviarProtocoloFinanceiro from '../components/ModalEnviarProtocoloFinanceiro';
 import DadosBancariosTransportadoras from '../components/DadosBancariosTransportadoras';
 import { carregarSessao } from '../utils/authLocal';
+import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 import {
   atualizarStatusJornada,
   buscarJornadaPorIdentificadores,
@@ -3846,17 +3847,23 @@ ${portaisLaudo.length ? `
       const vinculosImportacao = await carregarVinculosTransportadoras().catch(() => []);
       const mapaVinculosImportacao = criarMapaVinculosTransportadoras(vinculosImportacao);
       const mapaAuditorPorTransportadora = new Map();
+      // Casamento por CNPJ (raiz), quando a carteira tem um cadastrado: imune
+      // a nome de transportadora errado/divergente na fatura (a fatura 3161355
+      // veio como "SANTA MARIA" mas o CNPJ era da TW TRANSPORTES — vinculo de
+      // nome so foi cadastrado depois da importacao, entao a fatura nasceu sem
+      // auditor). Nome+vinculo continua como fallback pra carteira sem CNPJ.
+      const mapaAuditorPorRaizCnpj = new Map();
       (state.carteiras || []).forEach((carteira) => {
         if (!carteira.auditor_nome) return;
+        const dadosAuditor = { auditor_nome: carteira.auditor_nome, auditor_email: carteira.auditor_email || '' };
+        const raizCarteira = obterRaizCnpj(carteira.cnpj_transportadora);
+        if (raizCnpjValida(raizCarteira)) mapaAuditorPorRaizCnpj.set(raizCarteira, dadosAuditor);
         // A carteira pode ter sido cadastrada com um nome-alias da
         // transportadora (antes do vinculo existir, ou digitado diferente).
         // Resolve pelo mesmo mapa de vinculos usado no nome da fatura, senao
         // a chave nunca bate e a fatura nova entra sem auditor.
         const nomeCarteiraResolvido = aplicarVinculoTransportadora(carteira.transportadora, mapaVinculosImportacao);
-        mapaAuditorPorTransportadora.set(normalizarNomeTransportadora(nomeCarteiraResolvido), {
-          auditor_nome: carteira.auditor_nome,
-          auditor_email: carteira.auditor_email || '',
-        });
+        mapaAuditorPorTransportadora.set(normalizarNomeTransportadora(nomeCarteiraResolvido), dadosAuditor);
       });
 
       let faturasSalvas = 0;
@@ -3883,9 +3890,11 @@ ${portaisLaudo.length ? `
           if (anterior) await anterior.catch(() => {});
           const existenteId = existentesPorChave.get(chaveExistente);
           const nomeResolvido = aplicarVinculoTransportadora(fatura.transportadora, mapaVinculosImportacao);
-          const auditorDaCarteira = !existenteId
-            ? mapaAuditorPorTransportadora.get(normalizarNomeTransportadora(nomeResolvido))
-            : null;
+          const raizFatura = obterRaizCnpj(fatura.cnpj_transportadora);
+          const auditorDaCarteira = existenteId ? null : (
+            (raizCnpjValida(raizFatura) && mapaAuditorPorRaizCnpj.get(raizFatura))
+            || mapaAuditorPorTransportadora.get(normalizarNomeTransportadora(nomeResolvido))
+          );
           const resultado = await salvarFaturaSupabase({
             ...(existenteId ? { id: existenteId } : {}),
             ...fatura,
@@ -4968,22 +4977,30 @@ function Gestao({ state, onState }) {
     setErroAtribuicao('');
     try {
       const mapaAuditorPorCarteira = new Map();
+      const mapaAuditorPorRaizCnpj = new Map();
       carteiras.forEach((carteira) => {
         if (!carteira.auditor_nome) return;
+        const dadosAuditor = { auditor_nome: carteira.auditor_nome, auditor_email: carteira.auditor_email || '' };
         const chave = normalizarNomeTransportadora(resolverNomeTransportadora(carteira.transportadora));
-        mapaAuditorPorCarteira.set(chave, { auditor_nome: carteira.auditor_nome, auditor_email: carteira.auditor_email || '' });
+        mapaAuditorPorCarteira.set(chave, dadosAuditor);
+        const raizCarteira = obterRaizCnpj(carteira.cnpj_transportadora);
+        if (raizCnpjValida(raizCarteira)) mapaAuditorPorRaizCnpj.set(raizCarteira, dadosAuditor);
       });
-      const pendentes = state.faturas.filter((fatura) => {
-        if (fatura.auditor_nome) return false;
+      // Casa primeiro por CNPJ (raiz) — imune a nome de transportadora
+      // errado/divergente na fatura — e só cai pro nome+vínculo quando a
+      // carteira não tem CNPJ cadastrado ou a fatura não tem CNPJ pra comparar.
+      const resolverAuditor = (fatura) => {
+        const raizFatura = obterRaizCnpj(fatura.cnpj_transportadora);
+        if (raizCnpjValida(raizFatura) && mapaAuditorPorRaizCnpj.has(raizFatura)) return mapaAuditorPorRaizCnpj.get(raizFatura);
         const chave = normalizarNomeTransportadora(resolverNomeTransportadora(fatura.transportadora));
-        return mapaAuditorPorCarteira.has(chave);
-      });
+        return mapaAuditorPorCarteira.get(chave) || null;
+      };
+      const pendentes = state.faturas.filter((fatura) => !fatura.auditor_nome && resolverAuditor(fatura));
       let estadoAtual = state;
       let corrigidas = 0;
       const gestorNome = carregarSessao()?.nome || 'Gestao';
       for (const fatura of pendentes) {
-        const chave = normalizarNomeTransportadora(resolverNomeTransportadora(fatura.transportadora));
-        const auditorDaCarteira = mapaAuditorPorCarteira.get(chave);
+        const auditorDaCarteira = resolverAuditor(fatura);
         estadoAtual = await atualizarFaturaAuditoria(estadoAtual, { ...fatura, ...auditorDaCarteira }, {
           acao: 'AUDITOR_ATRIBUIDO', descricao: `Sincronizado com a carteira de ${auditorDaCarteira.auditor_nome} (correcao retroativa).`, usuario_nome: gestorNome,
         });

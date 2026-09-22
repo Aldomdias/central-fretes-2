@@ -4016,7 +4016,7 @@ export async function calcularSavingPosAprovacaoAgregado(filtros = {}) {
   const inicio = Date.now();
   const parametrosRpc = {
     p_transportadoras: transportadoras,
-    p_origem: filtros.origem || '',
+    p_origem: limparOrigemParaConsultaDb(filtros.origem || ''),
     p_canais: canalVariantesConsultaDb(filtros.canal || ''),
     p_data_corte: filtros.dataCorte,
     p_fim_atual: filtros.fimAtual,
@@ -4105,7 +4105,7 @@ export async function buscarPrimeiroCteSaving(filtros = {}) {
   if (!transportadoras.length) return '';
   const { data, error } = await supabase.rpc('primeiro_cte_saving', {
     p_transportadoras: transportadoras,
-    p_origem: filtros.origem || '',
+    p_origem: limparOrigemParaConsultaDb(filtros.origem || ''),
     p_canais: canalVariantesConsultaDb(filtros.canal || ''),
     p_data_corte: filtros.dataCorte,
     p_fim_atual: filtros.fimAtual,

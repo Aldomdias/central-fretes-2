@@ -669,7 +669,7 @@ export async function listarCarteirasAuditoria() {
   const client = getSupabaseClient();
   const { data, error } = await client
     .from('auditoria_carteiras')
-    .select('id, transportadora, auditor_nome, auditor_email');
+    .select('id, transportadora, cnpj_transportadora, auditor_nome, auditor_email');
   if (error) {
     console.warn('Não foi possível carregar carteiras de auditoria.', error.message || error);
     return [];

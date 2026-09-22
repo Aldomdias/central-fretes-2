@@ -623,7 +623,13 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
     ? Array.from(new Set((transportadorasAlvo || []).map((nome) => aplicarVinculoTransportadora(nome, mapaVinculos) || nome).map((nome) => String(nome || '').trim()).filter(Boolean)))
     : nomesTransportadorasRegistros(registros, mapaVinculos);
 
-  if (nomes.length > 0 && nomes.length <= 5) {
+  // O limite era 5, mas carregarBaseTransportadorasDb ja busca por
+  // transportadoraIds em consultas batched (nao faz uma query por nome), entao
+  // nao ha custo real em cobrir mais nomes aqui. Um limite baixo forcava faturas
+  // com CT-es de varias transportadoras (comum em faturas consolidadas) a cair
+  // no fallback de baixar a base inteira (~1,8 milhao de rotas) mesmo quando so
+  // precisavam de um punhado de transportadoras especificas.
+  if (nomes.length > 0 && nomes.length <= 40) {
     const cacheKey = nomes.map((nome) => normalizeTransportadoraCompare(nome)).sort().join('|');
     if (!_cacheBaseFretePorTransportadora.has(cacheKey)) {
       onProgress?.({ etapa: 'carregando_tabelas_transportadora', carregados: 0, total: nomes.length });
@@ -999,6 +1005,23 @@ function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, de
   return { candidatos, melhor };
 }
 
+// processarCteComMotorSimulador roda uma vez por CT-e do lote. transportadorasPrincipais
+// e buildLookupTables (que varre TODA a malha de rotas de TODAS as transportadoras
+// carregadas) não dependem do CT-e em si, só do array `transportadoras` — então ficam
+// em cache por referência do array pra não repetir a varredura completa a cada CT-e
+// (numa fatura com 91 CT-es isso rodava a malha inteira 91 vezes à toa).
+const _cacheLookupPorTransportadoras = new WeakMap();
+function obterLookupCacheado(transportadoras) {
+  let cache = _cacheLookupPorTransportadoras.get(transportadoras);
+  if (!cache) {
+    const transportadorasPrincipais = (transportadoras || []).filter((t) => !t?.tabelaAlternativaDe);
+    const { cidadePorIbge } = buildLookupTables(transportadorasPrincipais);
+    cache = { transportadorasPrincipais, cidadePorIbge };
+    _cacheLookupPorTransportadoras.set(transportadoras, cache);
+  }
+  return cache;
+}
+
 function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '', opcoes = {}) {
   const transportadoraTabela = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
   if (!transportadoraTabela) return null;
@@ -1009,9 +1032,7 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
   // ambiguidade na busca por origem/rota (duas cenários pra transportadora
   // "alvo" na mesma origem). As alternativas só são usadas mais abaixo, em
   // montarComparativoTabelas, isoladas uma a uma.
-  const transportadorasPrincipais = (transportadoras || []).filter((t) => !t?.tabelaAlternativaDe);
-
-  const { cidadePorIbge } = buildLookupTables(transportadorasPrincipais);
+  const { transportadorasPrincipais, cidadePorIbge } = obterLookupCacheado(transportadoras);
   const canalOriginal = normalizarCanalResultado(pick(cte, ['canal', 'canal_original']));
   const canaisTentativa = canalOriginal === 'A DEFINIR'
     ? ['ATACADO', 'B2C', '']
@@ -1905,19 +1926,28 @@ async function enriquecerCtesComTrackingAoVivo(ctes = [], onProgress) {
   });
 
   const total = ctes.length;
-  const resultado = [];
-  const tamanhoLote = 20;
+  // Lote maior (a consulta em si já pagina por 300 chaves por vez lá dentro)
+  // e concorrência limitada: em vez de esperar um lote de cada vez, dispara
+  // vários em paralelo, o que reduz bastante o tempo total em faturas grandes
+  // sem sobrecarregar o Supabase (é leitura simples, não API externa limitada).
+  const tamanhoLote = 200;
+  const concorrenciaMaxima = 4;
+  const lotes = [];
+  for (let inicio = 0; inicio < ctes.length; inicio += tamanhoLote) {
+    lotes.push(ctes.slice(inicio, inicio + tamanhoLote));
+  }
+  const resultadoPorLote = new Array(lotes.length);
+  let carregados = 0;
   onProgress?.({ etapa: 'cruzando_tracking', carregados: 0, total });
 
-  for (let inicio = 0; inicio < ctes.length; inicio += tamanhoLote) {
-    const loteCtes = ctes.slice(inicio, inicio + tamanhoLote);
+  const processarLote = async (loteCtes, indiceLote) => {
     const linhas = loteCtes.map(montarLinha);
     let linhasEnriquecidas = linhas;
     try {
       const mapasTracking = await withTimeout(
         buscarTrackingParaRealizado(linhas),
-        25000,
-        `Tracking lote ${Math.floor(inicio / tamanhoLote) + 1}`,
+        45000,
+        `Tracking lote ${indiceLote + 1}`,
       );
       linhasEnriquecidas = enriquecerRealizadoComTracking(linhas, mapasTracking).linhas || linhas;
     } catch (error) {
@@ -1931,9 +1961,9 @@ async function enriquecerCtesComTrackingAoVivo(ctes = [], onProgress) {
       }));
     }
 
-    loteCtes.forEach((cte, index) => {
+    resultadoPorLote[indiceLote] = loteCtes.map((cte, index) => {
       const enriquecida = linhasEnriquecidas[index] || {};
-      resultado.push({
+      return {
         ...cte,
         trackingMatch: enriquecida.trackingMatch || cte.trackingMatch,
         peso_declarado: enriquecida.pesoDeclarado || cte.peso_declarado,
@@ -1941,14 +1971,20 @@ async function enriquecerCtesComTrackingAoVivo(ctes = [], onProgress) {
         cubagem: enriquecida.cubagemTotal || cte.cubagem,
         cubagemTotal: enriquecida.cubagemTotal || cte.cubagemTotal,
         documento_destinatario: enriquecida.documentoDestinatario || cte.documento_destinatario || '',
-      });
+      };
     });
 
-    onProgress?.({ etapa: 'cruzando_tracking', carregados: Math.min(inicio + tamanhoLote, total), total });
+    carregados = Math.min(carregados + loteCtes.length, total);
+    onProgress?.({ etapa: 'cruzando_tracking', carregados, total });
+  };
+
+  for (let inicio = 0; inicio < lotes.length; inicio += concorrenciaMaxima) {
+    const grupo = lotes.slice(inicio, inicio + concorrenciaMaxima);
+    await Promise.all(grupo.map((loteCtes, offset) => processarLote(loteCtes, inicio + offset)));
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
-  return resultado;
+  return resultadoPorLote.flat();
 }
 
 export async function processarESalvarAuditoriaMes({ competencia, dataInicio, dataFim, canais, onProgress, ignorarCubagem = true, percentualContingenciaPeso = 0, apenasDadosCompletos = true } = {}) {
