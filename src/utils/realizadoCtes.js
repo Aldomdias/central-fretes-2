@@ -562,8 +562,16 @@ export async function parseRealizadoCtesFile(file, opcoesImportacao) {
         documentoRemetente: row.documentoRemetente || nf.documentoRemetente || '',
       };
     })
-    .filter((row) => row.chaveCte || row.numeroCte)
-    .filter((row) => row.valorCte > 0 || row.valorNF > 0);
+    .filter((row) => row.chaveCte || row.numeroCte);
+
+  // Uma chave CT-e identifica o documento mesmo quando os valores financeiros
+  // vieram vazios/zerados ou quando o cabeçalho do arquivo ainda não foi
+  // reconhecido. Descartar essas linhas aqui fazia o upload complementar dizer
+  // "nenhum CT-e novo" e também as escondia do diagnóstico. Elas precisam subir
+  // para a base oficial; a validação mensal já contabiliza semValorCte/semValorNf.
+  const registrosSemValorFinanceiro = normalizados.filter(
+    (row) => row.valorCte <= 0 && row.valorNF <= 0,
+  ).length;
 
   // Politica: a base sobe COMPLETA — CP COMERCIAL, EBAZAR, CPS LOG e tomador vazio
   // tambem entram, para ficarem disponiveis em busca/filtro. A exclusao desses
@@ -587,6 +595,7 @@ export async function parseRealizadoCtesFile(file, opcoesImportacao) {
       linhasEstimadas: contarLinhasPelaRef(refInfo.refCorrigida),
       linhasOriginais: rows.length,
       registrosLidos: normalizados.length,
+      registrosSemValorFinanceiro,
       registrosAntesTomador: normalizados.length,
       // A base sobe completa: nada e ignorado no import. O resumo abaixo e so
       // informativo (quantos de cada categoria especial entraram).

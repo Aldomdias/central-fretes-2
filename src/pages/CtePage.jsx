@@ -3377,10 +3377,11 @@ export default function CtePage() {
         {metaUpload ? (
           <>
             <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', marginTop: 12 }}>
-              <SummaryCard title="Lidos" value={fmtN(metaUpload.registrosLidos ?? metaUpload.registrosAntesTomador)} subtitle="linhas com CT-e/valor" />
+              <SummaryCard title="Lidos" value={fmtN(metaUpload.registrosLidos ?? metaUpload.registrosAntesTomador)} subtitle="linhas identificadas como CT-e" />
               <SummaryCard title="Importados" value={fmtN(metaUpload.registrosImportados ?? metaUpload.registrosValidos)} subtitle="aceitos pela política" />
               <SummaryCard title="Ignorados" value={fmtN(metaUpload.registrosIgnorados ?? metaUpload.registrosIgnoradosTomador)} subtitle="fora da regra" tone={Number(metaUpload.registrosIgnorados || metaUpload.registrosIgnoradosTomador || 0) > 0 ? 'warn' : ''} />
               <SummaryCard title="Duplicados" value={fmtN(metaUpload.duplicados || 0)} subtitle="chaves repetidas" />
+              <SummaryCard title="Sem valores" value={fmtN(metaUpload.registrosSemValorFinanceiro || 0)} subtitle="CT-e e NF zerados; serão importados" tone={Number(metaUpload.registrosSemValorFinanceiro || 0) > 0 ? 'warn' : ''} />
               <SummaryCard title="Linhas arquivo" value={fmtN(metaUpload.linhasOriginais)} subtitle={`aba ${metaUpload.aba || '—'}`} />
             </div>
             {metaUpload.resumoExclusoes && Object.keys(metaUpload.resumoExclusoes).length > 0 ? (
