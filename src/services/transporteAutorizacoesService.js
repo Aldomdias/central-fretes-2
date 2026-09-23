@@ -23,6 +23,56 @@ export async function listarAutorizacoes({ canal, status } = {}) {
   return data || [];
 }
 
+// Pedido (Marketplace) e chave da NF de cada CT-e, pela base (tracking primeiro,
+// realizado como reserva). Quem autoriza precisa desses dados na tela.
+export async function buscarVinculoPorCte(chavesCte = []) {
+  const mapa = new Map();
+  const chaves = [...new Set(chavesCte.map(soDigitos).filter(Boolean))];
+  if (!chaves.length || !isSupabaseConfigured()) return mapa;
+  const client = getSupabaseClient();
+  try {
+    for (let i = 0; i < chaves.length; i += 100) {
+      const lote = chaves.slice(i, i + 100);
+      const { data } = await client.from('tracking_rows').select('chave_cte,chave_nfe,pedido_erp,mk:raw->>Pedido Marketplace').in('chave_cte', lote);
+      (data || []).forEach((row) => {
+        const chave = soDigitos(row.chave_cte);
+        const atual = mapa.get(chave) || { chaveNfe: '', pedido: '' };
+        mapa.set(chave, { chaveNfe: atual.chaveNfe || soDigitos(row.chave_nfe), pedido: atual.pedido || row.mk || row.pedido_erp || '' });
+      });
+      const faltamNfe = lote.filter((chave) => !mapa.get(chave)?.chaveNfe);
+      if (faltamNfe.length) {
+        const { data: realizado } = await client.from('realizado_local_ctes').select('chave_cte,chave_nfe').in('chave_cte', faltamNfe);
+        (realizado || []).forEach((row) => {
+          const chave = soDigitos(row.chave_cte);
+          const atual = mapa.get(chave) || { chaveNfe: '', pedido: '' };
+          if (soDigitos(row.chave_nfe)) mapa.set(chave, { ...atual, chaveNfe: soDigitos(row.chave_nfe) });
+        });
+      }
+    }
+  } catch (error) {
+    console.warn('[Autorizacoes transporte] vinculo por CT-e indisponivel.', error?.message || error);
+  }
+  return mapa;
+}
+
+// Preenche pedido/NF que faltam nos itens da fila (enviados antes do vinculo).
+export async function completarVinculosPendentes(itens = []) {
+  const incompletos = itens.filter((item) => item.chave_cte && (!item.numero_pedido || !item.chave_nfe));
+  if (!incompletos.length) return 0;
+  const vinculos = await buscarVinculoPorCte(incompletos.map((item) => item.chave_cte));
+  let atualizados = 0;
+  for (const item of incompletos) {
+    const achado = vinculos.get(soDigitos(item.chave_cte));
+    const patch = {};
+    if (!item.numero_pedido && achado?.pedido) patch.numero_pedido = achado.pedido;
+    if (!item.chave_nfe && achado?.chaveNfe) patch.chave_nfe = achado.chaveNfe;
+    if (!Object.keys(patch).length) continue;
+    const { error } = await exigirClient().from(TABELA).update(patch).eq('id', item.id);
+    if (!error) atualizados += 1;
+  }
+  return atualizados;
+}
+
 // Auditoria -> fila do gestor do canal. Nao duplica CT-e que ja esta na fila
 // (PENDENTE) ou ja autorizado.
 export async function enviarParaAutorizacao(itens = [], usuarioNome = '') {
@@ -34,14 +84,7 @@ export async function enviarParaAutorizacao(itens = [], usuarioNome = '') {
     if (error) throw new Error(`Erro ao verificar fila: ${error.message}`);
     existentes = new Set((data || []).map((row) => row.chave_cte));
   }
-  const semPedido = itens.filter((item) => !item.numero_pedido && soDigitos(item.chave_cte)).map((item) => soDigitos(item.chave_cte));
-  const pedidoPorCte = new Map();
-  if (semPedido.length) {
-    try {
-      const { data } = await client.from('tracking_rows').select('chave_cte,pedido_erp,mk:raw->>Pedido Marketplace').in('chave_cte', semPedido);
-      (data || []).forEach((row) => pedidoPorCte.set(soDigitos(row.chave_cte), row.mk || row.pedido_erp || ''));
-    } catch (error) { /* pedido e so informativo */ }
-  }
+  const vinculos = await buscarVinculoPorCte(itens.filter((item) => !item.numero_pedido || !item.chave_nfe).map((item) => item.chave_cte));
   const novos = itens
     .filter((item) => soDigitos(item.chave_cte) || soDigitos(item.chave_nfe))
     .filter((item) => !existentes.has(soDigitos(item.chave_cte)))
@@ -50,8 +93,8 @@ export async function enviarParaAutorizacao(itens = [], usuarioNome = '') {
       origem: 'AUDITORIA',
       status: 'PENDENTE',
       chave_cte: soDigitos(item.chave_cte) || null,
-      chave_nfe: soDigitos(item.chave_nfe) || null,
-      numero_pedido: item.numero_pedido || pedidoPorCte.get(soDigitos(item.chave_cte)) || null,
+      chave_nfe: soDigitos(item.chave_nfe) || vinculos.get(soDigitos(item.chave_cte))?.chaveNfe || null,
+      numero_pedido: item.numero_pedido || vinculos.get(soDigitos(item.chave_cte))?.pedido || null,
       transportadora: item.transportadora || null,
       cidade_origem: item.cidade_origem || null,
       cidade_destino: item.cidade_destino || null,
