@@ -268,6 +268,25 @@ function extrairIdentificadoresCte(texto = '') {
   return [...new Set(String(texto || '').match(/\d{5,}/g) || [])];
 }
 
+async function aplicarSaldoTransporteNaExibicao(registros = []) {
+  const saldos = await carregarSaldosAutorizadosPorChave(registros.flatMap((row) => [row.chave_cte, row.chave_nfe]));
+  if (!saldos.size) return registros;
+  return registros.map((row) => {
+    const saldo = Number(saldos.get(normalizarChaveCte(row.chave_cte)) || saldos.get(normalizarChaveCte(row.chave_nfe)) || 0);
+    if (!(saldo > 0) || !(Number(row.valor_calculado || 0) > 0)) return row;
+    const valorCalculado = Number((Number(row.valor_calculado) + saldo).toFixed(2));
+    const diferenca = Number((Number(row.valor_cte || 0) - valorCalculado).toFixed(2));
+    return {
+      ...row,
+      valor_calculado: valorCalculado,
+      diferenca,
+      diferenca_abs: Math.abs(diferenca),
+      percentual_diferenca: valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0,
+      detalhes_calculo: { ...(row.detalhes_calculo || {}), saldo_transporte_autorizado: saldo },
+    };
+  });
+}
+
 function chaveUnicaCteFatura(item = {}) {
   return normalizarChaveCte(item.chave_cte) || normalizarChaveCte(item.numero_cte) || String(item.id || '');
 }
@@ -3464,7 +3483,11 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         trackingOverridePorChave,
         reentregaPorChave,
       });
-      const registrosComFaturas = await enriquecerCtesComFaturas(registros);
+      // Saldo autorizado (gestor do transporte) so na exibicao: o que vai pro
+      // banco continua sendo o calculo puro do motor — a reauditoria da fatura
+      // soma o saldo sozinha e nao pode contar duas vezes.
+      const registrosExibicao = await aplicarSaldoTransporteNaExibicao(registros);
+      const registrosComFaturas = await enriquecerCtesComFaturas(registrosExibicao);
       setResultadoCtesAvulsos(registrosComFaturas);
       if (registros.length) {
         await salvarAuditoriaAvulsa(registros);
@@ -5208,7 +5231,7 @@ ${portaisLaudo.length ? `
             )}
             <div className="audit-quick-table-wrap">
               <table className="sim-analise-tabela audit-quick-table">
-                <thead><tr><th>DOCCOB</th><th>CT-e</th><th>Chave</th><th>Fatura</th><th>Transportadora</th><th>Canal</th><th>Rota</th><th>Peso NF</th><th>Pago</th><th>C�lculo Verum</th><th>Dif. Verum</th><th>C�lculo AMD</th><th>Dif. AMD</th><th>Status</th></tr></thead>
+                <thead><tr><th>DOCCOB</th><th>CT-e</th><th>Chave</th><th>Fatura</th><th>Transportadora</th><th>Canal</th><th>Rota</th><th>Peso NF</th><th>Pago</th><th>C�lculo Verum</th><th>Dif. Verum</th><th>C�lculo AMD</th><th>Dif. AMD</th><th>Saldo autorizado</th><th>Status</th></tr></thead>
                 <tbody>
                   {resultadoCtesAvulsosFiltrado.map((row, index) => {
                     const key = row.chave_cte || row.numero_cte || index;
@@ -5284,10 +5307,15 @@ ${portaisLaudo.length ? `
                           <td>{verum > 0 ? dinheiroMaybe(difVerum) : '-'}</td>
                           <td>{dinheiroMaybe(row.valor_calculado)}</td>
                           <td>{dinheiroMaybe(row.diferenca)}</td>
+                          <td title="Autorizado pelo responsavel do transporte (ja somado ao calculo AMD)">
+                            {Number(row.detalhes_calculo?.saldo_transporte_autorizado || 0) > 0
+                              ? <strong style={{ color: '#166534' }}>+ {dinheiroMaybe(row.detalhes_calculo.saldo_transporte_autorizado)}</strong>
+                              : '-'}
+                          </td>
                           <td><span className={statusClass}>{semValorNf ? 'Sem valor NF' : linhaOk ? 'Dentro da tolerancia' : (row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-'))}</span></td>
                         </tr>
                         {aberto && (
-                          <tr className="audit-quick-detail-row"><td colSpan="14">
+                          <tr className="audit-quick-detail-row"><td colSpan="15">
                             <div className="hint-box compact" style={{ marginBottom: 10, borderColor: semValorNf ? '#fdba74' : '#dbe3ef', background: semValorNf ? '#fff7ed' : '#f8fafc' }}>
                               <strong>{semValorNf ? 'CT-e sem valor NF identificado.' : 'Ajustes manuais do CT-e'}</strong>
                               <div className="form-grid three" style={{ marginTop: 8 }}>
