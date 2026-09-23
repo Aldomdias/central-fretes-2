@@ -5333,7 +5333,7 @@ ${portaisLaudo.length ? `
       <div className="table-card">
         <div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th><input type="checkbox" checked={todasFiltradasSelecionadas} disabled={!lista.length} onChange={alternarSelecaoFiltradas} title="Selecionar/desmarcar todas as faturas filtradas (todas as paginas)" /></th><th>Fatura</th><th>Transportadora</th><th>Origem</th><th>Vencimento</th><th>Valor</th><th>CT-es</th><th>Divergencia</th><th>Auditor</th><th>Status</th><th>Pagamento</th><th></th></tr></thead>
+            <thead><tr><th><input type="checkbox" checked={todasFiltradasSelecionadas} disabled={!lista.length} onChange={alternarSelecaoFiltradas} title="Selecionar/desmarcar todas as faturas filtradas (todas as paginas)" /></th><th>Fatura</th><th>Transportadora</th><th>Origem</th><th>Vencimento</th><th>Valor</th><th>CT-es</th><th>Divergencia</th><th>Auditor</th><th>Status</th><th>Pagamento</th><th>Fornecedor</th><th></th></tr></thead>
             <tbody>
               {listaPaginada.map((fatura) => {
                 const auditadaCompleta = faturaTotalmenteAuditada(fatura);
@@ -5365,6 +5365,19 @@ ${portaisLaudo.length ? `
                           : 'Ainda sem pagamento conciliado'}
                     >
                       <Status value={situacaoPagamentoFatura(fatura)} />
+                    </td>
+                    <td
+                      title={fatura.confirmacao_transportador_status === 'APROVADO'
+                        ? `Confirmada${fatura.confirmacao_transportador_em ? ` em ${dataBr(fatura.confirmacao_transportador_em)}` : ''}${fatura.confirmacao_transportador_por ? ` por ${fatura.confirmacao_transportador_por}` : ''}`
+                        : fatura.confirmacao_transportador_status === 'ENVIADO'
+                          ? `Laudo enviado${fatura.confirmacao_transportador_enviado_em ? ` em ${dataBr(fatura.confirmacao_transportador_enviado_em)}` : ''}, aguardando o fornecedor confirmar`
+                          : 'Laudo ainda nao enviado ao fornecedor'}
+                    >
+                      {fatura.confirmacao_transportador_status === 'APROVADO'
+                        ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Aprovada</span>
+                        : fatura.confirmacao_transportador_status === 'ENVIADO'
+                          ? <span style={{ color: '#b45309', fontWeight: 700 }}>Aguardando</span>
+                          : <span style={{ color: '#94a3b8' }}>—</span>}
                     </td>
                     <td><button className="btn-secondary audit-small-button" onClick={(event) => { event.stopPropagation(); setAberta(fatura); }}>Abrir</button></td>
                   </tr>
