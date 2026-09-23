@@ -3907,7 +3907,7 @@ ${portaisLaudo.length ? `
           if (existenteId) faturasAtualizadas += 1;
           else faturasNovas += 1;
           existentesPorChave.set(chaveExistente, resultado.id);
-          const detalhes = detalhesDaFatura(grupos, fatura.numero_fatura, fatura.serie_fatura)
+          const detalhes = detalhesDaFatura(grupos, fatura.numero_fatura, fatura.serie_fatura, fatura.cnpj_transportadora, fatura.transportadora)
             .map((item) => parseDetalheFaturaVerum(item, resultado.id, fatura));
           if (detalhes.length) {
             // Reimportacao: limpa os CT-es antigos da fatura para nao duplicar.
