@@ -1,3 +1,5 @@
+import { obterRaizCnpj } from './cnpj.js';
+
 function valor(row, nomes) {
   for (const nome of nomes) {
     if (row[nome] !== undefined && row[nome] !== null && row[nome] !== '') return row[nome];
@@ -111,6 +113,17 @@ export function chaveFatura(numeroFatura, serieFatura) {
   return `${parteChave(numeroFatura)}::${parteChave(serieFatura)}`;
 }
 
+// Identifica a transportadora pelo CNPJ (raiz) quando disponível — imune a
+// nome digitado diferente entre a aba Faturas e a aba Detalhes — e cai pro
+// nome normalizado só quando não há CNPJ. Sem isso, duas transportadoras
+// diferentes com a MESMA numeração de fatura (ex.: "44") colidem na mesma
+// chave e os CT-es de uma vazam pra fatura da outra.
+function parteChaveTransportadora(cnpjTransportadora, nomeTransportadora) {
+  const raiz = obterRaizCnpj(cnpjTransportadora);
+  if (raiz && raiz.length === 8) return `CNPJ:${raiz}`;
+  return `NOME:${String(nomeTransportadora || '').trim().toUpperCase().replace(/\s+/g, ' ')}`;
+}
+
 // A aba Detalhes do Verum normalmente nao traz Numero Fatura/Serie Fatura
 // separados: vem uma coluna combinada "Numero Fatura - Serie" (ex: "131833-1").
 // Sem isso, numero/serie ficam vazios pra toda linha e o casamento com a
@@ -137,24 +150,33 @@ function numeroSerieDetalhe(row) {
 // numero para o fallback quando a serie nao bate entre as duas abas.
 export function agruparDetalhesVerum(rowsDetalhes = []) {
   const porChave = new Map();
-  const porNumero = new Map();
+  const porNumeroTransportadora = new Map();
   for (const row of rowsDetalhes) {
     const { numero, serie } = numeroSerieDetalhe(row);
-    const chave = chaveFatura(numero, serie);
+    const transpChave = parteChaveTransportadora(
+      somenteDigitos(row, ['CNPJ Transportadora']),
+      texto(row, ['Transportadora']),
+    );
+    const chave = `${chaveFatura(numero, serie)}::${transpChave}`;
     porChave.set(chave, [...(porChave.get(chave) || []), row]);
-    const numeroChave = parteChave(numero);
-    if (!porNumero.has(numeroChave)) porNumero.set(numeroChave, new Set());
-    porNumero.get(numeroChave).add(chave);
+    // Numero + transportadora, sem a serie — cobre serie divergente entre as
+    // abas Faturas e Detalhes, mas ainda isolado por transportadora (nunca
+    // mistura CT-es de fatura "44" da transportadora A com a fatura "44" da B).
+    const numeroTranspChave = `${parteChave(numero)}::${transpChave}`;
+    if (!porNumeroTransportadora.has(numeroTranspChave)) porNumeroTransportadora.set(numeroTranspChave, new Set());
+    porNumeroTransportadora.get(numeroTranspChave).add(chave);
   }
-  return { porChave, porNumero };
+  return { porChave, porNumeroTransportadora };
 }
 
-export function detalhesDaFatura(grupos, numeroFatura, serieFatura) {
-  const chave = chaveFatura(numeroFatura, serieFatura);
+export function detalhesDaFatura(grupos, numeroFatura, serieFatura, cnpjTransportadora, nomeTransportadora) {
+  const transpChave = parteChaveTransportadora(cnpjTransportadora, nomeTransportadora);
+  const chave = `${chaveFatura(numeroFatura, serieFatura)}::${transpChave}`;
   if (grupos.porChave.has(chave)) return grupos.porChave.get(chave);
-  // Series divergentes entre as abas: aceita casar so pelo numero quando ele
-  // aponta para uma unica fatura na aba Detalhes.
-  const chaves = grupos.porNumero.get(parteChave(numeroFatura));
+  // Serie divergente entre as abas: aceita casar so pelo numero (ainda preso
+  // a transportadora) quando ele aponta para uma unica fatura na aba Detalhes.
+  const numeroTranspChave = `${parteChave(numeroFatura)}::${transpChave}`;
+  const chaves = grupos.porNumeroTransportadora.get(numeroTranspChave);
   if (chaves && chaves.size === 1) return grupos.porChave.get([...chaves][0]) || [];
   return [];
 }
@@ -165,7 +187,7 @@ export function analisarLayoutVerum(rowsFaturas = [], rowsDetalhes = []) {
   const grupos = agruparDetalhesVerum(rowsDetalhes);
   const reconhecidos = new Set();
   for (const fatura of validas) {
-    for (const row of detalhesDaFatura(grupos, fatura.numero_fatura, fatura.serie_fatura)) {
+    for (const row of detalhesDaFatura(grupos, fatura.numero_fatura, fatura.serie_fatura, fatura.cnpj_transportadora, fatura.transportadora)) {
       reconhecidos.add(row);
     }
   }
