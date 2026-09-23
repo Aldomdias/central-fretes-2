@@ -2,6 +2,7 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { aplicarReauditoriaDetalhes, ENCERRADOS, gerarProtocolo, isoDate, normalizarChaveCte } from '../utils/auditoriaFretesDomain';
 import { chaveFatura } from '../utils/auditoriaFretesImport';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
+import { gerarTokenAleatorio } from './auditoriaCteJornadaService';
 
 const STORAGE_KEY = 'central_fretes_plataforma_auditoria_440_v1';
 
@@ -1285,4 +1286,30 @@ export async function enviarFaturaParaProtocolo(state, fatura, dados, usuario = 
 
 export function restaurarDemonstracaoAuditoria() {
   return writeLocal(demoState());
+}
+
+export function urlPortalFatura(token) {
+  if (!token) return '';
+  const base = typeof window !== 'undefined' ? window.location.origin : '';
+  return `${base}/api/portal-fatura/${token}`;
+}
+
+// Gera (uma vez) o link de confirmacao da fatura pro transportador clicar OK
+// direto no laudo — reaproveita o mesmo token em reenvios, ate ele confirmar.
+export async function gerarLinkConfirmacaoFatura(state, fatura) {
+  if (fatura.confirmacao_transportador_token) {
+    return { state, url: urlPortalFatura(fatura.confirmacao_transportador_token), token: fatura.confirmacao_transportador_token };
+  }
+  const token = gerarTokenAleatorio();
+  const agora = new Date().toISOString();
+  const next = await atualizarFaturaAuditoria(state, {
+    ...fatura,
+    confirmacao_transportador_token: token,
+    confirmacao_transportador_status: fatura.confirmacao_transportador_status || 'ENVIADO',
+    confirmacao_transportador_enviado_em: agora,
+  }, {
+    acao: 'LINK_CONFIRMACAO_GERADO',
+    descricao: 'Link de confirmacao da fatura gerado para envio ao transportador.',
+  });
+  return { state: next, url: urlPortalFatura(token), token };
 }
