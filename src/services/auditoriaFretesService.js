@@ -3,6 +3,7 @@ import { aplicarReauditoriaDetalhes, ENCERRADOS, gerarProtocolo, isoDate, normal
 import { chaveFatura } from '../utils/auditoriaFretesImport';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 import { gerarTokenAleatorio } from './auditoriaCteJornadaService';
+import { carregarSaldosAutorizadosPorChave } from './transporteAutorizacoesService';
 
 const STORAGE_KEY = 'central_fretes_plataforma_auditoria_440_v1';
 
@@ -396,7 +397,12 @@ export async function reauditarFatura(state, fatura, detalhes, usuarioNome = 'Us
     }
   }
 
-  const { detalhes: atualizados, resumo } = aplicarReauditoriaDetalhes(detalhes, resultados);
+  // Saldos autorizados pelo gestor do transporte (B2C/Atacado) por chave de CT-e
+  // ou NF: somam ao calculado na comparacao, sem tocar no motor.
+  const saldosAutorizados = await carregarSaldosAutorizadosPorChave(
+    detalhes.flatMap((item) => [item.chave_cte, item.chave_nfe]),
+  );
+  const { detalhes: atualizados, resumo } = aplicarReauditoriaDetalhes(detalhes, resultados, saldosAutorizados);
   for (let inicio = 0; inicio < atualizados.length; inicio += 200) {
     await safeUpsert('fatura_detalhes', atualizados.slice(inicio, inicio + 200));
   }

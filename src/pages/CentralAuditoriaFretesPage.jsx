@@ -88,6 +88,7 @@ import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, apli
 import { buscarTrackingPorChaveNfeManual } from '../services/trackingSupabaseService';
 import { consultarMunicipiosIbge } from '../services/ibgeService';
 import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
+import { enviarParaAutorizacao } from '../services/transporteAutorizacoesService';
 
 const TABS = [
   ['dashboard', 'Dashboard'],
@@ -1712,6 +1713,39 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     }
   };
 
+  // CT-es divergentes marcados vao pra fila do gestor do transporte do canal
+  // (B2C/Atacado) autorizar um saldo — caso de cotacao/sem tabela. Quando ele
+  // autoriza, a proxima reauditoria soma o valor e a divergencia some.
+  const enviarParaAutorizacaoTransporte = async () => {
+    const alvo = detalhes.filter((item) => selecionados.includes(item.id));
+    if (!alvo.length) return;
+    const observacao = window.prompt(`Enviar ${alvo.length} CT-e(s) para autorizacao do responsavel do transporte. Observacao pra ele (o que aconteceu):`, '');
+    if (observacao === null) return;
+    try {
+      const itens = alvo.map((item) => {
+        const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte)) || referenciaCtes.get(normalizarChaveCte(item.numero_cte)) || {};
+        return {
+          canal: item.canal || base.canal || fatura.canal,
+          chave_cte: item.chave_cte,
+          chave_nfe: item.chave_nfe || base.chave_nfe,
+          numero_pedido: item.numero_pedido || base.numero_pedido,
+          transportadora: fatura.transportadora,
+          cidade_origem: item.cidade_origem || base.cidade_origem,
+          cidade_destino: item.cidade_destino || base.cidade_destino,
+          valor_cte: item.valor_frete,
+          valor_calculado: item.calculado_frete,
+          valor_divergente: Math.max(Number(item.diferenca || 0), 0),
+          observacao: observacao.trim(),
+          fatura_id: fatura.id,
+        };
+      });
+      const { enviados, jaNaFila } = await enviarParaAutorizacao(itens, sessao?.nome || sessao?.email || '');
+      setMensagemLiberacao(`✓ ${enviados} CT-e(s) enviado(s) para autorizacao do transporte${jaNaFila ? ` (${jaNaFila} ja estavam na fila)` : ''}.`);
+    } catch (error) {
+      setErroDetalhes(`Erro ao enviar para autorizacao: ${error.message}`);
+    }
+  };
+
   const liberarParaPagamento = async () => {
     const resumo = resumirDetalhesAuditoria(detalhes, toleranciaFatura);
     // valor_fatura (confiavel) - calculado, nao cobrancaAcima-cobrancaAbaixo:
@@ -2821,6 +2855,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('EDI')}>Gerar DOCCOB EDI (Verum)</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('CSV')}>Gerar DOCCOB CSV</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('XLSX')}>Gerar DOCCOB XLSX</button>
+        <button className="btn-secondary" disabled={!selecionados.length} onClick={enviarParaAutorizacaoTransporte} title="Envia os CT-es marcados para o responsavel do transporte (B2C/Atacado) autorizar um saldo">Enviar p/ autorizacao transporte</button>
         <button className="btn-secondary" onClick={() => mudarStatus('AGUARDANDO_NOVA_FATURA')}>Solicitar nova fatura</button>
         <button className="btn-primary" onClick={liberarParaPagamento}>Liberar para pagamento</button>
         <button

@@ -33,6 +33,8 @@ const MENU_GRUPOS = [
       { chave: 'painel-operacao', label: 'Painel operacao' },
       { chave: 'lotacao', label: 'Lotacao tabelas' },
       { chave: 'lotacao-operacao', label: 'Lotacao operacao' },
+      { chave: 'autorizacoes-transporte-b2c', label: 'Autorizacoes transporte B2C' },
+      { chave: 'autorizacoes-transporte-atacado', label: 'Autorizacoes transporte Atacado' },
     ],
   },
   {
