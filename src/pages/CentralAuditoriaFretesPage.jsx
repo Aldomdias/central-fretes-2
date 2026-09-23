@@ -1142,18 +1142,6 @@ function PainelAcompanhamento({ state }) {
   const valorTotalJanela = naJanela.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
   const valorAbertoJanela = naJanelaAbertas.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
 
-  const porStatus = useMemo(() => {
-    const mapa = new Map();
-    naJanela.forEach((item) => {
-      const status = item.status || 'RECEBIDA';
-      const atual = mapa.get(status) || { status, qtd: 0, valor: 0 };
-      atual.qtd += 1;
-      atual.valor += Number(item.valor_fatura || 0);
-      mapa.set(status, atual);
-    });
-    return [...mapa.values()].sort((a, b) => b.qtd - a.qtd);
-  }, [naJanela]);
-
   // Situacao de pagamento (Pago/Pago com divergencia/Partida lancada/Lancada
   // no financeiro/Nao pago) — mesmas 5 categorias do filtro "Pagamento" da
   // aba Faturas. Diferente do "Por status" acima, que mistura status bruto
@@ -1300,17 +1288,6 @@ function PainelAcompanhamento({ state }) {
         <Card label="Valor total na janela" value={dinheiro(valorTotalJanela)} />
         <Card label="Valor em aberto" value={dinheiro(valorAbertoJanela)} color="#9b1111" />
       </div>
-
-      <div className="audit-section-title">Por status</div>
-      <SimpleTable
-        headers={['Status', 'Qtd', 'Valor']}
-        rows={porStatus.map((item) => [
-          <StatusClicavel key="s" value={item.status} ativo={statusFiltro === item.status} onClick={() => alternarFiltro(setStatusFiltro, statusFiltro)(item.status)} />,
-          item.qtd,
-          dinheiro(item.valor),
-        ])}
-        empty="Nenhuma fatura na janela selecionada."
-      />
 
       <div className="audit-section-title">Por situacao de pagamento</div>
       <SimpleTable
