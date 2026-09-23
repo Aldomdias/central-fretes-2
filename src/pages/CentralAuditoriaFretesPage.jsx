@@ -88,7 +88,7 @@ import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, apli
 import { buscarTrackingPorChaveNfeManual } from '../services/trackingSupabaseService';
 import { consultarMunicipiosIbge } from '../services/ibgeService';
 import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
-import { enviarParaAutorizacao } from '../services/transporteAutorizacoesService';
+import { carregarSaldosAutorizadosPorChave, enviarParaAutorizacao } from '../services/transporteAutorizacoesService';
 
 const TABS = [
   ['dashboard', 'Dashboard'],
@@ -1590,6 +1590,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [infoRecalculo, setInfoRecalculo] = useState('');
   const [progressoRecalculo, setProgressoRecalculo] = useState(null);
   const [referenciaCtes, setReferenciaCtes] = useState(new Map());
+  const [saldosTransporte, setSaldosTransporte] = useState(new Map());
   const [cteExpandido, setCteExpandido] = useState(null);
   const [resultadosDetalhe, setResultadosDetalhe] = useState(new Map());
   const [carregandoDetalheCte, setCarregandoDetalheCte] = useState(null);
@@ -1611,6 +1612,19 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     [detalhesOriginais, referenciaCtes]
   );
   const duplicadosRemovidos = Math.max(0, detalhesOriginais.length - detalhes.length);
+
+  // Saldo autorizado pelo gestor do transporte (B2C/Atacado) por chave do CT-e
+  // ou da NF — coluna propria na tabela de CT-es; soma ao calculado na reauditoria.
+  useEffect(() => {
+    let ativo = true;
+    const chaves = detalhesOriginais.flatMap((item) => [item.chave_cte, item.chave_nfe]).filter(Boolean);
+    if (!chaves.length) { setSaldosTransporte(new Map()); return undefined; }
+    carregarSaldosAutorizadosPorChave(chaves).then((mapa) => { if (ativo) setSaldosTransporte(mapa); });
+    return () => { ativo = false; };
+  }, [detalhesOriginais.length, fatura.id, mensagemLiberacao]);
+  const saldoTransporteDoCte = (item) => Number(
+    saldosTransporte.get(normalizarChaveCte(item.chave_cte)) || saldosTransporte.get(normalizarChaveCte(item.chave_nfe)) || 0,
+  );
   const resumoAuditoriaFatura = useMemo(() => resumirDetalhesAuditoria(detalhes, toleranciaFatura), [detalhes, toleranciaFatura.acima, toleranciaFatura.abaixo]);
   const divergencias = detalhes.filter((item) =>
     Number(item.calculado_frete || 0) > 0
@@ -2491,7 +2505,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         </label>
       </div>
       <table className="sim-analise-tabela">
-        <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th>Peso</th><th>Valor NF</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Motivo</th><th>Status</th><th>Entrega</th></tr></thead>
+        <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th>Peso</th><th>Valor NF</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Saldo autorizado</th><th>Motivo</th><th>Status</th><th>Entrega</th></tr></thead>
         <tbody>
           {lista.map((item) => {
             const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte))
@@ -2519,6 +2533,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                   <td style={{ cursor: 'pointer' }} className={Number(item.diferenca_verum || 0) ? 'negativo' : ''} onClick={() => alternarDetalheCte(item)}>{Number(item.calculado_frete_verum || 0) ? dinheiro(item.diferenca_verum) : '-'}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{Number(item.calculado_frete || 0) ? dinheiro(item.calculado_frete) : 'Sem calculo'}</td>
                   <td style={{ cursor: 'pointer' }} className={Number(item.diferenca || 0) ? 'negativo' : ''} onClick={() => alternarDetalheCte(item)}>{dinheiro(item.diferenca)}</td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)} title="Autorizado pelo responsavel do transporte; soma ao AMD ao reauditar/recalcular a fatura">
+                    {saldoTransporteDoCte(item) > 0 ? <strong style={{ color: '#166534' }}>+ {dinheiro(saldoTransporteDoCte(item))}</strong> : '-'}
+                  </td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{motivoAuditoriaLinha(item, semValorNf)}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}><Status value={item.status} /></td>
                   <td style={{ whiteSpace: 'nowrap', fontSize: 11 }}>
@@ -2532,7 +2549,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                 </tr>
                 {expandido && (
                   <tr>
-                    <td colSpan="15" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
+                    <td colSpan="16" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
                       <div className="hint-box compact" style={{ marginBottom: 10, borderColor: semValorNf ? '#fdba74' : '#dbe3ef', background: semValorNf ? '#fff7ed' : '#f8fafc' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                           <strong>{semValorNf ? 'CT-e sem valor NF identificado.' : 'Ajustes manuais do CT-e'}</strong>
@@ -2679,7 +2696,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
               </Fragment>
             );
           })}
-          {!lista.length && <tr><td colSpan="15">Nenhum CT-e nesta visao.</td></tr>}
+          {!lista.length && <tr><td colSpan="16">Nenhum CT-e nesta visao.</td></tr>}
         </tbody>
       </table>
     </div>
