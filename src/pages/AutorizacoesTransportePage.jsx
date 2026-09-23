@@ -22,7 +22,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
   const [mensagem, setMensagem] = useState('');
   const [edicao, setEdicao] = useState({});
   const [processando, setProcessando] = useState('');
-  const [form, setForm] = useState({ chave: '', valor: '', observacao: '' });
+  const [form, setForm] = useState({ chave: '', pedido: '', valor: '', observacao: '' });
 
   const carregar = async () => {
     setCarregando(true);
@@ -70,16 +70,19 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
     setMensagem('');
     try {
       const chave = form.chave.replace(/\D/g, '');
-      await lancarSaldoAntecipado({
+      const resultado = await lancarSaldoAntecipado({
         canal,
         chaveCte: chave.length === 44 && chave.slice(20, 22) === '57' ? chave : '',
         chaveNfe: chave.length === 44 && chave.slice(20, 22) !== '57' ? chave : '',
+        numeroPedido: form.pedido,
         valor: Number(String(form.valor).replace(',', '.')),
         observacao: form.observacao,
         usuarioNome,
       });
-      setForm({ chave: '', valor: '', observacao: '' });
-      setMensagem('Saldo autorizado lancado — ja vale pra auditoria dessa chave.');
+      setForm({ chave: '', pedido: '', valor: '', observacao: '' });
+      setMensagem(resultado.vinculadoCte
+        ? `Saldo lancado e vinculado ao CT-e ${resultado.chaveCte}${resultado.pedido ? ` (pedido ${resultado.pedido})` : ''}.`
+        : 'Saldo lancado, mas nao achei o CT-e dessa chave na base ainda — vai valer quando a NF for vinculada ao CT-e.');
       await carregar();
     } catch (error) {
       setMensagem(error.message || String(error));
@@ -147,9 +150,10 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
 
       {aba === 'lancar' && (
         <div className="hint-box">
-          <p style={{ marginTop: 0 }}>Informe a chave (CT-e ou nota fiscal, 44 digitos) e o valor que voce autorizou. Se a auditoria ainda nao rodou, o CT-e nem precisa vir pra fila.</p>
+          <p style={{ marginTop: 0 }}>Informe a chave (CT-e ou nota fiscal, 44 digitos) <strong>ou</strong> o numero do pedido, e o valor que voce autorizou. O sistema ja procura o CT-e na base e vincula. Se a auditoria ainda nao rodou, o CT-e nem precisa vir pra fila.</p>
           <div className="form-grid three">
             <label className="field">Chave do CT-e ou da NF<input value={form.chave} onChange={(e) => setForm((f) => ({ ...f, chave: e.target.value }))} placeholder="44 digitos" /></label>
+            <label className="field">Numero do pedido<input value={form.pedido} onChange={(e) => setForm((f) => ({ ...f, pedido: e.target.value }))} placeholder="Ex.: 7031847" /></label>
             <label className="field">Valor autorizado (R$)<input value={form.valor} onChange={(e) => setForm((f) => ({ ...f, valor: e.target.value }))} placeholder="150,00" /></label>
             <label className="field">Observacao<input value={form.observacao} onChange={(e) => setForm((f) => ({ ...f, observacao: e.target.value }))} /></label>
           </div>
