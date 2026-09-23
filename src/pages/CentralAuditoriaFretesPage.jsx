@@ -930,7 +930,7 @@ function Status({ value }) {
 
 // Mesmo badge do Status, mas clicavel — usado no Painel pra filtrar tipo BI
 // (clica no status/valor e a tela inteira recorta por ele; clica de novo tira).
-function StatusClicavel({ value, ativo, onClick }) {
+function StatusClicavel({ value, ativo, onClick, label }) {
   return (
     <button
       type="button"
@@ -939,7 +939,7 @@ function StatusClicavel({ value, ativo, onClick }) {
       style={{ cursor: 'pointer', border: ativo ? '2px solid #071d49' : 'none', font: 'inherit' }}
       title={ativo ? 'Clique para limpar o filtro' : 'Clique para filtrar por este valor'}
     >
-      {nomeStatus(value || '-')}
+      {label || nomeStatus(value || '-')}
     </button>
   );
 }
@@ -1037,6 +1037,15 @@ const JANELA_VENCIMENTO_OPCOES = [7, 10, 15, 20, 30];
 // partida/data_pagamento, nao so do status principal da fatura.
 const STATUS_PAGAMENTO_PAGAS = new Set(['PAGO', 'PAGO_DIVERGENTE']);
 const STATUS_PAGAMENTO_LANCADAS = new Set(['LANCADA_FINANCEIRO', 'PARTIDA_LANCADA']);
+// Mesmos rotulos do filtro "Pagamento" da aba Faturas — pra nao inventar
+// texto novo pra situacao que ja tem nome definido em outro lugar da tela.
+const ROTULO_PAGAMENTO = {
+  PAGO: 'Pago',
+  PAGO_DIVERGENTE: 'Pago com divergencia',
+  PARTIDA_LANCADA: 'Partida lancada (aguardando)',
+  LANCADA_FINANCEIRO: 'Lancada no financeiro (aguardando)',
+  NAO_PAGO: 'Nao pago',
+};
 // "Liberada" = passou da auditoria pro fluxo de pagamento. Se isso aconteceu
 // sem 100% dos CT-es auditados, alguem pulou etapa.
 const STATUS_LIBERADAS = new Set(['PRONTA_PARA_PAGAMENTO', 'ENVIADA_AO_FINANCEIRO', 'PAGA', 'PAGA_COM_DIVERGENCIA']);
@@ -1143,6 +1152,24 @@ function PainelAcompanhamento({ state }) {
       mapa.set(status, atual);
     });
     return [...mapa.values()].sort((a, b) => b.qtd - a.qtd);
+  }, [naJanela]);
+
+  // Situacao de pagamento (Pago/Pago com divergencia/Partida lancada/Lancada
+  // no financeiro/Nao pago) — mesmas 5 categorias do filtro "Pagamento" da
+  // aba Faturas. Diferente do "Por status" acima, que mistura status bruto
+  // importado do Verum (Disponivel/Indisponivel/...) com o status do nosso
+  // fluxo — aqui e so o que interessa pra saber se foi pago ou nao.
+  const porPagamento = useMemo(() => {
+    const mapa = new Map();
+    naJanela.forEach((item) => {
+      const situacao = situacaoPagamentoFatura(item);
+      const atual = mapa.get(situacao) || { situacao, qtd: 0, valor: 0 };
+      atual.qtd += 1;
+      atual.valor += Number(item.valor_fatura || 0);
+      mapa.set(situacao, atual);
+    });
+    const ordem = ['NAO_PAGO', 'LANCADA_FINANCEIRO', 'PARTIDA_LANCADA', 'PAGO', 'PAGO_DIVERGENTE'];
+    return [...mapa.values()].sort((a, b) => ordem.indexOf(a.situacao) - ordem.indexOf(b.situacao));
   }, [naJanela]);
 
   const porAuditor = useMemo(() => {
@@ -1285,6 +1312,17 @@ function PainelAcompanhamento({ state }) {
         empty="Nenhuma fatura na janela selecionada."
       />
 
+      <div className="audit-section-title">Por situacao de pagamento</div>
+      <SimpleTable
+        headers={['Pagamento', 'Qtd', 'Valor']}
+        rows={porPagamento.map((item) => [
+          <StatusClicavel key="p" value={item.situacao} label={ROTULO_PAGAMENTO[item.situacao]} ativo={pagamentoFiltro === item.situacao} onClick={() => alternarFiltro(setPagamentoFiltro, pagamentoFiltro)(item.situacao)} />,
+          item.qtd,
+          dinheiro(item.valor),
+        ])}
+        empty="Nenhuma fatura na janela selecionada."
+      />
+
       <div className="audit-section-title">Por auditor</div>
       <SimpleTable
         headers={['Auditor', 'Em aberto', 'Vencidas', 'Com divergencia', 'Lancadas', 'Pagas', 'Valor em aberto']}
@@ -1316,7 +1354,7 @@ function PainelAcompanhamento({ state }) {
             dataBr(item.data_vencimento),
             <span key="d" style={{ fontWeight: 700, color: vencida ? '#9b1111' : (dias <= 3 ? '#e67e22' : undefined) }}>{dias}</span>,
             <StatusClicavel key="st" value={item.status} ativo={statusFiltro === item.status} onClick={() => alternarFiltro(setStatusFiltro, statusFiltro)(item.status)} />,
-            <StatusClicavel key="pg" value={situacaoPagamento} ativo={pagamentoFiltro === situacaoPagamento} onClick={() => alternarFiltro(setPagamentoFiltro, pagamentoFiltro)(situacaoPagamento)} />,
+            <StatusClicavel key="pg" value={situacaoPagamento} label={ROTULO_PAGAMENTO[situacaoPagamento]} ativo={pagamentoFiltro === situacaoPagamento} onClick={() => alternarFiltro(setPagamentoFiltro, pagamentoFiltro)(situacaoPagamento)} />,
             dinheiro(item.valor_fatura),
           ];
         })}
