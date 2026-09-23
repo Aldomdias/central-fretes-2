@@ -1063,7 +1063,7 @@ function chaveFaturaTransportadora(numeroFatura, transportadora) {
 // quantas ja foram lancadas/pagas, quem esta com mais pendencia, quem liberou
 // sem auditar, quem tem desconto calculado sem confirmacao" — janela e filtros
 // configuraveis em vez dos cards fixos (3/7 dias) do Dashboard.
-function PainelAcompanhamento({ state }) {
+function PainelAcompanhamento({ state, onIrParaFaturas }) {
   const [janelaDias, setJanelaDias] = useState(10);
   const [auditorFiltro, setAuditorFiltro] = useState('');
   const [statusFiltro, setStatusFiltro] = useState('');
@@ -1185,6 +1185,78 @@ function PainelAcompanhamento({ state }) {
     naJanelaVisivel.slice().sort((a, b) => diasAte(a.data_vencimento, hoje) - diasAte(b.data_vencimento, hoje))
   ), [naJanelaVisivel, hoje]);
 
+  // Laudo de pendencias: exporta exatamente a lista que esta na tela (respeita
+  // os filtros ativos), agrupada por auditor — pra mandar pro auditor (ou pra
+  // Carol/gestao) o "isso aqui esta parado, resolve" sem precisar printar tela.
+  const baixarLaudoPendenciasPainel = () => {
+    const porAuditorLaudo = new Map();
+    listaRisco.forEach((item) => {
+      const nome = item.auditor_nome || 'SEM AUDITOR DEFINIDO';
+      if (!porAuditorLaudo.has(nome)) porAuditorLaudo.set(nome, []);
+      porAuditorLaudo.get(nome).push(item);
+    });
+    const gruposOrdenados = [...porAuditorLaudo.entries()].sort((a, b) => b[1].length - a[1].length);
+    const valorTotal = listaRisco.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
+    const blocos = gruposOrdenados.map(([nome, itens]) => {
+      const linhas = itens.map((item) => {
+        const dias = diasAte(item.data_vencimento, hoje);
+        const vencida = dias != null && dias < 0 && !ENCERRADOS.has(item.status);
+        return `<tr>
+          <td>${escapeHtmlAuditoria(item.numero_fatura || '-')}</td>
+          <td>${escapeHtmlAuditoria(item.transportadora || '-')}</td>
+          <td>${escapeHtmlAuditoria(dataBr(item.data_vencimento))}</td>
+          <td style="color:${vencida ? '#b91c1c' : (dias <= 3 ? '#b45309' : '#334155')};font-weight:700">${dias}</td>
+          <td>${escapeHtmlAuditoria(nomeStatus(item.status))}</td>
+          <td>${escapeHtmlAuditoria(ROTULO_PAGAMENTO[situacaoPagamentoFatura(item)] || '-')}</td>
+          <td>${escapeHtmlAuditoria(dinheiro(item.valor_fatura))}</td>
+        </tr>`;
+      }).join('');
+      const valorGrupo = itens.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
+      return `<section>
+        <h2>${escapeHtmlAuditoria(nome)} <small>${itens.length} fatura(s) · ${escapeHtmlAuditoria(dinheiro(valorGrupo))}</small></h2>
+        <table><thead><tr><th>Fatura</th><th>Transportadora</th><th>Vencimento</th><th>Dias</th><th>Status</th><th>Pagamento</th><th>Valor</th></tr></thead>
+        <tbody>${linhas}</tbody></table>
+      </section>`;
+    }).join('');
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<title>Laudo de pendencias - Auditoria de Fretes</title>
+<style>
+body{margin:0;background:#eef3f9;color:#0f172a;font-family:Arial,Helvetica,sans-serif}
+.wrap{max-width:1000px;margin:24px auto;padding:0 16px}
+header{background:#06183d;color:#fff;padding:24px 30px;border-radius:14px 14px 0 0}
+header h1{margin:0 0 6px;font-size:22px}header p{margin:2px 0;color:#cbd5e1;font-size:13px}
+.resumo{display:flex;gap:14px;flex-wrap:wrap;background:#fff;padding:16px 30px;border:1px solid #dbe3ef;border-top:0}
+.resumo .card{border:1px solid #dbe3ef;border-radius:9px;padding:10px 14px}
+.resumo .card small{display:block;color:#64748b}.resumo .card strong{font-size:18px}
+section{background:#fff;border:1px solid #dbe3ef;border-top:0;padding:18px 30px}
+section h2{margin:0 0 10px;font-size:16px;color:#06183d}section h2 small{font-weight:400;color:#64748b;font-size:12px;margin-left:8px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;background:#f1f5f9;padding:8px;border-bottom:1px solid #cbd5e1}
+td{padding:8px;border-bottom:1px solid #e2e8f0}
+footer{background:#fff;border:1px solid #dbe3ef;border-top:0;border-radius:0 0 14px 14px;padding:14px 30px;color:#64748b;font-size:12px}
+</style></head><body><div class="wrap">
+<header>
+  <h1>Laudo de pendencias — Auditoria de Fretes</h1>
+  <p>Gerado em ${new Date().toLocaleString('pt-BR')} · janela de ${janelaDias} dias${auditorFiltro ? ` · auditor: ${escapeHtmlAuditoria(auditorFiltro)}` : ''}${statusFiltro ? ` · status: ${escapeHtmlAuditoria(nomeStatus(statusFiltro))}` : ''}${pagamentoFiltro ? ` · pagamento: ${escapeHtmlAuditoria(ROTULO_PAGAMENTO[pagamentoFiltro] || '')}` : ''}</p>
+</header>
+<div class="resumo">
+  <div class="card"><small>Faturas</small><strong>${listaRisco.length}</strong></div>
+  <div class="card"><small>Auditores</small><strong>${porAuditorLaudo.size}</strong></div>
+  <div class="card"><small>Valor total</small><strong>${escapeHtmlAuditoria(dinheiro(valorTotal))}</strong></div>
+</div>
+${blocos || '<section>Nenhuma fatura na janela/filtros selecionados.</section>'}
+<footer>Central Fretes · Painel de acompanhamento diario da Auditoria de Fretes.</footer>
+</div></body></html>`;
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `laudo_pendencias_${new Date().toISOString().slice(0, 10)}.html`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  };
+
   // Desconto calculado pela auditoria (valor_fatura - calculado, quando cobraram
   // a mais) x desconto confirmado pelo protocolo enviado ao Financeiro. Sobra
   // = cobraram a mais, a auditoria já calculou, mas ninguém protocolou/justificou.
@@ -1261,6 +1333,22 @@ function PainelAcompanhamento({ state }) {
           {temFiltroAtivo && (
             <button type="button" className="btn-secondary" onClick={limparTodosFiltros}>Limpar filtros</button>
           )}
+          {onIrParaFaturas && (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => onIrParaFaturas({
+                status: statusFiltro,
+                filtroPagamento: pagamentoFiltro,
+                auditorFiltro,
+                filtro: transportadoraFiltro,
+                vencimentoInicio: dataInicio,
+                vencimentoFim: dataFim,
+              })}
+            >
+              Ver faturas com estes filtros →
+            </button>
+          )}
         </div>
         {temFiltroAtivo && (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, fontSize: 12, color: '#64748b', alignItems: 'center' }}>
@@ -1302,7 +1390,7 @@ function PainelAcompanhamento({ state }) {
 
       <div className="audit-section-title">Por auditor</div>
       <SimpleTable
-        headers={['Auditor', 'Em aberto', 'Vencidas', 'Com divergencia', 'Lancadas', 'Pagas', 'Valor em aberto']}
+        headers={['Auditor', 'Em aberto', 'Vencidas', 'Com divergencia', 'Lancadas', 'Pagas', 'Valor em aberto', '']}
         rows={porAuditor.map((item) => [
           <NomeClicavel key="n" ativo={auditorFiltro === item.nome} onClick={() => alternarFiltro(setAuditorFiltro, auditorFiltro)(item.nome)}>{item.nome}</NomeClicavel>,
           item.abertas,
@@ -1311,11 +1399,27 @@ function PainelAcompanhamento({ state }) {
           item.lancadas,
           item.pagas,
           dinheiro(item.valorAberto),
+          onIrParaFaturas ? (
+            <button
+              key="ir"
+              type="button"
+              className="btn-secondary"
+              onClick={() => onIrParaFaturas({
+                status: statusFiltro, filtroPagamento: pagamentoFiltro, auditorFiltro: item.nome, filtro: transportadoraFiltro,
+                vencimentoInicio: dataInicio, vencimentoFim: dataFim,
+              })}
+            >
+              Ver faturas
+            </button>
+          ) : null,
         ])}
         empty="Nenhuma fatura na janela selecionada."
       />
 
-      <div className="audit-section-title">Faturas na janela — por vencimento{somenteAbertas ? ' (em aberto)' : ''}</div>
+      <div className="audit-section-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span>Faturas na janela — por vencimento{somenteAbertas ? ' (em aberto)' : ''}</span>
+        <button type="button" className="btn-secondary" disabled={!listaRisco.length} onClick={baixarLaudoPendenciasPainel}>Gerar laudo de pendencias</button>
+      </div>
       <SimpleTable
         headers={['Fatura', 'Transportadora', 'Auditor', 'Vencimento', 'Dias', 'Status', 'Pagamento', 'Valor']}
         rows={listaRisco.map((item) => {
@@ -2626,18 +2730,20 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
 
 const PERFIS_VEEM_TODAS_FATURAS = new Set(['GESTAO', 'GESTOR_AUDITORIA_FRETES', 'FINANCEIRO']);
 
-function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTransportadoras }) {
+function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTransportadoras, filtrosIniciais = null }) {
   const mostrarAuditoriaAvulsa = modo === 'auditoria-cte';
   const mostrarFaturas = modo === 'faturas';
   const sessao = carregarSessao();
   const arquivoRef = useRef(null);
-  const [filtro, setFiltro] = useState('');
+  const [filtro, setFiltro] = useState(() => filtrosIniciais?.filtro || '');
   const [filtroFaturasLote, setFiltroFaturasLote] = useState('');
-  const [status, setStatus] = useState('');
-  const [filtroPagamento, setFiltroPagamento] = useState('');
+  const [status, setStatus] = useState(() => filtrosIniciais?.status || '');
+  const [filtroPagamento, setFiltroPagamento] = useState(() => filtrosIniciais?.filtroPagamento || '');
   const [canalFiltro, setCanalFiltro] = useState('');
   // Auditor entra ja filtrado nas proprias faturas; gestor/financeiro entram vendo tudo.
-  const [visaoFatura, setVisaoFatura] = useState(() => (PERFIS_VEEM_TODAS_FATURAS.has(sessao?.perfil) ? 'todas' : 'minhas'));
+  // Vindo do Painel (drill-down), sempre "todas" — senao o filtro de auditor/
+  // status clicado la pode nao bater com "minhas faturas" e a lista fica vazia.
+  const [visaoFatura, setVisaoFatura] = useState(() => (filtrosIniciais || PERFIS_VEEM_TODAS_FATURAS.has(sessao?.perfil) ? 'todas' : 'minhas'));
   const [filtroRapido, setFiltroRapido] = useState('');
   const [paginaFaturas, setPaginaFaturas] = useState(1);
   const TAM_PAGINA_FATURAS = 100;
@@ -2654,16 +2760,16 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [auditorLote, setAuditorLote] = useState('');
   const [emailAuditorLote, setEmailAuditorLote] = useState('');
   const [origemFiltroFatura, setOrigemFiltroFatura] = useState('');
-  const [auditorFiltro, setAuditorFiltro] = useState('');
-  const [filtrosAvancadosAbertos, setFiltrosAvancadosAbertos] = useState(false);
+  const [auditorFiltro, setAuditorFiltro] = useState(() => filtrosIniciais?.auditorFiltro || '');
+  const [filtrosAvancadosAbertos, setFiltrosAvancadosAbertos] = useState(() => Boolean(filtrosIniciais));
   const [resumoOrigensFaturas, setResumoOrigensFaturas] = useState(new Map());
   const [recalculandoLote, setRecalculandoLote] = useState(false);
   const [progressoLote, setProgressoLote] = useState(null);
   const [competenciaFiltro, setCompetenciaFiltro] = useState('');
   const [periodoInicio, setPeriodoInicio] = useState('');
   const [periodoFim, setPeriodoFim] = useState('');
-  const [vencimentoInicio, setVencimentoInicio] = useState('');
-  const [vencimentoFim, setVencimentoFim] = useState('');
+  const [vencimentoInicio, setVencimentoInicio] = useState(() => filtrosIniciais?.vencimentoInicio || '');
+  const [vencimentoFim, setVencimentoFim] = useState(() => filtrosIniciais?.vencimentoFim || '');
   const [buscaCtesAvulsa, setBuscaCtesAvulsa] = useState('');
   const [auditandoCtesAvulsos, setAuditandoCtesAvulsos] = useState(false);
   const [progressoCtesAvulsos, setProgressoCtesAvulsos] = useState(null);
@@ -6479,6 +6585,13 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   const [tab, setTab] = useState(initialTab);
   const [state, setState] = useState(null);
   const [erro, setErro] = useState('');
+  // Vinda do Painel: clicou num status/auditor/etc e quer ver a lista real de
+  // faturas ja filtrada, sem ter que reaplicar os filtros na aba Faturas.
+  const [filtrosIniciaisFaturas, setFiltrosIniciaisFaturas] = useState(null);
+  const irParaFaturasComFiltro = (filtros) => {
+    setFiltrosIniciaisFaturas({ chave: Date.now(), ...filtros });
+    setTab('faturas');
+  };
 
   useEffect(() => {
     carregarPlataformaAuditoria().then(setState).catch((error) => setErro(error.message));
@@ -6521,8 +6634,8 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
         {TABS.map(([id, label]) => <button key={id} className={`toggle-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>{label}</button>)}
       </div>
       {tab === 'dashboard' && <Dashboard state={state} />}
-      {tab === 'painel' && <PainelAcompanhamento state={state} />}
-      {tab === 'faturas' && <Faturas state={state} onState={setState} modo="faturas" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />}
+      {tab === 'painel' && <PainelAcompanhamento state={state} onIrParaFaturas={irParaFaturasComFiltro} />}
+      {tab === 'faturas' && <Faturas key={filtrosIniciaisFaturas?.chave || 'faturas'} state={state} onState={setState} modo="faturas" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} filtrosIniciais={filtrosIniciaisFaturas} />}
       {tab === 'auditoria-cte' && <Faturas state={state} onState={setState} modo="auditoria-cte" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />}
       {tab === 'aprovacao' && <AprovacaoGestao state={state} onState={setState} />}
       {tab === 'gestao' && <Gestao state={state} onState={setState} />}
