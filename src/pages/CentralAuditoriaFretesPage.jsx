@@ -1001,8 +1001,12 @@ function Dashboard({ state }) {
 }
 
 const JANELA_VENCIMENTO_OPCOES = [7, 10, 15, 20, 30];
-const STATUS_PAGAS = new Set(['PAGA', 'PAGA_COM_DIVERGENCIA']);
-const STATUS_LANCADAS = new Set(['ENVIADA_AO_FINANCEIRO']);
+// "Lancada"/"paga" nao e o campo status (RECEBIDA/COM_DIVERGENCIA/...) — e o
+// status de PAGAMENTO (situacaoPagamentoFatura, mesmo usado na coluna
+// "Pagamento" da lista de faturas), que depende de lancamento_financeiro/
+// partida/data_pagamento, nao so do status principal da fatura.
+const STATUS_PAGAMENTO_PAGAS = new Set(['PAGO', 'PAGO_DIVERGENTE']);
+const STATUS_PAGAMENTO_LANCADAS = new Set(['LANCADA_FINANCEIRO', 'PARTIDA_LANCADA']);
 // "Liberada" = passou da auditoria pro fluxo de pagamento. Se isso aconteceu
 // sem 100% dos CT-es auditados, alguem pulou etapa.
 const STATUS_LIBERADAS = new Set(['PRONTA_PARA_PAGAMENTO', 'ENVIADA_AO_FINANCEIRO', 'PAGA', 'PAGA_COM_DIVERGENCIA']);
@@ -1074,8 +1078,8 @@ function PainelAcompanhamento({ state }) {
   const naJanelaVisivel = somenteAbertas ? naJanelaAbertas : naJanela;
 
   const vencidas = naJanelaAbertas.filter((item) => diasAte(item.data_vencimento, hoje) < 0);
-  const pagas = naJanela.filter((item) => STATUS_PAGAS.has(item.status));
-  const lancadas = naJanela.filter((item) => STATUS_LANCADAS.has(item.status));
+  const pagas = naJanela.filter((item) => STATUS_PAGAMENTO_PAGAS.has(situacaoPagamentoFatura(item)));
+  const lancadas = naJanela.filter((item) => STATUS_PAGAMENTO_LANCADAS.has(situacaoPagamentoFatura(item)));
   const comDivergencia = naJanelaAbertas.filter((item) => item.status === 'COM_DIVERGENCIA');
   const aguardandoAprovacaoGestao = naJanelaAbertas.filter((item) => item.status === 'AGUARDANDO_APROVACAO_GESTAO');
   const aguardandoConfirmacaoTransportador = naJanelaAbertas.filter((item) => item.confirmacao_transportador_status === 'ENVIADO');
@@ -1108,8 +1112,9 @@ function PainelAcompanhamento({ state }) {
       const aberta = !ENCERRADOS.has(item.status);
       if (aberta) { atual.abertas += 1; atual.valorAberto += Number(item.valor_fatura || 0); }
       if (aberta && dias != null && dias < 0) atual.vencidas += 1;
-      if (STATUS_PAGAS.has(item.status)) atual.pagas += 1;
-      if (STATUS_LANCADAS.has(item.status)) atual.lancadas += 1;
+      const situacaoPagamento = situacaoPagamentoFatura(item);
+      if (STATUS_PAGAMENTO_PAGAS.has(situacaoPagamento)) atual.pagas += 1;
+      if (STATUS_PAGAMENTO_LANCADAS.has(situacaoPagamento)) atual.lancadas += 1;
       if (item.status === 'COM_DIVERGENCIA') atual.divergencia += 1;
       mapa.set(nome, atual);
     });
@@ -1239,7 +1244,7 @@ function PainelAcompanhamento({ state }) {
 
       <div className="audit-section-title">Faturas na janela — por vencimento{somenteAbertas ? ' (em aberto)' : ''}</div>
       <SimpleTable
-        headers={['Fatura', 'Transportadora', 'Auditor', 'Vencimento', 'Dias', 'Status', 'Valor']}
+        headers={['Fatura', 'Transportadora', 'Auditor', 'Vencimento', 'Dias', 'Status', 'Pagamento', 'Valor']}
         rows={listaRisco.map((item) => {
           const dias = diasAte(item.data_vencimento, hoje);
           const vencida = dias != null && dias < 0 && !ENCERRADOS.has(item.status);
@@ -1250,6 +1255,7 @@ function PainelAcompanhamento({ state }) {
             dataBr(item.data_vencimento),
             <span key="d" style={{ fontWeight: 700, color: vencida ? '#9b1111' : (dias <= 3 ? '#e67e22' : undefined) }}>{dias}</span>,
             <Status key="st" value={item.status} />,
+            <Status key="pg" value={situacaoPagamentoFatura(item)} />,
             dinheiro(item.valor_fatura),
           ];
         })}
