@@ -268,6 +268,18 @@ function extrairIdentificadoresCte(texto = '') {
   return [...new Set(String(texto || '').match(/\d{5,}/g) || [])];
 }
 
+// Soma o saldo autorizado (por chave de CT-e ou NF) ao AMD de um CT-e da fatura.
+// O detalhe ja vem da base pura do motor a cada render, entao nao ha dupla contagem.
+function aplicarSaldoTransporteNoDetalhe(item, saldos, referenciaCtes) {
+  if (!saldos?.size) return item;
+  const nfe = item.chave_nfe || referenciaCtes?.get(normalizarChaveCte(item.chave_cte))?.chave_nfe;
+  const saldo = Number(saldos.get(normalizarChaveCte(item.chave_cte)) || saldos.get(normalizarChaveCte(nfe)) || 0);
+  if (!(saldo > 0) || !(Number(item.calculado_frete || 0) > 0)) return item;
+  const calculado = Number((Number(item.calculado_frete) + saldo).toFixed(2));
+  const diferenca = Number((Number(item.valor_frete || 0) - calculado).toFixed(2));
+  return { ...item, calculado_frete: calculado, diferenca, saldo_autorizado: saldo, status: Math.abs(diferenca) <= 0.01 ? 'OK' : 'DIVERGENTE' };
+}
+
 async function aplicarSaldoTransporteNaExibicao(registros = []) {
   const saldos = await carregarSaldosAutorizadosPorChave(registros.flatMap((row) => [row.chave_cte, row.chave_nfe]));
   if (!saldos.size) return registros;
@@ -1627,8 +1639,10 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const toleranciaFatura = carregarToleranciaAuditoria();
   const detalhesOriginais = state.detalhes[fatura.id] || [];
   const detalhes = useMemo(
-    () => deduplicarDetalhesFatura(detalhesOriginais).map((item) => mesclarDetalheComReferenciaAuditoria(item, referenciaCtes)),
-    [detalhesOriginais, referenciaCtes]
+    () => deduplicarDetalhesFatura(detalhesOriginais)
+      .map((item) => mesclarDetalheComReferenciaAuditoria(item, referenciaCtes))
+      .map((item) => aplicarSaldoTransporteNoDetalhe(item, saldosTransporte, referenciaCtes)),
+    [detalhesOriginais, referenciaCtes, saldosTransporte]
   );
   const duplicadosRemovidos = Math.max(0, detalhesOriginais.length - detalhes.length);
 
@@ -1636,14 +1650,15 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   // ou da NF — coluna propria na tabela de CT-es; soma ao calculado na reauditoria.
   useEffect(() => {
     let ativo = true;
-    const chaves = detalhesOriginais.flatMap((item) => [item.chave_cte, item.chave_nfe]).filter(Boolean);
+    const chaves = detalhesOriginais.flatMap((item) => [
+      item.chave_cte, item.chave_nfe,
+      referenciaCtes.get(normalizarChaveCte(item.chave_cte))?.chave_nfe,
+    ]).filter(Boolean);
     if (!chaves.length) { setSaldosTransporte(new Map()); return undefined; }
     carregarSaldosAutorizadosPorChave(chaves).then((mapa) => { if (ativo) setSaldosTransporte(mapa); });
     return () => { ativo = false; };
-  }, [detalhesOriginais.length, fatura.id, mensagemLiberacao]);
-  const saldoTransporteDoCte = (item) => Number(
-    saldosTransporte.get(normalizarChaveCte(item.chave_cte)) || saldosTransporte.get(normalizarChaveCte(item.chave_nfe)) || 0,
-  );
+  }, [detalhesOriginais.length, fatura.id, mensagemLiberacao, referenciaCtes]);
+  const saldoTransporteDoCte = (item) => Number(item.saldo_autorizado || 0);
   const resumoAuditoriaFatura = useMemo(() => resumirDetalhesAuditoria(detalhes, toleranciaFatura), [detalhes, toleranciaFatura.acima, toleranciaFatura.abaixo]);
   const divergencias = detalhes.filter((item) =>
     Number(item.calculado_frete || 0) > 0
