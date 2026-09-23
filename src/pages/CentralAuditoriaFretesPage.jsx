@@ -928,6 +928,36 @@ function Status({ value }) {
   return <span className={`status-pill audit-status audit-status-${String(value || '').toLowerCase()}`}>{nomeStatus(value || '-')}</span>;
 }
 
+// Mesmo badge do Status, mas clicavel — usado no Painel pra filtrar tipo BI
+// (clica no status/valor e a tela inteira recorta por ele; clica de novo tira).
+function StatusClicavel({ value, ativo, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`status-pill audit-status audit-status-${String(value || '').toLowerCase()}`}
+      style={{ cursor: 'pointer', border: ativo ? '2px solid #071d49' : 'none', font: 'inherit' }}
+      title={ativo ? 'Clique para limpar o filtro' : 'Clique para filtrar por este valor'}
+    >
+      {nomeStatus(value || '-')}
+    </button>
+  );
+}
+
+function NomeClicavel({ children, ativo, onClick }) {
+  return (
+    <button
+      type="button"
+      className="btn-link"
+      onClick={onClick}
+      style={{ fontWeight: ativo ? 700 : 400, color: ativo ? '#071d49' : undefined, textDecoration: ativo ? 'underline' : undefined }}
+      title={ativo ? 'Clique para limpar o filtro' : 'Clique para filtrar por este valor'}
+    >
+      {children}
+    </button>
+  );
+}
+
 // Configuracao do que o laudo do transportador mostra. CT-es sem calculo
 // nunca viram OK — o checkbox correspondente so controla o destaque visual.
 function OpcoesLaudoTransportador({ opcoes, onMudar }) {
@@ -1027,11 +1057,23 @@ function chaveFaturaTransportadora(numeroFatura, transportadora) {
 function PainelAcompanhamento({ state }) {
   const [janelaDias, setJanelaDias] = useState(10);
   const [auditorFiltro, setAuditorFiltro] = useState('');
+  const [statusFiltro, setStatusFiltro] = useState('');
+  const [pagamentoFiltro, setPagamentoFiltro] = useState('');
+  const [transportadoraFiltro, setTransportadoraFiltro] = useState('');
   const [dataInicio, setDataInicio] = useState('');
   const [dataFim, setDataFim] = useState('');
   const [somenteAbertas, setSomenteAbertas] = useState(true);
   const [protocolos, setProtocolos] = useState(null);
   const [erroProtocolos, setErroProtocolos] = useState('');
+
+  // Clique-pra-filtrar tipo BI: qualquer badge/nome (status, pagamento,
+  // auditor, transportadora) na tabela vira um filtro — clicar de novo no
+  // mesmo valor limpa o filtro (toggle).
+  const alternarFiltro = (setter, valorAtual) => (valor) => setter(valorAtual === valor ? '' : valor);
+  const temFiltroAtivo = Boolean(auditorFiltro || statusFiltro || pagamentoFiltro || transportadoraFiltro || dataInicio || dataFim);
+  const limparTodosFiltros = () => {
+    setAuditorFiltro(''); setStatusFiltro(''); setPagamentoFiltro(''); setTransportadoraFiltro(''); setDataInicio(''); setDataFim('');
+  };
 
   useEffect(() => {
     let ativo = true;
@@ -1061,10 +1103,13 @@ function PainelAcompanhamento({ state }) {
   // a janela de dias (abaixo) decide o recorte.
   const faturasFiltradas = useMemo(() => faturas.filter((item) => {
     if (auditorFiltro && (item.auditor_nome || 'SEM AUDITOR DEFINIDO') !== auditorFiltro) return false;
+    if (statusFiltro && item.status !== statusFiltro) return false;
+    if (pagamentoFiltro && situacaoPagamentoFatura(item) !== pagamentoFiltro) return false;
+    if (transportadoraFiltro && item.transportadora !== transportadoraFiltro) return false;
     if (dataInicio && (!item.data_vencimento || item.data_vencimento < dataInicio)) return false;
     if (dataFim && (!item.data_vencimento || item.data_vencimento > dataFim)) return false;
     return true;
-  }), [faturas, auditorFiltro, dataInicio, dataFim]);
+  }), [faturas, auditorFiltro, statusFiltro, pagamentoFiltro, transportadoraFiltro, dataInicio, dataFim]);
 
   // Janela: vencimento dentro de N dias — inclui as ja vencidas (dias negativo),
   // pra ficar visivel quem passou do prazo sem ser preciso trocar de aba.
@@ -1198,10 +1243,19 @@ function PainelAcompanhamento({ state }) {
             <input type="checkbox" checked={somenteAbertas} onChange={(e) => setSomenteAbertas(e.target.checked)} />
             Só faturas em aberto
           </label>
-          {(auditorFiltro || dataInicio || dataFim) && (
-            <button type="button" className="btn-secondary" onClick={() => { setAuditorFiltro(''); setDataInicio(''); setDataFim(''); }}>Limpar filtros</button>
+          {temFiltroAtivo && (
+            <button type="button" className="btn-secondary" onClick={limparTodosFiltros}>Limpar filtros</button>
           )}
         </div>
+        {temFiltroAtivo && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, fontSize: 12, color: '#64748b', alignItems: 'center' }}>
+            <span>Filtrando por:</span>
+            {auditorFiltro && <span className="status-pill dark">{auditorFiltro} <button type="button" onClick={() => setAuditorFiltro('')} style={{ border: 0, background: 'none', color: 'inherit', cursor: 'pointer', marginLeft: 4 }}>×</button></span>}
+            {statusFiltro && <span className="status-pill dark">{nomeStatus(statusFiltro)} <button type="button" onClick={() => setStatusFiltro('')} style={{ border: 0, background: 'none', color: 'inherit', cursor: 'pointer', marginLeft: 4 }}>×</button></span>}
+            {pagamentoFiltro && <span className="status-pill dark">{nomeStatus(pagamentoFiltro)} <button type="button" onClick={() => setPagamentoFiltro('')} style={{ border: 0, background: 'none', color: 'inherit', cursor: 'pointer', marginLeft: 4 }}>×</button></span>}
+            {transportadoraFiltro && <span className="status-pill dark">{transportadoraFiltro} <button type="button" onClick={() => setTransportadoraFiltro('')} style={{ border: 0, background: 'none', color: 'inherit', cursor: 'pointer', marginLeft: 4 }}>×</button></span>}
+          </div>
+        )}
       </div>
 
       <div className="audit-section-title">Na janela de {janelaDias} dias{auditorFiltro ? ` · ${auditorFiltro}` : ''}</div>
@@ -1223,7 +1277,11 @@ function PainelAcompanhamento({ state }) {
       <div className="audit-section-title">Por status</div>
       <SimpleTable
         headers={['Status', 'Qtd', 'Valor']}
-        rows={porStatus.map((item) => [<Status key="s" value={item.status} />, item.qtd, dinheiro(item.valor)])}
+        rows={porStatus.map((item) => [
+          <StatusClicavel key="s" value={item.status} ativo={statusFiltro === item.status} onClick={() => alternarFiltro(setStatusFiltro, statusFiltro)(item.status)} />,
+          item.qtd,
+          dinheiro(item.valor),
+        ])}
         empty="Nenhuma fatura na janela selecionada."
       />
 
@@ -1231,7 +1289,7 @@ function PainelAcompanhamento({ state }) {
       <SimpleTable
         headers={['Auditor', 'Em aberto', 'Vencidas', 'Com divergencia', 'Lancadas', 'Pagas', 'Valor em aberto']}
         rows={porAuditor.map((item) => [
-          <button key="n" type="button" className="btn-link" onClick={() => setAuditorFiltro(item.nome)} style={{ fontWeight: item.vencidas ? 700 : 400, color: item.vencidas ? '#9b1111' : undefined }}>{item.nome}</button>,
+          <NomeClicavel key="n" ativo={auditorFiltro === item.nome} onClick={() => alternarFiltro(setAuditorFiltro, auditorFiltro)(item.nome)}>{item.nome}</NomeClicavel>,
           item.abertas,
           item.vencidas,
           item.divergencia,
@@ -1248,14 +1306,17 @@ function PainelAcompanhamento({ state }) {
         rows={listaRisco.map((item) => {
           const dias = diasAte(item.data_vencimento, hoje);
           const vencida = dias != null && dias < 0 && !ENCERRADOS.has(item.status);
+          const situacaoPagamento = situacaoPagamentoFatura(item);
           return [
             item.numero_fatura,
-            item.transportadora,
-            item.auditor_nome || <strong className="error-text">SEM AUDITOR</strong>,
+            <NomeClicavel key="t" ativo={transportadoraFiltro === item.transportadora} onClick={() => alternarFiltro(setTransportadoraFiltro, transportadoraFiltro)(item.transportadora)}>{item.transportadora}</NomeClicavel>,
+            item.auditor_nome
+              ? <NomeClicavel key="a" ativo={auditorFiltro === item.auditor_nome} onClick={() => alternarFiltro(setAuditorFiltro, auditorFiltro)(item.auditor_nome)}>{item.auditor_nome}</NomeClicavel>
+              : <strong className="error-text">SEM AUDITOR</strong>,
             dataBr(item.data_vencimento),
             <span key="d" style={{ fontWeight: 700, color: vencida ? '#9b1111' : (dias <= 3 ? '#e67e22' : undefined) }}>{dias}</span>,
-            <Status key="st" value={item.status} />,
-            <Status key="pg" value={situacaoPagamentoFatura(item)} />,
+            <StatusClicavel key="st" value={item.status} ativo={statusFiltro === item.status} onClick={() => alternarFiltro(setStatusFiltro, statusFiltro)(item.status)} />,
+            <StatusClicavel key="pg" value={situacaoPagamento} ativo={pagamentoFiltro === situacaoPagamento} onClick={() => alternarFiltro(setPagamentoFiltro, pagamentoFiltro)(situacaoPagamento)} />,
             dinheiro(item.valor_fatura),
           ];
         })}
@@ -1274,7 +1335,7 @@ function PainelAcompanhamento({ state }) {
       <SimpleTable
         headers={['Auditor', 'Liberou sem auditar', 'Sem tocar']}
         rows={alertasPorAuditor.map((item) => [
-          <button key="n" type="button" className="btn-link" onClick={() => setAuditorFiltro(item.nome)} style={{ fontWeight: 700, color: '#9b1111' }}>{item.nome}</button>,
+          <NomeClicavel key="n" ativo={auditorFiltro === item.nome} onClick={() => alternarFiltro(setAuditorFiltro, auditorFiltro)(item.nome)}>{item.nome}</NomeClicavel>,
           item.liberouSemAuditar,
           item.semTocar,
         ])}
@@ -1284,9 +1345,11 @@ function PainelAcompanhamento({ state }) {
         headers={['Fatura', 'Transportadora', 'Auditor', 'Status', 'CT-es auditados', 'Motivo', 'Vencimento']}
         rows={alertasDetalhe.map(({ item, motivo }) => [
           item.numero_fatura,
-          item.transportadora,
-          item.auditor_nome || <strong className="error-text">SEM AUDITOR</strong>,
-          <Status key="st" value={item.status} />,
+          <NomeClicavel key="t" ativo={transportadoraFiltro === item.transportadora} onClick={() => alternarFiltro(setTransportadoraFiltro, transportadoraFiltro)(item.transportadora)}>{item.transportadora}</NomeClicavel>,
+          item.auditor_nome
+            ? <NomeClicavel key="a" ativo={auditorFiltro === item.auditor_nome} onClick={() => alternarFiltro(setAuditorFiltro, auditorFiltro)(item.auditor_nome)}>{item.auditor_nome}</NomeClicavel>
+            : <strong className="error-text">SEM AUDITOR</strong>,
+          <StatusClicavel key="st" value={item.status} ativo={statusFiltro === item.status} onClick={() => alternarFiltro(setStatusFiltro, statusFiltro)(item.status)} />,
           `${item.ctes_auditados || 0}/${item.ctes_totais || 0}`,
           <strong key="m" style={{ color: '#9b1111' }}>{motivo}</strong>,
           dataBr(item.data_vencimento),
@@ -1311,9 +1374,11 @@ function PainelAcompanhamento({ state }) {
         headers={['Fatura', 'Transportadora', 'Auditor', 'Status', 'Desconto calculado', 'Confirmado (protocolo)', 'Pendente — precisa justificativa']}
         rows={descontosPendentes.map(({ fatura, calculado, confirmado, pendente }) => [
           fatura.numero_fatura,
-          fatura.transportadora,
-          fatura.auditor_nome || <strong className="error-text">SEM AUDITOR</strong>,
-          <Status key="st" value={fatura.status} />,
+          <NomeClicavel key="t" ativo={transportadoraFiltro === fatura.transportadora} onClick={() => alternarFiltro(setTransportadoraFiltro, transportadoraFiltro)(fatura.transportadora)}>{fatura.transportadora}</NomeClicavel>,
+          fatura.auditor_nome
+            ? <NomeClicavel key="a" ativo={auditorFiltro === fatura.auditor_nome} onClick={() => alternarFiltro(setAuditorFiltro, auditorFiltro)(fatura.auditor_nome)}>{fatura.auditor_nome}</NomeClicavel>
+            : <strong className="error-text">SEM AUDITOR</strong>,
+          <StatusClicavel key="st" value={fatura.status} ativo={statusFiltro === fatura.status} onClick={() => alternarFiltro(setStatusFiltro, statusFiltro)(fatura.status)} />,
           dinheiro(calculado),
           dinheiro(confirmado),
           <strong key="p" style={{ color: '#9b1111' }}>{dinheiro(pendente)}</strong>,
