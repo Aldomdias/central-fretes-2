@@ -121,11 +121,19 @@ export function normalizarChaveCte(chave) {
 // (auditoria_cte_resultados). Convencoes iguais as da Auditoria CT-e:
 // diferenca = cobrado - calculado; sem calculo => diferenca 0 (a pendencia
 // aparece na aba "Sem calculo", nao no valor divergente).
-export function aplicarReauditoriaDetalhes(detalhes = [], resultadosPorChave = new Map()) {
+export function aplicarReauditoriaDetalhes(detalhes = [], resultadosPorChave = new Map(), saldosAutorizadosPorChave = new Map()) {
   const atualizados = detalhes.map((item) => {
     const resultado = resultadosPorChave.get(normalizarChaveCte(item.chave_cte))
       || resultadosPorChave.get(normalizarChaveCte(item.numero_cte));
-    const calculado = Number(resultado?.valor_calculado || 0);
+    const calculadoMotor = Number(resultado?.valor_calculado || 0);
+    // Saldo autorizado pelo gestor do transporte (chave do CT-e ou da NF): soma
+    // ao calculado so aqui, na comparacao — o motor de calculo nao muda.
+    const saldoAutorizado = calculadoMotor > 0
+      ? Number(saldosAutorizadosPorChave.get(normalizarChaveCte(item.chave_cte))
+        || saldosAutorizadosPorChave.get(normalizarChaveCte(item.chave_nfe || resultado?.chave_nfe))
+        || 0)
+      : 0;
+    const calculado = Number((calculadoMotor + saldoAutorizado).toFixed(2));
     const calculadoVerum = Number(resultado?.valor_calculado_verum ?? resultado?.valor_calculado ?? item.calculado_frete_verum ?? 0);
     const valor = Number(item.valor_frete || 0);
     if (calculado <= 0) {
@@ -145,6 +153,7 @@ export function aplicarReauditoriaDetalhes(detalhes = [], resultadosPorChave = n
       detalhes_calculo: resultado?.detalhes_calculo ?? item.detalhes_calculo ?? null,
       calculado_frete_verum: calculadoVerum,
       calculado_frete: calculado,
+      saldo_autorizado: saldoAutorizado,
       diferenca,
       status: Math.abs(diferenca) <= 0.01 ? 'OK' : 'DIVERGENTE',
       motivo_divergencia: resultado?.motivo_sem_calculo || item.motivo_divergencia || '',
