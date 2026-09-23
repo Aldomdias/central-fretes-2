@@ -86,9 +86,11 @@ import { getSupabaseClient } from '../lib/supabaseClient';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import { buscarTrackingPorChaveNfeManual } from '../services/trackingSupabaseService';
 import { consultarMunicipiosIbge } from '../services/ibgeService';
+import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
 
 const TABS = [
   ['dashboard', 'Dashboard'],
+  ['painel', 'Painel'],
   ['faturas', 'Faturas'],
   ['gestao', 'Centro de Gestores'],
   ['financeiro', 'Central Financeira'],
@@ -992,6 +994,318 @@ function Dashboard({ state }) {
         <Card label="CT-es sem calculo" value={resumo.ctesSemCalculo} color="#e67e22" />
         <Card label="CT-es sem tabela" value={resumo.ctesSemTabela} color="#b78700" />
       </div>
+    </>
+  );
+}
+
+const JANELA_VENCIMENTO_OPCOES = [7, 10, 15, 20, 30];
+const STATUS_PAGAS = new Set(['PAGA', 'PAGA_COM_DIVERGENCIA']);
+const STATUS_LANCADAS = new Set(['ENVIADA_AO_FINANCEIRO']);
+// "Liberada" = passou da auditoria pro fluxo de pagamento. Se isso aconteceu
+// sem 100% dos CT-es auditados, alguem pulou etapa.
+const STATUS_LIBERADAS = new Set(['PRONTA_PARA_PAGAMENTO', 'ENVIADA_AO_FINANCEIRO', 'PAGA', 'PAGA_COM_DIVERGENCIA']);
+const TOLERANCIA_DESCONTO_PENDENTE = 1; // abaixo disso nao vale a pena cobrar justificativa
+
+// Chave pra cruzar fatura x protocolo de desconto: numero (sem zeros a
+// esquerda) + transportadora normalizada — mesmo cuidado do bug de faturas
+// com numero repetido entre transportadoras diferentes (ver auditoriaFretesImport).
+function chaveFaturaTransportadora(numeroFatura, transportadora) {
+  const numero = String(numeroFatura || '').trim().toUpperCase().replace(/^0+(?=.)/, '');
+  return `${numero}::${normalizarNomeTransportadora(transportadora)}`;
+}
+
+// Painel de acompanhamento diario: "quantas faturas vencem nos proximos N dias,
+// quantas ja foram lancadas/pagas, quem esta com mais pendencia, quem liberou
+// sem auditar, quem tem desconto calculado sem confirmacao" — janela e filtros
+// configuraveis em vez dos cards fixos (3/7 dias) do Dashboard.
+function PainelAcompanhamento({ state }) {
+  const [janelaDias, setJanelaDias] = useState(10);
+  const [auditorFiltro, setAuditorFiltro] = useState('');
+  const [dataInicio, setDataInicio] = useState('');
+  const [dataFim, setDataFim] = useState('');
+  const [somenteAbertas, setSomenteAbertas] = useState(true);
+  const [protocolos, setProtocolos] = useState(null);
+  const [erroProtocolos, setErroProtocolos] = useState('');
+
+  useEffect(() => {
+    let ativo = true;
+    listarProtocolosComDesconto()
+      .then((lista) => { if (ativo) setProtocolos(lista || []); })
+      .catch((error) => { if (ativo) { setProtocolos([]); setErroProtocolos(error.message || String(error)); } });
+    return () => { ativo = false; };
+  }, []);
+
+  const descontoConfirmadoPorFatura = useMemo(() => {
+    const mapa = new Map();
+    (protocolos || []).forEach((item) => {
+      const chave = chaveFaturaTransportadora(item.numero_fatura, item.transportadora);
+      mapa.set(chave, (mapa.get(chave) || 0) + Number(item.desconto_total || 0));
+    });
+    return mapa;
+  }, [protocolos]);
+
+  const hoje = useMemo(() => new Date(), []);
+  const faturas = state.faturas || [];
+
+  const auditores = useMemo(() => (
+    [...new Set(faturas.map((item) => item.auditor_nome).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'))
+  ), [faturas]);
+
+  // Filtro de periodo (opcional) restringe por data de vencimento; sem ele,
+  // a janela de dias (abaixo) decide o recorte.
+  const faturasFiltradas = useMemo(() => faturas.filter((item) => {
+    if (auditorFiltro && (item.auditor_nome || 'SEM AUDITOR DEFINIDO') !== auditorFiltro) return false;
+    if (dataInicio && (!item.data_vencimento || item.data_vencimento < dataInicio)) return false;
+    if (dataFim && (!item.data_vencimento || item.data_vencimento > dataFim)) return false;
+    return true;
+  }), [faturas, auditorFiltro, dataInicio, dataFim]);
+
+  // Janela: vencimento dentro de N dias — inclui as ja vencidas (dias negativo),
+  // pra ficar visivel quem passou do prazo sem ser preciso trocar de aba.
+  const naJanela = useMemo(() => faturasFiltradas.filter((item) => {
+    if (!item.data_vencimento) return false;
+    const dias = diasAte(item.data_vencimento, hoje);
+    return dias != null && dias <= janelaDias;
+  }), [faturasFiltradas, janelaDias, hoje]);
+
+  const naJanelaAbertas = useMemo(() => naJanela.filter((item) => !ENCERRADOS.has(item.status)), [naJanela]);
+  const naJanelaVisivel = somenteAbertas ? naJanelaAbertas : naJanela;
+
+  const vencidas = naJanelaAbertas.filter((item) => diasAte(item.data_vencimento, hoje) < 0);
+  const pagas = naJanela.filter((item) => STATUS_PAGAS.has(item.status));
+  const lancadas = naJanela.filter((item) => STATUS_LANCADAS.has(item.status));
+  const comDivergencia = naJanelaAbertas.filter((item) => item.status === 'COM_DIVERGENCIA');
+  const semAuditor = naJanelaAbertas.filter((item) => !item.auditor_nome);
+  const valorTotalJanela = naJanela.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
+  const valorAbertoJanela = naJanelaAbertas.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
+
+  const porStatus = useMemo(() => {
+    const mapa = new Map();
+    naJanela.forEach((item) => {
+      const status = item.status || 'RECEBIDA';
+      const atual = mapa.get(status) || { status, qtd: 0, valor: 0 };
+      atual.qtd += 1;
+      atual.valor += Number(item.valor_fatura || 0);
+      mapa.set(status, atual);
+    });
+    return [...mapa.values()].sort((a, b) => b.qtd - a.qtd);
+  }, [naJanela]);
+
+  const porAuditor = useMemo(() => {
+    const mapa = new Map();
+    naJanela.forEach((item) => {
+      const nome = item.auditor_nome || 'SEM AUDITOR DEFINIDO';
+      const atual = mapa.get(nome) || {
+        nome, total: 0, abertas: 0, vencidas: 0, pagas: 0, lancadas: 0, divergencia: 0, valorAberto: 0,
+      };
+      atual.total += 1;
+      const dias = diasAte(item.data_vencimento, hoje);
+      const aberta = !ENCERRADOS.has(item.status);
+      if (aberta) { atual.abertas += 1; atual.valorAberto += Number(item.valor_fatura || 0); }
+      if (aberta && dias != null && dias < 0) atual.vencidas += 1;
+      if (STATUS_PAGAS.has(item.status)) atual.pagas += 1;
+      if (STATUS_LANCADAS.has(item.status)) atual.lancadas += 1;
+      if (item.status === 'COM_DIVERGENCIA') atual.divergencia += 1;
+      mapa.set(nome, atual);
+    });
+    return [...mapa.values()].sort((a, b) => b.vencidas - a.vencidas || b.abertas - a.abertas);
+  }, [naJanela, hoje]);
+
+  const listaRisco = useMemo(() => (
+    naJanelaVisivel.slice().sort((a, b) => diasAte(a.data_vencimento, hoje) - diasAte(b.data_vencimento, hoje))
+  ), [naJanelaVisivel, hoje]);
+
+  // Desconto calculado pela auditoria (valor_fatura - calculado, quando cobraram
+  // a mais) x desconto confirmado pelo protocolo enviado ao Financeiro. Sobra
+  // = cobraram a mais, a auditoria já calculou, mas ninguém protocolou/justificou.
+  const descontos = useMemo(() => naJanela.map((item) => {
+    const calculado = Math.max(Number(item.diferenca || 0), 0);
+    const confirmado = descontoConfirmadoPorFatura.get(chaveFaturaTransportadora(item.numero_fatura, item.transportadora)) || 0;
+    const pendente = Number((calculado - confirmado).toFixed(2));
+    return { fatura: item, calculado, confirmado, pendente: pendente > 0 ? pendente : 0 };
+  }), [naJanela, descontoConfirmadoPorFatura]);
+
+  const descontoCalculadoTotal = descontos.reduce((acc, item) => acc + item.calculado, 0);
+  const descontoConfirmadoTotal = descontos.reduce((acc, item) => acc + item.confirmado, 0);
+  const descontosPendentes = descontos
+    .filter((item) => item.pendente >= TOLERANCIA_DESCONTO_PENDENTE)
+    .sort((a, b) => b.pendente - a.pendente);
+  const descontoPendenteTotal = descontosPendentes.reduce((acc, item) => acc + item.pendente, 0);
+
+  // Alertas de auditor: fatura liberada pro pagamento sem 100% dos CT-es
+  // auditados, e fatura parada com auditor definido mas nenhum CT-e tocado.
+  const liberadasSemAuditoriaCompleta = useMemo(() => naJanela.filter((item) => (
+    STATUS_LIBERADAS.has(item.status)
+    && Number(item.ctes_totais || 0) > 0
+    && Number(item.ctes_auditados || 0) < Number(item.ctes_totais || 0)
+  )), [naJanela]);
+
+  const semNenhumaAuditoria = useMemo(() => naJanela.filter((item) => (
+    !ENCERRADOS.has(item.status)
+    && item.auditor_nome
+    && Number(item.ctes_totais || 0) > 0
+    && Number(item.ctes_auditados || 0) === 0
+  )), [naJanela]);
+
+  const alertasPorAuditor = useMemo(() => {
+    const mapa = new Map();
+    const registrar = (item, campo) => {
+      const nome = item.auditor_nome || 'SEM AUDITOR DEFINIDO';
+      const atual = mapa.get(nome) || { nome, liberouSemAuditar: 0, semTocar: 0 };
+      atual[campo] += 1;
+      mapa.set(nome, atual);
+    };
+    liberadasSemAuditoriaCompleta.forEach((item) => registrar(item, 'liberouSemAuditar'));
+    semNenhumaAuditoria.forEach((item) => registrar(item, 'semTocar'));
+    return [...mapa.values()].sort((a, b) => (b.liberouSemAuditar + b.semTocar) - (a.liberouSemAuditar + a.semTocar));
+  }, [liberadasSemAuditoriaCompleta, semNenhumaAuditoria]);
+
+  const alertasDetalhe = useMemo(() => [
+    ...liberadasSemAuditoriaCompleta.map((item) => ({ item, motivo: 'Liberada sem 100% auditado' })),
+    ...semNenhumaAuditoria.map((item) => ({ item, motivo: 'Sem nenhum CT-e auditado' })),
+  ].sort((a, b) => diasAte(a.item.data_vencimento, hoje) - diasAte(b.item.data_vencimento, hoje)), [liberadasSemAuditoriaCompleta, semNenhumaAuditoria, hoje]);
+
+  return (
+    <>
+      <div className="table-card" style={{ marginBottom: 16 }}>
+        <div className="panel-title audit-table-title">Filtros</div>
+        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <label className="field">Janela de vencimento
+            <select value={janelaDias} onChange={(e) => setJanelaDias(Number(e.target.value))}>
+              {JANELA_VENCIMENTO_OPCOES.map((n) => <option key={n} value={n}>{n} dias</option>)}
+            </select>
+          </label>
+          <label className="field">Auditor
+            <select value={auditorFiltro} onChange={(e) => setAuditorFiltro(e.target.value)}>
+              <option value="">Todos</option>
+              {auditores.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
+              <option value="SEM AUDITOR DEFINIDO">SEM AUDITOR DEFINIDO</option>
+            </select>
+          </label>
+          <label className="field">Vencimento de<input type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} /></label>
+          <label className="field">ate<input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} /></label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}>
+            <input type="checkbox" checked={somenteAbertas} onChange={(e) => setSomenteAbertas(e.target.checked)} />
+            Só faturas em aberto
+          </label>
+          {(auditorFiltro || dataInicio || dataFim) && (
+            <button type="button" className="btn-secondary" onClick={() => { setAuditorFiltro(''); setDataInicio(''); setDataFim(''); }}>Limpar filtros</button>
+          )}
+        </div>
+      </div>
+
+      <div className="audit-section-title">Na janela de {janelaDias} dias{auditorFiltro ? ` · ${auditorFiltro}` : ''}</div>
+      <div className="summary-strip audit-summary-grid">
+        <Card label="Faturas na janela" value={naJanela.length} />
+        <Card label="Em aberto" value={naJanelaAbertas.length} color="#315ee7" />
+        <Card label="Vencidas (sem pagar)" value={vencidas.length} color="#9b1111" />
+        <Card label="Com divergencia" value={comDivergencia.length} color="#e67e22" />
+        <Card label="Sem auditor" value={semAuditor.length} color="#9b1111" />
+        <Card label="Lancadas no financeiro" value={lancadas.length} color="#315ee7" />
+        <Card label="Pagas" value={pagas.length} color="#14733b" />
+        <Card label="Valor total na janela" value={dinheiro(valorTotalJanela)} />
+        <Card label="Valor em aberto" value={dinheiro(valorAbertoJanela)} color="#9b1111" />
+      </div>
+
+      <div className="audit-section-title">Por status</div>
+      <SimpleTable
+        headers={['Status', 'Qtd', 'Valor']}
+        rows={porStatus.map((item) => [<Status key="s" value={item.status} />, item.qtd, dinheiro(item.valor)])}
+        empty="Nenhuma fatura na janela selecionada."
+      />
+
+      <div className="audit-section-title">Por auditor</div>
+      <SimpleTable
+        headers={['Auditor', 'Em aberto', 'Vencidas', 'Com divergencia', 'Lancadas', 'Pagas', 'Valor em aberto']}
+        rows={porAuditor.map((item) => [
+          <button key="n" type="button" className="btn-link" onClick={() => setAuditorFiltro(item.nome)} style={{ fontWeight: item.vencidas ? 700 : 400, color: item.vencidas ? '#9b1111' : undefined }}>{item.nome}</button>,
+          item.abertas,
+          item.vencidas,
+          item.divergencia,
+          item.lancadas,
+          item.pagas,
+          dinheiro(item.valorAberto),
+        ])}
+        empty="Nenhuma fatura na janela selecionada."
+      />
+
+      <div className="audit-section-title">Faturas na janela — por vencimento{somenteAbertas ? ' (em aberto)' : ''}</div>
+      <SimpleTable
+        headers={['Fatura', 'Transportadora', 'Auditor', 'Vencimento', 'Dias', 'Status', 'Valor']}
+        rows={listaRisco.map((item) => {
+          const dias = diasAte(item.data_vencimento, hoje);
+          const vencida = dias != null && dias < 0 && !ENCERRADOS.has(item.status);
+          return [
+            item.numero_fatura,
+            item.transportadora,
+            item.auditor_nome || <strong className="error-text">SEM AUDITOR</strong>,
+            dataBr(item.data_vencimento),
+            <span key="d" style={{ fontWeight: 700, color: vencida ? '#9b1111' : (dias <= 3 ? '#e67e22' : undefined) }}>{dias}</span>,
+            <Status key="st" value={item.status} />,
+            dinheiro(item.valor_fatura),
+          ];
+        })}
+        empty="Nenhuma fatura na janela selecionada."
+      />
+
+      <div className="audit-section-title">Alertas de auditoria — quem passou fatura sem auditar</div>
+      <p style={{ margin: '0 0 10px', fontSize: 13, color: '#64748b' }}>
+        "Liberou sem auditar" = status ja avancou pra pagamento (pronta/enviada/paga) mas nem todos os CT-es tem calculo AMD.
+        "Sem tocar" = fatura com auditor definido, ainda aberta, e nenhum CT-e auditado ate agora.
+      </p>
+      <div className="summary-strip audit-summary-grid">
+        <Card label="Liberadas sem 100% auditado" value={liberadasSemAuditoriaCompleta.length} color="#9b1111" />
+        <Card label="Sem nenhum CT-e auditado" value={semNenhumaAuditoria.length} color="#e67e22" />
+      </div>
+      <SimpleTable
+        headers={['Auditor', 'Liberou sem auditar', 'Sem tocar']}
+        rows={alertasPorAuditor.map((item) => [
+          <button key="n" type="button" className="btn-link" onClick={() => setAuditorFiltro(item.nome)} style={{ fontWeight: 700, color: '#9b1111' }}>{item.nome}</button>,
+          item.liberouSemAuditar,
+          item.semTocar,
+        ])}
+        empty="Nenhum alerta na janela selecionada."
+      />
+      <SimpleTable
+        headers={['Fatura', 'Transportadora', 'Auditor', 'Status', 'CT-es auditados', 'Motivo', 'Vencimento']}
+        rows={alertasDetalhe.map(({ item, motivo }) => [
+          item.numero_fatura,
+          item.transportadora,
+          item.auditor_nome || <strong className="error-text">SEM AUDITOR</strong>,
+          <Status key="st" value={item.status} />,
+          `${item.ctes_auditados || 0}/${item.ctes_totais || 0}`,
+          <strong key="m" style={{ color: '#9b1111' }}>{motivo}</strong>,
+          dataBr(item.data_vencimento),
+        ])}
+        empty="Nenhuma fatura com alerta na janela selecionada."
+      />
+
+      <div className="audit-section-title">Desconto calculado x confirmado (protocolo)</div>
+      <p style={{ margin: '0 0 10px', fontSize: 13, color: '#64748b' }}>
+        Desconto calculado = valor cobrado a mais pela transportadora segundo a auditoria (valor da fatura - calculado AMD).
+        Desconto confirmado = soma dos protocolos com desconto enviados ao Financeiro pra essa fatura. A diferenca é desconto
+        que a auditoria já identificou mas ainda não foi protocolado nem justificado.
+      </p>
+      {erroProtocolos && <div className="hint-box compact error-text">Erro ao consultar protocolos com desconto: {erroProtocolos}</div>}
+      <div className="summary-strip audit-summary-grid">
+        <Card label="Desconto calculado" value={dinheiro(descontoCalculadoTotal)} color="#9b1111" />
+        <Card label="Desconto confirmado (protocolo)" value={dinheiro(descontoConfirmadoTotal)} color="#14733b" />
+        <Card label="Pendente de protocolar/justificar" value={dinheiro(descontoPendenteTotal)} color="#9b1111" />
+        <Card label="Faturas com pendencia" value={descontosPendentes.length} color="#9b1111" />
+      </div>
+      <SimpleTable
+        headers={['Fatura', 'Transportadora', 'Auditor', 'Status', 'Desconto calculado', 'Confirmado (protocolo)', 'Pendente — precisa justificativa']}
+        rows={descontosPendentes.map(({ fatura, calculado, confirmado, pendente }) => [
+          fatura.numero_fatura,
+          fatura.transportadora,
+          fatura.auditor_nome || <strong className="error-text">SEM AUDITOR</strong>,
+          <Status key="st" value={fatura.status} />,
+          dinheiro(calculado),
+          dinheiro(confirmado),
+          <strong key="p" style={{ color: '#9b1111' }}>{dinheiro(pendente)}</strong>,
+        ])}
+        empty={protocolos === null ? 'Carregando protocolos...' : 'Nenhuma fatura com desconto pendente de confirmação na janela selecionada.'}
+      />
     </>
   );
 }
@@ -5913,6 +6227,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
         {TABS.map(([id, label]) => <button key={id} className={`toggle-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>{label}</button>)}
       </div>
       {tab === 'dashboard' && <Dashboard state={state} />}
+      {tab === 'painel' && <PainelAcompanhamento state={state} />}
       {tab === 'faturas' && <Faturas state={state} onState={setState} modo="faturas" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />}
       {tab === 'auditoria-cte' && <Faturas state={state} onState={setState} modo="auditoria-cte" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />}
       {tab === 'gestao' && <Gestao state={state} onState={setState} />}
