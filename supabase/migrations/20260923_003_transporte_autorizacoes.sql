@@ -40,3 +40,16 @@ create table if not exists public.transporte_autorizacoes (
 create index if not exists transporte_autorizacoes_canal_status_idx on public.transporte_autorizacoes (canal, status) where ativo;
 create index if not exists transporte_autorizacoes_chave_cte_idx on public.transporte_autorizacoes (chave_cte) where ativo and status = 'AUTORIZADA';
 create index if not exists transporte_autorizacoes_chave_nfe_idx on public.transporte_autorizacoes (chave_nfe) where ativo and status = 'AUTORIZADA';
+
+-- Mesmo padrao das demais tabelas do projeto (RLS aberta pra anon/authenticated).
+alter table public.transporte_autorizacoes enable row level security;
+
+grant select, insert, update, delete on public.transporte_autorizacoes to anon, authenticated;
+
+drop policy if exists "transporte_autorizacoes_access" on public.transporte_autorizacoes;
+
+create policy "transporte_autorizacoes_access"
+  on public.transporte_autorizacoes
+  for all to anon, authenticated
+  using (true)
+  with check (true);
