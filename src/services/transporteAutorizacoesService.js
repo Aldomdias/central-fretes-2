@@ -72,19 +72,52 @@ export async function decidirAutorizacao({ id, autorizar, valorAutorizado, obser
   if (error) throw new Error(`Erro ao registrar decisao: ${error.message}`);
 }
 
-// Gestor lanca a autorizacao antes da auditoria (chave do CT-e OU da NF).
-export async function lancarSaldoAntecipado({ canal, chaveCte, chaveNfe, valor, observacao, usuarioNome }) {
-  const cte = soDigitos(chaveCte);
-  const nfe = soDigitos(chaveNfe);
-  if (!cte && !nfe) throw new Error('Informe a chave do CT-e ou da nota fiscal.');
+// Liga chave do CT-e, chave da NF e pedido usando a base (tracking e realizado),
+// pra o saldo lancado por qualquer um dos tres ja ficar vinculado ao CT-e — a
+// auditoria depois so casa pela chave do CT-e, sem mexer em mais nada.
+async function resolverVinculo({ chaveCte, chaveNfe, pedido }) {
+  const client = exigirClient();
+  const achado = { chaveCte: chaveCte || '', chaveNfe: chaveNfe || '', pedido: pedido || '' };
+  const buscar = async (tabela, coluna, valor, select) => {
+    const { data } = await client.from(tabela).select(select).eq(coluna, valor).limit(1);
+    return data?.[0] || null;
+  };
+  try {
+    let linha = null;
+    if (chaveNfe) linha = await buscar('tracking_rows', 'chave_nfe', chaveNfe, 'chave_cte,chave_nfe,pedido,pedido_erp');
+    if (!linha && chaveNfe) linha = await buscar('realizado_local_ctes', 'chave_nfe', chaveNfe, 'chave_cte,chave_nfe');
+    if (!linha && chaveCte) linha = await buscar('tracking_rows', 'chave_cte', chaveCte, 'chave_cte,chave_nfe,pedido,pedido_erp');
+    if (!linha && chaveCte) linha = await buscar('realizado_local_ctes', 'chave_cte', chaveCte, 'chave_cte,chave_nfe');
+    if (!linha && pedido) {
+      linha = await buscar('tracking_rows', 'pedido', pedido, 'chave_cte,chave_nfe,pedido,pedido_erp')
+        || await buscar('tracking_rows', 'pedido_erp', pedido, 'chave_cte,chave_nfe,pedido,pedido_erp');
+    }
+    if (linha) {
+      achado.chaveCte = achado.chaveCte || soDigitos(linha.chave_cte);
+      achado.chaveNfe = achado.chaveNfe || soDigitos(linha.chave_nfe);
+      achado.pedido = achado.pedido || linha.pedido_erp || linha.pedido || '';
+    }
+  } catch (error) {
+    console.warn('[Autorizacoes transporte] vinculo nao resolvido; segue com o que foi informado.', error?.message || error);
+  }
+  return achado;
+}
+
+// Gestor lanca a autorizacao antes da auditoria (chave do CT-e, da NF ou pedido).
+export async function lancarSaldoAntecipado({ canal, chaveCte, chaveNfe, numeroPedido, valor, observacao, usuarioNome }) {
+  const informado = { chaveCte: soDigitos(chaveCte), chaveNfe: soDigitos(chaveNfe), pedido: String(numeroPedido || '').trim() };
+  if (!informado.chaveCte && !informado.chaveNfe && !informado.pedido) throw new Error('Informe a chave do CT-e, da nota fiscal ou o numero do pedido.');
   if (!(numero(valor) > 0)) throw new Error('Informe o valor autorizado.');
+  const vinculo = await resolverVinculo(informado);
+  if (!vinculo.chaveCte && !vinculo.chaveNfe) throw new Error('Pedido nao encontrado no tracking — informe a chave do CT-e ou da nota.');
   const agora = new Date().toISOString();
   const { error } = await exigirClient().from(TABELA).insert({
     canal: normalizarCanalAutorizacao(canal),
     origem: 'GESTOR',
     status: 'AUTORIZADA',
-    chave_cte: cte || null,
-    chave_nfe: nfe || null,
+    chave_cte: vinculo.chaveCte || null,
+    chave_nfe: vinculo.chaveNfe || null,
+    numero_pedido: vinculo.pedido || null,
     valor_autorizado: numero(valor),
     observacao_gestor: observacao || null,
     enviado_por: usuarioNome || null,
@@ -92,6 +125,7 @@ export async function lancarSaldoAntecipado({ canal, chaveCte, chaveNfe, valor, 
     decidido_em: agora,
   });
   if (error) throw new Error(`Erro ao lancar saldo: ${error.message}`);
+  return { vinculadoCte: Boolean(vinculo.chaveCte), chaveCte: vinculo.chaveCte, chaveNfe: vinculo.chaveNfe, pedido: vinculo.pedido };
 }
 
 export async function desativarAutorizacao(id) {
