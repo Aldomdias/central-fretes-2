@@ -71,6 +71,7 @@ import {
   vincularNovaFatura,
   registrarHistoricoCarteiraAuditoria,
   listarHistoricoCarteiraAuditoria,
+  gerarLinkConfirmacaoFatura,
 } from '../services/auditoriaFretesService';
 import {
   buscarCtesPorIdentificadores,
@@ -1077,6 +1078,8 @@ function PainelAcompanhamento({ state }) {
   const lancadas = naJanela.filter((item) => STATUS_LANCADAS.has(item.status));
   const comDivergencia = naJanelaAbertas.filter((item) => item.status === 'COM_DIVERGENCIA');
   const aguardandoAprovacaoGestao = naJanelaAbertas.filter((item) => item.status === 'AGUARDANDO_APROVACAO_GESTAO');
+  const aguardandoConfirmacaoTransportador = naJanelaAbertas.filter((item) => item.confirmacao_transportador_status === 'ENVIADO');
+  const confirmadasPeloTransportador = naJanela.filter((item) => item.confirmacao_transportador_status === 'APROVADO');
   const semAuditor = naJanelaAbertas.filter((item) => !item.auditor_nome);
   const valorTotalJanela = naJanela.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
   const valorAbertoJanela = naJanelaAbertas.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
@@ -1203,6 +1206,8 @@ function PainelAcompanhamento({ state }) {
         <Card label="Vencidas (sem pagar)" value={vencidas.length} color="#9b1111" />
         <Card label="Com divergencia" value={comDivergencia.length} color="#e67e22" />
         <Card label="Aguardando aprovacao gestao" value={aguardandoAprovacaoGestao.length} color="#9b1111" />
+        <Card label="Aguardando confirmacao do fornecedor" value={aguardandoConfirmacaoTransportador.length} color="#e67e22" />
+        <Card label="Confirmadas pelo fornecedor" value={confirmadasPeloTransportador.length} color="#14733b" />
         <Card label="Sem auditor" value={semAuditor.length} color="#9b1111" />
         <Card label="Lancadas no financeiro" value={lancadas.length} color="#315ee7" />
         <Card label="Pagas" value={pagas.length} color="#14733b" />
@@ -1840,8 +1845,20 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     }
   };
 
-  const baixarLaudoFatura = (versao = 'interno') => {
+  const baixarLaudoFatura = async (versao = 'interno') => {
     const transportador = versao === 'transportador' || versao === 'email';
+    // Link de confirmacao direto no laudo: o transportador clica "OK" e a
+    // fatura ja atualiza sozinha (ver AprovacaoGestao/api/portal-fatura).
+    let linkConfirmacao = '';
+    if (transportador) {
+      try {
+        const resultado = await gerarLinkConfirmacaoFatura(state, fatura);
+        onState(resultado.state);
+        linkConfirmacao = resultado.url;
+      } catch (error) {
+        setErroDetalhes(`Nao foi possivel gerar o link de confirmacao: ${error.message}`);
+      }
+    }
     const linhas = detalhes;
     const titulo = transportador ? 'Relatorio de divergencias de frete' : 'Laudo interno de auditoria de fatura';
     const toleranciaLaudo = carregarToleranciaAuditoria();
@@ -1889,6 +1906,12 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     const blocoEntregaLaudo = semEntrega.length
       ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><strong>⚠ ${semEntrega.length} CT-e(s) sem entrega comprovada — favor verificar</strong><p style="margin:6px 0 0;font-size:13px">O pagamento da fatura só é liberado quando todos os CT-es estiverem entregues. Envie o comprovante de entrega (canhoto/POD) dos CT-es: <b>${semEntrega.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtes.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p></div>`
       : '';
+    const jaConfirmada = fatura.confirmacao_transportador_status === 'APROVADO';
+    const blocoConfirmacaoLaudo = linkConfirmacao
+      ? (jaConfirmada
+        ? `<div style="margin:0 0 14px;padding:14px 18px;background:#dcfce7;border:1px solid #86efac;border-radius:10px;color:#065f46"><strong>✓ Fatura ja confirmada</strong>${fatura.confirmacao_transportador_em ? ` em ${escapeHtmlAuditoria(new Date(fatura.confirmacao_transportador_em).toLocaleString('pt-BR'))}` : ''}${fatura.confirmacao_transportador_por ? ` por ${escapeHtmlAuditoria(fatura.confirmacao_transportador_por)}` : ''}.</div>`
+        : `<div style="margin:0 0 14px;padding:18px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;color:#1e3a8a;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap"><div><strong>Confirmacao da fatura</strong><p style="margin:4px 0 0;font-size:13px">Confira os CT-es abaixo e clique para confirmar a fatura — a confirmacao atualiza o status automaticamente, sem precisar responder por e-mail.</p></div><a href="${escapeHtmlAuditoria(linkConfirmacao)}" target="_blank" rel="noopener" style="background:#0f6b3e;color:#fff;font-weight:700;padding:12px 20px;border-radius:9px;text-decoration:none;white-space:nowrap">OK, confirmar fatura</a></div>`)
+      : '';
     const html = `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -1923,6 +1946,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   </div>
   <div class="wrap">
     <div class="cards">${cards.map(([label, value]) => `<div class="card"><span>${escapeHtmlAuditoria(label)}</span><strong>${escapeHtmlAuditoria(value)}</strong></div>`).join('')}</div>
+    ${blocoConfirmacaoLaudo}
     ${blocoEntregaLaudo}
     <div class="note">Clique em cima de qualquer CT-e na tabela abaixo para abrir os detalhes completos do calculo (taxas, ICMS, base do frete etc.).</div>
     <div class="filters">
@@ -2387,7 +2411,19 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
             <Card label="Valor calculado" value={dinheiro(fatura.valor_calculado)} color="#04a484" />
             <Card label="Diferenca" value={dinheiro(fatura.diferenca)} color={Number(fatura.diferenca) ? '#9b1111' : '#04a484'} />
             <Card label="Quantidade CT-es" value={fatura.ctes_totais || detalhes.length} />
+            <Card
+              label="Confirmacao do transportador"
+              value={fatura.confirmacao_transportador_status === 'APROVADO' ? 'Aprovada' : (fatura.confirmacao_transportador_status === 'ENVIADO' ? 'Aguardando' : 'Nao enviada')}
+              color={fatura.confirmacao_transportador_status === 'APROVADO' ? '#04a484' : (fatura.confirmacao_transportador_status === 'ENVIADO' ? '#e67e22' : undefined)}
+            />
           </div>
+          {fatura.confirmacao_transportador_status && (
+            <p style={{ margin: '0 0 14px', fontSize: 12, color: '#64748b' }}>
+              {fatura.confirmacao_transportador_status === 'APROVADO'
+                ? `Confirmada${fatura.confirmacao_transportador_em ? ` em ${dataBr(fatura.confirmacao_transportador_em)}` : ''}${fatura.confirmacao_transportador_por ? ` por ${fatura.confirmacao_transportador_por}` : ''} pelo link enviado no laudo.`
+                : `Link enviado${fatura.confirmacao_transportador_enviado_em ? ` em ${dataBr(fatura.confirmacao_transportador_enviado_em)}` : ''}, aguardando o transportador confirmar (gere o "Laudo transportador" de novo pra reenviar o mesmo link).`}
+            </p>
+          )}
           <div className="form-grid three">
             <label className="field">Status
               <select value={fatura.status} onChange={(event) => mudarStatus(event.target.value)}>
@@ -3986,6 +4022,9 @@ ${portaisLaudo.length ? `
       const laudoTransportador = tipoLaudo === 'transportador';
       const opts = { ...opcoesLaudoTransportadorLote, transportador: laudoTransportador };
       const blocos = [];
+      // Link de confirmacao e por fatura (nao um so pro lote inteiro) — cada
+      // fatura e um documento distinto que o transportador confirma sozinho.
+      let estadoComLinks = state;
       for (let i = 0; i < faturasSelecionadas.length; i += 1) {
         const fatura = faturasSelecionadas[i];
         setProgressoLote({ etapa: 'montando_laudo', carregados: i + 1, total: faturasSelecionadas.length });
@@ -3999,8 +4038,22 @@ ${portaisLaudo.length ? `
           const base = refs.get(normalizarChaveCte(item.chave_cte)) || refs.get(normalizarChaveCte(item.numero_cte));
           return { ...mesclado, chave_nfe: mesclado.chave_nfe || base?.chave_nfe };
         });
-        blocos.push({ fatura, detalhes: detalhesLaudo });
+        let linkConfirmacao = '';
+        let faturaAtual = fatura;
+        if (laudoTransportador) {
+          try {
+            const faturaViva = estadoComLinks.faturas.find((item) => item.id === fatura.id) || fatura;
+            const resultado = await gerarLinkConfirmacaoFatura(estadoComLinks, faturaViva);
+            estadoComLinks = resultado.state;
+            linkConfirmacao = resultado.url;
+            faturaAtual = estadoComLinks.faturas.find((item) => item.id === fatura.id) || fatura;
+          } catch (erroLink) {
+            // Nao trava o laudo inteiro por causa de um link — fatura fica sem botao de confirmacao.
+          }
+        }
+        blocos.push({ fatura: faturaAtual, detalhes: detalhesLaudo, linkConfirmacao });
       }
+      if (laudoTransportador) onState(estadoComLinks);
       const todosDetalhes = blocos.flatMap((bloco) => bloco.detalhes);
       // Mesmo aviso de "CT-e sem entrega comprovada" do laudo de fatura
       // individual — no laudo em lote a decisao (liberar/questionar varias
@@ -4069,6 +4122,12 @@ ${portaisLaudo.length ? `
           </tr>
           <tr id="${detalheId}" class="detail-row"><td colspan="10">${detalhesCalculoHtmlFatura(item, { masked: linha.masked, calculadoPublico: linha.calculadoPublico, diffPublico: linha.diffPublico, descontoSemTabela: linha.descontoSemTabela })}</td></tr>`;
         }).join('');
+        const confirmadaBloco = bloco.fatura.confirmacao_transportador_status === 'APROVADO';
+        const confirmacaoCelula = confirmadaBloco
+          ? '<span style="color:#166534;font-weight:700">✓ Confirmada</span>'
+          : (bloco.linkConfirmacao
+            ? `<a href="${escapeHtmlAuditoria(bloco.linkConfirmacao)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="background:#0f6b3e;color:#fff;font-weight:700;padding:6px 12px;border-radius:7px;text-decoration:none;white-space:nowrap;font-size:11px">OK, confirmar</a>`
+            : '<span style="color:#94a3b8">—</span>');
         return `
         <tr class="main-row" onclick="toggleDetail('${grupoId}')">
           <td>${escapeHtmlAuditoria(bloco.fatura.numero_fatura || '-')}</td>
@@ -4078,8 +4137,9 @@ ${portaisLaudo.length ? `
           <td>${dinheiro(diffFaturaPublico)}</td>
           <td>${numeroFmt(bloco.detalhes.length)}</td>
           <td>${escapeHtmlAuditoria(resumoOrigem)}</td>
+          <td onclick="event.stopPropagation()">${confirmacaoCelula}</td>
         </tr>
-        <tr id="${grupoId}" class="detail-row"><td colspan="7">
+        <tr id="${grupoId}" class="detail-row"><td colspan="8">
           <table><thead><tr><th>CT-e</th><th>Chave</th><th>Rota</th><th>Canal</th><th>Peso</th><th>Frete pago</th><th>Calculo AMD</th><th>Diferenca</th><th>Status</th><th>Entrega</th></tr></thead>
           <tbody>${linhasCteHtml || '<tr><td colspan="10">Nenhum CT-e nesta fatura.</td></tr>'}</tbody></table>
         </td></tr>`;
@@ -4119,7 +4179,7 @@ ${portaisLaudo.length ? `
         <div class="report-actions">
           <button class="export-button" type="button" onclick="exportarExcel()">Exportar Excel</button>
         </div>
-    <table><thead><tr><th>Fatura</th><th>Transportadora</th><th>Valor cobrado</th><th>Calculo AMD</th><th>Diferenca</th><th>CT-es</th><th>Origem</th></tr></thead><tbody id="tabela-faturas-body">${linhasFatura || '<tr><td colspan="7">Nenhuma fatura selecionada.</td></tr>'}</tbody></table></div>
+    <table><thead><tr><th>Fatura</th><th>Transportadora</th><th>Valor cobrado</th><th>Calculo AMD</th><th>Diferenca</th><th>CT-es</th><th>Origem</th><th>Confirmacao</th></tr></thead><tbody id="tabela-faturas-body">${linhasFatura || '<tr><td colspan="8">Nenhuma fatura selecionada.</td></tr>'}</tbody></table></div>
         <script>
           function toggleDetail(id){var el=document.getElementById(id);if(!el)return;el.style.display='';el.classList.toggle('open')}
           function normalizarFiltro(v){return String(v||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toUpperCase()}
