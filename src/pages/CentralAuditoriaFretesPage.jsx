@@ -898,7 +898,7 @@ function faturaTotalmenteAuditada(fatura) {
 }
 
 function situacaoPagamentoFatura(fatura) {
-  if (fatura.status === 'PAGA') return 'PAGO';
+  if (fatura.status === 'PAGA' || fatura.status === 'PAGA_COM_DESCONTO') return 'PAGO';
   if (fatura.status === 'PAGA_COM_DIVERGENCIA') return 'PAGO_DIVERGENTE';
   if (fatura.partida) return 'PARTIDA_LANCADA';
   if (fatura.lancamento_financeiro) return 'LANCADA_FINANCEIRO';
@@ -1048,7 +1048,7 @@ const ROTULO_PAGAMENTO = {
 };
 // "Liberada" = passou da auditoria pro fluxo de pagamento. Se isso aconteceu
 // sem 100% dos CT-es auditados, alguem pulou etapa.
-const STATUS_LIBERADAS = new Set(['PRONTA_PARA_PAGAMENTO', 'ENVIADA_AO_FINANCEIRO', 'PAGA', 'PAGA_COM_DIVERGENCIA']);
+const STATUS_LIBERADAS = new Set(['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO', 'ENVIADA_AO_FINANCEIRO', 'PAGA', 'PAGA_COM_DESCONTO', 'PAGA_COM_DIVERGENCIA']);
 const TOLERANCIA_DESCONTO_PENDENTE = 1; // abaixo disso nao vale a pena cobrar justificativa
 
 // Chave pra cruzar fatura x protocolo de desconto: numero (sem zeros a
@@ -1650,28 +1650,19 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       auditoria_tolerancia_abaixo: Number(toleranciaFatura.abaixo || 0),
     };
 
-    // Valor calculado nao fechou com o cobrado (saldo a descontar): antes de
-    // liberar, pergunta se o desconto vai ser aplicado nesta fatura. Se nao
-    // (ou se cancelar), nao libera direto — manda pra aprovacao da gestao
-    // (eu/Carol) em vez de seguir pro pagamento com a divergencia sem resolver.
+    // Valor calculado nao fechou com o cobrado (saldo a descontar): nunca
+    // libera direto pro pagamento so no clique do auditor — vai sempre pra
+    // aprovacao da gestao (eu/Carol). So a gestao decide, na aba "Aprovacao
+    // da Gestao", se aprova (fatura vira LIBERADA_COM_DESCONTO) ou recusa
+    // (volta pra COM_DIVERGENCIA). Sem confirm() ambiguo no meio do caminho.
     if (saldo > TOLERANCIA_DESCONTO_PENDENTE) {
-      const aplicaDesconto = window.confirm(
-        `Essa fatura tem cobranca a maior de ${dinheiro(saldo)} (valor da fatura menos o calculado pela auditoria).\n\n`
-        + `Esse desconto vai ser aplicado no pagamento desta fatura?\n\n`
-        + `OK = sim, aplicar o desconto e liberar para pagamento.\n`
-        + `Cancelar = nao (ou nao decidido agora) — a fatura vai para aprovacao da gestao.`,
-      );
-      if (!aplicaDesconto) {
-        await mudarStatus('AGUARDANDO_APROVACAO_GESTAO', {
-          ...camposAuditoria,
-          desconto_aplicado_confirmado: false,
-          desconto_pendente_valor: Math.max(saldo, 0),
-          descricaoHistorico: `Enviada para aprovacao da gestao: cobranca a maior de ${dinheiro(saldo)} identificada e o desconto nao foi confirmado como aplicado na liberacao.`,
-        });
-        return;
-      }
-      camposAuditoria.desconto_aplicado_confirmado = true;
-      camposAuditoria.desconto_pendente_valor = 0;
+      await mudarStatus('AGUARDANDO_APROVACAO_GESTAO', {
+        ...camposAuditoria,
+        desconto_aplicado_confirmado: false,
+        desconto_pendente_valor: Math.max(saldo, 0),
+        descricaoHistorico: `Enviada para aprovacao da gestao: cobranca a maior de ${dinheiro(saldo)} identificada, precisa confirmar se o desconto sera aplicado.`,
+      });
+      return;
     }
 
     await mudarStatus('PRONTA_PARA_PAGAMENTO', {
@@ -6112,14 +6103,14 @@ function AprovacaoGestao({ state, onState }) {
     try {
       const next = await atualizarFaturaAuditoria(state, {
         ...fatura,
-        status: 'PRONTA_PARA_PAGAMENTO',
+        status: 'LIBERADA_COM_DESCONTO',
         desconto_aplicado_confirmado: true,
         desconto_pendente_valor: 0,
       }, {
         acao: 'APROVACAO_GESTAO_CONFIRMOU_DESCONTO',
         status_anterior: fatura.status,
-        status_novo: 'PRONTA_PARA_PAGAMENTO',
-        descricao: `Gestao aprovou: desconto de ${dinheiro(fatura.desconto_pendente_valor || fatura.diferenca || 0)} confirmado, fatura liberada para pagamento.`,
+        status_novo: 'LIBERADA_COM_DESCONTO',
+        descricao: `Gestao aprovou: desconto de ${dinheiro(fatura.desconto_pendente_valor || fatura.diferenca || 0)} confirmado, fatura liberada para pagamento com desconto.`,
         usuario_nome: sessao?.nome || sessao?.email || 'Gestao',
         usuario_email: sessao?.email || '',
       });
@@ -6424,7 +6415,7 @@ function Financeiro({ state, onState }) {
           <div className="panel-card">
             <div className="panel-title">Enviar para Financeiro</div>
             <div className="form-grid three">
-              <label className="field">Fatura<select value={faturaId} onChange={(e) => setFaturaId(e.target.value)}><option value="">Selecione</option>{state.faturas.filter((item) => item.status === 'PRONTA_PARA_PAGAMENTO').map((item) => <option key={item.id} value={item.id}>{item.numero_fatura} - {item.transportadora} - {dinheiro(item.valor_fatura)}</option>)}</select></label>
+              <label className="field">Fatura<select value={faturaId} onChange={(e) => setFaturaId(e.target.value)}><option value="">Selecione</option>{state.faturas.filter((item) => ['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO'].includes(item.status)).map((item) => <option key={item.id} value={item.id}>{item.numero_fatura} - {item.transportadora} - {dinheiro(item.valor_fatura)}</option>)}</select></label>
               <label className="field">Canal<select value={canal} onChange={(e) => setCanal(e.target.value)}><option value="VERUM_SAP">Verum / SAP</option><option value="PROTOCOLO_FINANCEIRO">Protocolo Financeiro</option></select></label>
               <div className="audit-form-actions"><button className="btn-primary" disabled={!faturaId} onClick={enviar}>Gerar protocolo e enviar</button></div>
             </div>

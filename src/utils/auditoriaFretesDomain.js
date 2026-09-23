@@ -10,8 +10,10 @@ export const FATURA_STATUS = [
   'AGUARDANDO_NOVA_FATURA',
   'AGUARDANDO_APROVACAO_GESTAO',
   'PRONTA_PARA_PAGAMENTO',
+  'LIBERADA_COM_DESCONTO',
   'ENVIADA_AO_FINANCEIRO',
   'PAGA',
+  'PAGA_COM_DESCONTO',
   'PAGA_COM_DIVERGENCIA',
   'TRATADA',
   'CANCELADA',
@@ -300,9 +302,9 @@ export function calcularDashboard(faturas = [], referencia = new Date()) {
   });
   const divergentes = faturas.filter((fatura) =>
     fatura.status === 'COM_DIVERGENCIA' || Number(fatura.diferenca || 0) !== 0);
-  const prontas = faturas.filter((fatura) => fatura.status === 'PRONTA_PARA_PAGAMENTO');
+  const prontas = faturas.filter((fatura) => ['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO'].includes(fatura.status));
   const enviadas = faturas.filter((fatura) => fatura.status === 'ENVIADA_AO_FINANCEIRO');
-  const pagas = faturas.filter((fatura) => ['PAGA', 'PAGA_COM_DIVERGENCIA'].includes(fatura.status));
+  const pagas = faturas.filter((fatura) => ['PAGA', 'PAGA_COM_DESCONTO', 'PAGA_COM_DIVERGENCIA'].includes(fatura.status));
 
   return {
     porStatus,
