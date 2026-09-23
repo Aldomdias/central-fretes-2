@@ -1086,6 +1086,7 @@ function PainelAcompanhamento({
   dataInicio, setDataInicio,
   dataFim, setDataFim,
   somenteAbertas, setSomenteAbertas,
+  fornecedorFiltro, setFornecedorFiltro,
 }) {
   const [protocolos, setProtocolos] = useState(null);
   const [erroProtocolos, setErroProtocolos] = useState('');
@@ -1094,9 +1095,9 @@ function PainelAcompanhamento({
   // auditor, transportadora) na tabela vira um filtro — clicar de novo no
   // mesmo valor limpa o filtro (toggle).
   const alternarFiltro = (setter, valorAtual) => (valor) => setter(valorAtual === valor ? '' : valor);
-  const temFiltroAtivo = Boolean(auditorFiltro || statusFiltro || pagamentoFiltro || transportadoraFiltro || dataInicio || dataFim);
+  const temFiltroAtivo = Boolean(auditorFiltro || statusFiltro || pagamentoFiltro || transportadoraFiltro || dataInicio || dataFim || fornecedorFiltro);
   const limparTodosFiltros = () => {
-    setAuditorFiltro(''); setStatusFiltro(''); setPagamentoFiltro(''); setTransportadoraFiltro(''); setDataInicio(''); setDataFim('');
+    setAuditorFiltro(''); setStatusFiltro(''); setPagamentoFiltro(''); setTransportadoraFiltro(''); setDataInicio(''); setDataFim(''); setFornecedorFiltro('');
   };
 
   useEffect(() => {
@@ -1132,6 +1133,9 @@ function PainelAcompanhamento({
     if (transportadoraFiltro && item.transportadora !== transportadoraFiltro) return false;
     if (dataInicio && (!item.data_vencimento || item.data_vencimento < dataInicio)) return false;
     if (dataFim && (!item.data_vencimento || item.data_vencimento > dataFim)) return false;
+    if (fornecedorFiltro === 'AGUARDANDO' && item.confirmacao_transportador_status !== 'ENVIADO') return false;
+    if (fornecedorFiltro === 'APROVADA' && item.confirmacao_transportador_status !== 'APROVADO') return false;
+    if (fornecedorFiltro === 'NAO_ENVIADO' && item.confirmacao_transportador_status) return false;
     return true;
   }), [faturas, auditorFiltro, statusFiltro, pagamentoFiltro, transportadoraFiltro, dataInicio, dataFim]);
 
@@ -1153,6 +1157,20 @@ function PainelAcompanhamento({
   const aguardandoAprovacaoGestao = naJanelaAbertas.filter((item) => item.status === 'AGUARDANDO_APROVACAO_GESTAO');
   const aguardandoConfirmacaoTransportador = naJanelaAbertas.filter((item) => item.confirmacao_transportador_status === 'ENVIADO');
   const confirmadasPeloTransportador = naJanela.filter((item) => item.confirmacao_transportador_status === 'APROVADO');
+  // Quanto tempo cada uma esta parada esperando o fornecedor — pra saber quem
+  // esta demorando demais, nao so quantas tem.
+  const aguardandoFornecedorComDias = useMemo(() => aguardandoConfirmacaoTransportador
+    .map((item) => ({
+      item,
+      dias: item.confirmacao_transportador_enviado_em
+        ? Math.floor((hoje.getTime() - new Date(item.confirmacao_transportador_enviado_em).getTime()) / 86400000)
+        : null,
+    }))
+    .sort((a, b) => (b.dias ?? -1) - (a.dias ?? -1)), [aguardandoConfirmacaoTransportador, hoje]);
+  const diasEsperaMaximo = aguardandoFornecedorComDias[0]?.dias ?? 0;
+  const diasEsperaMedio = aguardandoFornecedorComDias.length
+    ? Math.round(aguardandoFornecedorComDias.reduce((acc, item) => acc + (item.dias || 0), 0) / aguardandoFornecedorComDias.length)
+    : 0;
   const semAuditor = naJanelaAbertas.filter((item) => !item.auditor_nome);
   const valorTotalJanela = naJanela.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
   const valorAbertoJanela = naJanelaAbertas.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
@@ -1339,6 +1357,14 @@ ${blocos || '<section>Nenhuma fatura na janela/filtros selecionados.</section>'}
               <option value="SEM AUDITOR DEFINIDO">SEM AUDITOR DEFINIDO</option>
             </select>
           </label>
+          <label className="field">Retorno do fornecedor
+            <select value={fornecedorFiltro} onChange={(e) => setFornecedorFiltro(e.target.value)}>
+              <option value="">Todos</option>
+              <option value="AGUARDANDO">Aguardando retorno</option>
+              <option value="APROVADA">Confirmada pelo fornecedor</option>
+              <option value="NAO_ENVIADO">Laudo nao enviado</option>
+            </select>
+          </label>
           <label className="field">Vencimento de<input type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} /></label>
           <label className="field">ate<input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} /></label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}>
@@ -1372,6 +1398,7 @@ ${blocos || '<section>Nenhuma fatura na janela/filtros selecionados.</section>'}
             {statusFiltro && <span className="status-pill dark">{nomeStatus(statusFiltro)} <button type="button" onClick={() => setStatusFiltro('')} style={{ border: 0, background: 'none', color: 'inherit', cursor: 'pointer', marginLeft: 4 }}>×</button></span>}
             {pagamentoFiltro && <span className="status-pill dark">{nomeStatus(pagamentoFiltro)} <button type="button" onClick={() => setPagamentoFiltro('')} style={{ border: 0, background: 'none', color: 'inherit', cursor: 'pointer', marginLeft: 4 }}>×</button></span>}
             {transportadoraFiltro && <span className="status-pill dark">{transportadoraFiltro} <button type="button" onClick={() => setTransportadoraFiltro('')} style={{ border: 0, background: 'none', color: 'inherit', cursor: 'pointer', marginLeft: 4 }}>×</button></span>}
+            {fornecedorFiltro && <span className="status-pill dark">Fornecedor: {fornecedorFiltro === 'AGUARDANDO' ? 'Aguardando' : fornecedorFiltro === 'APROVADA' ? 'Confirmada' : 'Nao enviado'} <button type="button" onClick={() => setFornecedorFiltro('')} style={{ border: 0, background: 'none', color: 'inherit', cursor: 'pointer', marginLeft: 4 }}>×</button></span>}
           </div>
         )}
       </div>
@@ -1384,6 +1411,8 @@ ${blocos || '<section>Nenhuma fatura na janela/filtros selecionados.</section>'}
         <Card label="Com divergencia" value={comDivergencia.length} color="#e67e22" />
         <Card label="Aguardando aprovacao gestao" value={aguardandoAprovacaoGestao.length} color="#9b1111" />
         <Card label="Aguardando confirmacao do fornecedor" value={aguardandoConfirmacaoTransportador.length} color="#e67e22" />
+        <Card label="Espera maxima (dias)" value={diasEsperaMaximo} color={diasEsperaMaximo > 5 ? '#9b1111' : '#e67e22'} />
+        <Card label="Espera media (dias)" value={diasEsperaMedio} color="#e67e22" />
         <Card label="Confirmadas pelo fornecedor" value={confirmadasPeloTransportador.length} color="#14733b" />
         <Card label="Sem auditor" value={semAuditor.length} color="#9b1111" />
         <Card label="Lancadas no financeiro" value={lancadas.length} color="#315ee7" />
@@ -1455,6 +1484,22 @@ ${blocos || '<section>Nenhuma fatura na janela/filtros selecionados.</section>'}
           ];
         })}
         empty="Nenhuma fatura na janela selecionada."
+      />
+
+      <div className="audit-section-title">Aguardando retorno do fornecedor — por tempo de espera</div>
+      <SimpleTable
+        headers={['Fatura', 'Transportadora', 'Auditor', 'Laudo enviado em', 'Dias aguardando', 'Valor']}
+        rows={aguardandoFornecedorComDias.map(({ item, dias }) => [
+          item.numero_fatura,
+          <NomeClicavel key="t" ativo={transportadoraFiltro === item.transportadora} onClick={() => alternarFiltro(setTransportadoraFiltro, transportadoraFiltro)(item.transportadora)}>{item.transportadora}</NomeClicavel>,
+          item.auditor_nome
+            ? <NomeClicavel key="a" ativo={auditorFiltro === item.auditor_nome} onClick={() => alternarFiltro(setAuditorFiltro, auditorFiltro)(item.auditor_nome)}>{item.auditor_nome}</NomeClicavel>
+            : <strong className="error-text">SEM AUDITOR</strong>,
+          dataBr(item.confirmacao_transportador_enviado_em),
+          <strong key="d" style={{ color: dias >= 5 ? '#9b1111' : (dias >= 2 ? '#b45309' : undefined) }}>{dias ?? '—'}</strong>,
+          dinheiro(item.valor_fatura),
+        ])}
+        empty="Nenhuma fatura aguardando retorno do fornecedor na janela selecionada."
       />
 
       <div className="audit-section-title">Alertas de auditoria — quem passou fatura sem auditar</div>
@@ -1539,6 +1584,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [cancelandoRecalculo, setCancelandoRecalculo] = useState(false);
   const cancelarRecalculoRef = useRef(false);
   const [mensagemLiberacao, setMensagemLiberacao] = useState('');
+  const [ocorrenciaDraft, setOcorrenciaDraft] = useState(fatura.ocorrencia_texto || '');
+  const [salvandoOcorrencia, setSalvandoOcorrencia] = useState(false);
   const [infoRecalculo, setInfoRecalculo] = useState('');
   const [progressoRecalculo, setProgressoRecalculo] = useState(null);
   const [referenciaCtes, setReferenciaCtes] = useState(new Map());
@@ -1638,6 +1685,33 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     onState(next);
   };
 
+  // Ocorrencia: texto livre pra registrar algo que pode impactar a fatura
+  // (chamado aberto, pendencia externa etc.) — nao muda o status, so fica
+  // visivel pra quem abrir a fatura depois. Comeca simples (texto), pode
+  // virar indicador/categoria mais pra frente.
+  const salvarOcorrencia = async () => {
+    setSalvandoOcorrencia(true);
+    try {
+      const next = await atualizarFaturaAuditoria(state, {
+        ...fatura,
+        ocorrencia_texto: ocorrenciaDraft.trim(),
+        ocorrencia_em: new Date().toISOString(),
+        ocorrencia_por: sessao?.nome || sessao?.email || 'Usuario local',
+      }, {
+        acao: 'OCORRENCIA_REGISTRADA',
+        descricao: ocorrenciaDraft.trim() ? `Ocorrencia registrada: ${ocorrenciaDraft.trim()}` : 'Ocorrencia removida.',
+        usuario_nome: sessao?.nome || sessao?.email || 'Usuario local',
+        usuario_email: sessao?.email || '',
+      });
+      onState(next);
+      setMensagemLiberacao('✓ Ocorrencia salva.');
+    } catch (error) {
+      setErroDetalhes(`Erro ao salvar ocorrencia: ${error.message}`);
+    } finally {
+      setSalvandoOcorrencia(false);
+    }
+  };
+
   const liberarParaPagamento = async () => {
     const resumo = resumirDetalhesAuditoria(detalhes, toleranciaFatura);
     // valor_fatura (confiavel) - calculado, nao cobrancaAcima-cobrancaAbaixo:
@@ -1665,11 +1739,18 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     // da Gestao", se aprova (fatura vira LIBERADA_COM_DESCONTO) ou recusa
     // (volta pra COM_DIVERGENCIA). Sem confirm() ambiguo no meio do caminho.
     if (saldo > TOLERANCIA_DESCONTO_PENDENTE) {
+      // Observacao pra quem for aprovar (Carol/gestao) nao ficar perguntando
+      // o que e cada caso — contexto vai junto com o envio.
+      const observacaoAprovacao = window.prompt(
+        `Cobranca a maior de ${dinheiro(saldo)} identificada. Deixe uma observacao pra quem for aprovar (o que aconteceu, o que ja foi tratado com o transportador etc.):`,
+        '',
+      );
       await mudarStatus('AGUARDANDO_APROVACAO_GESTAO', {
         ...camposAuditoria,
         desconto_aplicado_confirmado: false,
         desconto_pendente_valor: Math.max(saldo, 0),
-        descricaoHistorico: `Enviada para aprovacao da gestao: cobranca a maior de ${dinheiro(saldo)} identificada, precisa confirmar se o desconto sera aplicado.`,
+        observacao_aprovacao: (observacaoAprovacao || '').trim(),
+        descricaoHistorico: `Enviada para aprovacao da gestao: cobranca a maior de ${dinheiro(saldo)} identificada, precisa confirmar se o desconto sera aplicado.${observacaoAprovacao ? ` Observacao: ${observacaoAprovacao.trim()}` : ''}`,
       });
       setMensagemLiberacao(`⚠ Nao liberada direto: ha cobranca a maior de ${dinheiro(saldo)} sem confirmacao. Fatura enviada para "Aguardando Aprovacao da Gestao".`);
       return;
@@ -2631,6 +2712,27 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                 : `Link enviado${fatura.confirmacao_transportador_enviado_em ? ` em ${dataBr(fatura.confirmacao_transportador_enviado_em)}` : ''}, aguardando o transportador confirmar (gere o "Laudo transportador" de novo pra reenviar o mesmo link).`}
             </p>
           )}
+          <div className="hint-box compact" style={{ marginBottom: 14 }}>
+            <strong style={{ display: 'block', marginBottom: 6 }}>Ocorrencia</strong>
+            <p style={{ margin: '0 0 8px', fontSize: 12, color: '#64748b' }}>
+              Algo acontecendo que pode impactar esta fatura (chamado aberto, pendencia externa etc.) — visivel pra quem abrir a fatura depois.
+            </p>
+            <textarea
+              value={ocorrenciaDraft}
+              onChange={(event) => setOcorrenciaDraft(event.target.value)}
+              placeholder="Ex.: Aberto chamado #1234 no sistema pra corrigir lancamento duplicado."
+              rows={2}
+              style={{ width: '100%', boxSizing: 'border-box', padding: 8, borderRadius: 6, border: '1px solid #cbd5e1', fontFamily: 'inherit', fontSize: 13 }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
+              <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                {fatura.ocorrencia_em ? `Ultima atualizacao: ${dataBr(fatura.ocorrencia_em)}${fatura.ocorrencia_por ? ` por ${fatura.ocorrencia_por}` : ''}` : 'Nenhuma ocorrencia registrada.'}
+              </span>
+              <button type="button" className="btn-secondary" disabled={salvandoOcorrencia || ocorrenciaDraft.trim() === (fatura.ocorrencia_texto || '')} onClick={salvarOcorrencia}>
+                {salvandoOcorrencia ? 'Salvando...' : 'Salvar ocorrencia'}
+              </button>
+            </div>
+          </div>
           <div className="form-grid three">
             <label className="field">Status
               <select value={fatura.status} onChange={(event) => mudarStatus(event.target.value)}>
@@ -4249,6 +4351,16 @@ ${portaisLaudo.length ? `
       setMensagemImportacao('Selecione uma ou mais faturas para gerar o laudo consolidado.');
       return;
     }
+    // Laudo pro transportador tem que ser de um fornecedor por vez — misturar
+    // faturas de transportadoras diferentes no mesmo arquivo confunde quem
+    // recebe (e o link de confirmacao por fatura nao resolve isso sozinho).
+    if (tipoLaudo === 'transportador') {
+      const transportadorasDistintas = [...new Set(faturasSelecionadas.map((item) => item.transportadora))];
+      if (transportadorasDistintas.length > 1) {
+        setMensagemImportacao(`Selecione faturas de um unico fornecedor por vez para gerar o laudo transportador. Voce selecionou: ${transportadorasDistintas.join(', ')}.`);
+        return;
+      }
+    }
     setRecalculandoLote(true);
     setProgressoLote(null);
     try {
@@ -5406,7 +5518,7 @@ ${portaisLaudo.length ? `
                 return (
                   <tr key={fatura.id} onClick={() => setAberta(fatura)} style={{ cursor: 'pointer', ...(auditadaCompleta ? { background: '#f0fdf4', borderLeft: '3px solid #16a34a' } : {}) }}>
                     <td onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selecionadasIds.includes(fatura.id)} onChange={() => alternarSelecao(fatura.id)} /></td>
-                    <td><strong>{fatura.numero_fatura}</strong></td>
+                    <td><strong>{fatura.numero_fatura}</strong>{fatura.ocorrencia_texto && <span title={`Ocorrencia: ${fatura.ocorrencia_texto}`} style={{ marginLeft: 4 }}>📌</span>}</td>
                     <td>{fatura.transportadora}</td>
                     <td title={resumoOrigensFaturas.get(fatura.id)?.tooltip || 'Origem ainda nao carregada/auditada'}>
                       {resumoOrigensFaturas.get(fatura.id)?.principal || '-'}
@@ -6278,7 +6390,7 @@ function AprovacaoGestao({ state, onState }) {
       </div>
       {mensagem && <div className="hint-box compact">{mensagem}</div>}
       <SimpleTable
-        headers={['Fatura', 'Transportadora', 'Auditor', 'Vencimento', 'Valor fatura', 'Calculado AMD', 'Desconto pendente', 'Acoes']}
+        headers={['Fatura', 'Transportadora', 'Auditor', 'Vencimento', 'Valor fatura', 'Calculado AMD', 'Desconto pendente', 'Observacao do auditor', 'Acoes']}
         rows={pendentes.map((item) => [
           item.numero_fatura,
           item.transportadora,
@@ -6287,6 +6399,7 @@ function AprovacaoGestao({ state, onState }) {
           dinheiro(item.valor_fatura),
           dinheiro(item.valor_calculado),
           <strong key="p" style={{ color: '#9b1111' }}>{dinheiro(item.desconto_pendente_valor || item.diferenca || 0)}</strong>,
+          item.observacao_aprovacao || <span style={{ color: '#94a3b8' }}>—</span>,
           ehGestor ? (
             <div key="acoes" style={{ display: 'flex', gap: 8 }}>
               <button type="button" className="btn-primary" disabled={processando === item.id} onClick={() => aprovar(item)}>Aprovar</button>
@@ -6716,6 +6829,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   const [painelDataInicio, setPainelDataInicio] = useState('');
   const [painelDataFim, setPainelDataFim] = useState('');
   const [painelSomenteAbertas, setPainelSomenteAbertas] = useState(true);
+  const [painelFornecedorFiltro, setPainelFornecedorFiltro] = useState('');
 
   useEffect(() => {
     carregarPlataformaAuditoria().then(setState).catch((error) => setErro(error.message));
@@ -6770,6 +6884,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
           dataInicio={painelDataInicio} setDataInicio={setPainelDataInicio}
           dataFim={painelDataFim} setDataFim={setPainelDataFim}
           somenteAbertas={painelSomenteAbertas} setSomenteAbertas={setPainelSomenteAbertas}
+          fornecedorFiltro={painelFornecedorFiltro} setFornecedorFiltro={setPainelFornecedorFiltro}
         />
       )}
       {tab === 'faturas' && <Faturas key={filtrosIniciaisFaturas?.chave || 'faturas'} state={state} onState={setState} modo="faturas" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} filtrosIniciais={filtrosIniciaisFaturas} />}
