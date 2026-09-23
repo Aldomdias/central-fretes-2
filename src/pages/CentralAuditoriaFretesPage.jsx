@@ -5,7 +5,7 @@ import BaseCtesStatus from '../components/BaseCtesStatus';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import ModalEnviarProtocoloFinanceiro from '../components/ModalEnviarProtocoloFinanceiro';
 import DadosBancariosTransportadoras from '../components/DadosBancariosTransportadoras';
-import { carregarSessao } from '../utils/authLocal';
+import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 import {
   atualizarStatusJornada,
@@ -92,6 +92,7 @@ const TABS = [
   ['dashboard', 'Dashboard'],
   ['painel', 'Painel'],
   ['faturas', 'Faturas'],
+  ['aprovacao', 'Aprovacao da Gestao'],
   ['gestao', 'Centro de Gestores'],
   ['financeiro', 'Central Financeira'],
 ];
@@ -1075,6 +1076,7 @@ function PainelAcompanhamento({ state }) {
   const pagas = naJanela.filter((item) => STATUS_PAGAS.has(item.status));
   const lancadas = naJanela.filter((item) => STATUS_LANCADAS.has(item.status));
   const comDivergencia = naJanelaAbertas.filter((item) => item.status === 'COM_DIVERGENCIA');
+  const aguardandoAprovacaoGestao = naJanelaAbertas.filter((item) => item.status === 'AGUARDANDO_APROVACAO_GESTAO');
   const semAuditor = naJanelaAbertas.filter((item) => !item.auditor_nome);
   const valorTotalJanela = naJanela.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
   const valorAbertoJanela = naJanelaAbertas.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
@@ -1200,6 +1202,7 @@ function PainelAcompanhamento({ state }) {
         <Card label="Em aberto" value={naJanelaAbertas.length} color="#315ee7" />
         <Card label="Vencidas (sem pagar)" value={vencidas.length} color="#9b1111" />
         <Card label="Com divergencia" value={comDivergencia.length} color="#e67e22" />
+        <Card label="Aguardando aprovacao gestao" value={aguardandoAprovacaoGestao.length} color="#9b1111" />
         <Card label="Sem auditor" value={semAuditor.length} color="#9b1111" />
         <Card label="Lancadas no financeiro" value={lancadas.length} color="#315ee7" />
         <Card label="Pagas" value={pagas.length} color="#14733b" />
@@ -1430,7 +1433,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     // essas duas dependem da soma do valor_frete por CT-e, que fica errada
     // quando algum CT-e veio com valor_frete zerado/incompleto no arquivo.
     const saldo = Number((Number(fatura.valor_fatura || 0) - resumo.calculoAmd).toFixed(2));
-    await mudarStatus('PRONTA_PARA_PAGAMENTO', {
+    const camposAuditoria = {
       valor_calculado: Number(resumo.calculoAmd.toFixed(2)),
       diferenca: saldo,
       valor_recuperado: Math.max(saldo, 0),
@@ -1443,6 +1446,34 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       auditoria_total_descontar: Number(Math.max(saldo, 0).toFixed(2)),
       auditoria_tolerancia_acima: Number(toleranciaFatura.acima || 0),
       auditoria_tolerancia_abaixo: Number(toleranciaFatura.abaixo || 0),
+    };
+
+    // Valor calculado nao fechou com o cobrado (saldo a descontar): antes de
+    // liberar, pergunta se o desconto vai ser aplicado nesta fatura. Se nao
+    // (ou se cancelar), nao libera direto — manda pra aprovacao da gestao
+    // (eu/Carol) em vez de seguir pro pagamento com a divergencia sem resolver.
+    if (saldo > TOLERANCIA_DESCONTO_PENDENTE) {
+      const aplicaDesconto = window.confirm(
+        `Essa fatura tem cobranca a maior de ${dinheiro(saldo)} (valor da fatura menos o calculado pela auditoria).\n\n`
+        + `Esse desconto vai ser aplicado no pagamento desta fatura?\n\n`
+        + `OK = sim, aplicar o desconto e liberar para pagamento.\n`
+        + `Cancelar = nao (ou nao decidido agora) — a fatura vai para aprovacao da gestao.`,
+      );
+      if (!aplicaDesconto) {
+        await mudarStatus('AGUARDANDO_APROVACAO_GESTAO', {
+          ...camposAuditoria,
+          desconto_aplicado_confirmado: false,
+          desconto_pendente_valor: Math.max(saldo, 0),
+          descricaoHistorico: `Enviada para aprovacao da gestao: cobranca a maior de ${dinheiro(saldo)} identificada e o desconto nao foi confirmado como aplicado na liberacao.`,
+        });
+        return;
+      }
+      camposAuditoria.desconto_aplicado_confirmado = true;
+      camposAuditoria.desconto_pendente_valor = 0;
+    }
+
+    await mudarStatus('PRONTA_PARA_PAGAMENTO', {
+      ...camposAuditoria,
       descricaoHistorico: `Liberada para pagamento. Auditoria: ${resumo.total} CT-e(s), ${resumo.divergentes} divergente(s), cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}. Toler�ncia aplicada: +${dinheiro(toleranciaFatura.acima)} / -${dinheiro(toleranciaFatura.abaixo)}.`,
     });
   };
@@ -3868,6 +3899,7 @@ ${portaisLaudo.length ? `
     setProgressoLote(null);
     try {
       let next = state;
+      let enviadasParaAprovacao = 0;
       for (let i = 0; i < faturasSelecionadas.length; i += 1) {
         const fatura = next.faturas.find((item) => item.id === faturasSelecionadas[i].id) || faturasSelecionadas[i];
         setProgressoLote({ etapa: 'atualizando_faturas_lote', carregados: i + 1, total: faturasSelecionadas.length });
@@ -3895,9 +3927,15 @@ ${portaisLaudo.length ? `
           // essas duas dependem da soma do valor_frete por CT-e, que fica errada
           // quando algum CT-e veio com valor_frete zerado/incompleto no arquivo.
           const saldo = Number((Number(fatura.valor_fatura || 0) - resumo.calculoAmd).toFixed(2));
+          // Em lote nao da pra perguntar item a item se o desconto vai ser
+          // aplicado — quem nao fecha (saldo acima da tolerancia) vai direto
+          // pra aprovacao da gestao em vez de liberar com a divergencia solta.
+          const precisaAprovacao = saldo > TOLERANCIA_DESCONTO_PENDENTE;
+          const statusNovo = precisaAprovacao ? 'AGUARDANDO_APROVACAO_GESTAO' : 'PRONTA_PARA_PAGAMENTO';
+          if (precisaAprovacao) enviadasParaAprovacao += 1;
           payload = {
             ...payload,
-            status: 'PRONTA_PARA_PAGAMENTO',
+            status: statusNovo,
             valor_calculado: Number(resumo.calculoAmd.toFixed(2)),
             diferenca: saldo,
             valor_recuperado: Math.max(saldo, 0),
@@ -3908,19 +3946,26 @@ ${portaisLaudo.length ? `
             auditoria_cobranca_acima: Number(resumo.cobrancaAcima.toFixed(2)),
             auditoria_cobranca_abaixo: Number(resumo.cobrancaAbaixo.toFixed(2)),
             auditoria_total_descontar: Number(Math.max(saldo, 0).toFixed(2)),
+            desconto_aplicado_confirmado: !precisaAprovacao,
+            desconto_pendente_valor: precisaAprovacao ? Math.max(saldo, 0) : 0,
           };
           evento = {
             ...evento,
-            acao: 'LIBERACAO_PAGAMENTO_EM_MASSA',
+            acao: precisaAprovacao ? 'ENVIADA_APROVACAO_GESTAO_EM_MASSA' : 'LIBERACAO_PAGAMENTO_EM_MASSA',
             status_anterior: fatura.status,
-            status_novo: 'PRONTA_PARA_PAGAMENTO',
-            descricao: `Liberada em massa para pagamento. Cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}.`,
+            status_novo: statusNovo,
+            descricao: precisaAprovacao
+              ? `Enviada para aprovacao da gestao (liberacao em massa): cobranca a maior de ${dinheiro(saldo)} nao confirmada.`
+              : `Liberada em massa para pagamento. Cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}.`,
           };
         }
         next = await atualizarFaturaAuditoria(next, payload, evento);
       }
       onState(next);
-      setMensagemImportacao(`${faturasSelecionadas.length} fatura(s) atualizada(s) em massa.`);
+      setMensagemImportacao(
+        `${faturasSelecionadas.length} fatura(s) atualizada(s) em massa.`
+        + (enviadasParaAprovacao ? ` ${enviadasParaAprovacao} foram para aprovacao da gestao (desconto nao fechado).` : ''),
+      );
     } catch (error) {
       setMensagemImportacao(`Erro na edicao em massa: ${error.message}`);
     } finally {
@@ -5787,6 +5832,109 @@ function Gestao({ state, onState }) {
   );
 }
 
+// Fila de faturas onde a auditoria calculou cobranca a maior (desconto a
+// aplicar) mas ninguem confirmou que esse desconto vai ser aplicado no
+// pagamento — precisa de decisao da gestao (eu/Carol) antes de seguir.
+function AprovacaoGestao({ state, onState }) {
+  const sessao = carregarSessao();
+  const ehGestor = usuarioEhGestorAuditoria(sessao);
+  const [processando, setProcessando] = useState(null);
+  const [mensagem, setMensagem] = useState('');
+
+  const pendentes = useMemo(() => (
+    (state.faturas || [])
+      .filter((item) => item.status === 'AGUARDANDO_APROVACAO_GESTAO')
+      .sort((a, b) => (a.data_vencimento || '').localeCompare(b.data_vencimento || ''))
+  ), [state.faturas]);
+
+  const aprovar = async (fatura) => {
+    setProcessando(fatura.id);
+    setMensagem('');
+    try {
+      const next = await atualizarFaturaAuditoria(state, {
+        ...fatura,
+        status: 'PRONTA_PARA_PAGAMENTO',
+        desconto_aplicado_confirmado: true,
+        desconto_pendente_valor: 0,
+      }, {
+        acao: 'APROVACAO_GESTAO_CONFIRMOU_DESCONTO',
+        status_anterior: fatura.status,
+        status_novo: 'PRONTA_PARA_PAGAMENTO',
+        descricao: `Gestao aprovou: desconto de ${dinheiro(fatura.desconto_pendente_valor || fatura.diferenca || 0)} confirmado, fatura liberada para pagamento.`,
+        usuario_nome: sessao?.nome || sessao?.email || 'Gestao',
+        usuario_email: sessao?.email || '',
+      });
+      onState(next);
+      setMensagem(`Fatura ${fatura.numero_fatura} aprovada e liberada para pagamento.`);
+    } catch (error) {
+      setMensagem(`Erro ao aprovar: ${error.message}`);
+    } finally {
+      setProcessando(null);
+    }
+  };
+
+  const recusar = async (fatura) => {
+    const motivo = window.prompt(`Motivo da recusa (volta para a auditoria tratar a divergencia da fatura ${fatura.numero_fatura}):`, '');
+    if (motivo === null) return;
+    setProcessando(fatura.id);
+    setMensagem('');
+    try {
+      const next = await atualizarFaturaAuditoria(state, {
+        ...fatura,
+        status: 'COM_DIVERGENCIA',
+        desconto_aplicado_confirmado: false,
+      }, {
+        acao: 'APROVACAO_GESTAO_RECUSOU',
+        status_anterior: fatura.status,
+        status_novo: 'COM_DIVERGENCIA',
+        descricao: `Gestao recusou a liberacao: ${motivo || 'sem motivo informado'}. Fatura devolvida para a auditoria.`,
+        usuario_nome: sessao?.nome || sessao?.email || 'Gestao',
+        usuario_email: sessao?.email || '',
+      });
+      onState(next);
+      setMensagem(`Fatura ${fatura.numero_fatura} devolvida para a auditoria.`);
+    } catch (error) {
+      setMensagem(`Erro ao recusar: ${error.message}`);
+    } finally {
+      setProcessando(null);
+    }
+  };
+
+  return (
+    <>
+      <div className="audit-section-title">Aprovacao da gestao</div>
+      <p style={{ margin: '0 0 10px', fontSize: 13, color: '#64748b' }}>
+        Faturas onde a auditoria calculou cobranca a maior (desconto a aplicar) e, na liberacao, nao foi confirmado que esse
+        desconto sera aplicado no pagamento. {ehGestor ? 'Aprove pra liberar com o desconto, ou recuse pra devolver pra auditoria tratar.' : 'Apenas gestao pode aprovar ou recusar — auditores acompanham aqui, mas as acoes ficam bloqueadas.'}
+      </p>
+      <div className="summary-strip audit-summary-grid">
+        <Card label="Aguardando aprovacao" value={pendentes.length} color={pendentes.length ? '#9b1111' : '#14733b'} />
+        <Card label="Valor pendente" value={dinheiro(pendentes.reduce((acc, item) => acc + Number(item.desconto_pendente_valor || item.diferenca || 0), 0))} color="#9b1111" />
+      </div>
+      {mensagem && <div className="hint-box compact">{mensagem}</div>}
+      <SimpleTable
+        headers={['Fatura', 'Transportadora', 'Auditor', 'Vencimento', 'Valor fatura', 'Calculado AMD', 'Desconto pendente', 'Acoes']}
+        rows={pendentes.map((item) => [
+          item.numero_fatura,
+          item.transportadora,
+          item.auditor_nome || <strong className="error-text">SEM AUDITOR</strong>,
+          dataBr(item.data_vencimento),
+          dinheiro(item.valor_fatura),
+          dinheiro(item.valor_calculado),
+          <strong key="p" style={{ color: '#9b1111' }}>{dinheiro(item.desconto_pendente_valor || item.diferenca || 0)}</strong>,
+          ehGestor ? (
+            <div key="acoes" style={{ display: 'flex', gap: 8 }}>
+              <button type="button" className="btn-primary" disabled={processando === item.id} onClick={() => aprovar(item)}>Aprovar</button>
+              <button type="button" className="btn-secondary" disabled={processando === item.id} onClick={() => recusar(item)}>Recusar</button>
+            </div>
+          ) : <span key="acoes" style={{ color: '#94a3b8' }}>Somente gestao</span>,
+        ])}
+        empty="Nenhuma fatura aguardando aprovacao da gestao."
+      />
+    </>
+  );
+}
+
 function Financeiro({ state, onState }) {
   const sessao = carregarSessao();
   const pagamentoRef = useRef(null);
@@ -6230,6 +6378,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
       {tab === 'painel' && <PainelAcompanhamento state={state} />}
       {tab === 'faturas' && <Faturas state={state} onState={setState} modo="faturas" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />}
       {tab === 'auditoria-cte' && <Faturas state={state} onState={setState} modo="auditoria-cte" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />}
+      {tab === 'aprovacao' && <AprovacaoGestao state={state} onState={setState} />}
       {tab === 'gestao' && <Gestao state={state} onState={setState} />}
       {tab === 'financeiro' && <Financeiro state={state} onState={setState} />}
     </div>
