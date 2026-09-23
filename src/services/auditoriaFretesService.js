@@ -400,11 +400,16 @@ export async function reauditarFatura(state, fatura, detalhes, usuarioNome = 'Us
     await safeUpsert('fatura_detalhes', atualizados.slice(inicio, inicio + 200));
   }
 
+  // Diferenca da fatura = valor_fatura (confiavel, vem da aba Faturas) menos
+  // o calculado total — nao a soma da diferenca de cada CT-e (resumo.valorDivergente),
+  // que fica errada quando o valor_frete por CT-e veio zerado/incompleto no
+  // arquivo mas o total da fatura esta correto.
+  const diferencaFatura = Number((Number(fatura.valor_fatura || 0) - resumo.valorCalculado).toFixed(2));
   const statusNovo = resumo.divergentes > 0 ? 'COM_DIVERGENCIA' : 'REAUDITADA_CENTRAL';
   const next = await atualizarFaturaAuditoria(state, {
     ...fatura,
     valor_calculado: resumo.valorCalculado,
-    diferenca: resumo.valorDivergente,
+    diferenca: diferencaFatura,
     ctes_auditados: resumo.total - resumo.semCalculo,
     ctes_divergentes: resumo.divergentes,
     ctes_sem_calculo: resumo.semCalculo,
