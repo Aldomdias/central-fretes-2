@@ -1049,6 +1049,14 @@ const ROTULO_PAGAMENTO = {
 // "Liberada" = passou da auditoria pro fluxo de pagamento. Se isso aconteceu
 // sem 100% dos CT-es auditados, alguem pulou etapa.
 const STATUS_LIBERADAS = new Set(['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO', 'ENVIADA_AO_FINANCEIRO', 'PAGA', 'PAGA_COM_DESCONTO', 'PAGA_COM_DIVERGENCIA']);
+// Gerar o laudo pro transportador marca AGUARDANDO_TRANSPORTADORA, exceto
+// quando a fatura ja esta mais adiante no fluxo (reimprimir o laudo nao pode
+// fazer uma fatura ja liberada/paga/cancelada "voltar" de status).
+const STATUS_NAO_REGREDIR_LAUDO = new Set([
+  'AGUARDANDO_APROVACAO_GESTAO', 'PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO',
+  'ENVIADA_AO_FINANCEIRO', 'PAGA', 'PAGA_COM_DESCONTO', 'PAGA_COM_DIVERGENCIA',
+  'TRATADA', 'CANCELADA', 'SUBSTITUIDA',
+]);
 const TOLERANCIA_DESCONTO_PENDENTE = 1; // abaixo disso nao vale a pena cobrar justificativa
 
 // Chave pra cruzar fatura x protocolo de desconto: numero (sem zeros a
@@ -2048,6 +2056,14 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         linkConfirmacao = resultado.url;
       } catch (error) {
         setErroDetalhes(`Nao foi possivel gerar o link de confirmacao: ${error.message}`);
+      }
+      // Mandou o laudo pro transportador: fatura passa a aguardar a resposta
+      // dele. So marca se ainda nao passou dessa etapa (nao regride fatura
+      // ja liberada/paga/etc so porque reimprimiu o laudo).
+      if (!STATUS_NAO_REGREDIR_LAUDO.has(fatura.status)) {
+        await mudarStatus('AGUARDANDO_TRANSPORTADORA', {
+          descricaoHistorico: 'Laudo enviado ao transportador — aguardando confirmacao.',
+        });
       }
     }
     const linhas = detalhes;
@@ -4245,6 +4261,20 @@ ${portaisLaudo.length ? `
             faturaAtual = estadoComLinks.faturas.find((item) => item.id === fatura.id) || fatura;
           } catch (erroLink) {
             // Nao trava o laudo inteiro por causa de um link — fatura fica sem botao de confirmacao.
+          }
+          if (!STATUS_NAO_REGREDIR_LAUDO.has(faturaAtual.status)) {
+            estadoComLinks = await atualizarFaturaAuditoria(estadoComLinks, {
+              ...faturaAtual,
+              status: 'AGUARDANDO_TRANSPORTADORA',
+            }, {
+              acao: 'STATUS_ALTERADO',
+              status_anterior: faturaAtual.status,
+              status_novo: 'AGUARDANDO_TRANSPORTADORA',
+              descricao: 'Laudo enviado ao transportador (lote) — aguardando confirmacao.',
+              usuario_nome: sessao?.nome || sessao?.email || 'Usuario local',
+              usuario_email: sessao?.email || '',
+            });
+            faturaAtual = estadoComLinks.faturas.find((item) => item.id === fatura.id) || faturaAtual;
           }
         }
         blocos.push({ fatura: faturaAtual, detalhes: detalhesLaudo, linkConfirmacao });
