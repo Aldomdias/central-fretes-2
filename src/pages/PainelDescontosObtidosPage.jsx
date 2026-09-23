@@ -5,8 +5,14 @@ import {
   listarHistoricoCarteirasTodas,
   listarLancamentosDescontosObtidos,
   listarResumoDescontosObtidos,
+  listarDescontosEnviadosLegado,
+  listarDescontosRealizadosParaConciliacao,
+  listarProtocolosComDesconto,
   obterUltimaAtualizacaoDescontosObtidos,
+  excluirProtocoloComDesconto,
+  excluirDescontoEnviadoLegado,
 } from '../services/descontosObtidosService';
+import { conciliarDescontos, montarDescontosEnviados } from '../utils/conciliacaoDescontos';
 import { baixarLaudoDescontosObtidosHtml } from '../utils/laudoDescontosObtidosHtml';
 import {
   aplicarVinculoTransportadora,
@@ -14,6 +20,12 @@ import {
   criarMapaVinculosTransportadoras,
   salvarVinculosTransportadoras,
 } from '../services/vinculosTransportadorasService';
+import {
+  aplicarVinculoConciliacaoDescontos,
+  carregarVinculosConciliacaoDescontos,
+  criarMapaVinculosConciliacaoDescontos,
+  salvarVinculosConciliacaoDescontos,
+} from '../services/vinculosConciliacaoDescontosService';
 import {
   baixarEmlOutlookDescontosObtidos,
   baixarHtmlEmailDescontosObtidos,
@@ -67,6 +79,11 @@ function formatDataBr(iso) {
   if (!iso) return '—';
   const [ano, mes, dia] = String(iso).split('-');
   return `${dia}/${mes}/${ano}`;
+}
+
+function formatMesAnoBr(chaveAnoMes) {
+  const [ano, mes] = String(chaveAnoMes).split('-');
+  return `${NOMES_MES[Number(mes) - 1]}/${ano}`;
 }
 
 function formatDataHoraBr(data) {
@@ -644,6 +661,110 @@ function SeletorVinculoTransportadora({ nomeSap, opcoes, salvando, onVincular })
   );
 }
 
+// Igual ao seletor acima, mas em vez de só filtrar nomes, agrupa os
+// lançamentos reais do SAP que batem com o texto digitado — mostra quantos
+// lançamentos cada transportadora tem e destaca quando algum bate o valor
+// exato da solicitação, pra decidir o vínculo olhando dado real em vez de só
+// o nome.
+function SeletorVinculoRealizado({ enviado, realizados, salvando, onVincular }) {
+  const [valor, setValor] = useState('');
+  const [aberto, setAberto] = useState(false);
+  const containerRef = useRef(null);
+
+  const nomesConhecidos = useMemo(
+    () => new Set(realizados.map((r) => r.transportadora_nome).filter(Boolean)),
+    [realizados]
+  );
+
+  const candidatos = useMemo(() => {
+    const busca = valor.trim().toUpperCase();
+    if (!busca) return [];
+    const grupos = new Map();
+    realizados.forEach((r) => {
+      const nome = r.transportadora_nome;
+      if (!nome || !nome.toUpperCase().includes(busca)) return;
+      if (!grupos.has(nome)) grupos.set(nome, { nome, qtd: 0, temValorIgual: false });
+      const grupo = grupos.get(nome);
+      grupo.qtd += 1;
+      if (Math.abs(Number(r.valor || 0) - Number(enviado.desconto_enviado || 0)) < 0.01) grupo.temValorIgual = true;
+    });
+    return Array.from(grupos.values())
+      .sort((a, b) => (Number(b.temValorIgual) - Number(a.temValorIgual)) || b.qtd - a.qtd)
+      .slice(0, 20);
+  }, [valor, realizados, enviado.desconto_enviado]);
+
+  const valido = nomesConhecidos.has(valor);
+
+  useEffect(() => {
+    function fecharFora(event) {
+      if (containerRef.current && !containerRef.current.contains(event.target)) setAberto(false);
+    }
+    document.addEventListener('mousedown', fecharFora);
+    return () => document.removeEventListener('mousedown', fecharFora);
+  }, []);
+
+  function selecionar(nome) {
+    setValor(nome);
+    setAberto(false);
+  }
+
+  return (
+    <div ref={containerRef} style={{ display: 'flex', gap: 6, position: 'relative' }}>
+      <input
+        type="text"
+        value={valor}
+        onChange={(event) => { setValor(event.target.value); setAberto(true); }}
+        onFocus={() => setAberto(true)}
+        placeholder="Digite pra buscar no SAP..."
+        autoComplete="off"
+        disabled={salvando}
+        style={{ flex: 1, minWidth: 0 }}
+      />
+      {aberto && candidatos.length ? (
+        <div
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: 0,
+            right: 40,
+            zIndex: 50,
+            background: '#fff',
+            border: '1px solid rgba(11,11,11,0.15)',
+            borderRadius: 8,
+            marginTop: 4,
+            maxHeight: 240,
+            overflowY: 'auto',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+          }}
+        >
+          {candidatos.map((c) => (
+            <div
+              key={c.nome}
+              onMouseDown={(event) => { event.preventDefault(); selecionar(c.nome); }}
+              style={{ padding: '8px 12px', fontSize: 13, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', gap: 8 }}
+              onMouseEnter={(event) => { event.currentTarget.style.background = 'rgba(74,58,167,0.08)'; }}
+              onMouseLeave={(event) => { event.currentTarget.style.background = 'transparent'; }}
+            >
+              <span>{c.nome}</span>
+              <span style={{ color: c.temValorIgual ? '#047857' : '#898781', fontWeight: c.temValorIgual ? 700 : 400, whiteSpace: 'nowrap' }}>
+                {c.temValorIgual ? `✓ valor bate · ${c.qtd} lanç.` : `${c.qtd} lanç.`}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <button
+        type="button"
+        className="btn-secondary"
+        disabled={!valido || salvando}
+        onClick={() => onVincular(valor)}
+      >
+        {salvando ? '...' : 'Vincular'}
+      </button>
+    </div>
+  );
+}
+
 function AbaPorAuditor() {
   const [linhas, setLinhas] = useState([]);
   const [historico, setHistorico] = useState([]);
@@ -886,6 +1007,270 @@ function AbaPorAuditor() {
           </div>
         </section>
       </div>
+    </>
+  );
+}
+
+const ROTULO_STATUS_CONCILIACAO = {
+  REALIZADO: 'Realizado',
+  REVISAR: 'Revisar',
+  DUPLICADA: 'Duplicada',
+  PENDENTE: 'Pendente',
+};
+
+const CLASSE_STATUS_CONCILIACAO = {
+  REALIZADO: 'success',
+  PENDENTE: 'warning',
+  DUPLICADA: 'tag-yellow',
+  REVISAR: '',
+};
+
+function AbaConciliacaoDescontos() {
+  const [protocolosRaw, setProtocolosRaw] = useState([]);
+  const [legadosRaw, setLegadosRaw] = useState([]);
+  const [realizadosRaw, setRealizadosRaw] = useState([]);
+  const [vinculosRaw, setVinculosRaw] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState('');
+  const [status, setStatus] = useState('TODOS');
+  const [origem, setOrigem] = useState('PLANILHA_LEGADA');
+  const [mes, setMes] = useState('TODOS');
+  const [busca, setBusca] = useState('');
+  const [vinculando, setVinculando] = useState('');
+  const [excluindo, setExcluindo] = useState('');
+
+  useEffect(() => {
+    let cancelado = false;
+    setCarregando(true);
+    Promise.all([
+      listarProtocolosComDesconto(),
+      listarDescontosEnviadosLegado(),
+      listarDescontosRealizadosParaConciliacao(),
+      carregarVinculosConciliacaoDescontos(),
+    ]).then(([protocolos, legados, realizados, vinculos]) => {
+      if (cancelado) return;
+      setProtocolosRaw(protocolos);
+      setLegadosRaw(legados);
+      setRealizadosRaw(realizados);
+      setVinculosRaw(vinculos);
+    }).catch((error) => {
+      if (!cancelado) setErro(error.message || 'Erro ao conciliar descontos.');
+    }).finally(() => {
+      if (!cancelado) setCarregando(false);
+    });
+    return () => { cancelado = true; };
+  }, []);
+
+  const mapaVinculos = useMemo(() => criarMapaVinculosConciliacaoDescontos(vinculosRaw), [vinculosRaw]);
+  const resolverNomeCanonico = useMemo(() => (nome) => aplicarVinculoConciliacaoDescontos(nome, mapaVinculos), [mapaVinculos]);
+
+  const linhas = useMemo(
+    () => conciliarDescontos(montarDescontosEnviados(protocolosRaw, legadosRaw), realizadosRaw, { resolverNomeCanonico }),
+    [protocolosRaw, legadosRaw, realizadosRaw, resolverNomeCanonico]
+  );
+
+  async function vincularTransportadora(nomeEnviado, nomeRealizado) {
+    if (!nomeRealizado) return;
+    setVinculando(nomeEnviado);
+    setErro('');
+    try {
+      const proximaLista = [...vinculosRaw, { nomeCte: nomeEnviado, nomeTabela: nomeRealizado, origem: 'conciliacao-descontos' }];
+      const resultado = await salvarVinculosConciliacaoDescontos(proximaLista);
+      setVinculosRaw(resultado.vinculos || proximaLista);
+    } catch (error) {
+      setErro(error.message || 'Não foi possível salvar o vínculo.');
+    } finally {
+      setVinculando('');
+    }
+  }
+
+  // Duplicata é a mesma solicitação repetida (fatura+transportadora+valor já
+  // conciliados em outra linha) — excluir aqui não mexe no valor já
+  // confirmado no realizado, só remove a(s) cópia(s) extra(s) da lista de
+  // enviados. Aceita uma linha (botão por linha) ou várias (botão em lote).
+  async function excluirDuplicatas(linhas) {
+    if (!linhas.length) return;
+    const emLote = linhas.length > 1;
+    const totalValor = linhas.reduce((s, r) => s + Number(r.desconto_enviado || 0), 0);
+    const confirmar = window.confirm(
+      emLote
+        ? `Excluir ${linhas.length} solicitação(ões) duplicada(s), totalizando ${formatMoeda(totalValor)}?\n\nO valor já conciliado nos pares Realizado não é afetado.`
+        : `Excluir esta solicitação duplicada?\n\nFatura ${linhas[0].numero_fatura || '—'} · ${linhas[0].transportadora || '—'} · ${formatMoeda(linhas[0].desconto_enviado)}\n\nO valor já conciliado na outra solicitação não é afetado.`
+    );
+    if (!confirmar) return;
+    setExcluindo(emLote ? 'lote' : linhas[0].id);
+    setErro('');
+    const idsProtocolo = new Set();
+    const idsLegado = new Set();
+    const falhas = [];
+    for (const row of linhas) {
+      try {
+        if (row.origem === 'PROTOCOLO_AUDITORIA') {
+          await excluirProtocoloComDesconto(row.id);
+          idsProtocolo.add(row.id);
+        } else {
+          await excluirDescontoEnviadoLegado(row.id);
+          idsLegado.add(row.id);
+        }
+      } catch (error) {
+        falhas.push(`${row.numero_fatura || row.id}: ${error.message || 'erro ao excluir'}`);
+      }
+    }
+    if (idsProtocolo.size) setProtocolosRaw((atual) => atual.filter((p) => !idsProtocolo.has(p.id)));
+    if (idsLegado.size) setLegadosRaw((atual) => atual.filter((l) => !idsLegado.has(l.id)));
+    if (falhas.length) setErro(`Algumas exclusões falharam: ${falhas.join('; ')}`);
+    setExcluindo('');
+  }
+
+  const linhasDaOrigem = useMemo(() => linhas.filter((row) => origem === 'TODAS' || row.origem === origem), [linhas, origem]);
+
+  const mesesDisponiveis = useMemo(() => {
+    const chaves = new Set();
+    linhasDaOrigem.forEach((row) => { if (row.data_envio) chaves.add(row.data_envio.slice(0, 7)); });
+    return Array.from(chaves).sort().reverse();
+  }, [linhasDaOrigem]);
+
+  useEffect(() => {
+    if (mes !== 'TODOS' && !mesesDisponiveis.includes(mes)) setMes('TODOS');
+  }, [mesesDisponiveis, mes]);
+
+  const linhasDoMes = useMemo(
+    () => linhasDaOrigem.filter((row) => mes === 'TODOS' || row.data_envio?.slice(0, 7) === mes),
+    [linhasDaOrigem, mes]
+  );
+
+  const filtradas = useMemo(() => {
+    // No filtro "Duplicada", traz junto o Realizado original de cada par (pelo
+    // duplicata_grupo) e ordena os dois lado a lado, pra dar pra comparar sem
+    // precisar procurar o par em outro filtro.
+    let base = linhasDoMes;
+    if (status === 'DUPLICADA') {
+      const grupos = new Set(linhasDoMes.filter((row) => row.status_conciliacao === 'DUPLICADA').map((row) => row.duplicata_grupo));
+      base = linhasDoMes.filter((row) => grupos.has(row.duplicata_grupo));
+    } else if (status !== 'TODOS') {
+      base = base.filter((row) => row.status_conciliacao === status);
+    }
+    const filtradasPorBusca = base.filter((row) => {
+      const alvo = `${row.numero_fatura || ''} ${row.transportadora || ''} ${row.protocolo || ''} ${row.arquivo_origem || ''}`.toLowerCase();
+      return !busca || alvo.includes(busca.toLowerCase());
+    });
+    if (status !== 'DUPLICADA') return filtradasPorBusca;
+    return [...filtradasPorBusca].sort((a, b) => {
+      const grupo = String(a.duplicata_grupo || '').localeCompare(String(b.duplicata_grupo || ''));
+      if (grupo !== 0) return grupo;
+      if (a.status_conciliacao === b.status_conciliacao) return 0;
+      return a.status_conciliacao === 'REALIZADO' ? -1 : 1;
+    });
+  }, [linhasDoMes, status, busca]);
+
+  const duplicadasVisiveis = useMemo(
+    () => filtradas.filter((row) => row.status_conciliacao === 'DUPLICADA'),
+    [filtradas]
+  );
+  const totalEnviado = linhasDoMes.reduce((s, row) => s + Number(row.desconto_enviado || 0), 0);
+  const realizados = linhasDoMes.filter((row) => row.status_conciliacao === 'REALIZADO');
+  const revisar = linhasDoMes.filter((row) => row.status_conciliacao === 'REVISAR');
+  const totalRealizado = realizados.reduce((s, row) => s + Number(row.desconto_realizado || 0), 0);
+  const pendentes = linhasDoMes.filter((row) => row.status_conciliacao === 'PENDENTE');
+  const duplicadas = linhasDoMes.filter((row) => row.status_conciliacao === 'DUPLICADA');
+
+  return (
+    <>
+      {erro ? <div className="sim-alert">{erro}</div> : null}
+      {carregando ? <div className="sim-alert info">Cruzando protocolos enviados com lançamentos realizados...</div> : null}
+      <div className="summary-strip">
+        <div className="summary-card"><span>Desconto enviado</span><strong>{formatMoeda(totalEnviado)}</strong><span>{formatInt(linhasDoMes.length)} solicitação(ões)</span></div>
+        <div className="summary-card"><span>Confirmado no realizado</span><strong>{formatMoeda(totalRealizado)}</strong><span>{formatInt(realizados.length)} conciliado(s)</span></div>
+        <div className="summary-card"><span>Pendente</span><strong>{formatMoeda(pendentes.reduce((s, row) => s + Number(row.desconto_enviado || 0), 0))}</strong><span>{formatInt(pendentes.length)} aguardando</span></div>
+        <div className="summary-card"><span>Requer revisão</span><strong>{formatInt(revisar.length)}</strong><span>mais de um candidato</span></div>
+        <div
+          className="summary-card"
+          role="button"
+          tabIndex={0}
+          onClick={() => setStatus((atual) => (atual === 'DUPLICADA' ? 'TODOS' : 'DUPLICADA'))}
+          onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setStatus((atual) => (atual === 'DUPLICADA' ? 'TODOS' : 'DUPLICADA')); } }}
+          style={{ cursor: 'pointer', outline: status === 'DUPLICADA' ? '2px solid #b45309' : 'none', outlineOffset: -2 }}
+        >
+          <span>Duplicada</span><strong>{formatInt(duplicadas.length)}</strong><span>mesma fatura/transportadora/valor já realizada — clique pra filtrar</span>
+        </div>
+      </div>
+      <section className="table-card">
+        <div className="sim-parametros-header">
+          <div><div className="panel-title">Enviado ao Financeiro × realizado no SAP</div><p>O casamento automático exige valor e janela de data compatíveis, e usa nome da transportadora, centro de custo ou número da partida (quando disponíveis) pra confirmar. Casos não seguros permanecem pendentes — vincule manualmente a transportadora do SAP nas linhas pendentes pra ensinar o casamento automático a reconhecer o mesmo nome da próxima vez.</p></div>
+          <div className="actions-right wrap">
+            {status === 'DUPLICADA' && duplicadasVisiveis.length > 0 ? (
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={excluindo === 'lote'}
+                onClick={() => excluirDuplicatas(duplicadasVisiveis)}
+              >
+                {excluindo === 'lote' ? 'Excluindo...' : `Excluir ${duplicadasVisiveis.length} duplicada(s)`}
+              </button>
+            ) : null}
+            <input value={busca} onChange={(event) => setBusca(event.target.value)} placeholder="Buscar fatura ou transportadora" />
+            <select value={origem} onChange={(event) => setOrigem(event.target.value)}>
+              <option value="PLANILHA_LEGADA">Arquivos importados</option>
+              <option value="PROTOCOLO_AUDITORIA">Protocolos da Auditoria</option>
+              <option value="TODAS">Todas as origens</option>
+            </select>
+            <select value={mes} onChange={(event) => setMes(event.target.value)}>
+              <option value="TODOS">Todos os meses</option>
+              {mesesDisponiveis.map((chave) => (
+                <option key={chave} value={chave}>{formatMesAnoBr(chave)}</option>
+              ))}
+            </select>
+            <select value={status} onChange={(event) => setStatus(event.target.value)}>
+              <option value="TODOS">Todos os status</option><option value="REALIZADO">Realizados</option><option value="PENDENTE">Pendentes</option><option value="REVISAR">Revisar</option><option value="DUPLICADA">Duplicadas</option>
+            </select>
+          </div>
+        </div>
+        <div className="sim-table-wrap" style={{ maxHeight: 620, overflowY: 'auto' }}>
+          <table className="sim-table">
+            <thead><tr><th>Status</th><th>Envio</th><th>Fatura</th><th>Transportadora</th><th>Enviado</th><th>Realizado</th><th>Data realizada</th><th>Origem</th><th>Ações</th></tr></thead>
+            <tbody>
+              {filtradas.map((row, indice) => {
+                // Início de um novo par (duplicata_grupo) ganha uma borda por
+                // cima, pra separar visualmente cada par Realizado+Duplicada.
+                const grupoAnterior = indice > 0 ? filtradas[indice - 1].duplicata_grupo : null;
+                const inicioDeGrupo = status === 'DUPLICADA' && indice > 0 && row.duplicata_grupo !== grupoAnterior;
+                return (
+                <tr
+                  key={`${row.origem}-${row.id}`}
+                  style={inicioDeGrupo ? { borderTop: '2px solid #ead28c' } : undefined}
+                >
+                  <td><span className={`status-pill ${CLASSE_STATUS_CONCILIACAO[row.status_conciliacao] || ''}`}>{ROTULO_STATUS_CONCILIACAO[row.status_conciliacao] || row.status_conciliacao}</span></td>
+                  <td>{formatDataBr(row.data_envio)}</td><td>{row.numero_fatura || '—'}</td><td>{row.transportadora || '—'}</td>
+                  <td>{formatMoeda(row.desconto_enviado)}</td><td>{row.realizado ? formatMoeda(row.desconto_realizado) : '—'}</td>
+                  <td>{row.realizado ? formatDataBr(row.realizado.data_lancamento) : '—'}</td>
+                  <td>{row.origem === 'PROTOCOLO_AUDITORIA' ? row.protocolo : row.arquivo_origem}</td>
+                  <td style={{ minWidth: 220 }}>
+                    {row.status_conciliacao === 'PENDENTE' ? (
+                      <SeletorVinculoRealizado
+                        enviado={row}
+                        realizados={realizadosRaw}
+                        salvando={vinculando === row.transportadora}
+                        onVincular={(nomeRealizado) => vincularTransportadora(row.transportadora, nomeRealizado)}
+                      />
+                    ) : row.status_conciliacao === 'DUPLICADA' ? (
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        disabled={excluindo === row.id}
+                        onClick={() => excluirDuplicatas([row])}
+                      >
+                        {excluindo === row.id ? 'Excluindo...' : 'Excluir duplicata'}
+                      </button>
+                    ) : '—'}
+                  </td>
+                </tr>
+                );
+              })}
+              {!filtradas.length && !carregando ? <tr><td colSpan={9}>Nenhum desconto encontrado para o filtro.</td></tr> : null}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </>
   );
 }
@@ -1138,10 +1523,18 @@ export default function PainelDescontosObtidosPage() {
         >
           Por auditor
         </button>
+        <button
+          type="button"
+          className={aba === 'conciliacao' ? 'btn-primary' : 'btn-secondary'}
+          onClick={() => setAba('conciliacao')}
+        >
+          Enviado × realizado
+        </button>
       </div>
 
       {aba === 'anual' ? <AbaAnoAno /> : null}
       {aba === 'auditor' ? <AbaPorAuditor /> : null}
+      {aba === 'conciliacao' ? <AbaConciliacaoDescontos /> : null}
 
       {aba === 'mensal' ? (
         <>

@@ -12,6 +12,7 @@ import { listarHistoricoAlteracoesTransportadoras } from '../services/auditoriaT
 import { cnpjPreenchidoValido, formatarCnpj, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
 import { atualizarCnpjsOrigensDb } from '../services/freteDatabaseService';
 import { normalizarRegrasTde } from '../utils/tde.js';
+import { testarTransportadoraRapido } from '../utils/testeRapidoTransportadora.js';
 
 // Carrega vínculos (transportadora_vinculos) e carteiras de auditoria uma vez
 // e expõe lookups prontos, pra mostrar/editar isso sem sair da tela de Transportadoras.
@@ -483,7 +484,7 @@ function formatCoringasTaxa(taxasExtras = []) {
   }).join(' | ');
 }
 
-function TaxasEspeciaisTab({ origem, transportadora, store }) {
+function TaxasEspeciaisTab({ origem, transportadora, store, grupoTabelaAlternativa = null }) {
   const [configVerumOpen, setConfigVerumOpen] = useState(false);
   const [configVerum, setConfigVerum] = useState({});
   const podeEditar = store.podeEditarTransportadoras;
@@ -491,7 +492,9 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
   const [editando, setEditando] = React.useState(null);
   const [feedback, setFeedback] = React.useState(null);
   const inputRef = React.useRef(null);
-  const rows = origem.taxasEspeciais || [];
+  const rows = (origem.taxasEspeciais || []).filter(
+    (item) => (item.grupoTabelaAlternativa || null) === grupoTabelaAlternativa
+  );
   const opcoesVerum = opcoesTaxasVerum(rows);
 
   function abrirConfigVerum() {
@@ -501,7 +504,11 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
   }
 
   function salvarConfigVerum() {
-    store.salvarOrigem(transportadora.id, { ...origem, taxasEspeciais: rows.map((row) => ({ ...row, verumVersaoSemTaxa: { ...configVerum } })) });
+    const outrosGrupos = (origem.taxasEspeciais || []).filter(
+      (item) => (item.grupoTabelaAlternativa || null) !== grupoTabelaAlternativa
+    );
+    const rowsAtualizadas = rows.map((row) => ({ ...row, verumVersaoSemTaxa: { ...configVerum } }));
+    store.salvarOrigem(transportadora.id, { ...origem, taxasEspeciais: [...outrosGrupos, ...rowsAtualizadas] });
     setConfigVerumOpen(false);
     setFeedback({ type: 'ok', text: 'Configuração do Verum atualizada. Salve a origem para gravar no cadastro.' });
   }
@@ -522,7 +529,7 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
     const taxasExtras = (form.taxasExtras || [])
       .map((te) => ({ nome: String(te.nome || '').trim(), valor: Number(te.valor) || 0, pct: Number(te.pct) || 0, min: Number(te.min) || 0, valorPorPeso: Number(te.valorPorPeso) || 0, pesoBase: Number(te.pesoBase) || 0 }))
       .filter((te) => te.pct > 0 || te.valor > 0 || te.valorPorPeso > 0);
-    const row = { ...form, taxasExtras, id: editando?.id ?? ('te-' + Date.now()) };
+    const row = { ...form, taxasExtras, id: editando?.id ?? ('te-' + Date.now()), grupoTabelaAlternativa };
     store.salvarLinha(transportadora.id, origem.id, 'taxasEspeciais', row);
     setForm(TAXA_ESP_VAZIA); setEditando(null);
   }
@@ -538,7 +545,7 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
     try {
       const parsed = await parseFileToRows(file, 'taxas');
       const payload = buildImportPayload(parsed, 'taxas', { transportadora: transportadora.nome, origem: origem.cidade, canal: origem.canal });
-      const aplicado = store.importarPayload(payload, 'taxas', null, { transportadoraId: transportadora.id, origemId: origem.id });
+      const aplicado = store.importarPayload(payload, 'taxas', grupoTabelaAlternativa, { transportadoraId: transportadora.id, origemId: origem.id });
       if (!aplicado) {
         setFeedback({ type: 'error', text: 'Importação não foi salva: você não tem permissão para editar transportadoras (ou sua sessão expirou). Recarregue a página e tente de novo.' });
       } else {
@@ -564,7 +571,16 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
           <button className="btn-secondary" onClick={() => exportarSecao('taxas', exportRows, `${origem.cidade}-taxas.xlsx`)} disabled={!rows.length}>Exportar</button>
           <button className="btn-secondary" onClick={() => baixarModelo('taxas')}>Baixar Modelo</button>
           {podeEditar ? <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar</button> : null}
-          {podeEditar ? <button className="btn-danger" onClick={() => store.limparSecaoOrigem(transportadora.id, origem.id, 'taxasEspeciais')}>Excluir Tudo</button> : null}
+          {podeEditar ? <button className="btn-danger" onClick={() => {
+            if (!grupoTabelaAlternativa) {
+              store.limparSecaoOrigem(transportadora.id, origem.id, 'taxasEspeciais');
+              return;
+            }
+            const outrosGrupos = (origem.taxasEspeciais || []).filter(
+              (item) => (item.grupoTabelaAlternativa || null) !== grupoTabelaAlternativa
+            );
+            store.salvarOrigem(transportadora.id, { ...origem, taxasEspeciais: outrosGrupos });
+          }}>Excluir Tudo</button> : null}
           <input hidden ref={inputRef} type="file" accept=".xlsx,.xls,.csv" onChange={importarArquivo} />
         </div>
       </div>
@@ -995,17 +1011,25 @@ function buildResumoTransportadora(transportadora) {
   };
 }
 
-function GeneralidadesTab({ transportadoraId, origem, store }) {
-  const [form, setForm] = useState({ ...DEFAULT_GENERALIDADES, ...(origem.generalidades || {}) });
+function GeneralidadesTab({ transportadoraId, origem, store, grupoTabelaAlternativa = null }) {
+  const generalidadesDoGrupo = grupoTabelaAlternativa
+    ? (origem.generalidadesAlternativas || []).find((item) => item.grupoTabelaAlternativa === grupoTabelaAlternativa)
+    : origem.generalidades;
+  // Sem generalidade própria cadastrada, a tabela alternativa mostra (e ao
+  // salvar passa a sobrescrever) uma cópia da principal — deixa claro que,
+  // até aqui, ela está herdando os valores de lá.
+  const [form, setForm] = useState({ ...DEFAULT_GENERALIDADES, ...(generalidadesDoGrupo || origem.generalidades || {}) });
   const [feedback, setFeedback] = useState('');
   const [salvando, setSalvando] = useState(false);
-  React.useEffect(() => setForm({ ...DEFAULT_GENERALIDADES, ...(origem.generalidades || {}) }), [origem]);
+  React.useEffect(() => {
+    setForm({ ...DEFAULT_GENERALIDADES, ...(generalidadesDoGrupo || origem.generalidades || {}) });
+  }, [origem, grupoTabelaAlternativa]);
   const update = (field, value) => { setForm((prev) => ({ ...prev, [field]: value })); setFeedback(''); };
 
   const salvar = async () => {
     setSalvando(true);
     try {
-      const resultado = await store.salvarGeneralidades(transportadoraId, origem.id, form);
+      const resultado = await store.salvarGeneralidades(transportadoraId, origem.id, form, grupoTabelaAlternativa);
       if (resultado?.ok === false) throw resultado.erro || new Error('Erro ao salvar generalidades.');
       setFeedback('ok');
     } catch (e) {
@@ -1017,7 +1041,10 @@ function GeneralidadesTab({ transportadoraId, origem, store }) {
 
   return (
     <div className="tab-panel">
-      <div className="tab-panel-header"><p>Taxas e generalidades aplicadas a todas as rotas desta origem</p></div>
+      <div className="tab-panel-header">
+        <p>Taxas e generalidades aplicadas a todas as rotas desta origem{grupoTabelaAlternativa ? <> · tabela <strong>{grupoTabelaAlternativa}</strong></> : null}</p>
+        {grupoTabelaAlternativa && !generalidadesDoGrupo ? <p className="mini-feedback info">Esta tabela alternativa ainda não tem generalidades próprias — os campos abaixo mostram os valores da tabela principal. Salvar aqui cria uma generalidade específica só para "{grupoTabelaAlternativa}".</p> : null}
+      </div>
       <div className="form-grid three generalidades-grid">
         <div className="checkbox-field">
           <label>ICMS</label>
@@ -1254,6 +1281,7 @@ function TransportadorasList({ items, onOpen, store }) {
   const [canalFiltro, setCanalFiltro] = useState('');
   const [coberturaFiltro, setCoberturaFiltro] = useState('');
   const [validacaoFiltro, setValidacaoFiltro] = useState('');
+  const [tabelaAlternativaFiltro, setTabelaAlternativaFiltro] = useState('');
   const [painelValidacaoOpen, setPainelValidacaoOpen] = useState(false);
   const [historicoOpen, setHistoricoOpen] = useState(false);
   const { vinculosSet, auditoresMap, repropagarTodosAuditores } = useVinculosEAuditores();
@@ -1301,9 +1329,12 @@ function TransportadorasList({ items, onOpen, store }) {
       const validacaoMatch = !validacaoFiltro || (item.origens || []).some((origem) => (
         validacaoFiltro === 'validadas' ? Boolean(origem.validado) : !origem.validado
       ));
-      return nomeMatch && cidadeMatch && canalMatch && coberturaMatch && validacaoMatch;
+      const temTabelaAlt = transportadoraTemTabelaAlternativa(item);
+      const tabelaAlternativaMatch = !tabelaAlternativaFiltro
+        || (tabelaAlternativaFiltro === 'com' ? temTabelaAlt : !temTabelaAlt);
+      return nomeMatch && cidadeMatch && canalMatch && coberturaMatch && validacaoMatch && tabelaAlternativaMatch;
     });
-  }, [items, busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro]);
+  }, [items, busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro, tabelaAlternativaFiltro]);
 
   const totalOrigens = useMemo(() => items.reduce((acc, item) => acc + (item.origens || []).length, 0), [items]);
   const totalOrigensValidadas = useMemo(
@@ -1319,7 +1350,7 @@ function TransportadorasList({ items, onOpen, store }) {
 
   useEffect(() => {
     setPagina(1);
-  }, [busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro]);
+  }, [busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro, tabelaAlternativaFiltro]);
 
   const atualizarBaseOficial = async () => {
     if (!store?.atualizarResumo || atualizandoResumo) return false;
@@ -1479,6 +1510,14 @@ function TransportadorasList({ items, onOpen, store }) {
               <option value="pendentes">Pendentes</option>
             </select>
           </div>
+          <div className="field">
+            <label>Tabela alternativa</label>
+            <select value={tabelaAlternativaFiltro} onChange={(e) => setTabelaAlternativaFiltro(e.target.value)} title="Origens que têm mais de uma tabela cadastrada (principal + alternativa)">
+              <option value="">Todas</option>
+              <option value="com">Só com tabela alternativa</option>
+              <option value="sem">Só sem tabela alternativa</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -1495,7 +1534,7 @@ function TransportadorasList({ items, onOpen, store }) {
               : 'list-card';
           return (
             <div key={item.id} className={cardClass} onClick={() => onOpen(item.id)}>
-              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>{item.nome}{(() => { const cs = [...new Set((item.origens||[]).flatMap(canaisOrigem))]; const temAtacado = cs.includes('ATACADO'); const temB2c = cs.includes('B2C'); return (<>{temAtacado&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dcfce7',color:'#166534'}}>ATACADO</span>}{temB2c&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8'}}>B2C</span>}</>); })()}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{carregandoItem ? <div className="list-meta-text" style={{ color: '#1d4ed8', fontWeight: 700 }}>⏳ Atualizando rotas, fretes, taxas e pendências...</div> : item.detalheCarregado && resumo.totalRotas !== undefined ? <div className="list-meta-text">{resumo.totalRotas} rota(s) · {resumo.totalCotacoes || 0} frete(s)</div> : <div className="list-meta-text" style={{ color: '#64748b' }}>Resumo rápido disponível · detalhes na fila de atualização</div>}{!carregandoItem && item.detalheCarregado && resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>{item.nome}{(() => { const cs = [...new Set((item.origens||[]).flatMap(canaisOrigem))]; const temAtacado = cs.includes('ATACADO'); const temB2c = cs.includes('B2C'); return (<>{temAtacado&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dcfce7',color:'#166534'}}>ATACADO</span>}{temB2c&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8'}}>B2C</span>}</>); })()}{transportadoraTemTabelaAlternativa(item) ? <span className="status-pill dark" title="Alguma origem desta transportadora tem tabela alternativa cadastrada" style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#ede9fe',color:'#6d28d9'}}>🔀 Tabela alternativa</span> : null}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{carregandoItem ? <div className="list-meta-text" style={{ color: '#1d4ed8', fontWeight: 700 }}>⏳ Atualizando rotas, fretes, taxas e pendências...</div> : item.detalheCarregado && resumo.totalRotas !== undefined ? <div className="list-meta-text">{resumo.totalRotas} rota(s) · {resumo.totalCotacoes || 0} frete(s)</div> : <div className="list-meta-text" style={{ color: '#64748b' }}>Resumo rápido disponível · detalhes na fila de atualização</div>}{!carregandoItem && item.detalheCarregado && resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 {(() => {
                   const totalOrig = (item.origens || []).length;
@@ -1635,6 +1674,8 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   // null = fechado; objeto = origem escolhida para mover de transportadora
   const [origemTransferindo, setOrigemTransferindo] = useState(null);
   const [salvandoOrigemId, setSalvandoOrigemId] = useState(null);
+  const [testandoTabela, setTestandoTabela] = useState(false);
+  const [resultadoTeste, setResultadoTeste] = useState(null);
   const { vinculosDaTransportadora, carteiraDaTransportadora, auditorNomes, salvarAuditor, analisarAntesDeSalvar, recarregarVinculos, adicionarVinculo, removerVinculo } = useVinculosEAuditores();
   const podeEditar = store.podeEditarTransportadoras;
   const tituloSemPermissao = 'Apenas Gestão ou Gestor de Auditoria de Fretes podem alterar transportadoras.';
@@ -1709,10 +1750,44 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
     store.removerOrigem(transportadora.id, origem.id);
   };
 
+  const testarTabela = async () => {
+    setTestandoTabela(true);
+    setResultadoTeste(null);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    try {
+      setResultadoTeste(testarTransportadoraRapido(transportadora));
+    } catch (error) {
+      setResultadoTeste({ status: 'bloqueada', erros: [error?.message || 'Falha inesperada durante o teste.'], alertas: [], totais: {}, simulacoes: {} });
+    } finally {
+      setTestandoTabela(false);
+    }
+  };
+
   return (
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← Transportadoras</button>
-      <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{origensBase.length} origem(ns)</span>{store.syncStatus?.rascunhoLocal ? <span className="status-pill light">Rascunho local</span> : null}{!podeEditar ? <span className="status-pill light" title={tituloSemPermissao}>Somente leitura</span> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={atualizarDadosTransportadora} disabled={store.syncStatus?.carregandoDetalheId === transportadora.id}>Atualizar dados</button>{podeEditar ? <button className="btn-primary" onClick={salvarTransportadoraAtual} disabled={salvando || store.syncStatus?.carregandoDetalheId === transportadora.id}>{salvando ? 'Salvando...' : 'Salvar alterações'}</button> : null}<button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmd({ origem: '', canal: '' })} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button>{podeEditar ? <button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button> : null}</div></div>
+      <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{origensBase.length} origem(ns)</span>{store.syncStatus?.rascunhoLocal ? <span className="status-pill light">Rascunho local</span> : null}{!podeEditar ? <span className="status-pill light" title={tituloSemPermissao}>Somente leitura</span> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={atualizarDadosTransportadora} disabled={store.syncStatus?.carregandoDetalheId === transportadora.id}>Atualizar dados</button><button className="btn-secondary" onClick={testarTabela} disabled={testandoTabela || !transportadora.detalheCarregado} title="Executa uma amostra rápida usando o mesmo motor de cálculo da auditoria">{testandoTabela ? 'Testando...' : '🧪 Testar tabela'}</button>{podeEditar ? <button className="btn-primary" onClick={salvarTransportadoraAtual} disabled={salvando || store.syncStatus?.carregandoDetalheId === transportadora.id}>{salvando ? 'Salvando...' : 'Salvar alterações'}</button> : null}<button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmd({ origem: '', canal: '' })} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button>{podeEditar ? <button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button> : null}</div></div>
+      {resultadoTeste ? (
+        <div className={`hint-box top-space ${resultadoTeste.status === 'bloqueada' ? 'alert-error' : resultadoTeste.status === 'alerta' ? 'alert-warn' : ''}`}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+            <div>
+              <strong>{resultadoTeste.status === 'aprovada' ? '✓ Tabela aprovada no pré-teste' : resultadoTeste.status === 'alerta' ? '⚠ Tabela aprovada com alertas' : '✕ Tabela bloqueada no pré-teste'}</strong><br />
+              {(resultadoTeste.totais?.origens || 0).toLocaleString('pt-BR')} origem(ns) · {(resultadoTeste.totais?.rotas || 0).toLocaleString('pt-BR')} rota(s) · {(resultadoTeste.totais?.cotacoes || 0).toLocaleString('pt-BR')} cotação(ões) · {(resultadoTeste.simulacoes?.sucesso || 0)} de {(resultadoTeste.simulacoes?.executadas || 0)} cenário(s) calculado(s) · {resultadoTeste.duracaoMs || 0} ms
+            </div>
+            <button className="btn-link inline-btn" onClick={() => setResultadoTeste(null)}>Fechar</button>
+          </div>
+          {[...(resultadoTeste.erros || []), ...(resultadoTeste.alertas || [])].length ? (
+            <ul style={{ margin: '10px 0 0', paddingLeft: 20 }}>
+              {[...(resultadoTeste.erros || []), ...(resultadoTeste.alertas || [])].slice(0, 12).map((mensagem) => <li key={mensagem}>{mensagem}</li>)}
+            </ul>
+          ) : null}
+          {resultadoTeste.origens?.length ? (
+            <div style={{ marginTop: 10, fontSize: 12, color: '#475569' }}>
+              Maiores origens: {resultadoTeste.origens.slice(0, 5).map((item) => `${item.origem} (${item.cotacoes.toLocaleString('pt-BR')} cotações)`).join(' · ')}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {feedbackChamado ? <div className="mini-feedback success top-space">{feedbackChamado}</div> : null}
       {store.syncStatus?.carregandoDetalheId === transportadora.id ? (
         <div className="hint-box top-space">
@@ -1748,7 +1823,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
               : 'list-card';
           return (
             <div key={origem.id} className={cardClass} onClick={() => onOpenOrigin(origem.id)}>
-              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#ede9fe':canaisOrigem(origem).includes('B2C')?'#dbeafe':'#dcfce7',color:canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#6d28d9':canaisOrigem(origem).includes('B2C')?'#1d4ed8':'#166534'}}>{canalOrigemLabel(origem)}</span></div><div className="list-subtitle">{(origem.rotas || []).length} rota(s) · {(origem.cotacoes || []).length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#ede9fe':canaisOrigem(origem).includes('B2C')?'#dbeafe':'#dcfce7',color:canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#6d28d9':canaisOrigem(origem).includes('B2C')?'#1d4ed8':'#166534'}}>{canalOrigemLabel(origem)}</span><BadgeTabelaAlternativa origem={origem} /></div><div className="list-subtitle">{(origem.rotas || []).length} rota(s) · {(origem.cotacoes || []).length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={transportadora.detalheCarregado ? analise.cobertura : 'Resumo'} severidade={transportadora.detalheCarregado ? analise.severidade : 'ok'} />
                 <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
@@ -1933,6 +2008,18 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
   const [sugestoesCte, setSugestoesCte] = useState([]);
   const [selecionados, setSelecionados] = useState([]);
   const [erroVinculo, setErroVinculo] = useState('');
+  const [resultadoPreTeste, setResultadoPreTeste] = useState(null);
+
+  useEffect(() => {
+    if (!open || !origem) {
+      setResultadoPreTeste(null);
+      return;
+    }
+    setResultadoPreTeste(testarTransportadoraRapido({
+      ...transportadora,
+      origens: [origem],
+    }));
+  }, [open, transportadora, origem]);
 
   if (!open) return null;
 
@@ -1996,6 +2083,22 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
 
   return (
     <Modal open={open} title={`Confirmar validação — ${origem?.cidade || ''}`} onClose={onClose}>
+      <div className={`hint-box ${resultadoPreTeste?.status === 'bloqueada' ? 'alert-error' : resultadoPreTeste?.status === 'alerta' ? 'alert-warn' : ''}`}>
+        <strong>1. Pré-teste da tabela</strong>
+        {!resultadoPreTeste ? <p style={{ margin: '8px 0 0' }}>Preparando amostra...</p> : (
+          <>
+            <p style={{ margin: '8px 0 0' }}>
+              {resultadoPreTeste.status === 'aprovada' ? '✓ Aprovada' : resultadoPreTeste.status === 'alerta' ? '⚠ Aprovada com alertas' : '✕ Bloqueada'} · {resultadoPreTeste.simulacoes.sucesso} de {resultadoPreTeste.simulacoes.executadas} cenário(s) calculado(s) · {resultadoPreTeste.totais.rotas.toLocaleString('pt-BR')} rota(s) · {resultadoPreTeste.totais.cotacoes.toLocaleString('pt-BR')} cotação(ões)
+            </p>
+            {[...(resultadoPreTeste.erros || []), ...(resultadoPreTeste.alertas || [])].length ? (
+              <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+                {[...(resultadoPreTeste.erros || []), ...(resultadoPreTeste.alertas || [])].slice(0, 8).map((mensagem) => <li key={mensagem}>{mensagem}</li>)}
+              </ul>
+            ) : null}
+          </>
+        )}
+      </div>
+
       <div className="hint-box">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
           <strong>Vínculos com CT-e para {transportadora?.nome}</strong>
@@ -2096,7 +2199,7 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
 
       <div className="actions-right gap-row top-space">
         <button className="btn-secondary" onClick={onClose}>Cancelar</button>
-        <button className="btn-primary" onClick={onConfirmar}>Confirmar validação</button>
+        <button className="btn-primary" onClick={onConfirmar} disabled={!resultadoPreTeste || resultadoPreTeste.status === 'bloqueada'} title={resultadoPreTeste?.status === 'bloqueada' ? 'Corrija os bloqueios do pré-teste antes de validar.' : undefined}>Confirmar validação</button>
       </div>
     </Modal>
   );
@@ -2220,6 +2323,46 @@ function gruposAlternativosDaOrigem(origem) {
   return Array.from(grupos).sort((a, b) => a.localeCompare(b));
 }
 
+// Quantidade de tabelas alternativas desta origem, considerando também
+// generalidades e taxas especiais (além de rotas/cotações). Só dá pra contar
+// de verdade quando os dados completos da origem já foram carregados —
+// quando a tela ainda está em modo resumo, cai pro indicador booleano leve
+// vindo do banco (origem.temTabelaAlternativa).
+function contarTabelasAlternativasOrigem(origem) {
+  const grupos = new Set();
+  [...(origem?.rotas || []), ...(origem?.cotacoes || []), ...(origem?.taxasEspeciais || [])].forEach((item) => {
+    if (item?.grupoTabelaAlternativa) grupos.add(String(item.grupoTabelaAlternativa));
+  });
+  (origem?.generalidadesAlternativas || []).forEach((item) => {
+    if (item?.grupoTabelaAlternativa) grupos.add(String(item.grupoTabelaAlternativa));
+  });
+  return grupos.size;
+}
+
+function origemTemTabelaAlternativa(origem) {
+  return Boolean(origem?.temTabelaAlternativa) || contarTabelasAlternativasOrigem(origem) > 0;
+}
+
+function transportadoraTemTabelaAlternativa(transportadora) {
+  return (transportadora?.origens || []).some(origemTemTabelaAlternativa);
+}
+
+// Badge compacto pra listas: mostra a contagem quando os dados completos da
+// origem estão disponíveis, senão só sinaliza que existe alguma alternativa.
+function BadgeTabelaAlternativa({ origem, style }) {
+  if (!origemTemTabelaAlternativa(origem)) return null;
+  const qtd = contarTabelasAlternativasOrigem(origem);
+  return (
+    <span
+      className="status-pill dark"
+      title="Esta origem tem tabela(s) alternativa(s) cadastrada(s)"
+      style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#ede9fe', color: '#6d28d9', ...style }}
+    >
+      🔀 {qtd > 0 ? `${qtd} tabela(s) alt.` : 'Tabela alternativa'}
+    </span>
+  );
+}
+
 function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
   const [aba, setAba] = useState('cadastro');
   const [inconsistenciasOpen, setInconsistenciasOpen] = useState(false);
@@ -2281,7 +2424,7 @@ function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
       <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{canalOrigemLabel(origem)}</strong> · {origem.rotas.length} rota(s){gruposExistentes.length ? <> · <span className="status-pill dark" title="Tabelas alternativas cadastradas nesta origem">{gruposExistentes.length} tabela(s) alternativa(s)</span></> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmdOpen(true)} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button><span className="status-pill dark">{origem.status}</span></div></div>
       {feedbackChamado ? <div className="mini-feedback success top-space">{feedbackChamado}</div> : null}
       <div className="tabs-row"><TabButton active={aba === 'cadastro'} onClick={() => setAba('cadastro')}>Cadastro</TabButton><TabButton active={aba === 'canal'} onClick={() => setAba('canal')}>Canal</TabButton><TabButton active={aba === 'generalidades'} onClick={() => setAba('generalidades')}>Generalidades</TabButton><TabButton active={aba === 'rotas'} onClick={() => setAba('rotas')}>Rotas</TabButton><TabButton active={aba === 'cotacoes'} onClick={() => setAba('cotacoes')}>Cotações</TabButton><TabButton active={aba === 'taxas'} onClick={() => setAba('taxas')}>Taxas Especiais</TabButton></div>
-      {(aba === 'rotas' || aba === 'cotacoes') ? (
+      {(aba === 'rotas' || aba === 'cotacoes' || aba === 'generalidades' || aba === 'taxas') ? (
         <div className="hint-box" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <strong style={{ fontSize: 12, color: '#64748b' }}>Tabela em edição:</strong>
           <button className={grupoAtivo === null ? 'tab-btn active' : 'tab-btn'} onClick={() => setGrupoAtivo(null)}>Tabela principal</button>
@@ -2309,16 +2452,16 @@ function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
             </button>
           ) : null}
           <span style={{ width: '100%', fontSize: 12, color: '#64748b' }}>
-            Rotas e cotações cadastradas aqui valem só pra esta origem e só pra esta tabela ({grupoAtivo || 'principal'}). Sem nenhuma alternativa cadastrada, o comportamento é idêntico ao de sempre.
+            Rotas, cotações, generalidades e taxas especiais cadastradas aqui valem só pra esta origem e só pra esta tabela ({grupoAtivo || 'principal'}). Generalidades e taxas especiais sem cadastro próprio na tabela alternativa usam as da tabela principal. Sem nenhuma alternativa cadastrada, o comportamento é idêntico ao de sempre.
           </span>
         </div>
       ) : null}
       {aba === 'cadastro' && <CadastroOrigemTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'canal' && <CanalTab transportadoraId={transportadora.id} origem={origem} store={store} />}
-      {aba === 'generalidades' && <GeneralidadesTab transportadoraId={transportadora.id} origem={origem} store={store} />}
+      {aba === 'generalidades' && <GeneralidadesTab transportadoraId={transportadora.id} origem={origem} store={store} grupoTabelaAlternativa={grupoAtivo} />}
       {aba === 'rotas' && <CrudTab title="Rota" secao="rotas" tipoImportacao="rotas" origem={origem} transportadora={transportadora} store={store} columns={rotasColumns} fields={rotasFields} grupoTabelaAlternativa={grupoAtivo} hint={<>Use <strong>Baixar Modelo</strong> para subir rotas no padrão do seu arquivo real. Também há <strong>Exportar</strong> e <strong>Excluir Tudo</strong>.</>} />}
       {aba === 'cotacoes' && <CrudTab title="Cotação" secao="cotacoes" tipoImportacao="cotacoes" origem={origem} transportadora={transportadora} store={store} columns={cotacoesColumns} fields={cotacoesFields} grupoTabelaAlternativa={grupoAtivo} hint={<>Fretes/cotações aceitam importação no modelo com <strong>Rota do frete</strong>, pesos, excesso, taxa aplicada e percentual.</>} />}
-      {aba === 'taxas' && <TaxasEspeciaisTab origem={origem} transportadora={transportadora} store={store} />}
+      {aba === 'taxas' && <TaxasEspeciaisTab origem={origem} transportadora={transportadora} store={store} grupoTabelaAlternativa={grupoAtivo} />}
       <InconsistenciasModal open={inconsistenciasOpen} title="Inconsistências da origem" transportadora={transportadora} origem={origem} onClose={() => setInconsistenciasOpen(false)} />
       <ModalChamadoAmdTabela
         open={chamadoAmdOpen}

@@ -213,7 +213,42 @@ async function fetchAllRows(supabase, table, orderBy = null, ascending = true, o
   return paginas.flat();
 }
 
-function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspeciais) {
+// `generalidadesRows`: uma ou mais linhas da tabela `generalidades` desta
+// origem — normalmente só a principal (grupo_tabela_alternativa === ''), mas
+// pode incluir uma linha por tabela alternativa cadastrada (ver
+// 20260922_002_generalidades_taxas_grupo_alternativo.sql). Aceita também uma
+// única linha "solta" (ou null) pra não quebrar chamadas antigas.
+function mapGeneralidadeRow(generalidade) {
+  return {
+    incideIcms: Boolean(generalidade?.incide_icms),
+    aliquotaIcms: generalidade?.aliquota_icms ?? 0,
+    adValorem: generalidade?.ad_valorem ?? 0,
+    adValoremMinimo: generalidade?.ad_valorem_minimo ?? 0,
+    pedagio: generalidade?.pedagio ?? 0,
+    gris: generalidade?.gris ?? 0,
+    grisMinimo: generalidade?.gris_minimo ?? 0,
+    tas: generalidade?.tas ?? 0,
+    ctrc: generalidade?.ctrc ?? 0,
+    cubagem: generalidade?.cubagem ?? 300,
+    tipoCalculo: generalidade?.tipo_calculo || 'PERCENTUAL',
+    observacoes: generalidade?.observacoes || '',
+    freteMinimo: generalidade?.frete_minimo ?? 0,
+    regraCalculo: generalidade?.regra_calculo || '',
+    taxaEmergencial: generalidade?.taxa_emergencial ?? 0,
+  };
+}
+
+function normalizeOrigemFromDb(origem, generalidadesRows, rotas, cotacoes, taxasEspeciais) {
+  const listaGeneralidades = Array.isArray(generalidadesRows)
+    ? generalidadesRows
+    : (generalidadesRows ? [generalidadesRows] : []);
+  const generalidadePrincipal = listaGeneralidades.find((item) => !item?.grupo_tabela_alternativa) || null;
+  const generalidadesAlternativas = listaGeneralidades
+    .filter((item) => item?.grupo_tabela_alternativa)
+    .map((item) => ({
+      grupoTabelaAlternativa: String(item.grupo_tabela_alternativa),
+      ...mapGeneralidadeRow(item),
+    }));
   return {
     id: origem.id,
     cidade: origem.cidade || '',
@@ -225,23 +260,19 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
     validado: Boolean(origem.validado),
     validado_em: origem.validado_em || null,
     validado_por: origem.validado_por || null,
-    generalidades: {
-      incideIcms: Boolean(generalidade?.incide_icms),
-      aliquotaIcms: generalidade?.aliquota_icms ?? 0,
-      adValorem: generalidade?.ad_valorem ?? 0,
-      adValoremMinimo: generalidade?.ad_valorem_minimo ?? 0,
-      pedagio: generalidade?.pedagio ?? 0,
-      gris: generalidade?.gris ?? 0,
-      grisMinimo: generalidade?.gris_minimo ?? 0,
-      tas: generalidade?.tas ?? 0,
-      ctrc: generalidade?.ctrc ?? 0,
-      cubagem: generalidade?.cubagem ?? 300,
-      tipoCalculo: generalidade?.tipo_calculo || 'PERCENTUAL',
-      observacoes: generalidade?.observacoes || '',
-      freteMinimo: generalidade?.frete_minimo ?? 0,
-      regraCalculo: generalidade?.regra_calculo || '',
-      taxaEmergencial: generalidade?.taxa_emergencial ?? 0,
-    },
+    generalidades: mapGeneralidadeRow(generalidadePrincipal),
+    // Generalidades das tabelas alternativas desta origem (uma entrada por
+    // grupo cadastrado). Vazio = nenhuma alternativa tem generalidade
+    // própria; o motor de Auditoria cai de volta na principal acima.
+    generalidadesAlternativas,
+    // Indicador leve (mesmo campo que carregarResumoBaseDb calcula por
+    // query) pra listas mostrarem o badge sem precisar varrer rotas de novo.
+    temTabelaAlternativa: Boolean(
+      generalidadesAlternativas.length
+      || rotas.some((item) => item?.grupo_tabela_alternativa)
+      || cotacoes.some((item) => item?.grupo_tabela_alternativa)
+      || taxasEspeciais.some((item) => item?.grupo_tabela_alternativa)
+    ),
     rotas: rotas.map((item) => ({
       ...(item.extra || {}),
       id: item.id,
@@ -307,6 +338,9 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
       adVal: item.ad_val,
       adValMinimo: item.ad_val_minimo,
       taxasExtras: Array.isArray(item.taxas_extras) ? item.taxas_extras : [],
+      // Mesmo rótulo de rotas.grupoTabelaAlternativa — taxa faz parte da
+      // tabela principal (nulo) ou de um conjunto alternativo da origem.
+      grupoTabelaAlternativa: item.grupo_tabela_alternativa || null,
       ...(item.extra || {}),
     })),
   };
@@ -357,23 +391,29 @@ function mapBaseToTables(transportadoras) {
         validado_por: origem.validado_por || null,
       });
 
-      generalidadesRows.push({
+      const generalidadesParaLinha = (grupo, dados) => ({
         origem_id: origemId,
-        incide_icms: toBoolean(generalidades.incideIcms),
-        aliquota_icms: toNumberOrNull(generalidades.aliquotaIcms),
-        ad_valorem: toNumberOrNull(generalidades.adValorem),
-        ad_valorem_minimo: toNumberOrNull(generalidades.adValoremMinimo),
-        pedagio: toNumberOrNull(generalidades.pedagio),
-        gris: toNumberOrNull(generalidades.gris),
-        gris_minimo: toNumberOrNull(generalidades.grisMinimo),
-        tas: toNumberOrNull(generalidades.tas),
-        ctrc: toNumberOrNull(generalidades.ctrc),
-        cubagem: toNumberOrNull(generalidades.cubagem),
-        tipo_calculo: generalidades.tipoCalculo || 'PERCENTUAL',
-        observacoes: generalidades.observacoes || '',
-        frete_minimo: toNumberOrNull(generalidades.freteMinimo),
-        regra_calculo: generalidades.regraCalculo || '',
-        taxa_emergencial: toNumberOrNull(generalidades.taxaEmergencial),
+        grupo_tabela_alternativa: grupo || '',
+        incide_icms: toBoolean(dados.incideIcms),
+        aliquota_icms: toNumberOrNull(dados.aliquotaIcms),
+        ad_valorem: toNumberOrNull(dados.adValorem),
+        ad_valorem_minimo: toNumberOrNull(dados.adValoremMinimo),
+        pedagio: toNumberOrNull(dados.pedagio),
+        gris: toNumberOrNull(dados.gris),
+        gris_minimo: toNumberOrNull(dados.grisMinimo),
+        tas: toNumberOrNull(dados.tas),
+        ctrc: toNumberOrNull(dados.ctrc),
+        cubagem: toNumberOrNull(dados.cubagem),
+        tipo_calculo: dados.tipoCalculo || 'PERCENTUAL',
+        observacoes: dados.observacoes || '',
+        frete_minimo: toNumberOrNull(dados.freteMinimo),
+        regra_calculo: dados.regraCalculo || '',
+        taxa_emergencial: toNumberOrNull(dados.taxaEmergencial),
+      });
+      generalidadesRows.push(generalidadesParaLinha(null, generalidades));
+      (origem.generalidadesAlternativas || []).forEach((alt) => {
+        if (!alt?.grupoTabelaAlternativa) return;
+        generalidadesRows.push(generalidadesParaLinha(alt.grupoTabelaAlternativa, alt));
       });
 
       (origem.rotas || []).forEach((item) => {
@@ -423,7 +463,7 @@ function mapBaseToTables(transportadoras) {
       });
 
       (origem.taxasEspeciais || []).forEach((item) => {
-        const { id, ibgeDestino, tda, tdr, trt, suframa, outras, gris, grisMinimo, adVal, adValMinimo, taxasExtras, ...extra } = item || {};
+        const { id, ibgeDestino, tda, tdr, trt, suframa, outras, gris, grisMinimo, adVal, adValMinimo, taxasExtras, grupoTabelaAlternativa, ...extra } = item || {};
 
         taxasRows.push({
           id: safeUuid(id, usedTaxas),
@@ -439,6 +479,7 @@ function mapBaseToTables(transportadoras) {
           ad_val: toNumberOrNull(adVal),
           ad_val_minimo: toNumberOrNull(adValMinimo),
           taxas_extras: Array.isArray(taxasExtras) ? taxasExtras : [],
+          grupo_tabela_alternativa: grupoTabelaAlternativa || null,
           extra,
         });
       });
@@ -674,7 +715,13 @@ export async function carregarBaseCompletaDb(onProgress = null) {
 
   const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);
 
-  const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
+  const generalidadeByOrigem = new Map();
+  generalidades.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = generalidadeByOrigem.get(key) || [];
+    list.push(item);
+    generalidadeByOrigem.set(key, list);
+  });
   const rotasByOrigem = new Map();
   const cotacoesByOrigem = new Map();
   const taxasByOrigem = new Map();
@@ -1012,7 +1059,13 @@ export async function carregarBaseFiltradaPorOrigemEDestinosDb(filtroCidades = [
     await enriquecerRotasComIbgeDestinoPorCepDb(rotas)
   );
 
-  const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
+  const generalidadeByOrigem = new Map();
+  generalidades.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = generalidadeByOrigem.get(key) || [];
+    list.push(item);
+    generalidadeByOrigem.set(key, list);
+  });
   const rotasByOrigem = new Map();
   const cotacoesByOrigem = new Map();
   const taxasByOrigem = new Map();
@@ -1107,7 +1160,13 @@ export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [],
 
   const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);
 
-  const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
+  const generalidadeByOrigem = new Map();
+  generalidades.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = generalidadeByOrigem.get(key) || [];
+    list.push(item);
+    generalidadeByOrigem.set(key, list);
+  });
   const rotasByOrigem = new Map();
   const cotacoesByOrigem = new Map();
   const taxasByOrigem = new Map();
@@ -1209,7 +1268,13 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
 
   const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);
 
-  const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
+  const generalidadeByOrigem = new Map();
+  generalidades.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = generalidadeByOrigem.get(key) || [];
+    list.push(item);
+    generalidadeByOrigem.set(key, list);
+  });
   const rotasByOrigem = new Map();
   const cotacoesByOrigem = new Map();
   const taxasByOrigem = new Map();
@@ -1354,6 +1419,10 @@ export async function carregarResumoBaseDb() {
     origensResponse,
     rotasCountResponse,
     cotacoesCountResponse,
+    rotasAlternativasResponse,
+    cotacoesAlternativasResponse,
+    taxasAlternativasResponse,
+    generalidadesAlternativasResponse,
   ] = await Promise.all([
     carregarTransportadorasResumoCompat(supabase),
     supabase.from('origens').select('id, transportadora_id, cidade, codigo_centro, cnpj, cnpj_raiz, canal, status, validado, validado_em, validado_por').order('cidade', { ascending: true }),
@@ -1363,12 +1432,30 @@ export async function carregarResumoBaseDb() {
     // colocar essa varredura pesada no caminho critico do login.
     supabase.from('rotas').select('id', { count: 'planned', head: true }),
     supabase.from('cotacoes').select('id', { count: 'planned', head: true }),
+    // Indicador leve de "esta origem tem tabela alternativa" pra lista de
+    // Transportadoras/Origens, sem carregar rotas/cotações inteiras aqui.
+    // Usa os índices parciais criados nas migrations de tabela alternativa.
+    supabase.from('rotas').select('origem_id').not('grupo_tabela_alternativa', 'is', null),
+    supabase.from('cotacoes').select('origem_id').not('grupo_tabela_alternativa', 'is', null),
+    supabase.from('taxas_especiais').select('origem_id').not('grupo_tabela_alternativa', 'is', null),
+    supabase.from('generalidades').select('origem_id').neq('grupo_tabela_alternativa', ''),
   ]);
 
   if (transportadorasResponse.error) throw transportadorasResponse.error;
   if (origensResponse.error) throw origensResponse.error;
   if (rotasCountResponse.error) throw rotasCountResponse.error;
   if (cotacoesCountResponse.error) throw cotacoesCountResponse.error;
+  if (rotasAlternativasResponse.error) throw rotasAlternativasResponse.error;
+  if (cotacoesAlternativasResponse.error) throw cotacoesAlternativasResponse.error;
+  if (taxasAlternativasResponse.error) throw taxasAlternativasResponse.error;
+  if (generalidadesAlternativasResponse.error) throw generalidadesAlternativasResponse.error;
+
+  const origensComTabelaAlternativa = new Set([
+    ...(rotasAlternativasResponse.data || []),
+    ...(cotacoesAlternativasResponse.data || []),
+    ...(taxasAlternativasResponse.data || []),
+    ...(generalidadesAlternativasResponse.data || []),
+  ].map((item) => String(item.origem_id)));
 
   const origensByTransportadora = new Map();
   (origensResponse.data || []).forEach((origem) => {
@@ -1389,6 +1476,7 @@ export async function carregarResumoBaseDb() {
       rotas: [],
       cotacoes: [],
       taxasEspeciais: [],
+      temTabelaAlternativa: origensComTabelaAlternativa.has(String(origem.id)),
     });
     origensByTransportadora.set(key, lista);
   });
@@ -1481,6 +1569,9 @@ export async function salvarGeneralidadesOrigemDb(origemId, generalidades = {}, 
   transportadoraNome = '',
   cidade = '',
   canal = '',
+  // Rótulo da tabela alternativa (mesmo usado em rotas/cotações). Vazio/null
+  // = generalidade da tabela principal da origem (comportamento de sempre).
+  grupoTabelaAlternativa = null,
 } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
   if (!origemId) throw new Error('Origem não informada para salvar generalidades.');
@@ -1489,6 +1580,9 @@ export async function salvarGeneralidadesOrigemDb(origemId, generalidades = {}, 
   });
   const row = {
     origem_id: origemIdPersistencia,
+    // A coluna não aceita null (default ''); '' é a sentinela da tabela
+    // principal no banco, ver 20260922_002_generalidades_taxas_grupo_alternativo.sql.
+    grupo_tabela_alternativa: grupoTabelaAlternativa || '',
     incide_icms: toBoolean(generalidades.incideIcms),
     aliquota_icms: toNumberOrNull(generalidades.aliquotaIcms),
     ad_valorem: toNumberOrNull(generalidades.adValorem),
@@ -1505,7 +1599,7 @@ export async function salvarGeneralidadesOrigemDb(origemId, generalidades = {}, 
     regra_calculo: generalidades.regraCalculo || '',
     taxa_emergencial: toNumberOrNull(generalidades.taxaEmergencial),
   };
-  await upsertRows(ensureClient(), 'generalidades', [row], 'origem_id');
+  await upsertRows(ensureClient(), 'generalidades', [row], 'origem_id,grupo_tabela_alternativa');
   if (invalidarValidacao) {
     const { error } = await ensureClient().from('origens').update({
       validado: false, validado_em: null, validado_por: null,
@@ -1514,6 +1608,22 @@ export async function salvarGeneralidadesOrigemDb(origemId, generalidades = {}, 
   }
   invalidarCacheBaseCompletaDb();
   return { atualizadas: 1, origemId: origemIdPersistencia };
+}
+
+// Remove a generalidade de uma tabela alternativa específica (sem afetar a
+// principal nem outras alternativas da mesma origem). Usado ao excluir uma
+// tabela alternativa inteira (ver store.excluirGrupoTabelaAlternativa).
+export async function excluirGeneralidadesAlternativaDb(origemId, grupoTabelaAlternativa) {
+  if (!isSupabaseConfigured()) return { ok: true, modo: 'local' };
+  if (!origemId || !grupoTabelaAlternativa) return { ok: true, ignorado: true };
+  const { error } = await ensureClient()
+    .from('generalidades')
+    .delete()
+    .eq('origem_id', origemId)
+    .eq('grupo_tabela_alternativa', grupoTabelaAlternativa);
+  if (error) throw error;
+  invalidarCacheBaseCompletaDb();
+  return { ok: true };
 }
 
 // `secao` aceita uma string ('rotas') ou um array (['rotas', 'cotacoes']) para
@@ -1573,7 +1683,7 @@ export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHA
   await upsertRows(supabase, 'origens', origensRows, 'id');
 
   if (secoes.includes('generalidades')) {
-    await upsertRows(supabase, 'generalidades', generalidadesRows, 'origem_id');
+    await upsertRows(supabase, 'generalidades', generalidadesRows, 'origem_id,grupo_tabela_alternativa');
   }
   if (secoes.includes('rotas')) {
     await upsertRows(supabase, 'rotas', rotasRows, 'id');
@@ -2165,7 +2275,7 @@ async function buscarIdsTransportadoraPorNome({ supabase, nomeTransportadora }) 
 }
 
 function transportadorasFromDbRows({ transportadoras = [], origens = [], generalidades = [], rotas = [], cotacoes = [], taxas = [] }) {
-  const generalidadeByOrigem = new Map((generalidades || []).map((item) => [String(item.origem_id), item]));
+  const generalidadeByOrigem = groupByOrigemId(generalidades);
   const rotasByOrigem = groupByOrigemId(rotas);
   const cotacoesByOrigem = groupByOrigemId(cotacoes);
   const taxasByOrigem = groupByOrigemId(taxas);

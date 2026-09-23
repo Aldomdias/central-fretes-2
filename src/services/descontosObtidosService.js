@@ -3,6 +3,7 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 const TABELA = 'descontos_obtidos_sap';
 const LOTE = 500;
 const PAGINA_CONSULTA = 1000; // limite padrão de linhas por resposta do PostgREST
+const TABELA_ENVIADOS_LEGADO = 'financeiro_descontos_enviados_legado';
 
 function exigirClient() {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
@@ -186,5 +187,103 @@ export async function listarMesesImportados() {
     return await buscarTodasPaginas(() => client.from(TABELA).select('ano, mes, arquivo_origem, valor').order('id', { ascending: true }));
   } catch (error) {
     throw new Error(`Erro ao consultar meses importados: ${error.message}`);
+  }
+}
+
+export async function importarDescontosEnviadosLegado({ registros, importadoPor, onProgress }) {
+  const client = exigirClient();
+  let inseridos = 0;
+  let duplicados = 0;
+  const linhas = registros.map((row) => ({
+    data_envio: row.dataEnvio,
+    numero_fatura: row.numeroFatura,
+    responsavel: row.responsavel || null,
+    tipo_envio: row.tipoEnvio || null,
+    transportadora: row.transportadora,
+    cnpj: row.cnpj || null,
+    vencimento: row.vencimento,
+    status_fatura: row.statusFatura || null,
+    valor_fatura: row.valorFatura,
+    desconto_enviado: row.descontoEnviado,
+    valor_real_pagar: row.valorRealPagar,
+    partida: row.partida || null,
+    centro_custo_desconto: row.centroCustoDesconto || null,
+    observacao: row.observacao || null,
+    dados_bancarios: row.dadosBancarios || null,
+    arquivo_origem: row.arquivoOrigem,
+    linha_hash: row.linhaHash,
+    importado_por: importadoPor || null,
+  }));
+  for (let i = 0; i < linhas.length; i += LOTE) {
+    const lote = linhas.slice(i, i + LOTE);
+    const { data, error } = await client
+      .from(TABELA_ENVIADOS_LEGADO)
+      .upsert(lote, { onConflict: 'linha_hash', ignoreDuplicates: true })
+      .select('id');
+    if (error) throw new Error(`Erro ao gravar descontos enviados: ${error.message}`);
+    inseridos += data?.length || 0;
+    duplicados += lote.length - (data?.length || 0);
+    onProgress?.({ enviados: Math.min(i + LOTE, linhas.length), total: linhas.length });
+  }
+  return { totalLinhas: linhas.length, inseridos, duplicados };
+}
+
+export async function listarDescontosEnviadosLegado() {
+  try {
+    return await buscarTodasPaginas(() => exigirClient()
+      .from(TABELA_ENVIADOS_LEGADO)
+      .select('*')
+      .order('data_envio', { ascending: true }));
+  } catch (error) {
+    throw new Error(`Erro ao consultar descontos enviados: ${error.message}`);
+  }
+}
+
+// Soft delete: financeiro_protocolos já usa "ativo=false" pra desativar sem
+// apagar (mesma convenção usada quando um protocolo é substituído). Usado
+// aqui pra excluir uma solicitação identificada como duplicata na
+// conciliação Enviado x realizado.
+export async function excluirProtocoloComDesconto(id) {
+  const client = exigirClient();
+  const { error } = await client
+    .from('financeiro_protocolos')
+    .update({ ativo: false, updated_at: new Date().toISOString() })
+    .eq('id', id);
+  if (error) throw new Error(`Erro ao excluir protocolo: ${error.message}`);
+}
+
+// financeiro_descontos_enviados_legado é um log de importação (só
+// select+insert por padrão); "excluido" é a única forma de soft delete e
+// exige a migration supabase/migrations/20260922_004_descontos_enviados_legado_exclusao.sql.
+export async function excluirDescontoEnviadoLegado(id) {
+  const client = exigirClient();
+  const { error } = await client
+    .from(TABELA_ENVIADOS_LEGADO)
+    .update({ excluido: true })
+    .eq('id', id);
+  if (error) throw new Error(`Erro ao excluir desconto enviado importado: ${error.message}. Rode a migration supabase/migrations/20260922_004_descontos_enviados_legado_exclusao.sql.`);
+}
+
+export async function listarProtocolosComDesconto() {
+  try {
+    return await buscarTodasPaginas(() => exigirClient()
+      .from('financeiro_protocolos')
+      .select('id, protocolo, numero_fatura, transportadora, cnpj_transportadora, desconto_total, centro_custo_codigo, partida, enviado_em, created_at, ativo')
+      .gt('desconto_total', 0)
+      .eq('ativo', true)
+      .order('enviado_em', { ascending: true }));
+  } catch (error) {
+    throw new Error(`Erro ao consultar protocolos com desconto: ${error.message}`);
+  }
+}
+
+export async function listarDescontosRealizadosParaConciliacao() {
+  try {
+    return await buscarTodasPaginas(() => exigirClient()
+      .from(TABELA)
+      .select('id, data_lancamento, transportadora_nome, valor, centro_lucro, lancamento_contabil, texto_partida, arquivo_origem')
+      .order('data_lancamento', { ascending: true }));
+  } catch (error) {
+    throw new Error(`Erro ao consultar descontos realizados: ${error.message}`);
   }
 }
