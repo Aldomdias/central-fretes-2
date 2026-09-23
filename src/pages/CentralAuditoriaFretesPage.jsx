@@ -3635,10 +3635,27 @@ ${portaisLaudo.length ? `
           : await carregarDetalhesFaturaSupabase(fatura.id);
         const detalhesUnicos = deduplicarDetalhesFatura(detalhesRaw || []);
         const refs = await buscarReferenciaCtes(detalhesUnicos.flatMap((item) => [item.chave_cte, item.numero_cte]));
-        const detalhesLaudo = detalhesUnicos.map((item) => mesclarDetalheComReferenciaAuditoria(item, refs));
+        const detalhesLaudo = detalhesUnicos.map((item) => {
+          const mesclado = mesclarDetalheComReferenciaAuditoria(item, refs);
+          const base = refs.get(normalizarChaveCte(item.chave_cte)) || refs.get(normalizarChaveCte(item.numero_cte));
+          return { ...mesclado, chave_nfe: mesclado.chave_nfe || base?.chave_nfe };
+        });
         blocos.push({ fatura, detalhes: detalhesLaudo });
       }
       const todosDetalhes = blocos.flatMap((bloco) => bloco.detalhes);
+      // Mesmo aviso de "CT-e sem entrega comprovada" do laudo de fatura
+      // individual — no laudo em lote a decisao (liberar/questionar varias
+      // faturas de uma vez) tambem depende de saber quem ainda nao entregou.
+      setProgressoLote({ etapa: 'consultando_entregas', carregados: faturasSelecionadas.length, total: faturasSelecionadas.length });
+      let entregaCtesLote = null;
+      try {
+        entregaCtesLote = await buscarStatusEntregaCtes(todosDetalhes);
+      } catch (erroEntrega) {
+        entregaCtesLote = null;
+      }
+      const semEntregaGeral = entregaCtesLote
+        ? todosDetalhes.filter((item) => entregaCtesLote.get(chaveEntregaRegistro(item))?.status !== STATUS_ENTREGA.ENTREGUE)
+        : [];
       const linhasParaResumo = aplicarMascaraLaudoTransportador(todosDetalhes, opts, toleranciaLaudo);
       const resumoGeral = resumirDetalhesAuditoria(linhasParaResumo, toleranciaLaudo);
       const transportadoras = [...new Set(faturasSelecionadas.map((f) => f.transportadora).filter(Boolean))].join(', ');
@@ -3652,7 +3669,11 @@ ${portaisLaudo.length ? `
         ['Cobranca acima', dinheiro(resumoGeral.cobrancaAcima)],
         ['Cobranca abaixo', dinheiro(resumoGeral.cobrancaAbaixo)],
         ['Total a descontar', dinheiro(resumoGeral.totalDescontar)],
+        ['Sem entrega', semEntregaGeral.length],
       ];
+      const blocoEntregaLote = semEntregaGeral.length
+        ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><strong>⚠ ${semEntregaGeral.length} CT-e(s) sem entrega comprovada no lote — favor verificar</strong><p style="margin:6px 0 0;font-size:13px">O pagamento so deve ser liberado com todos os CT-es entregues. CT-es: <b>${semEntregaGeral.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtesLote?.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p></div>`
+        : (entregaCtesLote ? '' : `<div style="margin:0 0 14px;padding:14px 18px;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;color:#7c2d12"><strong>⚠ Nao foi possivel consultar o status de entrega dos CT-es deste lote.</strong></div>`);
       // Laudo hierarquico: uma linha por fatura, expande CT-es; cada CT-e
       // expande o detalhe do calculo. Tudo fechado por padrao.
       const linhasFatura = blocos.map((bloco, idxFatura) => {
@@ -3672,6 +3693,8 @@ ${portaisLaudo.length ? `
             ? `${origemCte || '-'}/${item.uf_origem || ''} -> ${destinoCte || '-'}/${item.uf_destino || ''}`
             : '-';
           const pesoCte = Number(item.peso || 0);
+          const statusEntregaCte = entregaCtesLote?.get(chaveEntregaRegistro(item))?.status;
+          const entregaTexto = !entregaCtesLote ? '...' : (statusEntregaCte ? escapeHtmlAuditoria(ROTULO_ENTREGA[statusEntregaCte] || statusEntregaCte) : 'Sem rastreamento');
           return `
           <tr class="main-row"${linha.semCalculo ? ' style="background:#fff7ed"' : ''} onclick="toggleDetail('${detalheId}')">
             <td>${escapeHtmlAuditoria(item.numero_cte || '-')}</td>
@@ -3683,8 +3706,9 @@ ${portaisLaudo.length ? `
             <td>${Number(item.calculado_frete || 0) ? dinheiro(linha.calculadoPublico) : '-'}</td>
             <td>${dinheiro(linha.diffPublico)}</td>
             <td>${escapeHtmlAuditoria(linha.statusPublico)}</td>
+            <td style="${statusEntregaCte === STATUS_ENTREGA.ENTREGUE ? 'color:#166534;font-weight:700' : 'color:#b91c1c;font-weight:700'}">${entregaTexto}</td>
           </tr>
-          <tr id="${detalheId}" class="detail-row"><td colspan="9">${detalhesCalculoHtmlFatura(item, { masked: linha.masked, calculadoPublico: linha.calculadoPublico, diffPublico: linha.diffPublico, descontoSemTabela: linha.descontoSemTabela })}</td></tr>`;
+          <tr id="${detalheId}" class="detail-row"><td colspan="10">${detalhesCalculoHtmlFatura(item, { masked: linha.masked, calculadoPublico: linha.calculadoPublico, diffPublico: linha.diffPublico, descontoSemTabela: linha.descontoSemTabela })}</td></tr>`;
         }).join('');
         return `
         <tr class="main-row" onclick="toggleDetail('${grupoId}')">
@@ -3697,8 +3721,8 @@ ${portaisLaudo.length ? `
           <td>${escapeHtmlAuditoria(resumoOrigem)}</td>
         </tr>
         <tr id="${grupoId}" class="detail-row"><td colspan="7">
-          <table><thead><tr><th>CT-e</th><th>Chave</th><th>Rota</th><th>Canal</th><th>Peso</th><th>Frete pago</th><th>Calculo AMD</th><th>Diferenca</th><th>Status</th></tr></thead>
-          <tbody>${linhasCteHtml || '<tr><td colspan="9">Nenhum CT-e nesta fatura.</td></tr>'}</tbody></table>
+          <table><thead><tr><th>CT-e</th><th>Chave</th><th>Rota</th><th>Canal</th><th>Peso</th><th>Frete pago</th><th>Calculo AMD</th><th>Diferenca</th><th>Status</th><th>Entrega</th></tr></thead>
+          <tbody>${linhasCteHtml || '<tr><td colspan="10">Nenhum CT-e nesta fatura.</td></tr>'}</tbody></table>
         </td></tr>`;
       }).join('');
       const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8" />
@@ -3721,6 +3745,7 @@ ${portaisLaudo.length ? `
         </style></head><body>
         <div class="hero"><h1>Laudo consolidado de faturas</h1><p>${escapeHtmlAuditoria(transportadoras || 'Transportadora')} - ${faturasSelecionadas.length} fatura(s) - gerado em ${new Date().toLocaleString('pt-BR')}</p></div>
         <div class="wrap"><div class="cards">${cards.map(([label, value]) => `<div class="card"><span>${escapeHtmlAuditoria(label)}</span><strong>${escapeHtmlAuditoria(value)}</strong></div>`).join('')}</div>
+        ${blocoEntregaLote}
         <div class="note">Clique em cima de qualquer fatura para ver os CT-es; clique em cima de um CT-e para abrir os detalhes completos do calculo (taxas, ICMS, base do frete etc.).</div>
         <div class="filters">
           <label>Buscar<input id="filtro-busca" type="search" placeholder="Fatura, transportadora ou origem" oninput="aplicarFiltros()"></label>
