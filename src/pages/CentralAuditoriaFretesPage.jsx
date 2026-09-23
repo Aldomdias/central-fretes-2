@@ -274,7 +274,7 @@ function aplicarSaldoTransporteNoDetalhe(item, saldos, referenciaCtes) {
   if (!saldos?.size) return item;
   const nfe = item.chave_nfe || referenciaCtes?.get(normalizarChaveCte(item.chave_cte))?.chave_nfe;
   const saldo = Number(saldos.get(normalizarChaveCte(item.chave_cte)) || saldos.get(normalizarChaveCte(nfe)) || 0);
-  if (!(saldo > 0) || !(Number(item.calculado_frete || 0) > 0)) return item;
+  if (!(saldo > 0)) return item;
   const calculado = Number((Number(item.calculado_frete) + saldo).toFixed(2));
   const diferenca = Number((Number(item.valor_frete || 0) - calculado).toFixed(2));
   return { ...item, calculado_frete: calculado, diferenca, saldo_autorizado: saldo, status: Math.abs(diferenca) <= 0.01 ? 'OK' : 'DIVERGENTE' };
@@ -297,15 +297,24 @@ function recalcularLinhaAvulsa(row, valorCalculado, saldo) {
 function aplicarSaldoNaLinhaAvulsa(row, saldos) {
   if (!saldos?.size || row.detalhes_calculo?.saldo_transporte_autorizado) return row;
   const saldo = Number(saldos.get(normalizarChaveCte(row.chave_cte)) || saldos.get(normalizarChaveCte(row.chave_nfe)) || 0);
-  if (!(saldo > 0) || !(Number(row.valor_calculado || 0) > 0)) return row;
-  return recalcularLinhaAvulsa(row, Number((Number(row.valor_calculado) + saldo).toFixed(2)), saldo);
+  if (!(saldo > 0)) return row;
+  const semCalculo = !(Number(row.valor_calculado || 0) > 0);
+  const nova = recalcularLinhaAvulsa(row, Number((Number(row.valor_calculado || 0) + saldo).toFixed(2)), saldo);
+  // Sem tabela/cotacao: o valor autorizado passa a ser o calculado (guarda o status original pra desfazer).
+  return semCalculo
+    ? { ...nova, status_calculo: 'CALCULADO', motivo_sem_calculo: '', detalhes_calculo: { ...nova.detalhes_calculo, saldo_transporte_origem: { status_calculo: row.status_calculo || '', motivo_sem_calculo: row.motivo_sem_calculo || '' } } }
+    : nova;
 }
 
 // Desfaz a soma antes de gravar: o banco guarda so o calculo puro do motor.
 function removerSaldoDaLinhaAvulsa(row) {
   const saldo = Number(row?.detalhes_calculo?.saldo_transporte_autorizado || 0);
   if (!(saldo > 0)) return row;
-  return recalcularLinhaAvulsa(row, Number((Number(row.valor_calculado || 0) - saldo).toFixed(2)), 0);
+  const origem = row.detalhes_calculo?.saldo_transporte_origem;
+  const base = recalcularLinhaAvulsa(row, Number((Number(row.valor_calculado || 0) - saldo).toFixed(2)), 0);
+  if (!origem) return base;
+  const { saldo_transporte_origem: _o, ...detalhes } = base.detalhes_calculo || {};
+  return { ...base, status_calculo: origem.status_calculo, motivo_sem_calculo: origem.motivo_sem_calculo, detalhes_calculo: detalhes };
 }
 
 function chaveUnicaCteFatura(item = {}) {
