@@ -128,11 +128,10 @@ export function aplicarReauditoriaDetalhes(detalhes = [], resultadosPorChave = n
     const calculadoMotor = Number(resultado?.valor_calculado || 0);
     // Saldo autorizado pelo gestor do transporte (chave do CT-e ou da NF): soma
     // ao calculado so aqui, na comparacao — o motor de calculo nao muda.
-    const saldoAutorizado = calculadoMotor > 0
-      ? Number(saldosAutorizadosPorChave.get(normalizarChaveCte(item.chave_cte))
-        || saldosAutorizadosPorChave.get(normalizarChaveCte(item.chave_nfe || resultado?.chave_nfe))
-        || 0)
-      : 0;
+    // Sem tabela/cotacao o motor nao calcula (0): ai o valor autorizado vira o proprio calculado.
+    const saldoAutorizado = Number(saldosAutorizadosPorChave.get(normalizarChaveCte(item.chave_cte))
+      || saldosAutorizadosPorChave.get(normalizarChaveCte(item.chave_nfe || resultado?.chave_nfe))
+      || 0);
     const calculado = Number((calculadoMotor + saldoAutorizado).toFixed(2));
     const calculadoVerum = Number(resultado?.valor_calculado_verum ?? resultado?.valor_calculado ?? item.calculado_frete_verum ?? 0);
     const valor = Number(item.valor_frete || 0);
