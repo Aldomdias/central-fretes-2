@@ -1364,7 +1364,12 @@ export async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [] } =
   const transportadoraIds = transportadoras.map((item) => item.id).filter(Boolean);
   if (!transportadoraIds.length) return [];
 
-  const origens = await buscarOrigensFiltradasDb({ supabase, transportadoraIds });
+  // incluirInativas: true — esta função alimenta a Auditoria, que recalcula
+  // CT-es já emitidos. Uma origem desativada depois da emissão não pode fazer
+  // o CT-e sumir do cálculo (virava SEM_ORIGEM mesmo com tabela cadastrada).
+  // O Simulador usa outra função (buscarBaseSimulacaoDb) e continua só com
+  // origens ativas, que é o comportamento certo pra cotação nova.
+  const origens = await buscarOrigensFiltradasDb({ supabase, transportadoraIds, incluirInativas: true });
   const origemIds = (origens || []).map((item) => item.id).filter(Boolean);
   if (!origemIds.length) {
     return transportadoras.map((transportadora) => ({
