@@ -1530,6 +1530,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [recalculando, setRecalculando] = useState(false);
   const [cancelandoRecalculo, setCancelandoRecalculo] = useState(false);
   const cancelarRecalculoRef = useRef(false);
+  const [mensagemLiberacao, setMensagemLiberacao] = useState('');
   const [infoRecalculo, setInfoRecalculo] = useState('');
   const [progressoRecalculo, setProgressoRecalculo] = useState(null);
   const [referenciaCtes, setReferenciaCtes] = useState(new Map());
@@ -1662,6 +1663,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         desconto_pendente_valor: Math.max(saldo, 0),
         descricaoHistorico: `Enviada para aprovacao da gestao: cobranca a maior de ${dinheiro(saldo)} identificada, precisa confirmar se o desconto sera aplicado.`,
       });
+      setMensagemLiberacao(`⚠ Nao liberada direto: ha cobranca a maior de ${dinheiro(saldo)} sem confirmacao. Fatura enviada para "Aguardando Aprovacao da Gestao".`);
       return;
     }
 
@@ -1669,6 +1671,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       ...camposAuditoria,
       descricaoHistorico: `Liberada para pagamento. Auditoria: ${resumo.total} CT-e(s), ${resumo.divergentes} divergente(s), cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}. Toler�ncia aplicada: +${dinheiro(toleranciaFatura.acima)} / -${dinheiro(toleranciaFatura.abaixo)}.`,
     });
+    setMensagemLiberacao('✓ Fatura liberada para pagamento — o valor calculado bateu com o cobrado.');
   };
 
   const baixarArquivo = (blob, nomeArquivo) => {
@@ -2711,6 +2714,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
           Enviar para Protocolo
         </button>
       </div>
+      {mensagemLiberacao && (
+        <div className="hint-box compact" style={{ marginTop: 8 }}>{mensagemLiberacao}</div>
+      )}
       {protocoloAberto && (
         <ModalEnviarProtocoloFinanceiro
           state={state}
