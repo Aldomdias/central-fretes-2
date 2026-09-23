@@ -4349,6 +4349,7 @@ ${portaisLaudo.length ? `
           <tr id="${detalheId}" class="detail-row"><td colspan="10">${detalhesCalculoHtmlFatura(item, { masked: linha.masked, calculadoPublico: linha.calculadoPublico, diffPublico: linha.diffPublico, descontoSemTabela: linha.descontoSemTabela })}</td></tr>`;
         }).join('');
         const confirmadaBloco = bloco.fatura.confirmacao_transportador_status === 'APROVADO';
+        const tokenBloco = bloco.linkConfirmacao ? bloco.linkConfirmacao.split('/').pop() : '';
         const confirmacaoCelula = confirmadaBloco
           ? '<span style="color:#166534;font-weight:700">✓ Confirmada</span>'
           : (bloco.linkConfirmacao
@@ -4363,7 +4364,7 @@ ${portaisLaudo.length ? `
           <td>${dinheiro(diffFaturaPublico)}</td>
           <td>${numeroFmt(bloco.detalhes.length)}</td>
           <td>${escapeHtmlAuditoria(resumoOrigem)}</td>
-          <td onclick="event.stopPropagation()">${confirmacaoCelula}</td>
+          <td onclick="event.stopPropagation()" id="conf-cel-${idxFatura}" data-token="${escapeHtmlAuditoria(tokenBloco)}" data-confirmada="${confirmadaBloco ? '1' : '0'}">${confirmacaoCelula}</td>
         </tr>
         <tr id="${grupoId}" class="detail-row"><td colspan="8">
           <table><thead><tr><th>CT-e</th><th>Chave</th><th>Rota</th><th>Canal</th><th>Peso</th><th>Frete pago</th><th>Calculo AMD</th><th>Diferenca</th><th>Status</th><th>Entrega</th></tr></thead>
@@ -4385,8 +4386,13 @@ ${portaisLaudo.length ? `
           .filters input,.filters select{box-sizing:border-box;width:100%;border:1px solid #cbd5e1;border-radius:7px;background:#fff;padding:9px;color:#0f172a}
           .clear-button{border:1px solid #cbd5e1;border-radius:7px;background:#fff;padding:9px 12px;cursor:pointer}
           .filters strong{padding:9px 0;white-space:nowrap}
+          .confirmar-todas{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+          .confirmar-todas input{padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;min-width:260px;font-size:13px}
+          .confirm-all-button{border:0;border-radius:8px;background:#0f6b3e;color:#fff;font-weight:700;padding:11px 16px;cursor:pointer;white-space:nowrap}
+          .confirm-all-button:disabled{background:#94a3b8;cursor:not-allowed}
+          #confirmar-todas-resultado{font-size:12px;color:#334155;font-weight:600}
           @media(max-width:850px){.filters{grid-template-columns:1fr 1fr}.filters label:first-child{grid-column:1/-1}}
-          @media print{.filters,.export-button{display:none}}
+          @media print{.filters,.export-button,.confirmar-todas{display:none}}
         </style></head><body>
         <div class="hero"><h1>Laudo consolidado de faturas</h1><p>${escapeHtmlAuditoria(transportadoras || 'Transportadora')} - ${faturasSelecionadas.length} fatura(s) - gerado em ${new Date().toLocaleString('pt-BR')}</p></div>
         <div class="wrap"><div class="cards">${cards.map(([label, value]) => `<div class="card"><span>${escapeHtmlAuditoria(label)}</span><strong>${escapeHtmlAuditoria(value)}</strong></div>`).join('')}</div>
@@ -4404,6 +4410,11 @@ ${portaisLaudo.length ? `
         </div>
         <div class="report-actions">
           <button class="export-button" type="button" onclick="exportarExcel()">Exportar Excel</button>
+          ${laudoTransportador ? `<div class="confirmar-todas">
+            <input type="text" id="confirmar-todas-nome" placeholder="Seu nome — email@transportadora.com.br">
+            <button type="button" class="confirm-all-button" onclick="confirmarTodas()">OK, confirmar todas as pendentes</button>
+            <span id="confirmar-todas-resultado"></span>
+          </div>` : ''}
         </div>
     <table><thead><tr><th>Fatura</th><th>Transportadora</th><th>Valor cobrado</th><th>Calculo AMD</th><th>Diferenca</th><th>CT-es</th><th>Origem</th><th>Confirmacao</th></tr></thead><tbody id="tabela-faturas-body">${linhasFatura || '<tr><td colspan="8">Nenhuma fatura selecionada.</td></tr>'}</tbody></table></div>
         <script>
@@ -4451,6 +4462,36 @@ ${portaisLaudo.length ? `
             link.click();
             link.remove();
             setTimeout(function(){URL.revokeObjectURL(url)},1000);
+          }
+          function confirmarTodas(){
+            var nomeInput=document.getElementById('confirmar-todas-nome');
+            var resultado=document.getElementById('confirmar-todas-resultado');
+            var botao=document.querySelector('.confirm-all-button');
+            var nome=(nomeInput&&nomeInput.value||'').trim();
+            if(!nome){resultado.textContent='Informe seu nome e e-mail antes de confirmar.';resultado.style.color='#b91c1c';return}
+            var celulas=Array.from(document.querySelectorAll('[data-token]')).filter(function(el){return el.getAttribute('data-confirmada')!=='1'&&el.getAttribute('data-token')});
+            var tokens=celulas.map(function(el){return el.getAttribute('data-token')});
+            if(!tokens.length){resultado.textContent='Nenhuma fatura pendente para confirmar.';resultado.style.color='#334155';return}
+            botao.disabled=true;
+            resultado.style.color='#334155';
+            resultado.textContent='Confirmando '+tokens.length+' fatura(s)...';
+            fetch('${escapeHtmlAuditoria(`${typeof window !== 'undefined' ? window.location.origin : ''}/api/portal-fatura-lote`)}', {
+              method:'POST',
+              headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({tokens:tokens,respondido_por:nome}),
+            }).then(function(r){return r.json().then(function(data){return {ok:r.ok,data:data}})}).then(function(res){
+              if(!res.ok){resultado.style.color='#b91c1c';resultado.textContent='Erro: '+(res.data&&res.data.erro||'nao foi possivel confirmar.');botao.disabled=false;return}
+              celulas.forEach(function(el){
+                el.setAttribute('data-confirmada','1');
+                el.innerHTML='<span style="color:#166534;font-weight:700">✓ Confirmada</span>';
+              });
+              resultado.style.color='#166534';
+              resultado.textContent=res.data.confirmadas+' fatura(s) confirmada(s) com sucesso.';
+            }).catch(function(erro){
+              resultado.style.color='#b91c1c';
+              resultado.textContent='Erro de conexao: '+erro.message;
+              botao.disabled=false;
+            });
           }
           aplicarFiltros();
         </script>
