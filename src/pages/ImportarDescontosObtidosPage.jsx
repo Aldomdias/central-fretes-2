@@ -3,6 +3,7 @@ import { parseDescontosObtidosFile } from '../utils/descontosObtidosImport';
 import { parseProtocolosFinanceirosFile } from '../utils/descontosEnviadosImport';
 import { importarDescontosEnviadosLegado, importarDescontosObtidos } from '../services/descontosObtidosService';
 import { carregarSessao } from '../utils/authLocal';
+import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 
 function formatMoeda(valor) {
   return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -50,6 +51,7 @@ export default function ImportarDescontosObtidosPage() {
   const [previews, setPreviews] = useState([]);
   const [resultados, setResultados] = useState([]);
   const [progresso, setProgresso] = useState(null);
+  const [arquivoAtualLabel, setArquivoAtualLabel] = useState('');
   const inputArquivosRef = useRef(null);
   const inputPastaRef = useRef(null);
 
@@ -95,12 +97,14 @@ export default function ImportarDescontosObtidosPage() {
     setResultados([]);
     setProcessando(true);
     setPreviews([]);
+    setProgresso({ etapa: 'lendo_arquivos', carregados: 0, total: arquivos.length });
 
     const lidos = [];
     const falhas = [];
 
     for (let i = 0; i < arquivos.length; i += 1) {
       const arquivo = arquivos[i];
+      setArquivoAtualLabel(`Lendo arquivo ${i + 1} de ${arquivos.length}: ${arquivo.name}`);
       setFeedback(`Lendo ${i + 1} de ${arquivos.length}: ${arquivo.name}...`);
       try {
         const dados = tipoBase === 'enviados'
@@ -110,10 +114,13 @@ export default function ImportarDescontosObtidosPage() {
       } catch (error) {
         falhas.push(`${arquivo.name}: ${error.message || 'erro ao ler'}`);
       }
+      setProgresso({ etapa: 'lendo_arquivos', carregados: i + 1, total: arquivos.length });
     }
 
     setPreviews(lidos);
     setProcessando(false);
+    setProgresso(null);
+    setArquivoAtualLabel('');
 
     const totalElegivel = lidos.reduce((acc, d) => acc + (d.meta.linhasElegiveis ?? d.meta.linhasComDesconto ?? 0), 0);
     const totalOriginal = lidos.reduce((acc, d) => acc + d.meta.linhasOriginais, 0);
@@ -140,7 +147,8 @@ export default function ImportarDescontosObtidosPage() {
       const preview = previews[i];
       if (!preview.registros.length) continue;
 
-      setProgresso({ arquivoAtual: i + 1, totalArquivos: previews.length, arquivo: preview.meta.arquivo, enviados: 0, total: preview.registros.length });
+      setArquivoAtualLabel(`Gravando arquivo ${i + 1} de ${previews.length}: ${preview.meta.arquivo}`);
+      setProgresso({ etapa: 'gravando_registros', carregados: 0, total: preview.registros.length });
       setFeedback(`Gravando arquivo ${i + 1} de ${previews.length}: ${preview.meta.arquivo}...`);
 
       try {
@@ -148,12 +156,12 @@ export default function ImportarDescontosObtidosPage() {
           ? await importarDescontosEnviadosLegado({
             registros: preview.registros,
             importadoPor: carregarSessao()?.nome || carregarSessao()?.email || 'Usuário local',
-            onProgress: (event) => setProgresso((atual) => ({ ...atual, ...event })),
+            onProgress: (event) => setProgresso({ etapa: 'gravando_registros', carregados: event.enviados, total: event.total }),
           })
           : await importarDescontosObtidos({
             registros: preview.registros,
             arquivoOrigem: preview.meta.arquivo,
-            onProgress: (event) => setProgresso((atual) => ({ ...atual, ...event })),
+            onProgress: (event) => setProgresso({ etapa: 'gravando_registros', carregados: event.enviados, total: event.total }),
           });
         respostas.push({ arquivo: preview.meta.arquivo, ...resposta });
       } catch (error) {
@@ -164,6 +172,7 @@ export default function ImportarDescontosObtidosPage() {
     setResultados(respostas);
     setProcessando(false);
     setProgresso(null);
+    setArquivoAtualLabel('');
 
     const totalInseridos = respostas.reduce((acc, r) => acc + r.inseridos, 0);
     const totalDuplicados = respostas.reduce((acc, r) => acc + r.duplicados, 0);
@@ -220,16 +229,11 @@ export default function ImportarDescontosObtidosPage() {
       {erro ? <div className="sim-alert">{erro}</div> : null}
       {feedback ? <div className="sim-alert info">{feedback}</div> : null}
 
-      {progresso ? (
-        <div className="sim-alert info">
-          <div className="sim-parametros-header">
-            <div>
-              <strong>Gravando... (arquivo {progresso.arquivoAtual} de {progresso.totalArquivos})</strong>
-              <p>{progresso.arquivo}: {formatInt(progresso.enviados)} de {formatInt(progresso.total)} linha(s)</p>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <AmdProcessingOverlay
+        ativo={processando}
+        progresso={progresso}
+        mensagemRodape={arquivoAtualLabel || 'Pode levar mais tempo em arquivos grandes.'}
+      />
 
       <div className="feature-grid two">
         <section className="panel-card">

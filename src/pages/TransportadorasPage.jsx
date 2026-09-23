@@ -12,6 +12,7 @@ import { listarHistoricoAlteracoesTransportadoras } from '../services/auditoriaT
 import { cnpjPreenchidoValido, formatarCnpj, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
 import { atualizarCnpjsOrigensDb } from '../services/freteDatabaseService';
 import { normalizarRegrasTde } from '../utils/tde.js';
+import { testarTransportadoraRapido } from '../utils/testeRapidoTransportadora.js';
 
 // Carrega vínculos (transportadora_vinculos) e carteiras de auditoria uma vez
 // e expõe lookups prontos, pra mostrar/editar isso sem sair da tela de Transportadoras.
@@ -1673,6 +1674,8 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   // null = fechado; objeto = origem escolhida para mover de transportadora
   const [origemTransferindo, setOrigemTransferindo] = useState(null);
   const [salvandoOrigemId, setSalvandoOrigemId] = useState(null);
+  const [testandoTabela, setTestandoTabela] = useState(false);
+  const [resultadoTeste, setResultadoTeste] = useState(null);
   const { vinculosDaTransportadora, carteiraDaTransportadora, auditorNomes, salvarAuditor, analisarAntesDeSalvar, recarregarVinculos, adicionarVinculo, removerVinculo } = useVinculosEAuditores();
   const podeEditar = store.podeEditarTransportadoras;
   const tituloSemPermissao = 'Apenas Gestão ou Gestor de Auditoria de Fretes podem alterar transportadoras.';
@@ -1747,10 +1750,44 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
     store.removerOrigem(transportadora.id, origem.id);
   };
 
+  const testarTabela = async () => {
+    setTestandoTabela(true);
+    setResultadoTeste(null);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    try {
+      setResultadoTeste(testarTransportadoraRapido(transportadora));
+    } catch (error) {
+      setResultadoTeste({ status: 'bloqueada', erros: [error?.message || 'Falha inesperada durante o teste.'], alertas: [], totais: {}, simulacoes: {} });
+    } finally {
+      setTestandoTabela(false);
+    }
+  };
+
   return (
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← Transportadoras</button>
-      <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{origensBase.length} origem(ns)</span>{store.syncStatus?.rascunhoLocal ? <span className="status-pill light">Rascunho local</span> : null}{!podeEditar ? <span className="status-pill light" title={tituloSemPermissao}>Somente leitura</span> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={atualizarDadosTransportadora} disabled={store.syncStatus?.carregandoDetalheId === transportadora.id}>Atualizar dados</button>{podeEditar ? <button className="btn-primary" onClick={salvarTransportadoraAtual} disabled={salvando || store.syncStatus?.carregandoDetalheId === transportadora.id}>{salvando ? 'Salvando...' : 'Salvar alterações'}</button> : null}<button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmd({ origem: '', canal: '' })} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button>{podeEditar ? <button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button> : null}</div></div>
+      <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{origensBase.length} origem(ns)</span>{store.syncStatus?.rascunhoLocal ? <span className="status-pill light">Rascunho local</span> : null}{!podeEditar ? <span className="status-pill light" title={tituloSemPermissao}>Somente leitura</span> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={atualizarDadosTransportadora} disabled={store.syncStatus?.carregandoDetalheId === transportadora.id}>Atualizar dados</button><button className="btn-secondary" onClick={testarTabela} disabled={testandoTabela || !transportadora.detalheCarregado} title="Executa uma amostra rápida usando o mesmo motor de cálculo da auditoria">{testandoTabela ? 'Testando...' : '🧪 Testar tabela'}</button>{podeEditar ? <button className="btn-primary" onClick={salvarTransportadoraAtual} disabled={salvando || store.syncStatus?.carregandoDetalheId === transportadora.id}>{salvando ? 'Salvando...' : 'Salvar alterações'}</button> : null}<button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmd({ origem: '', canal: '' })} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button>{podeEditar ? <button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button> : null}</div></div>
+      {resultadoTeste ? (
+        <div className={`hint-box top-space ${resultadoTeste.status === 'bloqueada' ? 'alert-error' : resultadoTeste.status === 'alerta' ? 'alert-warn' : ''}`}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+            <div>
+              <strong>{resultadoTeste.status === 'aprovada' ? '✓ Tabela aprovada no pré-teste' : resultadoTeste.status === 'alerta' ? '⚠ Tabela aprovada com alertas' : '✕ Tabela bloqueada no pré-teste'}</strong><br />
+              {(resultadoTeste.totais?.origens || 0).toLocaleString('pt-BR')} origem(ns) · {(resultadoTeste.totais?.rotas || 0).toLocaleString('pt-BR')} rota(s) · {(resultadoTeste.totais?.cotacoes || 0).toLocaleString('pt-BR')} cotação(ões) · {(resultadoTeste.simulacoes?.sucesso || 0)} de {(resultadoTeste.simulacoes?.executadas || 0)} cenário(s) calculado(s) · {resultadoTeste.duracaoMs || 0} ms
+            </div>
+            <button className="btn-link inline-btn" onClick={() => setResultadoTeste(null)}>Fechar</button>
+          </div>
+          {[...(resultadoTeste.erros || []), ...(resultadoTeste.alertas || [])].length ? (
+            <ul style={{ margin: '10px 0 0', paddingLeft: 20 }}>
+              {[...(resultadoTeste.erros || []), ...(resultadoTeste.alertas || [])].slice(0, 12).map((mensagem) => <li key={mensagem}>{mensagem}</li>)}
+            </ul>
+          ) : null}
+          {resultadoTeste.origens?.length ? (
+            <div style={{ marginTop: 10, fontSize: 12, color: '#475569' }}>
+              Maiores origens: {resultadoTeste.origens.slice(0, 5).map((item) => `${item.origem} (${item.cotacoes.toLocaleString('pt-BR')} cotações)`).join(' · ')}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {feedbackChamado ? <div className="mini-feedback success top-space">{feedbackChamado}</div> : null}
       {store.syncStatus?.carregandoDetalheId === transportadora.id ? (
         <div className="hint-box top-space">
@@ -1971,6 +2008,18 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
   const [sugestoesCte, setSugestoesCte] = useState([]);
   const [selecionados, setSelecionados] = useState([]);
   const [erroVinculo, setErroVinculo] = useState('');
+  const [resultadoPreTeste, setResultadoPreTeste] = useState(null);
+
+  useEffect(() => {
+    if (!open || !origem) {
+      setResultadoPreTeste(null);
+      return;
+    }
+    setResultadoPreTeste(testarTransportadoraRapido({
+      ...transportadora,
+      origens: [origem],
+    }));
+  }, [open, transportadora, origem]);
 
   if (!open) return null;
 
@@ -2034,6 +2083,22 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
 
   return (
     <Modal open={open} title={`Confirmar validação — ${origem?.cidade || ''}`} onClose={onClose}>
+      <div className={`hint-box ${resultadoPreTeste?.status === 'bloqueada' ? 'alert-error' : resultadoPreTeste?.status === 'alerta' ? 'alert-warn' : ''}`}>
+        <strong>1. Pré-teste da tabela</strong>
+        {!resultadoPreTeste ? <p style={{ margin: '8px 0 0' }}>Preparando amostra...</p> : (
+          <>
+            <p style={{ margin: '8px 0 0' }}>
+              {resultadoPreTeste.status === 'aprovada' ? '✓ Aprovada' : resultadoPreTeste.status === 'alerta' ? '⚠ Aprovada com alertas' : '✕ Bloqueada'} · {resultadoPreTeste.simulacoes.sucesso} de {resultadoPreTeste.simulacoes.executadas} cenário(s) calculado(s) · {resultadoPreTeste.totais.rotas.toLocaleString('pt-BR')} rota(s) · {resultadoPreTeste.totais.cotacoes.toLocaleString('pt-BR')} cotação(ões)
+            </p>
+            {[...(resultadoPreTeste.erros || []), ...(resultadoPreTeste.alertas || [])].length ? (
+              <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+                {[...(resultadoPreTeste.erros || []), ...(resultadoPreTeste.alertas || [])].slice(0, 8).map((mensagem) => <li key={mensagem}>{mensagem}</li>)}
+              </ul>
+            ) : null}
+          </>
+        )}
+      </div>
+
       <div className="hint-box">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
           <strong>Vínculos com CT-e para {transportadora?.nome}</strong>
@@ -2134,7 +2199,7 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
 
       <div className="actions-right gap-row top-space">
         <button className="btn-secondary" onClick={onClose}>Cancelar</button>
-        <button className="btn-primary" onClick={onConfirmar}>Confirmar validação</button>
+        <button className="btn-primary" onClick={onConfirmar} disabled={!resultadoPreTeste || resultadoPreTeste.status === 'bloqueada'} title={resultadoPreTeste?.status === 'bloqueada' ? 'Corrija os bloqueios do pré-teste antes de validar.' : undefined}>Confirmar validação</button>
       </div>
     </Modal>
   );

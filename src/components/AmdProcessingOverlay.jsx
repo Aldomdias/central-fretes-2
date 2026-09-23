@@ -28,6 +28,8 @@ export const ETAPA_LABEL_AUDITORIA = {
   processando_origem: 'Processando origem',
   salvando_jornada: 'Gravando decisão na jornada dos CT-es',
   salvando_candidatos_origem: 'Calculando e salvando candidatos da origem',
+  lendo_arquivos: 'Lendo arquivos',
+  gravando_registros: 'Gravando registros',
 };
 
 export function rotuloEtapaAuditoria(progresso) {

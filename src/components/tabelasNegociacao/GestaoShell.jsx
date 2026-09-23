@@ -9,6 +9,7 @@ import GestaoAprovacoes from './GestaoAprovacoes';
 import GestaoHistorico from './GestaoHistorico';
 import GestaoSavingsAprovados from './GestaoSavingsAprovados';
 import GestaoSavingSimulado from './GestaoSavingSimulado';
+import GestaoSavingTransportadora from './GestaoSavingTransportadora';
 import { gestaoStyles } from './GestaoStyles';
 
 const FILTROS_INICIAIS = {
@@ -47,6 +48,7 @@ const ABAS = [
   ['aprovacoes', 'Aprovações'],
   ['savings-aprovados', 'Savings pós-aprovação'],
   ['saving-simulado', 'Saving simulado'],
+  ['saving-transportadora', 'Saving por transportadora'],
   ['historico', 'Histórico'],
 ];
 
@@ -189,6 +191,10 @@ export default function GestaoShell({
 
       {aba === 'saving-simulado' ? (
         <GestaoSavingSimulado tabelas={tabelas} />
+      ) : null}
+
+      {aba === 'saving-transportadora' ? (
+        <GestaoSavingTransportadora tabelas={tabelas} />
       ) : null}
 
       {aba === 'historico' ? (

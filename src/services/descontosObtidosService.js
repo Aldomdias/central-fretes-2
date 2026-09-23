@@ -239,11 +239,36 @@ export async function listarDescontosEnviadosLegado() {
   }
 }
 
+// Soft delete: financeiro_protocolos já usa "ativo=false" pra desativar sem
+// apagar (mesma convenção usada quando um protocolo é substituído). Usado
+// aqui pra excluir uma solicitação identificada como duplicata na
+// conciliação Enviado x realizado.
+export async function excluirProtocoloComDesconto(id) {
+  const client = exigirClient();
+  const { error } = await client
+    .from('financeiro_protocolos')
+    .update({ ativo: false, updated_at: new Date().toISOString() })
+    .eq('id', id);
+  if (error) throw new Error(`Erro ao excluir protocolo: ${error.message}`);
+}
+
+// financeiro_descontos_enviados_legado é um log de importação (só
+// select+insert por padrão); "excluido" é a única forma de soft delete e
+// exige a migration supabase/migrations/20260922_004_descontos_enviados_legado_exclusao.sql.
+export async function excluirDescontoEnviadoLegado(id) {
+  const client = exigirClient();
+  const { error } = await client
+    .from(TABELA_ENVIADOS_LEGADO)
+    .update({ excluido: true })
+    .eq('id', id);
+  if (error) throw new Error(`Erro ao excluir desconto enviado importado: ${error.message}. Rode a migration supabase/migrations/20260922_004_descontos_enviados_legado_exclusao.sql.`);
+}
+
 export async function listarProtocolosComDesconto() {
   try {
     return await buscarTodasPaginas(() => exigirClient()
       .from('financeiro_protocolos')
-      .select('id, protocolo, numero_fatura, transportadora, cnpj_transportadora, desconto_total, centro_custo_codigo, enviado_em, created_at, ativo')
+      .select('id, protocolo, numero_fatura, transportadora, cnpj_transportadora, desconto_total, centro_custo_codigo, partida, enviado_em, created_at, ativo')
       .gt('desconto_total', 0)
       .eq('ativo', true)
       .order('enviado_em', { ascending: true }));

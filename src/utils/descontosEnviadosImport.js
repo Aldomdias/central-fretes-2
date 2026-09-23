@@ -41,6 +41,12 @@ function dataEnvioPeloArquivo(nome, anoReferencia) {
   let ano = match[3] || anoReferencia;
   if (!ano) return null;
   if (String(ano).length === 2) ano = `20${ano}`;
+  // anoReferencia vem do Vencimento das linhas do arquivo — se essa coluna
+  // veio vazia/com valor quebrado em todas as linhas, o ano cai pra algo
+  // implausível (ex.: 1900, de uma célula de data do Excel mal lida). Não
+  // grava uma data claramente errada; melhor não ter data de envio do que
+  // ter uma errada.
+  if (Number(ano) < 2000 || Number(ano) > 2100) return null;
   return `${ano}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
 }
 
