@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarSessao } from '../utils/authLocal';
 import {
+  completarVinculosPendentes,
   decidirAutorizacao,
   desativarAutorizacao,
   lancarSaldoAntecipado,
@@ -24,11 +25,17 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
   const [processando, setProcessando] = useState('');
   const [form, setForm] = useState({ chave: '', pedido: '', valor: '', observacao: '' });
 
-  const carregar = async () => {
+  // Recarrega a fila e, de quebra, busca no tracking o pedido (Marketplace) e a
+  // chave da NF que faltarem nos itens — quem autoriza precisa ver isso.
+  const carregar = async (avisar = false) => {
     setCarregando(true);
     setErro('');
     try {
-      setItens(await listarAutorizacoes({ canal }));
+      let lista = await listarAutorizacoes({ canal });
+      const preenchidos = await completarVinculosPendentes(lista.filter((item) => item.status === 'PENDENTE'));
+      if (preenchidos) lista = await listarAutorizacoes({ canal });
+      setItens(lista);
+      if (avisar) setMensagem(preenchidos ? `${preenchidos} item(ns) atualizado(s) com pedido/chave da NF.` : 'Fila atualizada — nada novo pra completar.');
     } catch (error) {
       setErro(error.message || String(error));
     } finally {
@@ -109,7 +116,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
         {[['fila', `Fila (${pendentes.length})`], ['lancar', 'Lancar saldo autorizado'], ['historico', `Historico (${decididas.length})`]].map(([id, label]) => (
           <button key={id} className={`toggle-btn ${aba === id ? 'active' : ''}`} onClick={() => setAba(id)}>{label}</button>
         ))}
-        <button className="btn-secondary" onClick={carregar} disabled={carregando}>{carregando ? 'Atualizando...' : '↻ Atualizar'}</button>
+        <button className="btn-secondary" onClick={() => carregar(true)} disabled={carregando} title="Recarrega a fila e busca o pedido e a chave da NF que faltarem">{carregando ? 'Atualizando...' : '↻ Atualizar e buscar pedido/NF'}</button>
       </div>
       <div className="summary-strip audit-summary-grid">
         <div className="summary-card audit-kpi" style={{ borderLeft: '4px solid #9b1111' }}><span>Aguardando decisao</span><strong>{pendentes.length}</strong></div>
