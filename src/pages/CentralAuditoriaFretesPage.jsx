@@ -280,23 +280,32 @@ function aplicarSaldoTransporteNoDetalhe(item, saldos, referenciaCtes) {
   return { ...item, calculado_frete: calculado, diferenca, saldo_autorizado: saldo, status: Math.abs(diferenca) <= 0.01 ? 'OK' : 'DIVERGENTE' };
 }
 
-async function aplicarSaldoTransporteNaExibicao(registros = []) {
-  const saldos = await carregarSaldosAutorizadosPorChave(registros.flatMap((row) => [row.chave_cte, row.chave_nfe]));
-  if (!saldos.size) return registros;
-  return registros.map((row) => {
-    const saldo = Number(saldos.get(normalizarChaveCte(row.chave_cte)) || saldos.get(normalizarChaveCte(row.chave_nfe)) || 0);
-    if (!(saldo > 0) || !(Number(row.valor_calculado || 0) > 0)) return row;
-    const valorCalculado = Number((Number(row.valor_calculado) + saldo).toFixed(2));
-    const diferenca = Number((Number(row.valor_cte || 0) - valorCalculado).toFixed(2));
-    return {
-      ...row,
-      valor_calculado: valorCalculado,
-      diferenca,
-      diferenca_abs: Math.abs(diferenca),
-      percentual_diferenca: valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0,
-      detalhes_calculo: { ...(row.detalhes_calculo || {}), saldo_transporte_autorizado: saldo },
-    };
-  });
+function recalcularLinhaAvulsa(row, valorCalculado, saldo) {
+  const diferenca = Number((Number(row.valor_cte || 0) - valorCalculado).toFixed(2));
+  const { saldo_transporte_autorizado: _ignorado, ...detalhesSemSaldo } = row.detalhes_calculo || {};
+  return {
+    ...row,
+    valor_calculado: valorCalculado,
+    diferenca,
+    diferenca_abs: Math.abs(diferenca),
+    percentual_diferenca: valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0,
+    detalhes_calculo: saldo > 0 ? { ...detalhesSemSaldo, saldo_transporte_autorizado: saldo } : (row.detalhes_calculo ? detalhesSemSaldo : row.detalhes_calculo),
+  };
+}
+
+// Soma o saldo autorizado ao AMD da linha (sem contar duas vezes se ja aplicado).
+function aplicarSaldoNaLinhaAvulsa(row, saldos) {
+  if (!saldos?.size || row.detalhes_calculo?.saldo_transporte_autorizado) return row;
+  const saldo = Number(saldos.get(normalizarChaveCte(row.chave_cte)) || saldos.get(normalizarChaveCte(row.chave_nfe)) || 0);
+  if (!(saldo > 0) || !(Number(row.valor_calculado || 0) > 0)) return row;
+  return recalcularLinhaAvulsa(row, Number((Number(row.valor_calculado) + saldo).toFixed(2)), saldo);
+}
+
+// Desfaz a soma antes de gravar: o banco guarda so o calculo puro do motor.
+function removerSaldoDaLinhaAvulsa(row) {
+  const saldo = Number(row?.detalhes_calculo?.saldo_transporte_autorizado || 0);
+  if (!(saldo > 0)) return row;
+  return recalcularLinhaAvulsa(row, Number((Number(row.valor_calculado || 0) - saldo).toFixed(2)), 0);
 }
 
 function chaveUnicaCteFatura(item = {}) {
@@ -2982,7 +2991,21 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [buscaCtesAvulsa, setBuscaCtesAvulsa] = useState('');
   const [auditandoCtesAvulsos, setAuditandoCtesAvulsos] = useState(false);
   const [progressoCtesAvulsos, setProgressoCtesAvulsos] = useState(null);
-  const [resultadoCtesAvulsos, setResultadoCtesAvulsos] = useState([]);
+  const [resultadoCtesAvulsosBase, setResultadoCtesAvulsos] = useState([]);
+  const [saldosAvulsos, setSaldosAvulsos] = useState(new Map());
+  // Saldo autorizado (gestor do transporte) entra so aqui, na exibicao — vale
+  // pra Consultar e pra Auditar. Nada disso vai pro banco (ver salvarAuditoriaAvulsa).
+  useEffect(() => {
+    let ativo = true;
+    const chaves = resultadoCtesAvulsosBase.flatMap((row) => [row.chave_cte, row.chave_nfe]).filter(Boolean);
+    if (!chaves.length) { setSaldosAvulsos(new Map()); return undefined; }
+    carregarSaldosAutorizadosPorChave(chaves).then((mapa) => { if (ativo) setSaldosAvulsos(mapa); });
+    return () => { ativo = false; };
+  }, [resultadoCtesAvulsosBase]);
+  const resultadoCtesAvulsos = useMemo(
+    () => resultadoCtesAvulsosBase.map((row) => aplicarSaldoNaLinhaAvulsa(row, saldosAvulsos)),
+    [resultadoCtesAvulsosBase, saldosAvulsos],
+  );
   const [cteAvulsoExpandido, setCteAvulsoExpandido] = useState(null);
   const [resultadoCtesAvulsosSalvos, setResultadoCtesAvulsosSalvos] = useState(false);
   const [toleranciaAuditoria, setToleranciaAuditoria] = useState(carregarToleranciaAuditoria);
@@ -3238,7 +3261,9 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   };
 
   const salvarAuditoriaAvulsa = async (registrosParam = resultadoCtesAvulsos) => {
-    const registros = (registrosParam || []).filter((row) => row?.chave_cte || row?.numero_cte);
+    // Tira o saldo autorizado da exibicao antes de gravar: no banco fica o
+    // calculo puro do motor, senao a reauditoria da fatura contaria em dobro.
+    const registros = (registrosParam || []).filter((row) => row?.chave_cte || row?.numero_cte).map(removerSaldoDaLinhaAvulsa);
     if (!registros.length) {
       setMensagemImportacao('Nenhum CT-e calculado para salvar.');
       return;
@@ -3498,11 +3523,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         trackingOverridePorChave,
         reentregaPorChave,
       });
-      // Saldo autorizado (gestor do transporte) so na exibicao: o que vai pro
-      // banco continua sendo o calculo puro do motor — a reauditoria da fatura
-      // soma o saldo sozinha e nao pode contar duas vezes.
-      const registrosExibicao = await aplicarSaldoTransporteNaExibicao(registros);
-      const registrosComFaturas = await enriquecerCtesComFaturas(registrosExibicao);
+      const registrosComFaturas = await enriquecerCtesComFaturas(registros);
       setResultadoCtesAvulsos(registrosComFaturas);
       if (registros.length) {
         await salvarAuditoriaAvulsa(registros);
