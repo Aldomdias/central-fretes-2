@@ -164,13 +164,14 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
       {aba === 'historico' && (
         <div className="table-card"><div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th>Decidido em</th><th>Origem</th><th>Status</th><th>Chave CT-e</th><th>Chave NF</th><th>Valor autorizado</th><th>Observacao</th><th>Por</th><th /></tr></thead>
+            <thead><tr><th>Decidido em</th><th>Origem</th><th>Status</th><th>Pedido</th><th>Chave CT-e</th><th>Chave NF</th><th>Valor autorizado</th><th>Observacao</th><th>Por</th><th /></tr></thead>
             <tbody>
               {decididas.map((item) => (
                 <tr key={item.id}>
                   <td>{dataHora(item.decidido_em)}</td>
                   <td>{item.origem === 'GESTOR' ? 'Lancado pelo gestor' : 'Fila da auditoria'}</td>
                   <td>{item.status}</td>
+                  <td>{item.numero_pedido || '-'}</td>
                   <td style={{ fontSize: 11 }}>{item.chave_cte || '-'}</td>
                   <td style={{ fontSize: 11 }}>{item.chave_nfe || '-'}</td>
                   <td>{dinheiro(item.valor_autorizado)}</td>
@@ -179,7 +180,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   <td>{item.status === 'AUTORIZADA' && <button className="btn-secondary" onClick={() => remover(item)}>Remover</button>}</td>
                 </tr>
               ))}
-              {!decididas.length && <tr><td colSpan={9}>Nada decidido ainda.</td></tr>}
+              {!decididas.length && <tr><td colSpan={10}>Nada decidido ainda.</td></tr>}
             </tbody>
           </table>
         </div></div>
