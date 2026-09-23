@@ -1063,15 +1063,22 @@ function chaveFaturaTransportadora(numeroFatura, transportadora) {
 // quantas ja foram lancadas/pagas, quem esta com mais pendencia, quem liberou
 // sem auditar, quem tem desconto calculado sem confirmacao" — janela e filtros
 // configuraveis em vez dos cards fixos (3/7 dias) do Dashboard.
-function PainelAcompanhamento({ state, onIrParaFaturas }) {
-  const [janelaDias, setJanelaDias] = useState(10);
-  const [auditorFiltro, setAuditorFiltro] = useState('');
-  const [statusFiltro, setStatusFiltro] = useState('');
-  const [pagamentoFiltro, setPagamentoFiltro] = useState('');
-  const [transportadoraFiltro, setTransportadoraFiltro] = useState('');
-  const [dataInicio, setDataInicio] = useState('');
-  const [dataFim, setDataFim] = useState('');
-  const [somenteAbertas, setSomenteAbertas] = useState(true);
+// Filtros do Painel vem de fora (useState no componente pai) em vez de
+// nascerem aqui dentro: a aba some quando troca pra Faturas (deixa de
+// renderizar), entao um useState local resetaria tudo ao voltar. Vindos de
+// cima, sobrevivem a troca de aba — "ir pra Faturas e voltar com o mesmo
+// filtro" funciona sem precisar de localStorage/URL.
+function PainelAcompanhamento({
+  state, onIrParaFaturas,
+  janelaDias, setJanelaDias,
+  auditorFiltro, setAuditorFiltro,
+  statusFiltro, setStatusFiltro,
+  pagamentoFiltro, setPagamentoFiltro,
+  transportadoraFiltro, setTransportadoraFiltro,
+  dataInicio, setDataInicio,
+  dataFim, setDataFim,
+  somenteAbertas, setSomenteAbertas,
+}) {
   const [protocolos, setProtocolos] = useState(null);
   const [erroProtocolos, setErroProtocolos] = useState('');
 
@@ -6593,6 +6600,17 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
     setTab('faturas');
   };
 
+  // Estado dos filtros do Painel mora aqui (nao dentro de PainelAcompanhamento)
+  // pra sobreviver a ida-e-volta pra aba Faturas — ver comentario no componente.
+  const [painelJanelaDias, setPainelJanelaDias] = useState(10);
+  const [painelAuditorFiltro, setPainelAuditorFiltro] = useState('');
+  const [painelStatusFiltro, setPainelStatusFiltro] = useState('');
+  const [painelPagamentoFiltro, setPainelPagamentoFiltro] = useState('');
+  const [painelTransportadoraFiltro, setPainelTransportadoraFiltro] = useState('');
+  const [painelDataInicio, setPainelDataInicio] = useState('');
+  const [painelDataFim, setPainelDataFim] = useState('');
+  const [painelSomenteAbertas, setPainelSomenteAbertas] = useState(true);
+
   useEffect(() => {
     carregarPlataformaAuditoria().then(setState).catch((error) => setErro(error.message));
   }, []);
@@ -6634,7 +6652,20 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
         {TABS.map(([id, label]) => <button key={id} className={`toggle-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>{label}</button>)}
       </div>
       {tab === 'dashboard' && <Dashboard state={state} />}
-      {tab === 'painel' && <PainelAcompanhamento state={state} onIrParaFaturas={irParaFaturasComFiltro} />}
+      {tab === 'painel' && (
+        <PainelAcompanhamento
+          state={state}
+          onIrParaFaturas={irParaFaturasComFiltro}
+          janelaDias={painelJanelaDias} setJanelaDias={setPainelJanelaDias}
+          auditorFiltro={painelAuditorFiltro} setAuditorFiltro={setPainelAuditorFiltro}
+          statusFiltro={painelStatusFiltro} setStatusFiltro={setPainelStatusFiltro}
+          pagamentoFiltro={painelPagamentoFiltro} setPagamentoFiltro={setPainelPagamentoFiltro}
+          transportadoraFiltro={painelTransportadoraFiltro} setTransportadoraFiltro={setPainelTransportadoraFiltro}
+          dataInicio={painelDataInicio} setDataInicio={setPainelDataInicio}
+          dataFim={painelDataFim} setDataFim={setPainelDataFim}
+          somenteAbertas={painelSomenteAbertas} setSomenteAbertas={setPainelSomenteAbertas}
+        />
+      )}
       {tab === 'faturas' && <Faturas key={filtrosIniciaisFaturas?.chave || 'faturas'} state={state} onState={setState} modo="faturas" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} filtrosIniciais={filtrosIniciaisFaturas} />}
       {tab === 'auditoria-cte' && <Faturas state={state} onState={setState} modo="auditoria-cte" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />}
       {tab === 'aprovacao' && <AprovacaoGestao state={state} onState={setState} />}
