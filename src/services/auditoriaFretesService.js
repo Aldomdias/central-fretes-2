@@ -857,10 +857,15 @@ export async function atualizarStatusFaturasPagasEmLote(state, pagamentosCompens
   // pagamento parcelado): o upsert nao aceita dois updates pro mesmo id no
   // mesmo lote, entao consolida por fatura antes de enviar (soma o valor
   // pago e fica com a data mais recente).
+  // Fatura que passou por aprovacao da gestao com desconto (LIBERADA_COM_DESCONTO)
+  // vira PAGA_COM_DESCONTO em vez de PAGA simples, pra nao perder esse historico
+  // quando o pagamento compensa — mesma logica de "esse pagamento teve desconto".
+  const faturasPorId = new Map((state.faturas || []).map((item) => [item.id, item]));
   const porFatura = new Map();
   for (const pagamento of pagamentosCompensados) {
     const atual = porFatura.get(pagamento.fatura_id);
-    const status = pagamento.resultado === 'PAGO' ? 'PAGA' : 'PAGA_COM_DIVERGENCIA';
+    const teveDesconto = faturasPorId.get(pagamento.fatura_id)?.status === 'LIBERADA_COM_DESCONTO';
+    const status = pagamento.resultado === 'PAGO' ? (teveDesconto ? 'PAGA_COM_DESCONTO' : 'PAGA') : 'PAGA_COM_DIVERGENCIA';
     if (!atual) {
       porFatura.set(pagamento.fatura_id, {
         id: pagamento.fatura_id,
@@ -884,7 +889,7 @@ export async function atualizarStatusFaturasPagasEmLote(state, pagamentosCompens
     id: uid('hist'),
     fatura_id: pagamento.fatura_id,
     acao: 'PAGAMENTO_CONCILIADO',
-    status_novo: pagamento.resultado === 'PAGO' ? 'PAGA' : 'PAGA_COM_DIVERGENCIA',
+    status_novo: porFatura.get(pagamento.fatura_id)?.status || (pagamento.resultado === 'PAGO' ? 'PAGA' : 'PAGA_COM_DIVERGENCIA'),
     descricao: `Pagamento conciliado via relatorio SAP: ${pagamento.resultado} (doc. ${pagamento.documento_compensacao || '-'}).`,
     usuario_nome: usuarioNome,
     created_at: agora,
