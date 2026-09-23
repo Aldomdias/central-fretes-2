@@ -34,6 +34,14 @@ export async function enviarParaAutorizacao(itens = [], usuarioNome = '') {
     if (error) throw new Error(`Erro ao verificar fila: ${error.message}`);
     existentes = new Set((data || []).map((row) => row.chave_cte));
   }
+  const semPedido = itens.filter((item) => !item.numero_pedido && soDigitos(item.chave_cte)).map((item) => soDigitos(item.chave_cte));
+  const pedidoPorCte = new Map();
+  if (semPedido.length) {
+    try {
+      const { data } = await client.from('tracking_rows').select('chave_cte,pedido_erp,mk:raw->>Pedido Marketplace').in('chave_cte', semPedido);
+      (data || []).forEach((row) => pedidoPorCte.set(soDigitos(row.chave_cte), row.mk || row.pedido_erp || ''));
+    } catch (error) { /* pedido e so informativo */ }
+  }
   const novos = itens
     .filter((item) => soDigitos(item.chave_cte) || soDigitos(item.chave_nfe))
     .filter((item) => !existentes.has(soDigitos(item.chave_cte)))
@@ -43,7 +51,7 @@ export async function enviarParaAutorizacao(itens = [], usuarioNome = '') {
       status: 'PENDENTE',
       chave_cte: soDigitos(item.chave_cte) || null,
       chave_nfe: soDigitos(item.chave_nfe) || null,
-      numero_pedido: item.numero_pedido || null,
+      numero_pedido: item.numero_pedido || pedidoPorCte.get(soDigitos(item.chave_cte)) || null,
       transportadora: item.transportadora || null,
       cidade_origem: item.cidade_origem || null,
       cidade_destino: item.cidade_destino || null,
@@ -84,18 +92,20 @@ async function resolverVinculo({ chaveCte, chaveNfe, pedido }) {
   };
   try {
     let linha = null;
-    if (chaveNfe) linha = await buscar('tracking_rows', 'chave_nfe', chaveNfe, 'chave_cte,chave_nfe,pedido,pedido_erp');
+    if (chaveNfe) linha = await buscar('tracking_rows', 'chave_nfe', chaveNfe, 'chave_cte,chave_nfe,pedido,pedido_erp,mk:raw->>Pedido Marketplace');
     if (!linha && chaveNfe) linha = await buscar('realizado_local_ctes', 'chave_nfe', chaveNfe, 'chave_cte,chave_nfe');
-    if (!linha && chaveCte) linha = await buscar('tracking_rows', 'chave_cte', chaveCte, 'chave_cte,chave_nfe,pedido,pedido_erp');
+    if (!linha && chaveCte) linha = await buscar('tracking_rows', 'chave_cte', chaveCte, 'chave_cte,chave_nfe,pedido,pedido_erp,mk:raw->>Pedido Marketplace');
     if (!linha && chaveCte) linha = await buscar('realizado_local_ctes', 'chave_cte', chaveCte, 'chave_cte,chave_nfe');
     if (!linha && pedido) {
-      linha = await buscar('tracking_rows', 'pedido', pedido, 'chave_cte,chave_nfe,pedido,pedido_erp')
-        || await buscar('tracking_rows', 'pedido_erp', pedido, 'chave_cte,chave_nfe,pedido,pedido_erp');
+      // "Numero do pedido" = Pedido Marketplace (o que a operacao usa); aceita tambem o ERP.
+      linha = await buscar('tracking_rows', 'raw->>Pedido Marketplace', pedido, 'chave_cte,chave_nfe,pedido,pedido_erp,mk:raw->>Pedido Marketplace')
+        || await buscar('tracking_rows', 'pedido_erp', pedido, 'chave_cte,chave_nfe,pedido,pedido_erp,mk:raw->>Pedido Marketplace')
+        || await buscar('tracking_rows', 'pedido', pedido, 'chave_cte,chave_nfe,pedido,pedido_erp,mk:raw->>Pedido Marketplace');
     }
     if (linha) {
       achado.chaveCte = achado.chaveCte || soDigitos(linha.chave_cte);
       achado.chaveNfe = achado.chaveNfe || soDigitos(linha.chave_nfe);
-      achado.pedido = achado.pedido || linha.pedido_erp || linha.pedido || '';
+      achado.pedido = linha.mk || achado.pedido || linha.pedido_erp || linha.pedido || '';
     }
   } catch (error) {
     console.warn('[Autorizacoes transporte] vinculo nao resolvido; segue com o que foi informado.', error?.message || error);
@@ -105,7 +115,7 @@ async function resolverVinculo({ chaveCte, chaveNfe, pedido }) {
 
 // Gestor lanca a autorizacao antes da auditoria (chave do CT-e, da NF ou pedido).
 export async function lancarSaldoAntecipado({ canal, chaveCte, chaveNfe, numeroPedido, valor, observacao, usuarioNome }) {
-  const informado = { chaveCte: soDigitos(chaveCte), chaveNfe: soDigitos(chaveNfe), pedido: String(numeroPedido || '').trim() };
+  const informado = { chaveCte: soDigitos(chaveCte), chaveNfe: soDigitos(chaveNfe), pedido: String(numeroPedido || '').replace(/^#/, '').trim() };
   if (!informado.chaveCte && !informado.chaveNfe && !informado.pedido) throw new Error('Informe a chave do CT-e, da nota fiscal ou o numero do pedido.');
   if (!(numero(valor) > 0)) throw new Error('Informe o valor autorizado.');
   const vinculo = await resolverVinculo(informado);
