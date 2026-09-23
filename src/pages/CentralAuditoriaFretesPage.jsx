@@ -1112,7 +1112,10 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
 
   const liberarParaPagamento = async () => {
     const resumo = resumirDetalhesAuditoria(detalhes, toleranciaFatura);
-    const saldo = Number((resumo.cobrancaAcima - resumo.cobrancaAbaixo).toFixed(2));
+    // valor_fatura (confiavel) - calculado, nao cobrancaAcima-cobrancaAbaixo:
+    // essas duas dependem da soma do valor_frete por CT-e, que fica errada
+    // quando algum CT-e veio com valor_frete zerado/incompleto no arquivo.
+    const saldo = Number((Number(fatura.valor_fatura || 0) - resumo.calculoAmd).toFixed(2));
     await mudarStatus('PRONTA_PARA_PAGAMENTO', {
       valor_calculado: Number(resumo.calculoAmd.toFixed(2)),
       diferenca: saldo,
@@ -3574,7 +3577,10 @@ ${portaisLaudo.length ? `
         if (tipo === 'liberar') {
           const detalhesFatura = state.detalhes?.[fatura.id] || await carregarDetalhesFaturaSupabase(fatura.id);
           const resumo = resumirDetalhesAuditoria(detalhesFatura, carregarToleranciaAuditoria());
-          const saldo = Number((resumo.cobrancaAcima - resumo.cobrancaAbaixo).toFixed(2));
+          // valor_fatura (confiavel) - calculado, nao cobrancaAcima-cobrancaAbaixo:
+          // essas duas dependem da soma do valor_frete por CT-e, que fica errada
+          // quando algum CT-e veio com valor_frete zerado/incompleto no arquivo.
+          const saldo = Number((Number(fatura.valor_fatura || 0) - resumo.calculoAmd).toFixed(2));
           payload = {
             ...payload,
             status: 'PRONTA_PARA_PAGAMENTO',
