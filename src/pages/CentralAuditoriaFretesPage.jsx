@@ -2769,6 +2769,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const TAM_PAGINA_FATURAS = 100;
   const [somenteAuditadas, setSomenteAuditadas] = useState(false);
   const [detectandoCanais, setDetectandoCanais] = useState(false);
+  const [atualizandoFaturas, setAtualizandoFaturas] = useState(false);
   const [progressoCanais, setProgressoCanais] = useState(null);
   const [progressoImportacao, setProgressoImportacao] = useState(null);
   const [aberta, setAberta] = useState(null);
@@ -3108,6 +3109,27 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       setMensagemImportacao(`Erro ao registrar devolutiva: ${error.message}`);
     } finally {
       setDevolutivaJornadaSalvando(false);
+    }
+  };
+
+  // Recarrega as faturas do banco — necessario pra ver mudancas que
+  // aconteceram fora desta sessao (ex.: transportador confirmou pelo laudo,
+  // outro auditor mexeu numa fatura) sem precisar dar F5 na pagina inteira.
+  const atualizarFaturas = async () => {
+    setAtualizandoFaturas(true);
+    try {
+      const atualizado = await carregarPlataformaAuditoria();
+      onState({
+        ...atualizado,
+        protocolos: state.protocolos?.length ? state.protocolos : atualizado.protocolos,
+        solicitacaoHistorico: state.solicitacaoHistorico?.length ? state.solicitacaoHistorico : atualizado.solicitacaoHistorico,
+        pagamentos: state.pagamentos?.length ? state.pagamentos : atualizado.pagamentos,
+      });
+      setMensagemImportacao('Faturas atualizadas.');
+    } catch (error) {
+      setMensagemImportacao(`Erro ao atualizar faturas: ${error.message}`);
+    } finally {
+      setAtualizandoFaturas(false);
     }
   };
 
@@ -5176,6 +5198,9 @@ ${portaisLaudo.length ? `
             </span>
           </div>
           <div className="actions-right">
+            <button className="btn-secondary" disabled={atualizandoFaturas} onClick={atualizarFaturas} title="Recarrega as faturas do banco — util pra ver confirmacoes do transportador ou mudancas de outro auditor">
+              {atualizandoFaturas ? 'Atualizando...' : '↻ Atualizar'}
+            </button>
             <button className="btn-secondary" disabled={detectandoCanais} onClick={detectarCanais} title="Varre os CT-es já auditados e grava o canal predominante de cada fatura">
               {detectandoCanais ? `Detectando canais... ${progressoCanais?.carregados ?? ''}` : 'Detectar canais'}
             </button>
