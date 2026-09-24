@@ -88,7 +88,8 @@ import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, apli
 import { buscarTrackingPorChaveNfeManual } from '../services/trackingSupabaseService';
 import { consultarMunicipiosIbge } from '../services/ibgeService';
 import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
-import { carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarParaAutorizacao } from '../services/transporteAutorizacoesService';
+import { carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarParaAutorizacao, enviarParaSuprimentos } from '../services/transporteAutorizacoesService';
+import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
 
 const TABS = [
   ['dashboard', 'Dashboard'],
@@ -1809,9 +1810,56 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   // CT-es divergentes marcados vao pra fila do gestor do transporte do canal
   // (B2C/Atacado) autorizar um saldo — caso de cotacao/sem tabela. Quando ele
   // autoriza, a proxima reauditoria soma o valor e a divergencia some.
+  // Premissa: so vai pra aprovacao caso que a AMD ja simulou (calculado > 0) e
+  // que a AMD diz que foi cobrado a mais (diferenca positiva).
+  const casosForaDaPremissa = (alvo) => alvo.filter((item) => !(Number(item.calculado_frete || 0) > 0 && Number(item.diferenca || 0) > 0));
+  const [modalSuprimentos, setModalSuprimentos] = useState(null);
+
+  const abrirModalSuprimentos = () => {
+    const alvo = detalhes.filter((item) => selecionados.includes(item.id));
+    if (!alvo.length) return;
+    setModalSuprimentos({ alvo, tipoAjuste: TIPOS_AJUSTE_TABELA[0].valor, justificativa: '', enviando: false });
+  };
+
+  const confirmarEnvioSuprimentos = async () => {
+    const { alvo, tipoAjuste, justificativa } = modalSuprimentos;
+    if (String(justificativa).trim().length < 30) { setErroDetalhes('Justificativa muito curta: explique bem o caso (minimo 30 caracteres).'); return; }
+    setModalSuprimentos((prev) => ({ ...prev, enviando: true }));
+    try {
+      const itens = alvo.map((item) => {
+        const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte)) || referenciaCtes.get(normalizarChaveCte(item.numero_cte)) || {};
+        return {
+          chave_cte: item.chave_cte,
+          chave_nfe: item.chave_nfe || base.chave_nfe,
+          numero_pedido: item.numero_pedido || base.numero_pedido,
+          transportadora: fatura.transportadora,
+          cidade_origem: item.cidade_origem || base.cidade_origem,
+          cidade_destino: item.cidade_destino || base.cidade_destino,
+          valor_cte: item.valor_frete,
+          valor_calculado: item.calculado_frete,
+          valor_divergente: Math.max(Number(item.diferenca || 0), 0),
+          fatura_id: fatura.id,
+        };
+      });
+      const { enviados, protocolo } = await enviarParaSuprimentos(itens, {
+        tipoAjuste, justificativa, usuarioNome: sessao?.nome || sessao?.email || '', usuarioEmail: sessao?.email || '',
+      });
+      setModalSuprimentos(null);
+      setMensagemLiberacao(`✓ ${enviados} CT-e(s) enviado(s) para Suprimentos${protocolo ? ` — chamado AMD ${protocolo} aberto` : ' (chamado AMD nao foi criado, verifique a Central de Solicitacoes)'}.`);
+    } catch (error) {
+      setModalSuprimentos((prev) => (prev ? { ...prev, enviando: false } : prev));
+      setErroDetalhes(`Erro ao enviar para Suprimentos: ${error.message}`);
+    }
+  };
+
   const enviarParaAutorizacaoTransporte = async () => {
     const alvo = detalhes.filter((item) => selecionados.includes(item.id));
     if (!alvo.length) return;
+    const fora = casosForaDaPremissa(alvo);
+    if (fora.length) {
+      setErroDetalhes(`Nao da pra enviar para aprovacao: ${fora.length} CT-e(s) sem simulacao na AMD ou sem diferenca positiva (cobrado a mais). Se a AMD nao calculou, use "Enviar p/ Suprimentos".`);
+      return;
+    }
     const observacao = window.prompt(`Enviar ${alvo.length} CT-e(s) para autorizacao do responsavel do transporte. Observacao pra ele (o que aconteceu):`, '');
     if (observacao === null) return;
     try {
@@ -2951,7 +2999,28 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('EDI')}>Gerar DOCCOB EDI (Verum)</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('CSV')}>Gerar DOCCOB CSV</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('XLSX')}>Gerar DOCCOB XLSX</button>
+        <button className="btn-secondary" disabled={!selecionados.length} onClick={abrirModalSuprimentos} title="Abre um chamado AMD e envia os CT-es marcados para a fila de Suprimentos aprovar o valor">Enviar p/ Suprimentos</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={enviarParaAutorizacaoTransporte} title="Envia os CT-es marcados para o responsavel do transporte (B2C/Atacado) autorizar um saldo">Enviar p/ autorizacao transporte</button>
+        {modalSuprimentos && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="hint-box" style={{ background: '#fff', width: 'min(640px, 94vw)', padding: 20 }}>
+              <h3 style={{ marginTop: 0 }}>Enviar para Suprimentos ({modalSuprimentos.alvo.length} CT-e)</h3>
+              <p>Abre um chamado AMD na Central de Solicitacoes e coloca os CT-es na fila de Suprimentos. Quem aprovar o valor assume o chamado.</p>
+              <label className="field">Tipo de ajuste
+                <select value={modalSuprimentos.tipoAjuste} onChange={(e) => setModalSuprimentos((p) => ({ ...p, tipoAjuste: e.target.value }))}>
+                  {TIPOS_AJUSTE_TABELA.map((t) => <option key={t.valor} value={t.valor}>{t.valor}</option>)}
+                </select>
+              </label>
+              <label className="field">Justificativa * (explique bem o caso, minimo 30 caracteres)
+                <textarea rows={6} value={modalSuprimentos.justificativa} onChange={(e) => setModalSuprimentos((p) => ({ ...p, justificativa: e.target.value }))} />
+              </label>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button className="btn-secondary" disabled={modalSuprimentos.enviando} onClick={() => setModalSuprimentos(null)}>Cancelar</button>
+                <button className="btn-primary" disabled={modalSuprimentos.enviando} onClick={confirmarEnvioSuprimentos}>{modalSuprimentos.enviando ? 'Enviando...' : 'Abrir chamado e enviar'}</button>
+              </div>
+            </div>
+          </div>
+        )}
         <button className="btn-secondary" onClick={() => mudarStatus('AGUARDANDO_NOVA_FATURA')}>Solicitar nova fatura</button>
         <button className="btn-primary" onClick={liberarParaPagamento}>Liberar para pagamento</button>
         <button

@@ -147,6 +147,32 @@ export async function carregarSolicitacoesDetalhado() {
   return data || [];
 }
 
+// Quem aprova o valor no modulo Suprimentos assume o chamado: fica como
+// responsavel (a tarefa de corrigir a tabela passa a ser dele).
+export async function assumirSolicitacaoCentral(protocolo, dados = {}) {
+  const supabase = getClient();
+  const protocoloNorm = normalizarProtocolo(protocolo);
+  if (!supabase || !protocoloNorm) return { ok: false, ignorado: true };
+  const agora = new Date().toISOString();
+  const mensagem = dados.mensagem || `Valor aprovado por ${dados.responsavel}; chamado assumido pra corrigir a tabela.`;
+  const { data, error } = await supabase
+    .from('solicitacoes')
+    .update({ responsavel: dados.responsavel, mensagem_status: mensagem, data_ultima_atualizacao: agora })
+    .eq('protocolo', protocoloNorm)
+    .select('id, protocolo, status, responsavel')
+    .maybeSingle();
+  if (error) throw new Error(error.message || 'Erro ao assumir solicitacao na Central de Solicitacoes.');
+  if (!data?.id) return { ok: false, naoEncontrada: true, protocolo: protocoloNorm };
+  await supabase.from('historico_solicitacoes').insert({
+    solicitacao_id: data.id,
+    acao: 'Assumida via aprovacao de valor (Central Fretes)',
+    usuario: dados.responsavel,
+    mensagem,
+    data_evento: agora,
+  });
+  return { ok: true, solicitacao: data };
+}
+
 export async function concluirSolicitacaoCentral(protocolo, dados = {}) {
   const supabase = getClient();
   const protocoloNorm = normalizarProtocolo(protocolo);

@@ -10,7 +10,7 @@ import {
 
 const dinheiro = (valor) => Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const dataHora = (valor) => (valor ? new Date(valor).toLocaleString('pt-BR') : '-');
-const rotulo = (canal) => (canal === 'B2C' ? 'B2C' : 'Atacado');
+const rotulo = (canal) => (canal === 'B2C' ? 'B2C' : canal === 'SUPRIMENTOS' ? 'Suprimentos' : 'Atacado');
 
 // Um modulo por canal (B2C / Atacado): cada gestor so ve a fila do seu.
 export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
@@ -61,10 +61,10 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
     setMensagem('');
     try {
       await decidirAutorizacao({
-        id: item.id, autorizar, valorAutorizado, observacao: campo(item.id, 'obs', ''), usuarioNome,
+        id: item.id, autorizar, valorAutorizado, observacao: campo(item.id, 'obs', ''), usuarioNome, item,
       });
       setMensagem(autorizar
-        ? `Autorizado ${dinheiro(valorAutorizado)} — na proxima reauditoria da fatura a divergencia desse CT-e sai.`
+        ? `Autorizado ${dinheiro(valorAutorizado)} — na proxima reauditoria da fatura a divergencia desse CT-e sai.${item.protocolo_amd ? ` Chamado ${item.protocolo_amd} assumido por voce: corrija a tabela na Central de Solicitacoes.` : ''}`
         : 'Solicitacao recusada.');
       await carregar();
     } catch (error) {
@@ -130,11 +130,12 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
       {aba === 'fila' && (
         <div className="table-card"><div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th>Pedido</th><th>Chave CT-e</th><th>Chave NF</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor CT-e</th><th>Calculado</th><th>Divergente</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Justificativa *</th><th /></tr></thead>
+            <thead><tr><th>Pedido</th>{canal === 'SUPRIMENTOS' && <th>Chamado AMD</th>}<th>Chave CT-e</th><th>Chave NF</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor CT-e</th><th>Calculado</th><th>Divergente</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Justificativa *</th><th /></tr></thead>
             <tbody>
               {pendentes.map((item) => (
                 <tr key={item.id}>
                   <td>{item.numero_pedido || '-'}</td>
+                  {canal === 'SUPRIMENTOS' && <td>{item.protocolo_amd || '-'}<br /><small>{item.tipo_ajuste || ''}</small></td>}
                   <td style={{ fontSize: 11 }}>{item.chave_cte || '-'}</td>
                   <td style={{ fontSize: 11 }}>{item.chave_nfe || '-'}</td>
                   <td>{item.cidade_origem || '-'} → {item.cidade_destino || '-'}</td>
@@ -151,7 +152,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   </td>
                 </tr>
               ))}
-              {!pendentes.length && <tr><td colSpan={12}>{carregando ? 'Carregando...' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
+              {!pendentes.length && <tr><td colSpan={13}>{carregando ? 'Carregando...' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
             </tbody>
           </table>
         </div></div>
