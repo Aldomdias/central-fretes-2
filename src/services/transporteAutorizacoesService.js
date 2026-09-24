@@ -186,6 +186,37 @@ export async function desativarAutorizacao(id) {
   if (error) throw new Error(`Erro ao remover autorizacao: ${error.message}`);
 }
 
+// Decisoes do gestor (autorizou/recusou/na fila) por chave de CT-e ou NF, com
+// justificativa e quem decidiu — pra mostrar no CT-e (tooltip da coluna Saldo).
+export async function carregarDecisoesPorChave(chaves = []) {
+  const mapa = new Map();
+  if (!isSupabaseConfigured()) return mapa;
+  const unicas = [...new Set(chaves.map(soDigitos).filter(Boolean))];
+  const client = getSupabaseClient();
+  try {
+    for (let inicio = 0; inicio < unicas.length; inicio += 150) {
+      const lote = unicas.slice(inicio, inicio + 150).join(',');
+      const { data, error } = await client.from(TABELA)
+        .select('id, canal, status, chave_cte, chave_nfe, valor_autorizado, valor_divergente, observacao_gestor, observacao_auditoria, decidido_por, decidido_em, enviado_por, enviado_em')
+        .eq('ativo', true)
+        .or(`chave_cte.in.(${lote}),chave_nfe.in.(${lote})`)
+        .order('enviado_em', { ascending: false });
+      if (error) throw error;
+      (data || []).forEach((row) => {
+        [row.chave_cte, row.chave_nfe].filter(Boolean).forEach((chave) => {
+          if (!unicas.includes(chave)) return;
+          const lista = mapa.get(chave) || [];
+          if (!lista.some((item) => item.id === row.id)) lista.push(row);
+          mapa.set(chave, lista);
+        });
+      });
+    }
+  } catch (error) {
+    console.warn('[Autorizacoes transporte] decisoes indisponiveis.', error?.message || error);
+  }
+  return mapa;
+}
+
 // Saldo autorizado por chave (CT-e ou NF), somando se houver mais de uma.
 // Retorna Map<chaveSoDigitos, valor>. Falha aqui nunca pode travar a auditoria.
 export async function carregarSaldosAutorizadosPorChave(chaves = []) {

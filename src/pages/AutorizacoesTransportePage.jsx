@@ -55,6 +55,8 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
   const decidir = async (item, autorizar) => {
     const valorAutorizado = Number(String(campo(item.id, 'valor', item.valor_divergente)).replace(',', '.')) || 0;
     if (autorizar && !(valorAutorizado > 0)) { setMensagem('Informe um valor autorizado maior que zero.'); return; }
+    // Sem contexto nao da pra autorizar nem recusar: justificativa obrigatoria.
+    if (!String(campo(item.id, 'obs', '')).trim()) { setMensagem('Informe a justificativa (obrigatoria) para autorizar ou recusar.'); return; }
     setProcessando(item.id);
     setMensagem('');
     try {
@@ -128,7 +130,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
       {aba === 'fila' && (
         <div className="table-card"><div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th>Pedido</th><th>Chave CT-e</th><th>Chave NF</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor CT-e</th><th>Calculado</th><th>Divergente</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Sua observacao</th><th /></tr></thead>
+            <thead><tr><th>Pedido</th><th>Chave CT-e</th><th>Chave NF</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor CT-e</th><th>Calculado</th><th>Divergente</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Justificativa *</th><th /></tr></thead>
             <tbody>
               {pendentes.map((item) => (
                 <tr key={item.id}>
@@ -142,7 +144,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   <td><strong style={{ color: '#9b1111' }}>{dinheiro(item.valor_divergente)}</strong></td>
                   <td>{item.observacao_auditoria || '-'}</td>
                   <td><input style={{ width: 90 }} value={campo(item.id, 'valor', String(item.valor_divergente ?? ''))} onChange={(e) => editar(item.id, 'valor', e.target.value)} /></td>
-                  <td><input value={campo(item.id, 'obs', '')} onChange={(e) => editar(item.id, 'obs', e.target.value)} placeholder="Observacao" /></td>
+                  <td><input value={campo(item.id, 'obs', '')} onChange={(e) => editar(item.id, 'obs', e.target.value)} placeholder="Justificativa (obrigatoria)" /></td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn-primary" disabled={processando === item.id} onClick={() => decidir(item, true)}>Autorizar</button>{' '}
                     <button className="btn-secondary" disabled={processando === item.id} onClick={() => decidir(item, false)}>Recusar</button>
