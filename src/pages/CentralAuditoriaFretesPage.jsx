@@ -1823,8 +1823,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
 
   const confirmarEnvioSuprimentos = async () => {
     const { alvo, tipoAjuste, justificativa } = modalSuprimentos;
-    if (String(justificativa).trim().length < 30) { setErroDetalhes('Justificativa muito curta: explique bem o caso (minimo 30 caracteres).'); return; }
-    setModalSuprimentos((prev) => ({ ...prev, enviando: true }));
+    if (String(justificativa).trim().length < 30) { setModalSuprimentos((prev) => ({ ...prev, erro: `Justificativa muito curta (${String(justificativa).trim().length}/30 caracteres). Explique melhor o caso.` })); return; }
+    setModalSuprimentos((prev) => ({ ...prev, enviando: true, erro: '' }));
     try {
       const itens = alvo.map((item) => {
         const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte)) || referenciaCtes.get(normalizarChaveCte(item.numero_cte)) || {};
@@ -1847,8 +1847,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       setModalSuprimentos(null);
       setMensagemLiberacao(`✓ ${enviados} CT-e(s) enviado(s) para Suprimentos${protocolo ? ` — chamado AMD ${protocolo} aberto` : ' (chamado AMD nao foi criado, verifique a Central de Solicitacoes)'}.`);
     } catch (error) {
-      setModalSuprimentos((prev) => (prev ? { ...prev, enviando: false } : prev));
-      setErroDetalhes(`Erro ao enviar para Suprimentos: ${error.message}`);
+      setModalSuprimentos((prev) => (prev ? { ...prev, enviando: false, erro: `Erro ao enviar para Suprimentos: ${error.message}` } : prev));
     }
   };
 
@@ -3014,6 +3013,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
               <label className="field">Justificativa * (explique bem o caso, minimo 30 caracteres)
                 <textarea rows={6} value={modalSuprimentos.justificativa} onChange={(e) => setModalSuprimentos((p) => ({ ...p, justificativa: e.target.value }))} />
               </label>
+              {modalSuprimentos.erro && <div className="hint-box compact error-text">{modalSuprimentos.erro}</div>}
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button className="btn-secondary" disabled={modalSuprimentos.enviando} onClick={() => setModalSuprimentos(null)}>Cancelar</button>
                 <button className="btn-primary" disabled={modalSuprimentos.enviando} onClick={confirmarEnvioSuprimentos}>{modalSuprimentos.enviando ? 'Enviando...' : 'Abrir chamado e enviar'}</button>
