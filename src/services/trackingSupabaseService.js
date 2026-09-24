@@ -96,6 +96,7 @@ function toDbRow(row = {}) {
     pedido_erp: row.pedidoErp || '',
     canal: row.canal || '',
     canal_original: row.canalOriginal || '',
+    status_pedido: row.statusPedido || row.status || '',
     transportadora: row.transportadora || '',
     cidade_origem: row.cidadeOrigem || '',
     uf_origem: row.ufOrigem || '',
