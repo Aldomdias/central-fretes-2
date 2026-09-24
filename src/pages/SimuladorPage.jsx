@@ -75,6 +75,7 @@ import {
   criarTrackingAgregado,
   somarTrackingAgregado,
 } from '../utils/trackingCubagem';
+import { resolverPesoCteRealizado } from '../utils/pesoRealizadoSimulador';
 
 
 function sleep(ms) {
@@ -539,7 +540,11 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
     chaveCte: pickRealizadoField(r, ['chave_cte', 'chaveCte', 'chave']) || '',
     chaveNfe: pickRealizadoField(r, ['chave_nfe', 'chaveNfe', 'chave_nf', 'chaveNf', 'chave_nota', 'chaveNota']) || '',
     notaFiscal: pickRealizadoField(r, ['nota_fiscal', 'notaFiscal', 'nf', 'numero_nf', 'numeroNf', 'nfe_numero']) || '',
-    pesoDeclarado: numeroRealizado(pickRealizadoField(r, ['peso_declarado', 'pesoDeclarado', 'peso', 'peso_real', 'pesoReal'])) || 0,
+    // Mantém os dois conceitos separados. `peso` é o peso do CT-e escolhido
+    // pela opção da tela; `peso_declarado` pode ser o bruto da NF e só serve
+    // como fallback quando o CT-e não trouxe peso.
+    peso: numeroRealizado(pickRealizadoField(r, ['peso'])) || 0,
+    pesoDeclarado: numeroRealizado(pickRealizadoField(r, ['peso_declarado', 'pesoDeclarado', 'peso_real', 'pesoReal'])) || 0,
     qtdVolumes: numeroRealizado(pickRealizadoField(r, ['qtd_volumes', 'qtdVolumes', 'volume', 'volumes', 'quantidade_volumes', 'total_unidades', 'totalUnidades'])) || 0,
     totalUnidades: numeroRealizado(pickRealizadoField(r, ['total_unidades', 'totalUnidades', 'Total de unidades', 'TOTAL DE UNIDADES'])) || 0,
     quantidadeItens: numeroRealizado(pickRealizadoField(r, ['quantidade_itens', 'quantidadeItens', 'qtd_itens', 'qtdItens', 'Quantidade de itens', 'QUANTIDADE DE ITENS'])) || 0,
@@ -1198,13 +1203,7 @@ function volumeRealizado(row = {}) {
 }
 
 function pesoRealizado(row = {}, filtros = {}) {
-  const declarado = numeroRealizado(row.pesoDeclarado);
-  const base = declarado > 0 ? declarado : numeroRealizado(row.peso);
-  // Modo "usar peso do CT-e": ignora cubagem e opcionalmente aplica um percentual
-  // de contingência sobre o peso real, como plano B enquanto a cubagem não está validada.
-  if (!filtros.ignorarCubagem) return base;
-  const percentual = Number(filtros.percentualContingenciaPeso) || 0;
-  return base * (1 + percentual / 100);
+  return resolverPesoCteRealizado(row, filtros);
 }
 
 function cubagemRealizado(row = {}, filtros = {}) {
