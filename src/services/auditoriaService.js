@@ -11,6 +11,7 @@
  */
 
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { marcarResultadoRecalculado } from '../utils/auditoriaResultadoPersistencia.js';
 import * as XLSX from 'xlsx';
 import { filtrarCpComercialCte } from './cteBasePolicy';
 import { carregarResultadosSalvosCompetenciaPaginados } from '../utils/auditoriaResumoMensalPaginacao';
@@ -637,7 +638,7 @@ function montarLinhaResultadoDireto(row = {}, competencia = '') {
   const status = row.status_calculo || (valorCalculado > 0 ? 'CALCULADO' : 'SEM_CALCULO');
   const detalhe = row.detalhes_calculo ?? null;
 
-  return {
+  return marcarResultadoRecalculado({
     competencia: String(row.competencia || competencia || '').slice(0, 7),
     data_emissao: pick(row, ['data_emissao', 'emissao', 'dataEmissao']) || null,
     chave_cte: pick(row, ['chave_cte', 'chaveCte', 'chave']) || null,
@@ -672,7 +673,7 @@ function montarLinhaResultadoDireto(row = {}, competencia = '') {
     transportadora_tabela: pick(row, ['transportadora_tabela', 'transportadora_contratada', 'transportadora']) || null,
     tipo_calculo: pick(row, ['tipo_calculo', 'tipoCalculo']) || null,
     detalhes_calculo: typeof detalhe === 'string' || (detalhe && typeof detalhe === 'object') ? detalhe : null,
-  };
+  });
 }
 
 async function executarComConcorrenciaAuditoria(itens, concorrencia, tarefa) {

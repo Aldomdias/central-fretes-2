@@ -10,7 +10,7 @@ import {
 
 const dinheiro = (valor) => Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const dataHora = (valor) => (valor ? new Date(valor).toLocaleString('pt-BR') : '-');
-const rotulo = (canal) => (canal === 'B2C' ? 'B2C' : 'Atacado');
+const rotulo = (canal) => (canal === 'B2C' ? 'B2C' : canal === 'SUPRIMENTOS' ? 'Suprimentos' : 'Atacado');
 
 // Um modulo por canal (B2C / Atacado): cada gestor so ve a fila do seu.
 export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
@@ -55,14 +55,16 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
   const decidir = async (item, autorizar) => {
     const valorAutorizado = Number(String(campo(item.id, 'valor', item.valor_divergente)).replace(',', '.')) || 0;
     if (autorizar && !(valorAutorizado > 0)) { setMensagem('Informe um valor autorizado maior que zero.'); return; }
+    // Sem contexto nao da pra autorizar nem recusar: justificativa obrigatoria.
+    if (!String(campo(item.id, 'obs', '')).trim()) { setMensagem('Informe a justificativa (obrigatoria) para autorizar ou recusar.'); return; }
     setProcessando(item.id);
     setMensagem('');
     try {
       await decidirAutorizacao({
-        id: item.id, autorizar, valorAutorizado, observacao: campo(item.id, 'obs', ''), usuarioNome,
+        id: item.id, autorizar, valorAutorizado, observacao: campo(item.id, 'obs', ''), usuarioNome, item,
       });
       setMensagem(autorizar
-        ? `Autorizado ${dinheiro(valorAutorizado)} — na proxima reauditoria da fatura a divergencia desse CT-e sai.`
+        ? `Autorizado ${dinheiro(valorAutorizado)} — na proxima reauditoria da fatura a divergencia desse CT-e sai.${item.protocolo_amd ? ` Chamado ${item.protocolo_amd} assumido por voce: corrija a tabela na Central de Solicitacoes.` : ''}`
         : 'Solicitacao recusada.');
       await carregar();
     } catch (error) {
@@ -128,11 +130,12 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
       {aba === 'fila' && (
         <div className="table-card"><div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th>Pedido</th><th>Chave CT-e</th><th>Chave NF</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor CT-e</th><th>Calculado</th><th>Divergente</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Sua observacao</th><th /></tr></thead>
+            <thead><tr><th>Pedido</th>{canal === 'SUPRIMENTOS' && <th>Chamado AMD</th>}<th>Chave CT-e</th><th>Chave NF</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor CT-e</th><th>Calculado</th><th>Divergente</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Justificativa *</th><th /></tr></thead>
             <tbody>
               {pendentes.map((item) => (
                 <tr key={item.id}>
                   <td>{item.numero_pedido || '-'}</td>
+                  {canal === 'SUPRIMENTOS' && <td>{item.protocolo_amd || '-'}<br /><small>{item.tipo_ajuste || ''}</small></td>}
                   <td style={{ fontSize: 11 }}>{item.chave_cte || '-'}</td>
                   <td style={{ fontSize: 11 }}>{item.chave_nfe || '-'}</td>
                   <td>{item.cidade_origem || '-'} → {item.cidade_destino || '-'}</td>
@@ -142,14 +145,14 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   <td><strong style={{ color: '#9b1111' }}>{dinheiro(item.valor_divergente)}</strong></td>
                   <td>{item.observacao_auditoria || '-'}</td>
                   <td><input style={{ width: 90 }} value={campo(item.id, 'valor', String(item.valor_divergente ?? ''))} onChange={(e) => editar(item.id, 'valor', e.target.value)} /></td>
-                  <td><input value={campo(item.id, 'obs', '')} onChange={(e) => editar(item.id, 'obs', e.target.value)} placeholder="Observacao" /></td>
+                  <td><input value={campo(item.id, 'obs', '')} onChange={(e) => editar(item.id, 'obs', e.target.value)} placeholder="Justificativa (obrigatoria)" /></td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn-primary" disabled={processando === item.id} onClick={() => decidir(item, true)}>Autorizar</button>{' '}
                     <button className="btn-secondary" disabled={processando === item.id} onClick={() => decidir(item, false)}>Recusar</button>
                   </td>
                 </tr>
               ))}
-              {!pendentes.length && <tr><td colSpan={12}>{carregando ? 'Carregando...' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
+              {!pendentes.length && <tr><td colSpan={13}>{carregando ? 'Carregando...' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
             </tbody>
           </table>
         </div></div>

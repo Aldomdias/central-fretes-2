@@ -1,4 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { assumirSolicitacaoCentral, criarSolicitacaoCentralNegociacao } from './centralSolicitacoesService';
 
 const TABELA = 'transporte_autorizacoes';
 
@@ -11,7 +12,9 @@ function exigirClient() {
 }
 
 export function normalizarCanalAutorizacao(canal) {
-  return String(canal || '').toUpperCase().includes('B2C') ? 'B2C' : 'ATACADO';
+  const texto = String(canal || '').toUpperCase();
+  if (texto.includes('SUPRIMENTOS')) return 'SUPRIMENTOS';
+  return texto.includes('B2C') ? 'B2C' : 'ATACADO';
 }
 
 export async function listarAutorizacoes({ canal, status } = {}) {
@@ -112,7 +115,7 @@ export async function enviarParaAutorizacao(itens = [], usuarioNome = '') {
   return { enviados: novos.length, jaNaFila: itens.length - novos.length };
 }
 
-export async function decidirAutorizacao({ id, autorizar, valorAutorizado, observacao, usuarioNome }) {
+export async function decidirAutorizacao({ id, autorizar, valorAutorizado, observacao, usuarioNome, item = null }) {
   const { error } = await exigirClient().from(TABELA).update({
     status: autorizar ? 'AUTORIZADA' : 'RECUSADA',
     valor_autorizado: autorizar ? numero(valorAutorizado) : 0,
@@ -121,6 +124,67 @@ export async function decidirAutorizacao({ id, autorizar, valorAutorizado, obser
     decidido_em: new Date().toISOString(),
   }).eq('id', id);
   if (error) throw new Error(`Erro ao registrar decisao: ${error.message}`);
+  // Suprimentos: quem aprova o valor assume o chamado AMD (vai corrigir a tabela depois).
+  let chamadoAssumido = false;
+  if (autorizar && item?.canal === 'SUPRIMENTOS' && item?.protocolo_amd) {
+    try {
+      const res = await assumirSolicitacaoCentral(item.protocolo_amd, {
+        responsavel: usuarioNome,
+        mensagem: `Valor de ${numero(valorAutorizado).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} aprovado por ${usuarioNome} (CT-e ${item.chave_cte || item.chave_nfe}). Justificativa: ${observacao}. Chamado assumido pra corrigir a tabela.`,
+      });
+      chamadoAssumido = Boolean(res?.ok);
+    } catch (erroChamado) {
+      console.warn('[Suprimentos] chamado nao assumido.', erroChamado?.message || erroChamado);
+    }
+  }
+  return { chamadoAssumido };
+}
+
+// Auditor -> Suprimentos: abre um chamado AMD (Central de Solicitacoes) e coloca
+// os CT-es na fila do modulo Suprimentos pra aprovar o valor.
+export async function enviarParaSuprimentos(itens = [], { tipoAjuste, justificativa, usuarioNome, usuarioEmail } = {}) {
+  if (!itens.length) throw new Error('Selecione ao menos um CT-e.');
+  if (String(justificativa || '').trim().length < 30) throw new Error('Justificativa muito curta — explique bem a diferenca (minimo 30 caracteres).');
+  const client = exigirClient();
+  const transportadoras = [...new Set(itens.map((item) => item.transportadora).filter(Boolean))];
+  const linhas = itens.map((item) => `- CT-e ${item.chave_cte || item.chave_nfe || '-'} | ${item.transportadora || '-'} | pago ${numero(item.valor_cte).toFixed(2)} | calculado ${numero(item.valor_calculado).toFixed(2)} | diferenca ${numero(item.valor_divergente).toFixed(2)}`);
+  let protocolo = null;
+  const chamado = await criarSolicitacaoCentralNegociacao({
+    tipoSolicitacao: 'AJUSTE DE TABELA',
+    tipoAjuste: tipoAjuste || 'Outro ajuste de tabela',
+    area: 'Suprimentos',
+    nome: usuarioNome,
+    email: usuarioEmail,
+    transportadora: transportadoras.join(', '),
+    assunto: `${tipoAjuste || 'Ajuste de tabela'} — ${transportadoras.join(', ')} (${itens.length} CT-e)`,
+    descricao: `Diferenca identificada pela Auditoria de Fretes.\n\nJustificativa do auditor:\n${justificativa.trim()}\n\nCT-es:\n${linhas.join('\n')}`,
+    mensagemStatus: 'Aberta pela Auditoria de Fretes; aguardando aprovacao do valor em Suprimentos.',
+  });
+  if (chamado?.ok) protocolo = chamado.solicitacao?.protocolo || null;
+  const vinculos = await buscarVinculoPorCte(itens.map((item) => item.chave_cte));
+  const novos = itens.map((item) => ({
+    canal: 'SUPRIMENTOS',
+    origem: 'AUDITORIA',
+    status: 'PENDENTE',
+    chave_cte: soDigitos(item.chave_cte) || null,
+    chave_nfe: soDigitos(item.chave_nfe) || vinculos.get(soDigitos(item.chave_cte))?.chaveNfe || null,
+    numero_pedido: item.numero_pedido || vinculos.get(soDigitos(item.chave_cte))?.pedido || null,
+    transportadora: item.transportadora || null,
+    cidade_origem: item.cidade_origem || null,
+    cidade_destino: item.cidade_destino || null,
+    valor_cte: numero(item.valor_cte),
+    valor_calculado: numero(item.valor_calculado),
+    valor_divergente: numero(item.valor_divergente),
+    observacao_auditoria: justificativa.trim(),
+    enviado_por: usuarioNome || null,
+    fatura_id: item.fatura_id || null,
+    protocolo_amd: protocolo,
+    tipo_ajuste: tipoAjuste || null,
+  })).filter((item) => item.chave_cte || item.chave_nfe);
+  if (!novos.length) throw new Error('Nenhum CT-e com chave valida para enviar.');
+  const { error } = await client.from(TABELA).insert(novos);
+  if (error) throw new Error(`Erro ao enviar para Suprimentos: ${error.message}. Rode a migration 20260924_002_transporte_autorizacoes_suprimentos.sql.`);
+  return { enviados: novos.length, protocolo };
 }
 
 // Liga chave do CT-e, chave da NF e pedido usando a base (tracking e realizado),
@@ -184,6 +248,37 @@ export async function lancarSaldoAntecipado({ canal, chaveCte, chaveNfe, numeroP
 export async function desativarAutorizacao(id) {
   const { error } = await exigirClient().from(TABELA).update({ ativo: false }).eq('id', id);
   if (error) throw new Error(`Erro ao remover autorizacao: ${error.message}`);
+}
+
+// Decisoes do gestor (autorizou/recusou/na fila) por chave de CT-e ou NF, com
+// justificativa e quem decidiu — pra mostrar no CT-e (tooltip da coluna Saldo).
+export async function carregarDecisoesPorChave(chaves = []) {
+  const mapa = new Map();
+  if (!isSupabaseConfigured()) return mapa;
+  const unicas = [...new Set(chaves.map(soDigitos).filter(Boolean))];
+  const client = getSupabaseClient();
+  try {
+    for (let inicio = 0; inicio < unicas.length; inicio += 150) {
+      const lote = unicas.slice(inicio, inicio + 150).join(',');
+      const { data, error } = await client.from(TABELA)
+        .select('id, canal, status, chave_cte, chave_nfe, valor_autorizado, valor_divergente, observacao_gestor, observacao_auditoria, decidido_por, decidido_em, enviado_por, enviado_em')
+        .eq('ativo', true)
+        .or(`chave_cte.in.(${lote}),chave_nfe.in.(${lote})`)
+        .order('enviado_em', { ascending: false });
+      if (error) throw error;
+      (data || []).forEach((row) => {
+        [row.chave_cte, row.chave_nfe].filter(Boolean).forEach((chave) => {
+          if (!unicas.includes(chave)) return;
+          const lista = mapa.get(chave) || [];
+          if (!lista.some((item) => item.id === row.id)) lista.push(row);
+          mapa.set(chave, lista);
+        });
+      });
+    }
+  } catch (error) {
+    console.warn('[Autorizacoes transporte] decisoes indisponiveis.', error?.message || error);
+  }
+  return mapa;
 }
 
 // Saldo autorizado por chave (CT-e ou NF), somando se houver mais de uma.

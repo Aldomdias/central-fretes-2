@@ -96,6 +96,7 @@ function toDbRow(row = {}) {
     pedido_erp: row.pedidoErp || '',
     canal: row.canal || '',
     canal_original: row.canalOriginal || '',
+    status_pedido: row.statusPedido || row.status || '',
     transportadora: row.transportadora || '',
     cidade_origem: row.cidadeOrigem || '',
     uf_origem: row.ufOrigem || '',
@@ -275,6 +276,10 @@ export async function importarTrackingSupabase({
   }
 
   const resultado = await subirTrackingSupabase(registros, (event) => {
+    // No modo "atualizar" a contagem real vem da verificação de NFs existentes.
+    if (event.verificacao) {
+      statsComplementar = { ...statsComplementar, ...event.verificacao };
+    }
     onProgress?.({
       ...event,
       // Eventos só com mensagem vêm da verificação prévia, sem lote/percentual.
@@ -289,7 +294,7 @@ export async function importarTrackingSupabase({
     complementar: statsComplementar,
     mensagem: modo === 'complementar'
       ? `${resultado.enviados.toLocaleString('pt-BR')} linha(s) nova(s) gravada(s) no Supabase.`
-      : `${resultado.enviados.toLocaleString('pt-BR')} linha(s) gravada(s)/atualizada(s) no Supabase.`,
+      : `${resultado.enviados.toLocaleString('pt-BR')} linha(s) gravada(s): ${resultado.jaNaBase.toLocaleString('pt-BR')} atualizada(s) e ${resultado.novos.toLocaleString('pt-BR')} nova(s).`,
   };
 }
 
@@ -348,6 +353,15 @@ export async function subirTrackingSupabase(rows = [], onProgress) {
     ids.add(item.id);
     payload.push(item);
   });
+  const jaNaBase = payload.filter((item) => {
+    const chave = extrairChaveNfeRegistro(item);
+    return chave && existentesPorNf.has(chave);
+  }).length;
+  const novos = payload.length - jaNaBase;
+  onProgress?.({
+    mensagem: `${jaNaBase.toLocaleString('pt-BR')} NF(s) já na base (serão atualizadas) e ${novos.toLocaleString('pt-BR')} nova(s).`,
+    verificacao: { jaNaBase, novos },
+  });
   let enviados = 0;
 
   for (let i = 0; i < payload.length; i += CHUNK_SIZE) {
@@ -370,7 +384,7 @@ export async function subirTrackingSupabase(rows = [], onProgress) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
-  return { enviados, total: payload.length, duplicadosIgnorados };
+  return { enviados, total: payload.length, duplicadosIgnorados, jaNaBase, novos };
 }
 
 function filtroEmissaoNf(competencia) {

@@ -88,7 +88,8 @@ import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, apli
 import { buscarTrackingPorChaveNfeManual } from '../services/trackingSupabaseService';
 import { consultarMunicipiosIbge } from '../services/ibgeService';
 import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
-import { carregarSaldosAutorizadosPorChave, enviarParaAutorizacao } from '../services/transporteAutorizacoesService';
+import { carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarParaAutorizacao, enviarParaSuprimentos } from '../services/transporteAutorizacoesService';
+import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
 
 const TABS = [
   ['dashboard', 'Dashboard'],
@@ -266,6 +267,31 @@ function detalhesCalculoHtmlFatura(item = {}, opts = {}) {
 }
 function extrairIdentificadoresCte(texto = '') {
   return [...new Set(String(texto || '').match(/\d{5,}/g) || [])];
+}
+
+// Decisoes do gestor de transporte (autorizou/recusou/na fila) juntando as
+// chaves de CT-e e NF do item, sem repetir.
+function decisoesTransporteDoItem(mapa, chaves = []) {
+  const vistos = new Set();
+  return chaves.flatMap((chave) => mapa?.get(normalizarChaveCte(chave)) || []).filter((d) => (vistos.has(d.id) ? false : vistos.add(d.id)));
+}
+
+// Celula "Saldo autorizado": valor somado (verde), Recusado (vermelho) ou Na fila;
+// o tooltip traz quem decidiu, quando e a justificativa.
+function CelulaSaldoTransporte({ saldo, decisoes = [], formatar = dinheiro }) {
+  const recusadas = decisoes.filter((d) => d.status === 'RECUSADA');
+  const pendentes = decisoes.filter((d) => d.status === 'PENDENTE');
+  const texto = decisoes.map((d) => {
+    const quem = d.decidido_por || d.enviado_por || '-';
+    const quando = d.decidido_em || d.enviado_em;
+    if (d.status === 'PENDENTE') return `Na fila do responsavel do transporte (${d.canal}) desde ${dataBr(d.enviado_em)} — enviado por ${quem}. Obs. auditoria: ${d.observacao_auditoria || '-'}`;
+    return `${d.status === 'AUTORIZADA' ? 'Autorizado' : 'Recusado'}${d.status === 'AUTORIZADA' ? ` ${dinheiro(d.valor_autorizado)}` : ''} por ${quem} em ${dataBr(quando)} (${d.canal}). Justificativa: ${d.observacao_gestor || '-'}`;
+  }).join('\n');
+  let conteudo = '-';
+  if (saldo > 0) conteudo = <strong style={{ color: '#166534' }}>+ {formatar(saldo)}</strong>;
+  else if (recusadas.length) conteudo = <strong style={{ color: '#9b1111' }}>Recusado</strong>;
+  else if (pendentes.length) conteudo = <strong style={{ color: '#b45309' }}>Na fila</strong>;
+  return <span title={texto || undefined} style={{ cursor: texto ? 'help' : undefined }}>{conteudo}</span>;
 }
 
 // Soma o saldo autorizado (por chave de CT-e ou NF) ao AMD de um CT-e da fatura.
@@ -1640,6 +1666,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [progressoRecalculo, setProgressoRecalculo] = useState(null);
   const [referenciaCtes, setReferenciaCtes] = useState(new Map());
   const [saldosTransporte, setSaldosTransporte] = useState(new Map());
+  const [decisoesTransporte, setDecisoesTransporte] = useState(new Map());
   const [cteExpandido, setCteExpandido] = useState(null);
   const [resultadosDetalhe, setResultadosDetalhe] = useState(new Map());
   const [carregandoDetalheCte, setCarregandoDetalheCte] = useState(null);
@@ -1674,6 +1701,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     ]).filter(Boolean);
     if (!chaves.length) { setSaldosTransporte(new Map()); return undefined; }
     carregarSaldosAutorizadosPorChave(chaves).then((mapa) => { if (ativo) setSaldosTransporte(mapa); });
+    carregarDecisoesPorChave(chaves).then((mapa) => { if (ativo) setDecisoesTransporte(mapa); });
     return () => { ativo = false; };
   }, [detalhesOriginais.length, fatura.id, mensagemLiberacao, referenciaCtes]);
   const saldoTransporteDoCte = (item) => Number(item.saldo_autorizado || 0);
@@ -1782,9 +1810,55 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   // CT-es divergentes marcados vao pra fila do gestor do transporte do canal
   // (B2C/Atacado) autorizar um saldo — caso de cotacao/sem tabela. Quando ele
   // autoriza, a proxima reauditoria soma o valor e a divergencia some.
+  // Premissa: so vai pra aprovacao caso que a AMD ja simulou (calculado > 0) e
+  // que a AMD diz que foi cobrado a mais (diferenca positiva).
+  const casosForaDaPremissa = (alvo) => alvo.filter((item) => !(Number(item.calculado_frete || 0) > 0 && Number(item.diferenca || 0) > 0));
+  const [modalSuprimentos, setModalSuprimentos] = useState(null);
+
+  const abrirModalSuprimentos = () => {
+    const alvo = detalhes.filter((item) => selecionados.includes(item.id));
+    if (!alvo.length) return;
+    setModalSuprimentos({ alvo, tipoAjuste: TIPOS_AJUSTE_TABELA[0].valor, justificativa: '', enviando: false });
+  };
+
+  const confirmarEnvioSuprimentos = async () => {
+    const { alvo, tipoAjuste, justificativa } = modalSuprimentos;
+    if (String(justificativa).trim().length < 30) { setModalSuprimentos((prev) => ({ ...prev, erro: `Justificativa muito curta (${String(justificativa).trim().length}/30 caracteres). Explique melhor o caso.` })); return; }
+    setModalSuprimentos((prev) => ({ ...prev, enviando: true, erro: '' }));
+    try {
+      const itens = alvo.map((item) => {
+        const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte)) || referenciaCtes.get(normalizarChaveCte(item.numero_cte)) || {};
+        return {
+          chave_cte: item.chave_cte,
+          chave_nfe: item.chave_nfe || base.chave_nfe,
+          numero_pedido: item.numero_pedido || base.numero_pedido,
+          transportadora: fatura.transportadora,
+          cidade_origem: item.cidade_origem || base.cidade_origem,
+          cidade_destino: item.cidade_destino || base.cidade_destino,
+          valor_cte: item.valor_frete,
+          valor_calculado: item.calculado_frete,
+          valor_divergente: Math.max(Number(item.diferenca || 0), 0),
+          fatura_id: fatura.id,
+        };
+      });
+      const { enviados, protocolo } = await enviarParaSuprimentos(itens, {
+        tipoAjuste, justificativa, usuarioNome: sessao?.nome || sessao?.email || '', usuarioEmail: sessao?.email || '',
+      });
+      setModalSuprimentos(null);
+      setMensagemLiberacao(`✓ ${enviados} CT-e(s) enviado(s) para Suprimentos${protocolo ? ` — chamado AMD ${protocolo} aberto` : ' (chamado AMD nao foi criado, verifique a Central de Solicitacoes)'}.`);
+    } catch (error) {
+      setModalSuprimentos((prev) => (prev ? { ...prev, enviando: false, erro: `Erro ao enviar para Suprimentos: ${error.message}` } : prev));
+    }
+  };
+
   const enviarParaAutorizacaoTransporte = async () => {
     const alvo = detalhes.filter((item) => selecionados.includes(item.id));
     if (!alvo.length) return;
+    const fora = casosForaDaPremissa(alvo);
+    if (fora.length) {
+      setErroDetalhes(`Nao da pra enviar para aprovacao: ${fora.length} CT-e(s) sem simulacao na AMD ou sem diferenca positiva (cobrado a mais). Se a AMD nao calculou, use "Enviar p/ Suprimentos".`);
+      return;
+    }
     const observacao = window.prompt(`Enviar ${alvo.length} CT-e(s) para autorizacao do responsavel do transporte. Observacao pra ele (o que aconteceu):`, '');
     if (observacao === null) return;
     try {
@@ -2585,8 +2659,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                   <td style={{ cursor: 'pointer' }} className={Number(item.diferenca_verum || 0) ? 'negativo' : ''} onClick={() => alternarDetalheCte(item)}>{Number(item.calculado_frete_verum || 0) ? dinheiro(item.diferenca_verum) : '-'}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{Number(item.calculado_frete || 0) ? dinheiro(item.calculado_frete) : 'Sem calculo'}</td>
                   <td style={{ cursor: 'pointer' }} className={Number(item.diferenca || 0) ? 'negativo' : ''} onClick={() => alternarDetalheCte(item)}>{dinheiro(item.diferenca)}</td>
-                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)} title="Autorizado pelo responsavel do transporte; soma ao AMD ao reauditar/recalcular a fatura">
-                    {saldoTransporteDoCte(item) > 0 ? <strong style={{ color: '#166534' }}>+ {dinheiro(saldoTransporteDoCte(item))}</strong> : '-'}
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)} title="Passe o mouse no valor pra ver quem decidiu e a justificativa">
+                    <CelulaSaldoTransporte saldo={saldoTransporteDoCte(item)} decisoes={decisoesTransporteDoItem(decisoesTransporte, [item.chave_cte, item.chave_nfe, referenciaCtes.get(normalizarChaveCte(item.chave_cte))?.chave_nfe])} />
                   </td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{motivoAuditoriaLinha(item, semValorNf)}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}><Status value={item.status} /></td>
@@ -2924,7 +2998,29 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('EDI')}>Gerar DOCCOB EDI (Verum)</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('CSV')}>Gerar DOCCOB CSV</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('XLSX')}>Gerar DOCCOB XLSX</button>
+        <button className="btn-secondary" disabled={!selecionados.length} onClick={abrirModalSuprimentos} title="Abre um chamado AMD e envia os CT-es marcados para a fila de Suprimentos aprovar o valor">Enviar p/ Suprimentos</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={enviarParaAutorizacaoTransporte} title="Envia os CT-es marcados para o responsavel do transporte (B2C/Atacado) autorizar um saldo">Enviar p/ autorizacao transporte</button>
+        {modalSuprimentos && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="hint-box" style={{ background: '#fff', width: 'min(640px, 94vw)', padding: 20 }}>
+              <h3 style={{ marginTop: 0 }}>Enviar para Suprimentos ({modalSuprimentos.alvo.length} CT-e)</h3>
+              <p>Abre um chamado AMD na Central de Solicitacoes e coloca os CT-es na fila de Suprimentos. Quem aprovar o valor assume o chamado.</p>
+              <label className="field">Tipo de ajuste
+                <select value={modalSuprimentos.tipoAjuste} onChange={(e) => setModalSuprimentos((p) => ({ ...p, tipoAjuste: e.target.value }))}>
+                  {TIPOS_AJUSTE_TABELA.map((t) => <option key={t.valor} value={t.valor}>{t.valor}</option>)}
+                </select>
+              </label>
+              <label className="field">Justificativa * (explique bem o caso, minimo 30 caracteres)
+                <textarea rows={6} value={modalSuprimentos.justificativa} onChange={(e) => setModalSuprimentos((p) => ({ ...p, justificativa: e.target.value }))} />
+              </label>
+              {modalSuprimentos.erro && <div className="hint-box compact error-text">{modalSuprimentos.erro}</div>}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button className="btn-secondary" disabled={modalSuprimentos.enviando} onClick={() => setModalSuprimentos(null)}>Cancelar</button>
+                <button className="btn-primary" disabled={modalSuprimentos.enviando} onClick={confirmarEnvioSuprimentos}>{modalSuprimentos.enviando ? 'Enviando...' : 'Abrir chamado e enviar'}</button>
+              </div>
+            </div>
+          </div>
+        )}
         <button className="btn-secondary" onClick={() => mudarStatus('AGUARDANDO_NOVA_FATURA')}>Solicitar nova fatura</button>
         <button className="btn-primary" onClick={liberarParaPagamento}>Liberar para pagamento</button>
         <button
@@ -3002,6 +3098,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [progressoCtesAvulsos, setProgressoCtesAvulsos] = useState(null);
   const [resultadoCtesAvulsosBase, setResultadoCtesAvulsos] = useState([]);
   const [saldosAvulsos, setSaldosAvulsos] = useState(new Map());
+  const [decisoesAvulsas, setDecisoesAvulsas] = useState(new Map());
   // Saldo autorizado (gestor do transporte) entra so aqui, na exibicao — vale
   // pra Consultar e pra Auditar. Nada disso vai pro banco (ver salvarAuditoriaAvulsa).
   useEffect(() => {
@@ -3009,6 +3106,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     const chaves = resultadoCtesAvulsosBase.flatMap((row) => [row.chave_cte, row.chave_nfe]).filter(Boolean);
     if (!chaves.length) { setSaldosAvulsos(new Map()); return undefined; }
     carregarSaldosAutorizadosPorChave(chaves).then((mapa) => { if (ativo) setSaldosAvulsos(mapa); });
+    carregarDecisoesPorChave(chaves).then((mapa) => { if (ativo) setDecisoesAvulsas(mapa); });
     return () => { ativo = false; };
   }, [resultadoCtesAvulsosBase]);
   const resultadoCtesAvulsos = useMemo(
@@ -5352,10 +5450,8 @@ ${portaisLaudo.length ? `
                           <td>{verum > 0 ? dinheiroMaybe(difVerum) : '-'}</td>
                           <td>{dinheiroMaybe(row.valor_calculado)}</td>
                           <td>{dinheiroMaybe(row.diferenca)}</td>
-                          <td title="Autorizado pelo responsavel do transporte (ja somado ao calculo AMD)">
-                            {Number(row.detalhes_calculo?.saldo_transporte_autorizado || 0) > 0
-                              ? <strong style={{ color: '#166534' }}>+ {dinheiroMaybe(row.detalhes_calculo.saldo_transporte_autorizado)}</strong>
-                              : '-'}
+                          <td>
+                            <CelulaSaldoTransporte saldo={Number(row.detalhes_calculo?.saldo_transporte_autorizado || 0)} decisoes={decisoesTransporteDoItem(decisoesAvulsas, [row.chave_cte, row.chave_nfe])} formatar={dinheiroMaybe} />
                           </td>
                           <td><span className={statusClass}>{semValorNf ? 'Sem valor NF' : linhaOk ? 'Dentro da tolerancia' : (row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-'))}</span></td>
                         </tr>

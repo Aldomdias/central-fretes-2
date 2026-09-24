@@ -45,6 +45,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'painel-descontos-obtidos', label: 'Painel Descontos Obtidos', grupo: 'Financeiro' },
   { chave: 'autorizacoes-transporte-b2c', label: 'Autorizações Transporte B2C', grupo: 'Operação' },
   { chave: 'autorizacoes-transporte-atacado', label: 'Autorizações Transporte Atacado', grupo: 'Operação' },
+  { chave: 'autorizacoes-suprimentos', label: 'Autorizações Suprimentos', grupo: 'Operação' },
   { chave: 'consulta-ibge', label: 'Consulta IBGE', grupo: 'Cadastros' },
   { chave: 'icms-uf', label: 'Matriz ICMS UF', grupo: 'Cadastros' },
   { chave: 'ferramentas', label: 'Ferramentas', grupo: 'Geral' },
