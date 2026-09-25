@@ -4515,6 +4515,12 @@ function statusCombinadoCte(item) {
   const ganhaTabelas = item.statusSelecionada === 'Ganharia';
   const temConcorrencia = Number(item.concorrentes || 0) > 1;
 
+  // Tabela x tabela: só conta a disputa entre tabelas (sem frete realizado).
+  if (item.fonteBaseComparativa === 'MEDIA_TABELAS') {
+    if (ganhaTabelas) return { label: temConcorrencia ? 'Ganha (1º)' : 'Vencedor', bg: '#dcfce7', color: '#15803d', icon: '✅' };
+    return { label: 'Perde para concorrente', bg: '#fee2e2', color: '#dc2626', icon: '❌' };
+  }
+
   if (!temConcorrencia) {
     if (ganhaRealizado) return { label: 'Vencedor', bg: '#dcfce7', color: '#15803d', icon: '✅' };
     return { label: 'Acima do realizado', bg: '#fee2e2', color: '#dc2626', icon: '❌' };
@@ -4565,6 +4571,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // Aba 'Análise de tabela (realizado)': mesma tela/motor do realizado, mas as
   // tabelas competem entre si usando peso/cubagem/rota dos CT-es (sem o frete pago).
   const [modoTabelaVsTabela, setModoTabelaVsTabela] = useState(false);
+  const [transportadorasForaDisputa, setTransportadorasForaDisputa] = useState([]);
+  const cacheBaseTabelaRef = useRef(null);
+  const primeiraRenderForaDisputaRef = useRef(true);
+  const [considerarRealizadoNaAnalise, setConsiderarRealizadoNaAnalise] = useState(false);
   const [diagnosticoAusenciaAtivo, setDiagnosticoAusenciaAtivo] = useState(false);
   const [incluirCpsLogRealizado, setIncluirCpsLogRealizado] = useState(false);
   const [incluirCpComercialRealizado, setIncluirCpComercialRealizado] = useState(
@@ -7252,14 +7262,19 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       const routeKeysRealizado = criarRouteKeysRealizado(rowsFiltrados, ctx.canal);
       const deveCompararConcorrentes = Boolean(compararConcorrentesRealizado) || modoTabelaVsTabela;
+      // Na aba de análise de tabela o usuário pode ligar o frete realizado (compara também com o pago).
+      const tabelaVsTabelaAtivo = modoTabelaVsTabela && !considerarRealizadoNaAnalise;
+      // Reexecuções (ex.: tirar/voltar transportadora da disputa) reaproveitam as tabelas já carregadas.
+      const chaveCacheBase = [ctx.canal, ctx.origem, ctx.inicio, ctx.fim, nomeTabelaSelecionada, rowsFiltrados.length, incluirNegociacoesRealizado].join('|');
+      const cacheBase = modoTabelaVsTabela && cacheBaseTabelaRef.current?.chave === chaveCacheBase ? cacheBaseTabelaRef.current : null;
       const basesParaMesclar = [baseSelecionada].filter((base) => Array.isArray(base) ? base.length : Boolean(base));
 
       if (deveCompararConcorrentes && incluirNegociacoesRealizado && transportadorasNegociacaoRealizado.length) {
         basesParaMesclar.push(transportadorasNegociacaoRealizado);
       }
-      let baseRotas = [];
+      let baseRotas = cacheBase ? cacheBase.baseRotas : [];
 
-      if (deveCompararConcorrentes && routeKeysRealizado.length) {
+      if (!cacheBase && deveCompararConcorrentes && routeKeysRealizado.length) {
         atualizarProcessamentoUi(`Buscando concorrentes por ${routeKeysRealizado.length.toLocaleString('pt-BR')} rota(s) reais...`, 58);
         baseRotas = await buscarBaseSimulacaoPorRotasDb({
           routeKeys: routeKeysRealizado.slice(0, 5000),
@@ -7284,8 +7299,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
           .filter((ibge) => ibge.length >= 6)
       )];
 
-      let basesOrigemCarregadas = 0;
-      if (deveCompararConcorrentes) {
+      let basesOrigemCarregadas = cacheBase ? cacheBase.basesOrigemCarregadas : 0;
+      if (cacheBase) {
+        atualizarProcessamentoUi('Reaproveitando tabelas já carregadas...', 72);
+      } else if (deveCompararConcorrentes) {
         for (let idx = 0; idx < origensParaBuscar.length; idx += 1) {
           const origemBusca = origensParaBuscar[idx];
           atualizarProcessamentoUi(`Buscando tabelas concorrentes da origem ${origemBusca}...`, Math.min(72, 60 + idx));
@@ -7311,7 +7328,19 @@ export default function SimuladorPage({ transportadoras = [] }) {
         atualizarProcessamentoUi('Simulando somente a negociação selecionada contra o realizado...', 72);
       }
 
-      let baseParaSimulacao = mesclarBasesTransportadorasSimulador(basesParaMesclar);
+      let baseParaSimulacao = cacheBase ? cacheBase.base : mesclarBasesTransportadorasSimulador(basesParaMesclar);
+      if (modoTabelaVsTabela && !cacheBase) {
+        cacheBaseTabelaRef.current = { chave: chaveCacheBase, base: baseParaSimulacao, baseRotas, basesOrigemCarregadas };
+      }
+      // Transportadoras tiradas da disputa (aba de análise de tabela): somem da base e o ranking sobe.
+      if (modoTabelaVsTabela && transportadorasForaDisputa.length) {
+        const foraNorm = new Set(transportadorasForaDisputa.map((nome) => normalizarTransportadoraSimulador(nome)));
+        const selecionadaNorm = normalizarTransportadoraSimulador(nomeTabelaSelecionada || "");
+        baseParaSimulacao = baseParaSimulacao.filter((t) => {
+          const nomeNorm = normalizarTransportadoraSimulador(t.nome || t.transportadora || "");
+          return nomeNorm === selecionadaNorm || !foraNorm.has(nomeNorm);
+        });
+      }
 
       if (!baseParaSimulacao.length) {
         setErroSimulacao('Não encontrei nenhuma tabela compatível para simular. Confira se as tabelas estão no Supabase e se a origem/canal existem no cadastro.');
@@ -7401,7 +7430,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         }
       }
 
-      const rowsSimulacao = modoTabelaVsTabela
+      const rowsSimulacao = tabelaVsTabelaAtivo
         ? rowsFiltrados.map((row) => ({ ...row, valorCte: 0 }))
         : rowsFiltrados;
       const paramsSimulacao = {
@@ -7430,7 +7459,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           ignorarCubagem: usarPesoCteRealizado,
           percentualContingenciaPeso: percentualContingenciaPesoRealizado,
           diagnosticoAusenciaAtivo,
-          tabelaVsTabela: modoTabelaVsTabela,
+          tabelaVsTabela: tabelaVsTabelaAtivo,
         },
         cidadePorIbge: mapaCidades,
         gradePorCanal: grade,
@@ -7480,7 +7509,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           compararTabelaAtualReajuste,
           usarTabelaAtualComoBaseRealizado,
           compararConcorrentes: deveCompararConcorrentes,
-          tabelaVsTabela: modoTabelaVsTabela,
+          tabelaVsTabela: tabelaVsTabelaAtivo,
           canal: ctx.canal,
           modo: ctx.modo,
           origem: ctx.origem,
@@ -8846,6 +8875,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const totalComparadoRealizadoUi = vencedorRealizadoUi + perdedorRealizadoUi;
   const aderenciaRealizadoUi = totalComparadoRealizadoUi ? (vencedorRealizadoUi / totalComparadoRealizadoUi) * 100 : 0;
 
+  // Marcar/desmarcar transportadora fora da disputa re-simula sozinho (sem buscar tabelas de novo).
+  useEffect(() => {
+    if (primeiraRenderForaDisputaRef.current) { primeiraRenderForaDisputaRef.current = false; return undefined; }
+    if (!modoTabelaVsTabela || !resultadoRealizado || !baseRealizadoCarregada?.contexto) return undefined;
+    const timer = window.setTimeout(() => { onSimularRealizadoBase(); }, 700);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transportadorasForaDisputa]);
+
   return (
     <div className="simulador-shell">
       <div className="simulador-header compact-top">
@@ -9555,6 +9593,35 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   ? 'Usa só peso, cubagem, origem e destino dos CT-es do período (o frete pago e a transportadora que carregou são ignorados). Todas as tabelas são recalculadas e competem entre si; laudos e negociação funcionam como no simulador do realizado.'
                   : 'Simule uma tabela sobre os CT-es realizados para medir projeção de faturamento, saving, rotas perdidas e redução necessária por rota.'}
               </p>
+              {modoTabelaVsTabela && (
+                <details style={{ marginTop: 6 }}>
+                  <summary style={{ cursor: 'pointer', fontWeight: 700 }}>
+                    Tirar transportadoras da disputa{transportadorasForaDisputa.length ? ` (${transportadorasForaDisputa.length} fora)` : ''}
+                  </summary>
+                  <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, marginTop: 4, background: '#fff' }}>
+                    {transportadorasForaDisputa.length > 0 && (
+                      <button type="button" className="sim-tab" style={{ marginBottom: 6 }} onClick={() => setTransportadorasForaDisputa([])}>Limpar exclusões</button>
+                    )}
+                    {todasTransportadorasDisponiveis.map((nome) => (
+                      <label key={nome} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '2px 0' }}>
+                        <input
+                          type="checkbox"
+                          checked={transportadorasForaDisputa.includes(nome)}
+                          onChange={(e) => setTransportadorasForaDisputa((atual) => (e.target.checked ? [...atual, nome] : atual.filter((item) => item !== nome)))}
+                        />
+                        {nome}
+                      </label>
+                    ))}
+                  </div>
+                  <small style={{ color: '#64748b' }}>Marcadas somem da simulação (a transportadora analisada nunca é removida) e o ranking sobe. A simulação roda de novo sozinha ao marcar/desmarcar.</small>
+                </details>
+              )}
+              {modoTabelaVsTabela && (
+                <label className="sim-flag" style={{ marginTop: 6 }}>
+                  <input type="checkbox" checked={considerarRealizadoNaAnalise} onChange={(e) => setConsiderarRealizadoNaAnalise(e.target.checked)} />
+                  Considerar também o frete realizado (ganhar só conta se ficar 1º entre as tabelas e abaixo do pago). Desligado = só entre tabelas. Simule de novo após trocar.
+                </label>
+              )}
             </div>
             <button className="sim-tab" type="button" onClick={exportarSimuladorRealizado} disabled={!resultadoRealizado?.rotas?.length}>
               Exportar laudo
@@ -10587,6 +10654,31 @@ export default function SimuladorPage({ transportadoras = [] }) {
               {/* 4 estados */}
               {(resultadoRealizado.ctesDetalhes || []).length > 0 && (() => {
                 const detalhesStatus = resultadoRealizado.ctesDetalhes || [];
+                if (resultadoRealizado.filtros?.tabelaVsTabela) {
+                  const ganhou = Number(resultadoRealizado.ctesGanhariaSelecionada || 0);
+                  const perdeu = Number(resultadoRealizado.ctesPerdidosSelecionada || 0);
+                  const semTabela = Number(resultadoRealizado.ctesSemTabelaSelecionada || 0);
+                  const totalDisputa = ganhou + perdeu;
+                  return (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                      <div style={{ background: '#dcfce7', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 14px', textAlign: 'center' }}>
+                        <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#15803d' }}>{ganhou.toLocaleString('pt-BR')}</div>
+                        <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#15803d' }}>✅ Ganha (1º entre as tabelas)</div>
+                        <div style={{ fontSize: '0.7rem', color: '#166534' }}>Aderência: {formatPercent(totalDisputa ? (ganhou / totalDisputa) * 100 : 0)}</div>
+                      </div>
+                      <div style={{ background: '#fee2e2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', textAlign: 'center' }}>
+                        <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#dc2626' }}>{perdeu.toLocaleString('pt-BR')}</div>
+                        <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#dc2626' }}>❌ Perde para concorrente</div>
+                        <div style={{ fontSize: '0.7rem', color: '#b91c1c' }}>Outra tabela fica mais barata</div>
+                      </div>
+                      <div style={{ background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 14px', textAlign: 'center' }}>
+                        <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#64748b' }}>{semTabela.toLocaleString('pt-BR')}</div>
+                        <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748b' }}>— Sem tabela</div>
+                        <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Transportadora não atende o caso</div>
+                      </div>
+                    </div>
+                  );
+                }
                 if (!resultadoRealizado.compararConcorrentes) {
                   // Mesma contagem do card "Aderência da tabela" acima
                   // (aderenciaRealizadoUi), pra nunca divergir do que essa caixa
