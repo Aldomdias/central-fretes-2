@@ -357,6 +357,8 @@ export function usuarioTemAcesso(usuario, pagina) {
   if (!usuario) return false;
   if (import.meta.env.DEV && pagina === 'importacao-ia-tabelas') return true;
   if (pagina === 'minha-senha') return true;
+  // Gestao decide a fila de Suprimentos mesmo com lista de paginas personalizada.
+  if (pagina === 'autorizacoes-suprimentos' && usuario.perfil === 'GESTAO') return true;
   if (pagina === 'usuarios' || pagina === 'usuarios-ativos') return usuarioPodeAdministrarUsuarios(usuario);
 
   const permissoes = permissoesUsuario(usuario);
