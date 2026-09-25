@@ -265,7 +265,7 @@ export async function atualizarFaturaAuditoria(state, fatura, evento) {
 // Enriquecimento: puxa da base reauditada (auditoria_cte_resultados) o que ja
 // sabemos de cada CT-e da fatura - rota, peso, canal, competencia e valores.
 // E consulta de referencia: falha aqui nao pode travar a tela da fatura.
-export async function buscarReferenciaCtes(chaves = []) {
+export async function buscarReferenciaCtes(chaves = [], { comDetalhes = false, lancarErro = false } = {}) {
   const referencia = new Map();
   if (!isSupabaseConfigured() || !chaves.length) return referencia;
   const normalizadas = [...new Set(chaves.map(normalizarChaveCte).filter(Boolean))];
@@ -278,9 +278,13 @@ export async function buscarReferenciaCtes(chaves = []) {
       // memória completa e comparativos de tabelas; transferi-lo para todos os
       // CT-es fazia até uma fatura de 6 itens exceder 12 s. O JSON completo é
       // buscado sob demanda quando o usuário abre o detalhe de um CT-e.
-      .select('chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at')
+      // `comDetalhes` e usado na geracao de laudo, que precisa da memoria de calculo.
+      .select(`chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at${comDetalhes ? ', detalhes_calculo' : ''}`)
       .in('chave_cte', lote);
-    if (error) break;
+    if (error) {
+      if (lancarErro) throw new Error(`Erro ao consultar a base: ${error.message}`);
+      break;
+    }
     // Podem existir registros duplicados pra mesma chave/competencia (recalculos
     // antigos que inseriram em vez de atualizar) — sempre ficar com o mais
     // recente por updated_at, senao a tela pode pegar um resultado desatualizado
@@ -298,7 +302,85 @@ export async function buscarReferenciaCtes(chaves = []) {
       if (numero) referencia.set(numero, maisRecente(referencia.get(numero), row));
     }
   }
+  // Fallback: CT-e que ainda nao foi calculado na auditoria mas existe no
+  // realizado. So enriquece rota/canal/peso/NF (por chave, nunca por numero,
+  // que se repete entre emitentes); valores calculados ficam zerados de
+  // proposito para nao passar como resultado da auditoria.
+  const faltando = normalizadas.filter((chave) => chave.length >= 40 && !referencia.has(chave));
+  for (let inicio = 0; inicio < faltando.length; inicio += 200) {
+    const lote = faltando.slice(inicio, inicio + 200);
+    const { data, error } = await client
+      .from('realizado_local_ctes')
+      .select('chave_cte, numero_cte, competencia, cidade_origem, uf_origem, ibge_origem, cidade_destino, uf_destino, ibge_destino, canal, peso, valor_nf, valor_cte, updated_at')
+      .in('chave_cte', lote);
+    if (error) {
+      if (lancarErro) throw new Error(`Erro ao consultar o realizado: ${error.message}`);
+      break;
+    }
+    for (const row of data || []) {
+      const chave = normalizarChaveCte(row.chave_cte);
+      if (!chave || referencia.has(chave)) continue;
+      referencia.set(chave, {
+        ...row,
+        valor_calculado: 0,
+        valor_calculado_verum: 0,
+        status_calculo: 'SEM_CALCULO',
+        motivo_sem_calculo: 'CT-e no realizado, ainda nao calculado na auditoria',
+        origem_referencia: 'realizado',
+      });
+    }
+  }
   return referencia;
+}
+
+// Corrige no realizado (base dos CT-es) a origem/destino que divergem do
+// tracking (ex.: importacao gravou "VITORIA/SE" com IBGE de Vitoria/ES quando o
+// tracking diz Serra/ES -> Aracaju/SE). O tracking manda; so corrige quando o
+// tracking traz IBGE de origem e destino validos. Depois disso o CT-e pode ser
+// recalculado normalmente.
+export async function corrigirBaseCtesPeloTracking(chaves = []) {
+  const resultado = { corrigidos: [], iguais: 0, semTracking: 0 };
+  const normalizadas = [...new Set((chaves || []).map((c) => String(c || '').replace(/\D/g, '')).filter((c) => c.length >= 40))];
+  if (!isSupabaseConfigured() || !normalizadas.length) return resultado;
+  const client = getSupabaseClient();
+  const dig7 = (v) => String(v || '').replace(/\D/g, '').slice(0, 7);
+  for (let inicio = 0; inicio < normalizadas.length; inicio += 100) {
+    const lote = normalizadas.slice(inicio, inicio + 100);
+    const [{ data: tracking, error: erroTracking }, { data: base, error: erroBase }] = await Promise.all([
+      client.from('tracking_rows').select('chave_cte, cidade_origem, uf_origem, ibge_origem, cidade_destino, uf_destino, ibge_destino').in('chave_cte', lote),
+      client.from('realizado_local_ctes').select('chave_cte, cidade_origem, uf_origem, ibge_origem, cidade_destino, uf_destino, ibge_destino').in('chave_cte', lote),
+    ]);
+    if (erroTracking) throw new Error(`Erro ao consultar o tracking: ${erroTracking.message}`);
+    if (erroBase) throw new Error(`Erro ao consultar a base de CT-es: ${erroBase.message}`);
+    const trackingPorChave = new Map();
+    (tracking || []).forEach((row) => {
+      if (dig7(row.ibge_origem).length !== 7 || dig7(row.ibge_destino).length !== 7) return;
+      if (!trackingPorChave.has(row.chave_cte)) trackingPorChave.set(row.chave_cte, row);
+    });
+    for (const atual of base || []) {
+      const t = trackingPorChave.get(atual.chave_cte);
+      if (!t) { resultado.semTracking += 1; continue; }
+      if (dig7(t.ibge_origem) === dig7(atual.ibge_origem) && dig7(t.ibge_destino) === dig7(atual.ibge_destino)
+        && String(t.uf_origem || '') === String(atual.uf_origem || '') && String(t.uf_destino || '') === String(atual.uf_destino || '')) {
+        resultado.iguais += 1;
+        continue;
+      }
+      const novo = {
+        cidade_origem: t.cidade_origem, uf_origem: t.uf_origem, ibge_origem: dig7(t.ibge_origem),
+        cidade_destino: t.cidade_destino, uf_destino: t.uf_destino, ibge_destino: dig7(t.ibge_destino),
+        chave_rota_ibge: `${dig7(t.ibge_origem)}-${dig7(t.ibge_destino)}`,
+        updated_at: new Date().toISOString(),
+      };
+      const { error } = await client.from('realizado_local_ctes').update(novo).eq('chave_cte', atual.chave_cte);
+      if (error) throw new Error(`Erro ao corrigir o CT-e na base: ${error.message}`);
+      resultado.corrigidos.push({
+        chave: atual.chave_cte,
+        de: `${atual.cidade_origem}/${atual.uf_origem} → ${atual.cidade_destino}/${atual.uf_destino}`,
+        para: `${t.cidade_origem}/${t.uf_origem} → ${t.cidade_destino}/${t.uf_destino}`,
+      });
+    }
+  }
+  return resultado;
 }
 
 export async function buscarResumoOrigensFaturas(faturaIds = []) {

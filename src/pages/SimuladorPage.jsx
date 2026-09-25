@@ -3817,9 +3817,17 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       && freteTabelaAtualPropria > 0
       && transportadoraLinhaEhBaseComparativa
     );
-    const freteBaseComparativa = usarTabelaAtualComoBase ? freteTabelaAtualPropria : valorCte;
-    const fonteBaseComparativa = usarTabelaAtualComoBase ? 'TABELA_ATUAL' : 'REALIZADO';
-    const rotuloBaseComparativa = usarTabelaAtualComoBase ? 'tabela atual' : 'realizado';
+    // Modo tabela x tabela: o frete pago não entra. A referência passa a ser a
+    // média das OUTRAS tabelas que atendem o mesmo caso (peso/cubagem/rota).
+    const modoTabelaVsTabela = Boolean(filtros.tabelaVsTabela);
+    const concorrentesTabela = modoTabelaVsTabela
+      ? resultado.filter((item) => item !== itemSelecionada).map((item) => numeroRealizado(item.total)).filter((v) => v > 0)
+      : [];
+    const freteBaseComparativa = modoTabelaVsTabela
+      ? (concorrentesTabela.length ? concorrentesTabela.reduce((soma, v) => soma + v, 0) / concorrentesTabela.length : numeroRealizado(itemSelecionada?.total))
+      : (usarTabelaAtualComoBase ? freteTabelaAtualPropria : valorCte);
+    const fonteBaseComparativa = modoTabelaVsTabela ? 'MEDIA_TABELAS' : (usarTabelaAtualComoBase ? 'TABELA_ATUAL' : 'REALIZADO');
+    const rotuloBaseComparativa = modoTabelaVsTabela ? 'média das tabelas' : (usarTabelaAtualComoBase ? 'tabela atual' : 'realizado');
 
     const freteVenc = numeroRealizado(vencedor.total);
     freteVencedor += freteVenc;
@@ -3846,8 +3854,10 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       savingTabelaSelecionadaVsRealBruto += economiaTabelaSelecionadaVsRealBruto;
 
       const temConcorrenteTabela = resultado.length > 1;
-      const ganhaVsRealizado = freteSel > 0 && freteBaseComparativa > 0 && freteSel < freteBaseComparativa;
       const ganhaVsConcorrencia = Number(itemSelecionada.ranking) === 1;
+      const ganhaVsRealizado = modoTabelaVsTabela
+        ? freteSel > 0 && (!temConcorrenteTabela || ganhaVsConcorrencia)
+        : freteSel > 0 && freteBaseComparativa > 0 && freteSel < freteBaseComparativa;
 
       // Contagem completa (nao limitada aos 3000 CT-es do ctesDetalhes, que e
       // uma amostra enviesada pra auditoria) — usada no painel "Vencedor vs
@@ -4133,7 +4143,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       // derruba o navegador.
       vencedorDetalhes: vencedor?.detalhes || null,
       selecionadaDetalhes: itemSelecionada?.detalhes || null,
-      ganhouRealizado: freteSel > 0 && freteBaseComparativa > 0 && freteSel < freteBaseComparativa,
+      ganhouRealizado: modoTabelaVsTabela ? statusSelecionada === 'Ganharia' : freteSel > 0 && freteBaseComparativa > 0 && freteSel < freteBaseComparativa,
       todosResultados: resultado.slice(0, 8).map((r) => ({
         transportadora: r.transportadora,
         total: r.total,
@@ -4552,6 +4562,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const capasNegociacaoCarregadasRef = useRef(false);
   const [incluirNegociacoesRealizado, setIncluirNegociacoesRealizado] = useState(false);
   const [compararConcorrentesRealizado, setCompararConcorrentesRealizado] = useState(false);
+  // Aba 'Análise de tabela (realizado)': mesma tela/motor do realizado, mas as
+  // tabelas competem entre si usando peso/cubagem/rota dos CT-es (sem o frete pago).
+  const [modoTabelaVsTabela, setModoTabelaVsTabela] = useState(false);
   const [diagnosticoAusenciaAtivo, setDiagnosticoAusenciaAtivo] = useState(false);
   const [incluirCpsLogRealizado, setIncluirCpsLogRealizado] = useState(false);
   const [incluirCpComercialRealizado, setIncluirCpComercialRealizado] = useState(
@@ -7238,7 +7251,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         : rowsComIbgeEscopoNegociacao;
 
       const routeKeysRealizado = criarRouteKeysRealizado(rowsFiltrados, ctx.canal);
-      const deveCompararConcorrentes = Boolean(compararConcorrentesRealizado);
+      const deveCompararConcorrentes = Boolean(compararConcorrentesRealizado) || modoTabelaVsTabela;
       const basesParaMesclar = [baseSelecionada].filter((base) => Array.isArray(base) ? base.length : Boolean(base));
 
       if (deveCompararConcorrentes && incluirNegociacoesRealizado && transportadorasNegociacaoRealizado.length) {
@@ -7388,8 +7401,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
         }
       }
 
+      const rowsSimulacao = modoTabelaVsTabela
+        ? rowsFiltrados.map((row) => ({ ...row, valorCte: 0 }))
+        : rowsFiltrados;
       const paramsSimulacao = {
-        rows: rowsFiltrados,
+        rows: rowsSimulacao,
         baseOnline: baseParaSimulacao,
         baseOnlineAtual: baseTabelaAtualReajuste,
         transportadoraSelecionada: nomeTabelaSelecionada,
@@ -7414,6 +7430,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           ignorarCubagem: usarPesoCteRealizado,
           percentualContingenciaPeso: percentualContingenciaPesoRealizado,
           diagnosticoAusenciaAtivo,
+          tabelaVsTabela: modoTabelaVsTabela,
         },
         cidadePorIbge: mapaCidades,
         gradePorCanal: grade,
@@ -7463,6 +7480,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           compararTabelaAtualReajuste,
           usarTabelaAtualComoBaseRealizado,
           compararConcorrentes: deveCompararConcorrentes,
+          tabelaVsTabela: modoTabelaVsTabela,
           canal: ctx.canal,
           modo: ctx.modo,
           origem: ctx.origem,
@@ -8845,9 +8863,23 @@ export default function SimuladorPage({ transportadoras = [] }) {
           ['analise', 'Análise de transportadora'],
           ['origem', 'Análise por origem'],
           ['realizado', 'Simulador do realizado'],
+          ['tabela-realizado', 'Análise de tabela (realizado)'],
           ['cobertura', 'Cobertura de tabela'],
         ].map(([id, label]) => (
-          <button key={id} className={`sim-tab ${aba === id ? 'active' : ''}`} onClick={() => setAba(id)}>
+          <button
+            key={id}
+            className={`sim-tab ${(id === 'tabela-realizado' ? aba === 'realizado' && modoTabelaVsTabela : id === 'realizado' ? aba === 'realizado' && !modoTabelaVsTabela : aba === id) ? 'active' : ''}`}
+            onClick={() => {
+              if (id === 'tabela-realizado' || id === 'realizado') {
+                const novoModo = id === 'tabela-realizado';
+                if (novoModo !== modoTabelaVsTabela) setResultadoRealizado(null);
+                setModoTabelaVsTabela(novoModo);
+                setAba('realizado');
+              } else {
+                setAba(id);
+              }
+            }}
+          >
             {label}
           </button>
         ))}
@@ -9517,9 +9549,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
         <div className="sim-card">
           <div className="sim-resultado-topo compact-top">
             <div>
-              <h2 style={{ margin: 0 }}>Simulador do realizado</h2>
+              <h2 style={{ margin: 0 }}>{modoTabelaVsTabela ? 'Análise de tabela (realizado)' : 'Simulador do realizado'}</h2>
               <p>
-                Simule uma tabela sobre os CT-es realizados para medir projeção de faturamento, saving, rotas perdidas e redução necessária por rota.
+                {modoTabelaVsTabela
+                  ? 'Usa só peso, cubagem, origem e destino dos CT-es do período (o frete pago e a transportadora que carregou são ignorados). Todas as tabelas são recalculadas e competem entre si; laudos e negociação funcionam como no simulador do realizado.'
+                  : 'Simule uma tabela sobre os CT-es realizados para medir projeção de faturamento, saving, rotas perdidas e redução necessária por rota.'}
               </p>
             </div>
             <button className="sim-tab" type="button" onClick={exportarSimuladorRealizado} disabled={!resultadoRealizado?.rotas?.length}>

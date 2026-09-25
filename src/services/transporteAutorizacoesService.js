@@ -17,6 +17,19 @@ export function normalizarCanalAutorizacao(canal) {
   return texto.includes('B2C') ? 'B2C' : 'ATACADO';
 }
 
+// Analise do frete pra quem decide: frete atual (calculado pela AMD), quanto
+// vira com o adicional cobrado e quanto isso pesa sobre o valor da NF.
+export function analisarFrete({ valor_nf: valorNf, valor_calculado: calculado, valor_divergente: adicional, valor_cte: cobrado } = {}) {
+  const nf = numero(valorNf);
+  const atual = numero(calculado);
+  const extra = numero(adicional);
+  const comAdicional = atual > 0 ? atual + extra : numero(cobrado);
+  const pct = (valor) => (nf > 0 ? (valor / nf) * 100 : null);
+  return { valorNf: nf, freteAtual: atual, adicional: extra, freteComAdicional: comAdicional, pctAtual: atual > 0 ? pct(atual) : null, pctComAdicional: pct(comAdicional) };
+}
+
+export const formatarPct = (valor) => (valor == null ? '-' : `${valor.toFixed(2).replace('.', ',')}%`);
+
 export async function listarAutorizacoes({ canal, status } = {}) {
   let query = exigirClient().from(TABELA).select('*').eq('ativo', true).order('enviado_em', { ascending: false }).limit(2000);
   if (canal) query = query.eq('canal', canal);
@@ -54,6 +67,24 @@ export async function buscarVinculoPorCte(chavesCte = []) {
     }
   } catch (error) {
     console.warn('[Autorizacoes transporte] vinculo por CT-e indisponivel.', error?.message || error);
+  }
+  return mapa;
+}
+
+// Canal real (B2C/Atacado) de cada CT-e pela base do realizado. Na fila de
+// Suprimentos o canal do registro e "SUPRIMENTOS", entao o real vem daqui.
+export async function buscarCanalPorCte(chavesCte = []) {
+  const mapa = new Map();
+  const chaves = [...new Set(chavesCte.map(soDigitos).filter(Boolean))];
+  if (!chaves.length || !isSupabaseConfigured()) return mapa;
+  const client = getSupabaseClient();
+  try {
+    for (let i = 0; i < chaves.length; i += 100) {
+      const { data } = await client.from('realizado_local_ctes').select('chave_cte,canal').in('chave_cte', chaves.slice(i, i + 100));
+      (data || []).forEach((row) => { if (row.canal) mapa.set(soDigitos(row.chave_cte), String(row.canal).toUpperCase()); });
+    }
+  } catch (error) {
+    console.warn('[Autorizacoes] canal por CT-e indisponivel.', error?.message || error);
   }
   return mapa;
 }
@@ -101,6 +132,7 @@ export async function enviarParaAutorizacao(itens = [], usuarioNome = '') {
       transportadora: item.transportadora || null,
       cidade_origem: item.cidade_origem || null,
       cidade_destino: item.cidade_destino || null,
+      valor_nf: numero(item.valor_nf),
       valor_cte: numero(item.valor_cte),
       valor_calculado: numero(item.valor_calculado),
       valor_divergente: numero(item.valor_divergente),
@@ -113,6 +145,24 @@ export async function enviarParaAutorizacao(itens = [], usuarioNome = '') {
     if (error) throw new Error(`Erro ao enviar para autorizacao: ${error.message}`);
   }
   return { enviados: novos.length, jaNaFila: itens.length - novos.length };
+}
+
+// Suprimentos identifica que o caso nao e dele: passa a solicitacao pendente pra
+// fila do transporte (B2C ou Atacado). O motivo fica no historico da observacao.
+export async function transferirParaTransporte(itens = [], { destino, motivo, usuarioNome } = {}) {
+  const canalDestino = String(destino || '').toUpperCase();
+  if (!['B2C', 'ATACADO'].includes(canalDestino)) throw new Error('Escolha o destino: B2C ou Atacado.');
+  if (!String(motivo || '').trim()) throw new Error('Informe o motivo da transferencia.');
+  const quando = new Date().toLocaleString('pt-BR');
+  for (const item of itens) {
+    const nota = `[Transferido de ${item.canal === 'SUPRIMENTOS' ? 'Suprimentos' : item.canal} para ${canalDestino} por ${usuarioNome || '-'} em ${quando}: ${String(motivo).trim()}]`;
+    const { error } = await exigirClient().from(TABELA).update({
+      canal: canalDestino,
+      observacao_auditoria: [item.observacao_auditoria, nota].filter(Boolean).join(' '),
+    }).eq('id', item.id).eq('status', 'PENDENTE');
+    if (error) throw new Error(`Erro ao transferir: ${error.message}`);
+  }
+  return { transferidos: itens.length, destino: canalDestino };
 }
 
 export async function decidirAutorizacao({ id, autorizar, valorAutorizado, observacao, usuarioNome, item = null }) {
@@ -142,12 +192,35 @@ export async function decidirAutorizacao({ id, autorizar, valorAutorizado, obser
 
 // Auditor -> Suprimentos: abre um chamado AMD (Central de Solicitacoes) e coloca
 // os CT-es na fila do modulo Suprimentos pra aprovar o valor.
-export async function enviarParaSuprimentos(itens = [], { tipoAjuste, justificativa, usuarioNome, usuarioEmail } = {}) {
+// `autorizadoPor`: a gestao (Aprovacao de Gestao) ja aprovou o valor; entra na fila
+// como AUTORIZADA (saldo ja vale na auditoria) e Suprimentos so assume o chamado.
+const BUCKET_ANEXOS = 'autorizacoes-anexos';
+const LIMITE_ANEXO_MB = 20;
+
+// Sobe os arquivos (File) pro Storage e devolve [{nome, tamanho, path, url}].
+export async function enviarAnexosAutorizacao(arquivos = []) {
+  const client = exigirClient();
+  const pasta = `${new Date().toISOString().slice(0, 10)}/${Math.random().toString(36).slice(2, 10)}`;
+  const anexos = [];
+  for (const arquivo of arquivos) {
+    if (arquivo.size > LIMITE_ANEXO_MB * 1024 * 1024) throw new Error(`O arquivo "${arquivo.name}" passa de ${LIMITE_ANEXO_MB} MB.`);
+    const nomeSeguro = arquivo.name.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const path = `${pasta}/${nomeSeguro}`;
+    const { error } = await client.storage.from(BUCKET_ANEXOS).upload(path, arquivo, { upsert: false, contentType: arquivo.type || undefined });
+    if (error) throw new Error(`Erro ao anexar "${arquivo.name}": ${error.message}. Rode a migration 20260925_002_autorizacoes_anexos.sql.`);
+    const { data } = client.storage.from(BUCKET_ANEXOS).getPublicUrl(path);
+    anexos.push({ nome: arquivo.name, tamanho: arquivo.size, path, url: data?.publicUrl || '' });
+  }
+  return anexos;
+}
+
+export async function enviarParaSuprimentos(itens = [], { tipoAjuste, justificativa, usuarioNome, usuarioEmail, autorizadoPor = '', anexos = [] } = {}) {
   if (!itens.length) throw new Error('Selecione ao menos um CT-e.');
+  if (!autorizadoPor && !anexos.length) throw new Error('Anexe ao menos um arquivo (tabela, lista de TDE ou documento de apoio).');
   if (String(justificativa || '').trim().length < 30) throw new Error('Justificativa muito curta — explique bem a diferenca (minimo 30 caracteres).');
   const client = exigirClient();
   const transportadoras = [...new Set(itens.map((item) => item.transportadora).filter(Boolean))];
-  const linhas = itens.map((item) => `- CT-e ${item.chave_cte || item.chave_nfe || '-'} | ${item.transportadora || '-'} | pago ${numero(item.valor_cte).toFixed(2)} | calculado ${numero(item.valor_calculado).toFixed(2)} | diferenca ${numero(item.valor_divergente).toFixed(2)}`);
+  const linhas = itens.map((item) => `- CT-e ${item.chave_cte || item.chave_nfe || '-'} | ${item.transportadora || '-'} | NF ${numero(item.valor_nf).toFixed(2)} | pago ${numero(item.valor_cte).toFixed(2)} | calculado ${numero(item.valor_calculado).toFixed(2)} (${formatarPct(analisarFrete(item).pctAtual)} da NF) | diferenca ${numero(item.valor_divergente).toFixed(2)} | frete com adicional ${formatarPct(analisarFrete(item).pctComAdicional)} da NF`);
   let protocolo = null;
   const chamado = await criarSolicitacaoCentralNegociacao({
     tipoSolicitacao: 'AJUSTE DE TABELA',
@@ -157,7 +230,7 @@ export async function enviarParaSuprimentos(itens = [], { tipoAjuste, justificat
     email: usuarioEmail,
     transportadora: transportadoras.join(', '),
     assunto: `${tipoAjuste || 'Ajuste de tabela'} — ${transportadoras.join(', ')} (${itens.length} CT-e)`,
-    descricao: `Diferenca identificada pela Auditoria de Fretes.\n\nJustificativa do auditor:\n${justificativa.trim()}\n\nCT-es:\n${linhas.join('\n')}`,
+    descricao: `Diferenca identificada pela Auditoria de Fretes.${autorizadoPor ? `\n\nValor JA AUTORIZADO pela gestao (${autorizadoPor}) e lancado na auditoria; Suprimentos deve assumir o chamado e ajustar a tabela.` : ''}\n\nJustificativa:\n${justificativa.trim()}\n\nCT-es:\n${linhas.join('\n')}${anexos.length ? `\n\nAnexos:\n${anexos.map((a) => `- ${a.nome}: ${a.url}`).join('\n')}` : ''}`,
     mensagemStatus: 'Aberta pela Auditoria de Fretes; aguardando aprovacao do valor em Suprimentos.',
   });
   if (chamado?.ok) protocolo = chamado.solicitacao?.protocolo || null;
@@ -165,13 +238,15 @@ export async function enviarParaSuprimentos(itens = [], { tipoAjuste, justificat
   const novos = itens.map((item) => ({
     canal: 'SUPRIMENTOS',
     origem: 'AUDITORIA',
-    status: 'PENDENTE',
+    status: autorizadoPor ? 'AUTORIZADA' : 'PENDENTE',
+    ...(autorizadoPor ? { valor_autorizado: numero(item.valor_divergente), decidido_por: autorizadoPor, decidido_em: new Date().toISOString(), observacao_gestor: justificativa.trim() } : {}),
     chave_cte: soDigitos(item.chave_cte) || null,
     chave_nfe: soDigitos(item.chave_nfe) || vinculos.get(soDigitos(item.chave_cte))?.chaveNfe || null,
     numero_pedido: item.numero_pedido || vinculos.get(soDigitos(item.chave_cte))?.pedido || null,
     transportadora: item.transportadora || null,
     cidade_origem: item.cidade_origem || null,
     cidade_destino: item.cidade_destino || null,
+    valor_nf: numero(item.valor_nf),
     valor_cte: numero(item.valor_cte),
     valor_calculado: numero(item.valor_calculado),
     valor_divergente: numero(item.valor_divergente),
@@ -180,10 +255,11 @@ export async function enviarParaSuprimentos(itens = [], { tipoAjuste, justificat
     fatura_id: item.fatura_id || null,
     protocolo_amd: protocolo,
     tipo_ajuste: tipoAjuste || null,
+    ...(anexos.length ? { anexos } : {}),
   })).filter((item) => item.chave_cte || item.chave_nfe);
   if (!novos.length) throw new Error('Nenhum CT-e com chave valida para enviar.');
   const { error } = await client.from(TABELA).insert(novos);
-  if (error) throw new Error(`Erro ao enviar para Suprimentos: ${error.message}. Rode a migration 20260924_002_transporte_autorizacoes_suprimentos.sql.`);
+  if (error) throw new Error(`Erro ao enviar para Suprimentos: ${error.message}. Rode as migrations 20260924_002_transporte_autorizacoes_suprimentos.sql e 20260925_001_autorizacoes_valor_nf.sql.`);
   return { enviados: novos.length, protocolo };
 }
 
@@ -243,6 +319,37 @@ export async function lancarSaldoAntecipado({ canal, chaveCte, chaveNfe, numeroP
   });
   if (error) throw new Error(`Erro ao lancar saldo: ${error.message}`);
   return { vinculadoCte: Boolean(vinculo.chaveCte), chaveCte: vinculo.chaveCte, chaveNfe: vinculo.chaveNfe, pedido: vinculo.pedido };
+}
+
+// Gestao (Aprovacao de Gestao) aprova a fatura SEM desconto: o adicional de cada
+// CT-e vira saldo AUTORIZADO (mesma tabela) e a auditoria passa a considerar.
+export async function autorizarPelaGestao(itens = [], { observacao, usuarioNome } = {}) {
+  const validos = itens.filter((item) => (soDigitos(item.chave_cte) || soDigitos(item.chave_nfe)) && numero(item.valor_divergente) > 0);
+  if (!validos.length) return { autorizados: 0 };
+  const agora = new Date().toISOString();
+  const { error } = await exigirClient().from(TABELA).insert(validos.map((item) => ({
+    canal: normalizarCanalAutorizacao(item.canal),
+    origem: 'GESTOR',
+    status: 'AUTORIZADA',
+    chave_cte: soDigitos(item.chave_cte) || null,
+    chave_nfe: soDigitos(item.chave_nfe) || null,
+    numero_pedido: item.numero_pedido || null,
+    transportadora: item.transportadora || null,
+    cidade_origem: item.cidade_origem || null,
+    cidade_destino: item.cidade_destino || null,
+    valor_nf: numero(item.valor_nf),
+    valor_cte: numero(item.valor_cte),
+    valor_calculado: numero(item.valor_calculado),
+    valor_divergente: numero(item.valor_divergente),
+    valor_autorizado: numero(item.valor_divergente),
+    observacao_gestor: observacao || 'Autorizado na Aprovacao de Gestao (fatura sem desconto).',
+    enviado_por: usuarioNome || null,
+    decidido_por: usuarioNome || null,
+    decidido_em: agora,
+    fatura_id: item.fatura_id || null,
+  })));
+  if (error) throw new Error(`Erro ao registrar autorizacao da gestao: ${error.message}. Rode a migration 20260925_001_autorizacoes_valor_nf.sql.`);
+  return { autorizados: validos.length };
 }
 
 export async function desativarAutorizacao(id) {
