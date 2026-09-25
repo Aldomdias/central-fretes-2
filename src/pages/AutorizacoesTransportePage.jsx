@@ -2,12 +2,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { carregarSessao } from '../utils/authLocal';
 import {
   analisarFrete,
+  buscarCanalPorCte,
   completarVinculosPendentes,
   decidirAutorizacao,
   desativarAutorizacao,
   formatarPct,
   lancarSaldoAntecipado,
   listarAutorizacoes,
+  transferirParaTransporte,
 } from '../services/transporteAutorizacoesService';
 
 const dinheiro = (valor) => Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -25,6 +27,10 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
   const [mensagem, setMensagem] = useState('');
   const [edicao, setEdicao] = useState({});
   const [processando, setProcessando] = useState('');
+  const [marcados, setMarcados] = useState([]);
+  const [justificativaMassa, setJustificativaMassa] = useState('');
+  const [canaisReais, setCanaisReais] = useState(new Map());
+  const [destinoTransferencia, setDestinoTransferencia] = useState('');
   const [form, setForm] = useState({ chave: '', pedido: '', valor: '', observacao: '' });
 
   // Recarrega a fila e, de quebra, busca no tracking o pedido (Marketplace) e a
@@ -37,6 +43,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
       const preenchidos = await completarVinculosPendentes(lista.filter((item) => item.status === 'PENDENTE'));
       if (preenchidos) lista = await listarAutorizacoes({ canal });
       setItens(lista);
+      setCanaisReais(await buscarCanalPorCte(lista.filter((item) => item.status === 'PENDENTE').map((item) => item.chave_cte)));
       if (avisar) setMensagem(preenchidos ? `${preenchidos} item(ns) atualizado(s) com pedido/chave da NF.` : 'Fila atualizada — nada novo pra completar.');
     } catch (error) {
       setErro(error.message || String(error));
@@ -74,6 +81,60 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
     } finally {
       setProcessando('');
     }
+  };
+
+  // Suprimentos -> transporte (B2C/Atacado): vale pra um item (justificativa da linha)
+  // ou pra todos os marcados (justificativa em massa).
+  const transferir = async (alvo, motivo) => {
+    if (!alvo.length) { setMensagem('Marque ao menos um CT-e.'); return; }
+    if (!destinoTransferencia) { setMensagem('Escolha o destino da transferencia (B2C ou Atacado).'); return; }
+    if (!String(motivo).trim()) { setMensagem('Informe a justificativa (obrigatoria) para transferir.'); return; }
+    if (!window.confirm(`Transferir ${alvo.length} CT-e(s) para o transporte ${destinoTransferencia === 'B2C' ? 'B2C' : 'Atacado'}?`)) return;
+    setProcessando('transferir');
+    setMensagem('');
+    try {
+      const res = await transferirParaTransporte(alvo, { destino: destinoTransferencia, motivo, usuarioNome });
+      setMensagem(`${res.transferidos} CT-e(s) transferido(s) para a fila do transporte ${res.destino === 'B2C' ? 'B2C' : 'Atacado'}.`);
+      setMarcados([]);
+      setJustificativaMassa('');
+      await carregar();
+    } catch (error) {
+      setMensagem(error.message || String(error));
+    } finally {
+      setProcessando('');
+    }
+  };
+
+  const todosMarcados = pendentes.length > 0 && pendentes.every((item) => marcados.includes(item.id));
+  const alternarMarcado = (id) => setMarcados((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const alternarTodos = () => setMarcados(todosMarcados ? [] : pendentes.map((item) => item.id));
+
+  // Decide varios de uma vez com a mesma justificativa. O valor autorizado de
+  // cada item continua sendo o do campo da linha (padrao: o adicional).
+  const decidirEmMassa = async (autorizar) => {
+    const alvo = pendentes.filter((item) => marcados.includes(item.id));
+    if (!alvo.length) { setMensagem('Marque ao menos um CT-e.'); return; }
+    if (!justificativaMassa.trim()) { setMensagem('Informe a justificativa em massa (obrigatoria).'); return; }
+    if (!window.confirm(`${autorizar ? 'Autorizar' : 'Recusar'} ${alvo.length} CT-e(s) com a mesma justificativa?`)) return;
+    setProcessando('massa');
+    setMensagem('');
+    let ok = 0;
+    const falhas = [];
+    for (const item of alvo) {
+      const valorAutorizado = Number(String(campo(item.id, 'valor', item.valor_divergente)).replace(',', '.')) || 0;
+      if (autorizar && !(valorAutorizado > 0)) { falhas.push(`${item.chave_cte?.slice(25, 34) || item.id}: valor zerado`); continue; }
+      try {
+        await decidirAutorizacao({ id: item.id, autorizar, valorAutorizado, observacao: justificativaMassa.trim(), usuarioNome, item });
+        ok += 1;
+      } catch (error) {
+        falhas.push(`${item.chave_cte?.slice(25, 34) || item.id}: ${error.message || error}`);
+      }
+    }
+    setMensagem(`${autorizar ? 'Autorizados' : 'Recusados'} ${ok} de ${alvo.length} CT-e(s).${falhas.length ? ` Falharam: ${falhas.slice(0, 5).join(' | ')}` : ''}`);
+    setMarcados([]);
+    setJustificativaMassa('');
+    setProcessando('');
+    await carregar();
   };
 
   const lancar = async () => {
@@ -130,14 +191,35 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
       {mensagem && <div className="hint-box compact">{mensagem}</div>}
 
       {aba === 'fila' && (
-        <div className="table-card"><div className="sim-analise-tabela-wrap">
+        <div className="table-card">
+          {pendentes.length > 0 && (
+            <div className="audit-action-bar" style={{ alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span>{marcados.length} de {pendentes.length} marcado(s)</span>
+              <input style={{ flex: '1 1 320px' }} value={justificativaMassa} onChange={(e) => setJustificativaMassa(e.target.value)} placeholder="Justificativa em massa (obrigatoria) — vale para todos os marcados" />
+              <button className="btn-primary" disabled={processando === 'massa' || !marcados.length} onClick={() => decidirEmMassa(true)}>Autorizar marcados</button>
+              <button className="btn-secondary" disabled={processando === 'massa' || !marcados.length} onClick={() => decidirEmMassa(false)}>Recusar marcados</button>
+              {canal === 'SUPRIMENTOS' && (
+                <>
+                  <select value={destinoTransferencia} onChange={(e) => setDestinoTransferencia(e.target.value)} title="Destino da transferencia">
+                    <option value="">Transferir para...</option>
+                    <option value="B2C">Transporte B2C</option>
+                    <option value="ATACADO">Transporte Atacado</option>
+                  </select>
+                  <button className="btn-secondary" disabled={processando === 'transferir' || !marcados.length} onClick={() => transferir(pendentes.filter((item) => marcados.includes(item.id)), justificativaMassa)} title="Nao e de Suprimentos: passa os marcados para a fila do transporte">Transferir para transporte</button>
+                </>
+              )}
+            </div>
+          )}
+          <div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th>Pedido</th>{canal === 'SUPRIMENTOS' && <th>Chamado AMD</th>}<th>Chave CT-e</th><th>Chave NF</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor NF</th><th>Valor CT-e</th><th>Frete atual (AMD)</th><th>% NF atual</th><th>Adicional</th><th>Frete c/ adicional</th><th>% NF c/ adicional</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Justificativa *</th><th /></tr></thead>
+            <thead><tr><th><input type="checkbox" checked={todosMarcados} onChange={alternarTodos} title="Marcar todos" /></th><th>Pedido</th><th>Canal</th>{canal === 'SUPRIMENTOS' && <th>Chamado AMD</th>}<th>Chave CT-e</th><th>Chave NF</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor NF</th><th>Valor CT-e</th><th>Frete atual (AMD)</th><th>% NF atual</th><th>Adicional</th><th>Frete c/ adicional</th><th>% NF c/ adicional</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Justificativa *</th><th /></tr></thead>
             <tbody>
               {pendentes.map((item) => (
                 <tr key={item.id}>
+                  <td><input type="checkbox" checked={marcados.includes(item.id)} onChange={() => alternarMarcado(item.id)} /></td>
                   <td>{item.numero_pedido || '-'}</td>
-                  {canal === 'SUPRIMENTOS' && <td>{item.protocolo_amd || '-'}<br /><small>{item.tipo_ajuste || ''}</small></td>}
+                  <td><strong>{canaisReais.get(String(item.chave_cte || '').replace(/\D/g, '')) || (item.canal === 'SUPRIMENTOS' ? '-' : rotulo(item.canal))}</strong></td>
+                  {canal === 'SUPRIMENTOS' && <td>{item.protocolo_amd || '-'}<br /><small>{item.tipo_ajuste || ''}</small>{(item.anexos || []).map((a) => <div key={a.path}><a href={a.url} target="_blank" rel="noreferrer" style={{ fontSize: 11 }}>📎 {a.nome}</a></div>)}</td>}
                   <td style={{ fontSize: 11 }}>{item.chave_cte || '-'}</td>
                   <td style={{ fontSize: 11 }}>{item.chave_nfe || '-'}</td>
                   <td>{item.cidade_origem || '-'} → {item.cidade_destino || '-'}</td>
@@ -155,10 +237,11 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn-primary" disabled={processando === item.id} onClick={() => decidir(item, true)}>Autorizar</button>{' '}
                     <button className="btn-secondary" disabled={processando === item.id} onClick={() => decidir(item, false)}>Recusar</button>
+                    {canal === 'SUPRIMENTOS' && <>{' '}<button className="btn-secondary" disabled={processando === 'transferir'} onClick={() => transferir([item], campo(item.id, 'obs', ''))} title="Nao e de Suprimentos: passa para o transporte (destino escolhido na barra acima)">Transferir p/ transporte</button></>}
                   </td>
                 </tr>
               ))}
-              {!pendentes.length && <tr><td colSpan={17}>{carregando ? 'Carregando...' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
+              {!pendentes.length && <tr><td colSpan={18}>{carregando ? 'Carregando...' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
             </tbody>
           </table>
         </div></div>

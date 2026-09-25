@@ -11,6 +11,8 @@ import LotacaoPage from './pages/LotacaoPage';
 import LotacaoOperacaoPage from './pages/LotacaoOperacaoPage';
 import LotacaoAuditoriaPage from './pages/LotacaoAuditoriaPage';
 import ConsultaIbgePage from './pages/ConsultaIbgePage';
+import IbgeRapidoModal from './components/IbgeRapidoModal';
+import AvisoAprovacoesSuprimentos from './components/AvisoAprovacoesSuprimentos';
 import LoginPage from './pages/LoginPage';
 import UserManagementPage from './pages/UserManagementPage';
 import PainelUsuariosAtivosPage from './pages/PainelUsuariosAtivosPage';
@@ -260,6 +262,10 @@ export default function App() {
         onFecharMobile={() => setMenuMobileAberto(false)}
       />
       <main className="app-content">{content}</main>
+      <IbgeRapidoModal />
+      {usuarioTemAcesso(sessao, 'autorizacoes-suprimentos') && paginaAtual !== 'autorizacoes-suprimentos' && (
+        <AvisoAprovacoesSuprimentos onAbrir={() => mudarPagina('autorizacoes-suprimentos')} />
+      )}
     </div>
   );
 }

@@ -89,7 +89,7 @@ import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, apli
 import { buscarTrackingPorChaveNfeManual } from '../services/trackingSupabaseService';
 import { consultarMunicipiosIbge } from '../services/ibgeService';
 import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
-import { autorizarPelaGestao, carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarParaAutorizacao, enviarParaSuprimentos } from '../services/transporteAutorizacoesService';
+import { autorizarPelaGestao, carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarAnexosAutorizacao, enviarParaAutorizacao, enviarParaSuprimentos } from '../services/transporteAutorizacoesService';
 import AnaliseFreteTabela from '../components/AnaliseFreteTabela';
 import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
 
@@ -1854,11 +1854,13 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     if (suprimentos && String(justificativa).trim().length < 30) { setModalSuprimentos((prev) => ({ ...prev, erro: `Justificativa muito curta (${String(justificativa).trim().length}/30 caracteres). Explique melhor o caso.` })); return; }
     const temSemCalculo = destino === 'TRANSPORTE' && detalhes.some((d) => itens.some((i) => i.chave_cte === d.chave_cte) && semCalculoAmd(d));
     if (temSemCalculo && String(justificativa).trim().length < 30) { setModalSuprimentos((prev) => ({ ...prev, erro: `Ha CT-e sem calculo (cotacao): justifique o caso (${String(justificativa).trim().length}/30 caracteres).` })); return; }
+    if (suprimentos && !(modalSuprimentos.anexos || []).length) { setModalSuprimentos((prev) => ({ ...prev, erro: 'Anexe ao menos um arquivo (tabela, lista de TDE ou documento de apoio) para compor a solicitacao.' })); return; }
     setModalSuprimentos((prev) => ({ ...prev, enviando: true, erro: '' }));
     try {
       const usuarioNome = sessao?.nome || sessao?.email || '';
       if (suprimentos) {
-        const { enviados, protocolo } = await enviarParaSuprimentos(itens, { tipoAjuste, justificativa, usuarioNome, usuarioEmail: sessao?.email || '' });
+        const anexos = await enviarAnexosAutorizacao(modalSuprimentos.anexos);
+        const { enviados, protocolo } = await enviarParaSuprimentos(itens, { tipoAjuste, justificativa, usuarioNome, usuarioEmail: sessao?.email || '', anexos });
         setMensagemLiberacao(`✓ ${enviados} CT-e(s) enviado(s) para Suprimentos${protocolo ? ` — chamado AMD ${protocolo} aberto` : ' (chamado AMD nao foi criado, verifique a Central de Solicitacoes)'}.`);
       } else {
         const { enviados, jaNaFila } = await enviarParaAutorizacao(itens.map((item) => ({ ...item, observacao: String(justificativa).trim() })), usuarioNome);
@@ -2640,13 +2642,17 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     setInfoRecalculo('');
     let resumo;
     try {
-      resumo = await corrigirBaseCtesPeloTracking(alvo.map((item) => item.chave_cte));
+      setInfoRecalculo(`Etapa 1/2 — consultando o tracking de ${alvo.length} CT-e(s)...`);
+      resumo = await corrigirBaseCtesPeloTracking(alvo.map((item) => item.chave_cte), (p) => {
+        setInfoRecalculo(`Etapa 1/2 — ${p.etapa === 'consultando' ? 'consultando o tracking' : 'corrigindo a base pelo tracking'}: ${p.processados} de ${p.total} CT-e(s) (${p.corrigidos} corrigido(s) até agora)...`);
+      });
     } catch (error) {
       setErroDetalhes(error.message || 'Erro ao corrigir a base pelo tracking.');
       setCorrigindoTracking(false);
       return;
     }
     setCorrigindoTracking(false);
+    setInfoRecalculo(`Etapa 1/2 concluída: ${resumo.corrigidos.length} corrigido(s), ${resumo.iguais} já iguais, ${resumo.semTracking} sem tracking. Etapa 2/2 — recalculando ${alvo.length} CT-e(s)...`);
     const lista = resumo.corrigidos.map((c) => `${c.chave.slice(25, 34)}: ${c.de} → ${c.para}`).slice(0, 5).join(' | ');
     await recalcular(alvo.map((item) => item.id));
     setInfoRecalculo(`Base corrigida pelo tracking: ${resumo.corrigidos.length} CT-e(s) corrigido(s), ${resumo.iguais} já estavam iguais, ${resumo.semTracking} sem tracking. Recalculados ${alvo.length}.${lista ? ` Ex.: ${lista}` : ''}`);
@@ -3114,7 +3120,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
           {recalculando ? 'Recalculando...' : selecionados.length ? `Recalcular selecionados (${selecionados.length})` : 'Recalcular CT-es'}
         </button>
         <button className="btn-secondary" disabled={corrigindoTracking || atualizandoBase || recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={corrigirBasePeloTracking} title="Compara origem/destino do CT-e na base com o tracking, corrige o que divergir e recalcula os CT-es selecionados (ou os sem cálculo)">
-          {corrigindoTracking ? 'Corrigindo...' : selecionados.length ? `Corrigir base (tracking) (${selecionados.length})` : 'Corrigir base (tracking)'}
+          {corrigindoTracking ? 'Corrigindo (etapa 1/2)...' : selecionados.length ? `Corrigir base (tracking) (${selecionados.length})` : 'Corrigir base (tracking)'}
         </button>
         <button className="btn-secondary" disabled={atualizandoBase || recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={atualizarDaBase} title="Relê da base já calculada os CT-es selecionados (ou os 'Fora da base'), sem recalcular">
           {atualizandoBase ? 'Buscando...' : selecionados.length ? `Atualizar da base (${selecionados.length})` : 'Atualizar da base'}
@@ -3155,6 +3161,19 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
               <label className="field">{modalSuprimentos.destino === 'SUPRIMENTOS' ? 'Justificativa * (explique bem o caso, minimo 30 caracteres)' : 'Observacao pra ele (o que aconteceu)'}
                 <textarea rows={modalSuprimentos.destino === 'SUPRIMENTOS' ? 6 : 3} value={modalSuprimentos.justificativa} onChange={(e) => setModalSuprimentos((p) => ({ ...p, justificativa: e.target.value }))} />
               </label>
+              {modalSuprimentos.destino === 'SUPRIMENTOS' && (
+                <div className="field">
+                  <label>Anexos * (tabela, lista de TDE ou documento de apoio; vao junto no chamado AMD)</label>
+                  <input type="file" multiple onChange={(e) => { const novos = Array.from(e.target.files || []); setModalSuprimentos((p) => ({ ...p, anexos: [...(p.anexos || []), ...novos] })); e.target.value = ''; }} />
+                  {(modalSuprimentos.anexos || []).map((arq, i) => (
+                    <div key={`${arq.name}-${i}`} className="compact">
+                      📎 {arq.name} ({Math.max(1, Math.round(arq.size / 1024))} KB){' '}
+                      <button className="btn-secondary audit-small-button" onClick={() => setModalSuprimentos((p) => ({ ...p, anexos: p.anexos.filter((_, j) => j !== i) }))}>Remover</button>
+                    </div>
+                  ))}
+                  {!(modalSuprimentos.anexos || []).length && <span className="compact">Nenhum anexo adicionado.</span>}
+                </div>
+              )}
               {modalSuprimentos.erro && <div className="hint-box compact error-text">{modalSuprimentos.erro}</div>}
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button className="btn-secondary" disabled={modalSuprimentos.enviando} onClick={() => setModalSuprimentos(null)}>Cancelar</button>
@@ -3221,7 +3240,6 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   );
 }
 
-const PERFIS_VEEM_TODAS_FATURAS = new Set(['GESTAO', 'GESTOR_AUDITORIA_FRETES', 'FINANCEIRO']);
 
 function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTransportadoras, filtrosIniciais = null }) {
   const mostrarAuditoriaAvulsa = modo === 'auditoria-cte';
@@ -3236,7 +3254,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   // Auditor entra ja filtrado nas proprias faturas; gestor/financeiro entram vendo tudo.
   // Vindo do Painel (drill-down), sempre "todas" — senao o filtro de auditor/
   // status clicado la pode nao bater com "minhas faturas" e a lista fica vazia.
-  const [visaoFatura, setVisaoFatura] = useState(() => (filtrosIniciais || PERFIS_VEEM_TODAS_FATURAS.has(sessao?.perfil) ? 'todas' : 'minhas'));
+  const [visaoFatura, setVisaoFatura] = useState('todas');
   const [filtroRapido, setFiltroRapido] = useState('');
   const [paginaFaturas, setPaginaFaturas] = useState(1);
   const TAM_PAGINA_FATURAS = 100;
@@ -6805,6 +6823,114 @@ async function carregarCtesFaturaParaAprovacao(fatura) {
 // aplicar) e o auditor respondeu se sera descontado — a gestao (eu/Carol)
 // decide: aprovar com desconto, aprovar sem desconto (o adicional vira saldo
 // autorizado), autorizar e mandar pra Suprimentos ajustar a tabela, ou recusar.
+const DECISOES_GESTAO = {
+  APROVACAO_GESTAO_CONFIRMOU_DESCONTO: 'Aprovada COM desconto',
+  APROVACAO_GESTAO_SEM_DESCONTO: 'Aprovada SEM desconto',
+  APROVACAO_GESTAO_AUTORIZOU_E_ENVIOU_SUPRIMENTOS: 'Enviada p/ Suprimentos',
+  APROVACAO_GESTAO_RECUSOU: 'Recusada',
+};
+
+// Historico das decisoes da gestao (lido do historico de fatura): o que foi
+// decidido, quem, quando e quanto. O valor vem da descricao gravada no evento.
+function HistoricoAprovacaoGestao({ state }) {
+  const [filtroTransportadora, setFiltroTransportadora] = useState('');
+  const [filtroDecisao, setFiltroDecisao] = useState('');
+  const [filtroQuem, setFiltroQuem] = useState('');
+  const [filtroSolicitante, setFiltroSolicitante] = useState('');
+  const [de, setDe] = useState('');
+  const [ate, setAte] = useState('');
+  const [busca, setBusca] = useState('');
+
+  const registros = useMemo(() => {
+    const faturas = new Map((state.faturas || []).map((f) => [f.id, f]));
+    return (state.historico || [])
+      .filter((h) => DECISOES_GESTAO[h.acao])
+      .map((h) => {
+        const fatura = faturas.get(h.fatura_id) || {};
+        const achou = String(h.descricao || '').match(/R\$[\s\u00a0]*([\d.]+,\d{2})/);
+        return {
+          id: h.id,
+          data: h.created_at || '',
+          decisao: h.acao,
+          quem: h.usuario_nome || '-',
+          valor: achou ? Number(achou[1].replace(/\./g, '').replace(',', '.')) : null,
+          descricao: h.descricao || '',
+          numero: fatura.numero_fatura || '-',
+          transportadora: fatura.transportadora || '-',
+          solicitante: fatura.auditor_nome || 'SEM AUDITOR',
+        };
+      })
+      .sort((a, b) => String(b.data).localeCompare(String(a.data)));
+  }, [state.historico, state.faturas]);
+
+  const unicos = (campo) => [...new Set(registros.map((r) => r[campo]).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const filtrados = useMemo(() => {
+    const termo = busca.trim().toLowerCase();
+    return registros.filter((r) => (
+      (!filtroTransportadora || r.transportadora === filtroTransportadora)
+      && (!filtroDecisao || r.decisao === filtroDecisao)
+      && (!filtroQuem || r.quem === filtroQuem)
+      && (!filtroSolicitante || r.solicitante === filtroSolicitante)
+      && (!de || String(r.data).slice(0, 10) >= de)
+      && (!ate || String(r.data).slice(0, 10) <= ate)
+      && (!termo || [r.numero, r.transportadora, r.descricao].some((v) => String(v).toLowerCase().includes(termo)))
+    ));
+  }, [registros, filtroTransportadora, filtroDecisao, filtroQuem, filtroSolicitante, de, ate, busca]);
+
+  const somaPor = (chave) => filtrados.filter((r) => r.decisao === chave).reduce((acc, r) => acc + Number(r.valor || 0), 0);
+  const temFiltro = filtroTransportadora || filtroDecisao || filtroQuem || filtroSolicitante || de || ate || busca;
+  const limpar = () => { setFiltroTransportadora(''); setFiltroDecisao(''); setFiltroQuem(''); setFiltroSolicitante(''); setDe(''); setAte(''); setBusca(''); };
+  const seletor = (rotulo, valor, setValor, opcoes, todos) => (
+    <label className="field" style={{ minWidth: 200 }}>{rotulo}
+      <select value={valor} onChange={(e) => setValor(e.target.value)}>
+        <option value="">{todos}</option>
+        {opcoes.map(([v, nome]) => <option key={v} value={v}>{nome}</option>)}
+      </select>
+    </label>
+  );
+
+  return (
+    <>
+      <div className="summary-strip audit-summary-grid">
+        <Card label="Decisoes" value={filtrados.length} color="#9153F0" />
+        <Card label="Aprovado c/ desconto" value={dinheiro(somaPor('APROVACAO_GESTAO_CONFIRMOU_DESCONTO'))} color="#14733b" />
+        <Card label="Aprovado s/ desconto (autorizado)" value={dinheiro(somaPor('APROVACAO_GESTAO_SEM_DESCONTO'))} color="#9b1111" />
+        <Card label="Enviado p/ Suprimentos" value={dinheiro(somaPor('APROVACAO_GESTAO_AUTORIZOU_E_ENVIOU_SUPRIMENTOS'))} color="#b45309" />
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', margin: '10px 0' }}>
+        {seletor('Transportadora', filtroTransportadora, setFiltroTransportadora, unicos('transportadora').map((v) => [v, v]), 'Todas')}
+        {seletor('Decisao', filtroDecisao, setFiltroDecisao, Object.entries(DECISOES_GESTAO), 'Todas')}
+        {seletor('Decidido por', filtroQuem, setFiltroQuem, unicos('quem').map((v) => [v, v]), 'Todos')}
+        {seletor('Solicitante (auditor)', filtroSolicitante, setFiltroSolicitante, unicos('solicitante').map((v) => [v, v]), 'Todos')}
+        <label className="field">De<input type="date" value={de} onChange={(e) => setDe(e.target.value)} /></label>
+        <label className="field">Ate<input type="date" value={ate} onChange={(e) => setAte(e.target.value)} /></label>
+        <label className="field" style={{ minWidth: 200 }}>Buscar<input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Fatura, transportadora ou texto" /></label>
+        {temFiltro && <button type="button" className="btn-secondary" onClick={limpar}>Limpar filtros</button>}
+      </div>
+      <div className="table-card"><div className="sim-analise-tabela-wrap" style={{ maxHeight: '60vh', overflow: 'auto' }}>
+        <table className="sim-analise-tabela">
+          <thead><tr><th>Data</th><th>Fatura</th><th>Transportadora</th><th>Solicitante</th><th>Decisao</th><th>Valor</th><th>Decidido por</th><th>Justificativa / detalhe</th></tr></thead>
+          <tbody>
+            {!filtrados.length && <tr><td colSpan={8}>Nenhuma decisao encontrada.</td></tr>}
+            {filtrados.map((r) => (
+              <tr key={r.id}>
+                <td style={{ whiteSpace: 'nowrap' }}>{r.data ? new Date(r.data).toLocaleString('pt-BR') : '-'}</td>
+                <td><strong>{r.numero}</strong></td>
+                <td>{r.transportadora}</td>
+                <td>{r.solicitante}</td>
+                <td>{DECISOES_GESTAO[r.decisao]}</td>
+                <td>{r.valor == null ? '-' : dinheiro(r.valor)}</td>
+                <td>{r.quem}</td>
+                <td style={{ fontSize: 12, maxWidth: 480 }}>{r.descricao}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div></div>
+    </>
+  );
+}
+
 function AprovacaoGestao({ state, onState }) {
   const sessao = carregarSessao();
   const ehGestor = usuarioEhGestorAuditoria(sessao);
@@ -6816,11 +6942,30 @@ function AprovacaoGestao({ state, onState }) {
   const [ctesPorFatura, setCtesPorFatura] = useState({});
   const [decisao, setDecisao] = useState(null);
 
-  const pendentes = useMemo(() => (
+  const [aba, setAba] = useState('pendentes');
+  const [filtroTransportadora, setFiltroTransportadora] = useState('');
+  const [filtroSolicitante, setFiltroSolicitante] = useState('');
+  const [filtroBusca, setFiltroBusca] = useState('');
+
+  const pendentesTodas = useMemo(() => (
     (state.faturas || [])
       .filter((item) => item.status === 'AGUARDANDO_APROVACAO_GESTAO')
       .sort((a, b) => (a.data_vencimento || '').localeCompare(b.data_vencimento || ''))
   ), [state.faturas]);
+
+  const nomeSolicitante = (item) => item.auditor_nome || 'SEM AUDITOR';
+  const opcoesTransportadora = useMemo(() => [...new Set(pendentesTodas.map((item) => item.transportadora).filter(Boolean))].sort((a, b) => a.localeCompare(b)), [pendentesTodas]);
+  const opcoesSolicitante = useMemo(() => [...new Set(pendentesTodas.map(nomeSolicitante))].sort((a, b) => a.localeCompare(b)), [pendentesTodas]);
+
+  // Filtros dinamicos: transportadora, solicitante (auditor) e busca livre por fatura.
+  const pendentes = useMemo(() => {
+    const busca = filtroBusca.trim().toLowerCase();
+    return pendentesTodas.filter((item) => (
+      (!filtroTransportadora || item.transportadora === filtroTransportadora)
+      && (!filtroSolicitante || nomeSolicitante(item) === filtroSolicitante)
+      && (!busca || [item.numero_fatura, item.transportadora, item.auditor_nome].some((v) => String(v || '').toLowerCase().includes(busca)))
+    ));
+  }, [pendentesTodas, filtroTransportadora, filtroSolicitante, filtroBusca]);
 
   const valorPendente = (item) => Number(item.desconto_pendente_valor || item.diferenca || 0);
   const escolhidas = pendentes.filter((item) => selecionadas.includes(item.id));
@@ -6845,6 +6990,8 @@ function AprovacaoGestao({ state, onState }) {
   };
 
   const alternarSelecao = (id) => setSelecionadas((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  const semCalculoAmd = (item) => !(Number(item.calculado_frete || 0) > 0);
 
   // CT-es com adicional cobrado (calculado pela AMD e cobrado a mais), no formato da fila de autorizacoes.
   const itensComAdicional = (fatura, ctes) => ctes
@@ -6946,10 +7093,14 @@ function AprovacaoGestao({ state, onState }) {
   };
 
   const respostaAuditor = (fatura) => {
-    const texto = fatura.observacao_aprovacao || '';
+    // A coluna observacao_aprovacao nao existe na tabela faturas (o upsert a descarta),
+    // entao a resposta do auditor tambem e lida do evento de envio no historico.
+    const envio = (state.historico || []).find((h) => h.fatura_id === fatura.id && h.status_novo === 'AGUARDANDO_APROVACAO_GESTAO');
+    const doHistorico = envio ? String(envio.descricao || '').replace(/^.*?cobranca a maior de R\$[\s ]*[\d.]+,\d{2}\.\s*/i, '') : '';
+    const texto = fatura.observacao_aprovacao || doHistorico;
     const sim = texto.includes('[DESCONTO: SIM]');
     const nao = texto.includes('[DESCONTO: NAO]');
-    return { sim, nao, texto: texto.replace(/\[DESCONTO: (SIM|NAO)\]\s*/, '') };
+    return { sim, nao, texto: texto.replace(/\[DESCONTO: (SIM|NAO)\]\s*/, ''), quem: envio?.usuario_nome || '' };
   };
 
   const totalEscolhido = escolhidas.reduce((acc, item) => acc + valorPendente(item), 0);
@@ -6960,14 +7111,39 @@ function AprovacaoGestao({ state, onState }) {
   return (
     <>
       <div className="audit-section-title">Aprovacao da gestao</div>
+      <div style={{ display: 'flex', gap: 8, margin: '6px 0 10px' }}>
+        <button type="button" className={aba === 'pendentes' ? 'btn-primary' : 'btn-secondary'} onClick={() => setAba('pendentes')}>Pendentes ({pendentesTodas.length})</button>
+        <button type="button" className={aba === 'historico' ? 'btn-primary' : 'btn-secondary'} onClick={() => setAba('historico')}>Historico de decisoes</button>
+      </div>
+      {aba === 'historico' ? <HistoricoAprovacaoGestao state={state} /> : (<>
       <p style={{ margin: '0 0 10px', fontSize: 13, color: '#64748b' }}>
         Faturas com cobranca a maior enviadas pela auditoria, ja com a resposta do auditor (sera descontado? por que nao?). Clique na fatura pra ver os CT-es e a analise do frete.
         {ehGestor ? ' Marque uma ou mais faturas e escolha a decisao.' : ' Apenas gestao pode decidir — auditores acompanham aqui, mas as acoes ficam bloqueadas.'}
       </p>
       <div className="summary-strip audit-summary-grid">
-        <Card label="Aguardando aprovacao" value={pendentes.length} color={pendentes.length ? '#9b1111' : '#14733b'} />
+        <Card label={pendentes.length === pendentesTodas.length ? 'Aguardando aprovacao' : `Aguardando (filtrado de ${pendentesTodas.length})`} value={pendentes.length} color={pendentes.length ? '#9b1111' : '#14733b'} />
         <Card label="Valor pendente" value={dinheiro(pendentes.reduce((acc, item) => acc + valorPendente(item), 0))} color="#9b1111" />
         <Card label="Selecionadas" value={`${escolhidas.length} · ${dinheiro(totalEscolhido)}`} color="#9153F0" />
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', margin: '10px 0' }}>
+        <label className="field" style={{ minWidth: 240 }}>Transportadora
+          <select value={filtroTransportadora} onChange={(e) => setFiltroTransportadora(e.target.value)}>
+            <option value="">Todas</option>
+            {opcoesTransportadora.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
+          </select>
+        </label>
+        <label className="field" style={{ minWidth: 220 }}>Solicitante (auditor)
+          <select value={filtroSolicitante} onChange={(e) => setFiltroSolicitante(e.target.value)}>
+            <option value="">Todos</option>
+            {opcoesSolicitante.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
+          </select>
+        </label>
+        <label className="field" style={{ minWidth: 220 }}>Buscar
+          <input value={filtroBusca} onChange={(e) => setFiltroBusca(e.target.value)} placeholder="Fatura, transportadora ou auditor" />
+        </label>
+        {(filtroTransportadora || filtroSolicitante || filtroBusca) && (
+          <button type="button" className="btn-secondary" onClick={() => { setFiltroTransportadora(''); setFiltroSolicitante(''); setFiltroBusca(''); }}>Limpar filtros</button>
+        )}
       </div>
       {ehGestor && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0' }}>
@@ -6987,6 +7163,7 @@ function AprovacaoGestao({ state, onState }) {
             </tr>
           </thead>
           <tbody>
+            {!pendentes.length && <tr><td colSpan={9}>Nenhuma fatura com esses filtros.</td></tr>}
             {pendentes.map((item) => {
               const aberta = Boolean(expandidas[item.id]);
               const dados = ctesPorFatura[item.id];
@@ -7008,6 +7185,7 @@ function AprovacaoGestao({ state, onState }) {
                     {resposta.sim && <strong style={{ color: '#14733b' }}>Vai descontar. </strong>}
                     {resposta.nao && <strong style={{ color: '#9b1111' }}>Nao vai descontar. </strong>}
                     {resposta.texto || (!resposta.sim && !resposta.nao ? <span style={{ color: '#94a3b8' }}>—</span> : null)}
+                    {resposta.quem && <div style={{ fontSize: 11, color: '#64748b' }}>Enviado por {resposta.quem}</div>}
                   </td>
                 </tr>,
                 aberta && (
@@ -7080,6 +7258,7 @@ function AprovacaoGestao({ state, onState }) {
           </div>
         </div>
       )}
+    </>)}
     </>
   );
 }
