@@ -1813,7 +1813,10 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   // autoriza, a proxima reauditoria soma o valor e a divergencia some.
   // Premissa: so vai pra aprovacao caso que a AMD ja simulou (calculado > 0) e
   // que a AMD diz que foi cobrado a mais (diferenca positiva).
-  const casosForaDaPremissa = (alvo) => alvo.filter((item) => !(Number(item.calculado_frete || 0) > 0 && Number(item.diferenca || 0) > 0));
+  // Excecao: CT-e sem calculo (sem tabela / cotacao via transporte) pode ir pro
+  // transporte, mas exige justificativa. Calculado sem cobranca a maior nao vai.
+  const semCalculoAmd = (item) => !(Number(item.calculado_frete || 0) > 0);
+  const casosForaDaPremissa = (alvo) => alvo.filter((item) => !semCalculoAmd(item) && !(Number(item.diferenca || 0) > 0));
   const [modalSuprimentos, setModalSuprimentos] = useState(null);
   const [modalLiberacao, setModalLiberacao] = useState(null);
 
@@ -1832,7 +1835,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       valor_nf: item.valor_nf || base.valor_nf,
       valor_cte: item.valor_frete,
       valor_calculado: item.calculado_frete,
-      valor_divergente: Math.max(Number(item.diferenca || 0), 0),
+      // Sem calculo (cotacao): o valor a autorizar e o frete cobrado inteiro.
+      valor_divergente: semCalculoAmd(item) ? Math.max(Number(item.valor_frete || 0), 0) : Math.max(Number(item.diferenca || 0), 0),
       fatura_id: fatura.id,
     };
   });
@@ -1847,6 +1851,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     const { destino, itens, tipoAjuste, justificativa } = modalSuprimentos;
     const suprimentos = destino === 'SUPRIMENTOS';
     if (suprimentos && String(justificativa).trim().length < 30) { setModalSuprimentos((prev) => ({ ...prev, erro: `Justificativa muito curta (${String(justificativa).trim().length}/30 caracteres). Explique melhor o caso.` })); return; }
+    const temSemCalculo = destino === 'TRANSPORTE' && detalhes.some((d) => itens.some((i) => i.chave_cte === d.chave_cte) && semCalculoAmd(d));
+    if (temSemCalculo && String(justificativa).trim().length < 30) { setModalSuprimentos((prev) => ({ ...prev, erro: `Ha CT-e sem calculo (cotacao): justifique o caso (${String(justificativa).trim().length}/30 caracteres).` })); return; }
     setModalSuprimentos((prev) => ({ ...prev, enviando: true, erro: '' }));
     try {
       const usuarioNome = sessao?.nome || sessao?.email || '';
@@ -1868,7 +1874,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     if (!alvo.length) return;
     const fora = casosForaDaPremissa(alvo);
     if (fora.length) {
-      setErroDetalhes(`Nao da pra enviar para aprovacao: ${fora.length} CT-e(s) sem simulacao na AMD ou sem diferenca positiva (cobrado a mais). Se a AMD nao calculou, use "Enviar p/ Suprimentos".`);
+      setErroDetalhes(`Nao da pra enviar para aprovacao: ${fora.length} CT-e(s) com calculo da AMD mas sem diferenca positiva (nao foi cobrado a mais).`);
       return;
     }
     setModalSuprimentos({ destino: 'TRANSPORTE', itens: montarItensEnvio(alvo), tipoAjuste: '', justificativa: '', enviando: false });
@@ -6825,7 +6831,8 @@ function AprovacaoGestao({ state, onState }) {
       valor_nf: item.valor_nf,
       valor_cte: item.valor_frete,
       valor_calculado: item.calculado_frete,
-      valor_divergente: Math.max(Number(item.diferenca || 0), 0),
+      // Sem calculo (cotacao): o valor a autorizar e o frete cobrado inteiro.
+      valor_divergente: semCalculoAmd(item) ? Math.max(Number(item.valor_frete || 0), 0) : Math.max(Number(item.diferenca || 0), 0),
       fatura_id: fatura.id,
     }));
 
