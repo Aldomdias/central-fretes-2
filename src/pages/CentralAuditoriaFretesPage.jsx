@@ -88,7 +88,8 @@ import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, apli
 import { buscarTrackingPorChaveNfeManual } from '../services/trackingSupabaseService';
 import { consultarMunicipiosIbge } from '../services/ibgeService';
 import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
-import { carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarParaAutorizacao, enviarParaSuprimentos } from '../services/transporteAutorizacoesService';
+import { autorizarPelaGestao, carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarParaAutorizacao, enviarParaSuprimentos } from '../services/transporteAutorizacoesService';
+import AnaliseFreteTabela from '../components/AnaliseFreteTabela';
 import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
 
 const TABS = [
@@ -1812,77 +1813,95 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   // autoriza, a proxima reauditoria soma o valor e a divergencia some.
   // Premissa: so vai pra aprovacao caso que a AMD ja simulou (calculado > 0) e
   // que a AMD diz que foi cobrado a mais (diferenca positiva).
-  const casosForaDaPremissa = (alvo) => alvo.filter((item) => !(Number(item.calculado_frete || 0) > 0 && Number(item.diferenca || 0) > 0));
+  // Excecao: CT-e sem calculo (sem tabela / cotacao via transporte) pode ir pro
+  // transporte, mas exige justificativa. Calculado sem cobranca a maior nao vai.
+  const semCalculoAmd = (item) => !(Number(item.calculado_frete || 0) > 0);
+  const casosForaDaPremissa = (alvo) => alvo.filter((item) => !semCalculoAmd(item) && !(Number(item.diferenca || 0) > 0));
   const [modalSuprimentos, setModalSuprimentos] = useState(null);
+  const [modalLiberacao, setModalLiberacao] = useState(null);
+
+  // Itens no formato da fila de autorizacoes, ja com valor da NF pra analise do frete.
+  const montarItensEnvio = (alvo) => alvo.map((item) => {
+    const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte)) || referenciaCtes.get(normalizarChaveCte(item.numero_cte)) || {};
+    return {
+      canal: item.canal || base.canal || fatura.canal,
+      chave_cte: item.chave_cte,
+      numero_cte: item.numero_cte,
+      chave_nfe: item.chave_nfe || base.chave_nfe,
+      numero_pedido: item.numero_pedido || base.numero_pedido,
+      transportadora: fatura.transportadora,
+      cidade_origem: item.cidade_origem || base.cidade_origem,
+      cidade_destino: item.cidade_destino || base.cidade_destino,
+      valor_nf: item.valor_nf || base.valor_nf,
+      valor_cte: item.valor_frete,
+      valor_calculado: item.calculado_frete,
+      // Sem calculo (cotacao): o valor a autorizar e o frete cobrado inteiro.
+      valor_divergente: semCalculoAmd(item) ? Math.max(Number(item.valor_frete || 0), 0) : Math.max(Number(item.diferenca || 0), 0),
+      fatura_id: fatura.id,
+    };
+  });
 
   const abrirModalSuprimentos = () => {
     const alvo = detalhes.filter((item) => selecionados.includes(item.id));
     if (!alvo.length) return;
-    setModalSuprimentos({ alvo, tipoAjuste: TIPOS_AJUSTE_TABELA[0].valor, justificativa: '', enviando: false });
+    setModalSuprimentos({ destino: 'SUPRIMENTOS', itens: montarItensEnvio(alvo), tipoAjuste: TIPOS_AJUSTE_TABELA[0].valor, justificativa: '', enviando: false });
   };
 
   const confirmarEnvioSuprimentos = async () => {
-    const { alvo, tipoAjuste, justificativa } = modalSuprimentos;
-    if (String(justificativa).trim().length < 30) { setModalSuprimentos((prev) => ({ ...prev, erro: `Justificativa muito curta (${String(justificativa).trim().length}/30 caracteres). Explique melhor o caso.` })); return; }
+    const { destino, itens, tipoAjuste, justificativa } = modalSuprimentos;
+    const suprimentos = destino === 'SUPRIMENTOS';
+    if (suprimentos && String(justificativa).trim().length < 30) { setModalSuprimentos((prev) => ({ ...prev, erro: `Justificativa muito curta (${String(justificativa).trim().length}/30 caracteres). Explique melhor o caso.` })); return; }
+    const temSemCalculo = destino === 'TRANSPORTE' && detalhes.some((d) => itens.some((i) => i.chave_cte === d.chave_cte) && semCalculoAmd(d));
+    if (temSemCalculo && String(justificativa).trim().length < 30) { setModalSuprimentos((prev) => ({ ...prev, erro: `Ha CT-e sem calculo (cotacao): justifique o caso (${String(justificativa).trim().length}/30 caracteres).` })); return; }
     setModalSuprimentos((prev) => ({ ...prev, enviando: true, erro: '' }));
     try {
-      const itens = alvo.map((item) => {
-        const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte)) || referenciaCtes.get(normalizarChaveCte(item.numero_cte)) || {};
-        return {
-          chave_cte: item.chave_cte,
-          chave_nfe: item.chave_nfe || base.chave_nfe,
-          numero_pedido: item.numero_pedido || base.numero_pedido,
-          transportadora: fatura.transportadora,
-          cidade_origem: item.cidade_origem || base.cidade_origem,
-          cidade_destino: item.cidade_destino || base.cidade_destino,
-          valor_cte: item.valor_frete,
-          valor_calculado: item.calculado_frete,
-          valor_divergente: Math.max(Number(item.diferenca || 0), 0),
-          fatura_id: fatura.id,
-        };
-      });
-      const { enviados, protocolo } = await enviarParaSuprimentos(itens, {
-        tipoAjuste, justificativa, usuarioNome: sessao?.nome || sessao?.email || '', usuarioEmail: sessao?.email || '',
-      });
+      const usuarioNome = sessao?.nome || sessao?.email || '';
+      if (suprimentos) {
+        const { enviados, protocolo } = await enviarParaSuprimentos(itens, { tipoAjuste, justificativa, usuarioNome, usuarioEmail: sessao?.email || '' });
+        setMensagemLiberacao(`✓ ${enviados} CT-e(s) enviado(s) para Suprimentos${protocolo ? ` — chamado AMD ${protocolo} aberto` : ' (chamado AMD nao foi criado, verifique a Central de Solicitacoes)'}.`);
+      } else {
+        const { enviados, jaNaFila } = await enviarParaAutorizacao(itens.map((item) => ({ ...item, observacao: String(justificativa).trim() })), usuarioNome);
+        setMensagemLiberacao(`✓ ${enviados} CT-e(s) enviado(s) para autorizacao do transporte${jaNaFila ? ` (${jaNaFila} ja estavam na fila)` : ''}.`);
+      }
       setModalSuprimentos(null);
-      setMensagemLiberacao(`✓ ${enviados} CT-e(s) enviado(s) para Suprimentos${protocolo ? ` — chamado AMD ${protocolo} aberto` : ' (chamado AMD nao foi criado, verifique a Central de Solicitacoes)'}.`);
     } catch (error) {
-      setModalSuprimentos((prev) => (prev ? { ...prev, enviando: false, erro: `Erro ao enviar para Suprimentos: ${error.message}` } : prev));
+      setModalSuprimentos((prev) => (prev ? { ...prev, enviando: false, erro: `Erro ao enviar: ${error.message}` } : prev));
     }
   };
 
-  const enviarParaAutorizacaoTransporte = async () => {
+  const enviarParaAutorizacaoTransporte = () => {
     const alvo = detalhes.filter((item) => selecionados.includes(item.id));
     if (!alvo.length) return;
     const fora = casosForaDaPremissa(alvo);
     if (fora.length) {
-      setErroDetalhes(`Nao da pra enviar para aprovacao: ${fora.length} CT-e(s) sem simulacao na AMD ou sem diferenca positiva (cobrado a mais). Se a AMD nao calculou, use "Enviar p/ Suprimentos".`);
+      setErroDetalhes(`Nao da pra enviar para aprovacao: ${fora.length} CT-e(s) com calculo da AMD mas sem diferenca positiva (nao foi cobrado a mais).`);
       return;
     }
-    const observacao = window.prompt(`Enviar ${alvo.length} CT-e(s) para autorizacao do responsavel do transporte. Observacao pra ele (o que aconteceu):`, '');
-    if (observacao === null) return;
+    setModalSuprimentos({ destino: 'TRANSPORTE', itens: montarItensEnvio(alvo), tipoAjuste: '', justificativa: '', enviando: false });
+  };
+
+  const confirmarLiberacaoComDiferenca = async () => {
+    const { saldo, camposAuditoria, descontar, motivo, observacao } = modalLiberacao;
+    if (!descontar) { setModalLiberacao((prev) => ({ ...prev, erro: 'Responda se o valor sera descontado (Sim ou Nao).' })); return; }
+    if (descontar === 'NAO' && String(motivo).trim().length < 10) { setModalLiberacao((prev) => ({ ...prev, erro: 'Informe o motivo de nao descontar (minimo 10 caracteres).' })); return; }
+    const texto = [
+      `[DESCONTO: ${descontar === 'SIM' ? 'SIM' : 'NAO'}]`,
+      descontar === 'NAO' ? `Motivo de nao descontar: ${String(motivo).trim()}.` : '',
+      String(observacao).trim() ? `Obs.: ${String(observacao).trim()}` : '',
+    ].filter(Boolean).join(' ');
+    setModalLiberacao((prev) => ({ ...prev, enviando: true, erro: '' }));
     try {
-      const itens = alvo.map((item) => {
-        const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte)) || referenciaCtes.get(normalizarChaveCte(item.numero_cte)) || {};
-        return {
-          canal: item.canal || base.canal || fatura.canal,
-          chave_cte: item.chave_cte,
-          chave_nfe: item.chave_nfe || base.chave_nfe,
-          numero_pedido: item.numero_pedido || base.numero_pedido,
-          transportadora: fatura.transportadora,
-          cidade_origem: item.cidade_origem || base.cidade_origem,
-          cidade_destino: item.cidade_destino || base.cidade_destino,
-          valor_cte: item.valor_frete,
-          valor_calculado: item.calculado_frete,
-          valor_divergente: Math.max(Number(item.diferenca || 0), 0),
-          observacao: observacao.trim(),
-          fatura_id: fatura.id,
-        };
+      await mudarStatus('AGUARDANDO_APROVACAO_GESTAO', {
+        ...camposAuditoria,
+        desconto_aplicado_confirmado: false,
+        desconto_pendente_valor: Math.max(saldo, 0),
+        observacao_aprovacao: texto,
+        descricaoHistorico: `Enviada para aprovacao da gestao: cobranca a maior de ${dinheiro(saldo)}. ${texto}`,
       });
-      const { enviados, jaNaFila } = await enviarParaAutorizacao(itens, sessao?.nome || sessao?.email || '');
-      setMensagemLiberacao(`✓ ${enviados} CT-e(s) enviado(s) para autorizacao do transporte${jaNaFila ? ` (${jaNaFila} ja estavam na fila)` : ''}.`);
+      setModalLiberacao(null);
+      setMensagemLiberacao(`⚠ Nao liberada direto: ha cobranca a maior de ${dinheiro(saldo)}. Fatura enviada para "Aprovacao da Gestao" com as suas respostas.`);
     } catch (error) {
-      setErroDetalhes(`Erro ao enviar para autorizacao: ${error.message}`);
+      setModalLiberacao((prev) => (prev ? { ...prev, enviando: false, erro: `Erro ao enviar: ${error.message}` } : prev));
     }
   };
 
@@ -1913,20 +1932,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     // da Gestao", se aprova (fatura vira LIBERADA_COM_DESCONTO) ou recusa
     // (volta pra COM_DIVERGENCIA). Sem confirm() ambiguo no meio do caminho.
     if (saldo > TOLERANCIA_DESCONTO_PENDENTE) {
-      // Observacao pra quem for aprovar (Carol/gestao) nao ficar perguntando
-      // o que e cada caso — contexto vai junto com o envio.
-      const observacaoAprovacao = window.prompt(
-        `Cobranca a maior de ${dinheiro(saldo)} identificada. Deixe uma observacao pra quem for aprovar (o que aconteceu, o que ja foi tratado com o transportador etc.):`,
-        '',
-      );
-      await mudarStatus('AGUARDANDO_APROVACAO_GESTAO', {
-        ...camposAuditoria,
-        desconto_aplicado_confirmado: false,
-        desconto_pendente_valor: Math.max(saldo, 0),
-        observacao_aprovacao: (observacaoAprovacao || '').trim(),
-        descricaoHistorico: `Enviada para aprovacao da gestao: cobranca a maior de ${dinheiro(saldo)} identificada, precisa confirmar se o desconto sera aplicado.${observacaoAprovacao ? ` Observacao: ${observacaoAprovacao.trim()}` : ''}`,
-      });
-      setMensagemLiberacao(`⚠ Nao liberada direto: ha cobranca a maior de ${dinheiro(saldo)} sem confirmacao. Fatura enviada para "Aguardando Aprovacao da Gestao".`);
+      // Questionario pro auditor (vai descontar? por que nao?) antes de ir pra gestao.
+      setModalLiberacao({ saldo, camposAuditoria, itens: montarItensEnvio(detalhes.filter((item) => Number(item.calculado_frete || 0) > 0 && Number(item.diferenca || 0) > 0)), descontar: '', motivo: '', observacao: '', enviando: false, erro: '' });
       return;
     }
 
@@ -2321,7 +2328,17 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         });
       }
     }
-    const linhas = detalhes;
+    // A referencia da tela vem sem detalhes_calculo (perf); o laudo precisa deles.
+    let linhas = detalhes;
+    try {
+      const refsDetalhe = await buscarReferenciaCtes(detalhes.flatMap((item) => [item.chave_cte, item.numero_cte]), { comDetalhes: true });
+      linhas = detalhes.map((item) => {
+        const ref = refsDetalhe.get(normalizarChaveCte(item.chave_cte)) || refsDetalhe.get(normalizarChaveCte(item.numero_cte));
+        return ref?.detalhes_calculo ? { ...item, detalhes_calculo: ref.detalhes_calculo } : item;
+      });
+    } catch (error) {
+      console.warn('Nao foi possivel carregar os detalhes de calculo para o laudo.', error);
+    }
     const titulo = transportador ? 'Relatorio de divergencias de frete' : 'Laudo interno de auditoria de fatura';
     const toleranciaLaudo = carregarToleranciaAuditoria();
     const opts = { ...opcoesLaudoTransportador, transportador };
@@ -2372,7 +2389,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     const blocoConfirmacaoLaudo = linkConfirmacao
       ? (jaConfirmada
         ? `<div style="margin:0 0 14px;padding:14px 18px;background:#dcfce7;border:1px solid #86efac;border-radius:10px;color:#065f46"><strong>✓ Fatura ja confirmada</strong>${fatura.confirmacao_transportador_em ? ` em ${escapeHtmlAuditoria(new Date(fatura.confirmacao_transportador_em).toLocaleString('pt-BR'))}` : ''}${fatura.confirmacao_transportador_por ? ` por ${escapeHtmlAuditoria(fatura.confirmacao_transportador_por)}` : ''}.</div>`
-        : `<div style="margin:0 0 14px;padding:18px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;color:#1e3a8a;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap"><div><strong>Confirmacao da fatura</strong><p style="margin:4px 0 0;font-size:13px">Confira os CT-es abaixo e clique para confirmar a fatura — a confirmacao atualiza o status automaticamente, sem precisar responder por e-mail.</p></div><a href="${escapeHtmlAuditoria(linkConfirmacao)}" target="_blank" rel="noopener" style="background:#0f6b3e;color:#fff;font-weight:700;padding:12px 20px;border-radius:9px;text-decoration:none;white-space:nowrap">OK, confirmar fatura</a></div>`)
+        : `<div style="margin:0 0 14px;padding:18px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;color:#1e3a8a;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap"><div><strong>Confirmacao da fatura</strong><p style="margin:4px 0 0;font-size:13px">Confira os CT-es abaixo e clique para confirmar a fatura — a confirmacao atualiza o status automaticamente, sem precisar responder por e-mail.</p></div><a href="${escapeHtmlAuditoria(linkConfirmacao)}" target="_blank" rel="noopener" style="background:#0f6b3e;color:#fff;font-weight:700;padding:12px 20px;border-radius:9px;text-decoration:none;white-space:nowrap">OK, confirmar fatura</a><a href="${escapeHtmlAuditoria(linkConfirmacao)}" target="_blank" rel="noopener" style="background:#b45309;color:#fff;font-weight:700;padding:12px 20px;border-radius:9px;text-decoration:none;white-space:nowrap">Não concordo — contestar / enviar evidências</a></div>`)
       : '';
     const html = `<!doctype html>
 <html lang="pt-BR">
@@ -2454,14 +2471,41 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       document.getElementById('filtro-status').value='';
       aplicarFiltros();
     }
+    function montarTabelaExcelDetalhada(tabela){
+      var linhas=Array.from(tabela.querySelectorAll('tbody .main-row')).filter(function(r){return r.style.display!=='none'});
+      var detalhes=linhas.map(function(row){
+        var mapa={};var det=row.nextElementSibling;
+        if(det&&det.classList.contains('detail-row')){
+          det.querySelectorAll('.calc-box').forEach(function(box){
+            var t=String(box.querySelector('h4')&&box.querySelector('h4').textContent||'Detalhes').trim();
+            box.querySelectorAll('.calc-line').forEach(function(l){
+              var k=String(l.querySelector('span')&&l.querySelector('span').textContent||'').trim();
+              var v=String(l.querySelector('strong')&&l.querySelector('strong').textContent||'').trim();
+              if(k)mapa[t+' - '+k]=v;
+            });
+          });
+        }
+        return mapa;
+      });
+      var colunas=[];
+      detalhes.forEach(function(m){Object.keys(m).forEach(function(k){if(colunas.indexOf(k)<0)colunas.push(k)})});
+      var nova=document.createElement('table');
+      var cab=tabela.tHead.cloneNode(true);
+      colunas.forEach(function(n){var th=document.createElement('th');th.textContent=n;cab.rows[0].appendChild(th)});
+      nova.appendChild(cab);
+      var corpo=document.createElement('tbody');
+      linhas.forEach(function(row,i){
+        var c=row.cloneNode(true);c.removeAttribute('onclick');c.removeAttribute('style');
+        colunas.forEach(function(n){var td=document.createElement('td');td.textContent=detalhes[i][n]||'';c.appendChild(td)});
+        corpo.appendChild(c);
+      });
+      nova.appendChild(corpo);
+      return nova;
+    }
     function exportarExcel(){
       var corpo=document.getElementById('tabela-fatura-body');
       var tabela=corpo.closest('table');
-      var copia=tabela.cloneNode(true);
-      Array.from(copia.querySelectorAll('.detail-row')).forEach(function(row){row.remove()});
-      Array.from(copia.querySelectorAll('tbody tr')).forEach(function(row){
-        if(row.style.display==='none')row.remove();
-      });
+      var copia=montarTabelaExcelDetalhada(tabela);
       var conteudo='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>'+copia.outerHTML+'</body></html>';
       var blob=new Blob(['\\ufeff',conteudo],{type:'application/vnd.ms-excel;charset=utf-8'});
       var url=URL.createObjectURL(blob);
@@ -2545,6 +2589,42 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     }
   };
 
+  // Força a releitura da base (auditoria_cte_resultados) só dos CT-es selecionados
+  // (ou de todos os "fora da base" se nada estiver selecionado), sem recalcular.
+  const [atualizandoBase, setAtualizandoBase] = useState(false);
+  const atualizarDaBase = async () => {
+    const alvo = selecionados.length
+      ? detalhes.filter((item) => selecionados.includes(item.id))
+      : detalhes.filter((item) => !referenciaCtes.has(normalizarChaveCte(item.chave_cte)) && !referenciaCtes.has(normalizarChaveCte(item.numero_cte)));
+    if (!alvo.length) {
+      setInfoRecalculo('Todos os CT-es já estão cruzados com a base.');
+      return;
+    }
+    setAtualizandoBase(true);
+    setErroDetalhes('');
+    try {
+      const nova = await buscarReferenciaCtes(alvo.flatMap((item) => [item.chave_cte, item.numero_cte]), { lancarErro: true });
+      const achou = (item) => nova.has(normalizarChaveCte(item.chave_cte)) || nova.has(normalizarChaveCte(item.numero_cte));
+      setReferenciaCtes((atual) => {
+        const proximo = new Map(atual);
+        nova.forEach((valor, chave) => proximo.set(chave, valor));
+        return proximo;
+      });
+      setResultadosDetalhe((atual) => {
+        const proximo = new Map(atual);
+        alvo.forEach((item) => proximo.delete(item.chave_cte));
+        return proximo;
+      });
+      const encontrados = alvo.filter(achou).length;
+      const faltam = alvo.length - encontrados;
+      setInfoRecalculo(`Base atualizada: ${encontrados} de ${alvo.length} CT-e(s) encontrado(s)${faltam ? `; ${faltam} continuam fora da base — aí sim vale recalcular.` : '.'}`);
+    } catch (error) {
+      setErroDetalhes(error.message || 'Erro ao atualizar da base.');
+    } finally {
+      setAtualizandoBase(false);
+    }
+  };
+
   const ctesNaBase = detalhes.filter((item) =>
     referenciaCtes.has(normalizarChaveCte(item.chave_cte))
     || referenciaCtes.has(normalizarChaveCte(item.numero_cte))).length;
@@ -2589,6 +2669,15 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
           Mostrando {lista.length} de {listaOriginal.length} CT-e(s){listaOriginal.length !== detalhes.length ? '' : ` da fatura`}. {ctesNaBase} ja cruzaram com a base auditada
           {ctesNaBase < detalhes.length ? '; os demais continuam listados para auditoria.' : '.'}
         </p>
+      )}
+      {fatura.status === 'AGUARDANDO_APROVACAO_GESTAO' && (
+        <div className="hint-box compact" style={{ marginBottom: 10, borderColor: '#fcd34d', background: '#fffbeb', color: '#92400e' }}>
+          <strong>⏳ Enviada para liberacao — aguardando aprovacao da gestao.</strong>
+          <div style={{ fontSize: 12, marginTop: 4 }}>
+            Cobranca a maior pendente: <strong>{dinheiro(fatura.desconto_pendente_valor || fatura.diferenca || 0)}</strong>
+            {fatura.observacao_aprovacao ? ` · Resposta enviada: ${fatura.observacao_aprovacao}` : ''}
+          </div>
+        </div>
       )}
       {detalhes.length > 0 && (() => {
         if (entregaErroFatura) return <div className="hint-box compact" style={{ marginBottom: 10 }}>Não foi possível consultar a entrega no tracking: {entregaErroFatura}</div>;
@@ -2663,7 +2752,20 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                     <CelulaSaldoTransporte saldo={saldoTransporteDoCte(item)} decisoes={decisoesTransporteDoItem(decisoesTransporte, [item.chave_cte, item.chave_nfe, referenciaCtes.get(normalizarChaveCte(item.chave_cte))?.chave_nfe])} />
                   </td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{motivoAuditoriaLinha(item, semValorNf)}</td>
-                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}><Status value={item.status} /></td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>
+                    <Status value={item.status} />
+                    {(() => {
+                      const divergenteCte = Number(item.calculado_frete || 0) > 0 && Number(item.diferenca || 0) > 0.01;
+                      const naFila = decisoesTransporteDoItem(decisoesTransporte, [item.chave_cte, item.chave_nfe, referenciaCtes.get(normalizarChaveCte(item.chave_cte))?.chave_nfe]).filter((d) => d.status === 'PENDENTE');
+                      const badge = { display: 'inline-block', marginTop: 3, padding: '1px 6px', borderRadius: 6, fontSize: 11, fontWeight: 700, background: '#fef3c7', color: '#92400e', whiteSpace: 'nowrap' };
+                      return (
+                        <>
+                          {fatura.status === 'AGUARDANDO_APROVACAO_GESTAO' && divergenteCte && <div><span style={badge} title="A fatura foi enviada para liberacao e aguarda a decisao da gestao">⏳ Aguardando gestao</span></div>}
+                          {naFila.length > 0 && <div><span style={badge} title="CT-e na fila de autorizacao, aguardando decisao">⏳ Na fila: {naFila[0].canal === 'SUPRIMENTOS' ? 'Suprimentos' : naFila[0].canal}</span></div>}
+                        </>
+                      );
+                    })()}
+                  </td>
                   <td style={{ whiteSpace: 'nowrap', fontSize: 11 }}>
                     {(() => {
                       const ent = entregaCtes?.get(chaveEntregaRegistro(item));
@@ -2878,14 +2980,16 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
             <Card label="Quantidade CT-es" value={fatura.ctes_totais || detalhes.length} />
             <Card
               label="Confirmacao do transportador"
-              value={fatura.confirmacao_transportador_status === 'APROVADO' ? 'Aprovada' : (fatura.confirmacao_transportador_status === 'ENVIADO' ? 'Aguardando' : 'Nao enviada')}
-              color={fatura.confirmacao_transportador_status === 'APROVADO' ? '#04a484' : (fatura.confirmacao_transportador_status === 'ENVIADO' ? '#e67e22' : undefined)}
+              value={fatura.confirmacao_transportador_status === 'APROVADO' ? 'Aprovada' : (fatura.confirmacao_transportador_status === 'CONTESTADO' ? 'Contestada' : (fatura.confirmacao_transportador_status === 'ENVIADO' ? 'Aguardando' : 'Nao enviada'))}
+              color={fatura.confirmacao_transportador_status === 'APROVADO' ? '#04a484' : (fatura.confirmacao_transportador_status === 'CONTESTADO' ? '#c0392b' : (fatura.confirmacao_transportador_status === 'ENVIADO' ? '#e67e22' : undefined))}
             />
           </div>
           {fatura.confirmacao_transportador_status && (
             <p style={{ margin: '0 0 14px', fontSize: 12, color: '#64748b' }}>
               {fatura.confirmacao_transportador_status === 'APROVADO'
                 ? `Confirmada${fatura.confirmacao_transportador_em ? ` em ${dataBr(fatura.confirmacao_transportador_em)}` : ''}${fatura.confirmacao_transportador_por ? ` por ${fatura.confirmacao_transportador_por}` : ''} pelo link enviado no laudo.`
+                : fatura.confirmacao_transportador_status === 'CONTESTADO'
+                ? `CONTESTADA${fatura.confirmacao_transportador_em ? ` em ${dataBr(fatura.confirmacao_transportador_em)}` : ''}${fatura.confirmacao_transportador_por ? ` por ${fatura.confirmacao_transportador_por}` : ''}. Observação: ${fatura.confirmacao_transportador_observacao || '-'}${fatura.confirmacao_transportador_evidencias ? ` | Evidências: ${fatura.confirmacao_transportador_evidencias}` : ''}`
                 : `Link enviado${fatura.confirmacao_transportador_enviado_em ? ` em ${dataBr(fatura.confirmacao_transportador_enviado_em)}` : ''}, aguardando o transportador confirmar (gere o "Laudo transportador" de novo pra reenviar o mesmo link).`}
             </p>
           )}
@@ -2982,6 +3086,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <button className="btn-primary" disabled={recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={recalcular} title={selecionados.length ? 'Recalcula só os CT-es selecionados' : 'Recalcula todos os CT-es da fatura'}>
           {recalculando ? 'Recalculando...' : selecionados.length ? `Recalcular selecionados (${selecionados.length})` : 'Recalcular CT-es'}
         </button>
+        <button className="btn-secondary" disabled={atualizandoBase || recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={atualizarDaBase} title="Relê da base já calculada os CT-es selecionados (ou os 'Fora da base'), sem recalcular">
+          {atualizandoBase ? 'Buscando...' : selecionados.length ? `Atualizar da base (${selecionados.length})` : 'Atualizar da base'}
+        </button>
         <button className="btn-secondary" disabled={reauditando || recalculando || carregandoDetalhes || !detalhes.length} onClick={reauditar} title="Só cruza com o que já está calculado em auditoria_cte_resultados, sem recalcular">
           {reauditando ? 'Reauditando...' : 'Reauditar CT-es'}
         </button>
@@ -3002,21 +3109,55 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <button className="btn-secondary" disabled={!selecionados.length} onClick={enviarParaAutorizacaoTransporte} title="Envia os CT-es marcados para o responsavel do transporte (B2C/Atacado) autorizar um saldo">Enviar p/ autorizacao transporte</button>
         {modalSuprimentos && (
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div className="hint-box" style={{ background: '#fff', width: 'min(640px, 94vw)', padding: 20 }}>
-              <h3 style={{ marginTop: 0 }}>Enviar para Suprimentos ({modalSuprimentos.alvo.length} CT-e)</h3>
-              <p>Abre um chamado AMD na Central de Solicitacoes e coloca os CT-es na fila de Suprimentos. Quem aprovar o valor assume o chamado.</p>
-              <label className="field">Tipo de ajuste
-                <select value={modalSuprimentos.tipoAjuste} onChange={(e) => setModalSuprimentos((p) => ({ ...p, tipoAjuste: e.target.value }))}>
-                  {TIPOS_AJUSTE_TABELA.map((t) => <option key={t.valor} value={t.valor}>{t.valor}</option>)}
-                </select>
-              </label>
-              <label className="field">Justificativa * (explique bem o caso, minimo 30 caracteres)
-                <textarea rows={6} value={modalSuprimentos.justificativa} onChange={(e) => setModalSuprimentos((p) => ({ ...p, justificativa: e.target.value }))} />
+            <div className="hint-box" style={{ background: '#fff', width: 'min(900px, 96vw)', maxHeight: '92vh', overflow: 'auto', padding: 20 }}>
+              <h3 style={{ marginTop: 0 }}>{modalSuprimentos.destino === 'SUPRIMENTOS' ? 'Enviar para Suprimentos' : 'Enviar para autorizacao do transporte'} ({modalSuprimentos.itens.length} CT-e)</h3>
+              <p>{modalSuprimentos.destino === 'SUPRIMENTOS'
+                ? 'Abre um chamado AMD na Central de Solicitacoes e coloca os CT-es na fila de Suprimentos. Quem aprovar o valor assume o chamado.'
+                : 'Coloca os CT-es na fila do responsavel do transporte do canal (B2C/Atacado) autorizar o saldo.'} Confira a analise abaixo:</p>
+              <AnaliseFreteTabela itens={modalSuprimentos.itens} />
+              {modalSuprimentos.destino === 'SUPRIMENTOS' && (
+                <label className="field">Tipo de ajuste
+                  <select value={modalSuprimentos.tipoAjuste} onChange={(e) => setModalSuprimentos((p) => ({ ...p, tipoAjuste: e.target.value }))}>
+                    {TIPOS_AJUSTE_TABELA.map((t) => <option key={t.valor} value={t.valor}>{t.valor}</option>)}
+                  </select>
+                </label>
+              )}
+              <label className="field">{modalSuprimentos.destino === 'SUPRIMENTOS' ? 'Justificativa * (explique bem o caso, minimo 30 caracteres)' : 'Observacao pra ele (o que aconteceu)'}
+                <textarea rows={modalSuprimentos.destino === 'SUPRIMENTOS' ? 6 : 3} value={modalSuprimentos.justificativa} onChange={(e) => setModalSuprimentos((p) => ({ ...p, justificativa: e.target.value }))} />
               </label>
               {modalSuprimentos.erro && <div className="hint-box compact error-text">{modalSuprimentos.erro}</div>}
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button className="btn-secondary" disabled={modalSuprimentos.enviando} onClick={() => setModalSuprimentos(null)}>Cancelar</button>
-                <button className="btn-primary" disabled={modalSuprimentos.enviando} onClick={confirmarEnvioSuprimentos}>{modalSuprimentos.enviando ? 'Enviando...' : 'Abrir chamado e enviar'}</button>
+                <button className="btn-primary" disabled={modalSuprimentos.enviando} onClick={confirmarEnvioSuprimentos}>{modalSuprimentos.enviando ? 'Enviando...' : (modalSuprimentos.destino === 'SUPRIMENTOS' ? 'Abrir chamado e enviar' : 'Enviar para autorizacao')}</button>
+              </div>
+            </div>
+          </div>
+        )}
+        {modalLiberacao && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="hint-box" style={{ background: '#fff', width: 'min(900px, 96vw)', maxHeight: '92vh', overflow: 'auto', padding: 20 }}>
+              <h3 style={{ marginTop: 0 }}>Enviar para aprovacao da gestao</h3>
+              <p>Ha cobranca a maior de <strong>{dinheiro(modalLiberacao.saldo)}</strong> nesta fatura. Responda para quem vai aprovar:</p>
+              {modalLiberacao.itens.length > 0 && <AnaliseFreteTabela itens={modalLiberacao.itens} />}
+              <div className="field" style={{ marginTop: 10 }}>
+                <span>Esse valor de diferenca sera descontado? *</span>
+                <div style={{ display: 'flex', gap: 16, marginTop: 4 }}>
+                  <label><input type="radio" name="descontar" checked={modalLiberacao.descontar === 'SIM'} onChange={() => setModalLiberacao((p) => ({ ...p, descontar: 'SIM' }))} /> Sim, sera descontado</label>
+                  <label><input type="radio" name="descontar" checked={modalLiberacao.descontar === 'NAO'} onChange={() => setModalLiberacao((p) => ({ ...p, descontar: 'NAO' }))} /> Nao</label>
+                </div>
+              </div>
+              {modalLiberacao.descontar === 'NAO' && (
+                <label className="field">Qual o motivo de nao descontar? * (minimo 10 caracteres)
+                  <textarea rows={3} value={modalLiberacao.motivo} onChange={(e) => setModalLiberacao((p) => ({ ...p, motivo: e.target.value }))} />
+                </label>
+              )}
+              <label className="field">Observacao para a gestao (opcional)
+                <textarea rows={2} value={modalLiberacao.observacao} onChange={(e) => setModalLiberacao((p) => ({ ...p, observacao: e.target.value }))} />
+              </label>
+              {modalLiberacao.erro && <div className="hint-box compact error-text">{modalLiberacao.erro}</div>}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button className="btn-secondary" disabled={modalLiberacao.enviando} onClick={() => setModalLiberacao(null)}>Cancelar</button>
+                <button className="btn-primary" disabled={modalLiberacao.enviando} onClick={confirmarLiberacaoComDiferenca}>{modalLiberacao.enviando ? 'Enviando...' : 'Enviar para a gestao'}</button>
               </div>
             </div>
           </div>
@@ -3087,6 +3228,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [filtrosAvancadosAbertos, setFiltrosAvancadosAbertos] = useState(() => Boolean(filtrosIniciais));
   const [resumoOrigensFaturas, setResumoOrigensFaturas] = useState(new Map());
   const [recalculandoLote, setRecalculandoLote] = useState(false);
+  const [modalLiberacaoLote, setModalLiberacaoLote] = useState(null);
   const [progressoLote, setProgressoLote] = useState(null);
   const [competenciaFiltro, setCompetenciaFiltro] = useState('');
   const [periodoInicio, setPeriodoInicio] = useState('');
@@ -4482,7 +4624,29 @@ ${portaisLaudo.length ? `
     };
   }, [faturasSelecionadas, state.detalhes, opcoesLaudoTransportadorLote]);
 
-  const atualizarFaturasEmMassa = async (tipo) => {
+  // Estimativa barata (sem carregar CT-es) de quais faturas vao precisar de aprovacao da gestao.
+  const faturasComCobrancaAMaior = () => faturasSelecionadas.filter((item) => Number(item.valor_fatura || 0) - Number(item.valor_calculado || 0) > TOLERANCIA_DESCONTO_PENDENTE);
+
+  const abrirLiberacaoLote = () => {
+    if (!faturasSelecionadas.length) return;
+    setModalLiberacaoLote({ descontar: '', motivo: '', observacao: '', erro: '' });
+  };
+
+  const confirmarLiberacaoLote = () => {
+    const { descontar, motivo, observacao } = modalLiberacaoLote;
+    const exige = faturasComCobrancaAMaior().length > 0;
+    if (exige && !descontar) { setModalLiberacaoLote((p) => ({ ...p, erro: 'Responda se o valor sera descontado (Sim ou Nao).' })); return; }
+    if (exige && descontar === 'NAO' && String(motivo).trim().length < 10) { setModalLiberacaoLote((p) => ({ ...p, erro: 'Informe o motivo de nao descontar (minimo 10 caracteres).' })); return; }
+    const texto = [
+      descontar ? `[DESCONTO: ${descontar === 'SIM' ? 'SIM' : 'NAO'}]` : '',
+      descontar === 'NAO' ? `Motivo de nao descontar: ${String(motivo).trim()}.` : '',
+      String(observacao).trim() ? `Obs.: ${String(observacao).trim()}` : '',
+    ].filter(Boolean).join(' ');
+    setModalLiberacaoLote(null);
+    atualizarFaturasEmMassa('liberar', texto);
+  };
+
+  const atualizarFaturasEmMassa = async (tipo, respostaAuditor = '') => {
     if (!faturasSelecionadas.length) return;
     setMensagemImportacao('');
     setRecalculandoLote(true);
@@ -4538,6 +4702,7 @@ ${portaisLaudo.length ? `
             auditoria_total_descontar: Number(Math.max(saldo, 0).toFixed(2)),
             desconto_aplicado_confirmado: !precisaAprovacao,
             desconto_pendente_valor: precisaAprovacao ? Math.max(saldo, 0) : 0,
+            ...(precisaAprovacao ? { observacao_aprovacao: respostaAuditor } : {}),
           };
           evento = {
             ...evento,
@@ -4545,7 +4710,7 @@ ${portaisLaudo.length ? `
             status_anterior: fatura.status,
             status_novo: statusNovo,
             descricao: precisaAprovacao
-              ? `Enviada para aprovacao da gestao (liberacao em massa): cobranca a maior de ${dinheiro(saldo)} nao confirmada.`
+              ? `Enviada para aprovacao da gestao (liberacao em massa): cobranca a maior de ${dinheiro(saldo)}.${respostaAuditor ? ` ${respostaAuditor}` : ''}`
               : `Liberada em massa para pagamento. Cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}.`,
           };
         }
@@ -4596,7 +4761,7 @@ ${portaisLaudo.length ? `
           ? state.detalhes[fatura.id]
           : await carregarDetalhesFaturaSupabase(fatura.id);
         const detalhesUnicos = deduplicarDetalhesFatura(detalhesRaw || []);
-        const refs = await buscarReferenciaCtes(detalhesUnicos.flatMap((item) => [item.chave_cte, item.numero_cte]));
+        const refs = await buscarReferenciaCtes(detalhesUnicos.flatMap((item) => [item.chave_cte, item.numero_cte]), { comDetalhes: true });
         const detalhesLaudo = detalhesUnicos.map((item) => {
           const mesclado = mesclarDetalheComReferenciaAuditoria(item, refs);
           const base = refs.get(normalizarChaveCte(item.chave_cte)) || refs.get(normalizarChaveCte(item.numero_cte));
@@ -4705,7 +4870,7 @@ ${portaisLaudo.length ? `
         const confirmacaoCelula = confirmadaBloco
           ? '<span style="color:#166534;font-weight:700">✓ Confirmada</span>'
           : (bloco.linkConfirmacao
-            ? `<a href="${escapeHtmlAuditoria(bloco.linkConfirmacao)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="background:#0f6b3e;color:#fff;font-weight:700;padding:6px 12px;border-radius:7px;text-decoration:none;white-space:nowrap;font-size:11px">OK, confirmar</a>`
+            ? `<a href="${escapeHtmlAuditoria(bloco.linkConfirmacao)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="background:#0f6b3e;color:#fff;font-weight:700;padding:6px 12px;border-radius:7px;text-decoration:none;white-space:nowrap;font-size:11px">OK, confirmar</a> <a href="${escapeHtmlAuditoria(bloco.linkConfirmacao)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="background:#b45309;color:#fff;font-weight:700;padding:6px 12px;border-radius:7px;text-decoration:none;white-space:nowrap;font-size:11px">Contestar</a>`
             : '<span style="color:#94a3b8">—</span>');
         return `
         <tr class="main-row" onclick="toggleDetail('${grupoId}')">
@@ -4796,14 +4961,49 @@ ${portaisLaudo.length ? `
             document.getElementById('filtro-status').value='';
             aplicarFiltros();
           }
+              function montarTabelaExcelDetalhada(tabela){
+            var nova=document.createElement('table');
+            var cab=document.createElement('tr');
+            var fixas=['Fatura','Transportadora','CT-e','Chave','Rota','Canal','Peso','Frete pago','Calculo AMD','Diferenca','Status','Entrega'];
+            var registros=[];
+            tabela.querySelectorAll('tbody > .main-row').forEach(function(fat){
+              if(fat.style.display==='none')return;
+              var grupo=fat.nextElementSibling;
+              if(!grupo||!grupo.classList.contains('detail-row'))return;
+              grupo.querySelectorAll('tbody .main-row').forEach(function(cte){
+                var det=cte.nextElementSibling;var mapa={};
+                if(det&&det.classList.contains('detail-row')){
+                  det.querySelectorAll('.calc-box').forEach(function(box){
+                    var t=String(box.querySelector('h4')&&box.querySelector('h4').textContent||'Detalhes').trim();
+                    box.querySelectorAll('.calc-line').forEach(function(l){
+                      var k=String(l.querySelector('span')&&l.querySelector('span').textContent||'').trim();
+                      var v=String(l.querySelector('strong')&&l.querySelector('strong').textContent||'').trim();
+                      if(k)mapa[t+' - '+k]=v;
+                    });
+                  });
+                }
+                var c=cte.cells;var base=[fat.cells[0].textContent.trim(),fat.cells[1].textContent.trim()];
+                for(var j=0;j<c.length;j++)base.push(c[j].textContent.trim());
+                registros.push({base:base,mapa:mapa});
+              });
+            });
+            var colunas=[];
+            registros.forEach(function(r){Object.keys(r.mapa).forEach(function(k){if(colunas.indexOf(k)<0)colunas.push(k)})});
+            fixas.concat(colunas).forEach(function(n){var th=document.createElement('th');th.textContent=n;cab.appendChild(th)});
+            var thead=document.createElement('thead');thead.appendChild(cab);nova.appendChild(thead);
+            var corpo=document.createElement('tbody');
+            registros.forEach(function(r){
+              var tr=document.createElement('tr');
+              r.base.concat(colunas.map(function(n){return r.mapa[n]||''})).forEach(function(v){var td=document.createElement('td');td.textContent=v;tr.appendChild(td)});
+              corpo.appendChild(tr);
+            });
+            nova.appendChild(corpo);
+            return nova;
+          }
           function exportarExcel(){
             var corpo=document.getElementById('tabela-faturas-body');
             var tabela=corpo.closest('table');
-            var copia=tabela.cloneNode(true);
-            Array.from(copia.querySelectorAll('.detail-row')).forEach(function(row){row.remove()});
-            Array.from(copia.querySelectorAll('tbody tr')).forEach(function(row){
-              if(row.style.display==='none')row.remove();
-            });
+      var copia=montarTabelaExcelDetalhada(tabela);
             var conteudo='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>'+copia.outerHTML+'</body></html>';
             var blob=new Blob(['\\ufeff',conteudo],{type:'application/vnd.ms-excel;charset=utf-8'});
             var url=URL.createObjectURL(blob);
@@ -5711,7 +5911,37 @@ ${portaisLaudo.length ? `
           <input value={auditorLote} onChange={(e) => setAuditorLote(e.target.value)} placeholder="Auditor" disabled={recalculandoLote} style={{ maxWidth: 180 }} />
           <input value={emailAuditorLote} onChange={(e) => setEmailAuditorLote(e.target.value)} placeholder="E-mail auditor" disabled={recalculandoLote} style={{ maxWidth: 210 }} />
           <button className="btn-secondary" disabled={recalculandoLote || !auditorLote.trim()} onClick={() => atualizarFaturasEmMassa('auditor')}>Aplicar auditor</button>
-          <button className="btn-primary" disabled={recalculandoLote} onClick={() => atualizarFaturasEmMassa('liberar')}>Liberar selecionadas</button>
+          <button className="btn-primary" disabled={recalculandoLote} onClick={abrirLiberacaoLote}>Liberar selecionadas</button>
+          {modalLiberacaoLote && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div className="hint-box" style={{ background: '#fff', width: 'min(640px, 94vw)', maxHeight: '92vh', overflow: 'auto', padding: 20 }}>
+                <h3 style={{ marginTop: 0 }}>Liberar {faturasSelecionadas.length} fatura(s)</h3>
+                {faturasComCobrancaAMaior().length > 0
+                  ? <p><strong>{faturasComCobrancaAMaior().length}</strong> fatura(s) tem cobranca a maior e vao para a aprovacao da gestao (Carol). Responda abaixo — a resposta vai junto para ela. As demais sao liberadas direto.</p>
+                  : <p>Nenhuma fatura com cobranca a maior identificada; serao liberadas para pagamento. (Se alguma tiver diferenca ao recalcular, vai para a gestao com a sua observacao.)</p>}
+                <div className="field">
+                  <span>Esse valor de diferenca sera descontado?{faturasComCobrancaAMaior().length > 0 ? ' *' : ''}</span>
+                  <div style={{ display: 'flex', gap: 16, marginTop: 4 }}>
+                    <label><input type="radio" name="descontarLote" checked={modalLiberacaoLote.descontar === 'SIM'} onChange={() => setModalLiberacaoLote((p) => ({ ...p, descontar: 'SIM' }))} /> Sim, sera descontado</label>
+                    <label><input type="radio" name="descontarLote" checked={modalLiberacaoLote.descontar === 'NAO'} onChange={() => setModalLiberacaoLote((p) => ({ ...p, descontar: 'NAO' }))} /> Nao</label>
+                  </div>
+                </div>
+                {modalLiberacaoLote.descontar === 'NAO' && (
+                  <label className="field">Qual o motivo de nao descontar? * (minimo 10 caracteres)
+                    <textarea rows={3} value={modalLiberacaoLote.motivo} onChange={(e) => setModalLiberacaoLote((p) => ({ ...p, motivo: e.target.value }))} />
+                  </label>
+                )}
+                <label className="field">Justificativa / o que esta acontecendo (opcional)
+                  <textarea rows={3} value={modalLiberacaoLote.observacao} onChange={(e) => setModalLiberacaoLote((p) => ({ ...p, observacao: e.target.value }))} />
+                </label>
+                {modalLiberacaoLote.erro && <div className="hint-box compact error-text">{modalLiberacaoLote.erro}</div>}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button className="btn-secondary" onClick={() => setModalLiberacaoLote(null)}>Cancelar</button>
+                  <button className="btn-primary" onClick={confirmarLiberacaoLote}>Liberar / enviar para a gestao</button>
+                </div>
+              </div>
+            </div>
+          )}
           <button className="btn-secondary" disabled={recalculandoLote} onClick={() => baixarLaudoFaturasSelecionadas('interno')}>Laudo consolidado</button>
           <button className="btn-secondary" disabled={recalculandoLote} onClick={() => baixarLaudoFaturasSelecionadas('transportador')}>Laudo transportador lote</button>
           <button className="btn-secondary" disabled={recalculandoLote} onClick={() => setSelecionadasIds([])}>Limpar selecao</button>
@@ -5768,12 +5998,16 @@ ${portaisLaudo.length ? `
                     <td
                       title={fatura.confirmacao_transportador_status === 'APROVADO'
                         ? `Confirmada${fatura.confirmacao_transportador_em ? ` em ${dataBr(fatura.confirmacao_transportador_em)}` : ''}${fatura.confirmacao_transportador_por ? ` por ${fatura.confirmacao_transportador_por}` : ''}`
+                        : fatura.confirmacao_transportador_status === 'CONTESTADO'
+                          ? `Contestada pelo fornecedor: ${fatura.confirmacao_transportador_observacao || ''}${fatura.confirmacao_transportador_evidencias ? ` | Evidências: ${fatura.confirmacao_transportador_evidencias}` : ''}`
                         : fatura.confirmacao_transportador_status === 'ENVIADO'
                           ? `Laudo enviado${fatura.confirmacao_transportador_enviado_em ? ` em ${dataBr(fatura.confirmacao_transportador_enviado_em)}` : ''}, aguardando o fornecedor confirmar`
                           : 'Laudo ainda nao enviado ao fornecedor'}
                     >
                       {fatura.confirmacao_transportador_status === 'APROVADO'
                         ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Aprovada</span>
+                        : fatura.confirmacao_transportador_status === 'CONTESTADO'
+                          ? <span style={{ color: '#b91c1c', fontWeight: 700 }}>Contestada</span>
                         : fatura.confirmacao_transportador_status === 'ENVIADO'
                           ? <span style={{ color: '#b45309', fontWeight: 700 }}>Aguardando</span>
                           : <span style={{ color: '#94a3b8' }}>—</span>}
@@ -6530,14 +6764,27 @@ function Gestao({ state, onState }) {
   );
 }
 
+// CT-es de uma fatura ja cruzados com a base auditada (rota, peso, NF, calculo AMD).
+async function carregarCtesFaturaParaAprovacao(fatura) {
+  const lista = deduplicarDetalhesFatura((await carregarDetalhesFaturaSupabase(fatura.id)) || []);
+  const referencia = await buscarReferenciaCtes(lista.flatMap((item) => [item.chave_cte, item.numero_cte]));
+  return lista.map((item) => mesclarDetalheComReferenciaAuditoria(item, referencia));
+}
+
 // Fila de faturas onde a auditoria calculou cobranca a maior (desconto a
-// aplicar) mas ninguem confirmou que esse desconto vai ser aplicado no
-// pagamento — precisa de decisao da gestao (eu/Carol) antes de seguir.
+// aplicar) e o auditor respondeu se sera descontado — a gestao (eu/Carol)
+// decide: aprovar com desconto, aprovar sem desconto (o adicional vira saldo
+// autorizado), autorizar e mandar pra Suprimentos ajustar a tabela, ou recusar.
 function AprovacaoGestao({ state, onState }) {
   const sessao = carregarSessao();
   const ehGestor = usuarioEhGestorAuditoria(sessao);
-  const [processando, setProcessando] = useState(null);
+  const usuarioNome = sessao?.nome || sessao?.email || 'Gestao';
+  const [processando, setProcessando] = useState(false);
   const [mensagem, setMensagem] = useState('');
+  const [selecionadas, setSelecionadas] = useState([]);
+  const [expandidas, setExpandidas] = useState({});
+  const [ctesPorFatura, setCtesPorFatura] = useState({});
+  const [decisao, setDecisao] = useState(null);
 
   const pendentes = useMemo(() => (
     (state.faturas || [])
@@ -6545,91 +6792,264 @@ function AprovacaoGestao({ state, onState }) {
       .sort((a, b) => (a.data_vencimento || '').localeCompare(b.data_vencimento || ''))
   ), [state.faturas]);
 
-  const aprovar = async (fatura) => {
-    setProcessando(fatura.id);
-    setMensagem('');
+  const valorPendente = (item) => Number(item.desconto_pendente_valor || item.diferenca || 0);
+  const escolhidas = pendentes.filter((item) => selecionadas.includes(item.id));
+  const todasMarcadas = pendentes.length > 0 && escolhidas.length === pendentes.length;
+
+  const carregarCtes = async (fatura) => {
+    if (ctesPorFatura[fatura.id]?.lista || ctesPorFatura[fatura.id]?.carregando) return ctesPorFatura[fatura.id]?.lista || null;
+    setCtesPorFatura((prev) => ({ ...prev, [fatura.id]: { carregando: true } }));
     try {
-      const next = await atualizarFaturaAuditoria(state, {
-        ...fatura,
-        status: 'LIBERADA_COM_DESCONTO',
-        desconto_aplicado_confirmado: true,
-        desconto_pendente_valor: 0,
-      }, {
-        acao: 'APROVACAO_GESTAO_CONFIRMOU_DESCONTO',
-        status_anterior: fatura.status,
-        status_novo: 'LIBERADA_COM_DESCONTO',
-        descricao: `Gestao aprovou: desconto de ${dinheiro(fatura.desconto_pendente_valor || fatura.diferenca || 0)} confirmado, fatura liberada para pagamento com desconto.`,
-        usuario_nome: sessao?.nome || sessao?.email || 'Gestao',
-        usuario_email: sessao?.email || '',
-      });
-      onState(next);
-      setMensagem(`Fatura ${fatura.numero_fatura} aprovada e liberada para pagamento.`);
+      const lista = await carregarCtesFaturaParaAprovacao(fatura);
+      setCtesPorFatura((prev) => ({ ...prev, [fatura.id]: { lista } }));
+      return lista;
     } catch (error) {
-      setMensagem(`Erro ao aprovar: ${error.message}`);
-    } finally {
-      setProcessando(null);
+      setCtesPorFatura((prev) => ({ ...prev, [fatura.id]: { erro: error.message || String(error) } }));
+      return null;
     }
   };
 
-  const recusar = async (fatura) => {
-    const motivo = window.prompt(`Motivo da recusa (volta para a auditoria tratar a divergencia da fatura ${fatura.numero_fatura}):`, '');
-    if (motivo === null) return;
-    setProcessando(fatura.id);
-    setMensagem('');
-    try {
-      const next = await atualizarFaturaAuditoria(state, {
-        ...fatura,
-        status: 'COM_DIVERGENCIA',
-        desconto_aplicado_confirmado: false,
-      }, {
-        acao: 'APROVACAO_GESTAO_RECUSOU',
-        status_anterior: fatura.status,
-        status_novo: 'COM_DIVERGENCIA',
-        descricao: `Gestao recusou a liberacao: ${motivo || 'sem motivo informado'}. Fatura devolvida para a auditoria.`,
-        usuario_nome: sessao?.nome || sessao?.email || 'Gestao',
-        usuario_email: sessao?.email || '',
-      });
-      onState(next);
-      setMensagem(`Fatura ${fatura.numero_fatura} devolvida para a auditoria.`);
-    } catch (error) {
-      setMensagem(`Erro ao recusar: ${error.message}`);
-    } finally {
-      setProcessando(null);
-    }
+  const alternarExpansao = (fatura) => {
+    setExpandidas((prev) => ({ ...prev, [fatura.id]: !prev[fatura.id] }));
+    carregarCtes(fatura);
   };
+
+  const alternarSelecao = (id) => setSelecionadas((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  // CT-es com adicional cobrado (calculado pela AMD e cobrado a mais), no formato da fila de autorizacoes.
+  const itensComAdicional = (fatura, ctes) => ctes
+    .filter((item) => Number(item.calculado_frete || 0) > 0 && Number(item.diferenca || 0) > 0)
+    .map((item) => ({
+      canal: item.canal || fatura.canal,
+      chave_cte: item.chave_cte,
+      numero_cte: item.numero_cte,
+      chave_nfe: item.chave_nfe,
+      numero_pedido: item.numero_pedido,
+      transportadora: fatura.transportadora,
+      cidade_origem: item.cidade_origem,
+      cidade_destino: item.cidade_destino,
+      valor_nf: item.valor_nf,
+      valor_cte: item.valor_frete,
+      valor_calculado: item.calculado_frete,
+      // Sem calculo (cotacao): o valor a autorizar e o frete cobrado inteiro.
+      valor_divergente: semCalculoAmd(item) ? Math.max(Number(item.valor_frete || 0), 0) : Math.max(Number(item.diferenca || 0), 0),
+      fatura_id: fatura.id,
+    }));
+
+  const abrirDecisao = (tipo) => {
+    if (!escolhidas.length) return;
+    escolhidas.forEach((fatura) => { carregarCtes(fatura); });
+    setDecisao({ tipo, justificativa: '', tipoAjuste: TIPOS_AJUSTE_TABELA[0].valor, erro: '' });
+  };
+
+  const TITULOS_DECISAO = {
+    COM_DESCONTO: 'Aprovar COM desconto',
+    SEM_DESCONTO: 'Aprovar SEM desconto (autorizar o adicional)',
+    SUPRIMENTOS: 'Autorizar e enviar para Suprimentos',
+    RECUSAR: 'Recusar (devolver para a auditoria)',
+  };
+
+  const confirmarDecisao = async () => {
+    const { tipo, justificativa, tipoAjuste } = decisao;
+    const texto = String(justificativa || '').trim();
+    if (tipo === 'RECUSAR' && texto.length < 5) { setDecisao((p) => ({ ...p, erro: 'Informe o motivo da recusa.' })); return; }
+    if (tipo === 'SEM_DESCONTO' && texto.length < 10) { setDecisao((p) => ({ ...p, erro: 'Informe a justificativa de aprovar sem desconto (minimo 10 caracteres).' })); return; }
+    if (tipo === 'SUPRIMENTOS' && texto.length < 30) { setDecisao((p) => ({ ...p, erro: `Justificativa muito curta (${texto.length}/30 caracteres). Explique o ajuste que Suprimentos precisa fazer.` })); return; }
+    setProcessando(true);
+    setDecisao((p) => ({ ...p, erro: '' }));
+    const resultados = [];
+    let proximo = state;
+    for (const fatura of escolhidas) {
+      try {
+        const nome = fatura.numero_fatura;
+        const valor = valorPendente(fatura);
+        let statusNovo = 'LIBERADA_COM_DESCONTO';
+        let acao = 'APROVACAO_GESTAO_CONFIRMOU_DESCONTO';
+        let descricao = `Gestao aprovou: desconto de ${dinheiro(valor)} confirmado, fatura liberada para pagamento com desconto.${texto ? ` Obs.: ${texto}` : ''}`;
+        let campos = { desconto_aplicado_confirmado: true, desconto_pendente_valor: 0 };
+
+        if (tipo === 'RECUSAR') {
+          statusNovo = 'COM_DIVERGENCIA';
+          acao = 'APROVACAO_GESTAO_RECUSOU';
+          descricao = `Gestao recusou a liberacao: ${texto}. Fatura devolvida para a auditoria.`;
+          campos = { desconto_aplicado_confirmado: false };
+        } else if (tipo === 'SEM_DESCONTO' || tipo === 'SUPRIMENTOS') {
+          const ctes = ctesPorFatura[fatura.id]?.lista || await carregarCtesFaturaParaAprovacao(fatura);
+          const itens = itensComAdicional(fatura, ctes);
+          if (!itens.length) throw new Error('nenhum CT-e com adicional calculado pela AMD nesta fatura (sem simulacao ou sem diferenca positiva).');
+          const totalAdicional = itens.reduce((acc, item) => acc + item.valor_divergente, 0);
+          statusNovo = 'PRONTA_PARA_PAGAMENTO';
+          campos = { desconto_aplicado_confirmado: false, desconto_pendente_valor: 0 };
+          if (tipo === 'SEM_DESCONTO') {
+            await autorizarPelaGestao(itens, { observacao: `Aprovacao de Gestao (${nome}) sem desconto: ${texto}`, usuarioNome });
+            acao = 'APROVACAO_GESTAO_SEM_DESCONTO';
+            descricao = `Gestao aprovou SEM desconto: ${dinheiro(totalAdicional)} em ${itens.length} CT-e(s) autorizado(s) como saldo. Justificativa: ${texto}`;
+          } else {
+            const { protocolo } = await enviarParaSuprimentos(itens, { tipoAjuste, justificativa: texto, usuarioNome, usuarioEmail: sessao?.email || '', autorizadoPor: usuarioNome });
+            acao = 'APROVACAO_GESTAO_AUTORIZOU_E_ENVIOU_SUPRIMENTOS';
+            descricao = `Gestao autorizou ${dinheiro(totalAdicional)} em ${itens.length} CT-e(s) e enviou para Suprimentos ajustar a tabela${protocolo ? ` (chamado AMD ${protocolo})` : ''}. Justificativa: ${texto}`;
+          }
+        }
+
+        proximo = await atualizarFaturaAuditoria(proximo, { ...fatura, status: statusNovo, ...campos }, {
+          acao,
+          status_anterior: fatura.status,
+          status_novo: statusNovo,
+          descricao,
+          usuario_nome: usuarioNome,
+          usuario_email: sessao?.email || '',
+        });
+        resultados.push({ ok: true, nome });
+      } catch (error) {
+        resultados.push({ ok: false, nome: fatura.numero_fatura, erro: error.message || String(error) });
+      }
+    }
+    if (proximo !== state) onState(proximo);
+    const okIds = escolhidas.filter((_, indice) => resultados[indice]?.ok).map((item) => item.id);
+    setSelecionadas((prev) => prev.filter((id) => !okIds.includes(id)));
+    const falhas = resultados.filter((r) => !r.ok);
+    const feitas = resultados.length - falhas.length;
+    setMensagem(`${feitas} fatura(s): ${TITULOS_DECISAO[tipo].toLowerCase()}.${falhas.length ? ` Falhou em ${falhas.map((f) => `${f.nome} (${f.erro})`).join('; ')}` : ''}`);
+    setProcessando(false);
+    if (falhas.length) setDecisao((p) => ({ ...p, erro: `Falhou em ${falhas.length} fatura(s): ${falhas.map((f) => `${f.nome} (${f.erro})`).join('; ')}` }));
+    else setDecisao(null);
+  };
+
+  const respostaAuditor = (fatura) => {
+    const texto = fatura.observacao_aprovacao || '';
+    const sim = texto.includes('[DESCONTO: SIM]');
+    const nao = texto.includes('[DESCONTO: NAO]');
+    return { sim, nao, texto: texto.replace(/\[DESCONTO: (SIM|NAO)\]\s*/, '') };
+  };
+
+  const totalEscolhido = escolhidas.reduce((acc, item) => acc + valorPendente(item), 0);
+  const botao = (tipo, rotulo, classe = 'btn-secondary') => (
+    <button type="button" className={classe} disabled={!escolhidas.length || processando} onClick={() => abrirDecisao(tipo)}>{rotulo} ({escolhidas.length})</button>
+  );
 
   return (
     <>
       <div className="audit-section-title">Aprovacao da gestao</div>
       <p style={{ margin: '0 0 10px', fontSize: 13, color: '#64748b' }}>
-        Faturas onde a auditoria calculou cobranca a maior (desconto a aplicar) e, na liberacao, nao foi confirmado que esse
-        desconto sera aplicado no pagamento. {ehGestor ? 'Aprove pra liberar com o desconto, ou recuse pra devolver pra auditoria tratar.' : 'Apenas gestao pode aprovar ou recusar — auditores acompanham aqui, mas as acoes ficam bloqueadas.'}
+        Faturas com cobranca a maior enviadas pela auditoria, ja com a resposta do auditor (sera descontado? por que nao?). Clique na fatura pra ver os CT-es e a analise do frete.
+        {ehGestor ? ' Marque uma ou mais faturas e escolha a decisao.' : ' Apenas gestao pode decidir — auditores acompanham aqui, mas as acoes ficam bloqueadas.'}
       </p>
       <div className="summary-strip audit-summary-grid">
         <Card label="Aguardando aprovacao" value={pendentes.length} color={pendentes.length ? '#9b1111' : '#14733b'} />
-        <Card label="Valor pendente" value={dinheiro(pendentes.reduce((acc, item) => acc + Number(item.desconto_pendente_valor || item.diferenca || 0), 0))} color="#9b1111" />
+        <Card label="Valor pendente" value={dinheiro(pendentes.reduce((acc, item) => acc + valorPendente(item), 0))} color="#9b1111" />
+        <Card label="Selecionadas" value={`${escolhidas.length} · ${dinheiro(totalEscolhido)}`} color="#9153F0" />
       </div>
+      {ehGestor && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0' }}>
+          {botao('COM_DESCONTO', 'Aprovar com desconto', 'btn-primary')}
+          {botao('SEM_DESCONTO', 'Aprovar sem desconto')}
+          {botao('SUPRIMENTOS', 'Autorizar e enviar p/ Suprimentos')}
+          {botao('RECUSAR', 'Recusar')}
+        </div>
+      )}
       {mensagem && <div className="hint-box compact">{mensagem}</div>}
-      <SimpleTable
-        headers={['Fatura', 'Transportadora', 'Auditor', 'Vencimento', 'Valor fatura', 'Calculado AMD', 'Desconto pendente', 'Observacao do auditor', 'Acoes']}
-        rows={pendentes.map((item) => [
-          item.numero_fatura,
-          item.transportadora,
-          item.auditor_nome || <strong className="error-text">SEM AUDITOR</strong>,
-          dataBr(item.data_vencimento),
-          dinheiro(item.valor_fatura),
-          dinheiro(item.valor_calculado),
-          <strong key="p" style={{ color: '#9b1111' }}>{dinheiro(item.desconto_pendente_valor || item.diferenca || 0)}</strong>,
-          item.observacao_aprovacao || <span style={{ color: '#94a3b8' }}>—</span>,
-          ehGestor ? (
-            <div key="acoes" style={{ display: 'flex', gap: 8 }}>
-              <button type="button" className="btn-primary" disabled={processando === item.id} onClick={() => aprovar(item)}>Aprovar</button>
-              <button type="button" className="btn-secondary" disabled={processando === item.id} onClick={() => recusar(item)}>Recusar</button>
+      <div className="table-card"><div className="sim-analise-tabela-wrap">
+        <table className="sim-analise-tabela">
+          <thead>
+            <tr>
+              <th style={{ width: 30 }}>{ehGestor && <input type="checkbox" checked={todasMarcadas} onChange={() => setSelecionadas(todasMarcadas ? [] : pendentes.map((item) => item.id))} title="Marcar todas" />}</th>
+              <th>Fatura</th><th>Transportadora</th><th>Auditor</th><th>Vencimento</th><th>Valor fatura</th><th>Calculado AMD</th><th>Desconto pendente</th><th>Resposta do auditor</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pendentes.map((item) => {
+              const aberta = Boolean(expandidas[item.id]);
+              const dados = ctesPorFatura[item.id];
+              const resposta = respostaAuditor(item);
+              const comAdicional = dados?.lista ? itensComAdicional(item, dados.lista) : [];
+              return [
+                <tr key={item.id}>
+                  <td>{ehGestor && <input type="checkbox" checked={selecionadas.includes(item.id)} onChange={() => alternarSelecao(item.id)} />}</td>
+                  <td>
+                    <button type="button" className="btn-secondary" style={{ padding: '2px 8px' }} onClick={() => alternarExpansao(item)} title="Ver CT-es e analise do frete">{aberta ? '▾' : '▸'} {item.numero_fatura}</button>
+                  </td>
+                  <td>{item.transportadora}</td>
+                  <td>{item.auditor_nome || <strong className="error-text">SEM AUDITOR</strong>}</td>
+                  <td>{dataBr(item.data_vencimento)}</td>
+                  <td>{dinheiro(item.valor_fatura)}</td>
+                  <td>{dinheiro(item.valor_calculado)}</td>
+                  <td><strong style={{ color: '#9b1111' }}>{dinheiro(valorPendente(item))}</strong></td>
+                  <td>
+                    {resposta.sim && <strong style={{ color: '#14733b' }}>Vai descontar. </strong>}
+                    {resposta.nao && <strong style={{ color: '#9b1111' }}>Nao vai descontar. </strong>}
+                    {resposta.texto || (!resposta.sim && !resposta.nao ? <span style={{ color: '#94a3b8' }}>—</span> : null)}
+                  </td>
+                </tr>,
+                aberta && (
+                  <tr key={`${item.id}-ctes`}>
+                    <td colSpan={9} style={{ background: '#f8fafc' }}>
+                      {dados?.carregando && <p>Carregando CT-es da fatura...</p>}
+                      {dados?.erro && <p className="error-text">Erro ao carregar CT-es: {dados.erro}</p>}
+                      {dados?.lista && (
+                        <>
+                          <strong>Analise do frete — CT-es com adicional ({comAdicional.length})</strong>
+                          {comAdicional.length
+                            ? <AnaliseFreteTabela itens={comAdicional} />
+                            : <p style={{ margin: '4px 0' }}>Nenhum CT-e com adicional calculado pela AMD (diferenca positiva).</p>}
+                          <strong>Todos os CT-es da fatura ({dados.lista.length})</strong>
+                          <div className="sim-analise-tabela-wrap" style={{ maxHeight: 320, overflow: 'auto' }}>
+                            <table className="sim-analise-tabela">
+                              <thead><tr><th>CT-e</th><th>Origem &rarr; Destino</th><th>Peso</th><th>Valor NF</th><th>Cobrado</th><th>Calculado AMD</th><th>Diferenca</th><th>Status</th></tr></thead>
+                              <tbody>
+                                {dados.lista.map((cte) => (
+                                  <tr key={cte.id || cte.chave_cte}>
+                                    <td style={{ fontSize: 11 }}>{cte.numero_cte || String(cte.chave_cte || '').slice(-9)}</td>
+                                    <td>{cte.cidade_origem || '-'} &rarr; {cte.cidade_destino || '-'}</td>
+                                    <td>{Number(cte.peso || 0) ? numeroFmt(cte.peso, 2) : '-'}</td>
+                                    <td>{Number(cte.valor_nf || 0) ? dinheiro(cte.valor_nf) : '-'}</td>
+                                    <td>{dinheiro(cte.valor_frete)}</td>
+                                    <td>{Number(cte.calculado_frete || 0) ? dinheiro(cte.calculado_frete) : '-'}</td>
+                                    <td style={{ color: Number(cte.diferenca || 0) > 0.01 ? '#9b1111' : undefined }}>{Number(cte.calculado_frete || 0) ? dinheiro(cte.diferenca) : '-'}</td>
+                                    <td>{cte.status || '-'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ),
+              ];
+            })}
+            {!pendentes.length && <tr><td colSpan={9}>Nenhuma fatura aguardando aprovacao da gestao.</td></tr>}
+          </tbody>
+        </table>
+      </div></div>
+
+      {decisao && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="hint-box" style={{ background: '#fff', width: 'min(900px, 96vw)', maxHeight: '92vh', overflow: 'auto', padding: 20 }}>
+            <h3 style={{ marginTop: 0 }}>{TITULOS_DECISAO[decisao.tipo]} — {escolhidas.length} fatura(s), {dinheiro(totalEscolhido)}</h3>
+            {decisao.tipo === 'COM_DESCONTO' && <p>A fatura e liberada para pagamento com o desconto de cobranca a maior.</p>}
+            {decisao.tipo === 'SEM_DESCONTO' && <p>O adicional de cada CT-e cobrado a mais vira <strong>saldo autorizado</strong> (gestao/auditoria) e a fatura e liberada para pagamento sem desconto.</p>}
+            {decisao.tipo === 'SUPRIMENTOS' && <p>O adicional ja fica <strong>autorizado</strong> na auditoria, a fatura e liberada e um chamado AMD e aberto para Suprimentos assumir e ajustar a tabela.</p>}
+            {decisao.tipo === 'RECUSAR' && <p>As faturas voltam para a auditoria tratar a divergencia.</p>}
+            {decisao.tipo === 'SUPRIMENTOS' && (
+              <label className="field">Tipo de ajuste
+                <select value={decisao.tipoAjuste} onChange={(e) => setDecisao((p) => ({ ...p, tipoAjuste: e.target.value }))}>
+                  {TIPOS_AJUSTE_TABELA.map((t) => <option key={t.valor} value={t.valor}>{t.valor}</option>)}
+                </select>
+              </label>
+            )}
+            <label className="field">
+              {decisao.tipo === 'RECUSAR' ? 'Motivo da recusa *' : decisao.tipo === 'SEM_DESCONTO' ? 'Justificativa * (minimo 10 caracteres)' : decisao.tipo === 'SUPRIMENTOS' ? 'Justificativa / o que Suprimentos deve ajustar * (minimo 30 caracteres)' : 'Observacao (opcional)'}
+              <textarea rows={4} value={decisao.justificativa} onChange={(e) => setDecisao((p) => ({ ...p, justificativa: e.target.value }))} />
+            </label>
+            {decisao.erro && <div className="hint-box compact error-text">{decisao.erro}</div>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn-secondary" disabled={processando} onClick={() => setDecisao(null)}>Cancelar</button>
+              <button className="btn-primary" disabled={processando} onClick={confirmarDecisao}>{processando ? 'Processando...' : 'Confirmar'}</button>
             </div>
-          ) : <span key="acoes" style={{ color: '#94a3b8' }}>Somente gestao</span>,
-        ])}
-        empty="Nenhuma fatura aguardando aprovacao da gestao."
-      />
+          </div>
+        </div>
+      )}
     </>
   );
 }

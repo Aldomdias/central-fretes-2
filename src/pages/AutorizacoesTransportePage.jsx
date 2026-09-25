@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarSessao } from '../utils/authLocal';
 import {
+  analisarFrete,
   completarVinculosPendentes,
   decidirAutorizacao,
   desativarAutorizacao,
+  formatarPct,
   lancarSaldoAntecipado,
   listarAutorizacoes,
 } from '../services/transporteAutorizacoesService';
@@ -130,7 +132,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
       {aba === 'fila' && (
         <div className="table-card"><div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th>Pedido</th>{canal === 'SUPRIMENTOS' && <th>Chamado AMD</th>}<th>Chave CT-e</th><th>Chave NF</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor CT-e</th><th>Calculado</th><th>Divergente</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Justificativa *</th><th /></tr></thead>
+            <thead><tr><th>Pedido</th>{canal === 'SUPRIMENTOS' && <th>Chamado AMD</th>}<th>Chave CT-e</th><th>Chave NF</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor NF</th><th>Valor CT-e</th><th>Frete atual (AMD)</th><th>% NF atual</th><th>Adicional</th><th>Frete c/ adicional</th><th>% NF c/ adicional</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Justificativa *</th><th /></tr></thead>
             <tbody>
               {pendentes.map((item) => (
                 <tr key={item.id}>
@@ -140,9 +142,13 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   <td style={{ fontSize: 11 }}>{item.chave_nfe || '-'}</td>
                   <td>{item.cidade_origem || '-'} → {item.cidade_destino || '-'}</td>
                   <td>{item.transportadora || '-'}</td>
+                  <td>{Number(item.valor_nf) > 0 ? dinheiro(item.valor_nf) : '-'}</td>
                   <td>{dinheiro(item.valor_cte)}</td>
                   <td>{dinheiro(item.valor_calculado)}</td>
+                  <td>{formatarPct(analisarFrete(item).pctAtual)}</td>
                   <td><strong style={{ color: '#9b1111' }}>{dinheiro(item.valor_divergente)}</strong></td>
+                  <td>{dinheiro(analisarFrete(item).freteComAdicional)}</td>
+                  <td><strong>{formatarPct(analisarFrete(item).pctComAdicional)}</strong></td>
                   <td>{item.observacao_auditoria || '-'}</td>
                   <td><input style={{ width: 90 }} value={campo(item.id, 'valor', String(item.valor_divergente ?? ''))} onChange={(e) => editar(item.id, 'valor', e.target.value)} /></td>
                   <td><input value={campo(item.id, 'obs', '')} onChange={(e) => editar(item.id, 'obs', e.target.value)} placeholder="Justificativa (obrigatoria)" /></td>
@@ -152,7 +158,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   </td>
                 </tr>
               ))}
-              {!pendentes.length && <tr><td colSpan={13}>{carregando ? 'Carregando...' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
+              {!pendentes.length && <tr><td colSpan={17}>{carregando ? 'Carregando...' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
             </tbody>
           </table>
         </div></div>

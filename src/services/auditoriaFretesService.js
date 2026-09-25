@@ -265,7 +265,7 @@ export async function atualizarFaturaAuditoria(state, fatura, evento) {
 // Enriquecimento: puxa da base reauditada (auditoria_cte_resultados) o que ja
 // sabemos de cada CT-e da fatura - rota, peso, canal, competencia e valores.
 // E consulta de referencia: falha aqui nao pode travar a tela da fatura.
-export async function buscarReferenciaCtes(chaves = []) {
+export async function buscarReferenciaCtes(chaves = [], { comDetalhes = false, lancarErro = false } = {}) {
   const referencia = new Map();
   if (!isSupabaseConfigured() || !chaves.length) return referencia;
   const normalizadas = [...new Set(chaves.map(normalizarChaveCte).filter(Boolean))];
@@ -278,9 +278,13 @@ export async function buscarReferenciaCtes(chaves = []) {
       // memória completa e comparativos de tabelas; transferi-lo para todos os
       // CT-es fazia até uma fatura de 6 itens exceder 12 s. O JSON completo é
       // buscado sob demanda quando o usuário abre o detalhe de um CT-e.
-      .select('chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at')
+      // `comDetalhes` e usado na geracao de laudo, que precisa da memoria de calculo.
+      .select(`chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at${comDetalhes ? ', detalhes_calculo' : ''}`)
       .in('chave_cte', lote);
-    if (error) break;
+    if (error) {
+      if (lancarErro) throw new Error(`Erro ao consultar a base: ${error.message}`);
+      break;
+    }
     // Podem existir registros duplicados pra mesma chave/competencia (recalculos
     // antigos que inseriram em vez de atualizar) — sempre ficar com o mais
     // recente por updated_at, senao a tela pode pegar um resultado desatualizado
@@ -296,6 +300,34 @@ export async function buscarReferenciaCtes(chaves = []) {
       if (chave) referencia.set(chave, maisRecente(referencia.get(chave), row));
       const numero = normalizarChaveCte(row.numero_cte);
       if (numero) referencia.set(numero, maisRecente(referencia.get(numero), row));
+    }
+  }
+  // Fallback: CT-e que ainda nao foi calculado na auditoria mas existe no
+  // realizado. So enriquece rota/canal/peso/NF (por chave, nunca por numero,
+  // que se repete entre emitentes); valores calculados ficam zerados de
+  // proposito para nao passar como resultado da auditoria.
+  const faltando = normalizadas.filter((chave) => chave.length >= 40 && !referencia.has(chave));
+  for (let inicio = 0; inicio < faltando.length; inicio += 200) {
+    const lote = faltando.slice(inicio, inicio + 200);
+    const { data, error } = await client
+      .from('realizado_local_ctes')
+      .select('chave_cte, numero_cte, competencia, cidade_origem, uf_origem, ibge_origem, cidade_destino, uf_destino, ibge_destino, canal, peso, valor_nf, valor_cte, updated_at')
+      .in('chave_cte', lote);
+    if (error) {
+      if (lancarErro) throw new Error(`Erro ao consultar o realizado: ${error.message}`);
+      break;
+    }
+    for (const row of data || []) {
+      const chave = normalizarChaveCte(row.chave_cte);
+      if (!chave || referencia.has(chave)) continue;
+      referencia.set(chave, {
+        ...row,
+        valor_calculado: 0,
+        valor_calculado_verum: 0,
+        status_calculo: 'SEM_CALCULO',
+        motivo_sem_calculo: 'CT-e no realizado, ainda nao calculado na auditoria',
+        origem_referencia: 'realizado',
+      });
     }
   }
   return referencia;

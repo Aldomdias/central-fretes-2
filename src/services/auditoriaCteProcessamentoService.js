@@ -772,14 +772,14 @@ function pesoCte(cte = {}, opcoes = {}) {
   return Math.max(pesoDeclarado, pesoCubado, toNumber(pick(cte, ['peso'])));
 }
 
-function localizarTabelaAuditoria(transportadoras = [], cte = {}, mapaVinculos = null, transportadoraAlvo = '') {
+function localizarTabelaAuditoria(transportadoras = [], cte = {}, mapaVinculos = null, transportadoraAlvo = '', opcoes = {}) {
   const transportadoraNome = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
   const cnpjTransportadora = cnpjTransportadoraCte(cte);
   const candidatasTransportadora = localizarTransportadoras(transportadoras, transportadoraNome, cnpjTransportadora);
   if (!candidatasTransportadora.length) return { status: 'SEM_TABELA' };
 
   const tentativas = [];
-  const peso = pesoCte(cte);
+  const peso = pesoCte(cte, opcoes);
 
   for (const transportadora of candidatasTransportadora) {
     const origens = listarOrigensCompativeis(transportadora, cte);
@@ -1353,10 +1353,10 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
   const resultadoSimulador = processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
   if (resultadoSimulador) return anexarComparativoPesos(resultadoSimulador, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
 
-  const tabelaDireta = localizarTabelaAuditoria(transportadoras, cte, mapaVinculos, transportadoraAlvo);
+  const tabelaDireta = localizarTabelaAuditoria(transportadoras, cte, mapaVinculos, transportadoraAlvo, opcoes);
   const tabelaInvertida = tabelaDireta.status === 'OK'
     ? null
-    : localizarTabelaAuditoria(transportadoras, inverterOrigemDestinoCte(cte), mapaVinculos, transportadoraAlvo);
+    : localizarTabelaAuditoria(transportadoras, inverterOrigemDestinoCte(cte), mapaVinculos, transportadoraAlvo, opcoes);
   const calculoInvertido = tabelaDireta.status !== 'OK' && tabelaInvertida?.status === 'OK';
   const cteCalculo = calculoInvertido ? inverterOrigemDestinoCte(cte) : cte;
   const tabela = calculoInvertido ? tabelaInvertida : tabelaDireta;
