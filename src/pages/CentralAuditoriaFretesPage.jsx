@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
+import { carregarRespostasEntregaFatura, salvarPendenciasEntrega, urlAnexoEntrega, urlPortalEntrega, validarRespostaEntrega } from '../services/entregaPortalService';
 import { buscarStatusEntregaCtes, chaveEntregaRegistro, ROTULO_ENTREGA, STATUS_ENTREGA } from '../services/auditoriaEntregaCteService';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
@@ -2386,8 +2387,12 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <tr id="${detalheId}" class="detail-row"><td colspan="9">${detalhesCalculoHtmlFatura(item, { masked, calculadoPublico, diffPublico, descontoSemTabela })}</td></tr>`;
     }).join('');
     const semEntrega = entregaCtes ? linhas.filter((item) => entregaCtes.get(chaveEntregaRegistro(item))?.status !== STATUS_ENTREGA.ENTREGUE) : [];
+    const linkEntrega = transportador ? urlPortalEntrega(linkConfirmacao) : '';
+    if (linkEntrega && semEntrega.length) {
+      await salvarPendenciasEntrega(fatura, semEntrega.map((item) => ({ ...item, entrega_status: entregaCtes.get(chaveEntregaRegistro(item))?.status })));
+    }
     const blocoEntregaLaudo = semEntrega.length
-      ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><strong>⚠ ${semEntrega.length} CT-e(s) sem entrega comprovada — favor verificar</strong><p style="margin:6px 0 0;font-size:13px">O pagamento da fatura só é liberado quando todos os CT-es estiverem entregues. Envie o comprovante de entrega (canhoto/POD) dos CT-es: <b>${semEntrega.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtes.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p></div>`
+      ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><strong>⚠ ${semEntrega.length} CT-e(s) sem entrega comprovada — favor verificar</strong><p style="margin:6px 0 0;font-size:13px">O pagamento da fatura só é liberado quando todos os CT-es estiverem entregues. Envie o comprovante de entrega (canhoto/POD) dos CT-es: <b>${semEntrega.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtes.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p>${botaoPortalEntrega(linkEntrega)}</div>`
       : '';
     const jaConfirmada = fatura.confirmacao_transportador_status === 'APROVADO';
     const blocoConfirmacaoLaudo = linkConfirmacao
@@ -2724,6 +2729,17 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
           </div>
         );
       })()}
+      <RespostasEntregaFatura
+        faturaId={fatura.id}
+        usuarioNome={sessao?.nome || sessao?.email || ''}
+        aoValidar={() => {
+          setEntregaCtes(null);
+          buscarStatusEntregaCtes(detalhes.map((item) => {
+            const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte)) || referenciaCtes.get(normalizarChaveCte(item.numero_cte));
+            return { ...item, chave_nfe: item.chave_nfe || base?.chave_nfe };
+          })).then(setEntregaCtes).catch((error) => setEntregaErroFatura(error.message || String(error)));
+        }}
+      />
       <div className="form-grid three" style={{ marginBottom: 10 }}>
         <label className="field">Entrega
           <select value={filtroEntregaCte} onChange={(e) => setFiltroEntregaCte(e.target.value)}>
@@ -4874,8 +4890,18 @@ ${portaisLaudo.length ? `
         ['Total a descontar', dinheiro(resumoGeral.totalDescontar)],
         ['Sem entrega', semEntregaGeral.length],
       ];
+      const portaisEntregaLote = [];
+      if (laudoTransportador && entregaCtesLote) {
+        for (const bloco of blocos) {
+          const link = urlPortalEntrega(bloco.linkConfirmacao);
+          const pend = bloco.detalhes.filter((item) => entregaCtesLote.get(chaveEntregaRegistro(item))?.status !== STATUS_ENTREGA.ENTREGUE);
+          if (!link || !pend.length) continue;
+          await salvarPendenciasEntrega(bloco.fatura, pend.map((item) => ({ ...item, entrega_status: entregaCtesLote.get(chaveEntregaRegistro(item))?.status })));
+          portaisEntregaLote.push({ numero: bloco.fatura.numero_fatura, url: link, total: pend.length });
+        }
+      }
       const blocoEntregaLote = semEntregaGeral.length
-        ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><strong>⚠ ${semEntregaGeral.length} CT-e(s) sem entrega comprovada no lote — favor verificar</strong><p style="margin:6px 0 0;font-size:13px">O pagamento so deve ser liberado com todos os CT-es entregues. CT-es: <b>${semEntregaGeral.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtesLote?.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p></div>`
+        ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><strong>⚠ ${semEntregaGeral.length} CT-e(s) sem entrega comprovada no lote — favor verificar</strong><p style="margin:6px 0 0;font-size:13px">O pagamento so deve ser liberado com todos os CT-es entregues. CT-es: <b>${semEntregaGeral.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtesLote?.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p>${portaisEntregaLote.map((portal) => botaoPortalEntrega(portal.url, `Responder entregas — fatura ${portal.numero} (${portal.total} CT-e)`)).join('')}</div>`
         : (entregaCtesLote ? '' : `<div style="margin:0 0 14px;padding:14px 18px;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;color:#7c2d12"><strong>⚠ Nao foi possivel consultar o status de entrega dos CT-es deste lote.</strong></div>`);
       // Laudo hierarquico: uma linha por fatura, expande CT-es; cada CT-e
       // expande o detalhe do calculo. Tudo fechado por padrao.
@@ -6823,6 +6849,76 @@ async function carregarCtesFaturaParaAprovacao(fatura) {
 // aplicar) e o auditor respondeu se sera descontado — a gestao (eu/Carol)
 // decide: aprovar com desconto, aprovar sem desconto (o adicional vira saldo
 // autorizado), autorizar e mandar pra Suprimentos ajustar a tabela, ou recusar.
+
+// Botao do laudo que leva a transportadora ao portal de comprovantes de entrega.
+const botaoPortalEntrega = (url, rotulo = 'Responder e enviar comprovantes de entrega') => (url
+  ? `<p style="margin:10px 0 0"><a href="${escapeHtmlAuditoria(url)}" target="_blank" rel="noopener" style="display:inline-block;padding:10px 16px;background:#b91c1c;color:#fff;border-radius:8px;font-weight:700;text-decoration:none;font-size:13px">${escapeHtmlAuditoria(rotulo)}</a></p>`
+  : '');
+
+const ROTULO_RESPOSTA_ENTREGA = { ENTREGUE: 'Entregue (comprovante)', NAO_ENTREGUE: 'Nao entregue / devolucao', EM_ANALISE: 'Em analise' };
+
+// Respostas da transportadora (portal de entrega): o auditor confere os comprovantes e
+// aprova (CT-e passa a contar como entregue) ou rejeita (transportadora reenvia).
+function RespostasEntregaFatura({ faturaId, usuarioNome, aoValidar }) {
+  const [respostas, setRespostas] = useState(null);
+  const [erro, setErro] = useState('');
+  const [processando, setProcessando] = useState('');
+  const carregar = async () => setRespostas(await carregarRespostasEntregaFatura(faturaId));
+  useEffect(() => { carregar(); }, [faturaId]);
+
+  const validar = async (resposta, aprovar) => {
+    let observacao = '';
+    if (!aprovar) {
+      observacao = window.prompt('Motivo da rejeicao (a transportadora vera ao reenviar):') || '';
+      if (!observacao.trim()) return;
+    }
+    setProcessando(resposta.id);
+    setErro('');
+    try {
+      await validarRespostaEntrega({ id: resposta.id, aprovar, observacao, usuarioNome });
+      await carregar();
+      aoValidar?.();
+    } catch (error) {
+      setErro(error.message || String(error));
+    } finally {
+      setProcessando('');
+    }
+  };
+
+  if (!respostas?.length) return null;
+  return (
+    <div className="hint-box compact" style={{ marginBottom: 10 }}>
+      <strong>Respostas da transportadora sobre entregas ({respostas.length})</strong>
+      {erro && <div className="error-text">{erro}</div>}
+      <div className="sim-analise-tabela-wrap" style={{ maxHeight: 280, overflow: 'auto', marginTop: 6 }}>
+        <table className="sim-analise-tabela">
+          <thead><tr><th>CT-e</th><th>Resposta</th><th>Justificativa</th><th>Comprovantes</th><th>Enviado por</th><th>Status</th><th /></tr></thead>
+          <tbody>
+            {respostas.map((r) => (
+              <tr key={r.id}>
+                <td>{r.numero_cte || String(r.chave).slice(-9)}</td>
+                <td>{ROTULO_RESPOSTA_ENTREGA[r.resposta] || r.resposta}</td>
+                <td style={{ fontSize: 12, maxWidth: 280 }}>{r.justificativa || '-'}</td>
+                <td>{(r.anexos || []).length ? (r.anexos || []).map((a) => <div key={a.path}><a href={urlAnexoEntrega(a.path)} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>📎 {a.nome}</a></div>) : '-'}</td>
+                <td style={{ fontSize: 12 }}>{r.respondido_por || '-'}<br />{r.respondido_em ? new Date(r.respondido_em).toLocaleString('pt-BR') : ''}</td>
+                <td>{r.status_validacao === 'APROVADO' ? <strong style={{ color: '#14733b' }}>Aprovada</strong> : r.status_validacao === 'REJEITADO' ? <strong style={{ color: '#9b1111' }}>Rejeitada</strong> : 'Aguardando'}{r.observacao_validacao ? <div style={{ fontSize: 11 }}>{r.observacao_validacao}</div> : null}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  {r.status_validacao === 'PENDENTE' && (
+                    <>
+                      <button type="button" className="btn-primary audit-small-button" disabled={processando === r.id} onClick={() => validar(r, true)} title={r.resposta === 'ENTREGUE' ? 'CT-e passa a contar como entregue' : 'Registra a resposta como conferida'}>Aprovar</button>{' '}
+                      <button type="button" className="btn-secondary audit-small-button" disabled={processando === r.id} onClick={() => validar(r, false)}>Rejeitar</button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 const DECISOES_GESTAO = {
   APROVACAO_GESTAO_CONFIRMOU_DESCONTO: 'Aprovada COM desconto',
   APROVACAO_GESTAO_SEM_DESCONTO: 'Aprovada SEM desconto',
