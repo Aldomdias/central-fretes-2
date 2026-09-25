@@ -333,6 +333,56 @@ export async function buscarReferenciaCtes(chaves = [], { comDetalhes = false, l
   return referencia;
 }
 
+// Corrige no realizado (base dos CT-es) a origem/destino que divergem do
+// tracking (ex.: importacao gravou "VITORIA/SE" com IBGE de Vitoria/ES quando o
+// tracking diz Serra/ES -> Aracaju/SE). O tracking manda; so corrige quando o
+// tracking traz IBGE de origem e destino validos. Depois disso o CT-e pode ser
+// recalculado normalmente.
+export async function corrigirBaseCtesPeloTracking(chaves = []) {
+  const resultado = { corrigidos: [], iguais: 0, semTracking: 0 };
+  const normalizadas = [...new Set((chaves || []).map((c) => String(c || '').replace(/\D/g, '')).filter((c) => c.length >= 40))];
+  if (!isSupabaseConfigured() || !normalizadas.length) return resultado;
+  const client = getSupabaseClient();
+  const dig7 = (v) => String(v || '').replace(/\D/g, '').slice(0, 7);
+  for (let inicio = 0; inicio < normalizadas.length; inicio += 100) {
+    const lote = normalizadas.slice(inicio, inicio + 100);
+    const [{ data: tracking, error: erroTracking }, { data: base, error: erroBase }] = await Promise.all([
+      client.from('tracking_rows').select('chave_cte, cidade_origem, uf_origem, ibge_origem, cidade_destino, uf_destino, ibge_destino').in('chave_cte', lote),
+      client.from('realizado_local_ctes').select('chave_cte, cidade_origem, uf_origem, ibge_origem, cidade_destino, uf_destino, ibge_destino').in('chave_cte', lote),
+    ]);
+    if (erroTracking) throw new Error(`Erro ao consultar o tracking: ${erroTracking.message}`);
+    if (erroBase) throw new Error(`Erro ao consultar a base de CT-es: ${erroBase.message}`);
+    const trackingPorChave = new Map();
+    (tracking || []).forEach((row) => {
+      if (dig7(row.ibge_origem).length !== 7 || dig7(row.ibge_destino).length !== 7) return;
+      if (!trackingPorChave.has(row.chave_cte)) trackingPorChave.set(row.chave_cte, row);
+    });
+    for (const atual of base || []) {
+      const t = trackingPorChave.get(atual.chave_cte);
+      if (!t) { resultado.semTracking += 1; continue; }
+      if (dig7(t.ibge_origem) === dig7(atual.ibge_origem) && dig7(t.ibge_destino) === dig7(atual.ibge_destino)
+        && String(t.uf_origem || '') === String(atual.uf_origem || '') && String(t.uf_destino || '') === String(atual.uf_destino || '')) {
+        resultado.iguais += 1;
+        continue;
+      }
+      const novo = {
+        cidade_origem: t.cidade_origem, uf_origem: t.uf_origem, ibge_origem: dig7(t.ibge_origem),
+        cidade_destino: t.cidade_destino, uf_destino: t.uf_destino, ibge_destino: dig7(t.ibge_destino),
+        chave_rota_ibge: `${dig7(t.ibge_origem)}-${dig7(t.ibge_destino)}`,
+        updated_at: new Date().toISOString(),
+      };
+      const { error } = await client.from('realizado_local_ctes').update(novo).eq('chave_cte', atual.chave_cte);
+      if (error) throw new Error(`Erro ao corrigir o CT-e na base: ${error.message}`);
+      resultado.corrigidos.push({
+        chave: atual.chave_cte,
+        de: `${atual.cidade_origem}/${atual.uf_origem} → ${atual.cidade_destino}/${atual.uf_destino}`,
+        para: `${t.cidade_origem}/${t.uf_origem} → ${t.cidade_destino}/${t.uf_destino}`,
+      });
+    }
+  }
+  return resultado;
+}
+
 export async function buscarResumoOrigensFaturas(faturaIds = []) {
   const resumo = new Map();
   if (!isSupabaseConfigured() || !faturaIds.length) return resumo;

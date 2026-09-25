@@ -52,6 +52,7 @@ import {
   atualizarFaturaAuditoria,
   atenderSolicitacaoFinanceira,
   buscarReferenciaCtes,
+  corrigirBaseCtesPeloTracking,
   buscarResumoOrigensFaturas,
   carregarPlataformaAuditoria,
   carregarPlataformaAuditoriaFinanceiro,
@@ -2181,7 +2182,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   // auditoria + tabelas cadastradas), salva o resultado em
   // auditoria_cte_resultados e, na sequência, reauditar a fatura pra puxar os
   // valores recém-calculados pros detalhes e agregados da fatura.
-  const recalcular = async () => {
+  const recalcular = async (idsAlvo) => {
     cancelarRecalculoRef.current = false;
     setCancelandoRecalculo(false);
     setRecalculando(true);
@@ -2190,8 +2191,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     try {
       // Se tiver CT-e marcado no checkbox, recalcula só esses; sem marcação,
       // recalcula a fatura inteira.
-      const alvo = selecionados.length
-        ? detalhes.filter((item) => selecionados.includes(item.id))
+      const idsRecalculo = Array.isArray(idsAlvo) ? idsAlvo : selecionados;
+      const alvo = idsRecalculo.length
+        ? detalhes.filter((item) => idsRecalculo.includes(item.id))
         : detalhes;
       const chaves = alvo.map((item) => item.chave_cte).filter(Boolean);
       if (!chaves.length) throw new Error('Esta fatura não possui CT-es com chave para recalcular.');
@@ -2276,7 +2278,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       const referencia = await buscarReferenciaCtes(detalhes.map((item) => item.chave_cte));
       setReferenciaCtes(referencia);
       setProgressoRecalculo({ etapa: 'concluido', carregados: 1, total: 1 });
-      const escopo = selecionados.length ? `${selecionados.length} CT-e(s) selecionado(s)` : 'todos os CT-es da fatura';
+      const escopo = idsRecalculo.length ? `${idsRecalculo.length} CT-e(s)` : 'todos os CT-es da fatura';
       setInfoRecalculo(`Recalculado ${escopo}: ${encontrados} encontrado(s) e salvo(s)${naoEncontrados ? `, ${naoEncontrados} não encontrado(s) na base de CT-es.` : '.'}`);
     } catch (error) {
       setErroDetalhes(error.message || String(error));
@@ -2623,6 +2625,31 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     } finally {
       setAtualizandoBase(false);
     }
+  };
+
+  // Corrige origem/destino da base pelo tracking (selecionados, ou os sem
+  // calculo se nada estiver marcado) e ja recalcula esses CT-es.
+  const [corrigindoTracking, setCorrigindoTracking] = useState(false);
+  const corrigirBasePeloTracking = async () => {
+    const alvo = selecionados.length
+      ? detalhes.filter((item) => selecionados.includes(item.id))
+      : detalhes.filter((item) => !(Number(item.calculado_frete || 0) > 0));
+    if (!alvo.length) { setInfoRecalculo('Nenhum CT-e sem cálculo ou selecionado para corrigir.'); return; }
+    setCorrigindoTracking(true);
+    setErroDetalhes('');
+    setInfoRecalculo('');
+    let resumo;
+    try {
+      resumo = await corrigirBaseCtesPeloTracking(alvo.map((item) => item.chave_cte));
+    } catch (error) {
+      setErroDetalhes(error.message || 'Erro ao corrigir a base pelo tracking.');
+      setCorrigindoTracking(false);
+      return;
+    }
+    setCorrigindoTracking(false);
+    const lista = resumo.corrigidos.map((c) => `${c.chave.slice(25, 34)}: ${c.de} → ${c.para}`).slice(0, 5).join(' | ');
+    await recalcular(alvo.map((item) => item.id));
+    setInfoRecalculo(`Base corrigida pelo tracking: ${resumo.corrigidos.length} CT-e(s) corrigido(s), ${resumo.iguais} já estavam iguais, ${resumo.semTracking} sem tracking. Recalculados ${alvo.length}.${lista ? ` Ex.: ${lista}` : ''}`);
   };
 
   const ctesNaBase = detalhes.filter((item) =>
@@ -3085,6 +3112,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <span>{selecionados.length} CT-e(s) selecionado(s)</span>
         <button className="btn-primary" disabled={recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={recalcular} title={selecionados.length ? 'Recalcula só os CT-es selecionados' : 'Recalcula todos os CT-es da fatura'}>
           {recalculando ? 'Recalculando...' : selecionados.length ? `Recalcular selecionados (${selecionados.length})` : 'Recalcular CT-es'}
+        </button>
+        <button className="btn-secondary" disabled={corrigindoTracking || atualizandoBase || recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={corrigirBasePeloTracking} title="Compara origem/destino do CT-e na base com o tracking, corrige o que divergir e recalcula os CT-es selecionados (ou os sem cálculo)">
+          {corrigindoTracking ? 'Corrigindo...' : selecionados.length ? `Corrigir base (tracking) (${selecionados.length})` : 'Corrigir base (tracking)'}
         </button>
         <button className="btn-secondary" disabled={atualizandoBase || recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={atualizarDaBase} title="Relê da base já calculada os CT-es selecionados (ou os 'Fora da base'), sem recalcular">
           {atualizandoBase ? 'Buscando...' : selecionados.length ? `Atualizar da base (${selecionados.length})` : 'Atualizar da base'}
