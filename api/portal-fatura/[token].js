@@ -37,6 +37,13 @@ function dataBr(valor) {
   return ano && mes && dia ? `${dia}/${mes}/${ano}` : String(valor);
 }
 
+async function carregarDivergencias(supabase, faturaId) {
+  try {
+    const { data } = await supabase.from('fatura_cte_divergencias').select('*').eq('fatura_id', faturaId).order('numero_cte');
+    return data || [];
+  } catch { return []; }
+}
+
 function paginaErro(titulo, detalhe) {
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -58,7 +65,47 @@ async function carregarFatura(supabase, token) {
   return { fatura };
 }
 
-function paginaPortalFatura({ fatura, enviado, acaoEnviada }) {
+function formCtes(divergencias) {
+  const linhas = divergencias.map((d, i) => {
+    const respondido = d.resposta;
+    return `<tr>
+      <td><strong>${esc(d.numero_cte || String(d.chave).slice(-9))}</strong><div class="ch">${esc(d.chave)}</div>
+        <input type="hidden" name="id_${i}" value="${esc(d.id)}"></td>
+      <td>${dinheiro(d.valor_cobrado)}</td>
+      <td>${dinheiro(d.valor_calculado)}</td>
+      <td class="destaque">${dinheiro(d.diferenca)}</td>
+      <td>
+        <label class="op"><input type="radio" name="resp_${i}" value="CONCORDO"${respondido === 'CONCORDO' ? ' checked' : ''} onclick="marcar(${i})"> Concordo</label>
+        <label class="op"><input type="radio" name="resp_${i}" value="NAO_CONCORDO"${respondido === 'NAO_CONCORDO' ? ' checked' : ''} onclick="marcar(${i})"> Não concordo</label>
+        <div id="desc_box_${i}" class="cx">Desconto devido (R$): <input type="text" name="desc_${i}" id="desc_${i}" value="${esc(respondido === 'CONCORDO' && d.valor_desconto != null ? Number(d.valor_desconto).toFixed(2) : Number(d.diferenca).toFixed(2))}" data-max="${Number(d.diferenca).toFixed(2)}" inputmode="decimal"></div>
+        <div id="just_box_${i}" class="cx"><input type="text" name="just_${i}" id="just_${i}" placeholder="Motivo (obrigatório se não concorda)" value="${esc(d.justificativa || '')}"></div>
+      </td></tr>`;
+  }).join('');
+  return `<form method="POST" id="frmCtes">
+    <div class="quem">
+      <label for="respondido_por">Quem está respondendo (nome e e-mail)</label>
+      <input type="text" id="respondido_por" name="respondido_por" placeholder="Nome — email@transportadora.com.br">
+    </div>
+    <p class="dica"><b>${divergencias.length} CT-e(s) com cobrança acima do calculado.</b> Para cada um, informe se concorda (e o desconto devido) ou não concorda (e o motivo).</p>
+    <p><button type="button" class="sec" onclick="todos()">Concordo com todos (desconto = diferença)</button></p>
+    <div class="tw"><table class="ctes"><thead><tr><th>CT-e</th><th>Cobrado</th><th>Calculado</th><th>Diferença</th><th>Sua resposta</th></tr></thead><tbody>${linhas}</tbody></table></div>
+    <input type="hidden" name="acao" value="responder_ctes">
+    <input type="hidden" name="total" value="${divergencias.length}">
+    <button type="submit" onclick="return validarCtes()">Enviar respostas</button>
+  </form>
+  <script>
+  function marcar(i){var r=document.querySelector('input[name=resp_'+i+']:checked');var c=r&&r.value==='CONCORDO';document.getElementById('desc_box_'+i).style.display=c?'block':'none';document.getElementById('just_box_'+i).style.display=r?'block':'none';}
+  function todos(){var n=Number(document.querySelector('input[name=total]').value);for(var i=0;i<n;i++){var c=document.querySelector('input[name=resp_'+i+'][value=CONCORDO]');c.checked=true;var d=document.getElementById('desc_'+i);d.value=d.getAttribute('data-max');marcar(i);}}
+  function validarCtes(){var q=document.getElementById('respondido_por');if(!q.value.trim()){q.focus();alert('Informe quem está respondendo.');return false}
+    var n=Number(document.querySelector('input[name=total]').value);
+    for(var i=0;i<n;i++){var r=document.querySelector('input[name=resp_'+i+']:checked');if(!r){alert('Responda todos os CT-es (falta o CT-e da linha '+(i+1)+').');return false}
+      if(r.value==='NAO_CONCORDO'&&!document.getElementById('just_'+i).value.trim()){document.getElementById('just_'+i).focus();alert('Informe o motivo do CT-e da linha '+(i+1)+'.');return false}}
+    return true}
+  for(var k=0;k<${divergencias.length};k++)marcar(k);
+  </script>`;
+}
+
+function paginaPortalFatura({ fatura, enviado, acaoEnviada, divergencias = [] }) {
   const saldo = Math.max(Number(fatura.diferenca || 0), 0);
   const jaAprovada = fatura.confirmacao_transportador_status === 'APROVADO';
   const contestada = fatura.confirmacao_transportador_status === 'CONTESTADO';
@@ -76,7 +123,7 @@ function paginaPortalFatura({ fatura, enviado, acaoEnviada }) {
 <title>Confirmação de fatura — ${esc(fatura.transportadora || 'Transportadora')}</title>
 <style>
 body{margin:0;background:#eef3f9;color:#0f172a;font-family:Arial,Helvetica,sans-serif}
-.page{max-width:640px;margin:24px auto;background:#fff;border:1px solid #dbe3ef;border-radius:14px;overflow:hidden}
+.page{max-width:900px;margin:24px auto;background:#fff;border:1px solid #dbe3ef;border-radius:14px;overflow:hidden}
 header{padding:26px 30px;background:#06183d;color:#fff}
 header h1{margin:0 0 6px;font-size:22px}header p{margin:3px 0;color:#cbd5e1;font-size:14px}
 .resumo{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;padding:18px 30px;background:#f8fafc}
@@ -89,6 +136,7 @@ textarea{box-sizing:border-box;width:100%;padding:10px;border:1px solid #cbd5e1;
 button.recusar{background:#b45309}button.recusar:hover{background:#92400e}.ou{text-align:center;color:#64748b;font-size:12px;margin:16px 0 10px}.contestar-box{padding:14px;border:1px solid #fcd34d;border-radius:10px;background:#fffbeb}
 .ok{margin:0 30px 16px;padding:14px;background:#dcfce7;border:1px solid #86efac;border-radius:9px;color:#065f46;font-weight:700}
 form{padding:0 30px 26px}
+.tw{overflow-x:auto;margin:10px 0 16px}.ctes{width:100%;border-collapse:collapse;font-size:13px}.ctes th,.ctes td{border-bottom:1px solid #e2e8f0;padding:8px;text-align:left;vertical-align:top}.ctes th{background:#f1f5f9}.ch{font-size:10px;color:#94a3b8;word-break:break-all}.op{display:block;margin:2px 0;font-size:13px}.cx{display:none;margin-top:6px;font-size:12px}.cx input{padding:6px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;width:100%;box-sizing:border-box}.dica{font-size:13px;color:#334155}button.sec{background:#475569;width:auto;padding:9px 14px;font-size:13px}
 .quem{margin-bottom:14px}
 .quem label{display:block;font-size:12px;color:#64748b;margin-bottom:4px}
 .quem input{box-sizing:border-box;width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px}
@@ -115,7 +163,8 @@ footer{padding:16px 30px;color:#64748b;font-size:12px;border-top:1px solid #e2e8
       ? `Identificamos cobrança a maior de <b>${dinheiro(saldo)}</b> nesta fatura em relação ao valor calculado pela auditoria. Ao confirmar, você concorda que esse desconto seja aplicado no pagamento.`
       : 'Esta fatura já foi auditada e o valor calculado bate com o valor cobrado. Ao confirmar, você reconhece a fatura para seguirmos com o pagamento.'}</p>
   </div>
-  ${!jaAprovada ? `<form method="POST">
+  ${!jaAprovada && divergencias.length ? formCtes(divergencias) : ''}
+  ${!jaAprovada && !divergencias.length ? `<form method="POST">
     <div class="quem">
       <label for="respondido_por">Quem está respondendo (nome e e-mail)</label>
       <input type="text" id="respondido_por" name="respondido_por" placeholder="Nome — email@transportadora.com.br">
@@ -175,17 +224,61 @@ export default async function handler(req, res) {
 
     if (req.method === 'GET') {
       res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8');
-      return res.send(paginaPortalFatura({ fatura: contexto.fatura, enviado: false }));
+      return res.send(paginaPortalFatura({ fatura: contexto.fatura, enviado: false, divergencias: await carregarDivergencias(supabase, contexto.fatura.id) }));
     }
 
     if (req.method === 'POST') {
       const { fatura } = contexto;
       const corpo = lerCorpo(req);
-      const acao = corpo.acao === 'contestar' ? 'contestar' : 'confirmar';
+      const acao = ['contestar', 'responder_ctes'].includes(corpo.acao) ? corpo.acao : 'confirmar';
       const respondidoPor = String(corpo.respondido_por || '').slice(0, 200) || null;
       const agora = new Date().toISOString();
       if (fatura.confirmacao_transportador_status !== 'APROVADO') {
-        if (acao === 'contestar') {
+        if (acao === 'responder_ctes') {
+          const divergencias = await carregarDivergencias(supabase, fatura.id);
+          const porId = new Map(divergencias.map((d) => [String(d.id), d]));
+          const total = Math.min(Number(corpo.total) || 0, divergencias.length);
+          const respostas = [];
+          for (let i = 0; i < total; i += 1) {
+            const d = porId.get(String(corpo[`id_${i}`] || ''));
+            const resposta = corpo[`resp_${i}`];
+            if (!d || !['CONCORDO', 'NAO_CONCORDO'].includes(resposta)) continue;
+            const justificativa = String(corpo[`just_${i}`] || '').trim().slice(0, 1000);
+            const bruto = Number(String(corpo[`desc_${i}`] || '0').replace(/\./g, '').replace(',', '.').replace(/[^0-9.\-]/g, '')) || 0;
+            const valorDesconto = resposta === 'CONCORDO' ? Math.min(Math.max(bruto, 0), Number(d.diferenca || 0)) : null;
+            if (resposta === 'NAO_CONCORDO' && !justificativa) continue;
+            respostas.push({ d, resposta, justificativa: justificativa || null, valorDesconto });
+          }
+          if (!respostas.length || respostas.length < divergencias.length) {
+            res.status(400).setHeader('Content-Type', 'text/html; charset=utf-8');
+            return res.send(paginaErro('Respostas incompletas', 'Responda todos os CT-es (e o motivo dos que não concorda) e volte para tentar novamente.'));
+          }
+          for (const r of respostas) {
+            const { error: erroResp } = await supabase.from('fatura_cte_divergencias').update({
+              resposta: r.resposta, valor_desconto: r.valorDesconto, justificativa: r.justificativa, respondido_por: respondidoPor, respondido_em: agora,
+            }).eq('id', r.d.id);
+            if (erroResp) throw erroResp;
+          }
+          const concordam = respostas.filter((r) => r.resposta === 'CONCORDO');
+          const discordam = respostas.filter((r) => r.resposta === 'NAO_CONCORDO');
+          const totalDesconto = concordam.reduce((acc, r) => acc + Number(r.valorDesconto || 0), 0);
+          const resumoTxt = `${concordam.length} CT-e(s) com desconto reconhecido de ${dinheiro(totalDesconto)}; ${discordam.length} CT-e(s) contestado(s)${discordam.length ? ': ' + discordam.map((r) => `${r.d.numero_cte || r.d.chave} (${r.justificativa})`).join(' | ') : ''}.`;
+          const { error: erroFat } = await supabase.from('faturas').update({
+            confirmacao_transportador_status: discordam.length ? 'CONTESTADO' : 'APROVADO',
+            confirmacao_transportador_em: agora,
+            confirmacao_transportador_por: respondidoPor,
+            confirmacao_transportador_observacao: resumoTxt,
+            updated_at: agora,
+          }).eq('id', fatura.id);
+          if (erroFat) throw erroFat;
+          await supabase.from('auditoria_fatura_historico').insert({
+            fatura_id: fatura.id,
+            created_at: agora,
+            acao: discordam.length ? 'CONTESTACAO_TRANSPORTADOR_PORTAL' : 'CONFIRMACAO_TRANSPORTADOR_PORTAL',
+            descricao: `Transportador respondeu CT-e a CT-e pelo link de conferência${respondidoPor ? ` (${respondidoPor})` : ''}. ${resumoTxt}`,
+            usuario_nome: respondidoPor || 'Portal do transportador',
+          });
+        } else if (acao === 'contestar') {
           const observacao = String(corpo.observacao || '').trim().slice(0, 4000);
           const evidencias = String(corpo.evidencias || '').trim().slice(0, 4000);
           if (!observacao) {
@@ -235,7 +328,7 @@ export default async function handler(req, res) {
 
       const atualizado = await carregarFatura(supabase, token);
       res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8');
-      return res.send(paginaPortalFatura({ fatura: atualizado.fatura, enviado: true, acaoEnviada: acao }));
+      return res.send(paginaPortalFatura({ fatura: atualizado.fatura, enviado: true, acaoEnviada: acao === 'responder_ctes' && atualizado.fatura.confirmacao_transportador_status === 'CONTESTADO' ? 'contestar' : acao, divergencias: await carregarDivergencias(supabase, fatura.id) }));
     }
 
     res.status(405).setHeader('Content-Type', 'text/html; charset=utf-8');

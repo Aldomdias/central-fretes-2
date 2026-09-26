@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { carregarRespostasEntregaFatura, salvarPendenciasEntrega, urlAnexoEntrega, urlPortalEntrega, validarRespostaEntrega } from '../services/entregaPortalService';
+import { carregarDivergenciasFatura, ctesCobrancaAcima, salvarDivergenciasFatura } from '../services/divergenciaPortalService';
 import { buscarStatusEntregaCtes, chaveEntregaRegistro, ROTULO_ENTREGA, STATUS_ENTREGA } from '../services/auditoriaEntregaCteService';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
@@ -2408,6 +2409,10 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <tr id="${detalheId}" class="detail-row"><td colspan="9">${detalhesCalculoHtmlFatura(item, { masked, calculadoPublico, diffPublico, descontoSemTabela })}</td></tr>`;
     }).join('');
     const semEntrega = entregaCtes ? linhas.filter((item) => entregaCtes.get(chaveEntregaRegistro(item))?.status !== STATUS_ENTREGA.ENTREGUE) : [];
+    // CT-es com cobranca acima (os do card): o portal "Confirmar fatura" lista pra ela responder um a um.
+    if (transportador && linkConfirmacao) {
+      await salvarDivergenciasFatura(fatura, ctesCobrancaAcima(linhasParaResumo, (dif) => dentroDaToleranciaAuditoria(dif, toleranciaLaudo)));
+    }
     const linkEntrega = transportador ? urlPortalEntrega(linkConfirmacao) : '';
     if (linkEntrega && semEntrega.length) {
       await salvarPendenciasEntrega(fatura, semEntrega.map((item) => ({ ...item, entrega_status: entregaCtes.get(chaveEntregaRegistro(item))?.status })));
@@ -2750,6 +2755,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
           </div>
         );
       })()}
+      <RespostasDivergenciaFatura faturaId={fatura.id} />
       <RespostasEntregaFatura
         faturaId={fatura.id}
         usuarioNome={sessao?.nome || sessao?.email || ''}
@@ -4973,6 +4979,13 @@ ${portaisLaudo.length ? `
         ['Total a descontar', dinheiro(resumoGeral.totalDescontar)],
         ['Sem entrega', semEntregaGeral.length],
       ];
+      if (laudoTransportador) {
+        for (const bloco of blocos) {
+          if (!bloco.linkConfirmacao) continue;
+          const mascarados = aplicarMascaraLaudoTransportador(bloco.detalhes, opts, toleranciaLaudo);
+          await salvarDivergenciasFatura(bloco.fatura, ctesCobrancaAcima(mascarados, (dif) => dentroDaToleranciaAuditoria(dif, toleranciaLaudo)));
+        }
+      }
       const portaisEntregaLote = [];
       if (laudoTransportador && entregaCtesLote) {
         for (const bloco of blocos) {
@@ -7109,6 +7122,40 @@ function RespostasEntregaFatura({ faturaId, usuarioNome, aoValidar }) {
                     </>
                   )}
                 </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Respostas da transportadora no portal "Confirmar fatura": por CT-e com cobranca acima,
+// concordo (com o desconto que ela reconhece) ou nao concordo (com motivo).
+function RespostasDivergenciaFatura({ faturaId }) {
+  const [linhas, setLinhas] = useState(null);
+  useEffect(() => { let ativo = true; carregarDivergenciasFatura(faturaId).then((r) => { if (ativo) setLinhas(r); }); return () => { ativo = false; }; }, [faturaId]);
+  const respondidas = (linhas || []).filter((r) => r.resposta);
+  if (!respondidas.length) return null;
+  const totalDesconto = respondidas.filter((r) => r.resposta === 'CONCORDO').reduce((acc, r) => acc + Number(r.valor_desconto || 0), 0);
+  return (
+    <div className="hint-box compact" style={{ marginBottom: 10 }}>
+      <strong>Respostas da transportadora sobre cobranca acima ({respondidas.length} de {linhas.length} CT-es) — desconto reconhecido {dinheiro(totalDesconto)}</strong>
+      <div className="sim-analise-tabela-wrap" style={{ maxHeight: 280, overflow: 'auto', marginTop: 6 }}>
+        <table className="sim-analise-tabela">
+          <thead><tr><th>CT-e</th><th>Cobrado</th><th>Calculado</th><th>Diferenca</th><th>Resposta</th><th>Desconto</th><th>Motivo</th><th>Enviado por</th></tr></thead>
+          <tbody>
+            {respondidas.map((r) => (
+              <tr key={r.id}>
+                <td>{r.numero_cte || String(r.chave).slice(-9)}</td>
+                <td>{dinheiro(r.valor_cobrado)}</td>
+                <td>{dinheiro(r.valor_calculado)}</td>
+                <td>{dinheiro(r.diferenca)}</td>
+                <td>{r.resposta === 'CONCORDO' ? <strong style={{ color: '#14733b' }}>Concorda</strong> : <strong style={{ color: '#9b1111' }}>Nao concorda</strong>}</td>
+                <td>{r.resposta === 'CONCORDO' ? dinheiro(r.valor_desconto) : '-'}</td>
+                <td style={{ fontSize: 12, maxWidth: 280 }}>{r.justificativa || '-'}</td>
+                <td style={{ fontSize: 12 }}>{r.respondido_por || '-'}<br />{r.respondido_em ? new Date(r.respondido_em).toLocaleString('pt-BR') : ''}</td>
               </tr>
             ))}
           </tbody>
