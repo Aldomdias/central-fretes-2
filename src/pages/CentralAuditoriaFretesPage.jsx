@@ -74,6 +74,7 @@ import {
   registrarHistoricoCarteiraAuditoria,
   listarHistoricoCarteiraAuditoria,
   gerarLinkConfirmacaoFatura,
+  atribuirAuditorEmLote,
 } from '../services/auditoriaFretesService';
 import {
   buscarCtesPorIdentificadores,
@@ -86,11 +87,11 @@ import {
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { listarUsuariosSupabase } from '../services/usuariosSupabaseService';
 import { getSupabaseClient } from '../lib/supabaseClient';
-import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
+import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora, salvarVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { buscarTrackingPorChaveNfeManual } from '../services/trackingSupabaseService';
 import { consultarMunicipiosIbge } from '../services/ibgeService';
 import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
-import { autorizarPelaGestao, carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarAnexosAutorizacao, enviarParaAutorizacao, enviarParaSuprimentos } from '../services/transporteAutorizacoesService';
+import { autorizarPelaGestao, normalizarCanalAutorizacao, carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarAnexosAutorizacao, enviarParaAutorizacao, enviarParaSuprimentos } from '../services/transporteAutorizacoesService';
 import AnaliseFreteTabela from '../components/AnaliseFreteTabela';
 import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
 
@@ -1110,6 +1111,8 @@ function Dashboard({ state }) {
 }
 
 const JANELA_VENCIMENTO_OPCOES = [7, 10, 15, 20, 30];
+const A_VENCER_ALERTA_DIAS = 10;
+const ATRASO_MAX_ALERTA_DIAS = 60; // atrasadas: so ate 2 meses para tras
 // "Lancada"/"paga" nao e o campo status (RECEBIDA/COM_DIVERGENCIA/...) — e o
 // status de PAGAMENTO (situacaoPagamentoFatura, mesmo usado na coluna
 // "Pagamento" da lista de faturas), que depende de lancamento_financeiro/
@@ -1856,6 +1859,13 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     const temSemCalculo = destino === 'TRANSPORTE' && detalhes.some((d) => itens.some((i) => i.chave_cte === d.chave_cte) && semCalculoAmd(d));
     if (temSemCalculo && String(justificativa).trim().length < 30) { setModalSuprimentos((prev) => ({ ...prev, erro: `Ha CT-e sem calculo (cotacao): justifique o caso (${String(justificativa).trim().length}/30 caracteres).` })); return; }
     if (suprimentos && !(modalSuprimentos.anexos || []).length) { setModalSuprimentos((prev) => ({ ...prev, erro: 'Anexe ao menos um arquivo (tabela, lista de TDE ou documento de apoio) para compor a solicitacao.' })); return; }
+    const perguntaComplementar = destino === 'TRANSPORTE' && itens.some((i) => normalizarCanalAutorizacao(i.canal) === 'ATACADO');
+    const complementar = perguntaComplementar && modalSuprimentos.complementar === 'SIM';
+    if (perguntaComplementar && !modalSuprimentos.complementar) { setModalSuprimentos((prev) => ({ ...prev, erro: 'Responda se e CT-e complementar (Sim ou Nao).' })); return; }
+    if (complementar) {
+      const semNf = itens.filter((i) => String(i.chave_nfe || '').replace(/\D/g, '').length !== 44);
+      if (semNf.length) { setModalSuprimentos((prev) => ({ ...prev, erro: `CT-e complementar exige a chave da NF (44 digitos): faltam ${semNf.length} CT-e(s).` })); return; }
+    }
     setModalSuprimentos((prev) => ({ ...prev, enviando: true, erro: '' }));
     try {
       const usuarioNome = sessao?.nome || sessao?.email || '';
@@ -1864,7 +1874,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         const { enviados, protocolo } = await enviarParaSuprimentos(itens, { tipoAjuste, justificativa, usuarioNome, usuarioEmail: sessao?.email || '', anexos });
         setMensagemLiberacao(`✓ ${enviados} CT-e(s) enviado(s) para Suprimentos${protocolo ? ` — chamado AMD ${protocolo} aberto` : ' (chamado AMD nao foi criado, verifique a Central de Solicitacoes)'}.`);
       } else {
-        const { enviados, jaNaFila } = await enviarParaAutorizacao(itens.map((item) => ({ ...item, observacao: String(justificativa).trim() })), usuarioNome);
+        const { enviados, jaNaFila } = await enviarParaAutorizacao(itens.map((item) => ({ ...item, observacao: `${complementar ? '[CT-e COMPLEMENTAR] ' : ''}${String(justificativa).trim()}`.trim() })), usuarioNome);
         setMensagemLiberacao(`✓ ${enviados} CT-e(s) enviado(s) para autorizacao do transporte${jaNaFila ? ` (${jaNaFila} ja estavam na fila)` : ''}.`);
       }
       setModalSuprimentos(null);
@@ -3167,6 +3177,29 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                 ? 'Abre um chamado AMD na Central de Solicitacoes e coloca os CT-es na fila de Suprimentos. Quem aprovar o valor assume o chamado.'
                 : 'Coloca os CT-es na fila do responsavel do transporte do canal (B2C/Atacado) autorizar o saldo.'} Confira a analise abaixo:</p>
               <AnaliseFreteTabela itens={modalSuprimentos.itens} />
+              {modalSuprimentos.destino === 'TRANSPORTE' && modalSuprimentos.itens.some((i) => normalizarCanalAutorizacao(i.canal) === 'ATACADO') && (
+                <div className="field">
+                  <strong>E CT-e complementar? *</strong>
+                  <div style={{ display: 'flex', gap: 16, margin: '6px 0' }}>
+                    {[['SIM', 'Sim'], ['NAO', 'Nao']].map(([valor, rotulo]) => (
+                      <label key={valor} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <input type="radio" name="cte-complementar" checked={modalSuprimentos.complementar === valor} onChange={() => setModalSuprimentos((p) => ({ ...p, complementar: valor }))} />{rotulo}
+                      </label>
+                    ))}
+                  </div>
+                  {modalSuprimentos.complementar === 'SIM' && (
+                    <div>
+                      <span className="compact">Anexe a chave da NF (44 digitos) de cada CT-e complementar:</span>
+                      {modalSuprimentos.itens.map((it, idx) => (
+                        <div key={it.chave_cte || idx} style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
+                          <span style={{ fontSize: 11, minWidth: 120 }}>CT-e ...{String(it.chave_cte || '').slice(25, 34)}</span>
+                          <input style={{ flex: 1 }} placeholder="Chave da NF (44 digitos)" value={it.chave_nfe || ''} onChange={(e) => setModalSuprimentos((p) => ({ ...p, itens: p.itens.map((x, j) => (j === idx ? { ...x, chave_nfe: e.target.value.replace(/\D/g, '').slice(0, 44) } : x)) }))} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               {modalSuprimentos.destino === 'SUPRIMENTOS' && (
                 <label className="field">Tipo de ajuste
                   <select value={modalSuprimentos.tipoAjuste} onChange={(e) => setModalSuprimentos((p) => ({ ...p, tipoAjuste: e.target.value }))}>
@@ -3270,8 +3303,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   // Auditor entra ja filtrado nas proprias faturas; gestor/financeiro entram vendo tudo.
   // Vindo do Painel (drill-down), sempre "todas" — senao o filtro de auditor/
   // status clicado la pode nao bater com "minhas faturas" e a lista fica vazia.
-  const [visaoFatura, setVisaoFatura] = useState('todas');
-  const [filtroRapido, setFiltroRapido] = useState('');
+  const [visaoFatura, setVisaoFatura] = useState(() => filtrosIniciais?.visao || 'todas');
+  const [filtroRapido, setFiltroRapido] = useState(() => filtrosIniciais?.filtroRapido || '');
   const [paginaFaturas, setPaginaFaturas] = useState(1);
   const TAM_PAGINA_FATURAS = 100;
   const [somenteAuditadas, setSomenteAuditadas] = useState(false);
@@ -3375,6 +3408,25 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     const meuNome = String(sessao?.nome || '').trim().toLowerCase();
     return (!!meuEmail && emailAuditor === meuEmail) || (!!meuNome && nomeAuditor === meuNome);
   };
+  // Alerta de prazo: (1) nao pagas que vencem nos proximos A_VENCER_ALERTA_DIAS
+  // dias (so as sem lancamento/partida) e (2) vencidas nao pagas ate 2 meses atras
+  // (inclui as ja lancadas aguardando pagamento).
+  const faturaAberta = (fatura) => !ENCERRADOS.has(fatura.status) && !String(fatura.status || '').startsWith('PAGA');
+  const ehAVencerNaoPaga = (fatura) => {
+    if (!faturaAberta(fatura)) return false;
+    const dias = diasAte(fatura.data_vencimento);
+    return dias != null && dias >= 0 && dias <= A_VENCER_ALERTA_DIAS && situacaoPagamentoFatura(fatura) === 'NAO_PAGO';
+  };
+  const ehLancadaAntecipada = (fatura) => {
+    if (!faturaAberta(fatura)) return false;
+    const dias = diasAte(fatura.data_vencimento);
+    return dias != null && dias >= A_VENCER_ALERTA_DIAS && ['LANCADA_FINANCEIRO', 'PARTIDA_LANCADA'].includes(situacaoPagamentoFatura(fatura));
+  };
+  const ehVencidaNaoPaga = (fatura) => {
+    if (!faturaAberta(fatura)) return false;
+    const dias = diasAte(fatura.data_vencimento);
+    return dias != null && dias < 0 && dias >= -ATRASO_MAX_ALERTA_DIAS;
+  };
   const dentroFiltroRapido = (fatura) => {
     if (!filtroRapido) return true;
     if (filtroRapido === 'vencidas') return faixaVencimento(fatura) === 'VENCIDA';
@@ -3382,6 +3434,9 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       const dias = diasAte(fatura.data_vencimento);
       return dias != null && dias >= 0 && dias <= 7 && !ENCERRADOS.has(fatura.status);
     }
+    if (filtroRapido === 'alerta_a_vencer') return ehAVencerNaoPaga(fatura);
+    if (filtroRapido === 'alerta_vencidas') return ehVencidaNaoPaga(fatura);
+    if (filtroRapido === 'alerta_antecipadas') return ehLancadaAntecipada(fatura);
     if (filtroRapido === 'novas') return fatura.status === 'RECEBIDA';
     if (filtroRapido === 'enviadas') return fatura.status === 'ENVIADA_AO_FINANCEIRO';
     if (filtroRapido === 'lancadas') return ['PARTIDA_LANCADA', 'LANCADA_FINANCEIRO'].includes(situacaoPagamentoFatura(fatura));
@@ -3405,6 +3460,23 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     pagas: faturasEscopo.filter((fatura) => ['PAGO', 'PAGO_DIVERGENTE'].includes(situacaoPagamentoFatura(fatura))).length,
     pagasDivergentes: faturasEscopo.filter((fatura) => situacaoPagamentoFatura(fatura) === 'PAGO_DIVERGENTE').length,
   }), [faturasEscopo]);
+  // Alerta fixo com as faturas DO PROPRIO auditor (independe da visao escolhida).
+  const alertaPrazo = useMemo(() => {
+    const meuEmail = String(sessao?.email || '').trim().toLowerCase();
+    const meuNome = String(sessao?.nome || '').trim().toLowerCase();
+    const minhas = state.faturas.filter((fatura) => {
+      const email = String(fatura.auditor_email || '').trim().toLowerCase();
+      const nome = String(fatura.auditor_nome || '').trim().toLowerCase();
+      return (!!meuEmail && email === meuEmail) || (!!meuNome && nome === meuNome);
+    });
+    const soma = (lista) => lista.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
+    const aVencer = minhas.filter(ehAVencerNaoPaga);
+    const vencidas = minhas.filter(ehVencidaNaoPaga);
+    return { aVencer, vencidas, valorAVencer: soma(aVencer), valorVencidas: soma(vencidas) };
+  }, [state.faturas, sessao?.email, sessao?.nome]);
+  // Resumo do gestor: o mesmo alerta, agrupado por auditor (todas as faturas).
+  const ehGestorAlerta = usuarioEhGestorAuditoria(sessao);
+
   // Predicados nomeados (um por filtro) em vez de um && gigante: assim da pra
   // montar as opcoes de cada select considerando os OUTROS filtros ja
   // aplicados (estilo planilha) - ex.: se ja filtrou por Status, o select de
@@ -5821,6 +5893,20 @@ ${portaisLaudo.length ? `
           {visaoFatura === 'minhas' ? 'Mostrando suas faturas.' : visaoFatura === 'sem_auditor' ? 'Mostrando faturas sem auditor definido.' : 'Mostrando todas as faturas.'}
           {' '}Clique em um card para filtrar rápido; clique de novo para tirar o filtro.
         </p>
+        {(alertaPrazo.aVencer.length + alertaPrazo.vencidas.length) > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, margin: '8px 0 12px' }}>
+            <button type="button" onClick={() => { setVisaoFatura(ehGestorAlerta ? 'todas' : 'minhas'); setFiltroRapido('alerta_a_vencer'); }} style={{ flex: '1 1 260px', cursor: 'pointer', textAlign: 'left', font: 'inherit', padding: '12px 14px', borderRadius: 10, border: '1px solid #e67e22', background: '#fff6ea' }}>
+              <strong style={{ color: '#b45309' }}>⏰ A vencer em {A_VENCER_ALERTA_DIAS} dias (não pagas)</strong>
+              <div style={{ fontSize: 26, fontWeight: 700, color: '#e67e22' }}>{alertaPrazo.aVencer.length}</div>
+              <small>{dinheiro(alertaPrazo.valorAVencer)} · clique para ver as faturas</small>
+            </button>
+            <button type="button" onClick={() => { setVisaoFatura(ehGestorAlerta ? 'todas' : 'minhas'); setFiltroRapido('alerta_vencidas'); }} style={{ flex: '1 1 260px', cursor: 'pointer', textAlign: 'left', font: 'inherit', padding: '12px 14px', borderRadius: 10, border: '1px solid #cf2f2f', background: '#fdecec' }}>
+              <strong style={{ color: '#9b1111' }}>⚠ Vencidas e não pagas (últimos 2 meses)</strong>
+              <div style={{ fontSize: 26, fontWeight: 700, color: '#9b1111' }}>{alertaPrazo.vencidas.length}</div>
+              <small>{dinheiro(alertaPrazo.valorVencidas)} · clique para ver as faturas</small>
+            </button>
+          </div>
+        )}
         <div className="summary-strip audit-quick-cards">
           {[
             ['vencidas', 'Vencidas', resumoCards.vencidas, resumoCards.vencidas ? '#9b1111' : '#047857'],
@@ -6365,6 +6451,71 @@ function Gestao({ state, onState }) {
   // (carteira cadastrada com alias, fatura importada com o nome oficial —
   // ver aplicarAtribuicaoComEstado acima). So mexe em faturas SEM auditor
   // definido; quem ja tem auditor fica como esta, pra preservar continuidade.
+  // Casamento por nome com fallbacks seguros: nome exato; sem sufixo de filial
+  // ("RECOLI | SPO", "X - MATRIZ"); e prefixo, so quando aponta pra UMA carteira.
+  const auditorPorNomeTransportadora = (nomeFatura, mapaPorCarteira) => {
+    const nome = resolverNomeTransportadora(nomeFatura);
+    const exato = mapaPorCarteira.get(normalizarNomeTransportadora(nome));
+    if (exato) return exato;
+    const semSufixo = normalizarNomeTransportadora(String(nome || '').split('|')[0].split(' - ')[0]);
+    if (!semSufixo) return null;
+    if (mapaPorCarteira.has(semSufixo)) return mapaPorCarteira.get(semSufixo);
+    const candidatos = new Set();
+    mapaPorCarteira.forEach((dados, chave) => {
+      if (semSufixo.length >= 5 && (semSufixo.startsWith(`${chave} `) || chave.startsWith(`${semSufixo} `))) candidatos.add(dados.auditor_nome);
+    });
+    if (candidatos.size !== 1) return null;
+    const unico = [...candidatos][0];
+    let achado = null;
+    mapaPorCarteira.forEach((dados) => { if (dados.auditor_nome === unico) achado = dados; });
+    return achado;
+  };
+  // Diagnostico: faturas sem auditor agrupadas pelo nome que veio na fatura, pra
+  // ver quais nomes nao casam com nenhuma carteira (e por que a sincronizacao nao pega).
+  const semAuditorPorNome = useMemo(() => {
+    const mapa = new Map();
+    state.faturas.forEach((fatura) => {
+      if (fatura.auditor_nome) return;
+      const nome = fatura.transportadora || '(sem nome)';
+      const atual = mapa.get(nome) || { nome, total: 0, abertas: 0, cnpj: '' };
+      atual.total += 1;
+      if (!ENCERRADOS.has(fatura.status)) atual.abertas += 1;
+      if (!atual.cnpj && fatura.cnpj_transportadora) atual.cnpj = fatura.cnpj_transportadora;
+      mapa.set(nome, atual);
+    });
+    return [...mapa.values()].sort((a, b) => b.abertas - a.abertas || b.total - a.total);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.faturas]);
+  // Correcao manual: escolhe a carteira certa pra um nome de fatura que nao casa.
+  // Grava o vinculo (nome na fatura -> carteira) pra as proximas faturas ja casarem
+  // e atribui o auditor da carteira as faturas sem auditor com esse nome.
+  const [escolhaCarteira, setEscolhaCarteira] = useState({});
+  const [atribuindoNome, setAtribuindoNome] = useState('');
+  const carteirasComAuditor = useMemo(() => carteiras.filter((item) => item.auditor_nome)
+    .sort((a, b) => a.transportadora.localeCompare(b.transportadora, 'pt-BR')), [carteiras]);
+  const atribuirNomeACarteira = async (nomeFatura) => {
+    const carteira = carteirasComAuditor.find((item) => item.transportadora === escolhaCarteira[nomeFatura]);
+    if (!carteira) return;
+    setAtribuindoNome(nomeFatura);
+    setErroAtribuicao('');
+    try {
+      const existentes = await carregarVinculosTransportadoras();
+      await salvarVinculosTransportadoras([...(existentes || []), { nomeCte: nomeFatura, nomeTabela: carteira.transportadora, origem: 'auditoria-carteira' }]);
+      setMapaVinculos(criarMapaVinculosTransportadoras([...(existentes || []), { nomeCte: nomeFatura, nomeTabela: carteira.transportadora }]));
+      const ids = state.faturas.filter((f) => !f.auditor_nome && (f.transportadora || '(sem nome)') === nomeFatura).map((f) => f.id);
+      const resultado = await atribuirAuditorEmLote(state, ids, {
+        auditorNome: carteira.auditor_nome, auditorEmail: carteira.auditor_email || '',
+        descricao: `Nome "${nomeFatura}" vinculado a carteira ${carteira.transportadora} (${carteira.auditor_nome}).`,
+        usuarioNome: carregarSessao()?.nome || 'Gestao',
+      });
+      onState(resultado.state);
+      setResultadoSincronizacao({ corrigidas: resultado.atualizadas, aindaSemCarteira: resultado.state.faturas.filter((f) => !f.auditor_nome).length });
+    } catch (error) {
+      setErroAtribuicao(error.message || 'Erro ao vincular a carteira.');
+    } finally {
+      setAtribuindoNome('');
+    }
+  };
   const [sincronizandoAuditores, setSincronizandoAuditores] = useState(false);
   const [resultadoSincronizacao, setResultadoSincronizacao] = useState(null);
   const sincronizarFaturasSemAuditor = async () => {
@@ -6388,8 +6539,7 @@ function Gestao({ state, onState }) {
       const resolverAuditor = (fatura) => {
         const raizFatura = obterRaizCnpj(fatura.cnpj_transportadora);
         if (raizCnpjValida(raizFatura) && mapaAuditorPorRaizCnpj.has(raizFatura)) return mapaAuditorPorRaizCnpj.get(raizFatura);
-        const chave = normalizarNomeTransportadora(resolverNomeTransportadora(fatura.transportadora));
-        return mapaAuditorPorCarteira.get(chave) || null;
+        return auditorPorNomeTransportadora(fatura.transportadora, mapaAuditorPorCarteira);
       };
       const pendentes = state.faturas.filter((fatura) => !fatura.auditor_nome && resolverAuditor(fatura));
       let estadoAtual = state;
@@ -6534,6 +6684,44 @@ function Gestao({ state, onState }) {
           </p>
         )}
         {erroAtribuicao && <p className="error-text">{erroAtribuicao}</p>}
+        {semAuditorPorNome.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <strong>Faturas sem auditor, por nome da transportadora na fatura</strong>
+            <p style={{ margin: '4px 0 8px', color: '#475569' }}>Mostra o nome exatamente como veio na fatura. Nomes com sufixo (ex.: “| SPO”) ou diferentes do cadastro são os que a sincronização não acha. As primeiras 40, das que têm mais faturas em aberto.</p>
+            <div className="sim-analise-tabela-wrap">
+              <table className="sim-analise-tabela">
+                <thead><tr><th>Nome na fatura</th><th>CNPJ (fatura)</th><th>Em aberto</th><th>Total sem auditor</th><th>Carteira encontrada</th><th>Escolher a carteira certa</th></tr></thead>
+                <tbody>
+                  {semAuditorPorNome.slice(0, 40).map((linha) => {
+                    const chaveNome = normalizarNomeTransportadora(resolverNomeTransportadora(linha.nome));
+                    const carteiraExata = mapaCarteirasExistentes.get(chaveNome);
+                    return (
+                      <tr key={linha.nome}>
+                        <td>{linha.nome}</td>
+                        <td>{linha.cnpj || <span style={{ color: '#9b1111' }}>sem CNPJ</span>}</td>
+                        <td style={{ fontWeight: 700 }}>{linha.abertas}</td>
+                        <td>{linha.total}</td>
+                        <td>{carteiraExata ? (carteiraExata.auditor_nome ? <>{carteiraExata.auditor_nome} <span style={{ color: '#b45309' }}>(clique em Sincronizar)</span></> : <span style={{ color: '#9b1111' }}>carteira existe, sem auditor</span>) : <span style={{ color: '#9b1111' }}>nenhuma carteira com esse nome</span>}</td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <select value={escolhaCarteira[linha.nome] || ''} onChange={(e) => setEscolhaCarteira((atual) => ({ ...atual, [linha.nome]: e.target.value }))} style={{ maxWidth: 260 }}>
+                              <option value="">Selecione a transportadora…</option>
+                              {carteirasComAuditor.map((c) => <option key={c.transportadora} value={c.transportadora}>{c.transportadora} — {c.auditor_nome}</option>)}
+                            </select>
+                            <button type="button" disabled={!escolhaCarteira[linha.nome] || Boolean(atribuindoNome)} onClick={() => atribuirNomeACarteira(linha.nome)}>
+                              {atribuindoNome === linha.nome ? 'Aplicando...' : 'Vincular'}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {semAuditorPorNome.length > 40 && <p style={{ color: '#64748b' }}>+ {semAuditorPorNome.length - 40} nome(s) na fila.</p>}
+          </div>
+        )}
       </div>
       {porAuditor.size > 0 && (
         <div className="table-card">
@@ -7753,13 +7941,14 @@ function SimpleTable({ headers, rows, empty = 'Nenhum registro encontrado.' }) {
   );
 }
 
-export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', embedded = false, onMudarPagina, onAbrirTransportadoras }) {
+export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', embedded = false, onMudarPagina, onAbrirTransportadoras, filtroExterno = null }) {
   const [tab, setTab] = useState(initialTab);
   const [state, setState] = useState(null);
   const [erro, setErro] = useState('');
-  // Vinda do Painel: clicou num status/auditor/etc e quer ver a lista real de
-  // faturas ja filtrada, sem ter que reaplicar os filtros na aba Faturas.
-  const [filtrosIniciaisFaturas, setFiltrosIniciaisFaturas] = useState(null);
+  // Vinda do Painel (ou do aviso de prazo do App): clicou num status/auditor/etc
+  // e quer ver a lista real de faturas ja filtrada, sem reaplicar filtros.
+  const [filtrosIniciaisFaturas, setFiltrosIniciaisFaturas] = useState(filtroExterno);
+  useEffect(() => { if (filtroExterno) { setFiltrosIniciaisFaturas(filtroExterno); setTab('faturas'); } }, [filtroExterno]);
   const irParaFaturasComFiltro = (filtros) => {
     setFiltrosIniciaisFaturas({ chave: Date.now(), ...filtros });
     setTab('faturas');

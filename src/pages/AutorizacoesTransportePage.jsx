@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { carregarSessao } from '../utils/authLocal';
 import {
   analisarFrete,
@@ -7,6 +8,9 @@ import {
   decidirAutorizacao,
   desativarAutorizacao,
   formatarPct,
+  salvarChaveNfe,
+  fonteAutorizacao,
+  importarAprovacoesPlanilha,
   lancarSaldoAntecipado,
   listarAutorizacoes,
   transferirParaTransporte,
@@ -31,6 +35,9 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
   const [justificativaMassa, setJustificativaMassa] = useState('');
   const [canaisReais, setCanaisReais] = useState(new Map());
   const [destinoTransferencia, setDestinoTransferencia] = useState('');
+  const [filtroFonte, setFiltroFonte] = useState('');
+  const [importando, setImportando] = useState('');
+  const arquivoRef = useRef(null);
   const [form, setForm] = useState({ chave: '', pedido: '', valor: '', observacao: '' });
 
   // Recarrega a fila e, de quebra, busca no tracking o pedido (Marketplace) e a
@@ -42,7 +49,8 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
       let lista = await listarAutorizacoes({ canal });
       const preenchidos = await completarVinculosPendentes(lista.filter((item) => item.status === 'PENDENTE'));
       if (preenchidos) lista = await listarAutorizacoes({ canal });
-      setItens(lista);
+      // Aprovacao de Gestao fica no estado da gestao: continua valendo na auditoria, mas nao aparece aqui.
+      setItens(canal === 'SUPRIMENTOS' ? lista : lista.filter((item) => fonteAutorizacao(item) !== 'GESTAO'));
       setCanaisReais(await buscarCanalPorCte(lista.filter((item) => item.status === 'PENDENTE').map((item) => item.chave_cte)));
       if (avisar) setMensagem(preenchidos ? `${preenchidos} item(ns) atualizado(s) com pedido/chave da NF.` : 'Fila atualizada — nada novo pra completar.');
     } catch (error) {
@@ -163,6 +171,38 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
     }
   };
 
+  const importarPlanilha = async (evento) => {
+    const arquivo = evento.target.files?.[0];
+    evento.target.value = '';
+    if (!arquivo) return;
+    setErro(''); setMensagem(''); setImportando('Lendo planilha...');
+    try {
+      const wb = XLSX.read(await arquivo.arrayBuffer(), { type: 'array' });
+      const linhas = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '', raw: false });
+      const r = await importarAprovacoesPlanilha(linhas, { canal, usuarioNome, onProgress: (feito, total) => setImportando('Importando ' + feito + ' de ' + total + '...') });
+      const partes = [r.importadas + ' importada(s)'];
+      if (r.atualizadas) partes.push(r.atualizadas + ' da fila decidida(s)');
+      if (r.jaExistiam) partes.push(r.jaExistiam + ' ja existiam');
+      if (r.foraDoCanal) partes.push(r.foraDoCanal + ' de outro canal');
+      if (r.pendentes) partes.push(r.pendentes + ' sem decisao');
+      if (r.semVinculo.length) partes.push(r.semVinculo.length + ' sem CT-e/NF na base (' + r.semVinculo.slice(0, 5).join('; ') + (r.semVinculo.length > 5 ? '...' : '') + ')');
+      if (r.erros.length) partes.push(r.erros.length + ' com erro (' + r.erros.slice(0, 2).join('; ') + ')');
+      setMensagem('Importacao: ' + partes.join(', ') + '.');
+      await carregar();
+    } catch (error) {
+      setErro('Falha ao importar: ' + (error.message || error));
+    } finally {
+      setImportando('');
+    }
+  };
+
+  const informarChaveNfe = async (item) => {
+    const chave = String(campo(item.id, 'chaveNfe', '')).replace(/\D/g, '');
+    if (chave.length !== 44) { setMensagem('A chave da NF precisa ter 44 digitos.'); return; }
+    setProcessando('nfe-' + item.id);
+    try { await salvarChaveNfe(item, chave); setMensagem('Chave da NF salva.'); await carregar(); } catch (error) { setMensagem(error.message || String(error)); } finally { setProcessando(''); }
+  };
+
   const remover = async (item) => {
     if (!window.confirm('Remover esta autorizacao? O saldo deixa de valer na auditoria.')) return;
     try { await desativarAutorizacao(item.id); await carregar(); } catch (error) { setMensagem(error.message || String(error)); }
@@ -181,6 +221,8 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
         {[['fila', `Fila (${pendentes.length})`], ['lancar', 'Lancar saldo autorizado'], ['historico', `Historico (${decididas.length})`]].map(([id, label]) => (
           <button key={id} className={`toggle-btn ${aba === id ? 'active' : ''}`} onClick={() => setAba(id)}>{label}</button>
         ))}
+        <input ref={arquivoRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={importarPlanilha} />
+        <button className="btn-secondary" onClick={() => arquivoRef.current?.click()} disabled={Boolean(importando)} title="Importa a planilha de aprovacoes (custos-aprovado): NF, OP, Custo, Status...">{importando || '⬆ Importar aprovacoes (planilha)'}</button>
         <button className="btn-secondary" onClick={() => carregar(true)} disabled={carregando} title="Recarrega a fila e busca o pedido e a chave da NF que faltarem">{carregando ? 'Atualizando...' : '↻ Atualizar e buscar pedido/NF'}</button>
       </div>
       <div className="summary-strip audit-summary-grid">
@@ -221,7 +263,12 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   <td><strong>{canaisReais.get(String(item.chave_cte || '').replace(/\D/g, '')) || (item.canal === 'SUPRIMENTOS' ? '-' : rotulo(item.canal))}</strong></td>
                   {canal === 'SUPRIMENTOS' && <td>{item.protocolo_amd || '-'}<br /><small>{item.tipo_ajuste || ''}</small>{(item.anexos || []).map((a) => <div key={a.path}><a href={a.url} target="_blank" rel="noreferrer" style={{ fontSize: 11 }}>📎 {a.nome}</a></div>)}</td>}
                   <td style={{ fontSize: 11 }}>{item.chave_cte || '-'}</td>
-                  <td style={{ fontSize: 11 }}>{item.chave_nfe || '-'}</td>
+                  <td style={{ fontSize: 11 }}>{item.chave_nfe || (
+                    <div style={{ display: 'flex', gap: 4, minWidth: 190 }}>
+                      <input style={{ width: 150, fontSize: 11 }} placeholder="Chave NF (44 dig.)" value={campo(item.id, 'chaveNfe', '')} onChange={(e) => editar(item.id, 'chaveNfe', e.target.value.replace(/\D/g, '').slice(0, 44))} />
+                      <button className="btn-secondary" disabled={processando === 'nfe-' + item.id} onClick={() => informarChaveNfe(item)}>Salvar</button>
+                    </div>
+                  )}</td>
                   <td>{item.cidade_origem || '-'} → {item.cidade_destino || '-'}</td>
                   <td>{item.transportadora || '-'}</td>
                   <td>{Number(item.valor_nf) > 0 ? dinheiro(item.valor_nf) : '-'}</td>
@@ -261,14 +308,23 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
       )}
 
       {aba === 'historico' && (
-        <div className="table-card"><div className="sim-analise-tabela-wrap">
+        <div className="table-card">
+          <div style={{ padding: '8px 0' }}>
+            <select value={filtroFonte} onChange={(e) => setFiltroFonte(e.target.value)}>
+              <option value="">Todas as fontes</option>
+              <option value="IMPORTADO">Importado (planilha atacado)</option>
+              <option value="LANCADO">Lancado pelo gestor</option>
+              <option value="AUDITORIA">Fila da auditoria</option>
+            </select>
+          </div>
+          <div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th>Decidido em</th><th>Origem</th><th>Status</th><th>Pedido</th><th>Chave CT-e</th><th>Chave NF</th><th>Valor autorizado</th><th>Observacao</th><th>Por</th><th /></tr></thead>
+            <thead><tr><th>Decidido em</th><th>Fonte</th><th>Status</th><th>Pedido</th><th>Chave CT-e</th><th>Chave NF</th><th>Valor autorizado</th><th>Observacao</th><th>Por</th><th /></tr></thead>
             <tbody>
-              {decididas.map((item) => (
+              {decididas.filter((item) => !filtroFonte || fonteAutorizacao(item) === filtroFonte).map((item) => (
                 <tr key={item.id}>
                   <td>{dataHora(item.decidido_em)}</td>
-                  <td>{item.origem === 'GESTOR' ? 'Lancado pelo gestor' : 'Fila da auditoria'}</td>
+                  <td>{{ IMPORTADO: 'Importado (planilha atacado)', GESTAO: 'Aprovacao de Gestao', LANCADO: 'Lancado pelo gestor', AUDITORIA: 'Fila da auditoria' }[fonteAutorizacao(item)]}</td>
                   <td>{item.status}</td>
                   <td>{item.numero_pedido || '-'}</td>
                   <td style={{ fontSize: 11 }}>{item.chave_cte || '-'}</td>

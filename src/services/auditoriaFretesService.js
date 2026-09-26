@@ -147,6 +147,9 @@ async function safeUpsert(table, payload) {
       ? CAMPOS_OPCIONAIS_FATURA.find((campo) => mensagem.includes(campo))
       : '';
     const campoParaRemover = campoInexistente || campoOpcionalFatura;
+    // Coluna do link de confirmacao ausente (migration nao aplicada): nao
+    // descartar em silencio, senao o link vai no laudo mas nao fica salvo.
+    if (String(campoParaRemover || '').startsWith('confirmacao_transportador')) break;
     if (campoParaRemover && (mensagem.includes('schema cache') || mensagem.includes('column'))) {
       const limpar = (row) => {
         const next = { ...(row || {}) };
@@ -246,7 +249,23 @@ export async function buscarFaturasExistentesPorNumero(numeros = []) {
   return mapa;
 }
 
+// Campos do link de confirmacao: um objeto de fatura velho (carregado antes do
+// laudo ser enviado) nao pode zerar o token no banco — senao o link enviado
+// para a transportadora passa a dar "Link invalido".
+const CAMPOS_PROTEGIDOS_CONFIRMACAO = [
+  'confirmacao_transportador_token',
+  'confirmacao_transportador_status',
+  'confirmacao_transportador_enviado_em',
+];
+
 export async function atualizarFaturaAuditoria(state, fatura, evento) {
+  const atual = state.faturas.find((item) => item.id === fatura.id);
+  if (atual) {
+    fatura = { ...fatura };
+    CAMPOS_PROTEGIDOS_CONFIRMACAO.forEach((campo) => {
+      if (!fatura[campo] && atual[campo]) fatura[campo] = atual[campo];
+    });
+  }
   const next = {
     ...state,
     faturas: state.faturas.map((item) => item.id === fatura.id ? { ...item, ...fatura, updated_at: new Date().toISOString() } : item),
@@ -260,6 +279,40 @@ export async function atualizarFaturaAuditoria(state, fatura, evento) {
     await inserirHistorico('auditoria_fatura_historico', historico);
   }
   return writeLocal(next);
+}
+
+// Atribui um auditor a varias faturas de uma vez (lote), usado pra corrigir o
+// vinculo de uma transportadora cujo nome na fatura nao casa com a carteira.
+// So mexe nas faturas informadas que ainda estao SEM auditor.
+export async function atribuirAuditorEmLote(state, ids = [], { auditorNome, auditorEmail = '', descricao = '', usuarioNome = 'Gestao' } = {}) {
+  const alvo = new Set(ids);
+  const agora = new Date().toISOString();
+  const afetadas = state.faturas.filter((f) => alvo.has(f.id) && !f.auditor_nome);
+  if (!afetadas.length || !auditorNome) return { state, atualizadas: 0 };
+  const TAM = 200;
+  for (let i = 0; i < afetadas.length; i += TAM) {
+    const lote = afetadas.slice(i, i + TAM);
+    // eslint-disable-next-line no-await-in-loop
+    await safeUpsert('faturas', lote.map((f) => ({ id: f.id, auditor_nome: auditorNome, auditor_email: auditorEmail, updated_at: agora })));
+  }
+  const historicos = afetadas.map((f) => ({
+    id: uid('hist'), fatura_id: f.id, created_at: agora, acao: 'AUDITOR_ATRIBUIDO',
+    descricao: descricao || `Auditor ${auditorNome} atribuido em lote.`, usuario_nome: usuarioNome,
+  }));
+  try {
+    for (let i = 0; i < historicos.length; i += 200) {
+      // eslint-disable-next-line no-await-in-loop
+      await inserirHistorico('auditoria_fatura_historico', historicos.slice(i, i + 200));
+    }
+  } catch (histError) {
+    console.warn('Não foi possível registrar histórico da atribuição em lote.', histError.message || histError);
+  }
+  const ids2 = new Set(afetadas.map((f) => f.id));
+  const next = {
+    ...state,
+    faturas: state.faturas.map((f) => (ids2.has(f.id) ? { ...f, auditor_nome: auditorNome, auditor_email: auditorEmail, updated_at: agora } : f)),
+  };
+  return { state: writeLocal(next), atualizadas: afetadas.length };
 }
 
 // Enriquecimento: puxa da base reauditada (auditoria_cte_resultados) o que ja
@@ -338,7 +391,7 @@ export async function buscarReferenciaCtes(chaves = [], { comDetalhes = false, l
 // tracking diz Serra/ES -> Aracaju/SE). O tracking manda; so corrige quando o
 // tracking traz IBGE de origem e destino validos. Depois disso o CT-e pode ser
 // recalculado normalmente.
-export async function corrigirBaseCtesPeloTracking(chaves = []) {
+export async function corrigirBaseCtesPeloTracking(chaves = [], onProgress = null) {
   const resultado = { corrigidos: [], iguais: 0, semTracking: 0 };
   const normalizadas = [...new Set((chaves || []).map((c) => String(c || '').replace(/\D/g, '')).filter((c) => c.length >= 40))];
   if (!isSupabaseConfigured() || !normalizadas.length) return resultado;
@@ -352,12 +405,16 @@ export async function corrigirBaseCtesPeloTracking(chaves = []) {
     ]);
     if (erroTracking) throw new Error(`Erro ao consultar o tracking: ${erroTracking.message}`);
     if (erroBase) throw new Error(`Erro ao consultar a base de CT-es: ${erroBase.message}`);
+    onProgress?.({ etapa: 'consultando', processados: inicio, total: normalizadas.length, corrigidos: resultado.corrigidos.length });
     const trackingPorChave = new Map();
     (tracking || []).forEach((row) => {
       if (dig7(row.ibge_origem).length !== 7 || dig7(row.ibge_destino).length !== 7) return;
       if (!trackingPorChave.has(row.chave_cte)) trackingPorChave.set(row.chave_cte, row);
     });
+    let processados = 0;
     for (const atual of base || []) {
+      processados += 1;
+      onProgress?.({ etapa: 'corrigindo', processados: inicio + processados, total: normalizadas.length, corrigidos: resultado.corrigidos.length });
       const t = trackingPorChave.get(atual.chave_cte);
       if (!t) { resultado.semTracking += 1; continue; }
       if (dig7(t.ibge_origem) === dig7(atual.ibge_origem) && dig7(t.ibge_destino) === dig7(atual.ibge_destino)
@@ -1390,6 +1447,10 @@ export function urlPortalFatura(token) {
 // Gera (uma vez) o link de confirmacao da fatura pro transportador clicar OK
 // direto no laudo — reaproveita o mesmo token em reenvios, ate ele confirmar.
 export async function gerarLinkConfirmacaoFatura(state, fatura) {
+  const viva = state.faturas?.find((item) => item.id === fatura.id);
+  if (viva?.confirmacao_transportador_token && !fatura.confirmacao_transportador_token) {
+    fatura = { ...fatura, confirmacao_transportador_token: viva.confirmacao_transportador_token };
+  }
   if (fatura.confirmacao_transportador_token) {
     return { state, url: urlPortalFatura(fatura.confirmacao_transportador_token), token: fatura.confirmacao_transportador_token };
   }

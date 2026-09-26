@@ -1,4 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { parseNumeroPlanilha } from '../utils/parseNumeroPlanilha';
 import { assumirSolicitacaoCentral, criarSolicitacaoCentralNegociacao } from './centralSolicitacoesService';
 
 const TABELA = 'transporte_autorizacoes';
@@ -46,27 +47,37 @@ export async function buscarVinculoPorCte(chavesCte = []) {
   const chaves = [...new Set(chavesCte.map(soDigitos).filter(Boolean))];
   if (!chaves.length || !isSupabaseConfigured()) return mapa;
   const client = getSupabaseClient();
-  try {
-    for (let i = 0; i < chaves.length; i += 100) {
-      const lote = chaves.slice(i, i + 100);
-      const { data } = await client.from('tracking_rows').select('chave_cte,chave_nfe,pedido_erp,mk:raw->>Pedido Marketplace').in('chave_cte', lote);
+  // Cada fonte roda isolada: se uma consulta falhar, as outras seguem (antes um
+  // erro no select do tracking zerava tudo em silencio).
+  const mesclar = (chaveCte, { chaveNfe, pedido }) => {
+    const chave = soDigitos(chaveCte);
+    if (!chave) return;
+    const atual = mapa.get(chave) || { chaveNfe: '', pedido: '' };
+    mapa.set(chave, { chaveNfe: atual.chaveNfe || soDigitos(chaveNfe), pedido: atual.pedido || pedido || '' });
+  };
+  const tentar = async (rotulo, fn) => {
+    try { await fn(); } catch (error) { console.warn(`[Autorizacoes transporte] vinculo (${rotulo}) indisponivel.`, error?.message || error); }
+  };
+  for (let i = 0; i < chaves.length; i += 100) {
+    const lote = chaves.slice(i, i + 100);
+    await tentar('marketplace', async () => {
+      const { data } = await client.from('tracking_pedido_marketplace_map').select('pedido_marketplace,chave_cte,pedido_erp').in('chave_cte', lote);
+      (data || []).forEach((row) => mesclar(row.chave_cte, { pedido: row.pedido_marketplace || row.pedido_erp }));
+    });
+    await tentar('tracking', async () => {
+      const { data } = await client.from('tracking_rows').select('id,chave_cte,chave_nfe,pedido,pedido_erp').in('chave_cte', lote);
       (data || []).forEach((row) => {
-        const chave = soDigitos(row.chave_cte);
-        const atual = mapa.get(chave) || { chaveNfe: '', pedido: '' };
-        mapa.set(chave, { chaveNfe: atual.chaveNfe || soDigitos(row.chave_nfe), pedido: atual.pedido || row.mk || row.pedido_erp || '' });
+        const doId = String(row.id || '').startsWith('nf-') ? soDigitos(String(row.id).slice(3)) : '';
+        mesclar(row.chave_cte, { chaveNfe: row.chave_nfe || (doId.length === 44 ? doId : ''), pedido: row.pedido_erp || row.pedido });
       });
-      const faltamNfe = lote.filter((chave) => !mapa.get(chave)?.chaveNfe);
-      if (faltamNfe.length) {
-        const { data: realizado } = await client.from('realizado_local_ctes').select('chave_cte,chave_nfe').in('chave_cte', faltamNfe);
-        (realizado || []).forEach((row) => {
-          const chave = soDigitos(row.chave_cte);
-          const atual = mapa.get(chave) || { chaveNfe: '', pedido: '' };
-          if (soDigitos(row.chave_nfe)) mapa.set(chave, { ...atual, chaveNfe: soDigitos(row.chave_nfe) });
-        });
-      }
+    });
+    const faltamNfe = lote.filter((chave) => !mapa.get(chave)?.chaveNfe);
+    if (faltamNfe.length) {
+      await tentar('realizado', async () => {
+        const { data } = await client.from('realizado_local_ctes').select('chave_cte,chave_nfe').in('chave_cte', faltamNfe);
+        (data || []).forEach((row) => mesclar(row.chave_cte, { chaveNfe: row.chave_nfe }));
+      });
     }
-  } catch (error) {
-    console.warn('[Autorizacoes transporte] vinculo por CT-e indisponivel.', error?.message || error);
   }
   return mapa;
 }
@@ -275,20 +286,21 @@ async function resolverVinculo({ chaveCte, chaveNfe, pedido }) {
   };
   try {
     let linha = null;
-    if (chaveNfe) linha = await buscar('tracking_rows', 'chave_nfe', chaveNfe, 'chave_cte,chave_nfe,pedido,pedido_erp,mk:raw->>Pedido Marketplace');
+    if (chaveNfe) linha = await buscar('tracking_rows', 'chave_nfe', chaveNfe, 'chave_cte,chave_nfe,pedido,pedido_erp');
     if (!linha && chaveNfe) linha = await buscar('realizado_local_ctes', 'chave_nfe', chaveNfe, 'chave_cte,chave_nfe');
-    if (!linha && chaveCte) linha = await buscar('tracking_rows', 'chave_cte', chaveCte, 'chave_cte,chave_nfe,pedido,pedido_erp,mk:raw->>Pedido Marketplace');
+    if (!linha && chaveCte) linha = await buscar('tracking_rows', 'chave_cte', chaveCte, 'chave_cte,chave_nfe,pedido,pedido_erp');
     if (!linha && chaveCte) linha = await buscar('realizado_local_ctes', 'chave_cte', chaveCte, 'chave_cte,chave_nfe');
     if (!linha && pedido) {
       // "Numero do pedido" = Pedido Marketplace (o que a operacao usa); aceita tambem o ERP.
-      linha = await buscar('tracking_rows', 'raw->>Pedido Marketplace', pedido, 'chave_cte,chave_nfe,pedido,pedido_erp,mk:raw->>Pedido Marketplace')
-        || await buscar('tracking_rows', 'pedido_erp', pedido, 'chave_cte,chave_nfe,pedido,pedido_erp,mk:raw->>Pedido Marketplace')
-        || await buscar('tracking_rows', 'pedido', pedido, 'chave_cte,chave_nfe,pedido,pedido_erp,mk:raw->>Pedido Marketplace');
+      const mapaMk = await buscar('tracking_pedido_marketplace_map', 'pedido_marketplace', pedido, 'chave_cte,pedido_marketplace');
+      if (mapaMk?.chave_cte) linha = await buscar('tracking_rows', 'chave_cte', mapaMk.chave_cte, 'chave_cte,chave_nfe,pedido,pedido_erp') || { chave_cte: mapaMk.chave_cte };
+      if (!linha) linha = await buscar('tracking_rows', 'pedido_erp', pedido, 'chave_cte,chave_nfe,pedido,pedido_erp')
+        || await buscar('tracking_rows', 'pedido', pedido, 'chave_cte,chave_nfe,pedido,pedido_erp');
     }
     if (linha) {
       achado.chaveCte = achado.chaveCte || soDigitos(linha.chave_cte);
       achado.chaveNfe = achado.chaveNfe || soDigitos(linha.chave_nfe);
-      achado.pedido = linha.mk || achado.pedido || linha.pedido_erp || linha.pedido || '';
+      achado.pedido = achado.pedido || linha.pedido_erp || linha.pedido || '';
     }
   } catch (error) {
     console.warn('[Autorizacoes transporte] vinculo nao resolvido; segue com o que foi informado.', error?.message || error);
@@ -412,4 +424,144 @@ export async function carregarSaldosAutorizadosPorChave(chaves = []) {
     console.warn('[Autorizacoes transporte] saldos indisponiveis; seguindo sem eles.', error?.message || error);
   }
   return mapa;
+}
+
+// ---- Importacao da planilha "custos-aprovado" (fluxo do time de transporte) ----
+const semAcento = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+
+function dataBR(texto) {
+  const m = String(texto || '').match(/(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
+  if (!m) return null;
+  const d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]), Number(m[4] || 12), Number(m[5] || 0));
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// Acha chave do CT-e / NF pela OP (pedido) ou pelo numero da NF (+ valor da NF).
+async function resolverLinhaPlanilha(client, { op, nf, valorNf }) {
+  const tentar = async (fn) => { try { return await fn(); } catch { return null; } };
+  const cols = 'id,chave_cte,chave_nfe,nota_fiscal,valor_nf,pedido,pedido_erp';
+  let linha = null;
+  if (op) {
+    const mapa = await tentar(async () => (await client.from('tracking_pedido_marketplace_map').select('pedido_marketplace,chave_cte').eq('pedido_marketplace', op).limit(1)).data?.[0]);
+    if (mapa?.chave_cte) linha = (await tentar(async () => (await client.from('tracking_rows').select(cols).eq('chave_cte', mapa.chave_cte).limit(1)).data?.[0])) || { chave_cte: mapa.chave_cte };
+    if (!linha) linha = await tentar(async () => (await client.from('tracking_rows').select(cols).eq('pedido_erp', op).limit(1)).data?.[0]);
+    if (!linha) linha = await tentar(async () => (await client.from('tracking_rows').select(cols).eq('pedido', op).limit(1)).data?.[0]);
+  }
+  if (!linha && nf) {
+    const lista = (await tentar(async () => (await client.from('tracking_rows').select(cols).eq('nota_fiscal', nf).limit(50)).data)) || [];
+    const porValor = valorNf > 0 ? lista.filter((r) => Math.abs(numero(r.valor_nf) - valorNf) < 0.02) : [];
+    linha = porValor[0] || (lista.length === 1 ? lista[0] : null);
+  }
+  if (!linha) return { chaveCte: '', chaveNfe: '', pedido: op || '' };
+  const doId = String(linha.id || '').startsWith('nf-') ? soDigitos(String(linha.id).slice(3)) : '';
+  return {
+    chaveCte: soDigitos(linha.chave_cte),
+    chaveNfe: soDigitos(linha.chave_nfe) || (doId.length === 44 ? doId : ''),
+    pedido: op || linha.pedido_erp || linha.pedido || '',
+  };
+}
+
+export const MARCA_IMPORTACAO = '[IMPORTADO-PLANILHA]';
+
+// Fonte de cada registro, pra nao misturar no historico: planilha do atacado,
+// aprovacao da gestao (fatura), lancamento do gestor ou fila da auditoria.
+export function fonteAutorizacao(item = {}) {
+  if (String(item.observacao_auditoria || '').startsWith(MARCA_IMPORTACAO)) return 'IMPORTADO';
+  if (item.origem === 'GESTOR' && (item.fatura_id || /Aprovacao de Gestao/i.test(item.observacao_gestor || ''))) return 'GESTAO';
+  return item.origem === 'GESTOR' ? 'LANCADO' : 'AUDITORIA';
+}
+
+// linhas = objetos da planilha (NF, OP, Custo (R$), Valor NF (R$), Status, ...).
+// Cria/atualiza as autorizacoes do canal ja decididas (AUTORIZADA/RECUSADA).
+export async function importarAprovacoesPlanilha(linhas = [], { canal, usuarioNome = '', onProgress } = {}) {
+  const client = exigirClient();
+  const canalAlvo = normalizarCanalAutorizacao(canal);
+  // A planilha de aprovacoes e so do atacado: nunca entra em B2C/Suprimentos.
+  if (canalAlvo !== 'ATACADO') throw new Error('A importacao da planilha e so para o canal Atacado.');
+  const resumo = { importadas: 0, atualizadas: 0, jaExistiam: 0, foraDoCanal: 0, pendentes: 0, semVinculo: [], erros: [] };
+  const existentes = await listarAutorizacoes({ canal: canalAlvo });
+  const porCte = new Map();
+  existentes.forEach((item) => { if (item.chave_cte) porCte.set(soDigitos(item.chave_cte), item); });
+  const pega = (linha, nome) => {
+    const chave = Object.keys(linha).find((k) => semAcento(k) === semAcento(nome));
+    return chave ? linha[chave] : '';
+  };
+  const validas = linhas.filter((l) => l && Object.values(l).some((v) => String(v || '').trim()));
+  for (let i = 0; i < validas.length; i += 6) {
+    onProgress?.(i, validas.length);
+    await Promise.all(validas.slice(i, i + 6).map(async (linha) => {
+      const rotuloLinha = `NF ${pega(linha, 'NF') || '-'} / OP ${pega(linha, 'OP') || '-'}`;
+      try {
+        const status = semAcento(pega(linha, 'Status'));
+        const statusNovo = status.startsWith('aprov') ? 'AUTORIZADA' : (status.startsWith('rejeit') || status.startsWith('recus')) ? 'RECUSADA' : '';
+        if (!statusNovo) { resumo.pendentes += 1; return; }
+        const canalLinha = semAcento(pega(linha, 'Canal')).includes('b2c') ? 'B2C' : 'ATACADO';
+        if (canalLinha !== canalAlvo) { resumo.foraDoCanal += 1; return; }
+        const nf = String(pega(linha, 'NF') || '').replace(/\D/g, '').replace(/^0+/, '');
+        const op = String(pega(linha, 'OP') || '').replace(/^#/, '').trim();
+        const custo = numero(parseNumeroPlanilha(pega(linha, 'Custo (R$)'), 0));
+        const valorNf = numero(parseNumeroPlanilha(pega(linha, 'Valor NF (R$)'), 0));
+        const vinculo = await resolverLinhaPlanilha(client, { op, nf, valorNf });
+        if (!vinculo.chaveCte && !vinculo.chaveNfe) { resumo.semVinculo.push(rotuloLinha); return; }
+        const decididoPor = String(pega(linha, 'Aprovado/Rejeitado por') || '').trim() || usuarioNome;
+        const decididoEm = dataBR(pega(linha, 'Data Decisão')) || dataBR(pega(linha, 'Data')) || new Date().toISOString();
+        const motivo = [pega(linha, 'Motivo do Erro'), pega(linha, 'Classificação')].filter(Boolean).join(' - ');
+        const obs = [pega(linha, 'Observações'), statusNovo === 'RECUSADA' ? pega(linha, 'Motivo Rejeição') : ''].map((t) => String(t || '').trim()).filter(Boolean).join(' | ');
+        const campos = {
+          status: statusNovo,
+          valor_autorizado: statusNovo === 'AUTORIZADA' ? custo : 0,
+          observacao_gestor: obs || null,
+          decidido_por: decididoPor || null,
+          decidido_em: decididoEm,
+        };
+        const atual = vinculo.chaveCte ? porCte.get(vinculo.chaveCte) : null;
+        if (atual && atual.status !== 'PENDENTE') { resumo.jaExistiam += 1; return; }
+        if (atual) {
+          const { error } = await client.from(TABELA).update({ ...campos, chave_nfe: atual.chave_nfe || vinculo.chaveNfe || null, numero_pedido: atual.numero_pedido || vinculo.pedido || null }).eq('id', atual.id);
+          if (error) throw error;
+          resumo.atualizadas += 1;
+          return;
+        }
+        const registro = {
+          ...campos,
+          canal: canalAlvo,
+          origem: 'GESTOR',
+          chave_cte: vinculo.chaveCte || null,
+          chave_nfe: vinculo.chaveNfe || null,
+          numero_pedido: vinculo.pedido || null,
+          transportadora: String(pega(linha, 'Transportadora') || '').trim() || null,
+          valor_nf: valorNf,
+          observacao_auditoria: `${MARCA_IMPORTACAO} ${motivo}`.trim(),
+          enviado_por: usuarioNome || decididoPor || null,
+          enviado_em: dataBR(pega(linha, 'Data')) || decididoEm,
+        };
+        const { error } = await client.from(TABELA).insert(registro);
+        if (error) throw error;
+        if (vinculo.chaveCte) porCte.set(vinculo.chaveCte, { ...registro });
+        resumo.importadas += 1;
+      } catch (error) {
+        resumo.erros.push(`${rotuloLinha}: ${error?.message || error}`);
+      }
+    }));
+  }
+  onProgress?.(validas.length, validas.length);
+  return resumo;
+}
+
+// Auditor/gestor informa a chave da NF quando o tracking nao trouxe. Tenta tambem
+// completar o pedido pela propria chave.
+export async function salvarChaveNfe(item, chaveNfe) {
+  const client = exigirClient();
+  const chave = soDigitos(chaveNfe);
+  if (chave.length !== 44) throw new Error('A chave da NF precisa ter 44 digitos.');
+  const patch = { chave_nfe: chave };
+  if (!item.numero_pedido) {
+    try {
+      const { data } = await client.from('tracking_rows').select('pedido_erp,pedido').eq('chave_nfe', chave).limit(1);
+      const achado = data?.[0]?.pedido_erp || data?.[0]?.pedido;
+      if (achado) patch.numero_pedido = achado;
+    } catch { /* pedido segue vazio */ }
+  }
+  const { error } = await client.from(TABELA).update(patch).eq('id', item.id);
+  if (error) throw new Error('Erro ao salvar a chave da NF: ' + error.message);
 }

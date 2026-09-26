@@ -116,6 +116,16 @@ export default function GestaoAprovacoes({
             {ehGestor && podePublicarOficial(t) ? (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                 <button className="primary" type="button" disabled={salvando} onClick={() => onPublicar(t)}>Publicar na base oficial</button>
+                <button
+                  className="sim-tab"
+                  type="button"
+                  disabled={salvando}
+                  onClick={() => {
+                    const motivo = window.prompt('Motivo para devolver ' + t.transportadora + ' para negociação:', 'Devolvida para nova simulação e reenvio');
+                    if (motivo && motivo.trim()) onDevolver(t, motivo.trim());
+                  }}
+                  title="Tira das aprovadas e devolve para a negociação, para ajustar, simular e reenviar"
+                >Devolver para negociação</button>
                 {typeof onMarcarJaPublicada === 'function' ? (
                   <button className="sim-tab" type="button" disabled={salvando} onClick={() => onMarcarJaPublicada(t)} title="Use quando a tabela já foi inserida manualmente na base oficial">Já está na base oficial</button>
                 ) : null}

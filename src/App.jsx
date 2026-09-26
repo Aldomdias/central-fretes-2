@@ -13,6 +13,7 @@ import LotacaoAuditoriaPage from './pages/LotacaoAuditoriaPage';
 import ConsultaIbgePage from './pages/ConsultaIbgePage';
 import IbgeRapidoModal from './components/IbgeRapidoModal';
 import AvisoAprovacoesSuprimentos from './components/AvisoAprovacoesSuprimentos';
+import AvisoPrazoFaturas from './components/AvisoPrazoFaturas';
 import LoginPage from './pages/LoginPage';
 import UserManagementPage from './pages/UserManagementPage';
 import PainelUsuariosAtivosPage from './pages/PainelUsuariosAtivosPage';
@@ -76,6 +77,7 @@ export default function App() {
   const [manutencao, setManutencao] = useState(null);
   const store = useFreteStore(sessao);
   const [paginaAtual, setPaginaAtual] = useState('dashboard');
+  const [filtroFaturasExterno, setFiltroFaturasExterno] = useState(null);
   const [sidebarRecolhida, setSidebarRecolhida] = useState(true);
   const [menuMobileAberto, setMenuMobileAberto] = useState(false);
   const [transportadoraSelecionadaId, setTransportadoraSelecionadaId] = useState(null);
@@ -207,7 +209,7 @@ export default function App() {
     'lotacao-auditoria': <LotacaoAuditoriaPage />,
     'painel-auditoria': <PainelAuditoriaPage />,
     'painel-operacao': <PainelOperacaoPage />,
-    faturas: <CentralAuditoriaFretesPage initialTab="faturas" onMudarPagina={mudarPagina} onAbrirTransportadoras={abrirTransportadoras} />,
+    faturas: <CentralAuditoriaFretesPage initialTab="faturas" filtroExterno={filtroFaturasExterno} onMudarPagina={mudarPagina} onAbrirTransportadoras={abrirTransportadoras} />,
     'gestao-auditoria-fretes': <CentralAuditoriaFretesPage initialTab="gestao" onMudarPagina={mudarPagina} onAbrirTransportadoras={abrirTransportadoras} />,
     'financeiro-auditoria': <CentralAuditoriaFretesPage initialTab="financeiro" onMudarPagina={mudarPagina} onAbrirTransportadoras={abrirTransportadoras} />,
     tratativas: <TratativasPage />,
@@ -263,6 +265,9 @@ export default function App() {
       />
       <main className="app-content">{content}</main>
       <IbgeRapidoModal />
+      {usuarioTemAcesso(sessao, 'faturas') && (
+        <AvisoPrazoFaturas minimizavel={paginaAtual === 'faturas'} sessao={sessao} onAbrir={(filtros) => { setFiltroFaturasExterno({ chave: Date.now(), ...filtros }); mudarPagina('faturas'); }} />
+      )}
       {usuarioTemAcesso(sessao, 'autorizacoes-suprimentos') && paginaAtual !== 'autorizacoes-suprimentos' && (
         <AvisoAprovacoesSuprimentos onAbrir={() => mudarPagina('autorizacoes-suprimentos')} />
       )}
