@@ -58,3 +58,33 @@ export async function carregarDivergenciasFatura(faturaId) {
     return [];
   }
 }
+
+// Auditor aceita ou rejeita a resposta de um CT-e. Rejeitar reabre a fatura pra
+// transportadora (status CONTESTADO => o portal mostra o formulario de novo).
+export async function validarRespostaDivergencia({ linha, aprovar, observacao = '', usuarioNome = '' }) {
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const { error } = await client.from('fatura_cte_divergencias').update({
+    status_validacao: aprovar ? 'ACEITO' : 'REJEITADO',
+    validado_por: usuarioNome || null,
+    validado_em: agora,
+    observacao_validacao: observacao || null,
+  }).eq('id', linha.id);
+  if (error) throw error;
+  if (!aprovar) {
+    const { error: erroFatura } = await client.from('faturas').update({
+      confirmacao_transportador_status: 'CONTESTADO',
+      confirmacao_transportador_observacao: `Auditoria rejeitou a resposta do CT-e ${linha.numero_cte || linha.chave}: ${observacao}`,
+      updated_at: agora,
+    }).eq('id', linha.fatura_id);
+    if (erroFatura) throw erroFatura;
+  }
+  await client.from('auditoria_fatura_historico').insert({
+    fatura_id: linha.fatura_id,
+    created_at: agora,
+    acao: aprovar ? 'RESPOSTA_CTE_ACEITA' : 'RESPOSTA_CTE_REJEITADA',
+    descricao: `${aprovar ? 'Aceitou' : 'Rejeitou'} a resposta da transportadora no CT-e ${linha.numero_cte || linha.chave} (${linha.resposta === 'CONCORDO' ? `concorda, desconto R$ ${Number(linha.valor_desconto || 0).toFixed(2)}` : 'nao concorda'})${observacao ? `: ${observacao}` : ''}.`,
+    usuario_nome: usuarioNome || 'Auditoria',
+  });
+  return true;
+}

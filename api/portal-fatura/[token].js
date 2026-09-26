@@ -77,6 +77,7 @@ function formCtes(divergencias) {
       <td>
         <label class="op"><input type="radio" name="resp_${i}" value="CONCORDO"${respondido === 'CONCORDO' ? ' checked' : ''} onclick="marcar(${i})"> Concordo</label>
         <label class="op"><input type="radio" name="resp_${i}" value="NAO_CONCORDO"${respondido === 'NAO_CONCORDO' ? ' checked' : ''} onclick="marcar(${i})"> Não concordo</label>
+        ${d.status_validacao === 'REJEITADO' ? `<div class="rej">Rejeitado pela auditoria${d.observacao_validacao ? ': ' + esc(d.observacao_validacao) : ''}. Responda novamente.</div>` : ''}
         <div id="desc_box_${i}" class="cx">Desconto devido (R$): <input type="text" name="desc_${i}" id="desc_${i}" value="${esc(respondido === 'CONCORDO' && d.valor_desconto != null ? Number(d.valor_desconto).toFixed(2) : Number(d.diferenca).toFixed(2))}" data-max="${Number(d.diferenca).toFixed(2)}" inputmode="decimal"></div>
         <div id="just_box_${i}" class="cx"><input type="text" name="just_${i}" id="just_${i}" placeholder="Motivo (obrigatório se não concorda)" value="${esc(d.justificativa || '')}"></div>
       </td></tr>`;
@@ -136,7 +137,7 @@ textarea{box-sizing:border-box;width:100%;padding:10px;border:1px solid #cbd5e1;
 button.recusar{background:#b45309}button.recusar:hover{background:#92400e}.ou{text-align:center;color:#64748b;font-size:12px;margin:16px 0 10px}.contestar-box{padding:14px;border:1px solid #fcd34d;border-radius:10px;background:#fffbeb}
 .ok{margin:0 30px 16px;padding:14px;background:#dcfce7;border:1px solid #86efac;border-radius:9px;color:#065f46;font-weight:700}
 form{padding:0 30px 26px}
-.tw{overflow-x:auto;margin:10px 0 16px}.ctes{width:100%;border-collapse:collapse;font-size:13px}.ctes th,.ctes td{border-bottom:1px solid #e2e8f0;padding:8px;text-align:left;vertical-align:top}.ctes th{background:#f1f5f9}.ch{font-size:10px;color:#94a3b8;word-break:break-all}.op{display:block;margin:2px 0;font-size:13px}.cx{display:none;margin-top:6px;font-size:12px}.cx input{padding:6px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;width:100%;box-sizing:border-box}.dica{font-size:13px;color:#334155}button.sec{background:#475569;width:auto;padding:9px 14px;font-size:13px}
+.tw{overflow-x:auto;margin:10px 0 16px}.ctes{width:100%;border-collapse:collapse;font-size:13px}.ctes th,.ctes td{border-bottom:1px solid #e2e8f0;padding:8px;text-align:left;vertical-align:top}.ctes th{background:#f1f5f9}.ch{font-size:10px;color:#94a3b8;word-break:break-all}.op{display:block;margin:2px 0;font-size:13px}.cx{display:none;margin-top:6px;font-size:12px}.cx input{padding:6px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;width:100%;box-sizing:border-box}.rej{margin:6px 0;padding:6px 8px;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;color:#991b1b;font-size:12px}.dica{font-size:13px;color:#334155}button.sec{background:#475569;width:auto;padding:9px 14px;font-size:13px}
 .quem{margin-bottom:14px}
 .quem label{display:block;font-size:12px;color:#64748b;margin-bottom:4px}
 .quem input{box-sizing:border-box;width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px}
@@ -256,6 +257,7 @@ export default async function handler(req, res) {
           for (const r of respostas) {
             const { error: erroResp } = await supabase.from('fatura_cte_divergencias').update({
               resposta: r.resposta, valor_desconto: r.valorDesconto, justificativa: r.justificativa, respondido_por: respondidoPor, respondido_em: agora,
+              status_validacao: 'PENDENTE', validado_por: null, validado_em: null, observacao_validacao: null,
             }).eq('id', r.d.id);
             if (erroResp) throw erroResp;
           }

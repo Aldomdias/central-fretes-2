@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { carregarRespostasEntregaFatura, salvarPendenciasEntrega, urlAnexoEntrega, urlPortalEntrega, validarRespostaEntrega } from '../services/entregaPortalService';
-import { carregarDivergenciasFatura, ctesCobrancaAcima, salvarDivergenciasFatura } from '../services/divergenciaPortalService';
+import { carregarDivergenciasFatura, ctesCobrancaAcima, salvarDivergenciasFatura, validarRespostaDivergencia } from '../services/divergenciaPortalService';
 import { buscarStatusEntregaCtes, chaveEntregaRegistro, ROTULO_ENTREGA, STATUS_ENTREGA } from '../services/auditoriaEntregaCteService';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
@@ -995,9 +995,15 @@ function corAlerta(fatura) {
   return '#04a484';
 }
 
-function Card({ label, value, detail, color = '#9153F0' }) {
+function Card({ label, value, detail, color = '#9153F0', onClick, ativo = false, titulo }) {
   return (
-    <div className="summary-card audit-kpi" style={{ borderLeft: `4px solid ${color}` }}>
+    <div
+      className="summary-card audit-kpi"
+      style={{ borderLeft: `4px solid ${color}`, ...(onClick ? { cursor: 'pointer' } : {}), ...(ativo ? { boxShadow: `0 0 0 2px ${color}`, background: '#f8fafc' } : {}) }}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      title={onClick ? (titulo || 'Clique para filtrar os CT-es') : undefined}
+    >
       <span>{label}</span>
       <strong>{value}</strong>
       {detail && <small>{detail}</small>}
@@ -2706,6 +2712,14 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     return cor.borda === '#dc2626' ? 'acima' : 'abaixo';
   };
 
+  // Cards do resumo viram filtro: clicar leva a lista de CT-es filtrada; clicar de novo limpa.
+  const cliqueCard = (status) => {
+    const ativo = tab === 'ctes' && filtroStatusCte === status && status !== 'todos';
+    setTab('ctes');
+    setFiltroStatusCte(ativo ? 'todos' : status);
+  };
+  const cardAtivo = (status) => tab === 'ctes' && filtroStatusCte === status;
+
   const aplicarFiltrosCtes = (lista) => lista.filter((item) => {
     const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte))
       || referenciaCtes.get(normalizarChaveCte(item.numero_cte));
@@ -2755,7 +2769,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
           </div>
         );
       })()}
-      <RespostasDivergenciaFatura faturaId={fatura.id} />
+      <RespostasDivergenciaFatura faturaId={fatura.id} usuarioNome={sessao?.nome || sessao?.email || ''} />
       <RespostasEntregaFatura
         faturaId={fatura.id}
         usuarioNome={sessao?.nome || sessao?.email || ''}
@@ -3029,14 +3043,14 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       </div>
 
       <div className="summary-strip auditoria-avulsa-summary">
-        <Card label="CT-es" value={resumoAuditoriaFatura.total} />
+        <Card label="CT-es" value={resumoAuditoriaFatura.total} onClick={() => { setTab('ctes'); setFiltroStatusCte('todos'); }} ativo={tab === 'ctes' && filtroStatusCte === 'todos'} titulo="Todos os CT-es (limpa o filtro)" />
         <Card label="Calculados AMD" value={resumoAuditoriaFatura.calculados} />
-        <Card label="Divergentes" value={resumoAuditoriaFatura.divergentes} color={resumoAuditoriaFatura.divergentes ? '#dc2626' : '#047857'} />
-        <Card label="Sem calculo" value={resumoAuditoriaFatura.semCalculo} color={resumoAuditoriaFatura.semCalculo ? '#d97706' : '#047857'} />
+        <Card label="Divergentes" value={resumoAuditoriaFatura.divergentes} color={resumoAuditoriaFatura.divergentes ? '#dc2626' : '#047857'} onClick={() => { setTab('divergencias'); setFiltroStatusCte('todos'); }} ativo={tab === 'divergencias'} titulo="Ver so os CT-es divergentes" />
+        <Card label="Sem calculo" value={resumoAuditoriaFatura.semCalculo} color={resumoAuditoriaFatura.semCalculo ? '#d97706' : '#047857'} onClick={() => cliqueCard('sem_calculo')} ativo={cardAtivo('sem_calculo')} />
         <Card label="Frete pago" value={dinheiro(resumoAuditoriaFatura.fretePago)} />
         <Card label="Calculo AMD" value={dinheiro(resumoAuditoriaFatura.calculoAmd)} />
-        <Card label="Cobranca acima" value={dinheiro(resumoAuditoriaFatura.cobrancaAcima)} color="#dc2626" />
-        <Card label="Cobranca abaixo" value={dinheiro(resumoAuditoriaFatura.cobrancaAbaixo)} color="#d97706" />
+        <Card label="Cobranca acima" value={dinheiro(resumoAuditoriaFatura.cobrancaAcima)} color="#dc2626" onClick={() => cliqueCard('acima')} ativo={cardAtivo('acima')} />
+        <Card label="Cobranca abaixo" value={dinheiro(resumoAuditoriaFatura.cobrancaAbaixo)} color="#d97706" onClick={() => cliqueCard('abaixo')} ativo={cardAtivo('abaixo')} />
         <Card label="Total a descontar" value={dinheiro(resumoAuditoriaFatura.totalDescontar)} color={resumoAuditoriaFatura.totalDescontar ? '#d97706' : '#047857'} />
       </div>
       {duplicadosRemovidos > 0 && (
@@ -7133,18 +7147,59 @@ function RespostasEntregaFatura({ faturaId, usuarioNome, aoValidar }) {
 
 // Respostas da transportadora no portal "Confirmar fatura": por CT-e com cobranca acima,
 // concordo (com o desconto que ela reconhece) ou nao concordo (com motivo).
-function RespostasDivergenciaFatura({ faturaId }) {
+function RespostasDivergenciaFatura({ faturaId, usuarioNome }) {
   const [linhas, setLinhas] = useState(null);
-  useEffect(() => { let ativo = true; carregarDivergenciasFatura(faturaId).then((r) => { if (ativo) setLinhas(r); }); return () => { ativo = false; }; }, [faturaId]);
+  const [erro, setErro] = useState('');
+  const [processando, setProcessando] = useState('');
+  const carregar = async () => setLinhas(await carregarDivergenciasFatura(faturaId));
+  useEffect(() => { carregar(); }, [faturaId]);
+  const validar = async (linha, aprovar) => {
+    let observacao = '';
+    if (!aprovar) {
+      observacao = window.prompt('Motivo da rejeicao (a transportadora vera ao responder de novo):') || '';
+      if (!observacao.trim()) return;
+    }
+    setProcessando(linha.id);
+    setErro('');
+    try {
+      await validarRespostaDivergencia({ linha, aprovar, observacao: observacao.trim(), usuarioNome });
+      await carregar();
+    } catch (error) {
+      setErro(error.message || String(error));
+    } finally {
+      setProcessando('');
+    }
+  };
+  const aceitarTodas = async () => {
+    const pendentes = (linhas || []).filter((r) => r.resposta && (r.status_validacao || 'PENDENTE') === 'PENDENTE');
+    if (!pendentes.length || !window.confirm(`Aceitar as ${pendentes.length} resposta(s) pendente(s)?`)) return;
+    setProcessando('todas');
+    setErro('');
+    try {
+      for (const linha of pendentes) {
+        // eslint-disable-next-line no-await-in-loop
+        await validarRespostaDivergencia({ linha, aprovar: true, usuarioNome });
+      }
+      await carregar();
+    } catch (error) {
+      setErro(error.message || String(error));
+    } finally {
+      setProcessando('');
+    }
+  };
   const respondidas = (linhas || []).filter((r) => r.resposta);
   if (!respondidas.length) return null;
   const totalDesconto = respondidas.filter((r) => r.resposta === 'CONCORDO').reduce((acc, r) => acc + Number(r.valor_desconto || 0), 0);
   return (
     <div className="hint-box compact" style={{ marginBottom: 10 }}>
       <strong>Respostas da transportadora sobre cobranca acima ({respondidas.length} de {linhas.length} CT-es) — desconto reconhecido {dinheiro(totalDesconto)}</strong>
+      {respondidas.some((r) => (r.status_validacao || 'PENDENTE') === 'PENDENTE') && (
+        <button type="button" className="btn-primary audit-small-button" style={{ marginLeft: 10 }} disabled={processando === 'todas'} onClick={aceitarTodas}>Aceitar todas pendentes</button>
+      )}
+      {erro && <div className="error-text">{erro}</div>}
       <div className="sim-analise-tabela-wrap" style={{ maxHeight: 280, overflow: 'auto', marginTop: 6 }}>
         <table className="sim-analise-tabela">
-          <thead><tr><th>CT-e</th><th>Cobrado</th><th>Calculado</th><th>Diferenca</th><th>Resposta</th><th>Desconto</th><th>Motivo</th><th>Enviado por</th></tr></thead>
+          <thead><tr><th>CT-e</th><th>Cobrado</th><th>Calculado</th><th>Diferenca</th><th>Resposta</th><th>Desconto</th><th>Motivo</th><th>Enviado por</th><th>Auditoria</th><th /></tr></thead>
           <tbody>
             {respondidas.map((r) => (
               <tr key={r.id}>
@@ -7156,6 +7211,15 @@ function RespostasDivergenciaFatura({ faturaId }) {
                 <td>{r.resposta === 'CONCORDO' ? dinheiro(r.valor_desconto) : '-'}</td>
                 <td style={{ fontSize: 12, maxWidth: 280 }}>{r.justificativa || '-'}</td>
                 <td style={{ fontSize: 12 }}>{r.respondido_por || '-'}<br />{r.respondido_em ? new Date(r.respondido_em).toLocaleString('pt-BR') : ''}</td>
+                <td>{r.status_validacao === 'ACEITO' ? <strong style={{ color: '#14733b' }}>Aceita</strong> : r.status_validacao === 'REJEITADO' ? <strong style={{ color: '#9b1111' }}>Rejeitada</strong> : 'Aguardando'}{r.observacao_validacao ? <div style={{ fontSize: 11 }}>{r.observacao_validacao}</div> : null}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  {(r.status_validacao || 'PENDENTE') === 'PENDENTE' && (
+                    <>
+                      <button type="button" className="btn-primary audit-small-button" disabled={processando === r.id} onClick={() => validar(r, true)}>Aceitar</button>{' '}
+                      <button type="button" className="btn-secondary audit-small-button" disabled={processando === r.id} onClick={() => validar(r, false)}>Rejeitar</button>
+                    </>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
