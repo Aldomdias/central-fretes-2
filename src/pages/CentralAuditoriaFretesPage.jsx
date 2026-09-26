@@ -2327,20 +2327,31 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     // fatura ja atualiza sozinha (ver AprovacaoGestao/api/portal-fatura).
     let linkConfirmacao = '';
     if (transportador) {
+      let estadoLaudo = state;
+      let faturaLaudo = fatura;
       try {
         const resultado = await gerarLinkConfirmacaoFatura(state, fatura);
-        onState(resultado.state);
+        estadoLaudo = resultado.state;
+        faturaLaudo = estadoLaudo.faturas.find((item) => item.id === fatura.id) || fatura;
+        onState(estadoLaudo);
         linkConfirmacao = resultado.url;
       } catch (error) {
         setErroDetalhes(`Nao foi possivel gerar o link de confirmacao: ${error.message}`);
       }
       // Mandou o laudo pro transportador: fatura passa a aguardar a resposta
       // dele. So marca se ainda nao passou dessa etapa (nao regride fatura
-      // ja liberada/paga/etc so porque reimprimiu o laudo).
+      // ja liberada/paga/etc so porque reimprimiu o laudo). Usa o estado ja com
+      // o token (senao o estado velho apagaria o link recem-gerado).
       if (!STATUS_NAO_REGREDIR_LAUDO.has(fatura.status)) {
-        await mudarStatus('AGUARDANDO_TRANSPORTADORA', {
-          descricaoHistorico: 'Laudo enviado ao transportador — aguardando confirmacao.',
+        const next = await atualizarFaturaAuditoria(estadoLaudo, { ...faturaLaudo, status: 'AGUARDANDO_TRANSPORTADORA' }, {
+          acao: 'STATUS_ALTERADO',
+          status_anterior: fatura.status,
+          status_novo: 'AGUARDANDO_TRANSPORTADORA',
+          descricao: 'Laudo enviado ao transportador — aguardando confirmacao.',
+          usuario_nome: sessao?.nome || sessao?.email || 'Usuario local',
+          usuario_email: sessao?.email || '',
         });
+        onState(next);
       }
     }
     // A referencia da tela vem sem detalhes_calculo (perf); o laudo precisa deles.

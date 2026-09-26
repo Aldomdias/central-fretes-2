@@ -266,6 +266,12 @@ export async function atualizarFaturaAuditoria(state, fatura, evento) {
       if (!fatura[campo] && atual[campo]) fatura[campo] = atual[campo];
     });
   }
+  // Nunca manda null/vazio nos campos do link: um objeto velho (sem o token que
+  // acabou de ser gerado) sobrescreveria o token no banco e o link daria "invalido".
+  fatura = { ...fatura };
+  CAMPOS_PROTEGIDOS_CONFIRMACAO.forEach((campo) => {
+    if (!fatura[campo]) delete fatura[campo];
+  });
   const next = {
     ...state,
     faturas: state.faturas.map((item) => item.id === fatura.id ? { ...item, ...fatura, updated_at: new Date().toISOString() } : item),
@@ -1451,6 +1457,14 @@ export async function gerarLinkConfirmacaoFatura(state, fatura) {
   if (viva?.confirmacao_transportador_token && !fatura.confirmacao_transportador_token) {
     fatura = { ...fatura, confirmacao_transportador_token: viva.confirmacao_transportador_token };
   }
+  if (!fatura.confirmacao_transportador_token && isSupabaseConfigured()) {
+    // Estado local pode estar sem o token que ja existe no banco: reaproveita
+    // em vez de gerar outro (que invalidaria o link ja enviado).
+    try {
+      const { data } = await getSupabaseClient().from('faturas').select('confirmacao_transportador_token').eq('id', fatura.id).maybeSingle();
+      if (data?.confirmacao_transportador_token) fatura = { ...fatura, confirmacao_transportador_token: data.confirmacao_transportador_token };
+    } catch { /* segue e gera um novo */ }
+  }
   if (fatura.confirmacao_transportador_token) {
     return { state, url: urlPortalFatura(fatura.confirmacao_transportador_token), token: fatura.confirmacao_transportador_token };
   }
@@ -1465,5 +1479,12 @@ export async function gerarLinkConfirmacaoFatura(state, fatura) {
     acao: 'LINK_CONFIRMACAO_GERADO',
     descricao: 'Link de confirmacao da fatura gerado para envio ao transportador.',
   });
+  // So devolve o link se o token realmente ficou no banco (o portal busca la).
+  if (isSupabaseConfigured()) {
+    const { data } = await getSupabaseClient().from('faturas').select('confirmacao_transportador_token').eq('id', fatura.id).maybeSingle();
+    if (data?.confirmacao_transportador_token !== token) {
+      throw new Error('o token do link nao foi gravado no banco. Tente novamente.');
+    }
+  }
   return { state: next, url: urlPortalFatura(token), token };
 }
