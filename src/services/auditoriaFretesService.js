@@ -858,7 +858,14 @@ export async function registrarDoccob(state, doccob) {
 // aqui tentamos de novo com o próximo número em vez de estourar para o usuário.
 async function salvarComProtocoloUnico(table, montarPayload, prefixo, existentes) {
   const usados = existentes.map((item) => item?.protocolo).filter(Boolean);
-  for (let tentativa = 0; tentativa < 5; tentativa += 1) {
+  // O estado local pode estar sem os protocolos ja gravados (ou incompleto): parte do
+  // maior numero que ja existe no banco, senao as tentativas batem nos numeros usados.
+  try {
+    const inicio = `${prefixo}-${new Date().getFullYear()}-`;
+    const { data } = await getSupabaseClient().from(table).select('protocolo').like('protocolo', `${inicio}%`).order('protocolo', { ascending: false }).limit(5);
+    (data || []).forEach((linha) => linha?.protocolo && usados.push(linha.protocolo));
+  } catch { /* segue com o estado local */ }
+  for (let tentativa = 0; tentativa < 8; tentativa += 1) {
     const protocolo = gerarProtocolo(prefixo, usados);
     const payload = montarPayload(protocolo);
     try {
