@@ -2769,7 +2769,11 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
           </div>
         );
       })()}
-      <RespostasDivergenciaFatura faturaId={fatura.id} usuarioNome={sessao?.nome || sessao?.email || ''} />
+      <RespostasDivergenciaFatura
+        faturaId={fatura.id}
+        usuarioNome={sessao?.nome || sessao?.email || ''}
+        aoMudarConfirmacao={(novoStatus) => novoStatus && onState({ ...state, faturas: state.faturas.map((item) => (item.id === fatura.id ? { ...item, confirmacao_transportador_status: novoStatus } : item)) })}
+      />
       <RespostasEntregaFatura
         faturaId={fatura.id}
         usuarioNome={sessao?.nome || sessao?.email || ''}
@@ -7147,7 +7151,7 @@ function RespostasEntregaFatura({ faturaId, usuarioNome, aoValidar }) {
 
 // Respostas da transportadora no portal "Confirmar fatura": por CT-e com cobranca acima,
 // concordo (com o desconto que ela reconhece) ou nao concordo (com motivo).
-function RespostasDivergenciaFatura({ faturaId, usuarioNome }) {
+function RespostasDivergenciaFatura({ faturaId, usuarioNome, aoMudarConfirmacao }) {
   const [linhas, setLinhas] = useState(null);
   const [erro, setErro] = useState('');
   const [processando, setProcessando] = useState('');
@@ -7162,8 +7166,9 @@ function RespostasDivergenciaFatura({ faturaId, usuarioNome }) {
     setProcessando(linha.id);
     setErro('');
     try {
-      await validarRespostaDivergencia({ linha, aprovar, observacao: observacao.trim(), usuarioNome });
+      const novoStatus = await validarRespostaDivergencia({ linha, aprovar, observacao: observacao.trim(), usuarioNome });
       await carregar();
+      aoMudarConfirmacao?.(aprovar ? novoStatus : 'CONTESTADO');
     } catch (error) {
       setErro(error.message || String(error));
     } finally {
@@ -7176,11 +7181,13 @@ function RespostasDivergenciaFatura({ faturaId, usuarioNome }) {
     setProcessando('todas');
     setErro('');
     try {
+      let novoStatus = null;
       for (const linha of pendentes) {
         // eslint-disable-next-line no-await-in-loop
-        await validarRespostaDivergencia({ linha, aprovar: true, usuarioNome });
+        novoStatus = await validarRespostaDivergencia({ linha, aprovar: true, usuarioNome });
       }
       await carregar();
+      aoMudarConfirmacao?.(novoStatus);
     } catch (error) {
       setErro(error.message || String(error));
     } finally {

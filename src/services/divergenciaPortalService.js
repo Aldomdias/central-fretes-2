@@ -86,5 +86,31 @@ export async function validarRespostaDivergencia({ linha, aprovar, observacao = 
     descricao: `${aprovar ? 'Aceitou' : 'Rejeitou'} a resposta da transportadora no CT-e ${linha.numero_cte || linha.chave} (${linha.resposta === 'CONCORDO' ? `concorda, desconto R$ ${Number(linha.valor_desconto || 0).toFixed(2)}` : 'nao concorda'})${observacao ? `: ${observacao}` : ''}.`,
     usuario_nome: usuarioNome || 'Auditoria',
   });
-  return true;
+  return aprovar ? fecharConfirmacaoSeResolvida(client, linha.fatura_id, usuarioNome) : null;
+}
+
+// Quando todos os CT-es ja foram respondidos e nenhum esta pendente/rejeitado, a
+// confirmacao da fatura sai de "Contestada"/"Aguardando" e passa a "Aprovada"
+// (mesmo efeito do OK simples do portal). Devolve o novo status, ou null.
+async function fecharConfirmacaoSeResolvida(client, faturaId, usuarioNome) {
+  const { data } = await client.from('fatura_cte_divergencias').select('resposta, status_validacao, valor_desconto').eq('fatura_id', faturaId);
+  const linhas = data || [];
+  if (!linhas.length || linhas.some((l) => !l.resposta || (l.status_validacao || 'PENDENTE') !== 'ACEITO')) return null;
+  const desconto = linhas.filter((l) => l.resposta === 'CONCORDO').reduce((acc, l) => acc + Number(l.valor_desconto || 0), 0);
+  const agora = new Date().toISOString();
+  const { error } = await client.from('faturas').update({
+    confirmacao_transportador_status: 'APROVADO',
+    confirmacao_transportador_em: agora,
+    confirmacao_transportador_observacao: `Respostas por CT-e conferidas e aceitas pela auditoria. Desconto reconhecido: R$ ${desconto.toFixed(2)}.`,
+    updated_at: agora,
+  }).eq('id', faturaId);
+  if (error) return null;
+  await client.from('auditoria_fatura_historico').insert({
+    fatura_id: faturaId,
+    created_at: agora,
+    acao: 'CONFIRMACAO_TRANSPORTADOR_PORTAL',
+    descricao: `Todas as respostas por CT-e foram aceitas pela auditoria; confirmacao da fatura aprovada (desconto reconhecido R$ ${desconto.toFixed(2)}).`,
+    usuario_nome: usuarioNome || 'Auditoria',
+  });
+  return 'APROVADO';
 }
