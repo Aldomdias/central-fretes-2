@@ -7713,7 +7713,8 @@ function Financeiro({ state, onState }) {
   const lotesFechados = [...new Set(protocolosAtivos.filter(ehLoteFechado).map((item) => item.lote))].sort().reverse();
   const totalSelecionado = protocolosAtivos.filter((item) => selProtocolos.includes(item.id)).reduce((acc, item) => acc + Number(item.valor_real_a_pagar ?? item.valor ?? 0), 0);
 
-  const exportarPlanilhaLote = (lote, itens) => {
+  const exportarPlanilhaLote = async (lote, itens) => {
+    const { default: XS } = await import('xlsx-js-style'); // so esta exportacao precisa de estilo (cores/formatos)
     const STATUS = { LANCAMENTO_MANUAL: 'Manual', COBRANCA_PROCESSADA: 'Cobrança Processada', MISTA: 'Mista' };
     const TIPO = { DADOS_BANCARIOS: 'Dados Bancarios', BOLETO: 'Boleto' };
     const dadosBancarios = (item) => {
@@ -7735,19 +7736,42 @@ function Financeiro({ state, onState }) {
     });
     const soma = (col) => Number(linhas.reduce((acc, linha) => acc + linha[col], 0).toFixed(2));
     const aoa = [['', '', '', '', '', '', '', soma(7), soma(8), soma(9)], ['Fatura', 'Responsável', 'Tipo Envio', 'Transportadora', 'CNPJ', 'Vencimento', 'Status Fatura', 'Valor Fatura', 'Desconto', 'Valor real a pagar', 'Partida', 'CC Desconto', 'Observação', 'Dados Bancários'], ...linhas];
-    const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true });
-    const moeda = '"R$" #,##0.00';
-    ['H1', 'I1', 'J1'].forEach((ref) => { if (ws[ref]) ws[ref].z = moeda; });
-    linhas.forEach((_, i) => {
-      [7, 8, 9].forEach((col) => { const ref = XLSX.utils.encode_cell({ r: i + 2, c: col }); if (ws[ref]) ws[ref].z = moeda; });
-      const ref = XLSX.utils.encode_cell({ r: i + 2, c: 5 }); if (ws[ref] && ws[ref].t === 'd') ws[ref].z = 'dd/mm/yy';
+    const ws = XS.utils.aoa_to_sheet(aoa, { cellDates: true });
+    // Visual do modelo enviado ao Financeiro: totais em roxo, cabecalho magenta, linhas zebradas em rosa.
+    const CONTAB = '_-"R$"\\ * #,##0.00_-;\\-"R$"\\ * #,##0.00_-;_-"R$"\\ * "-"??_-;_-@_-';
+    const fonte = (extra = {}) => ({ name: 'Aptos Narrow', sz: 11, color: { rgb: 'FF000000' }, ...extra });
+    const preenche = (rgb) => ({ patternType: 'solid', fgColor: { rgb }, bgColor: { rgb } });
+    const alinha = { horizontal: 'center', vertical: 'center', wrapText: true };
+    const ultima = linhas.length + 2;
+    [7, 8, 9].forEach((col) => {
+      const ref = XS.utils.encode_cell({ r: 0, c: col });
+      const letra = XS.utils.encode_col(col);
+      ws[ref] = { t: 'n', v: soma(col), f: `SUM(${letra}3:${letra}${Math.max(ultima, 3)})`, z: CONTAB, s: { font: fonte({ bold: true, color: { rgb: 'FFFFFFFF' } }), fill: preenche('FF7030A0'), alignment: alinha } };
     });
-    ws['!cols'] = [10, 14, 16, 36, 18, 12, 20, 16, 14, 18, 14, 22, 30, 44].map((wch) => ({ wch }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'envios');
+    for (let col = 0; col < 14; col += 1) {
+      const ref = XS.utils.encode_cell({ r: 1, c: col });
+      ws[ref].s = { font: fonte({ bold: true, color: { rgb: 'FFFFFFFF' } }), fill: preenche('FFA02B93'), alignment: alinha };
+    }
+    linhas.forEach((_, i) => {
+      const fundo = preenche(i % 2 === 0 ? 'FFE49EDD' : 'FFF2CEEF');
+      for (let col = 0; col < 14; col += 1) {
+        const ref = XS.utils.encode_cell({ r: i + 2, c: col });
+        if (!ws[ref]) ws[ref] = { t: 's', v: '' };
+        ws[ref].s = { font: fonte(), fill: fundo, alignment: alinha };
+        if ([7, 8, 9].includes(col)) ws[ref].z = CONTAB;
+        if (col === 5 && ws[ref].t === 'd') ws[ref].z = 'dd/mm/yyyy';
+      }
+    });
+    ws['!cols'] = [10, 16, 20, 38, 18, 13, 22, 17, 14, 19, 17, 30, 40, 60].map((wch) => ({ wch }));
+    ws['!autofilter'] = { ref: `A2:N${Math.max(ultima, 2)}` };
+    ws['!freeze'] = { xSplit: 0, ySplit: 2 };
+    ws['!views'] = [{ state: 'frozen', ySplit: 2 }];
+    ws['!ref'] = `A1:N${Math.max(ultima, 2)}`;
+    const wb = XS.utils.book_new();
+    XS.utils.book_append_sheet(wb, ws, 'envios');
     const [, , mes, dia, seq] = String(lote).match(/^LOTE-(\d{4})-(\d{2})-(\d{2})-(\d+)$/) || [];
     const nome = dia ? `PROTOCOLO ${dia}-${mes}${Number(seq) > 1 ? ` (${Number(seq)})` : ''}.xlsx` : `PROTOCOLO ${lote}.xlsx`;
-    XLSX.writeFile(wb, nome, { cellDates: true });
+    XS.writeFile(wb, nome, { cellDates: true });
   };
 
   const fecharLoteEExportar = async () => {
@@ -7763,7 +7787,7 @@ function Financeiro({ state, onState }) {
       const lote = `LOTE-${data}-${String(doDia + 1).padStart(2, '0')}`;
       const next = await fecharLoteProtocolos(state, itens.map((item) => item.id), lote);
       onState(next);
-      exportarPlanilhaLote(lote, itens);
+      await exportarPlanilhaLote(lote, itens);
       setSelProtocolos([]);
       setLoteExportar(lote);
     } catch (error) {
@@ -7773,9 +7797,9 @@ function Financeiro({ state, onState }) {
     }
   };
 
-  const baixarPlanilhaLote = () => {
+  const baixarPlanilhaLote = async () => {
     const itens = protocolosAtivos.filter((item) => item.lote === loteExportar);
-    if (itens.length) exportarPlanilhaLote(loteExportar, itens);
+    if (itens.length) await exportarPlanilhaLote(loteExportar, itens);
   };
 
   const enviar = async () => {
