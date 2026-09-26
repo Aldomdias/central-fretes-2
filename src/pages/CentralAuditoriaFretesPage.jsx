@@ -1932,17 +1932,20 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     // essas duas dependem da soma do valor_frete por CT-e, que fica errada
     // quando algum CT-e veio com valor_frete zerado/incompleto no arquivo.
     const saldo = Number((Number(fatura.valor_fatura || 0) - resumo.calculoAmd).toFixed(2));
+    // O desconto a cobrar e a cobranca a MAIOR por CT-e (o que foi a menos nao compensa):
+    // o saldo liquido (fatura - calculado) pode ser negativo e esconder CT-es cobrados a mais.
+    const descontoDevido = Number(resumo.cobrancaAcima.toFixed(2));
     const camposAuditoria = {
       valor_calculado: Number(resumo.calculoAmd.toFixed(2)),
       diferenca: saldo,
-      valor_recuperado: Math.max(saldo, 0),
+      valor_recuperado: descontoDevido,
       ctes_totais: resumo.total,
       ctes_auditados: resumo.calculados,
       ctes_divergentes: resumo.divergentes,
       ctes_sem_calculo: resumo.semCalculo,
       auditoria_cobranca_acima: Number(resumo.cobrancaAcima.toFixed(2)),
       auditoria_cobranca_abaixo: Number(resumo.cobrancaAbaixo.toFixed(2)),
-      auditoria_total_descontar: Number(Math.max(saldo, 0).toFixed(2)),
+      auditoria_total_descontar: descontoDevido,
       auditoria_tolerancia_acima: Number(toleranciaFatura.acima || 0),
       auditoria_tolerancia_abaixo: Number(toleranciaFatura.abaixo || 0),
     };
@@ -1952,9 +1955,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     // aprovacao da gestao (eu/Carol). So a gestao decide, na aba "Aprovacao
     // da Gestao", se aprova (fatura vira LIBERADA_COM_DESCONTO) ou recusa
     // (volta pra COM_DIVERGENCIA). Sem confirm() ambiguo no meio do caminho.
-    if (saldo > TOLERANCIA_DESCONTO_PENDENTE) {
+    if (descontoDevido > TOLERANCIA_DESCONTO_PENDENTE) {
       // Questionario pro auditor (vai descontar? por que nao?) antes de ir pra gestao.
-      setModalLiberacao({ saldo, camposAuditoria, itens: montarItensEnvio(detalhes.filter((item) => Number(item.calculado_frete || 0) > 0 && Number(item.diferenca || 0) > 0)), descontar: '', motivo: '', observacao: '', enviando: false, erro: '' });
+      setModalLiberacao({ saldo: descontoDevido, camposAuditoria, itens: montarItensEnvio(detalhes.filter((item) => Number(item.calculado_frete || 0) > 0 && Number(item.diferenca || 0) > 0)), descontar: '', motivo: '', observacao: '', enviando: false, erro: '' });
       return;
     }
 
@@ -1962,7 +1965,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       ...camposAuditoria,
       descricaoHistorico: `Liberada para pagamento. Auditoria: ${resumo.total} CT-e(s), ${resumo.divergentes} divergente(s), cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}. Toler�ncia aplicada: +${dinheiro(toleranciaFatura.acima)} / -${dinheiro(toleranciaFatura.abaixo)}.`,
     });
-    setMensagemLiberacao('✓ Fatura liberada para pagamento — o valor calculado bateu com o cobrado.');
+    setMensagemLiberacao('✓ Fatura liberada para pagamento — nao ha cobranca a maior. Confira o protocolo financeiro abaixo.');
+    setProtocoloAberto(true);
   };
 
   const baixarArquivo = (blob, nomeArquivo) => {
@@ -4855,7 +4859,9 @@ ${portaisLaudo.length ? `
           // Em lote nao da pra perguntar item a item se o desconto vai ser
           // aplicado — quem nao fecha (saldo acima da tolerancia) vai direto
           // pra aprovacao da gestao em vez de liberar com a divergencia solta.
-          const precisaAprovacao = saldo > TOLERANCIA_DESCONTO_PENDENTE;
+          // Desconto = cobranca a MAIOR por CT-e (o saldo liquido pode ser negativo e esconder CT-es cobrados a mais).
+          const descontoDevido = Number(resumo.cobrancaAcima.toFixed(2));
+          const precisaAprovacao = descontoDevido > TOLERANCIA_DESCONTO_PENDENTE;
           const statusNovo = precisaAprovacao ? 'AGUARDANDO_APROVACAO_GESTAO' : 'PRONTA_PARA_PAGAMENTO';
           if (precisaAprovacao) enviadasParaAprovacao += 1;
           payload = {
@@ -4863,16 +4869,16 @@ ${portaisLaudo.length ? `
             status: statusNovo,
             valor_calculado: Number(resumo.calculoAmd.toFixed(2)),
             diferenca: saldo,
-            valor_recuperado: Math.max(saldo, 0),
+            valor_recuperado: descontoDevido,
             ctes_totais: resumo.total || payload.ctes_totais,
             ctes_auditados: resumo.calculados,
             ctes_divergentes: resumo.divergentes,
             ctes_sem_calculo: resumo.semCalculo,
             auditoria_cobranca_acima: Number(resumo.cobrancaAcima.toFixed(2)),
             auditoria_cobranca_abaixo: Number(resumo.cobrancaAbaixo.toFixed(2)),
-            auditoria_total_descontar: Number(Math.max(saldo, 0).toFixed(2)),
+            auditoria_total_descontar: descontoDevido,
             desconto_aplicado_confirmado: !precisaAprovacao,
-            desconto_pendente_valor: precisaAprovacao ? Math.max(saldo, 0) : 0,
+            desconto_pendente_valor: precisaAprovacao ? descontoDevido : 0,
             ...(precisaAprovacao ? { observacao_aprovacao: respostaAuditor } : {}),
           };
           evento = {
@@ -4881,7 +4887,7 @@ ${portaisLaudo.length ? `
             status_anterior: fatura.status,
             status_novo: statusNovo,
             descricao: precisaAprovacao
-              ? `Enviada para aprovacao da gestao (liberacao em massa): cobranca a maior de ${dinheiro(saldo)}.${respostaAuditor ? ` ${respostaAuditor}` : ''}`
+              ? `Enviada para aprovacao da gestao (liberacao em massa): cobranca a maior de ${dinheiro(descontoDevido)}.${respostaAuditor ? ` ${respostaAuditor}` : ''}`
               : `Liberada em massa para pagamento. Cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}.`,
           };
         }
