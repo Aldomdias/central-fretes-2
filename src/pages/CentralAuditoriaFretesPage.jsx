@@ -59,6 +59,7 @@ import {
   carregarPlataformaAuditoria,
   carregarPlataformaAuditoriaFinanceiro,
   criarProtocoloFinanceiro,
+  fecharLoteProtocolos,
   criarSolicitacaoFinanceira,
   buscarFaturasExistentesPorNumero,
   detectarCanaisFaturas,
@@ -7701,6 +7702,82 @@ function Financeiro({ state, onState }) {
   const [resumoPagamentosSap, setResumoPagamentosSap] = useState(null);
   const fatura = state.faturas.find((item) => item.id === faturaId);
 
+  // --- Fechar protocolo do dia (lote) e exportar a planilha do Financeiro ---
+  const [selProtocolos, setSelProtocolos] = useState([]);
+  const [mostrarFechados, setMostrarFechados] = useState(false);
+  const [loteExportar, setLoteExportar] = useState('');
+  const [fechandoLote, setFechandoLote] = useState(false);
+  const ehLoteFechado = (item) => String(item.lote || '').startsWith('LOTE-');
+  const protocolosAtivos = (state.protocolos || []).filter((item) => item.ativo !== false);
+  const protocolosVisiveis = protocolosAtivos.filter((item) => mostrarFechados || !ehLoteFechado(item));
+  const lotesFechados = [...new Set(protocolosAtivos.filter(ehLoteFechado).map((item) => item.lote))].sort().reverse();
+  const totalSelecionado = protocolosAtivos.filter((item) => selProtocolos.includes(item.id)).reduce((acc, item) => acc + Number(item.valor_real_a_pagar ?? item.valor ?? 0), 0);
+
+  const exportarPlanilhaLote = (lote, itens) => {
+    const STATUS = { LANCAMENTO_MANUAL: 'Manual', COBRANCA_PROCESSADA: 'Cobrança Processada', MISTA: 'Mista' };
+    const TIPO = { DADOS_BANCARIOS: 'Dados Bancarios', BOLETO: 'Boleto' };
+    const dadosBancarios = (item) => {
+      const d = item.dados_bancarios;
+      if (!d || item.tipo_envio === 'BOLETO') return '';
+      if (d.chave_pix) return `PIX: ${d.chave_pix} CNPJ: ${d.cnpj || item.cnpj_transportadora || ''}`.trim();
+      return [d.favorecido, d.banco && `Banco ${d.banco}`, d.agencia && `Ag ${d.agencia}`, d.conta && `Conta ${d.conta}`, d.tipo_conta].filter(Boolean).join(' ');
+    };
+    const numero = (v) => Number(v || 0);
+    const linhas = itens.map((item) => {
+      const desconto = numero(item.desconto_total);
+      return [
+        String(item.numero_fatura || ''), item.responsavel_nome || '', TIPO[item.tipo_envio] || item.tipo_envio || '', item.transportadora || '',
+        String(item.cnpj_transportadora || '').replace(/\D/g, ''), item.vencimento ? new Date(`${String(item.vencimento).slice(0, 10)}T12:00:00`) : '',
+        STATUS[item.status_fatura_protocolo] || '', numero(item.valor_fatura_original || item.valor), desconto, numero(item.valor_real_a_pagar ?? item.valor),
+        item.partida || '', desconto > 0 && item.centro_custo_codigo ? `${item.centro_custo_codigo} ${desconto.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : '',
+        item.observacoes || '', dadosBancarios(item),
+      ];
+    });
+    const soma = (col) => Number(linhas.reduce((acc, linha) => acc + linha[col], 0).toFixed(2));
+    const aoa = [['', '', '', '', '', '', '', soma(7), soma(8), soma(9)], ['Fatura', 'Responsável', 'Tipo Envio', 'Transportadora', 'CNPJ', 'Vencimento', 'Status Fatura', 'Valor Fatura', 'Desconto', 'Valor real a pagar', 'Partida', 'CC Desconto', 'Observação', 'Dados Bancários'], ...linhas];
+    const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true });
+    const moeda = '"R$" #,##0.00';
+    ['H1', 'I1', 'J1'].forEach((ref) => { if (ws[ref]) ws[ref].z = moeda; });
+    linhas.forEach((_, i) => {
+      [7, 8, 9].forEach((col) => { const ref = XLSX.utils.encode_cell({ r: i + 2, c: col }); if (ws[ref]) ws[ref].z = moeda; });
+      const ref = XLSX.utils.encode_cell({ r: i + 2, c: 5 }); if (ws[ref] && ws[ref].t === 'd') ws[ref].z = 'dd/mm/yy';
+    });
+    ws['!cols'] = [10, 14, 16, 36, 18, 12, 20, 16, 14, 18, 14, 22, 30, 44].map((wch) => ({ wch }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'envios');
+    const [, , mes, dia, seq] = String(lote).match(/^LOTE-(\d{4})-(\d{2})-(\d{2})-(\d+)$/) || [];
+    const nome = dia ? `PROTOCOLO ${dia}-${mes}${Number(seq) > 1 ? ` (${Number(seq)})` : ''}.xlsx` : `PROTOCOLO ${lote}.xlsx`;
+    XLSX.writeFile(wb, nome, { cellDates: true });
+  };
+
+  const fecharLoteEExportar = async () => {
+    const itens = protocolosAtivos.filter((item) => selProtocolos.includes(item.id) && !ehLoteFechado(item));
+    if (!itens.length) return;
+    if (!window.confirm(`Fechar o protocolo com ${itens.length} fatura(s) (${dinheiro(totalSelecionado)}) e gerar a planilha para o Financeiro?`)) return;
+    setFechandoLote(true);
+    setErroFinanceiro('');
+    try {
+      const hoje = new Date();
+      const data = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+      const doDia = lotesFechados.filter((item) => item.startsWith(`LOTE-${data}-`)).length;
+      const lote = `LOTE-${data}-${String(doDia + 1).padStart(2, '0')}`;
+      const next = await fecharLoteProtocolos(state, itens.map((item) => item.id), lote);
+      onState(next);
+      exportarPlanilhaLote(lote, itens);
+      setSelProtocolos([]);
+      setLoteExportar(lote);
+    } catch (error) {
+      setErroFinanceiro(error.message || String(error));
+    } finally {
+      setFechandoLote(false);
+    }
+  };
+
+  const baixarPlanilhaLote = () => {
+    const itens = protocolosAtivos.filter((item) => item.lote === loteExportar);
+    if (itens.length) exportarPlanilhaLote(loteExportar, itens);
+  };
+
   const enviar = async () => {
     if (!fatura) return;
     let next = await criarProtocoloFinanceiro(state, {
@@ -7917,7 +7994,46 @@ function Financeiro({ state, onState }) {
               <div className="audit-form-actions"><button className="btn-primary" disabled={!faturaId} onClick={enviar}>Gerar protocolo e enviar</button></div>
             </div>
           </div>
-          <SimpleTable headers={['Protocolo', 'Canal', 'Valor', 'Lote', 'Responsavel', 'Status']} rows={state.protocolos.map((item) => [item.protocolo, nomeStatus(item.canal), dinheiro(item.valor), item.lote || '-', item.responsavel_nome || '-', <Status key="s" value={item.status} />])} />
+          <div className="panel-card">
+            <div className="panel-title">Protocolo do dia — fechar e exportar planilha</div>
+            <p className="compact">Selecione as faturas que vao no protocolo, feche o lote e a planilha para o Financeiro e gerada. Os protocolos fechados ficam com o numero do lote e podem ser baixados de novo.</p>
+            <div className="actions-right" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <label className="compact"><input type="checkbox" checked={mostrarFechados} onChange={(e) => setMostrarFechados(e.target.checked)} /> Mostrar ja fechados</label>
+              <button type="button" className="btn-secondary" onClick={() => setSelProtocolos(protocolosVisiveis.filter((item) => !ehLoteFechado(item)).map((item) => item.id))}>Selecionar todos abertos</button>
+              <button type="button" className="btn-secondary" onClick={() => setSelProtocolos([])} disabled={!selProtocolos.length}>Limpar</button>
+              <button type="button" className="btn-primary" disabled={!selProtocolos.length || fechandoLote} onClick={fecharLoteEExportar}>{fechandoLote ? 'Fechando...' : `Fechar protocolo e exportar (${selProtocolos.length} - ${dinheiro(totalSelecionado)})`}</button>
+              {lotesFechados.length > 0 && (
+                <>
+                  <select value={loteExportar} onChange={(e) => setLoteExportar(e.target.value)}><option value="">Baixar planilha de um lote...</option>{lotesFechados.map((lote) => <option key={lote} value={lote}>{lote}</option>)}</select>
+                  <button type="button" className="btn-secondary" disabled={!loteExportar} onClick={baixarPlanilhaLote}>Baixar planilha</button>
+                </>
+              )}
+            </div>
+          </div>
+          <div className="table-card">
+            <div className="sim-analise-tabela-wrap">
+              <table className="sim-analise-tabela">
+                <thead><tr><th /><th>Protocolo</th><th>Fatura</th><th>Transportadora</th><th>Tipo</th><th>Valor a pagar</th><th>Desconto</th><th>Lote</th><th>Responsavel</th><th>Status</th></tr></thead>
+                <tbody>
+                  {protocolosVisiveis.map((item) => (
+                    <tr key={item.id}>
+                      <td>{!ehLoteFechado(item) && <input type="checkbox" checked={selProtocolos.includes(item.id)} onChange={(e) => setSelProtocolos((prev) => (e.target.checked ? [...prev, item.id] : prev.filter((id) => id !== item.id)))} />}</td>
+                      <td>{item.protocolo}</td>
+                      <td>{item.numero_fatura || '-'}</td>
+                      <td>{item.transportadora || '-'}</td>
+                      <td>{nomeStatus(item.tipo_envio || item.canal)}</td>
+                      <td>{dinheiro(item.valor_real_a_pagar ?? item.valor)}</td>
+                      <td>{Number(item.desconto_total || 0) ? dinheiro(item.desconto_total) : '-'}</td>
+                      <td>{item.lote || '-'}</td>
+                      <td>{item.responsavel_nome || '-'}</td>
+                      <td><Status value={item.status} /></td>
+                    </tr>
+                  ))}
+                  {!protocolosVisiveis.length && <tr><td colSpan={10}>Nenhum protocolo em aberto.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </>
       )}
       {subtab === 'solicitacoes' && (

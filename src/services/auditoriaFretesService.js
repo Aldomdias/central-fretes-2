@@ -909,6 +909,18 @@ export async function criarSolicitacaoFinanceira(state, dados) {
   return writeLocal(next);
 }
 
+// Fecha o protocolo do dia: os protocolos selecionados passam a pertencer ao lote
+// (a planilha enviada ao Financeiro sai desse lote).
+export async function fecharLoteProtocolos(state, ids = [], lote) {
+  if (!ids.length || !lote) return state;
+  if (isSupabaseConfigured()) {
+    const { error } = await getSupabaseClient().from('financeiro_protocolos').update({ lote, updated_at: new Date().toISOString() }).in('id', ids);
+    if (error) throw new Error(error.message || 'Erro ao fechar o lote.');
+  }
+  const alvo = new Set(ids);
+  return writeLocal({ ...state, protocolos: (state.protocolos || []).map((item) => (alvo.has(item.id) ? { ...item, lote } : item)) });
+}
+
 export async function atenderSolicitacaoFinanceira(state, solicitacao, atendimento) {
   const agora = new Date().toISOString();
   const statusAnterior = solicitacao.status;
