@@ -7901,13 +7901,15 @@ function FinanceiroDevolutiva({ state, onState, sessao }) {
         </>
       )}
       {problemaAberto && (
-        <div className="modal-overlay">
-          <div className="modal-box">
-            <div className="panel-title">Reportar problema — {problemaAberto.protocolo}</div>
-            <label className="field">Descreva o problema (dados bancarios errados, duplicidade, etc.)<textarea rows={4} value={problemaTexto} onChange={(e) => setProblemaTexto(e.target.value)} /></label>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div className="hint-box" style={{ background: '#fff', width: 'min(560px, 96vw)', maxHeight: '92vh', overflow: 'auto', padding: 20, borderRadius: 10 }}>
+            <h3 style={{ marginTop: 0 }}>Reportar problema — {problemaAberto.protocolo}</h3>
+            <p className="compact">Fatura {problemaAberto.numero_fatura || '-'} — {problemaAberto.transportadora || '-'} ({dinheiro(problemaAberto.valor_real_a_pagar ?? problemaAberto.valor)}).</p>
+            <p className="compact" style={{ color: '#475569' }}>Ao enviar, essa fatura sai da fila de validacao e volta para a auditoria tratar (ex.: dados bancarios errados, duplicidade). Depois que a auditoria corrigir e marcar como tratado, ela volta pra voce validar de novo aqui.</p>
+            <label className="field">Descreva o problema *<textarea rows={4} value={problemaTexto} onChange={(e) => setProblemaTexto(e.target.value)} placeholder="Ex.: dados bancarios divergentes do cadastro, fatura duplicada, valor incorreto..." /></label>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10 }}>
               <button className="btn-secondary" onClick={() => setProblemaAberto(null)}>Cancelar</button>
-              <button className="btn-primary" disabled={!problemaTexto.trim() || processando === problemaAberto.id} onClick={confirmarProblema}>Enviar</button>
+              <button className="btn-primary" disabled={!problemaTexto.trim() || processando === problemaAberto.id} onClick={confirmarProblema}>{processando === problemaAberto.id ? 'Enviando...' : 'Enviar para a auditoria'}</button>
             </div>
           </div>
         </div>
@@ -8222,7 +8224,7 @@ function Financeiro({ state, onState }) {
           </div>
           <div className="panel-card">
             <div className="panel-title">Protocolo do dia — fechar e exportar planilha</div>
-            <p className="compact">Selecione as faturas que vao no protocolo, feche o lote e a planilha para o Financeiro e gerada. Os protocolos fechados ficam com o numero do lote e podem ser baixados de novo.</p>
+            <p className="compact">Selecione as faturas que vao no protocolo, feche o lote e a planilha para o Financeiro e gerada. Os protocolos fechados ficam com o numero do lote e podem ser baixados de novo. Marque "Mostrar ja fechados" para ver o status: o Financeiro valida cada fatura (coluna "Devolutiva Financeiro") ou reporta um problema — nesse caso, a linha fica em vermelho e voce trata e clica em "Marcar tratado" para ela voltar pra fila deles.</p>
             <div className="actions-right" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
               <label className="compact"><input type="checkbox" checked={mostrarFechados} onChange={(e) => setMostrarFechados(e.target.checked)} /> Mostrar ja fechados</label>
               <label className="compact"><input type="checkbox" checked={soComProblema} onChange={(e) => setSoComProblema(e.target.checked)} /> So com problema do Financeiro ({protocolosAtivos.filter((item) => item.status_pagamento === 'PROBLEMA').length})</label>
