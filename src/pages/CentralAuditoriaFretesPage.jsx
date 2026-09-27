@@ -7797,10 +7797,34 @@ function FinanceiroDevolutiva({ state, onState, sessao }) {
     if (itens?.length) exportarPlanilhaLote(loteAberto, itens);
   };
 
+  // Valida o lote inteiro de uma vez (o normal e o lote fechar batendo). So os
+  // itens com problema reportado ficam de fora — precisam ser tratados a parte
+  // com a auditoria antes de validar.
+  const validarLote = async () => {
+    const itens = (porLote.get(loteAberto) || []).filter((item) => (item.status_pagamento || 'ABERTO') === 'ABERTO');
+    if (!itens.length) return;
+    if (!window.confirm(`Validar o lote inteiro (${itens.length} fatura(s))? Os itens ja marcados com problema ficam de fora.`)) return;
+    setProcessando('lote');
+    setErro('');
+    try {
+      const usuarioNome = sessao?.nome || sessao?.email || '';
+      for (const item of itens) {
+        // eslint-disable-next-line no-await-in-loop
+        await registrarDevolutivaProtocolo(item, { statusPagamento: 'PAGO', usuarioNome });
+      }
+      const validados = new Set(itens.map((item) => item.id));
+      onState({ ...state, protocolos: state.protocolos.map((item) => (validados.has(item.id) ? { ...item, status_pagamento: 'PAGO', pago_em: new Date().toISOString() } : item)) });
+    } catch (error) {
+      setErro(error.message || String(error));
+    } finally {
+      setProcessando('');
+    }
+  };
+
   return (
     <div className="panel-card">
       <div className="panel-title">Protocolos — Financeiro</div>
-      <p className="compact">Lotes fechados pela auditoria para pagamento. Baixe a planilha do lote e marque cada fatura como paga ou reporte um problema (ex.: dados bancarios errados, duplicidade).</p>
+      <p className="compact">Lotes fechados pela auditoria para pagamento. Confira as informacoes (mesmas da planilha), valide o lote inteiro de uma vez e reporte problema so nos casos que tiverem algo errado.</p>
       {erro && <div className="hint-box compact error-text">{erro}</div>}
       {!lotes.length && <div className="hint-box compact">Nenhum lote fechado ainda.</div>}
       {lotes.length > 0 && (
@@ -7818,40 +7842,50 @@ function FinanceiroDevolutiva({ state, onState, sessao }) {
       )}
       {loteAberto && porLote.get(loteAberto) && (
         <>
-          <div className="actions-right" style={{ margin: '10px 0' }}>
+          <div className="actions-right" style={{ margin: '10px 0', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button type="button" className="btn-secondary" onClick={baixarPlanilhaDoLote}>Baixar planilha deste lote</button>
+            <button type="button" className="btn-primary" disabled={processando === 'lote' || !porLote.get(loteAberto).some((item) => (item.status_pagamento || 'ABERTO') === 'ABERTO')} onClick={validarLote}>
+              {processando === 'lote' ? 'Validando...' : 'Validar lote inteiro'}
+            </button>
           </div>
           <div className="table-card">
             <div className="sim-analise-tabela-wrap">
               <table className="sim-analise-tabela">
-                <thead><tr><th>Protocolo</th><th>Fatura</th><th>Transportadora</th><th>Tipo</th><th>Valor a pagar</th><th>Vencimento</th><th>Dados bancarios / Partida</th><th>Devolutiva</th><th /></tr></thead>
+                <thead><tr><th>Protocolo</th><th>Fatura</th><th>Responsavel</th><th>Tipo Envio</th><th>Transportadora</th><th>CNPJ</th><th>Vencimento</th><th>Status Fatura</th><th>Valor Fatura</th><th>Desconto</th><th>Valor real a pagar</th><th>Partida</th><th>CC Desconto</th><th>Observacao</th><th>Dados Bancarios</th><th>Situacao</th><th /></tr></thead>
                 <tbody>
                   {porLote.get(loteAberto).map((item) => {
                     const status = item.status_pagamento || 'ABERTO';
                     const d = item.dados_bancarios;
-                    const info = item.tipo_envio === 'BOLETO'
-                      ? (item.partida || '-')
-                      : (d?.chave_pix ? `PIX: ${d.chave_pix}` : [d?.banco, d?.agencia, d?.conta].filter(Boolean).join(' / ') || '-');
+                    const dadosBancariosTxt = item.tipo_envio === 'BOLETO'
+                      ? ''
+                      : (d?.chave_pix ? `PIX: ${d.chave_pix} CNPJ: ${d.cnpj || item.cnpj_transportadora || ''}` : [d?.favorecido, d?.banco && `Banco ${d.banco}`, d?.agencia && `Ag ${d.agencia}`, d?.conta && `Conta ${d.conta}`].filter(Boolean).join(' ') || '-');
+                    const desconto = Number(item.desconto_total || 0);
+                    const ccDesconto = desconto > 0 && item.centro_custo_codigo ? `${item.centro_custo_codigo} ${desconto.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : '-';
                     return (
                       <tr key={item.id}>
                         <td>{item.protocolo}</td>
                         <td>{item.numero_fatura || '-'}</td>
-                        <td>{item.transportadora || '-'}</td>
+                        <td>{item.responsavel_nome || '-'}</td>
                         <td>{nomeStatus(item.tipo_envio || item.canal)}</td>
-                        <td>{dinheiro(item.valor_real_a_pagar ?? item.valor)}</td>
+                        <td>{item.transportadora || '-'}</td>
+                        <td>{item.cnpj_transportadora || '-'}</td>
                         <td>{item.vencimento ? new Date(`${String(item.vencimento).slice(0, 10)}T12:00:00`).toLocaleDateString('pt-BR') : '-'}</td>
-                        <td style={{ fontSize: 12, maxWidth: 240 }}>{info}</td>
+                        <td>{nomeStatus(item.status_fatura_protocolo || '-')}</td>
+                        <td>{dinheiro(item.valor_fatura_original ?? item.valor)}</td>
+                        <td>{desconto ? dinheiro(desconto) : '-'}</td>
+                        <td>{dinheiro(item.valor_real_a_pagar ?? item.valor)}</td>
+                        <td>{item.partida || '-'}</td>
+                        <td>{ccDesconto}</td>
+                        <td style={{ fontSize: 12, maxWidth: 200 }}>{item.observacoes || '-'}</td>
+                        <td style={{ fontSize: 12, maxWidth: 220 }}>{dadosBancariosTxt}</td>
                         <td>
-                          {status === 'PAGO' && <strong style={{ color: '#14733b' }}>Pago{item.pago_em ? ` em ${new Date(item.pago_em).toLocaleDateString('pt-BR')}` : ''}</strong>}
+                          {status === 'PAGO' && <strong style={{ color: '#14733b' }}>Validado{item.pago_em ? ` em ${new Date(item.pago_em).toLocaleDateString('pt-BR')}` : ''}</strong>}
                           {status === 'PROBLEMA' && <><strong style={{ color: '#9b1111' }}>Com problema</strong><div style={{ fontSize: 11 }}>{item.problema_descricao}</div></>}
-                          {status === 'ABERTO' && <span style={{ color: '#94a3b8' }}>Aguardando</span>}
+                          {status === 'ABERTO' && <span style={{ color: '#94a3b8' }}>Aguardando validacao</span>}
                         </td>
                         <td style={{ whiteSpace: 'nowrap' }}>
-                          {status === 'ABERTO' && (
-                            <>
-                              <button type="button" className="btn-primary audit-small-button" disabled={processando === item.id} onClick={() => marcarPago(item)}>Marcar pago</button>{' '}
-                              <button type="button" className="btn-secondary audit-small-button" disabled={processando === item.id} onClick={() => { setProblemaAberto(item); setProblemaTexto(''); }}>Problema</button>
-                            </>
+                          {status !== 'PROBLEMA' && (
+                            <button type="button" className="btn-secondary audit-small-button" disabled={processando === item.id || processando === 'lote'} onClick={() => { setProblemaAberto(item); setProblemaTexto(''); }}>Problema</button>
                           )}
                         </td>
                       </tr>
@@ -8397,6 +8431,21 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   const restaurar = () => setState({ ...restaurarDemonstracaoAuditoria(), modo: 'DEMONSTRACAO_LOCAL' });
 
   if (!state) return <div className="panel-card">{erro ? `Erro: ${erro}` : 'Carregando Plataforma de Auditoria de Fretes...'}</div>;
+
+  // Perfil Financeiro (fora da auditoria): modulo proprio, sem as outras abas
+  // (Faturas, Gestao etc.) — so o menu ja restringe a pagina, mas essa tela tinha
+  // suas proprias abas internas que davam acesso ao resto da auditoria.
+  if (carregarSessao()?.perfil === 'FINANCEIRO') {
+    return (
+      <div className="page-shell audit-platform-page">
+        <div className="page-header">
+          <h1>Protocolos — Financeiro</h1>
+          <p>Lotes fechados pela auditoria de fretes para pagamento.</p>
+        </div>
+        <Financeiro state={state} onState={setState} />
+      </div>
+    );
+  }
 
   if (embedded) {
     return <Faturas state={state} onState={setState} modo={initialTab === 'auditoria-cte' ? 'auditoria-cte' : 'faturas'} onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />;
