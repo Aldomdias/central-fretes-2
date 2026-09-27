@@ -7936,11 +7936,40 @@ function Financeiro({ state, onState }) {
   // --- Fechar protocolo do dia (lote) e exportar a planilha do Financeiro ---
   const [selProtocolos, setSelProtocolos] = useState([]);
   const [mostrarFechados, setMostrarFechados] = useState(false);
+  const [soComProblema, setSoComProblema] = useState(false);
+  const [tratandoProblema, setTratandoProblema] = useState('');
   const [loteExportar, setLoteExportar] = useState('');
   const [fechandoLote, setFechandoLote] = useState(false);
   const ehLoteFechado = (item) => String(item.lote || '').startsWith('LOTE-');
   const protocolosAtivos = (state.protocolos || []).filter((item) => item.ativo !== false);
-  const protocolosVisiveis = protocolosAtivos.filter((item) => mostrarFechados || !ehLoteFechado(item));
+  const protocolosVisiveis = protocolosAtivos
+    .filter((item) => mostrarFechados || !ehLoteFechado(item))
+    .filter((item) => !soComProblema || item.status_pagamento === 'PROBLEMA');
+  // Financeiro reportou problema (dados bancarios errados, duplicidade etc.): depois
+  // de corrigir, o auditor marca como tratado pra o protocolo voltar pra fila do
+  // Financeiro (status_pagamento volta a ABERTO, pra ele validar de novo).
+  const tratarProblemaProtocolo = async (item) => {
+    if (!window.confirm(`Marcar o problema do protocolo ${item.protocolo} como tratado? Ele volta para o Financeiro validar de novo.`)) return;
+    setTratandoProblema(item.id);
+    try {
+      const client = getSupabaseClient();
+      const agora = new Date().toISOString();
+      const { error } = await client.from('financeiro_protocolos').update({ status_pagamento: 'ABERTO', problema_descricao: null, devolutiva_por: null, devolutiva_em: null }).eq('id', item.id);
+      if (error) throw error;
+      await client.from('auditoria_fatura_historico').insert({
+        fatura_id: (item.fatura_ids || [])[0] || item.id,
+        created_at: agora,
+        acao: 'PROTOCOLO_PROBLEMA_TRATADO',
+        descricao: `Auditoria tratou o problema do protocolo ${item.protocolo} (era: ${item.problema_descricao}). Protocolo voltou para o Financeiro validar.`,
+        usuario_nome: carregarSessao()?.nome || carregarSessao()?.email || 'Auditoria',
+      });
+      onState({ ...state, protocolos: state.protocolos.map((p) => (p.id === item.id ? { ...p, status_pagamento: 'ABERTO', problema_descricao: null } : p)) });
+    } catch (error) {
+      setErroFinanceiro(error.message || String(error));
+    } finally {
+      setTratandoProblema('');
+    }
+  };
   const lotesFechados = [...new Set(protocolosAtivos.filter(ehLoteFechado).map((item) => item.lote))].sort().reverse();
   const totalSelecionado = protocolosAtivos.filter((item) => selProtocolos.includes(item.id)).reduce((acc, item) => acc + Number(item.valor_real_a_pagar ?? item.valor ?? 0), 0);
 
@@ -8193,6 +8222,7 @@ function Financeiro({ state, onState }) {
             <p className="compact">Selecione as faturas que vao no protocolo, feche o lote e a planilha para o Financeiro e gerada. Os protocolos fechados ficam com o numero do lote e podem ser baixados de novo.</p>
             <div className="actions-right" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
               <label className="compact"><input type="checkbox" checked={mostrarFechados} onChange={(e) => setMostrarFechados(e.target.checked)} /> Mostrar ja fechados</label>
+              <label className="compact"><input type="checkbox" checked={soComProblema} onChange={(e) => setSoComProblema(e.target.checked)} /> So com problema do Financeiro ({protocolosAtivos.filter((item) => item.status_pagamento === 'PROBLEMA').length})</label>
               <button type="button" className="btn-secondary" onClick={() => setSelProtocolos(protocolosVisiveis.filter((item) => !ehLoteFechado(item)).map((item) => item.id))}>Selecionar todos abertos</button>
               <button type="button" className="btn-secondary" onClick={() => setSelProtocolos([])} disabled={!selProtocolos.length}>Limpar</button>
               <button type="button" className="btn-primary" disabled={!selProtocolos.length || fechandoLote} onClick={fecharLoteEExportar}>{fechandoLote ? 'Fechando...' : `Fechar protocolo e exportar (${selProtocolos.length} - ${dinheiro(totalSelecionado)})`}</button>
@@ -8207,10 +8237,10 @@ function Financeiro({ state, onState }) {
           <div className="table-card">
             <div className="sim-analise-tabela-wrap">
               <table className="sim-analise-tabela">
-                <thead><tr><th /><th>Protocolo</th><th>Fatura</th><th>Transportadora</th><th>Tipo</th><th>Valor a pagar</th><th>Desconto</th><th>Lote</th><th>Responsavel</th><th>Status</th></tr></thead>
+                <thead><tr><th /><th>Protocolo</th><th>Fatura</th><th>Transportadora</th><th>Tipo</th><th>Valor a pagar</th><th>Desconto</th><th>Lote</th><th>Responsavel</th><th>Status</th><th>Devolutiva Financeiro</th><th /></tr></thead>
                 <tbody>
                   {protocolosVisiveis.map((item) => (
-                    <tr key={item.id}>
+                    <tr key={item.id} style={item.status_pagamento === 'PROBLEMA' ? { background: '#fef2f2' } : undefined}>
                       <td>{!ehLoteFechado(item) && <input type="checkbox" checked={selProtocolos.includes(item.id)} onChange={(e) => setSelProtocolos((prev) => (e.target.checked ? [...prev, item.id] : prev.filter((id) => id !== item.id)))} />}</td>
                       <td>{item.protocolo}</td>
                       <td>{item.numero_fatura || '-'}</td>
@@ -8221,9 +8251,15 @@ function Financeiro({ state, onState }) {
                       <td>{item.lote || '-'}</td>
                       <td>{item.responsavel_nome || '-'}</td>
                       <td><Status value={item.status} /></td>
+                      <td style={{ fontSize: 12, maxWidth: 220 }}>
+                        {item.status_pagamento === 'PAGO' && <strong style={{ color: '#14733b' }}>Validado{item.pago_em ? ` em ${new Date(item.pago_em).toLocaleDateString('pt-BR')}` : ''}</strong>}
+                        {item.status_pagamento === 'PROBLEMA' && <><strong style={{ color: '#9b1111' }}>Com problema</strong><div>{item.problema_descricao}</div>{item.devolutiva_por ? <div style={{ color: '#94a3b8' }}>por {item.devolutiva_por}</div> : null}</>}
+                        {(!item.status_pagamento || item.status_pagamento === 'ABERTO') && (item.lote ? <span style={{ color: '#94a3b8' }}>Aguardando validacao</span> : '-')}
+                      </td>
+                      <td>{item.status_pagamento === 'PROBLEMA' && <button type="button" className="btn-secondary audit-small-button" disabled={tratandoProblema === item.id} onClick={() => tratarProblemaProtocolo(item)}>Marcar tratado</button>}</td>
                     </tr>
                   ))}
-                  {!protocolosVisiveis.length && <tr><td colSpan={10}>Nenhum protocolo em aberto.</td></tr>}
+                  {!protocolosVisiveis.length && <tr><td colSpan={12}>Nenhum protocolo em aberto.</td></tr>}
                 </tbody>
               </table>
             </div>
