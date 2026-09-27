@@ -266,7 +266,7 @@ export default function App() {
       <main className="app-content">{content}</main>
       <IbgeRapidoModal />
       {usuarioTemAcesso(sessao, 'faturas') && (
-        <AvisoPrazoFaturas minimizavel={paginaAtual === 'faturas'} sessao={sessao} onAbrir={(filtros) => { setFiltroFaturasExterno({ chave: Date.now(), ...filtros }); mudarPagina('faturas'); }} />
+        <AvisoPrazoFaturas minimizavel sessao={sessao} onAbrir={(filtros) => { setFiltroFaturasExterno({ chave: Date.now(), ...filtros }); mudarPagina('faturas'); }} />
       )}
       {usuarioTemAcesso(sessao, 'autorizacoes-suprimentos') && paginaAtual !== 'autorizacoes-suprimentos' && (
         <AvisoAprovacoesSuprimentos onAbrir={() => mudarPagina('autorizacoes-suprimentos')} />
