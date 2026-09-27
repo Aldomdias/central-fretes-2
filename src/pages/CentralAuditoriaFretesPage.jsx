@@ -7766,8 +7766,8 @@ function FinanceiroDevolutiva({ state, onState, sessao }) {
     setProcessando(protocolo.id);
     setErro('');
     try {
-      await registrarDevolutivaProtocolo(protocolo, { statusPagamento: 'PAGO', usuarioNome: sessao?.nome || sessao?.email || '' });
-      onState({ ...state, protocolos: state.protocolos.map((item) => (item.id === protocolo.id ? { ...item, status_pagamento: 'PAGO', pago_em: new Date().toISOString() } : item)) });
+      const resultado = await registrarDevolutivaProtocolo(protocolo, { statusPagamento: 'PAGO', usuarioNome: sessao?.nome || sessao?.email || '' });
+      onState({ ...state, protocolos: state.protocolos.map((item) => (item.id === protocolo.id ? { ...item, status_pagamento: 'PAGO', pago_em: new Date().toISOString() } : item)), historico: [resultado.historico, ...(state.historico || [])] });
     } catch (error) {
       setErro(error.message || String(error));
     } finally {
@@ -7781,8 +7781,8 @@ function FinanceiroDevolutiva({ state, onState, sessao }) {
     setProcessando(protocolo.id);
     setErro('');
     try {
-      await registrarDevolutivaProtocolo(protocolo, { statusPagamento: 'PROBLEMA', problemaDescricao: problemaTexto.trim(), usuarioNome: sessao?.nome || sessao?.email || '' });
-      onState({ ...state, protocolos: state.protocolos.map((item) => (item.id === protocolo.id ? { ...item, status_pagamento: 'PROBLEMA', problema_descricao: problemaTexto.trim() } : item)) });
+      const resultado = await registrarDevolutivaProtocolo(protocolo, { statusPagamento: 'PROBLEMA', problemaDescricao: problemaTexto.trim(), usuarioNome: sessao?.nome || sessao?.email || '' });
+      onState({ ...state, protocolos: state.protocolos.map((item) => (item.id === protocolo.id ? { ...item, status_pagamento: 'PROBLEMA', problema_descricao: problemaTexto.trim() } : item)), historico: [resultado.historico, ...(state.historico || [])] });
       setProblemaAberto(null);
       setProblemaTexto('');
     } catch (error) {
@@ -7968,14 +7968,16 @@ function Financeiro({ state, onState }) {
       const agora = new Date().toISOString();
       const { error } = await client.from('financeiro_protocolos').update({ status_pagamento: 'ABERTO', problema_descricao: null, devolutiva_por: null, devolutiva_em: null }).eq('id', item.id);
       if (error) throw error;
-      await client.from('auditoria_fatura_historico').insert({
+      const historico = {
+        id: `hist-${Date.now()}-${Math.random().toString(16).slice(2)}`,
         fatura_id: (item.fatura_ids || [])[0] || item.id,
         created_at: agora,
         acao: 'PROTOCOLO_PROBLEMA_TRATADO',
         descricao: `Auditoria tratou o problema do protocolo ${item.protocolo} (era: ${item.problema_descricao}). Protocolo voltou para o Financeiro validar.`,
         usuario_nome: carregarSessao()?.nome || carregarSessao()?.email || 'Auditoria',
-      });
-      onState({ ...state, protocolos: state.protocolos.map((p) => (p.id === item.id ? { ...p, status_pagamento: 'ABERTO', problema_descricao: null } : p)) });
+      };
+      await client.from('auditoria_fatura_historico').insert(historico);
+      onState({ ...state, protocolos: state.protocolos.map((p) => (p.id === item.id ? { ...p, status_pagamento: 'ABERTO', problema_descricao: null } : p)), historico: [historico, ...(state.historico || [])] });
     } catch (error) {
       setErroFinanceiro(error.message || String(error));
     } finally {

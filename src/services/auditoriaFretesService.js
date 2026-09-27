@@ -1522,7 +1522,8 @@ export async function registrarDevolutivaProtocolo(protocolo, { statusPagamento,
   };
   const { error } = await client.from('financeiro_protocolos').update(payload).eq('id', protocolo.id);
   if (error) throw new Error(error.message || 'Erro ao registrar a devolutiva.');
-  await client.from('auditoria_fatura_historico').insert({
+  const historico = {
+    id: uid('hist'),
     fatura_id: (protocolo.fatura_ids || [])[0] || protocolo.id,
     created_at: agora,
     acao: statusPagamento === 'PAGO' ? 'PROTOCOLO_MARCADO_PAGO' : 'PROTOCOLO_COM_PROBLEMA',
@@ -1530,6 +1531,7 @@ export async function registrarDevolutivaProtocolo(protocolo, { statusPagamento,
       ? `Financeiro marcou o protocolo ${protocolo.protocolo} como pago.`
       : `Financeiro reportou problema no protocolo ${protocolo.protocolo}: ${problemaDescricao}`,
     usuario_nome: usuarioNome || 'Financeiro',
-  });
-  return payload;
+  };
+  await client.from('auditoria_fatura_historico').insert(historico);
+  return { ...payload, historico };
 }
