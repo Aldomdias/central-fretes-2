@@ -7884,6 +7884,9 @@ function FinanceiroDevolutiva({ state, onState, sessao }) {
                           {status === 'ABERTO' && <span style={{ color: '#94a3b8' }}>Aguardando validacao</span>}
                         </td>
                         <td style={{ whiteSpace: 'nowrap' }}>
+                          {status === 'ABERTO' && (
+                            <button type="button" className="btn-primary audit-small-button" disabled={processando === item.id || processando === 'lote'} onClick={() => marcarPago(item)}>Validar</button>
+                          )}{' '}
                           {status !== 'PROBLEMA' && (
                             <button type="button" className="btn-secondary audit-small-button" disabled={processando === item.id || processando === 'lote'} onClick={() => { setProblemaAberto(item); setProblemaTexto(''); }}>Problema</button>
                           )}
