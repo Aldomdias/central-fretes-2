@@ -1507,3 +1507,29 @@ export async function gerarLinkConfirmacaoFatura(state, fatura) {
   }
   return { state: next, url: urlPortalFatura(token), token };
 }
+
+// Devolutiva do Financeiro (externo a auditoria) sobre um protocolo do lote:
+// marca como pago ou reporta um problema (dados bancarios errados, duplicidade etc.).
+export async function registrarDevolutivaProtocolo(protocolo, { statusPagamento, problemaDescricao = '', usuarioNome = '' }) {
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const payload = {
+    status_pagamento: statusPagamento,
+    pago_em: statusPagamento === 'PAGO' ? agora : null,
+    problema_descricao: statusPagamento === 'PROBLEMA' ? problemaDescricao : null,
+    devolutiva_por: usuarioNome || null,
+    devolutiva_em: agora,
+  };
+  const { error } = await client.from('financeiro_protocolos').update(payload).eq('id', protocolo.id);
+  if (error) throw new Error(error.message || 'Erro ao registrar a devolutiva.');
+  await client.from('auditoria_fatura_historico').insert({
+    fatura_id: (protocolo.fatura_ids || [])[0] || protocolo.id,
+    created_at: agora,
+    acao: statusPagamento === 'PAGO' ? 'PROTOCOLO_MARCADO_PAGO' : 'PROTOCOLO_COM_PROBLEMA',
+    descricao: statusPagamento === 'PAGO'
+      ? `Financeiro marcou o protocolo ${protocolo.protocolo} como pago.`
+      : `Financeiro reportou problema no protocolo ${protocolo.protocolo}: ${problemaDescricao}`,
+    usuario_nome: usuarioNome || 'Financeiro',
+  });
+  return payload;
+}

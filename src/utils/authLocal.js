@@ -119,8 +119,8 @@ export const PERFIS_USUARIO = {
   },
   FINANCEIRO: {
     nome: 'Financeiro',
-    descricao: 'Protocolos, solicitacoes, boletos, pagamentos e comprovantes.',
-    paginas: ['dashboard', 'conceito-app', 'financeiro-auditoria', 'faturas', 'tratativas', 'prazo-pagamento', 'importar-descontos-obtidos', 'painel-descontos-obtidos'],
+    descricao: 'Time do Financeiro (fora da auditoria): ve os protocolos dos lotes fechados e da a devolutiva (pago / com problema) de cada fatura.',
+    paginas: ['dashboard', 'conceito-app', 'financeiro-auditoria'],
   },
   CONSULTA: {
     nome: 'Consulta',

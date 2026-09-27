@@ -60,6 +60,7 @@ import {
   carregarPlataformaAuditoriaFinanceiro,
   criarProtocoloFinanceiro,
   fecharLoteProtocolos,
+  registrarDevolutivaProtocolo,
   criarSolicitacaoFinanceira,
   buscarFaturasExistentesPorNumero,
   detectarCanaisFaturas,
@@ -7683,8 +7684,204 @@ function AprovacaoGestao({ state, onState }) {
   );
 }
 
+// Planilha do protocolo (lote) no modelo enviado ao Financeiro: usada tanto pela
+// auditoria (ao fechar o lote) quanto pela tela do Financeiro (baixar de novo).
+async function exportarPlanilhaLote(lote, itens) {
+  const { default: XS } = await import('xlsx-js-style'); // so esta exportacao precisa de estilo (cores/formatos)
+  const STATUS = { LANCAMENTO_MANUAL: 'Manual', COBRANCA_PROCESSADA: 'Cobrança Processada', MISTA: 'Mista' };
+  const TIPO = { DADOS_BANCARIOS: 'Dados Bancarios', BOLETO: 'Boleto' };
+  const dadosBancarios = (item) => {
+    const d = item.dados_bancarios;
+    if (!d || item.tipo_envio === 'BOLETO') return '';
+    if (d.chave_pix) return `PIX: ${d.chave_pix} CNPJ: ${d.cnpj || item.cnpj_transportadora || ''}`.trim();
+    return [d.favorecido, d.banco && `Banco ${d.banco}`, d.agencia && `Ag ${d.agencia}`, d.conta && `Conta ${d.conta}`, d.tipo_conta].filter(Boolean).join(' ');
+  };
+  const numero = (v) => Number(v || 0);
+  const linhas = itens.map((item) => {
+    const desconto = numero(item.desconto_total);
+    return [
+      String(item.numero_fatura || ''), item.responsavel_nome || '', TIPO[item.tipo_envio] || item.tipo_envio || '', item.transportadora || '',
+      String(item.cnpj_transportadora || '').replace(/\D/g, ''), item.vencimento ? new Date(`${String(item.vencimento).slice(0, 10)}T12:00:00`) : '',
+      STATUS[item.status_fatura_protocolo] || '', numero(item.valor_fatura_original || item.valor), desconto, numero(item.valor_real_a_pagar ?? item.valor),
+      item.partida || '', desconto > 0 && item.centro_custo_codigo ? `${item.centro_custo_codigo} ${desconto.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : '',
+      item.observacoes || '', dadosBancarios(item),
+    ];
+  });
+  const soma = (col) => Number(linhas.reduce((acc, linha) => acc + linha[col], 0).toFixed(2));
+  const aoa = [['', '', '', '', '', '', '', soma(7), soma(8), soma(9)], ['Fatura', 'Responsável', 'Tipo Envio', 'Transportadora', 'CNPJ', 'Vencimento', 'Status Fatura', 'Valor Fatura', 'Desconto', 'Valor real a pagar', 'Partida', 'CC Desconto', 'Observação', 'Dados Bancários'], ...linhas];
+  const ws = XS.utils.aoa_to_sheet(aoa, { cellDates: true });
+  // Visual do modelo enviado ao Financeiro: totais em roxo, cabecalho magenta, linhas zebradas em rosa.
+  const CONTAB = '_-"R$"\\ * #,##0.00_-;\\-"R$"\\ * #,##0.00_-;_-"R$"\\ * "-"??_-;_-@_-';
+  const fonte = (extra = {}) => ({ name: 'Aptos Narrow', sz: 11, color: { rgb: 'FF000000' }, ...extra });
+  const preenche = (rgb) => ({ patternType: 'solid', fgColor: { rgb }, bgColor: { rgb } });
+  const alinha = { horizontal: 'center', vertical: 'center', wrapText: true };
+  const ultima = linhas.length + 2;
+  [7, 8, 9].forEach((col) => {
+    const ref = XS.utils.encode_cell({ r: 0, c: col });
+    const letra = XS.utils.encode_col(col);
+    ws[ref] = { t: 'n', v: soma(col), f: `SUM(${letra}3:${letra}${Math.max(ultima, 3)})`, z: CONTAB, s: { font: fonte({ bold: true, color: { rgb: 'FFFFFFFF' } }), fill: preenche('FF7030A0'), alignment: alinha } };
+  });
+  for (let col = 0; col < 14; col += 1) {
+    const ref = XS.utils.encode_cell({ r: 1, c: col });
+    ws[ref].s = { font: fonte({ bold: true, color: { rgb: 'FFFFFFFF' } }), fill: preenche('FFA02B93'), alignment: alinha };
+  }
+  linhas.forEach((_, i) => {
+    const fundo = preenche(i % 2 === 0 ? 'FFE49EDD' : 'FFF2CEEF');
+    for (let col = 0; col < 14; col += 1) {
+      const ref = XS.utils.encode_cell({ r: i + 2, c: col });
+      if (!ws[ref]) ws[ref] = { t: 's', v: '' };
+      ws[ref].s = { font: fonte(), fill: fundo, alignment: alinha };
+      if ([7, 8, 9].includes(col)) ws[ref].z = CONTAB;
+      if (col === 5 && ws[ref].t === 'd') ws[ref].z = 'dd/mm/yyyy';
+    }
+  });
+  ws['!cols'] = [10, 16, 20, 38, 18, 13, 22, 17, 14, 19, 17, 30, 40, 60].map((wch) => ({ wch }));
+  ws['!autofilter'] = { ref: `A2:N${Math.max(ultima, 2)}` };
+  ws['!freeze'] = { xSplit: 0, ySplit: 2 };
+  ws['!views'] = [{ state: 'frozen', ySplit: 2 }];
+  ws['!ref'] = `A1:N${Math.max(ultima, 2)}`;
+  const wb = XS.utils.book_new();
+  XS.utils.book_append_sheet(wb, ws, 'envios');
+  const [, , mes, dia, seq] = String(lote).match(/^LOTE-(\d{4})-(\d{2})-(\d{2})-(\d+)$/) || [];
+  const nome = dia ? `PROTOCOLO ${dia}-${mes}${Number(seq) > 1 ? ` (${Number(seq)})` : ''}.xlsx` : `PROTOCOLO ${lote}.xlsx`;
+  XS.writeFile(wb, nome, { cellDates: true });
+}
+
+// Tela do time do Financeiro (fora da auditoria, perfil FINANCEIRO): so ve os
+// protocolos dos lotes ja fechados, agrupados por lote, baixa a planilha da
+// auditoria e da a devolutiva (pago / com problema) fatura a fatura.
+function FinanceiroDevolutiva({ state, onState, sessao }) {
+  const [processando, setProcessando] = useState('');
+  const [erro, setErro] = useState('');
+  const [problemaAberto, setProblemaAberto] = useState(null);
+  const [problemaTexto, setProblemaTexto] = useState('');
+  const [loteAberto, setLoteAberto] = useState('');
+  const protocolos = (state.protocolos || []).filter((item) => item.ativo !== false && String(item.lote || '').startsWith('LOTE-'));
+  const porLote = new Map();
+  protocolos.forEach((item) => { const lista = porLote.get(item.lote) || []; lista.push(item); porLote.set(item.lote, lista); });
+  const lotes = [...porLote.keys()].sort().reverse();
+  if (loteAberto === '' && lotes.length) setLoteAberto(lotes[0]);
+
+  const marcarPago = async (protocolo) => {
+    setProcessando(protocolo.id);
+    setErro('');
+    try {
+      await registrarDevolutivaProtocolo(protocolo, { statusPagamento: 'PAGO', usuarioNome: sessao?.nome || sessao?.email || '' });
+      onState({ ...state, protocolos: state.protocolos.map((item) => (item.id === protocolo.id ? { ...item, status_pagamento: 'PAGO', pago_em: new Date().toISOString() } : item)) });
+    } catch (error) {
+      setErro(error.message || String(error));
+    } finally {
+      setProcessando('');
+    }
+  };
+
+  const confirmarProblema = async () => {
+    if (!problemaTexto.trim()) return;
+    const protocolo = problemaAberto;
+    setProcessando(protocolo.id);
+    setErro('');
+    try {
+      await registrarDevolutivaProtocolo(protocolo, { statusPagamento: 'PROBLEMA', problemaDescricao: problemaTexto.trim(), usuarioNome: sessao?.nome || sessao?.email || '' });
+      onState({ ...state, protocolos: state.protocolos.map((item) => (item.id === protocolo.id ? { ...item, status_pagamento: 'PROBLEMA', problema_descricao: problemaTexto.trim() } : item)) });
+      setProblemaAberto(null);
+      setProblemaTexto('');
+    } catch (error) {
+      setErro(error.message || String(error));
+    } finally {
+      setProcessando('');
+    }
+  };
+
+  const baixarPlanilhaDoLote = () => {
+    const itens = porLote.get(loteAberto);
+    if (itens?.length) exportarPlanilhaLote(loteAberto, itens);
+  };
+
+  return (
+    <div className="panel-card">
+      <div className="panel-title">Protocolos — Financeiro</div>
+      <p className="compact">Lotes fechados pela auditoria para pagamento. Baixe a planilha do lote e marque cada fatura como paga ou reporte um problema (ex.: dados bancarios errados, duplicidade).</p>
+      {erro && <div className="hint-box compact error-text">{erro}</div>}
+      {!lotes.length && <div className="hint-box compact">Nenhum lote fechado ainda.</div>}
+      {lotes.length > 0 && (
+        <div className="tabs-row" style={{ flexWrap: 'wrap' }}>
+          {lotes.map((lote) => {
+            const itens = porLote.get(lote);
+            const pendentes = itens.filter((item) => (item.status_pagamento || 'ABERTO') === 'ABERTO').length;
+            return (
+              <button key={lote} className={`toggle-btn ${loteAberto === lote ? 'active' : ''}`} onClick={() => setLoteAberto(lote)}>
+                {lote.replace('LOTE-', '')} {pendentes ? `(${pendentes} pendente${pendentes > 1 ? 's' : ''})` : '✓'}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {loteAberto && porLote.get(loteAberto) && (
+        <>
+          <div className="actions-right" style={{ margin: '10px 0' }}>
+            <button type="button" className="btn-secondary" onClick={baixarPlanilhaDoLote}>Baixar planilha deste lote</button>
+          </div>
+          <div className="table-card">
+            <div className="sim-analise-tabela-wrap">
+              <table className="sim-analise-tabela">
+                <thead><tr><th>Protocolo</th><th>Fatura</th><th>Transportadora</th><th>Tipo</th><th>Valor a pagar</th><th>Vencimento</th><th>Dados bancarios / Partida</th><th>Devolutiva</th><th /></tr></thead>
+                <tbody>
+                  {porLote.get(loteAberto).map((item) => {
+                    const status = item.status_pagamento || 'ABERTO';
+                    const d = item.dados_bancarios;
+                    const info = item.tipo_envio === 'BOLETO'
+                      ? (item.partida || '-')
+                      : (d?.chave_pix ? `PIX: ${d.chave_pix}` : [d?.banco, d?.agencia, d?.conta].filter(Boolean).join(' / ') || '-');
+                    return (
+                      <tr key={item.id}>
+                        <td>{item.protocolo}</td>
+                        <td>{item.numero_fatura || '-'}</td>
+                        <td>{item.transportadora || '-'}</td>
+                        <td>{nomeStatus(item.tipo_envio || item.canal)}</td>
+                        <td>{dinheiro(item.valor_real_a_pagar ?? item.valor)}</td>
+                        <td>{item.vencimento ? new Date(`${String(item.vencimento).slice(0, 10)}T12:00:00`).toLocaleDateString('pt-BR') : '-'}</td>
+                        <td style={{ fontSize: 12, maxWidth: 240 }}>{info}</td>
+                        <td>
+                          {status === 'PAGO' && <strong style={{ color: '#14733b' }}>Pago{item.pago_em ? ` em ${new Date(item.pago_em).toLocaleDateString('pt-BR')}` : ''}</strong>}
+                          {status === 'PROBLEMA' && <><strong style={{ color: '#9b1111' }}>Com problema</strong><div style={{ fontSize: 11 }}>{item.problema_descricao}</div></>}
+                          {status === 'ABERTO' && <span style={{ color: '#94a3b8' }}>Aguardando</span>}
+                        </td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {status === 'ABERTO' && (
+                            <>
+                              <button type="button" className="btn-primary audit-small-button" disabled={processando === item.id} onClick={() => marcarPago(item)}>Marcar pago</button>{' '}
+                              <button type="button" className="btn-secondary audit-small-button" disabled={processando === item.id} onClick={() => { setProblemaAberto(item); setProblemaTexto(''); }}>Problema</button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+      {problemaAberto && (
+        <div className="modal-overlay">
+          <div className="modal-box">
+            <div className="panel-title">Reportar problema — {problemaAberto.protocolo}</div>
+            <label className="field">Descreva o problema (dados bancarios errados, duplicidade, etc.)<textarea rows={4} value={problemaTexto} onChange={(e) => setProblemaTexto(e.target.value)} /></label>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn-secondary" onClick={() => setProblemaAberto(null)}>Cancelar</button>
+              <button className="btn-primary" disabled={!problemaTexto.trim() || processando === problemaAberto.id} onClick={confirmarProblema}>Enviar</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Financeiro({ state, onState }) {
   const sessao = carregarSessao();
+  if (sessao?.perfil === 'FINANCEIRO') return <FinanceiroDevolutiva state={state} onState={onState} sessao={sessao} />;
   const pagamentoRef = useRef(null);
   const pagamentoPastaRef = useRef(null);
   const [subtab, setSubtab] = useState('protocolos');
@@ -7712,67 +7909,6 @@ function Financeiro({ state, onState }) {
   const protocolosVisiveis = protocolosAtivos.filter((item) => mostrarFechados || !ehLoteFechado(item));
   const lotesFechados = [...new Set(protocolosAtivos.filter(ehLoteFechado).map((item) => item.lote))].sort().reverse();
   const totalSelecionado = protocolosAtivos.filter((item) => selProtocolos.includes(item.id)).reduce((acc, item) => acc + Number(item.valor_real_a_pagar ?? item.valor ?? 0), 0);
-
-  const exportarPlanilhaLote = async (lote, itens) => {
-    const { default: XS } = await import('xlsx-js-style'); // so esta exportacao precisa de estilo (cores/formatos)
-    const STATUS = { LANCAMENTO_MANUAL: 'Manual', COBRANCA_PROCESSADA: 'Cobrança Processada', MISTA: 'Mista' };
-    const TIPO = { DADOS_BANCARIOS: 'Dados Bancarios', BOLETO: 'Boleto' };
-    const dadosBancarios = (item) => {
-      const d = item.dados_bancarios;
-      if (!d || item.tipo_envio === 'BOLETO') return '';
-      if (d.chave_pix) return `PIX: ${d.chave_pix} CNPJ: ${d.cnpj || item.cnpj_transportadora || ''}`.trim();
-      return [d.favorecido, d.banco && `Banco ${d.banco}`, d.agencia && `Ag ${d.agencia}`, d.conta && `Conta ${d.conta}`, d.tipo_conta].filter(Boolean).join(' ');
-    };
-    const numero = (v) => Number(v || 0);
-    const linhas = itens.map((item) => {
-      const desconto = numero(item.desconto_total);
-      return [
-        String(item.numero_fatura || ''), item.responsavel_nome || '', TIPO[item.tipo_envio] || item.tipo_envio || '', item.transportadora || '',
-        String(item.cnpj_transportadora || '').replace(/\D/g, ''), item.vencimento ? new Date(`${String(item.vencimento).slice(0, 10)}T12:00:00`) : '',
-        STATUS[item.status_fatura_protocolo] || '', numero(item.valor_fatura_original || item.valor), desconto, numero(item.valor_real_a_pagar ?? item.valor),
-        item.partida || '', desconto > 0 && item.centro_custo_codigo ? `${item.centro_custo_codigo} ${desconto.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : '',
-        item.observacoes || '', dadosBancarios(item),
-      ];
-    });
-    const soma = (col) => Number(linhas.reduce((acc, linha) => acc + linha[col], 0).toFixed(2));
-    const aoa = [['', '', '', '', '', '', '', soma(7), soma(8), soma(9)], ['Fatura', 'Responsável', 'Tipo Envio', 'Transportadora', 'CNPJ', 'Vencimento', 'Status Fatura', 'Valor Fatura', 'Desconto', 'Valor real a pagar', 'Partida', 'CC Desconto', 'Observação', 'Dados Bancários'], ...linhas];
-    const ws = XS.utils.aoa_to_sheet(aoa, { cellDates: true });
-    // Visual do modelo enviado ao Financeiro: totais em roxo, cabecalho magenta, linhas zebradas em rosa.
-    const CONTAB = '_-"R$"\\ * #,##0.00_-;\\-"R$"\\ * #,##0.00_-;_-"R$"\\ * "-"??_-;_-@_-';
-    const fonte = (extra = {}) => ({ name: 'Aptos Narrow', sz: 11, color: { rgb: 'FF000000' }, ...extra });
-    const preenche = (rgb) => ({ patternType: 'solid', fgColor: { rgb }, bgColor: { rgb } });
-    const alinha = { horizontal: 'center', vertical: 'center', wrapText: true };
-    const ultima = linhas.length + 2;
-    [7, 8, 9].forEach((col) => {
-      const ref = XS.utils.encode_cell({ r: 0, c: col });
-      const letra = XS.utils.encode_col(col);
-      ws[ref] = { t: 'n', v: soma(col), f: `SUM(${letra}3:${letra}${Math.max(ultima, 3)})`, z: CONTAB, s: { font: fonte({ bold: true, color: { rgb: 'FFFFFFFF' } }), fill: preenche('FF7030A0'), alignment: alinha } };
-    });
-    for (let col = 0; col < 14; col += 1) {
-      const ref = XS.utils.encode_cell({ r: 1, c: col });
-      ws[ref].s = { font: fonte({ bold: true, color: { rgb: 'FFFFFFFF' } }), fill: preenche('FFA02B93'), alignment: alinha };
-    }
-    linhas.forEach((_, i) => {
-      const fundo = preenche(i % 2 === 0 ? 'FFE49EDD' : 'FFF2CEEF');
-      for (let col = 0; col < 14; col += 1) {
-        const ref = XS.utils.encode_cell({ r: i + 2, c: col });
-        if (!ws[ref]) ws[ref] = { t: 's', v: '' };
-        ws[ref].s = { font: fonte(), fill: fundo, alignment: alinha };
-        if ([7, 8, 9].includes(col)) ws[ref].z = CONTAB;
-        if (col === 5 && ws[ref].t === 'd') ws[ref].z = 'dd/mm/yyyy';
-      }
-    });
-    ws['!cols'] = [10, 16, 20, 38, 18, 13, 22, 17, 14, 19, 17, 30, 40, 60].map((wch) => ({ wch }));
-    ws['!autofilter'] = { ref: `A2:N${Math.max(ultima, 2)}` };
-    ws['!freeze'] = { xSplit: 0, ySplit: 2 };
-    ws['!views'] = [{ state: 'frozen', ySplit: 2 }];
-    ws['!ref'] = `A1:N${Math.max(ultima, 2)}`;
-    const wb = XS.utils.book_new();
-    XS.utils.book_append_sheet(wb, ws, 'envios');
-    const [, , mes, dia, seq] = String(lote).match(/^LOTE-(\d{4})-(\d{2})-(\d{2})-(\d+)$/) || [];
-    const nome = dia ? `PROTOCOLO ${dia}-${mes}${Number(seq) > 1 ? ` (${Number(seq)})` : ''}.xlsx` : `PROTOCOLO ${lote}.xlsx`;
-    XS.writeFile(wb, nome, { cellDates: true });
-  };
 
   const fecharLoteEExportar = async () => {
     const itens = protocolosAtivos.filter((item) => selProtocolos.includes(item.id) && !ehLoteFechado(item));
