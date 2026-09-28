@@ -9,6 +9,7 @@ const INTERVALO_MS = 60000;
 export default function AvisoAprovacoesSuprimentos({ onAbrir }) {
   const [total, setTotal] = useState(0);
   const [novas, setNovas] = useState(0);
+  const [minimizado, setMinimizado] = useState(false);
   const anterior = useRef(null);
 
   useEffect(() => {
@@ -48,6 +49,22 @@ export default function AvisoAprovacoesSuprimentos({ onAbrir }) {
   }, []);
 
   if (!total) return null;
+
+  // Minimizado: so uma bolinha pequena, pra nao tampar outros botoes fixos (IBGE
+  // etc.) atras dela. Clicar de novo expande a pilula normal.
+  if (minimizado) {
+    return (
+      <button
+        type="button"
+        onClick={() => setMinimizado(false)}
+        title={`${total} aprovação(ões) de Suprimentos aguardando — clique para expandir`}
+        style={{ position: 'fixed', right: 16, bottom: 58, zIndex: 9998, width: 30, height: 30, borderRadius: '50%', cursor: 'pointer', border: 'none', background: '#9b1111', color: '#fff', fontWeight: 700, fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      >
+        {total}
+      </button>
+    );
+  }
+
   return (
     <>
       <style>{'@keyframes aviso-pulso{0%,100%{box-shadow:0 0 0 0 rgba(155,17,17,.55)}50%{box-shadow:0 0 0 10px rgba(155,17,17,0)}}'}</style>
@@ -57,14 +74,24 @@ export default function AvisoAprovacoesSuprimentos({ onAbrir }) {
           <div style={{ color: '#475569', marginTop: 2 }}>Aguardando decisão. Clique no botão vermelho para abrir.</div>
         </div>
       )}
-      <button
-        type="button"
-        onClick={() => { setNovas(0); onAbrir?.(); }}
-        title="Abrir Autorizações Suprimentos"
-        style={{ position: 'fixed', right: 16, bottom: 58, zIndex: 9998, borderRadius: 999, padding: '8px 14px', cursor: 'pointer', border: 'none', background: '#9b1111', color: '#fff', fontWeight: 700, animation: 'aviso-pulso 2s infinite' }}
-      >
-        🔔 Suprimentos: {total} aguardando
-      </button>
+      <div style={{ position: 'fixed', right: 16, bottom: 58, zIndex: 9998, display: 'flex', alignItems: 'center', gap: 4 }}>
+        <button
+          type="button"
+          onClick={() => { setNovas(0); onAbrir?.(); }}
+          title="Abrir Autorizações Suprimentos"
+          style={{ borderRadius: 999, padding: '8px 14px', cursor: 'pointer', border: 'none', background: '#9b1111', color: '#fff', fontWeight: 700, animation: 'aviso-pulso 2s infinite' }}
+        >
+          🔔 Suprimentos: {total} aguardando
+        </button>
+        <button
+          type="button"
+          onClick={() => setMinimizado(true)}
+          title="Minimizar"
+          style={{ width: 22, height: 22, borderRadius: '50%', cursor: 'pointer', border: '1px solid #9b1111', background: '#fff', color: '#9b1111', fontWeight: 700, fontSize: 12, lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}
+        >
+          −
+        </button>
+      </div>
     </>
   );
 }
