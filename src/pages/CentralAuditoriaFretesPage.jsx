@@ -1868,9 +1868,14 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     const temSemCalculo = destino === 'TRANSPORTE' && detalhes.some((d) => itens.some((i) => i.chave_cte === d.chave_cte) && semCalculoAmd(d));
     if (temSemCalculo && String(justificativa).trim().length < 30) { setModalSuprimentos((prev) => ({ ...prev, erro: `Ha CT-e sem calculo (cotacao): justifique o caso (${String(justificativa).trim().length}/30 caracteres).` })); return; }
     if (suprimentos && !(modalSuprimentos.anexos || []).length) { setModalSuprimentos((prev) => ({ ...prev, erro: 'Anexe ao menos um arquivo (tabela, lista de TDE ou documento de apoio) para compor a solicitacao.' })); return; }
-    const perguntaComplementar = destino === 'TRANSPORTE' && itens.some((i) => normalizarCanalAutorizacao(i.canal) === 'ATACADO');
+    const exigeSemDiferenca = destino === 'TRANSPORTE' && Number(modalSuprimentos.foraDaPremissa || 0) > 0;
+    const perguntaComplementar = destino === 'TRANSPORTE' && (itens.some((i) => normalizarCanalAutorizacao(i.canal) === 'ATACADO') || exigeSemDiferenca);
     const complementar = perguntaComplementar && modalSuprimentos.complementar === 'SIM';
     if (perguntaComplementar && !modalSuprimentos.complementar) { setModalSuprimentos((prev) => ({ ...prev, erro: 'Responda se e CT-e complementar (Sim ou Nao).' })); return; }
+    if (exigeSemDiferenca && !complementar) {
+      setModalSuprimentos((prev) => ({ ...prev, erro: `Nao da pra enviar para aprovacao: ${modalSuprimentos.foraDaPremissa} CT-e(s) com calculo da AMD mas sem diferenca positiva (nao foi cobrado a mais) e nao e complementar.` }));
+      return;
+    }
     if (complementar) {
       const semNf = itens.filter((i) => String(i.chave_nfe || '').replace(/\D/g, '').length !== 44);
       if (semNf.length) { setModalSuprimentos((prev) => ({ ...prev, erro: `CT-e complementar exige a chave da NF (44 digitos): faltam ${semNf.length} CT-e(s).` })); return; }
@@ -1895,12 +1900,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const enviarParaAutorizacaoTransporte = () => {
     const alvo = detalhes.filter((item) => selecionados.includes(item.id));
     if (!alvo.length) return;
-    const fora = casosForaDaPremissa(alvo);
-    if (fora.length) {
-      setErroDetalhes(`Nao da pra enviar para aprovacao: ${fora.length} CT-e(s) com calculo da AMD mas sem diferenca positiva (nao foi cobrado a mais).`);
-      return;
-    }
-    setModalSuprimentos({ destino: 'TRANSPORTE', itens: montarItensEnvio(alvo), tipoAjuste: '', justificativa: '', enviando: false });
+    const foraDaPremissa = casosForaDaPremissa(alvo).length;
+    setModalSuprimentos({ destino: 'TRANSPORTE', itens: montarItensEnvio(alvo), tipoAjuste: '', justificativa: '', enviando: false, foraDaPremissa });
   };
 
   const confirmarLiberacaoComDiferenca = async () => {
@@ -3235,9 +3236,12 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                 ? 'Abre um chamado AMD na Central de Solicitacoes e coloca os CT-es na fila de Suprimentos. Quem aprovar o valor assume o chamado.'
                 : 'Coloca os CT-es na fila do responsavel do transporte do canal (B2C/Atacado) autorizar o saldo.'} Confira a analise abaixo:</p>
               <AnaliseFreteTabela itens={modalSuprimentos.itens} />
-              {modalSuprimentos.destino === 'TRANSPORTE' && modalSuprimentos.itens.some((i) => normalizarCanalAutorizacao(i.canal) === 'ATACADO') && (
+              {modalSuprimentos.destino === 'TRANSPORTE' && (modalSuprimentos.itens.some((i) => normalizarCanalAutorizacao(i.canal) === 'ATACADO') || Number(modalSuprimentos.foraDaPremissa || 0) > 0) && (
                 <div className="field">
                   <strong>E CT-e complementar? *</strong>
+                  {Number(modalSuprimentos.foraDaPremissa || 0) > 0 && (
+                    <div className="compact" style={{ color: '#a15c00' }}>{modalSuprimentos.foraDaPremissa} CT-e(s) tem calculo da AMD mas sem diferenca positiva (nao foi cobrado a mais). So da pra enviar se for complementar.</div>
+                  )}
                   <div style={{ display: 'flex', gap: 16, margin: '6px 0' }}>
                     {[['SIM', 'Sim'], ['NAO', 'Nao']].map(([valor, rotulo]) => (
                       <label key={valor} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
