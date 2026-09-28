@@ -6,7 +6,7 @@ const INTERVALO_MS = 60000;
 // Aviso fixo no canto direito (acima do IBGE) com quantas aprovacoes de
 // Suprimentos estao aguardando decisao. Aparece ao entrar no sistema e quando
 // chega uma nova, sem precisar abrir a tela de Autorizacoes Suprimentos.
-export default function AvisoAprovacoesSuprimentos({ onAbrir }) {
+export default function AvisoAprovacoesSuprimentos({ onAbrir, oculto = false }) {
   const [total, setTotal] = useState(0);
   const [novas, setNovas] = useState(0);
   const anterior = useRef(null);
@@ -47,7 +47,8 @@ export default function AvisoAprovacoesSuprimentos({ onAbrir }) {
     };
   }, []);
 
-  if (!total) return null;
+  if (!total || oculto) return null;
+
   return (
     <>
       <style>{'@keyframes aviso-pulso{0%,100%{box-shadow:0 0 0 0 rgba(155,17,17,.55)}50%{box-shadow:0 0 0 10px rgba(155,17,17,0)}}'}</style>

@@ -80,6 +80,9 @@ export default function App() {
   const [filtroFaturasExterno, setFiltroFaturasExterno] = useState(null);
   const [sidebarRecolhida, setSidebarRecolhida] = useState(true);
   const [menuMobileAberto, setMenuMobileAberto] = useState(false);
+  const [avisosOcultos, setAvisosOcultos] = useState(() => {
+    try { return window.localStorage.getItem('central_fretes_avisos_ocultos') === '1'; } catch { return false; }
+  });
   const [transportadoraSelecionadaId, setTransportadoraSelecionadaId] = useState(null);
   const [origemSelecionadaId, setOrigemSelecionadaId] = useState(null);
   const transportadorasMemo = useMemo(() => store.transportadoras, [store.transportadoras]);
@@ -266,11 +269,21 @@ export default function App() {
       <main className="app-content">{content}</main>
       <IbgeRapidoModal />
       {usuarioTemAcesso(sessao, 'faturas') && (
-        <AvisoPrazoFaturas minimizavel sessao={sessao} onAbrir={(filtros) => { setFiltroFaturasExterno({ chave: Date.now(), ...filtros }); mudarPagina('faturas'); }} />
+        <AvisoPrazoFaturas minimizavel oculto={avisosOcultos} sessao={sessao} onAbrir={(filtros) => { setFiltroFaturasExterno({ chave: Date.now(), ...filtros }); mudarPagina('faturas'); }} />
       )}
       {usuarioTemAcesso(sessao, 'autorizacoes-suprimentos') && paginaAtual !== 'autorizacoes-suprimentos' && (
-        <AvisoAprovacoesSuprimentos onAbrir={() => mudarPagina('autorizacoes-suprimentos')} />
+        <AvisoAprovacoesSuprimentos oculto={avisosOcultos} onAbrir={() => mudarPagina('autorizacoes-suprimentos')} />
       )}
+      {/* Um botao so pra esconder/mostrar todos os avisos fixos de uma vez — em vez
+          de cada um ter seu proprio minimizar, o que tampava outros botoes fixos. */}
+      <button
+        type="button"
+        onClick={() => setAvisosOcultos((v) => { const next = !v; try { window.localStorage.setItem('central_fretes_avisos_ocultos', next ? '1' : '0'); } catch { /* localStorage indisponivel: segue so na sessao */ } return next; })}
+        title={avisosOcultos ? 'Mostrar avisos (Faturas, Suprimentos)' : 'Esconder avisos (Faturas, Suprimentos)'}
+        style={{ position: 'fixed', right: 16, bottom: 244, zIndex: 9998, width: 30, height: 30, borderRadius: '50%', cursor: 'pointer', border: '1px solid #cbd5e1', background: '#fff', color: '#334155', fontWeight: 700, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(0,0,0,.15)' }}
+      >
+        {avisosOcultos ? '👁' : '−'}
+      </button>
     </div>
   );
 }

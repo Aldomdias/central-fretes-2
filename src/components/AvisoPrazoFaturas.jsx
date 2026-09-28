@@ -31,7 +31,7 @@ function situacao(fatura) {
 // Avisos fixos (acima do de Suprimentos): (1) faturas nao pagas que vencem nos
 // proximos 10 dias e (2) vencidas nao pagas dos ultimos 2 meses. Auditor ve as
 // suas; gestor ve todas, com resumo por auditor. Clicar leva para as Faturas.
-export default function AvisoPrazoFaturas({ sessao, onAbrir, minimizavel = false }) {
+export default function AvisoPrazoFaturas({ sessao, onAbrir, minimizavel = false, oculto = false }) {
   const [faturas, setFaturas] = useState([]);
   const [antecipadasBrutas, setAntecipadasBrutas] = useState([]);
   const [expandido, setExpandido] = useState(false);
@@ -123,7 +123,7 @@ export default function AvisoPrazoFaturas({ sessao, onAbrir, minimizavel = false
     { chave: 'VENCIDA', lista: vencidas, cor: '#9b1111', bottom: 150, titulo: 'Vencidas e não pagas (últimos 2 meses)', botao: `⚠ Vencidas: ${vencidas.length}`, filtroRapido: 'alerta_vencidas' },
     { chave: 'ANTECIPADA', lista: gestor ? antecipadas : [], cor: '#0369a1', bottom: 196, titulo: `Lançadas com ${A_VENCER_DIAS} dias ou mais para vencer (gestão)`, botao: `📅 Lançadas antecipadas: ${antecipadas.length}`, filtroRapido: 'alerta_antecipadas' },
   ].filter((c) => c.lista.length);
-  if (!configs.length) return null;
+  if (!configs.length || oculto) return null;
   const total = configs.reduce((acc, c) => acc + c.lista.length, 0);
   // Em telas de trabalho (ex.: Faturas) fica so um botao pequeno; clicar mostra os tres.
   const recolhido = minimizavel && !expandido;
