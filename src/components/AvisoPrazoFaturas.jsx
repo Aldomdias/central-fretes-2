@@ -120,9 +120,15 @@ export default function AvisoPrazoFaturas({ sessao, onAbrir, minimizavel = false
 
   const abrirFaturas = (filtros) => { setAberto(null); onAbrir?.({ visao: gestor ? 'todas' : 'minhas', ...filtros }); };
   const abrirFaturaPorNumero = () => {
-    const numero = numeroBusca.trim();
+    // Digitou "numero transportadora" (ex.: "425659 tam"): quando o numero repete em
+    // mais de uma fatura, esse pedaco desempata sozinho, sem precisar escolher na lista.
+    const texto = numeroBusca.trim();
+    if (!texto) return;
+    const espaco = texto.indexOf(' ');
+    const numero = espaco === -1 ? texto : texto.slice(0, espaco).trim();
+    const transportadora = espaco === -1 ? '' : texto.slice(espaco + 1).trim();
     if (!numero) return;
-    abrirFaturas({ abrirNumeroFatura: numero, filtro: numero });
+    abrirFaturas({ abrirNumeroFatura: numero, abrirTransportadora: transportadora, filtro: numero });
     setNumeroBusca('');
     setBuscaAberta(false);
   };
@@ -206,8 +212,8 @@ export default function AvisoPrazoFaturas({ sessao, onAbrir, minimizavel = false
                 onChange={(e) => setNumeroBusca(e.target.value)}
                 onBlur={() => { if (!numeroBusca.trim()) setBuscaAberta(false); }}
                 onKeyDown={(e) => { if (e.key === 'Escape') { setNumeroBusca(''); setBuscaAberta(false); } }}
-                placeholder="Nº da fatura"
-                style={{ border: 'none', outline: 'none', width: 110, fontSize: 13 }}
+                placeholder="Nº da fatura (+ transportadora)"
+                style={{ border: 'none', outline: 'none', width: 170, fontSize: 13 }}
               />
               <button type="submit" title="Abrir fatura" style={{ border: 'none', background: '#071d49', color: '#fff', borderRadius: 999, width: 26, height: 26, cursor: 'pointer', fontSize: 13 }}>➜</button>
             </form>
