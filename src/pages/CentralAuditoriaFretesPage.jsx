@@ -2216,11 +2216,13 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     setInfoRecalculo('');
     try {
       // Se tiver CT-e marcado no checkbox, recalcula só esses; sem marcação,
-      // recalcula a fatura inteira.
+      // recalcula so a lista da aba aberta (ex.: os 44 "Sem calculo"), não a
+      // fatura inteira — senão reprocessa CT-es que já estão OK à toa.
       const idsRecalculo = Array.isArray(idsAlvo) ? idsAlvo : selecionados;
+      const listaAbaAtiva = tab === 'sem-calculo' ? semCalculo : tab === 'divergencias' ? divergencias : detalhes;
       const alvo = idsRecalculo.length
         ? detalhes.filter((item) => idsRecalculo.includes(item.id))
-        : detalhes;
+        : listaAbaAtiva;
       const chaves = alvo.map((item) => item.chave_cte).filter(Boolean);
       if (!chaves.length) throw new Error('Esta fatura não possui CT-es com chave para recalcular.');
 
@@ -2820,7 +2822,22 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         </label>
       </div>
       <table className="sim-analise-tabela">
-        <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th>Peso</th><th>Valor NF</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Saldo autorizado</th><th>Motivo</th><th>Status</th><th>Entrega</th></tr></thead>
+        <thead><tr>
+          <th>
+            <input
+              type="checkbox"
+              title="Selecionar todos os CT-es desta lista"
+              checked={lista.length > 0 && lista.every((item) => selecionados.includes(item.id))}
+              onChange={(e) => {
+                const idsLista = lista.map((item) => item.id);
+                setSelecionados((prev) => (e.target.checked
+                  ? [...new Set([...prev, ...idsLista])]
+                  : prev.filter((id) => !idsLista.includes(id))));
+              }}
+            />
+          </th>
+          <th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th>Peso</th><th>Valor NF</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Saldo autorizado</th><th>Motivo</th><th>Status</th><th>Entrega</th>
+        </tr></thead>
         <tbody>
           {lista.map((item) => {
             const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte))
@@ -3183,8 +3200,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       <OpcoesLaudoTransportador opcoes={opcoesLaudoTransportador} onMudar={setOpcoesLaudoTransportador} />
       <div className="audit-action-bar">
         <span>{selecionados.length} CT-e(s) selecionado(s)</span>
-        <button className="btn-primary" disabled={recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={recalcular} title={selecionados.length ? 'Recalcula só os CT-es selecionados' : 'Recalcula todos os CT-es da fatura'}>
-          {recalculando ? 'Recalculando...' : selecionados.length ? `Recalcular selecionados (${selecionados.length})` : 'Recalcular CT-es'}
+        <button className="btn-primary" disabled={recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={recalcular} title={selecionados.length ? 'Recalcula só os CT-es selecionados' : tab === 'sem-calculo' ? `Recalcula só os ${semCalculo.length} CT-es sem cálculo` : tab === 'divergencias' ? `Recalcula só os ${divergencias.length} CT-es divergentes` : 'Recalcula todos os CT-es da fatura'}>
+          {recalculando ? 'Recalculando...' : selecionados.length ? `Recalcular selecionados (${selecionados.length})` : tab === 'sem-calculo' ? `Recalcular sem cálculo (${semCalculo.length})` : tab === 'divergencias' ? `Recalcular divergentes (${divergencias.length})` : 'Recalcular CT-es'}
         </button>
         <button className="btn-secondary" disabled={corrigindoTracking || atualizandoBase || recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={corrigirBasePeloTracking} title="Compara origem/destino do CT-e na base com o tracking, corrige o que divergir e recalcula os CT-es selecionados (ou os sem cálculo)">
           {corrigindoTracking ? 'Corrigindo (etapa 1/2)...' : selecionados.length ? `Corrigir base (tracking) (${selecionados.length})` : 'Corrigir base (tracking)'}
