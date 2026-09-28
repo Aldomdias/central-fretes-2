@@ -3371,25 +3371,33 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [progressoCanais, setProgressoCanais] = useState(null);
   const [progressoImportacao, setProgressoImportacao] = useState(null);
   const [aberta, setAberta] = useState(null);
-  // Vinda do aviso fixo "abrir fatura N": acha e abre direto, sem precisar clicar na linha.
+  // Vinda do aviso fixo "abrir fatura N [transportadora]": acha e abre direto, sem
+  // precisar clicar na linha. A transportadora e so o desempate quando o numero repete.
   const [numeroFaturaAbrirAuto, setNumeroFaturaAbrirAuto] = useState(() => filtrosIniciais?.abrirNumeroFatura || '');
+  const [transportadoraFaturaAbrirAuto, setTransportadoraFaturaAbrirAuto] = useState(() => filtrosIniciais?.abrirTransportadora || '');
   useEffect(() => {
     if (!numeroFaturaAbrirAuto || !state.faturas?.length) return;
     const alvo = String(numeroFaturaAbrirAuto).trim();
+    const termoTransportadora = String(transportadoraFaturaAbrirAuto || '').trim().toLowerCase();
     const encontradas = state.faturas.filter((item) => String(item.numero_fatura || '').trim() === alvo);
-    if (encontradas.length === 1) {
-      setAberta(encontradas[0]);
-    } else if (encontradas.length > 1) {
+    const filtradasPorTransportadora = termoTransportadora
+      ? encontradas.filter((item) => String(item.transportadora || '').toLowerCase().includes(termoTransportadora))
+      : encontradas;
+    const alvoFinal = filtradasPorTransportadora.length ? filtradasPorTransportadora : encontradas;
+    if (alvoFinal.length === 1) {
+      setAberta(alvoFinal[0]);
+    } else if (alvoFinal.length > 1) {
       // Mais de uma fatura com esse numero (reenviada, transportadoras diferentes
-      // etc.): nao da pra escolher sozinho — deixa so a lista filtrada, ja com o
-      // numero no campo de busca, pra voce clicar na certa.
+      // etc.) mesmo apos o desempate pela transportadora — nao da pra escolher
+      // sozinho: deixa so a lista filtrada, ja com o numero na busca, pra clicar na certa.
       setFiltro(alvo);
-      setMensagemImportacao(`${encontradas.length} faturas com o número ${alvo} — escolha na lista abaixo.`);
+      setMensagemImportacao(`${alvoFinal.length} faturas com o número ${alvo}${termoTransportadora ? ` (transportadora "${termoTransportadora}")` : ''} — escolha na lista abaixo.`);
     } else {
       setMensagemImportacao(`Fatura ${alvo} não encontrada.`);
     }
     setNumeroFaturaAbrirAuto('');
-  }, [numeroFaturaAbrirAuto, state.faturas]);
+    setTransportadoraFaturaAbrirAuto('');
+  }, [numeroFaturaAbrirAuto, transportadoraFaturaAbrirAuto, state.faturas]);
   const [importando, setImportando] = useState(false);
   const [mensagemImportacao, setMensagemImportacao] = useState('');
   const [ultimaCargaFaturas, setUltimaCargaFaturas] = useState(carregarUltimaCargaFaturas);
