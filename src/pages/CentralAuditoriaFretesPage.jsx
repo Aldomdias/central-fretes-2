@@ -3359,9 +3359,15 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   useEffect(() => {
     if (!numeroFaturaAbrirAuto || !state.faturas?.length) return;
     const alvo = String(numeroFaturaAbrirAuto).trim();
-    const encontrada = state.faturas.find((item) => String(item.numero_fatura || '').trim() === alvo);
-    if (encontrada) {
-      setAberta(encontrada);
+    const encontradas = state.faturas.filter((item) => String(item.numero_fatura || '').trim() === alvo);
+    if (encontradas.length === 1) {
+      setAberta(encontradas[0]);
+    } else if (encontradas.length > 1) {
+      // Mais de uma fatura com esse numero (reenviada, transportadoras diferentes
+      // etc.): nao da pra escolher sozinho — deixa so a lista filtrada, ja com o
+      // numero no campo de busca, pra voce clicar na certa.
+      setFiltro(alvo);
+      setMensagemImportacao(`${encontradas.length} faturas com o número ${alvo} — escolha na lista abaixo.`);
     } else {
       setMensagemImportacao(`Fatura ${alvo} não encontrada.`);
     }
