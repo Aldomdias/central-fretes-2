@@ -36,6 +36,8 @@ export default function AvisoPrazoFaturas({ sessao, onAbrir, minimizavel = false
   const [antecipadasBrutas, setAntecipadasBrutas] = useState([]);
   const [expandido, setExpandido] = useState(false);
   const [aberto, setAberto] = useState(null); // null | 'A_VENCER' | 'VENCIDA' | 'ANTECIPADA'
+  const [buscaAberta, setBuscaAberta] = useState(false);
+  const [numeroBusca, setNumeroBusca] = useState('');
   const gestor = usuarioEhGestorAuditoria(sessao);
   const meuEmail = String(sessao?.email || '').trim().toLowerCase();
   const meuNome = String(sessao?.nome || '').trim().toLowerCase();
@@ -117,6 +119,13 @@ export default function AvisoPrazoFaturas({ sessao, onAbrir, minimizavel = false
   };
 
   const abrirFaturas = (filtros) => { setAberto(null); onAbrir?.({ visao: gestor ? 'todas' : 'minhas', ...filtros }); };
+  const abrirFaturaPorNumero = () => {
+    const numero = numeroBusca.trim();
+    if (!numero) return;
+    abrirFaturas({ abrirNumeroFatura: numero, filtro: numero });
+    setNumeroBusca('');
+    setBuscaAberta(false);
+  };
 
   const configs = [
     { chave: 'A_VENCER', lista: aVencer, cor: '#e67e22', bottom: 104, titulo: `A vencer nos próximos ${A_VENCER_DIAS} dias (não pagas)`, botao: `⏰ A vencer (${A_VENCER_DIAS}d): ${aVencer.length}`, filtroRapido: 'alerta_a_vencer' },
@@ -186,9 +195,31 @@ export default function AvisoPrazoFaturas({ sessao, onAbrir, minimizavel = false
         </div>
       )}
       {minimizavel && (
-        <button type="button" onClick={() => { setExpandido((v) => !v); setAberto(null); }} title={expandido ? 'Recolher avisos de prazo' : 'Mostrar avisos de prazo'} style={{ position: 'fixed', right: 16, bottom: 104, zIndex: 9998, borderRadius: 999, padding: '6px 12px', cursor: 'pointer', border: '1px solid #071d49', background: '#fff', color: '#071d49', fontWeight: 700 }}>
-          {expandido ? '✕ Faturas' : `⏰ Faturas (${total})`}
-        </button>
+        <div style={{ position: 'fixed', right: 16, bottom: 104, zIndex: 9998, display: 'flex', alignItems: 'center', gap: 6 }}>
+          {buscaAberta ? (
+            <form onSubmit={(e) => { e.preventDefault(); abrirFaturaPorNumero(); }} style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#fff', border: '1px solid #071d49', borderRadius: 999, padding: '3px 4px 3px 10px', boxShadow: '0 4px 14px rgba(0,0,0,.2)' }}>
+              <input
+                autoFocus
+                type="text"
+                inputMode="numeric"
+                value={numeroBusca}
+                onChange={(e) => setNumeroBusca(e.target.value)}
+                onBlur={() => { if (!numeroBusca.trim()) setBuscaAberta(false); }}
+                onKeyDown={(e) => { if (e.key === 'Escape') { setNumeroBusca(''); setBuscaAberta(false); } }}
+                placeholder="Nº da fatura"
+                style={{ border: 'none', outline: 'none', width: 110, fontSize: 13 }}
+              />
+              <button type="submit" title="Abrir fatura" style={{ border: 'none', background: '#071d49', color: '#fff', borderRadius: 999, width: 26, height: 26, cursor: 'pointer', fontSize: 13 }}>➜</button>
+            </form>
+          ) : (
+            <button type="button" onClick={() => setBuscaAberta(true)} title="Digitar o número da fatura pra abrir direto" style={{ borderRadius: '50%', width: 30, height: 30, cursor: 'pointer', border: '1px solid #071d49', background: '#fff', color: '#071d49', fontWeight: 700 }}>
+              🔎
+            </button>
+          )}
+          <button type="button" onClick={() => { setExpandido((v) => !v); setAberto(null); }} title={expandido ? 'Recolher avisos de prazo' : 'Mostrar avisos de prazo'} style={{ borderRadius: 999, padding: '6px 12px', cursor: 'pointer', border: '1px solid #071d49', background: '#fff', color: '#071d49', fontWeight: 700 }}>
+            {expandido ? '✕ Faturas' : `⏰ Faturas (${total})`}
+          </button>
+        </div>
       )}
       {!recolhido && configs.map((c) => (
         <button
