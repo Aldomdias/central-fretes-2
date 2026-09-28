@@ -1,4 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { carregarEntregasAprovadas } from './entregaPortalService';
 
 // Status de entrega dos CT-es da auditoria, lido do tracking (tracking_rows).
 // Regra de pagamento: fatura só é liberada quando TODOS os CT-es estão entregues.
@@ -7,6 +8,9 @@ export const STATUS_ENTREGA = {
   NAO_ENTREGUE: 'NAO_ENTREGUE', // achado no tracking, sem data de entrega
   SEM_TRACKING: 'SEM_TRACKING', // não achado no tracking
 };
+
+// Comprovante enviado pela transportadora (portal) e aprovado pelo auditor conta como entregue.
+export const ORIGEM_COMPROVANTE = 'COMPROVANTE';
 
 export const ROTULO_ENTREGA = {
   ENTREGUE: 'Entregue',
@@ -91,6 +95,14 @@ export async function buscarStatusEntregaCtes(registros = []) {
       const id = porNfe.get(soDigitos(l.chave_nfe));
       if (id) aplicar(id, l);
     }
+  }
+  // Comprovante aprovado pelo auditor vale como entrega mesmo sem data no tracking.
+  const pendentes = [...resultado.entries()].filter(([, v]) => v.status !== STATUS_ENTREGA.ENTREGUE).map(([id]) => id);
+  if (pendentes.length) {
+    const aprovadas = await carregarEntregasAprovadas(pendentes);
+    aprovadas.forEach((linha, id) => {
+      resultado.set(id, { status: STATUS_ENTREGA.ENTREGUE, dataEntrega: linha.validado_em || null, origem: ORIGEM_COMPROVANTE });
+    });
   }
   return resultado;
 }

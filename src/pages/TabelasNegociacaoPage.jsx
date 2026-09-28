@@ -1525,6 +1525,11 @@ export default function TabelasNegociacaoPage() {
 
   useEffect(function() { carregar(); }, []); // eslint-disable-line
 
+  // Mensagens de erro/sucesso ficam no topo da página; leva a tela até elas.
+  useEffect(function() {
+    if ((erro || sucesso) && typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [erro, sucesso]);
+
   useEffect(function() {
     async function abrirNegociacaoDaUrl() {
       var estadoUrl = lerEstadoUrlNegociacao();

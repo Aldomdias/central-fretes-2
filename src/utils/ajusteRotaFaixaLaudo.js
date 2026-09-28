@@ -446,6 +446,9 @@ export function gerarHtmlAjusteRotaFaixa(resultado = {}, { incluirSavingGerencia
     ctesComCalculoTotal, volumesAtendidosPorDia, volumesGanhariaPorDia, pedidosAtendidosTotal,
     savingPeriodo, savingMensal, savingAnual,
   } = montarDadosAjusteRotaFaixa(r);
+  // Tabela x tabela: nada do que foi pago / da concorrência aparece (o transportador
+  // poderia usar a folga para subir preço). Só a tabela dele e onde precisa reduzir.
+  const tvt = Boolean(r.filtros?.tabelaVsTabela);
 
   return `<!doctype html>
 <html lang="pt-BR">
@@ -486,7 +489,7 @@ export function gerarHtmlAjusteRotaFaixa(resultado = {}, { incluirSavingGerencia
   <header>
     <h1>${esc(tituloLaudo)}</h1>
     <div>${esc(transportadora)} - ${esc(periodo)} - Canal ${esc(r.filtros?.canal || 'Todos')}</div>
-    <div class="muted">Comparativo entre o frete cobrado no CT-e e a ${esc(rotuloTabelaLaudo)} simulada, agrupado por rota. Cobre 100% dos CT-es do periodo (nao e uma amostra).</div>
+    <div class="muted">${tvt ? `Simulacao da ${esc(rotuloTabelaLaudo)} em disputa com as demais tabelas, com peso, cubagem e rota reais dos CT-es, agrupada por rota.` : `Comparativo entre o frete cobrado no CT-e e a ${esc(rotuloTabelaLaudo)} simulada, agrupado por rota.`} Cobre 100% dos CT-es do periodo (nao e uma amostra).</div>
   </header>
   <main>
     <section class="cards">
@@ -496,22 +499,25 @@ export function gerarHtmlAjusteRotaFaixa(resultado = {}, { incluirSavingGerencia
       <div class="card"><span>Ganharia</span><strong>${formatNumberBR(totais.ctesGanharia, 0)}</strong></div>
       <div class="card"><span>Perderia</span><strong>${formatNumberBR(totais.ctesPerderia, 0)}</strong></div>
       <div class="card"><span>Aderencia da tabela</span><strong>${formatPercent(aderenciaTotal)}</strong></div>
-      <div class="card"><span>Faturamento atual</span><strong>${formatMoney(totais.freteRealizado)}</strong></div>
+      ${tvt ? '' : `<div class="card"><span>Faturamento atual</span><strong>${formatMoney(totais.freteRealizado)}</strong></div>`}
       <div class="card rpa-cell"><span>Faturamento ${esc(rotuloTabelaLaudo)}</span><strong>${formatMoney(totais.freteTabela)}</strong></div>
       <div class="card"><span>Faturamento ${esc(rotuloTabelaLaudo)} nas ganhas</span><strong>${formatMoney(totais.freteTabelaGanharia)}</strong></div>
       ${incluirSavingGerencial ? `
       <div class="card"><span>Saving no periodo</span><strong>${formatMoney(savingPeriodo)}</strong></div>
       <div class="card"><span>Saving mensal</span><strong>${formatMoney(savingMensal)}</strong></div>
       <div class="card"><span>Saving anual</span><strong>${formatMoney(savingAnual)}</strong></div>` : ''}
-      <div class="card"><span>% realizado medio</span><strong>${formatPercent(pctRealizadoTotal)}</strong></div>
+      ${tvt ? '' : `<div class="card"><span>% realizado medio</span><strong>${formatPercent(pctRealizadoTotal)}</strong></div>`}
       <div class="card"><span>% ${esc(rotuloTabelaLaudo)}</span><strong>${formatPercent(pctTabelaTotal)}</strong></div>
       <div class="card"><span>Reducao media sugerida</span><strong>${formatPercent(reduzirTotal)}</strong></div>
-      <div class="card"><span>Perdendo p/ outras transportadoras</span><strong>${formatMoney(totais.freteRealizadoPerderia)}</strong></div>
+      ${tvt ? '' : `<div class="card"><span>Perdendo p/ outras transportadoras</span><strong>${formatMoney(totais.freteRealizadoPerderia)}</strong></div>`}
       <div class="card"><span>Volumes/dia (base atendida)</span><strong>${formatNumberBR(volumesAtendidosPorDia, 1)}</strong></div>
       <div class="card rpa-cell"><span>Volumes/dia (rotas ganhas)</span><strong>${formatNumberBR(volumesGanhariaPorDia, 1)}</strong></div>
       ${pedidosAtendidosTotal > 0 ? `<div class="card"><span>Pedidos (base atendida)</span><strong>${formatNumberBR(pedidosAtendidosTotal, 0)}</strong></div>` : ''}
     </section>
-    <div class="note">
+    ${tvt ? `<div class="note">
+      <strong>Como ler:</strong> a analise considera so a disputa entre tabelas. "Ganharia" = a ${esc(rotuloTabelaLaudo)} ficou em 1o lugar no CT-e; "Perderia" = outra tabela ficou mais barata. "Fora da tabela" = CT-es sem cobertura. "Reduzir" = quanto a ${esc(rotuloTabelaLaudo)} precisaria cair, em media, nas rotas em que perderia para ficar competitiva.
+      "Volumes/dia (rotas ganhas)" = projecao de quanto ela carregaria por dia nos CT-es em que ficou em 1o lugar.
+    </div>` : `<div class="note">
       <strong>Como ler os cards:</strong> Os valores financeiros e percentuais consideram apenas os CT-es em rotas/faixas atendidas pela ${esc(rotuloTabelaLaudo)}.
       "Fora da tabela" mostra o volume do recorte que ficou sem cobertura e nao entra no faturamento, aderencia, percentuais ou reducao sugerida.
       Aderencia da tabela = dos CT-es com calculo, % em que a ${esc(rotuloTabelaLaudo)} ganharia do frete realizado (mesma logica da Aderencia de cada rota).
@@ -522,23 +528,23 @@ export function gerarHtmlAjusteRotaFaixa(resultado = {}, { incluirSavingGerencia
       Reducao media sugerida = quanto a ${esc(rotuloTabelaLaudo)} precisaria cair, em media, nas rotas onde ela ficou mais cara que o realizado.
       Perdendo = frete realizado nas rotas em que ela perderia para outra transportadora.
       "Volumes/dia (base atendida)" e o volume das rotas/faixas atendidas dividido pelos dias; "Volumes/dia (rotas ganhas)" e so o volume dos CT-es onde a ${esc(rotuloTabelaLaudo)} ganharia — a projecao real de quanto ela carregaria por dia.
-    </div>
+    </div>`}
     <h2>Resumo por rota (ordenado por quantidade de CT-es)</h2>
     <div class="note">Clique numa rota para ver os CT-es dela. A abertura mostra ate ${formatNumberBR(MAX_ITENS_AMOSTRA_POR_ROTA, 0)} CT-es por rota/cotacao para conferir o calculo; os totais da linha da rota (CT-es, Ganharia, Perderia etc.) sempre somam 100% do periodo, mesmo quando a lista expandida for uma amostra.</div>
     <table>
-      <thead><tr><th>Rota</th><th>Faixa</th><th class="num">CT-es</th><th class="num">Sem calc.</th><th class="num">Ganharia</th><th class="num">Perderia</th><th class="num">Aderencia rota</th><th class="num">Valor NF</th><th class="num">Frete cobrado</th><th class="num rpa-col">${esc(rotuloTabelaLaudo)}</th><th class="num">% cobrado</th><th class="num rpa-col">% ${esc(rotuloTabelaLaudo)}</th><th class="num">Reduzir</th></tr></thead>
+      <thead><tr><th>Rota</th><th>Faixa</th><th class="num">CT-es</th><th class="num">Sem calc.</th><th class="num">Ganharia</th><th class="num">Perderia</th><th class="num">Aderencia rota</th><th class="num">Valor NF</th>${tvt ? '' : '<th class="num">Frete cobrado</th>'}<th class="num rpa-col">${esc(rotuloTabelaLaudo)}</th>${tvt ? '' : '<th class="num">% cobrado</th>'}<th class="num rpa-col">% ${esc(rotuloTabelaLaudo)}</th><th class="num">Reduzir</th></tr></thead>
       <tbody>${linhasAtendidas.map((item, idx) => {
         const detalheId = `rota-${idx}`;
-        const linhasCte = item.itensAmostra.map((cte) => `<tr><td><strong>${esc(cte.cte)}</strong></td><td>${esc(cte.canal || '-')}</td><td class="num">${formatNumberBR(cte.peso, 2)}</td><td class="num">${formatMoney(cte.valorNF)}</td><td class="num">${formatMoney(cte.freteBaseComparativa)}</td><td class="num rpa-cell">${cte.tabelaRpa > 0 ? formatMoney(cte.tabelaRpa) : '-'}</td><td class="num">${formatPercent(cte.percentualCobrado)}</td><td class="num rpa-cell">${formatPercent(cte.percentualCalc)}</td><td class="num">${formatPercent(cte.percentualBase)}</td><td class="num">${formatMoney(cte.valorBase)}</td><td class="num">${formatMoney(cte.gris)}</td><td class="num">${formatMoney(cte.tas)}</td><td class="num">${formatMoney(cte.ctrc)}</td><td class="num">${formatMoney(cte.pedagio)}</td><td class="num">${formatMoney(cte.icms)}</td><td>${esc(cte.statusSelecionada || '-')}</td></tr>`).join('');
+        const linhasCte = item.itensAmostra.map((cte) => `<tr><td><strong>${esc(cte.cte)}</strong></td><td>${esc(cte.canal || '-')}</td><td class="num">${formatNumberBR(cte.peso, 2)}</td><td class="num">${formatMoney(cte.valorNF)}</td>${tvt ? '' : `<td class="num">${formatMoney(cte.freteBaseComparativa)}</td>`}<td class="num rpa-cell">${cte.tabelaRpa > 0 ? formatMoney(cte.tabelaRpa) : '-'}</td>${tvt ? '' : `<td class="num">${formatPercent(cte.percentualCobrado)}</td>`}<td class="num rpa-cell">${formatPercent(cte.percentualCalc)}</td><td class="num">${formatPercent(cte.percentualBase)}</td><td class="num">${formatMoney(cte.valorBase)}</td><td class="num">${formatMoney(cte.gris)}</td><td class="num">${formatMoney(cte.tas)}</td><td class="num">${formatMoney(cte.ctrc)}</td><td class="num">${formatMoney(cte.pedagio)}</td><td class="num">${formatMoney(cte.icms)}</td><td>${esc(cte.statusSelecionada || '-')}</td></tr>`).join('');
         const avisoAmostra = item.itensAmostraIncompleta
           ? `<div class="note">Mostrando ${formatNumberBR(item.itensAmostra.length, 0)} de ${formatNumberBR(item.ctes, 0)} CT-e(s) desta rota (amostra de auditoria, limite de ${formatNumberBR(MAX_ITENS_AMOSTRA_POR_ROTA, 0)} por rota — nao e a lista completa).</div>`
           : '';
         const corpoDetalhe = item.avisoIncompleto
           ? '<div class="note">Esta parte veio de uma analise salva sem o agrupamento detalhado por rota/cotacao. Os valores entram nos cards e totais, mas nao ha CT-es detalhados para abrir. Para detalhar rota a rota, recalcule ou unifique parcelas salvas ja com o novo formato.</div>'
           : item.itensAmostra.length
-          ? `${avisoAmostra}<table class="mini-table"><thead><tr><th>CT-e</th><th>Canal</th><th class="num">Peso</th><th class="num">Valor NF</th><th class="num">Frete cobrado</th><th class="num rpa-col">${esc(rotuloTabelaLaudo)}</th><th class="num">% cobrado</th><th class="num rpa-col">% ${esc(rotuloTabelaLaudo)}</th><th class="num">% base</th><th class="num">Valor base</th><th class="num">GRIS</th><th class="num">TAS</th><th class="num">CTRC</th><th class="num">Pedagio</th><th class="num">ICMS</th><th>Status</th></tr></thead><tbody>${linhasCte}</tbody></table>`
+          ? `${avisoAmostra}<table class="mini-table"><thead><tr><th>CT-e</th><th>Canal</th><th class="num">Peso</th><th class="num">Valor NF</th>${tvt ? '' : '<th class="num">Frete cobrado</th>'}<th class="num rpa-col">${esc(rotuloTabelaLaudo)}</th>${tvt ? '' : '<th class="num">% cobrado</th>'}<th class="num rpa-col">% ${esc(rotuloTabelaLaudo)}</th><th class="num">% base</th><th class="num">Valor base</th><th class="num">GRIS</th><th class="num">TAS</th><th class="num">CTRC</th><th class="num">Pedagio</th><th class="num">ICMS</th><th>Status</th></tr></thead><tbody>${linhasCte}</tbody></table>`
           : '<div class="note">Nenhum CT-e desta rota está na amostra de auditoria disponível.</div>';
-        return `<tr class="linha-expansivel" onclick="document.getElementById('${detalheId}').classList.toggle('aberta')"><td><strong>${esc(item.rota)}</strong></td><td>${esc(item.faixa || '-')}</td><td class="num">${formatNumberBR(item.ctes, 0)}</td><td class="num">${formatNumberBR(item.ctesSemCalculo, 0)}</td><td class="num">${formatNumberBR(item.ctesGanharia, 0)}</td><td class="num">${formatNumberBR(item.ctesPerderia, 0)}</td><td class="num">${formatPercent(item.aderenciaRota)}</td><td class="num">${formatMoney(item.valorNF)}</td><td class="num">${formatMoney(item.freteRealizado)}</td><td class="num rpa-cell">${formatMoney(item.freteTabela)}</td><td class="num">${formatPercent(item.pctRealizado)}</td><td class="num rpa-cell">${formatPercent(item.pctTabelaFinal)}</td><td class="num ${item.reduzirPct > 0 ? 'reduce' : 'ok'}">${item.reduzirPct > 0 ? formatPercent(item.reduzirPct) : 'OK'}</td></tr><tr id="${detalheId}" class="linha-detalhe"><td colspan="13">${corpoDetalhe}</td></tr>`;
+        return `<tr class="linha-expansivel" onclick="document.getElementById('${detalheId}').classList.toggle('aberta')"><td><strong>${esc(item.rota)}</strong></td><td>${esc(item.faixa || '-')}</td><td class="num">${formatNumberBR(item.ctes, 0)}</td><td class="num">${formatNumberBR(item.ctesSemCalculo, 0)}</td><td class="num">${formatNumberBR(item.ctesGanharia, 0)}</td><td class="num">${formatNumberBR(item.ctesPerderia, 0)}</td><td class="num">${formatPercent(item.aderenciaRota)}</td><td class="num">${formatMoney(item.valorNF)}</td>${tvt ? '' : `<td class="num">${formatMoney(item.freteRealizado)}</td>`}<td class="num rpa-cell">${formatMoney(item.freteTabela)}</td>${tvt ? '' : `<td class="num">${formatPercent(item.pctRealizado)}</td>`}<td class="num rpa-cell">${formatPercent(item.pctTabelaFinal)}</td><td class="num ${item.reduzirPct > 0 ? 'reduce' : 'ok'}">${item.reduzirPct > 0 ? formatPercent(item.reduzirPct) : 'OK'}</td></tr><tr id="${detalheId}" class="linha-detalhe"><td colspan="${tvt ? 11 : 13}">${corpoDetalhe}</td></tr>`;
       }).join('')}</tbody>
     </table>
   </main>
@@ -557,6 +563,7 @@ export function gerarWorkbookAjusteRotaFaixa(resultado = {}, { incluirSavingGere
     ctesComCalculoTotal, volumesAtendidosPorDia, volumesGanhariaPorDia, pedidosAtendidosTotal,
     savingPeriodo, savingMensal, savingAnual,
   } = montarDadosAjusteRotaFaixa(resultado);
+  const tvt = Boolean(resultado.filtros?.tabelaVsTabela);
 
   const linhasResumo = [
     ['Laudo de ajuste por rota'],
@@ -568,7 +575,7 @@ export function gerarWorkbookAjusteRotaFaixa(resultado = {}, { incluirSavingGere
     ['Rotas atendidas', linhasAtendidas.length],
     ['Ganharia', totais.ctesGanharia],
     ['Perderia', totais.ctesPerderia],
-    ['Faturamento atual', Number(totais.freteRealizado.toFixed(2))],
+    ...(tvt ? [] : [['Faturamento atual', Number(totais.freteRealizado.toFixed(2))]]),
     [`Faturamento ${rotuloTabelaLaudo}`, Number(totais.freteTabela.toFixed(2))],
     [`Faturamento ${rotuloTabelaLaudo} nas ganhas`, Number(totais.freteTabelaGanharia.toFixed(2))],
     ...(incluirSavingGerencial ? [
@@ -577,10 +584,10 @@ export function gerarWorkbookAjusteRotaFaixa(resultado = {}, { incluirSavingGere
       ['Saving anual', Number(savingAnual.toFixed(2))],
     ] : []),
     ['Aderencia da tabela (%)', Number(aderenciaTotal.toFixed(2))],
-    ['% realizado medio', Number(pctRealizadoTotal.toFixed(2))],
+    ...(tvt ? [] : [['% realizado medio', Number(pctRealizadoTotal.toFixed(2))]]),
     [`% ${rotuloTabelaLaudo}`, Number(pctTabelaTotal.toFixed(2))],
     ['Reducao media sugerida (%)', Number(reduzirTotal.toFixed(2))],
-    ['Perdendo para outras transportadoras', Number(totais.freteRealizadoPerderia.toFixed(2))],
+    ...(tvt ? [] : [['Perdendo para outras transportadoras', Number(totais.freteRealizadoPerderia.toFixed(2))]]),
     ['Volumes/dia (base atendida)', Number(volumesAtendidosPorDia.toFixed(2))],
     ['Volumes/dia (rotas ganhas)', Number(volumesGanhariaPorDia.toFixed(2))],
     ...(pedidosAtendidosTotal > 0 ? [['Pedidos (base atendida)', pedidosAtendidosTotal]] : []),
@@ -594,8 +601,9 @@ export function gerarWorkbookAjusteRotaFaixa(resultado = {}, { incluirSavingGere
     Number(item.aderenciaRota.toFixed(2)), Number(item.valorNF.toFixed(2)), Number(item.freteRealizado.toFixed(2)), Number(item.freteTabela.toFixed(2)),
     Number(item.pctRealizado.toFixed(2)), Number(item.pctTabelaFinal.toFixed(2)), Number(item.reduzirPct.toFixed(2)),
   ]);
-  const wsRota = XLSX.utils.aoa_to_sheet([headerRota, ...linhasRota]);
-  wsRota['!cols'] = headerRota.map(() => ({ wch: 18 }));
+  const colsCobrado = tvt ? new Set([8, 10]) : new Set();
+  const wsRota = XLSX.utils.aoa_to_sheet([headerRota, ...linhasRota].map((linha) => linha.filter((_, i) => !colsCobrado.has(i))));
+  wsRota['!cols'] = headerRota.filter((_, i) => !colsCobrado.has(i)).map(() => ({ wch: 18 }));
 
   // CT-es de cada rota, com o detalhe do calculo (peso, %base, taxas, ICMS,
   // tabela simulada) — sem nenhuma informacao de correcao/discrepancia interna,
@@ -669,8 +677,9 @@ export function gerarWorkbookAjusteRotaFaixa(resultado = {}, { incluirSavingGere
     Number((cte.tda || 0).toFixed(2)), Number((cte.tde || 0).toFixed(2)), Number((cte.tdr || 0).toFixed(2)), Number((cte.trt || 0).toFixed(2)), Number((cte.suframa || 0).toFixed(2)), Number((cte.outras || 0).toFixed(2)), Number((cte.taxaExtra || 0).toFixed(2)),
     cte.statusSelecionada || '',
   ]);
-  const wsCtes = XLSX.utils.aoa_to_sheet([headerCtes, ...linhasCtes]);
-  wsCtes['!cols'] = headerCtes.map(() => ({ wch: 16 }));
+  const colsCobradoCte = tvt ? new Set(['Frete cobrado', `${rotuloTabelaLaudo} x cobrado`, '% cobrado'].map((h) => headerCtes.indexOf(h)).filter((i) => i >= 0)) : new Set();
+  const wsCtes = XLSX.utils.aoa_to_sheet([headerCtes, ...linhasCtes].map((linha) => linha.filter((_, i) => !colsCobradoCte.has(i))));
+  wsCtes['!cols'] = headerCtes.filter((_, i) => !colsCobradoCte.has(i)).map(() => ({ wch: 16 }));
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, wsResumo, 'Resumo');

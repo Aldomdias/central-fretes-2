@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
+import { carregarRespostasEntregaFatura, salvarPendenciasEntrega, urlAnexoEntrega, urlPortalEntrega, validarRespostaEntrega } from '../services/entregaPortalService';
+import { carregarDivergenciasFatura, ctesCobrancaAcima, salvarDivergenciasFatura, validarRespostaDivergencia } from '../services/divergenciaPortalService';
 import { buscarStatusEntregaCtes, chaveEntregaRegistro, ROTULO_ENTREGA, STATUS_ENTREGA } from '../services/auditoriaEntregaCteService';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
@@ -57,6 +59,8 @@ import {
   carregarPlataformaAuditoria,
   carregarPlataformaAuditoriaFinanceiro,
   criarProtocoloFinanceiro,
+  fecharLoteProtocolos,
+  registrarDevolutivaProtocolo,
   criarSolicitacaoFinanceira,
   buscarFaturasExistentesPorNumero,
   detectarCanaisFaturas,
@@ -73,6 +77,7 @@ import {
   registrarHistoricoCarteiraAuditoria,
   listarHistoricoCarteiraAuditoria,
   gerarLinkConfirmacaoFatura,
+  atribuirAuditorEmLote,
 } from '../services/auditoriaFretesService';
 import {
   buscarCtesPorIdentificadores,
@@ -85,11 +90,11 @@ import {
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { listarUsuariosSupabase } from '../services/usuariosSupabaseService';
 import { getSupabaseClient } from '../lib/supabaseClient';
-import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
+import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora, salvarVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { buscarTrackingPorChaveNfeManual } from '../services/trackingSupabaseService';
 import { consultarMunicipiosIbge } from '../services/ibgeService';
 import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
-import { autorizarPelaGestao, carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarAnexosAutorizacao, enviarParaAutorizacao, enviarParaSuprimentos } from '../services/transporteAutorizacoesService';
+import { autorizarPelaGestao, normalizarCanalAutorizacao, carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarAnexosAutorizacao, enviarParaAutorizacao, enviarParaSuprimentos } from '../services/transporteAutorizacoesService';
 import AnaliseFreteTabela from '../components/AnaliseFreteTabela';
 import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
 
@@ -992,9 +997,15 @@ function corAlerta(fatura) {
   return '#04a484';
 }
 
-function Card({ label, value, detail, color = '#9153F0' }) {
+function Card({ label, value, detail, color = '#9153F0', onClick, ativo = false, titulo }) {
   return (
-    <div className="summary-card audit-kpi" style={{ borderLeft: `4px solid ${color}` }}>
+    <div
+      className="summary-card audit-kpi"
+      style={{ borderLeft: `4px solid ${color}`, ...(onClick ? { cursor: 'pointer' } : {}), ...(ativo ? { boxShadow: `0 0 0 2px ${color}`, background: '#f8fafc' } : {}) }}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      title={onClick ? (titulo || 'Clique para filtrar os CT-es') : undefined}
+    >
       <span>{label}</span>
       <strong>{value}</strong>
       {detail && <small>{detail}</small>}
@@ -1109,6 +1120,8 @@ function Dashboard({ state }) {
 }
 
 const JANELA_VENCIMENTO_OPCOES = [7, 10, 15, 20, 30];
+const A_VENCER_ALERTA_DIAS = 10;
+const ATRASO_MAX_ALERTA_DIAS = 60; // atrasadas: so ate 2 meses para tras
 // "Lancada"/"paga" nao e o campo status (RECEBIDA/COM_DIVERGENCIA/...) — e o
 // status de PAGAMENTO (situacaoPagamentoFatura, mesmo usado na coluna
 // "Pagamento" da lista de faturas), que depende de lancamento_financeiro/
@@ -1855,6 +1868,13 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     const temSemCalculo = destino === 'TRANSPORTE' && detalhes.some((d) => itens.some((i) => i.chave_cte === d.chave_cte) && semCalculoAmd(d));
     if (temSemCalculo && String(justificativa).trim().length < 30) { setModalSuprimentos((prev) => ({ ...prev, erro: `Ha CT-e sem calculo (cotacao): justifique o caso (${String(justificativa).trim().length}/30 caracteres).` })); return; }
     if (suprimentos && !(modalSuprimentos.anexos || []).length) { setModalSuprimentos((prev) => ({ ...prev, erro: 'Anexe ao menos um arquivo (tabela, lista de TDE ou documento de apoio) para compor a solicitacao.' })); return; }
+    const perguntaComplementar = destino === 'TRANSPORTE' && itens.some((i) => normalizarCanalAutorizacao(i.canal) === 'ATACADO');
+    const complementar = perguntaComplementar && modalSuprimentos.complementar === 'SIM';
+    if (perguntaComplementar && !modalSuprimentos.complementar) { setModalSuprimentos((prev) => ({ ...prev, erro: 'Responda se e CT-e complementar (Sim ou Nao).' })); return; }
+    if (complementar) {
+      const semNf = itens.filter((i) => String(i.chave_nfe || '').replace(/\D/g, '').length !== 44);
+      if (semNf.length) { setModalSuprimentos((prev) => ({ ...prev, erro: `CT-e complementar exige a chave da NF (44 digitos): faltam ${semNf.length} CT-e(s).` })); return; }
+    }
     setModalSuprimentos((prev) => ({ ...prev, enviando: true, erro: '' }));
     try {
       const usuarioNome = sessao?.nome || sessao?.email || '';
@@ -1863,7 +1883,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         const { enviados, protocolo } = await enviarParaSuprimentos(itens, { tipoAjuste, justificativa, usuarioNome, usuarioEmail: sessao?.email || '', anexos });
         setMensagemLiberacao(`✓ ${enviados} CT-e(s) enviado(s) para Suprimentos${protocolo ? ` — chamado AMD ${protocolo} aberto` : ' (chamado AMD nao foi criado, verifique a Central de Solicitacoes)'}.`);
       } else {
-        const { enviados, jaNaFila } = await enviarParaAutorizacao(itens.map((item) => ({ ...item, observacao: String(justificativa).trim() })), usuarioNome);
+        const { enviados, jaNaFila } = await enviarParaAutorizacao(itens.map((item) => ({ ...item, observacao: `${complementar ? '[CT-e COMPLEMENTAR] ' : ''}${String(justificativa).trim()}`.trim() })), usuarioNome);
         setMensagemLiberacao(`✓ ${enviados} CT-e(s) enviado(s) para autorizacao do transporte${jaNaFila ? ` (${jaNaFila} ja estavam na fila)` : ''}.`);
       }
       setModalSuprimentos(null);
@@ -1914,17 +1934,20 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     // essas duas dependem da soma do valor_frete por CT-e, que fica errada
     // quando algum CT-e veio com valor_frete zerado/incompleto no arquivo.
     const saldo = Number((Number(fatura.valor_fatura || 0) - resumo.calculoAmd).toFixed(2));
+    // O desconto a cobrar e a cobranca a MAIOR por CT-e (o que foi a menos nao compensa):
+    // o saldo liquido (fatura - calculado) pode ser negativo e esconder CT-es cobrados a mais.
+    const descontoDevido = Number(resumo.cobrancaAcima.toFixed(2));
     const camposAuditoria = {
       valor_calculado: Number(resumo.calculoAmd.toFixed(2)),
       diferenca: saldo,
-      valor_recuperado: Math.max(saldo, 0),
+      valor_recuperado: descontoDevido,
       ctes_totais: resumo.total,
       ctes_auditados: resumo.calculados,
       ctes_divergentes: resumo.divergentes,
       ctes_sem_calculo: resumo.semCalculo,
       auditoria_cobranca_acima: Number(resumo.cobrancaAcima.toFixed(2)),
       auditoria_cobranca_abaixo: Number(resumo.cobrancaAbaixo.toFixed(2)),
-      auditoria_total_descontar: Number(Math.max(saldo, 0).toFixed(2)),
+      auditoria_total_descontar: descontoDevido,
       auditoria_tolerancia_acima: Number(toleranciaFatura.acima || 0),
       auditoria_tolerancia_abaixo: Number(toleranciaFatura.abaixo || 0),
     };
@@ -1934,9 +1957,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     // aprovacao da gestao (eu/Carol). So a gestao decide, na aba "Aprovacao
     // da Gestao", se aprova (fatura vira LIBERADA_COM_DESCONTO) ou recusa
     // (volta pra COM_DIVERGENCIA). Sem confirm() ambiguo no meio do caminho.
-    if (saldo > TOLERANCIA_DESCONTO_PENDENTE) {
+    if (descontoDevido > TOLERANCIA_DESCONTO_PENDENTE) {
       // Questionario pro auditor (vai descontar? por que nao?) antes de ir pra gestao.
-      setModalLiberacao({ saldo, camposAuditoria, itens: montarItensEnvio(detalhes.filter((item) => Number(item.calculado_frete || 0) > 0 && Number(item.diferenca || 0) > 0)), descontar: '', motivo: '', observacao: '', enviando: false, erro: '' });
+      setModalLiberacao({ saldo: descontoDevido, camposAuditoria, itens: montarItensEnvio(detalhes.filter((item) => Number(item.calculado_frete || 0) > 0 && Number(item.diferenca || 0) > 0)), descontar: '', motivo: '', observacao: '', enviando: false, erro: '' });
       return;
     }
 
@@ -1944,7 +1967,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       ...camposAuditoria,
       descricaoHistorico: `Liberada para pagamento. Auditoria: ${resumo.total} CT-e(s), ${resumo.divergentes} divergente(s), cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}. Toler�ncia aplicada: +${dinheiro(toleranciaFatura.acima)} / -${dinheiro(toleranciaFatura.abaixo)}.`,
     });
-    setMensagemLiberacao('✓ Fatura liberada para pagamento — o valor calculado bateu com o cobrado.');
+    setMensagemLiberacao('✓ Fatura liberada para pagamento — nao ha cobranca a maior. Confira o protocolo financeiro abaixo.');
+    setProtocoloAberto(true);
   };
 
   const baixarArquivo = (blob, nomeArquivo) => {
@@ -2316,20 +2340,31 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     // fatura ja atualiza sozinha (ver AprovacaoGestao/api/portal-fatura).
     let linkConfirmacao = '';
     if (transportador) {
+      let estadoLaudo = state;
+      let faturaLaudo = fatura;
       try {
         const resultado = await gerarLinkConfirmacaoFatura(state, fatura);
-        onState(resultado.state);
+        estadoLaudo = resultado.state;
+        faturaLaudo = estadoLaudo.faturas.find((item) => item.id === fatura.id) || fatura;
+        onState(estadoLaudo);
         linkConfirmacao = resultado.url;
       } catch (error) {
         setErroDetalhes(`Nao foi possivel gerar o link de confirmacao: ${error.message}`);
       }
       // Mandou o laudo pro transportador: fatura passa a aguardar a resposta
       // dele. So marca se ainda nao passou dessa etapa (nao regride fatura
-      // ja liberada/paga/etc so porque reimprimiu o laudo).
+      // ja liberada/paga/etc so porque reimprimiu o laudo). Usa o estado ja com
+      // o token (senao o estado velho apagaria o link recem-gerado).
       if (!STATUS_NAO_REGREDIR_LAUDO.has(fatura.status)) {
-        await mudarStatus('AGUARDANDO_TRANSPORTADORA', {
-          descricaoHistorico: 'Laudo enviado ao transportador — aguardando confirmacao.',
+        const next = await atualizarFaturaAuditoria(estadoLaudo, { ...faturaLaudo, status: 'AGUARDANDO_TRANSPORTADORA' }, {
+          acao: 'STATUS_ALTERADO',
+          status_anterior: fatura.status,
+          status_novo: 'AGUARDANDO_TRANSPORTADORA',
+          descricao: 'Laudo enviado ao transportador — aguardando confirmacao.',
+          usuario_nome: sessao?.nome || sessao?.email || 'Usuario local',
+          usuario_email: sessao?.email || '',
         });
+        onState(next);
       }
     }
     // A referencia da tela vem sem detalhes_calculo (perf); o laudo precisa deles.
@@ -2386,8 +2421,16 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <tr id="${detalheId}" class="detail-row"><td colspan="9">${detalhesCalculoHtmlFatura(item, { masked, calculadoPublico, diffPublico, descontoSemTabela })}</td></tr>`;
     }).join('');
     const semEntrega = entregaCtes ? linhas.filter((item) => entregaCtes.get(chaveEntregaRegistro(item))?.status !== STATUS_ENTREGA.ENTREGUE) : [];
+    // CT-es com cobranca acima (os do card): o portal "Confirmar fatura" lista pra ela responder um a um.
+    if (transportador && linkConfirmacao) {
+      await salvarDivergenciasFatura(fatura, ctesCobrancaAcima(linhasParaResumo, (dif) => dentroDaToleranciaAuditoria(dif, toleranciaLaudo)));
+    }
+    const linkEntrega = transportador ? urlPortalEntrega(linkConfirmacao) : '';
+    if (linkEntrega && semEntrega.length) {
+      await salvarPendenciasEntrega(fatura, semEntrega.map((item) => ({ ...item, entrega_status: entregaCtes.get(chaveEntregaRegistro(item))?.status })));
+    }
     const blocoEntregaLaudo = semEntrega.length
-      ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><strong>⚠ ${semEntrega.length} CT-e(s) sem entrega comprovada — favor verificar</strong><p style="margin:6px 0 0;font-size:13px">O pagamento da fatura só é liberado quando todos os CT-es estiverem entregues. Envie o comprovante de entrega (canhoto/POD) dos CT-es: <b>${semEntrega.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtes.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p></div>`
+      ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><strong>⚠ ${semEntrega.length} CT-e(s) sem entrega comprovada — favor verificar</strong><p style="margin:6px 0 0;font-size:13px">O pagamento da fatura só é liberado quando todos os CT-es estiverem entregues. Envie o comprovante de entrega (canhoto/POD) dos CT-es: <b>${semEntrega.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtes.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p>${botaoPortalEntrega(linkEntrega)}</div>`
       : '';
     const jaConfirmada = fatura.confirmacao_transportador_status === 'APROVADO';
     const blocoConfirmacaoLaudo = linkConfirmacao
@@ -2675,6 +2718,14 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     return cor.borda === '#dc2626' ? 'acima' : 'abaixo';
   };
 
+  // Cards do resumo viram filtro: clicar leva a lista de CT-es filtrada; clicar de novo limpa.
+  const cliqueCard = (status) => {
+    const ativo = tab === 'ctes' && filtroStatusCte === status && status !== 'todos';
+    setTab('ctes');
+    setFiltroStatusCte(ativo ? 'todos' : status);
+  };
+  const cardAtivo = (status) => tab === 'ctes' && filtroStatusCte === status;
+
   const aplicarFiltrosCtes = (lista) => lista.filter((item) => {
     const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte))
       || referenciaCtes.get(normalizarChaveCte(item.numero_cte));
@@ -2724,6 +2775,22 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
           </div>
         );
       })()}
+      <RespostasDivergenciaFatura
+        faturaId={fatura.id}
+        usuarioNome={sessao?.nome || sessao?.email || ''}
+        aoMudarConfirmacao={(novoStatus) => novoStatus && onState({ ...state, faturas: state.faturas.map((item) => (item.id === fatura.id ? { ...item, confirmacao_transportador_status: novoStatus } : item)) })}
+      />
+      <RespostasEntregaFatura
+        faturaId={fatura.id}
+        usuarioNome={sessao?.nome || sessao?.email || ''}
+        aoValidar={() => {
+          setEntregaCtes(null);
+          buscarStatusEntregaCtes(detalhes.map((item) => {
+            const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte)) || referenciaCtes.get(normalizarChaveCte(item.numero_cte));
+            return { ...item, chave_nfe: item.chave_nfe || base?.chave_nfe };
+          })).then(setEntregaCtes).catch((error) => setEntregaErroFatura(error.message || String(error)));
+        }}
+      />
       <div className="form-grid three" style={{ marginBottom: 10 }}>
         <label className="field">Entrega
           <select value={filtroEntregaCte} onChange={(e) => setFiltroEntregaCte(e.target.value)}>
@@ -2986,14 +3053,14 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       </div>
 
       <div className="summary-strip auditoria-avulsa-summary">
-        <Card label="CT-es" value={resumoAuditoriaFatura.total} />
+        <Card label="CT-es" value={resumoAuditoriaFatura.total} onClick={() => { setTab('ctes'); setFiltroStatusCte('todos'); }} ativo={tab === 'ctes' && filtroStatusCte === 'todos'} titulo="Todos os CT-es (limpa o filtro)" />
         <Card label="Calculados AMD" value={resumoAuditoriaFatura.calculados} />
-        <Card label="Divergentes" value={resumoAuditoriaFatura.divergentes} color={resumoAuditoriaFatura.divergentes ? '#dc2626' : '#047857'} />
-        <Card label="Sem calculo" value={resumoAuditoriaFatura.semCalculo} color={resumoAuditoriaFatura.semCalculo ? '#d97706' : '#047857'} />
+        <Card label="Divergentes" value={resumoAuditoriaFatura.divergentes} color={resumoAuditoriaFatura.divergentes ? '#dc2626' : '#047857'} onClick={() => { setTab('divergencias'); setFiltroStatusCte('todos'); }} ativo={tab === 'divergencias'} titulo="Ver so os CT-es divergentes" />
+        <Card label="Sem calculo" value={resumoAuditoriaFatura.semCalculo} color={resumoAuditoriaFatura.semCalculo ? '#d97706' : '#047857'} onClick={() => cliqueCard('sem_calculo')} ativo={cardAtivo('sem_calculo')} />
         <Card label="Frete pago" value={dinheiro(resumoAuditoriaFatura.fretePago)} />
         <Card label="Calculo AMD" value={dinheiro(resumoAuditoriaFatura.calculoAmd)} />
-        <Card label="Cobranca acima" value={dinheiro(resumoAuditoriaFatura.cobrancaAcima)} color="#dc2626" />
-        <Card label="Cobranca abaixo" value={dinheiro(resumoAuditoriaFatura.cobrancaAbaixo)} color="#d97706" />
+        <Card label="Cobranca acima" value={dinheiro(resumoAuditoriaFatura.cobrancaAcima)} color="#dc2626" onClick={() => cliqueCard('acima')} ativo={cardAtivo('acima')} />
+        <Card label="Cobranca abaixo" value={dinheiro(resumoAuditoriaFatura.cobrancaAbaixo)} color="#d97706" onClick={() => cliqueCard('abaixo')} ativo={cardAtivo('abaixo')} />
         <Card label="Total a descontar" value={dinheiro(resumoAuditoriaFatura.totalDescontar)} color={resumoAuditoriaFatura.totalDescontar ? '#d97706' : '#047857'} />
       </div>
       {duplicadosRemovidos > 0 && (
@@ -3151,6 +3218,29 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                 ? 'Abre um chamado AMD na Central de Solicitacoes e coloca os CT-es na fila de Suprimentos. Quem aprovar o valor assume o chamado.'
                 : 'Coloca os CT-es na fila do responsavel do transporte do canal (B2C/Atacado) autorizar o saldo.'} Confira a analise abaixo:</p>
               <AnaliseFreteTabela itens={modalSuprimentos.itens} />
+              {modalSuprimentos.destino === 'TRANSPORTE' && modalSuprimentos.itens.some((i) => normalizarCanalAutorizacao(i.canal) === 'ATACADO') && (
+                <div className="field">
+                  <strong>E CT-e complementar? *</strong>
+                  <div style={{ display: 'flex', gap: 16, margin: '6px 0' }}>
+                    {[['SIM', 'Sim'], ['NAO', 'Nao']].map(([valor, rotulo]) => (
+                      <label key={valor} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <input type="radio" name="cte-complementar" checked={modalSuprimentos.complementar === valor} onChange={() => setModalSuprimentos((p) => ({ ...p, complementar: valor }))} />{rotulo}
+                      </label>
+                    ))}
+                  </div>
+                  {modalSuprimentos.complementar === 'SIM' && (
+                    <div>
+                      <span className="compact">Anexe a chave da NF (44 digitos) de cada CT-e complementar:</span>
+                      {modalSuprimentos.itens.map((it, idx) => (
+                        <div key={it.chave_cte || idx} style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
+                          <span style={{ fontSize: 11, minWidth: 120 }}>CT-e ...{String(it.chave_cte || '').slice(25, 34)}</span>
+                          <input style={{ flex: 1 }} placeholder="Chave da NF (44 digitos)" value={it.chave_nfe || ''} onChange={(e) => setModalSuprimentos((p) => ({ ...p, itens: p.itens.map((x, j) => (j === idx ? { ...x, chave_nfe: e.target.value.replace(/\D/g, '').slice(0, 44) } : x)) }))} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               {modalSuprimentos.destino === 'SUPRIMENTOS' && (
                 <label className="field">Tipo de ajuste
                   <select value={modalSuprimentos.tipoAjuste} onChange={(e) => setModalSuprimentos((p) => ({ ...p, tipoAjuste: e.target.value }))}>
@@ -3254,8 +3344,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   // Auditor entra ja filtrado nas proprias faturas; gestor/financeiro entram vendo tudo.
   // Vindo do Painel (drill-down), sempre "todas" — senao o filtro de auditor/
   // status clicado la pode nao bater com "minhas faturas" e a lista fica vazia.
-  const [visaoFatura, setVisaoFatura] = useState('todas');
-  const [filtroRapido, setFiltroRapido] = useState('');
+  const [visaoFatura, setVisaoFatura] = useState(() => filtrosIniciais?.visao || 'todas');
+  const [filtroRapido, setFiltroRapido] = useState(() => filtrosIniciais?.filtroRapido || '');
   const [paginaFaturas, setPaginaFaturas] = useState(1);
   const TAM_PAGINA_FATURAS = 100;
   const [somenteAuditadas, setSomenteAuditadas] = useState(false);
@@ -3359,6 +3449,25 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     const meuNome = String(sessao?.nome || '').trim().toLowerCase();
     return (!!meuEmail && emailAuditor === meuEmail) || (!!meuNome && nomeAuditor === meuNome);
   };
+  // Alerta de prazo: (1) nao pagas que vencem nos proximos A_VENCER_ALERTA_DIAS
+  // dias (so as sem lancamento/partida) e (2) vencidas nao pagas ate 2 meses atras
+  // (inclui as ja lancadas aguardando pagamento).
+  const faturaAberta = (fatura) => !ENCERRADOS.has(fatura.status) && !String(fatura.status || '').startsWith('PAGA');
+  const ehAVencerNaoPaga = (fatura) => {
+    if (!faturaAberta(fatura)) return false;
+    const dias = diasAte(fatura.data_vencimento);
+    return dias != null && dias >= 0 && dias <= A_VENCER_ALERTA_DIAS && situacaoPagamentoFatura(fatura) === 'NAO_PAGO';
+  };
+  const ehLancadaAntecipada = (fatura) => {
+    if (!faturaAberta(fatura)) return false;
+    const dias = diasAte(fatura.data_vencimento);
+    return dias != null && dias >= A_VENCER_ALERTA_DIAS && ['LANCADA_FINANCEIRO', 'PARTIDA_LANCADA'].includes(situacaoPagamentoFatura(fatura));
+  };
+  const ehVencidaNaoPaga = (fatura) => {
+    if (!faturaAberta(fatura)) return false;
+    const dias = diasAte(fatura.data_vencimento);
+    return dias != null && dias < 0 && dias >= -ATRASO_MAX_ALERTA_DIAS;
+  };
   const dentroFiltroRapido = (fatura) => {
     if (!filtroRapido) return true;
     if (filtroRapido === 'vencidas') return faixaVencimento(fatura) === 'VENCIDA';
@@ -3366,6 +3475,9 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       const dias = diasAte(fatura.data_vencimento);
       return dias != null && dias >= 0 && dias <= 7 && !ENCERRADOS.has(fatura.status);
     }
+    if (filtroRapido === 'alerta_a_vencer') return ehAVencerNaoPaga(fatura);
+    if (filtroRapido === 'alerta_vencidas') return ehVencidaNaoPaga(fatura);
+    if (filtroRapido === 'alerta_antecipadas') return ehLancadaAntecipada(fatura);
     if (filtroRapido === 'novas') return fatura.status === 'RECEBIDA';
     if (filtroRapido === 'enviadas') return fatura.status === 'ENVIADA_AO_FINANCEIRO';
     if (filtroRapido === 'lancadas') return ['PARTIDA_LANCADA', 'LANCADA_FINANCEIRO'].includes(situacaoPagamentoFatura(fatura));
@@ -3389,6 +3501,23 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     pagas: faturasEscopo.filter((fatura) => ['PAGO', 'PAGO_DIVERGENTE'].includes(situacaoPagamentoFatura(fatura))).length,
     pagasDivergentes: faturasEscopo.filter((fatura) => situacaoPagamentoFatura(fatura) === 'PAGO_DIVERGENTE').length,
   }), [faturasEscopo]);
+  // Alerta fixo com as faturas DO PROPRIO auditor (independe da visao escolhida).
+  const alertaPrazo = useMemo(() => {
+    const meuEmail = String(sessao?.email || '').trim().toLowerCase();
+    const meuNome = String(sessao?.nome || '').trim().toLowerCase();
+    const minhas = state.faturas.filter((fatura) => {
+      const email = String(fatura.auditor_email || '').trim().toLowerCase();
+      const nome = String(fatura.auditor_nome || '').trim().toLowerCase();
+      return (!!meuEmail && email === meuEmail) || (!!meuNome && nome === meuNome);
+    });
+    const soma = (lista) => lista.reduce((acc, item) => acc + Number(item.valor_fatura || 0), 0);
+    const aVencer = minhas.filter(ehAVencerNaoPaga);
+    const vencidas = minhas.filter(ehVencidaNaoPaga);
+    return { aVencer, vencidas, valorAVencer: soma(aVencer), valorVencidas: soma(vencidas) };
+  }, [state.faturas, sessao?.email, sessao?.nome]);
+  // Resumo do gestor: o mesmo alerta, agrupado por auditor (todas as faturas).
+  const ehGestorAlerta = usuarioEhGestorAuditoria(sessao);
+
   // Predicados nomeados (um por filtro) em vez de um && gigante: assim da pra
   // montar as opcoes de cada select considerando os OUTROS filtros ja
   // aplicados (estilo planilha) - ex.: se ja filtrou por Status, o select de
@@ -4732,7 +4861,9 @@ ${portaisLaudo.length ? `
           // Em lote nao da pra perguntar item a item se o desconto vai ser
           // aplicado — quem nao fecha (saldo acima da tolerancia) vai direto
           // pra aprovacao da gestao em vez de liberar com a divergencia solta.
-          const precisaAprovacao = saldo > TOLERANCIA_DESCONTO_PENDENTE;
+          // Desconto = cobranca a MAIOR por CT-e (o saldo liquido pode ser negativo e esconder CT-es cobrados a mais).
+          const descontoDevido = Number(resumo.cobrancaAcima.toFixed(2));
+          const precisaAprovacao = descontoDevido > TOLERANCIA_DESCONTO_PENDENTE;
           const statusNovo = precisaAprovacao ? 'AGUARDANDO_APROVACAO_GESTAO' : 'PRONTA_PARA_PAGAMENTO';
           if (precisaAprovacao) enviadasParaAprovacao += 1;
           payload = {
@@ -4740,16 +4871,16 @@ ${portaisLaudo.length ? `
             status: statusNovo,
             valor_calculado: Number(resumo.calculoAmd.toFixed(2)),
             diferenca: saldo,
-            valor_recuperado: Math.max(saldo, 0),
+            valor_recuperado: descontoDevido,
             ctes_totais: resumo.total || payload.ctes_totais,
             ctes_auditados: resumo.calculados,
             ctes_divergentes: resumo.divergentes,
             ctes_sem_calculo: resumo.semCalculo,
             auditoria_cobranca_acima: Number(resumo.cobrancaAcima.toFixed(2)),
             auditoria_cobranca_abaixo: Number(resumo.cobrancaAbaixo.toFixed(2)),
-            auditoria_total_descontar: Number(Math.max(saldo, 0).toFixed(2)),
+            auditoria_total_descontar: descontoDevido,
             desconto_aplicado_confirmado: !precisaAprovacao,
-            desconto_pendente_valor: precisaAprovacao ? Math.max(saldo, 0) : 0,
+            desconto_pendente_valor: precisaAprovacao ? descontoDevido : 0,
             ...(precisaAprovacao ? { observacao_aprovacao: respostaAuditor } : {}),
           };
           evento = {
@@ -4758,7 +4889,7 @@ ${portaisLaudo.length ? `
             status_anterior: fatura.status,
             status_novo: statusNovo,
             descricao: precisaAprovacao
-              ? `Enviada para aprovacao da gestao (liberacao em massa): cobranca a maior de ${dinheiro(saldo)}.${respostaAuditor ? ` ${respostaAuditor}` : ''}`
+              ? `Enviada para aprovacao da gestao (liberacao em massa): cobranca a maior de ${dinheiro(descontoDevido)}.${respostaAuditor ? ` ${respostaAuditor}` : ''}`
               : `Liberada em massa para pagamento. Cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}.`,
           };
         }
@@ -4874,8 +5005,25 @@ ${portaisLaudo.length ? `
         ['Total a descontar', dinheiro(resumoGeral.totalDescontar)],
         ['Sem entrega', semEntregaGeral.length],
       ];
+      if (laudoTransportador) {
+        for (const bloco of blocos) {
+          if (!bloco.linkConfirmacao) continue;
+          const mascarados = aplicarMascaraLaudoTransportador(bloco.detalhes, opts, toleranciaLaudo);
+          await salvarDivergenciasFatura(bloco.fatura, ctesCobrancaAcima(mascarados, (dif) => dentroDaToleranciaAuditoria(dif, toleranciaLaudo)));
+        }
+      }
+      const portaisEntregaLote = [];
+      if (laudoTransportador && entregaCtesLote) {
+        for (const bloco of blocos) {
+          const link = urlPortalEntrega(bloco.linkConfirmacao);
+          const pend = bloco.detalhes.filter((item) => entregaCtesLote.get(chaveEntregaRegistro(item))?.status !== STATUS_ENTREGA.ENTREGUE);
+          if (!link || !pend.length) continue;
+          await salvarPendenciasEntrega(bloco.fatura, pend.map((item) => ({ ...item, entrega_status: entregaCtesLote.get(chaveEntregaRegistro(item))?.status })));
+          portaisEntregaLote.push({ numero: bloco.fatura.numero_fatura, url: link, total: pend.length });
+        }
+      }
       const blocoEntregaLote = semEntregaGeral.length
-        ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><strong>⚠ ${semEntregaGeral.length} CT-e(s) sem entrega comprovada no lote — favor verificar</strong><p style="margin:6px 0 0;font-size:13px">O pagamento so deve ser liberado com todos os CT-es entregues. CT-es: <b>${semEntregaGeral.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtesLote?.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p></div>`
+        ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><strong>⚠ ${semEntregaGeral.length} CT-e(s) sem entrega comprovada no lote — favor verificar</strong><p style="margin:6px 0 0;font-size:13px">O pagamento so deve ser liberado com todos os CT-es entregues. CT-es: <b>${semEntregaGeral.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtesLote?.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p>${portaisEntregaLote.map((portal) => botaoPortalEntrega(portal.url, `Responder entregas — fatura ${portal.numero} (${portal.total} CT-e)`)).join('')}</div>`
         : (entregaCtesLote ? '' : `<div style="margin:0 0 14px;padding:14px 18px;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;color:#7c2d12"><strong>⚠ Nao foi possivel consultar o status de entrega dos CT-es deste lote.</strong></div>`);
       // Laudo hierarquico: uma linha por fatura, expande CT-es; cada CT-e
       // expande o detalhe do calculo. Tudo fechado por padrao.
@@ -5795,6 +5943,20 @@ ${portaisLaudo.length ? `
           {visaoFatura === 'minhas' ? 'Mostrando suas faturas.' : visaoFatura === 'sem_auditor' ? 'Mostrando faturas sem auditor definido.' : 'Mostrando todas as faturas.'}
           {' '}Clique em um card para filtrar rápido; clique de novo para tirar o filtro.
         </p>
+        {(alertaPrazo.aVencer.length + alertaPrazo.vencidas.length) > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, margin: '8px 0 12px' }}>
+            <button type="button" onClick={() => { setVisaoFatura(ehGestorAlerta ? 'todas' : 'minhas'); setFiltroRapido('alerta_a_vencer'); }} style={{ flex: '1 1 260px', cursor: 'pointer', textAlign: 'left', font: 'inherit', padding: '12px 14px', borderRadius: 10, border: '1px solid #e67e22', background: '#fff6ea' }}>
+              <strong style={{ color: '#b45309' }}>⏰ A vencer em {A_VENCER_ALERTA_DIAS} dias (não pagas)</strong>
+              <div style={{ fontSize: 26, fontWeight: 700, color: '#e67e22' }}>{alertaPrazo.aVencer.length}</div>
+              <small>{dinheiro(alertaPrazo.valorAVencer)} · clique para ver as faturas</small>
+            </button>
+            <button type="button" onClick={() => { setVisaoFatura(ehGestorAlerta ? 'todas' : 'minhas'); setFiltroRapido('alerta_vencidas'); }} style={{ flex: '1 1 260px', cursor: 'pointer', textAlign: 'left', font: 'inherit', padding: '12px 14px', borderRadius: 10, border: '1px solid #cf2f2f', background: '#fdecec' }}>
+              <strong style={{ color: '#9b1111' }}>⚠ Vencidas e não pagas (últimos 2 meses)</strong>
+              <div style={{ fontSize: 26, fontWeight: 700, color: '#9b1111' }}>{alertaPrazo.vencidas.length}</div>
+              <small>{dinheiro(alertaPrazo.valorVencidas)} · clique para ver as faturas</small>
+            </button>
+          </div>
+        )}
         <div className="summary-strip audit-quick-cards">
           {[
             ['vencidas', 'Vencidas', resumoCards.vencidas, resumoCards.vencidas ? '#9b1111' : '#047857'],
@@ -6339,6 +6501,71 @@ function Gestao({ state, onState }) {
   // (carteira cadastrada com alias, fatura importada com o nome oficial —
   // ver aplicarAtribuicaoComEstado acima). So mexe em faturas SEM auditor
   // definido; quem ja tem auditor fica como esta, pra preservar continuidade.
+  // Casamento por nome com fallbacks seguros: nome exato; sem sufixo de filial
+  // ("RECOLI | SPO", "X - MATRIZ"); e prefixo, so quando aponta pra UMA carteira.
+  const auditorPorNomeTransportadora = (nomeFatura, mapaPorCarteira) => {
+    const nome = resolverNomeTransportadora(nomeFatura);
+    const exato = mapaPorCarteira.get(normalizarNomeTransportadora(nome));
+    if (exato) return exato;
+    const semSufixo = normalizarNomeTransportadora(String(nome || '').split('|')[0].split(' - ')[0]);
+    if (!semSufixo) return null;
+    if (mapaPorCarteira.has(semSufixo)) return mapaPorCarteira.get(semSufixo);
+    const candidatos = new Set();
+    mapaPorCarteira.forEach((dados, chave) => {
+      if (semSufixo.length >= 5 && (semSufixo.startsWith(`${chave} `) || chave.startsWith(`${semSufixo} `))) candidatos.add(dados.auditor_nome);
+    });
+    if (candidatos.size !== 1) return null;
+    const unico = [...candidatos][0];
+    let achado = null;
+    mapaPorCarteira.forEach((dados) => { if (dados.auditor_nome === unico) achado = dados; });
+    return achado;
+  };
+  // Diagnostico: faturas sem auditor agrupadas pelo nome que veio na fatura, pra
+  // ver quais nomes nao casam com nenhuma carteira (e por que a sincronizacao nao pega).
+  const semAuditorPorNome = useMemo(() => {
+    const mapa = new Map();
+    state.faturas.forEach((fatura) => {
+      if (fatura.auditor_nome) return;
+      const nome = fatura.transportadora || '(sem nome)';
+      const atual = mapa.get(nome) || { nome, total: 0, abertas: 0, cnpj: '' };
+      atual.total += 1;
+      if (!ENCERRADOS.has(fatura.status)) atual.abertas += 1;
+      if (!atual.cnpj && fatura.cnpj_transportadora) atual.cnpj = fatura.cnpj_transportadora;
+      mapa.set(nome, atual);
+    });
+    return [...mapa.values()].sort((a, b) => b.abertas - a.abertas || b.total - a.total);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.faturas]);
+  // Correcao manual: escolhe a carteira certa pra um nome de fatura que nao casa.
+  // Grava o vinculo (nome na fatura -> carteira) pra as proximas faturas ja casarem
+  // e atribui o auditor da carteira as faturas sem auditor com esse nome.
+  const [escolhaCarteira, setEscolhaCarteira] = useState({});
+  const [atribuindoNome, setAtribuindoNome] = useState('');
+  const carteirasComAuditor = useMemo(() => carteiras.filter((item) => item.auditor_nome)
+    .sort((a, b) => a.transportadora.localeCompare(b.transportadora, 'pt-BR')), [carteiras]);
+  const atribuirNomeACarteira = async (nomeFatura) => {
+    const carteira = carteirasComAuditor.find((item) => item.transportadora === escolhaCarteira[nomeFatura]);
+    if (!carteira) return;
+    setAtribuindoNome(nomeFatura);
+    setErroAtribuicao('');
+    try {
+      const existentes = await carregarVinculosTransportadoras();
+      await salvarVinculosTransportadoras([...(existentes || []), { nomeCte: nomeFatura, nomeTabela: carteira.transportadora, origem: 'auditoria-carteira' }]);
+      setMapaVinculos(criarMapaVinculosTransportadoras([...(existentes || []), { nomeCte: nomeFatura, nomeTabela: carteira.transportadora }]));
+      const ids = state.faturas.filter((f) => !f.auditor_nome && (f.transportadora || '(sem nome)') === nomeFatura).map((f) => f.id);
+      const resultado = await atribuirAuditorEmLote(state, ids, {
+        auditorNome: carteira.auditor_nome, auditorEmail: carteira.auditor_email || '',
+        descricao: `Nome "${nomeFatura}" vinculado a carteira ${carteira.transportadora} (${carteira.auditor_nome}).`,
+        usuarioNome: carregarSessao()?.nome || 'Gestao',
+      });
+      onState(resultado.state);
+      setResultadoSincronizacao({ corrigidas: resultado.atualizadas, aindaSemCarteira: resultado.state.faturas.filter((f) => !f.auditor_nome).length });
+    } catch (error) {
+      setErroAtribuicao(error.message || 'Erro ao vincular a carteira.');
+    } finally {
+      setAtribuindoNome('');
+    }
+  };
   const [sincronizandoAuditores, setSincronizandoAuditores] = useState(false);
   const [resultadoSincronizacao, setResultadoSincronizacao] = useState(null);
   const sincronizarFaturasSemAuditor = async () => {
@@ -6362,8 +6589,7 @@ function Gestao({ state, onState }) {
       const resolverAuditor = (fatura) => {
         const raizFatura = obterRaizCnpj(fatura.cnpj_transportadora);
         if (raizCnpjValida(raizFatura) && mapaAuditorPorRaizCnpj.has(raizFatura)) return mapaAuditorPorRaizCnpj.get(raizFatura);
-        const chave = normalizarNomeTransportadora(resolverNomeTransportadora(fatura.transportadora));
-        return mapaAuditorPorCarteira.get(chave) || null;
+        return auditorPorNomeTransportadora(fatura.transportadora, mapaAuditorPorCarteira);
       };
       const pendentes = state.faturas.filter((fatura) => !fatura.auditor_nome && resolverAuditor(fatura));
       let estadoAtual = state;
@@ -6508,6 +6734,44 @@ function Gestao({ state, onState }) {
           </p>
         )}
         {erroAtribuicao && <p className="error-text">{erroAtribuicao}</p>}
+        {semAuditorPorNome.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <strong>Faturas sem auditor, por nome da transportadora na fatura</strong>
+            <p style={{ margin: '4px 0 8px', color: '#475569' }}>Mostra o nome exatamente como veio na fatura. Nomes com sufixo (ex.: “| SPO”) ou diferentes do cadastro são os que a sincronização não acha. As primeiras 40, das que têm mais faturas em aberto.</p>
+            <div className="sim-analise-tabela-wrap">
+              <table className="sim-analise-tabela">
+                <thead><tr><th>Nome na fatura</th><th>CNPJ (fatura)</th><th>Em aberto</th><th>Total sem auditor</th><th>Carteira encontrada</th><th>Escolher a carteira certa</th></tr></thead>
+                <tbody>
+                  {semAuditorPorNome.slice(0, 40).map((linha) => {
+                    const chaveNome = normalizarNomeTransportadora(resolverNomeTransportadora(linha.nome));
+                    const carteiraExata = mapaCarteirasExistentes.get(chaveNome);
+                    return (
+                      <tr key={linha.nome}>
+                        <td>{linha.nome}</td>
+                        <td>{linha.cnpj || <span style={{ color: '#9b1111' }}>sem CNPJ</span>}</td>
+                        <td style={{ fontWeight: 700 }}>{linha.abertas}</td>
+                        <td>{linha.total}</td>
+                        <td>{carteiraExata ? (carteiraExata.auditor_nome ? <>{carteiraExata.auditor_nome} <span style={{ color: '#b45309' }}>(clique em Sincronizar)</span></> : <span style={{ color: '#9b1111' }}>carteira existe, sem auditor</span>) : <span style={{ color: '#9b1111' }}>nenhuma carteira com esse nome</span>}</td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <select value={escolhaCarteira[linha.nome] || ''} onChange={(e) => setEscolhaCarteira((atual) => ({ ...atual, [linha.nome]: e.target.value }))} style={{ maxWidth: 260 }}>
+                              <option value="">Selecione a transportadora…</option>
+                              {carteirasComAuditor.map((c) => <option key={c.transportadora} value={c.transportadora}>{c.transportadora} — {c.auditor_nome}</option>)}
+                            </select>
+                            <button type="button" disabled={!escolhaCarteira[linha.nome] || Boolean(atribuindoNome)} onClick={() => atribuirNomeACarteira(linha.nome)}>
+                              {atribuindoNome === linha.nome ? 'Aplicando...' : 'Vincular'}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {semAuditorPorNome.length > 40 && <p style={{ color: '#64748b' }}>+ {semAuditorPorNome.length - 40} nome(s) na fila.</p>}
+          </div>
+        )}
       </div>
       {porAuditor.size > 0 && (
         <div className="table-card">
@@ -6823,6 +7087,163 @@ async function carregarCtesFaturaParaAprovacao(fatura) {
 // aplicar) e o auditor respondeu se sera descontado — a gestao (eu/Carol)
 // decide: aprovar com desconto, aprovar sem desconto (o adicional vira saldo
 // autorizado), autorizar e mandar pra Suprimentos ajustar a tabela, ou recusar.
+
+// Botao do laudo que leva a transportadora ao portal de comprovantes de entrega.
+const botaoPortalEntrega = (url, rotulo = 'Responder e enviar comprovantes de entrega') => (url
+  ? `<p style="margin:10px 0 0"><a href="${escapeHtmlAuditoria(url)}" target="_blank" rel="noopener" style="display:inline-block;padding:10px 16px;background:#b91c1c;color:#fff;border-radius:8px;font-weight:700;text-decoration:none;font-size:13px">${escapeHtmlAuditoria(rotulo)}</a></p>`
+  : '');
+
+const ROTULO_RESPOSTA_ENTREGA = { ENTREGUE: 'Entregue (comprovante)', NAO_ENTREGUE: 'Nao entregue / devolucao', EM_ANALISE: 'Em analise' };
+
+// Respostas da transportadora (portal de entrega): o auditor confere os comprovantes e
+// aprova (CT-e passa a contar como entregue) ou rejeita (transportadora reenvia).
+function RespostasEntregaFatura({ faturaId, usuarioNome, aoValidar }) {
+  const [respostas, setRespostas] = useState(null);
+  const [erro, setErro] = useState('');
+  const [processando, setProcessando] = useState('');
+  const carregar = async () => setRespostas(await carregarRespostasEntregaFatura(faturaId));
+  useEffect(() => { carregar(); }, [faturaId]);
+
+  const validar = async (resposta, aprovar) => {
+    let observacao = '';
+    if (!aprovar) {
+      observacao = window.prompt('Motivo da rejeicao (a transportadora vera ao reenviar):') || '';
+      if (!observacao.trim()) return;
+    }
+    setProcessando(resposta.id);
+    setErro('');
+    try {
+      await validarRespostaEntrega({ id: resposta.id, aprovar, observacao, usuarioNome });
+      await carregar();
+      aoValidar?.();
+    } catch (error) {
+      setErro(error.message || String(error));
+    } finally {
+      setProcessando('');
+    }
+  };
+
+  if (!respostas?.length) return null;
+  return (
+    <div className="hint-box compact" style={{ marginBottom: 10 }}>
+      <strong>Respostas da transportadora sobre entregas ({respostas.length})</strong>
+      {erro && <div className="error-text">{erro}</div>}
+      <div className="sim-analise-tabela-wrap" style={{ maxHeight: 280, overflow: 'auto', marginTop: 6 }}>
+        <table className="sim-analise-tabela">
+          <thead><tr><th>CT-e</th><th>Resposta</th><th>Justificativa</th><th>Comprovantes</th><th>Enviado por</th><th>Status</th><th /></tr></thead>
+          <tbody>
+            {respostas.map((r) => (
+              <tr key={r.id}>
+                <td>{r.numero_cte || String(r.chave).slice(-9)}</td>
+                <td>{ROTULO_RESPOSTA_ENTREGA[r.resposta] || r.resposta}</td>
+                <td style={{ fontSize: 12, maxWidth: 280 }}>{r.justificativa || '-'}</td>
+                <td>{(r.anexos || []).length ? (r.anexos || []).map((a) => <div key={a.path}><a href={urlAnexoEntrega(a.path)} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>📎 {a.nome}</a></div>) : '-'}</td>
+                <td style={{ fontSize: 12 }}>{r.respondido_por || '-'}<br />{r.respondido_em ? new Date(r.respondido_em).toLocaleString('pt-BR') : ''}</td>
+                <td>{r.status_validacao === 'APROVADO' ? <strong style={{ color: '#14733b' }}>Aprovada</strong> : r.status_validacao === 'REJEITADO' ? <strong style={{ color: '#9b1111' }}>Rejeitada</strong> : 'Aguardando'}{r.observacao_validacao ? <div style={{ fontSize: 11 }}>{r.observacao_validacao}</div> : null}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  {r.status_validacao === 'PENDENTE' && (
+                    <>
+                      <button type="button" className="btn-primary audit-small-button" disabled={processando === r.id} onClick={() => validar(r, true)} title={r.resposta === 'ENTREGUE' ? 'CT-e passa a contar como entregue' : 'Registra a resposta como conferida'}>Aprovar</button>{' '}
+                      <button type="button" className="btn-secondary audit-small-button" disabled={processando === r.id} onClick={() => validar(r, false)}>Rejeitar</button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Respostas da transportadora no portal "Confirmar fatura": por CT-e com cobranca acima,
+// concordo (com o desconto que ela reconhece) ou nao concordo (com motivo).
+function RespostasDivergenciaFatura({ faturaId, usuarioNome, aoMudarConfirmacao }) {
+  const [linhas, setLinhas] = useState(null);
+  const [erro, setErro] = useState('');
+  const [processando, setProcessando] = useState('');
+  const carregar = async () => setLinhas(await carregarDivergenciasFatura(faturaId));
+  useEffect(() => { carregar(); }, [faturaId]);
+  const validar = async (linha, aprovar) => {
+    let observacao = '';
+    if (!aprovar) {
+      observacao = window.prompt('Motivo da rejeicao (a transportadora vera ao responder de novo):') || '';
+      if (!observacao.trim()) return;
+    }
+    setProcessando(linha.id);
+    setErro('');
+    try {
+      const novoStatus = await validarRespostaDivergencia({ linha, aprovar, observacao: observacao.trim(), usuarioNome });
+      await carregar();
+      aoMudarConfirmacao?.(aprovar ? novoStatus : 'CONTESTADO');
+    } catch (error) {
+      setErro(error.message || String(error));
+    } finally {
+      setProcessando('');
+    }
+  };
+  const aceitarTodas = async () => {
+    const pendentes = (linhas || []).filter((r) => r.resposta && (r.status_validacao || 'PENDENTE') === 'PENDENTE');
+    if (!pendentes.length || !window.confirm(`Aceitar as ${pendentes.length} resposta(s) pendente(s)?`)) return;
+    setProcessando('todas');
+    setErro('');
+    try {
+      let novoStatus = null;
+      for (const linha of pendentes) {
+        // eslint-disable-next-line no-await-in-loop
+        novoStatus = await validarRespostaDivergencia({ linha, aprovar: true, usuarioNome });
+      }
+      await carregar();
+      aoMudarConfirmacao?.(novoStatus);
+    } catch (error) {
+      setErro(error.message || String(error));
+    } finally {
+      setProcessando('');
+    }
+  };
+  const respondidas = (linhas || []).filter((r) => r.resposta);
+  if (!respondidas.length) return null;
+  const totalDesconto = respondidas.filter((r) => r.resposta === 'CONCORDO').reduce((acc, r) => acc + Number(r.valor_desconto || 0), 0);
+  return (
+    <div className="hint-box compact" style={{ marginBottom: 10 }}>
+      <strong>Respostas da transportadora sobre cobranca acima ({respondidas.length} de {linhas.length} CT-es) — desconto reconhecido {dinheiro(totalDesconto)}</strong>
+      {respondidas.some((r) => (r.status_validacao || 'PENDENTE') === 'PENDENTE') && (
+        <button type="button" className="btn-primary audit-small-button" style={{ marginLeft: 10 }} disabled={processando === 'todas'} onClick={aceitarTodas}>Aceitar todas pendentes</button>
+      )}
+      {erro && <div className="error-text">{erro}</div>}
+      <div className="sim-analise-tabela-wrap" style={{ maxHeight: 280, overflow: 'auto', marginTop: 6 }}>
+        <table className="sim-analise-tabela">
+          <thead><tr><th>CT-e</th><th>Cobrado</th><th>Calculado</th><th>Diferenca</th><th>Resposta</th><th>Desconto</th><th>Motivo</th><th>Enviado por</th><th>Auditoria</th><th /></tr></thead>
+          <tbody>
+            {respondidas.map((r) => (
+              <tr key={r.id}>
+                <td>{r.numero_cte || String(r.chave).slice(-9)}</td>
+                <td>{dinheiro(r.valor_cobrado)}</td>
+                <td>{dinheiro(r.valor_calculado)}</td>
+                <td>{dinheiro(r.diferenca)}</td>
+                <td>{r.resposta === 'CONCORDO' ? <strong style={{ color: '#14733b' }}>Concorda</strong> : <strong style={{ color: '#9b1111' }}>Nao concorda</strong>}</td>
+                <td>{r.resposta === 'CONCORDO' ? dinheiro(r.valor_desconto) : '-'}</td>
+                <td style={{ fontSize: 12, maxWidth: 280 }}>{r.justificativa || '-'}</td>
+                <td style={{ fontSize: 12 }}>{r.respondido_por || '-'}<br />{r.respondido_em ? new Date(r.respondido_em).toLocaleString('pt-BR') : ''}</td>
+                <td>{r.status_validacao === 'ACEITO' ? <strong style={{ color: '#14733b' }}>Aceita</strong> : r.status_validacao === 'REJEITADO' ? <strong style={{ color: '#9b1111' }}>Rejeitada</strong> : 'Aguardando'}{r.observacao_validacao ? <div style={{ fontSize: 11 }}>{r.observacao_validacao}</div> : null}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  {(r.status_validacao || 'PENDENTE') === 'PENDENTE' && (
+                    <>
+                      <button type="button" className="btn-primary audit-small-button" disabled={processando === r.id} onClick={() => validar(r, true)}>Aceitar</button>{' '}
+                      <button type="button" className="btn-secondary audit-small-button" disabled={processando === r.id} onClick={() => validar(r, false)}>Rejeitar</button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 const DECISOES_GESTAO = {
   APROVACAO_GESTAO_CONFIRMOU_DESCONTO: 'Aprovada COM desconto',
   APROVACAO_GESTAO_SEM_DESCONTO: 'Aprovada SEM desconto',
@@ -7263,8 +7684,243 @@ function AprovacaoGestao({ state, onState }) {
   );
 }
 
+// Planilha do protocolo (lote) no modelo enviado ao Financeiro: usada tanto pela
+// auditoria (ao fechar o lote) quanto pela tela do Financeiro (baixar de novo).
+async function exportarPlanilhaLote(lote, itens) {
+  const { default: XS } = await import('xlsx-js-style'); // so esta exportacao precisa de estilo (cores/formatos)
+  const STATUS = { LANCAMENTO_MANUAL: 'Manual', COBRANCA_PROCESSADA: 'Cobrança Processada', MISTA: 'Mista' };
+  const TIPO = { DADOS_BANCARIOS: 'Dados Bancarios', BOLETO: 'Boleto' };
+  const dadosBancarios = (item) => {
+    const d = item.dados_bancarios;
+    if (!d || item.tipo_envio === 'BOLETO') return '';
+    if (d.chave_pix) return `PIX: ${d.chave_pix} CNPJ: ${d.cnpj || item.cnpj_transportadora || ''}`.trim();
+    return [d.favorecido, d.banco && `Banco ${d.banco}`, d.agencia && `Ag ${d.agencia}`, d.conta && `Conta ${d.conta}`, d.tipo_conta].filter(Boolean).join(' ');
+  };
+  const numero = (v) => Number(v || 0);
+  const linhas = itens.map((item) => {
+    const desconto = numero(item.desconto_total);
+    return [
+      String(item.numero_fatura || ''), item.responsavel_nome || '', TIPO[item.tipo_envio] || item.tipo_envio || '', item.transportadora || '',
+      String(item.cnpj_transportadora || '').replace(/\D/g, ''), item.vencimento ? new Date(`${String(item.vencimento).slice(0, 10)}T12:00:00`) : '',
+      STATUS[item.status_fatura_protocolo] || '', numero(item.valor_fatura_original || item.valor), desconto, numero(item.valor_real_a_pagar ?? item.valor),
+      item.partida || '', desconto > 0 && item.centro_custo_codigo ? `${item.centro_custo_codigo} ${desconto.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : '',
+      item.observacoes || '', dadosBancarios(item),
+    ];
+  });
+  const soma = (col) => Number(linhas.reduce((acc, linha) => acc + linha[col], 0).toFixed(2));
+  const aoa = [['', '', '', '', '', '', '', soma(7), soma(8), soma(9)], ['Fatura', 'Responsável', 'Tipo Envio', 'Transportadora', 'CNPJ', 'Vencimento', 'Status Fatura', 'Valor Fatura', 'Desconto', 'Valor real a pagar', 'Partida', 'CC Desconto', 'Observação', 'Dados Bancários'], ...linhas];
+  const ws = XS.utils.aoa_to_sheet(aoa, { cellDates: true });
+  // Visual do modelo enviado ao Financeiro: totais em roxo, cabecalho magenta, linhas zebradas em rosa.
+  const CONTAB = '_-"R$"\\ * #,##0.00_-;\\-"R$"\\ * #,##0.00_-;_-"R$"\\ * "-"??_-;_-@_-';
+  const fonte = (extra = {}) => ({ name: 'Aptos Narrow', sz: 11, color: { rgb: 'FF000000' }, ...extra });
+  const preenche = (rgb) => ({ patternType: 'solid', fgColor: { rgb }, bgColor: { rgb } });
+  const alinha = { horizontal: 'center', vertical: 'center', wrapText: true };
+  const ultima = linhas.length + 2;
+  [7, 8, 9].forEach((col) => {
+    const ref = XS.utils.encode_cell({ r: 0, c: col });
+    const letra = XS.utils.encode_col(col);
+    ws[ref] = { t: 'n', v: soma(col), f: `SUM(${letra}3:${letra}${Math.max(ultima, 3)})`, z: CONTAB, s: { font: fonte({ bold: true, color: { rgb: 'FFFFFFFF' } }), fill: preenche('FF7030A0'), alignment: alinha } };
+  });
+  for (let col = 0; col < 14; col += 1) {
+    const ref = XS.utils.encode_cell({ r: 1, c: col });
+    ws[ref].s = { font: fonte({ bold: true, color: { rgb: 'FFFFFFFF' } }), fill: preenche('FFA02B93'), alignment: alinha };
+  }
+  linhas.forEach((_, i) => {
+    const fundo = preenche(i % 2 === 0 ? 'FFE49EDD' : 'FFF2CEEF');
+    for (let col = 0; col < 14; col += 1) {
+      const ref = XS.utils.encode_cell({ r: i + 2, c: col });
+      if (!ws[ref]) ws[ref] = { t: 's', v: '' };
+      ws[ref].s = { font: fonte(), fill: fundo, alignment: alinha };
+      if ([7, 8, 9].includes(col)) ws[ref].z = CONTAB;
+      if (col === 5 && ws[ref].t === 'd') ws[ref].z = 'dd/mm/yyyy';
+    }
+  });
+  ws['!cols'] = [10, 16, 20, 38, 18, 13, 22, 17, 14, 19, 17, 30, 40, 60].map((wch) => ({ wch }));
+  ws['!autofilter'] = { ref: `A2:N${Math.max(ultima, 2)}` };
+  ws['!freeze'] = { xSplit: 0, ySplit: 2 };
+  ws['!views'] = [{ state: 'frozen', ySplit: 2 }];
+  ws['!ref'] = `A1:N${Math.max(ultima, 2)}`;
+  const wb = XS.utils.book_new();
+  XS.utils.book_append_sheet(wb, ws, 'envios');
+  const [, , mes, dia, seq] = String(lote).match(/^LOTE-(\d{4})-(\d{2})-(\d{2})-(\d+)$/) || [];
+  const nome = dia ? `PROTOCOLO ${dia}-${mes}${Number(seq) > 1 ? ` (${Number(seq)})` : ''}.xlsx` : `PROTOCOLO ${lote}.xlsx`;
+  XS.writeFile(wb, nome, { cellDates: true });
+}
+
+// Tela do time do Financeiro (fora da auditoria, perfil FINANCEIRO): so ve os
+// protocolos dos lotes ja fechados, agrupados por lote, baixa a planilha da
+// auditoria e da a devolutiva (pago / com problema) fatura a fatura.
+function FinanceiroDevolutiva({ state, onState, sessao }) {
+  const [processando, setProcessando] = useState('');
+  const [erro, setErro] = useState('');
+  const [problemaAberto, setProblemaAberto] = useState(null);
+  const [problemaTexto, setProblemaTexto] = useState('');
+  const [loteAberto, setLoteAberto] = useState('');
+  const protocolos = (state.protocolos || []).filter((item) => item.ativo !== false && String(item.lote || '').startsWith('LOTE-'));
+  const porLote = new Map();
+  protocolos.forEach((item) => { const lista = porLote.get(item.lote) || []; lista.push(item); porLote.set(item.lote, lista); });
+  const lotes = [...porLote.keys()].sort().reverse();
+  if (loteAberto === '' && lotes.length) setLoteAberto(lotes[0]);
+
+  const marcarPago = async (protocolo) => {
+    setProcessando(protocolo.id);
+    setErro('');
+    try {
+      const resultado = await registrarDevolutivaProtocolo(protocolo, { statusPagamento: 'PAGO', usuarioNome: sessao?.nome || sessao?.email || '' });
+      onState({ ...state, protocolos: state.protocolos.map((item) => (item.id === protocolo.id ? { ...item, status_pagamento: 'PAGO', pago_em: new Date().toISOString() } : item)), historico: [resultado.historico, ...(state.historico || [])] });
+    } catch (error) {
+      setErro(error.message || String(error));
+    } finally {
+      setProcessando('');
+    }
+  };
+
+  const confirmarProblema = async () => {
+    if (!problemaTexto.trim()) return;
+    const protocolo = problemaAberto;
+    setProcessando(protocolo.id);
+    setErro('');
+    try {
+      const resultado = await registrarDevolutivaProtocolo(protocolo, { statusPagamento: 'PROBLEMA', problemaDescricao: problemaTexto.trim(), usuarioNome: sessao?.nome || sessao?.email || '' });
+      onState({ ...state, protocolos: state.protocolos.map((item) => (item.id === protocolo.id ? { ...item, status_pagamento: 'PROBLEMA', problema_descricao: problemaTexto.trim() } : item)), historico: [resultado.historico, ...(state.historico || [])] });
+      setProblemaAberto(null);
+      setProblemaTexto('');
+    } catch (error) {
+      setErro(error.message || String(error));
+    } finally {
+      setProcessando('');
+    }
+  };
+
+  const baixarPlanilhaDoLote = () => {
+    const itens = porLote.get(loteAberto);
+    if (itens?.length) exportarPlanilhaLote(loteAberto, itens);
+  };
+
+  // Valida o lote inteiro de uma vez (o normal e o lote fechar batendo). So os
+  // itens com problema reportado ficam de fora — precisam ser tratados a parte
+  // com a auditoria antes de validar.
+  const validarLote = async () => {
+    const itens = (porLote.get(loteAberto) || []).filter((item) => (item.status_pagamento || 'ABERTO') === 'ABERTO');
+    if (!itens.length) return;
+    if (!window.confirm(`Validar o lote inteiro (${itens.length} fatura(s))? Os itens ja marcados com problema ficam de fora.`)) return;
+    setProcessando('lote');
+    setErro('');
+    try {
+      const usuarioNome = sessao?.nome || sessao?.email || '';
+      for (const item of itens) {
+        // eslint-disable-next-line no-await-in-loop
+        await registrarDevolutivaProtocolo(item, { statusPagamento: 'PAGO', usuarioNome });
+      }
+      const validados = new Set(itens.map((item) => item.id));
+      onState({ ...state, protocolos: state.protocolos.map((item) => (validados.has(item.id) ? { ...item, status_pagamento: 'PAGO', pago_em: new Date().toISOString() } : item)) });
+    } catch (error) {
+      setErro(error.message || String(error));
+    } finally {
+      setProcessando('');
+    }
+  };
+
+  return (
+    <div className="panel-card">
+      <div className="panel-title">Protocolos — Financeiro</div>
+      <p className="compact">Lotes fechados pela auditoria para pagamento. Confira as informacoes (mesmas da planilha), valide o lote inteiro de uma vez e reporte problema so nos casos que tiverem algo errado.</p>
+      {erro && <div className="hint-box compact error-text">{erro}</div>}
+      {!lotes.length && <div className="hint-box compact">Nenhum lote fechado ainda.</div>}
+      {lotes.length > 0 && (
+        <div className="tabs-row" style={{ flexWrap: 'wrap' }}>
+          {lotes.map((lote) => {
+            const itens = porLote.get(lote);
+            const pendentes = itens.filter((item) => (item.status_pagamento || 'ABERTO') === 'ABERTO').length;
+            return (
+              <button key={lote} className={`toggle-btn ${loteAberto === lote ? 'active' : ''}`} onClick={() => setLoteAberto(lote)}>
+                {lote.replace('LOTE-', '')} {pendentes ? `(${pendentes} pendente${pendentes > 1 ? 's' : ''})` : '✓'}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {loteAberto && porLote.get(loteAberto) && (
+        <>
+          <div className="actions-right" style={{ margin: '10px 0', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className="btn-secondary" onClick={baixarPlanilhaDoLote}>Baixar planilha deste lote</button>
+            <button type="button" className="btn-primary" disabled={processando === 'lote' || !porLote.get(loteAberto).some((item) => (item.status_pagamento || 'ABERTO') === 'ABERTO')} onClick={validarLote}>
+              {processando === 'lote' ? 'Validando...' : 'Validar lote inteiro'}
+            </button>
+          </div>
+          <div className="table-card">
+            <div className="sim-analise-tabela-wrap">
+              <table className="sim-analise-tabela">
+                <thead><tr><th>Protocolo</th><th>Fatura</th><th>Responsavel</th><th>Tipo Envio</th><th>Transportadora</th><th>CNPJ</th><th>Vencimento</th><th>Status Fatura</th><th>Valor Fatura</th><th>Desconto</th><th>Valor real a pagar</th><th>Partida</th><th>CC Desconto</th><th>Observacao</th><th>Dados Bancarios</th><th>Situacao</th><th /></tr></thead>
+                <tbody>
+                  {porLote.get(loteAberto).map((item) => {
+                    const status = item.status_pagamento || 'ABERTO';
+                    const d = item.dados_bancarios;
+                    const dadosBancariosTxt = item.tipo_envio === 'BOLETO'
+                      ? ''
+                      : (d?.chave_pix ? `PIX: ${d.chave_pix} CNPJ: ${d.cnpj || item.cnpj_transportadora || ''}` : [d?.favorecido, d?.banco && `Banco ${d.banco}`, d?.agencia && `Ag ${d.agencia}`, d?.conta && `Conta ${d.conta}`].filter(Boolean).join(' ') || '-');
+                    const desconto = Number(item.desconto_total || 0);
+                    const ccDesconto = desconto > 0 && item.centro_custo_codigo ? `${item.centro_custo_codigo} ${desconto.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : '-';
+                    return (
+                      <tr key={item.id}>
+                        <td>{item.protocolo}</td>
+                        <td>{item.numero_fatura || '-'}</td>
+                        <td>{item.responsavel_nome || '-'}</td>
+                        <td>{nomeStatus(item.tipo_envio || item.canal)}</td>
+                        <td>{item.transportadora || '-'}</td>
+                        <td>{item.cnpj_transportadora || '-'}</td>
+                        <td>{item.vencimento ? new Date(`${String(item.vencimento).slice(0, 10)}T12:00:00`).toLocaleDateString('pt-BR') : '-'}</td>
+                        <td>{nomeStatus(item.status_fatura_protocolo || '-')}</td>
+                        <td>{dinheiro(item.valor_fatura_original ?? item.valor)}</td>
+                        <td>{desconto ? dinheiro(desconto) : '-'}</td>
+                        <td>{dinheiro(item.valor_real_a_pagar ?? item.valor)}</td>
+                        <td>{item.partida || '-'}</td>
+                        <td>{ccDesconto}</td>
+                        <td style={{ fontSize: 12, maxWidth: 200 }}>{item.observacoes || '-'}</td>
+                        <td style={{ fontSize: 12, maxWidth: 220 }}>{dadosBancariosTxt}</td>
+                        <td>
+                          {status === 'PAGO' && <strong style={{ color: '#14733b' }}>Validado{item.pago_em ? ` em ${new Date(item.pago_em).toLocaleDateString('pt-BR')}` : ''}</strong>}
+                          {status === 'PROBLEMA' && <><strong style={{ color: '#9b1111' }}>Com problema</strong><div style={{ fontSize: 11 }}>{item.problema_descricao}</div></>}
+                          {status === 'ABERTO' && <span style={{ color: '#94a3b8' }}>Aguardando validacao</span>}
+                        </td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {status === 'ABERTO' && (
+                            <button type="button" className="btn-primary audit-small-button" disabled={processando === item.id || processando === 'lote'} onClick={() => marcarPago(item)}>Validar</button>
+                          )}{' '}
+                          {status !== 'PROBLEMA' && (
+                            <button type="button" className="btn-secondary audit-small-button" disabled={processando === item.id || processando === 'lote'} onClick={() => { setProblemaAberto(item); setProblemaTexto(''); }}>Problema</button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+      {problemaAberto && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div className="hint-box" style={{ background: '#fff', width: 'min(560px, 96vw)', maxHeight: '92vh', overflow: 'auto', padding: 20, borderRadius: 10 }}>
+            <h3 style={{ marginTop: 0 }}>Reportar problema — {problemaAberto.protocolo}</h3>
+            <p className="compact">Fatura {problemaAberto.numero_fatura || '-'} — {problemaAberto.transportadora || '-'} ({dinheiro(problemaAberto.valor_real_a_pagar ?? problemaAberto.valor)}).</p>
+            <p className="compact" style={{ color: '#475569' }}>Ao enviar, essa fatura sai da fila de validacao e volta para a auditoria tratar (ex.: dados bancarios errados, duplicidade). Depois que a auditoria corrigir e marcar como tratado, ela volta pra voce validar de novo aqui.</p>
+            <label className="field">Descreva o problema *<textarea rows={4} value={problemaTexto} onChange={(e) => setProblemaTexto(e.target.value)} placeholder="Ex.: dados bancarios divergentes do cadastro, fatura duplicada, valor incorreto..." /></label>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10 }}>
+              <button className="btn-secondary" onClick={() => setProblemaAberto(null)}>Cancelar</button>
+              <button className="btn-primary" disabled={!problemaTexto.trim() || processando === problemaAberto.id} onClick={confirmarProblema}>{processando === problemaAberto.id ? 'Enviando...' : 'Enviar para a auditoria'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Financeiro({ state, onState }) {
   const sessao = carregarSessao();
+  if (sessao?.perfil === 'FINANCEIRO') return <FinanceiroDevolutiva state={state} onState={onState} sessao={sessao} />;
   const pagamentoRef = useRef(null);
   const pagamentoPastaRef = useRef(null);
   const [subtab, setSubtab] = useState('protocolos');
@@ -7281,6 +7937,83 @@ function Financeiro({ state, onState }) {
   const [progressoPagamentos, setProgressoPagamentos] = useState(null);
   const [resumoPagamentosSap, setResumoPagamentosSap] = useState(null);
   const fatura = state.faturas.find((item) => item.id === faturaId);
+
+  // --- Fechar protocolo do dia (lote) e exportar a planilha do Financeiro ---
+  const [selProtocolos, setSelProtocolos] = useState([]);
+  const [soComProblema, setSoComProblema] = useState(false);
+  const [loteAbertoAuditor, setLoteAbertoAuditor] = useState('');
+  const [tratandoProblema, setTratandoProblema] = useState('');
+  const [loteExportar, setLoteExportar] = useState('');
+  const [fechandoLote, setFechandoLote] = useState(false);
+  const ehLoteFechado = (item) => String(item.lote || '').startsWith('LOTE-');
+  const protocolosAtivos = (state.protocolos || []).filter((item) => item.ativo !== false);
+  const protocolosAbertos = protocolosAtivos.filter((item) => !ehLoteFechado(item));
+  // Lotes ja fechados, agrupados — so abre a tabela do lote quando voce clica nele
+  // (ou quando ha pendencia: abre sozinho no lote com problema).
+  const protocolosFechados = protocolosAtivos.filter(ehLoteFechado);
+  const porLoteFechado = new Map();
+  protocolosFechados.forEach((item) => { const lista = porLoteFechado.get(item.lote) || []; lista.push(item); porLoteFechado.set(item.lote, lista); });
+  const loteComProblema = [...porLoteFechado.keys()].sort().reverse().find((lote) => porLoteFechado.get(lote).some((item) => item.status_pagamento === 'PROBLEMA'));
+  if (loteAbertoAuditor === '' && loteComProblema) setLoteAbertoAuditor(loteComProblema);
+  const protocolosVisiveis = (loteAbertoAuditor ? porLoteFechado.get(loteAbertoAuditor) || [] : [])
+    .filter((item) => !soComProblema || item.status_pagamento === 'PROBLEMA');
+  // Financeiro reportou problema (dados bancarios errados, duplicidade etc.): depois
+  // de corrigir, o auditor marca como tratado pra o protocolo voltar pra fila do
+  // Financeiro (status_pagamento volta a ABERTO, pra ele validar de novo).
+  const tratarProblemaProtocolo = async (item) => {
+    if (!window.confirm(`Marcar o problema do protocolo ${item.protocolo} como tratado? Ele volta para o Financeiro validar de novo.`)) return;
+    setTratandoProblema(item.id);
+    try {
+      const client = getSupabaseClient();
+      const agora = new Date().toISOString();
+      const { error } = await client.from('financeiro_protocolos').update({ status_pagamento: 'ABERTO', problema_descricao: null, devolutiva_por: null, devolutiva_em: null }).eq('id', item.id);
+      if (error) throw error;
+      const historico = {
+        id: `hist-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        fatura_id: (item.fatura_ids || [])[0] || item.id,
+        created_at: agora,
+        acao: 'PROTOCOLO_PROBLEMA_TRATADO',
+        descricao: `Auditoria tratou o problema do protocolo ${item.protocolo} (era: ${item.problema_descricao}). Protocolo voltou para o Financeiro validar.`,
+        usuario_nome: carregarSessao()?.nome || carregarSessao()?.email || 'Auditoria',
+      };
+      await client.from('auditoria_fatura_historico').insert(historico);
+      onState({ ...state, protocolos: state.protocolos.map((p) => (p.id === item.id ? { ...p, status_pagamento: 'ABERTO', problema_descricao: null } : p)), historico: [historico, ...(state.historico || [])] });
+    } catch (error) {
+      setErroFinanceiro(error.message || String(error));
+    } finally {
+      setTratandoProblema('');
+    }
+  };
+  const lotesFechados = [...new Set(protocolosAtivos.filter(ehLoteFechado).map((item) => item.lote))].sort().reverse();
+  const totalSelecionado = protocolosAtivos.filter((item) => selProtocolos.includes(item.id)).reduce((acc, item) => acc + Number(item.valor_real_a_pagar ?? item.valor ?? 0), 0);
+
+  const fecharLoteEExportar = async () => {
+    const itens = protocolosAtivos.filter((item) => selProtocolos.includes(item.id) && !ehLoteFechado(item));
+    if (!itens.length) return;
+    if (!window.confirm(`Fechar o protocolo com ${itens.length} fatura(s) (${dinheiro(totalSelecionado)}) e gerar a planilha para o Financeiro?`)) return;
+    setFechandoLote(true);
+    setErroFinanceiro('');
+    try {
+      const hoje = new Date();
+      const data = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+      const doDia = lotesFechados.filter((item) => item.startsWith(`LOTE-${data}-`)).length;
+      const lote = `LOTE-${data}-${String(doDia + 1).padStart(2, '0')}`;
+      const next = await fecharLoteProtocolos(state, itens.map((item) => item.id), lote);
+      onState(next);
+      await exportarPlanilhaLote(lote, itens);
+      setSelProtocolos([]);
+      setLoteExportar(lote);
+    } catch (error) {
+      setErroFinanceiro(error.message || String(error));
+    } finally {
+      setFechandoLote(false);
+    }
+  };
+
+  const baixarPlanilhaLote = async () => {
+    const itens = protocolosAtivos.filter((item) => item.lote === loteExportar);
+    if (itens.length) await exportarPlanilhaLote(loteExportar, itens);
+  };
 
   const enviar = async () => {
     if (!fatura) return;
@@ -7498,7 +8231,93 @@ function Financeiro({ state, onState }) {
               <div className="audit-form-actions"><button className="btn-primary" disabled={!faturaId} onClick={enviar}>Gerar protocolo e enviar</button></div>
             </div>
           </div>
-          <SimpleTable headers={['Protocolo', 'Canal', 'Valor', 'Lote', 'Responsavel', 'Status']} rows={state.protocolos.map((item) => [item.protocolo, nomeStatus(item.canal), dinheiro(item.valor), item.lote || '-', item.responsavel_nome || '-', <Status key="s" value={item.status} />])} />
+          <div className="panel-card">
+            <div className="panel-title">Protocolo do dia — fechar e exportar planilha</div>
+            <p className="compact">Selecione as faturas que vao no protocolo e feche o lote — a planilha para o Financeiro e gerada na hora.</p>
+            <div className="actions-right" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button type="button" className="btn-secondary" onClick={() => setSelProtocolos(protocolosAbertos.map((item) => item.id))}>Selecionar todos abertos</button>
+              <button type="button" className="btn-secondary" onClick={() => setSelProtocolos([])} disabled={!selProtocolos.length}>Limpar</button>
+              <button type="button" className="btn-primary" disabled={!selProtocolos.length || fechandoLote} onClick={fecharLoteEExportar}>{fechandoLote ? 'Fechando...' : `Fechar protocolo e exportar (${selProtocolos.length} - ${dinheiro(totalSelecionado)})`}</button>
+            </div>
+          </div>
+          <div className="table-card">
+            <div className="sim-analise-tabela-wrap">
+              <table className="sim-analise-tabela">
+                <thead><tr><th /><th>Protocolo</th><th>Fatura</th><th>Transportadora</th><th>Tipo</th><th>Valor a pagar</th><th>Desconto</th><th>Responsavel</th><th>Status</th></tr></thead>
+                <tbody>
+                  {protocolosAbertos.map((item) => (
+                    <tr key={item.id}>
+                      <td><input type="checkbox" checked={selProtocolos.includes(item.id)} onChange={(e) => setSelProtocolos((prev) => (e.target.checked ? [...prev, item.id] : prev.filter((id) => id !== item.id)))} /></td>
+                      <td>{item.protocolo}</td>
+                      <td>{item.numero_fatura || '-'}</td>
+                      <td>{item.transportadora || '-'}</td>
+                      <td>{nomeStatus(item.tipo_envio || item.canal)}</td>
+                      <td>{dinheiro(item.valor_real_a_pagar ?? item.valor)}</td>
+                      <td>{Number(item.desconto_total || 0) ? dinheiro(item.desconto_total) : '-'}</td>
+                      <td>{item.responsavel_nome || '-'}</td>
+                      <td><Status value={item.status} /></td>
+                    </tr>
+                  ))}
+                  {!protocolosAbertos.length && <tr><td colSpan={9}>Nenhum protocolo em aberto.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="panel-card" style={{ marginTop: 16 }}>
+            <div className="panel-title">Lotes fechados</div>
+            <p className="compact">Cada lote fechado abre com um clique. O Financeiro valida cada fatura ou reporta um problema (coluna "Devolutiva Financeiro") — nesse caso a linha fica em vermelho: trate o que causou o problema e clique em "Marcar tratado" pra ela voltar pra fila deles.</p>
+            {!lotesFechados.length && <div className="hint-box compact">Nenhum lote fechado ainda.</div>}
+            {lotesFechados.length > 0 && (
+              <div className="tabs-row" style={{ flexWrap: 'wrap' }}>
+                {lotesFechados.map((lote) => {
+                  const itens = porLoteFechado.get(lote) || [];
+                  const problemas = itens.filter((item) => item.status_pagamento === 'PROBLEMA').length;
+                  return (
+                    <button key={lote} className={`toggle-btn ${loteAbertoAuditor === lote ? 'active' : ''}`} onClick={() => setLoteAbertoAuditor((prev) => (prev === lote ? '' : lote))}>
+                      {lote.replace('LOTE-', '')} {problemas ? `⚠ ${problemas} com problema` : '✓'}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          {loteAbertoAuditor && porLoteFechado.get(loteAbertoAuditor) && (
+            <>
+              <div className="actions-right" style={{ margin: '10px 0', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <label className="compact"><input type="checkbox" checked={soComProblema} onChange={(e) => setSoComProblema(e.target.checked)} /> So com problema do Financeiro</label>
+                <button type="button" className="btn-secondary" onClick={() => exportarPlanilhaLote(loteAbertoAuditor, porLoteFechado.get(loteAbertoAuditor) || [])}>Baixar planilha deste lote</button>
+              </div>
+              <div className="table-card">
+                <div className="sim-analise-tabela-wrap">
+                  <table className="sim-analise-tabela">
+                    <thead><tr><th>Protocolo</th><th>Fatura</th><th>Transportadora</th><th>Tipo</th><th>Valor a pagar</th><th>Desconto</th><th>Responsavel</th><th>Status</th><th>Devolutiva Financeiro</th><th /></tr></thead>
+                    <tbody>
+                      {protocolosVisiveis.map((item) => (
+                        <tr key={item.id} style={item.status_pagamento === 'PROBLEMA' ? { background: '#fef2f2' } : undefined}>
+                          <td>{item.protocolo}</td>
+                          <td>{item.numero_fatura || '-'}</td>
+                          <td>{item.transportadora || '-'}</td>
+                          <td>{nomeStatus(item.tipo_envio || item.canal)}</td>
+                          <td>{dinheiro(item.valor_real_a_pagar ?? item.valor)}</td>
+                          <td>{Number(item.desconto_total || 0) ? dinheiro(item.desconto_total) : '-'}</td>
+                          <td>{item.responsavel_nome || '-'}</td>
+                          <td><Status value={item.status} /></td>
+                          <td style={{ fontSize: 12, maxWidth: 220 }}>
+                            {item.status_pagamento === 'PAGO' && <strong style={{ color: '#14733b' }}>Validado{item.pago_em ? ` em ${new Date(item.pago_em).toLocaleDateString('pt-BR')}` : ''}</strong>}
+                            {item.status_pagamento === 'PROBLEMA' && <><strong style={{ color: '#9b1111' }}>Com problema</strong><div>{item.problema_descricao}</div>{item.devolutiva_por ? <div style={{ color: '#94a3b8' }}>por {item.devolutiva_por}</div> : null}</>}
+                            {(!item.status_pagamento || item.status_pagamento === 'ABERTO') && <span style={{ color: '#94a3b8' }}>Aguardando validacao</span>}
+                          </td>
+                          <td>{item.status_pagamento === 'PROBLEMA' && <button type="button" className="btn-secondary audit-small-button" disabled={tratandoProblema === item.id} onClick={() => tratarProblemaProtocolo(item)}>Marcar tratado</button>}</td>
+                        </tr>
+                      ))}
+                      {!protocolosVisiveis.length && <tr><td colSpan={10}>Nenhum protocolo com problema neste lote.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
         </>
       )}
       {subtab === 'solicitacoes' && (
@@ -7657,13 +8476,14 @@ function SimpleTable({ headers, rows, empty = 'Nenhum registro encontrado.' }) {
   );
 }
 
-export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', embedded = false, onMudarPagina, onAbrirTransportadoras }) {
+export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', embedded = false, onMudarPagina, onAbrirTransportadoras, filtroExterno = null }) {
   const [tab, setTab] = useState(initialTab);
   const [state, setState] = useState(null);
   const [erro, setErro] = useState('');
-  // Vinda do Painel: clicou num status/auditor/etc e quer ver a lista real de
-  // faturas ja filtrada, sem ter que reaplicar os filtros na aba Faturas.
-  const [filtrosIniciaisFaturas, setFiltrosIniciaisFaturas] = useState(null);
+  // Vinda do Painel (ou do aviso de prazo do App): clicou num status/auditor/etc
+  // e quer ver a lista real de faturas ja filtrada, sem reaplicar filtros.
+  const [filtrosIniciaisFaturas, setFiltrosIniciaisFaturas] = useState(filtroExterno);
+  useEffect(() => { if (filtroExterno) { setFiltrosIniciaisFaturas(filtroExterno); setTab('faturas'); } }, [filtroExterno]);
   const irParaFaturasComFiltro = (filtros) => {
     setFiltrosIniciaisFaturas({ chave: Date.now(), ...filtros });
     setTab('faturas');
@@ -7701,6 +8521,21 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   const restaurar = () => setState({ ...restaurarDemonstracaoAuditoria(), modo: 'DEMONSTRACAO_LOCAL' });
 
   if (!state) return <div className="panel-card">{erro ? `Erro: ${erro}` : 'Carregando Plataforma de Auditoria de Fretes...'}</div>;
+
+  // Perfil Financeiro (fora da auditoria): modulo proprio, sem as outras abas
+  // (Faturas, Gestao etc.) — so o menu ja restringe a pagina, mas essa tela tinha
+  // suas proprias abas internas que davam acesso ao resto da auditoria.
+  if (carregarSessao()?.perfil === 'FINANCEIRO') {
+    return (
+      <div className="page-shell audit-platform-page">
+        <div className="page-header">
+          <h1>Protocolos — Financeiro</h1>
+          <p>Lotes fechados pela auditoria de fretes para pagamento.</p>
+        </div>
+        <Financeiro state={state} onState={setState} />
+      </div>
+    );
+  }
 
   if (embedded) {
     return <Faturas state={state} onState={setState} modo={initialTab === 'auditoria-cte' ? 'auditoria-cte' : 'faturas'} onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />;
