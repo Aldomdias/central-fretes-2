@@ -3354,6 +3354,19 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [progressoCanais, setProgressoCanais] = useState(null);
   const [progressoImportacao, setProgressoImportacao] = useState(null);
   const [aberta, setAberta] = useState(null);
+  // Vinda do aviso fixo "abrir fatura N": acha e abre direto, sem precisar clicar na linha.
+  const [numeroFaturaAbrirAuto, setNumeroFaturaAbrirAuto] = useState(() => filtrosIniciais?.abrirNumeroFatura || '');
+  useEffect(() => {
+    if (!numeroFaturaAbrirAuto || !state.faturas?.length) return;
+    const alvo = String(numeroFaturaAbrirAuto).trim();
+    const encontrada = state.faturas.find((item) => String(item.numero_fatura || '').trim() === alvo);
+    if (encontrada) {
+      setAberta(encontrada);
+    } else {
+      setMensagemImportacao(`Fatura ${alvo} não encontrada.`);
+    }
+    setNumeroFaturaAbrirAuto('');
+  }, [numeroFaturaAbrirAuto, state.faturas]);
   const [importando, setImportando] = useState(false);
   const [mensagemImportacao, setMensagemImportacao] = useState('');
   const [ultimaCargaFaturas, setUltimaCargaFaturas] = useState(carregarUltimaCargaFaturas);
