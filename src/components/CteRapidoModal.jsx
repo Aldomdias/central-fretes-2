@@ -7,7 +7,7 @@ export const CHAVE_RECALCULAR_CTE = 'central_fretes_recalcular_chave';
 export const EVENTO_RECALCULAR_CTE = 'central-fretes:recalcular-chave';
 
 const estilo = {
-  botao: { position: 'fixed', right: 16, bottom: 60, zIndex: 9998, borderRadius: 999, padding: '8px 14px', cursor: 'pointer', border: '1px solid #cbd5e1', background: '#fff', boxShadow: '0 2px 8px rgba(0,0,0,.2)', fontWeight: 600 },
+  botao: { position: 'fixed', right: 140, bottom: 16, zIndex: 9998, borderRadius: 999, padding: '8px 14px', cursor: 'pointer', border: '1px solid #cbd5e1', background: '#fff', boxShadow: '0 2px 8px rgba(0,0,0,.2)', fontWeight: 600 },
   fundo: { position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(15,23,42,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 },
   painel: { width: 720, maxWidth: '100%', maxHeight: '85vh', display: 'flex', flexDirection: 'column', background: '#fff', color: '#0f172a', borderRadius: 12, boxShadow: '0 8px 30px rgba(0,0,0,.35)', padding: 16 },
   linha: { display: 'flex', gap: 6, marginBottom: 10 },

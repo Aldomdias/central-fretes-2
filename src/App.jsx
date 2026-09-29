@@ -293,6 +293,7 @@ export default function App() {
       )}
       {/* Um botao so pra esconder/mostrar todos os avisos fixos de uma vez — em vez
           de cada um ter seu proprio minimizar, o que tampava outros botoes fixos. */}
+      {sessao?.perfil !== 'NEGOCIACAO_FRETES' && (
       <button
         type="button"
         onClick={() => setAvisosOcultos((v) => { const next = !v; try { window.localStorage.setItem('central_fretes_avisos_ocultos', next ? '1' : '0'); } catch { /* localStorage indisponivel: segue so na sessao */ } return next; })}
@@ -301,6 +302,7 @@ export default function App() {
       >
         {avisosOcultos ? '👁' : '−'}
       </button>
+      )}
     </div>
   );
 }
