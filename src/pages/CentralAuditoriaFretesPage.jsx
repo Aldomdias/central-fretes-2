@@ -80,6 +80,8 @@ import {
   listarHistoricoCarteiraAuditoria,
   gerarLinkConfirmacaoFatura,
   atribuirAuditorEmLote,
+  carregarMapaNomeOficialPorRaizCnpj,
+  corrigirNomesFaturasPorCnpj,
 } from '../services/auditoriaFretesService';
 import {
   buscarCtesPorIdentificadores,
@@ -5769,6 +5771,7 @@ ${portaisLaudo.length ? `
       // uma fatura que ja existia, pra nao atropelar quem ja estava tratando.
       const vinculosImportacao = await carregarVinculosTransportadoras().catch(() => []);
       const mapaVinculosImportacao = criarMapaVinculosTransportadoras(vinculosImportacao);
+      const mapaNomeOficialPorCnpj = await carregarMapaNomeOficialPorRaizCnpj().catch(() => new Map());
       const mapaAuditorPorTransportadora = new Map();
       // Casamento por CNPJ (raiz), quando a carteira tem um cadastrado: imune
       // a nome de transportadora errado/divergente na fatura (a fatura 3161355
@@ -5812,8 +5815,14 @@ ${portaisLaudo.length ? `
         const execucao = (async () => {
           if (anterior) await anterior.catch(() => {});
           const existenteId = existentesPorChave.get(chaveExistente);
-          const nomeResolvido = aplicarVinculoTransportadora(fatura.transportadora, mapaVinculosImportacao);
           const raizFatura = obterRaizCnpj(fatura.cnpj_transportadora);
+          // CNPJ manda sobre o nome: fatura que vem com nome de filial/cidade
+          // ("PORTO ALEGRE") grava com o nome oficial do cadastro, senao fica
+          // sem auditor e fora dos filtros. A chave de reimportacao segue o nome original.
+          const nomeOficialPorCnpj = raizCnpjValida(raizFatura) ? mapaNomeOficialPorCnpj.get(raizFatura) : '';
+          const nomeOriginalFatura = fatura.transportadora;
+          if (nomeOficialPorCnpj) fatura.transportadora = nomeOficialPorCnpj;
+          const nomeResolvido = aplicarVinculoTransportadora(fatura.transportadora, mapaVinculosImportacao);
           const auditorDaCarteira = existenteId ? null : (
             (raizCnpjValida(raizFatura) && mapaAuditorPorRaizCnpj.get(raizFatura))
             || mapaAuditorPorTransportadora.get(normalizarNomeTransportadora(nomeResolvido))
@@ -5830,7 +5839,7 @@ ${portaisLaudo.length ? `
           if (existenteId) faturasAtualizadas += 1;
           else faturasNovas += 1;
           existentesPorChave.set(chaveExistente, resultado.id);
-          const detalhes = detalhesDaFatura(grupos, fatura.numero_fatura, fatura.serie_fatura, fatura.cnpj_transportadora, fatura.transportadora)
+          const detalhes = detalhesDaFatura(grupos, fatura.numero_fatura, fatura.serie_fatura, fatura.cnpj_transportadora, nomeOriginalFatura)
             .map((item) => parseDetalheFaturaVerum(item, resultado.id, fatura));
           if (detalhes.length) {
             // Reimportacao: limpa os CT-es antigos da fatura para nao duplicar.
@@ -6877,6 +6886,16 @@ function Gestao({ state, onState }) {
   const [mapaVinculos, setMapaVinculos] = useState(null);
   useEffect(() => {
     let cancelado = false;
+    // Faturas gravadas com nome de filial/cidade mas CNPJ do cadastro: corrige
+    // o nome e o auditor uma vez por sessao e recarrega se algo mudou.
+    try {
+      if (!sessionStorage.getItem('cf_corrigiu_nomes_cnpj')) {
+        sessionStorage.setItem('cf_corrigiu_nomes_cnpj', '1');
+        corrigirNomesFaturasPorCnpj({ usuarioNome: sessao?.nome || sessao?.email || 'Sistema' })
+          .then((r) => { if (r?.renomeadas > 0) window.location.reload(); })
+          .catch((e) => console.warn('Correcao de nomes por CNPJ falhou.', e?.message || e));
+      }
+    } catch { /* sessionStorage indisponivel */ }
     carregarVinculosTransportadoras()
       .then((vinculos) => { if (!cancelado) setMapaVinculos(criarMapaVinculosTransportadoras(vinculos)); })
       .catch(() => { if (!cancelado) setMapaVinculos(new Map()); });

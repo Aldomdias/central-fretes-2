@@ -890,6 +890,79 @@ export async function listarCarteirasAuditoria() {
   return data || [];
 }
 
+// Mapa raiz do CNPJ -> nome oficial da transportadora no cadastro. Considera o
+// CNPJ da transportadora e o das origens (filiais). Raiz ambigua (mais de uma
+// transportadora) fica de fora, para nunca renomear fatura no chute.
+export async function carregarMapaNomeOficialPorRaizCnpj() {
+  const mapa = new Map();
+  if (!isSupabaseConfigured()) return mapa;
+  const client = getSupabaseClient();
+  const [{ data: transportadoras }, { data: origens }] = await Promise.all([
+    client.from('transportadoras').select('id, nome, cnpj, cnpj_raiz').limit(5000),
+    client.from('origens').select('transportadora_id, cnpj, cnpj_raiz').limit(20000),
+  ]);
+  const porId = new Map((transportadoras || []).map((item) => [item.id, item.nome]));
+  const candidatos = new Map();
+  const registrar = (raizBruta, id) => {
+    const raiz = obterRaizCnpj(raizBruta);
+    if (!raizCnpjValida(raiz) || !porId.has(id)) return;
+    if (!candidatos.has(raiz)) candidatos.set(raiz, new Set());
+    candidatos.get(raiz).add(id);
+  };
+  (transportadoras || []).forEach((item) => registrar(item.cnpj_raiz || item.cnpj, item.id));
+  (origens || []).forEach((item) => registrar(item.cnpj_raiz || item.cnpj, item.transportadora_id));
+  candidatos.forEach((ids, raiz) => {
+    if (ids.size === 1) mapa.set(raiz, porId.get([...ids][0]));
+  });
+  return mapa;
+}
+
+// Corrige faturas ja gravadas cujo nome nao bate com o cadastro mas cujo CNPJ
+// bate: grava o nome oficial (filtros/carteira passam a funcionar) e, se a
+// fatura esta sem auditor, aplica o da carteira da transportadora.
+export async function corrigirNomesFaturasPorCnpj({ usuarioNome = 'Sistema' } = {}) {
+  if (!isSupabaseConfigured()) return { renomeadas: 0, comAuditor: 0 };
+  const client = getSupabaseClient();
+  const [mapa, carteiras, { data: faturas, error }] = await Promise.all([
+    carregarMapaNomeOficialPorRaizCnpj(),
+    listarCarteirasAuditoria(),
+    client.from('faturas').select('id, transportadora, cnpj_transportadora, auditor_nome, status').limit(50000),
+  ]);
+  if (error) throw new Error(error.message || 'Erro ao carregar faturas.');
+  const carteiraPorNome = new Map();
+  (carteiras || []).forEach((c) => { if (c.auditor_nome) carteiraPorNome.set(normalizarTexto(c.transportadora), c); });
+  const agora = new Date().toISOString();
+  const alvo = [];
+  (faturas || []).forEach((f) => {
+    const oficial = mapa.get(obterRaizCnpj(f.cnpj_transportadora));
+    if (!oficial) return;
+    const nomeDiferente = normalizarTexto(oficial) !== normalizarTexto(f.transportadora);
+    const carteira = !f.auditor_nome && !ENCERRADOS.has(f.status) ? carteiraPorNome.get(normalizarTexto(oficial)) : null;
+    if (!nomeDiferente && !carteira) return;
+    alvo.push({
+      id: f.id,
+      transportadora: oficial,
+      ...(carteira ? { auditor_nome: carteira.auditor_nome, auditor_email: carteira.auditor_email || '' } : {}),
+      updated_at: agora,
+      _antes: f.transportadora,
+      _carteira: Boolean(carteira),
+    });
+  });
+  if (!alvo.length) return { renomeadas: 0, comAuditor: 0 };
+  await safeUpsert('faturas', alvo.map(({ _antes, _carteira, ...row }) => row));
+  try {
+    await inserirHistorico('auditoria_fatura_historico', alvo.map((f) => ({
+      id: uid('hist'), fatura_id: f.id, created_at: agora,
+      acao: 'TRANSPORTADORA_CORRIGIDA_CNPJ',
+      descricao: `Transportadora "${f._antes}" corrigida para "${f.transportadora}" pelo CNPJ.${f._carteira ? ` Auditor ${f.auditor_nome} aplicado pela carteira.` : ''}`,
+      usuario_nome: usuarioNome,
+    })));
+  } catch (histError) {
+    console.warn('Não foi possível registrar histórico da correção por CNPJ.', histError.message || histError);
+  }
+  return { renomeadas: alvo.length, comAuditor: alvo.filter((f) => f._carteira).length };
+}
+
 export async function listarHistoricoCarteiraAuditoria(transportadora) {
   if (!isSupabaseConfigured()) return [];
   const client = getSupabaseClient();
