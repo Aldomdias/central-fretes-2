@@ -299,7 +299,8 @@ function canalCategoria(value) {
   if (canal.includes('A DEFINIR') || canal.includes('SEM TABELA') || canal.includes('SEM VINCULO')) return 'A DEFINIR';
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
-  if (canal.includes('ATACADO') || canal === 'B2B' || canal.includes(' B2B')) return 'ATACADO';
+  // DIGITIRE e um canal de venda atacado (tabelas cadastradas como ATACADO).
+  if (canal.includes('ATACADO') || canal.includes('DIGITIRE') || canal === 'B2B' || canal.includes(' B2B')) return 'ATACADO';
   if (canal.includes('B2C') || canal.includes('MARKETPLACE') || canal.includes('ECOMMERCE')) return 'B2C';
   return canal;
 }

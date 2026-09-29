@@ -88,7 +88,7 @@ function canalCategoria(value) {
   if (!canal) return '';
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
-  if (canal.includes('ATACADO') || canal === 'B2B' || canal.includes(' B2B')) return 'ATACADO';
+  if (canal.includes('ATACADO') || canal.includes('DIGITIRE') || canal === 'B2B' || canal.includes(' B2B')) return 'ATACADO';
   if (canal.includes('B2C') || canal.includes('MERCADO LIVRE') || canal.includes('SHOPEE') || canal.includes('MAGAZINE') || canal.includes('AMAZON') || canal.includes('MARKETPLACE') || canal.includes('ECOMMERCE')) return 'B2C';
   return canal;
 }
