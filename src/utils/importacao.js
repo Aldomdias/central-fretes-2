@@ -1,4 +1,5 @@
 import { gerarDadosVerum, excessoVerum } from './verumTaxas.js';
+import { baixarXlsxVerum } from './verumXlsx.js';
 import * as XLSX from 'xlsx';
 
 function normalizeHeader(value) {
@@ -180,6 +181,13 @@ function buildVerumWorksheet(tipo, rows) {
 function exportarSecaoVerum(tipo, rows, fileName) {
   const wb = XLSX.utils.book_new();
   const normalizedRows = sheetRowsForTipoVerum(tipo, rows);
+  try {
+    // Mesmo pacote dos arquivos oficiais aceitos pelo Verum (estilos, formatos, tabela).
+    baixarXlsxVerum(tipo, normalizedRows, fileName);
+    return;
+  } catch (error) {
+    console.error('Falha ao gerar xlsx no padrao Verum; usando formato simples.', error);
+  }
   const ws = buildVerumWorksheet(tipo, normalizedRows);
   XLSX.utils.book_append_sheet(
     wb,

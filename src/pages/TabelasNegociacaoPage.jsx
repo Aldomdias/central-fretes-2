@@ -51,7 +51,9 @@ import {
   buscarCnpjTransportadoraCadastro,
   listarTransportadorasCadastro,
   buscarTabelasPrincipaisDisponiveis,
+  montarTransportadoraVerumDaNegociacao,
 } from '../services/tabelasNegociacaoService';
+import { gerarArquivosVerum } from '../utils/importacao';
 import { cnpjPreenchidoValido, formatarCnpj, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
 import { LaudoNegociacaoTemplate, LaudoRodadasNegociacaoTemplate } from '../components/laudos';
 import LaudoTransportadoraConsolidadoTemplate from '../components/laudos/LaudoTransportadoraConsolidadoTemplate';
@@ -1029,6 +1031,7 @@ export default function TabelasNegociacaoPage() {
   const [novaOrigem, setNovaOrigem] = useState(Object.assign({}, NOVA_ORIGEM_VAZIA));
   const [abrindoRodada, setAbrindoRodada] = useState(false);
   const [abrindoRevisao, setAbrindoRevisao] = useState(false);
+  const [gerandoVerum, setGerandoVerum] = useState(false);
   const [laudoSalvoAberto, setLaudoSalvoAberto] = useState(null);
   const [tipoLaudoRodadas, setTipoLaudoRodadas] = useState('transportador');
   const [canalLaudoRodadas, setCanalLaudoRodadas] = useState('');
@@ -2858,6 +2861,16 @@ export default function TabelasNegociacaoPage() {
     finally { setSalvandoGestao(false); }
   }
 
+  async function handleGerarVerumNegociacao(tabela) {
+    setGerandoVerum(true); setErro(''); setSucesso('');
+    try {
+      var transportadoraVerum = await montarTransportadoraVerumDaNegociacao(tabela.id);
+      var arquivos = gerarArquivosVerum(transportadoraVerum);
+      setSucesso('Arquivos Verum gerados (' + arquivos.rotas.length + ' rotas, ' + arquivos.cotacoes.length + ' fretes) a partir da negociação, sem publicar.');
+    } catch (e) { setErro(e.message || 'Erro ao gerar Verum.'); }
+    finally { setGerandoVerum(false); }
+  }
+
   async function handlePublicarOficial(tabela) {
     var cnpjPublicar = await garantirCnpjTransportadora(tabela, 'publicar na base oficial');
     if (!cnpjPublicar) return;
@@ -3291,6 +3304,11 @@ export default function TabelasNegociacaoPage() {
               >
                 {carregandoItensNegociacao ? 'Carregando itens...' : 'Recarregar itens'}
               </button>
+              {temItensSalvos && !negociacaoPublicada(selecionada) ? (
+                <button className="sim-tab" type="button" onClick={function() { handleGerarVerumNegociacao(selecionada); }} disabled={gerandoVerum || salvando}>
+                  {gerandoVerum ? 'Gerando Verum...' : 'Gerar Verum'}
+                </button>
+              ) : null}
               <button className="sim-tab" type="button" onClick={function() { abrirModalAprovacao(selecionada); }}>
                 {podePublicarOficial(selecionada) && usuarioEhGestor(sessao) ? 'Publicar' : 'Enviar p/ gestor'}
               </button>

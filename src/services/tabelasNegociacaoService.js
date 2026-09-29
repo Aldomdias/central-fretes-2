@@ -1788,6 +1788,48 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
   };
 }
 
+// Somente leitura: monta a transportadora (mesmo formato da base oficial) a partir
+// da negociacao em andamento, para gerar os arquivos Verum antes da aprovacao.
+// Nao grava nada no banco.
+export async function montarTransportadoraVerumDaNegociacao(id) {
+  const tabela = await obterTabelaNegociacao(id);
+  const ehLotacao = upper(tabela.tipo_negociacao) === 'TABELA_LOTACAO'
+    || upper(tabela.tipo_tabela) === 'LOTACAO'
+    || upper(tabela.canal) === 'LOTACAO';
+  if (ehLotacao) throw new Error('Negociações de lotação não geram arquivos Verum.');
+
+  const itens = await listarTodosItensTabelaNegociacao(id);
+  if (!itens.length) {
+    throw new Error('Não há itens salvos nesta negociação (se já foi publicada, gere o Verum em Transportadoras).');
+  }
+  const taxasDestino = await listarTodasTaxasDestinoTabela(id);
+
+  const transportadora = converterTabelaNegociacaoParaSimulador({
+    ...tabela,
+    tabelas_negociacao_itens: itens,
+    tabelas_negociacao_taxas_destino: taxasDestino,
+  });
+  if (!transportadora?.origens?.length) {
+    throw new Error('Não foi possível montar origem/rotas/cotações. Revise os itens da negociação.');
+  }
+
+  // Arquivo de conferencia: vigencia sempre da data de geracao ate 5 anos a frente.
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const hoje = new Date();
+  const fim = new Date(hoje); fim.setFullYear(fim.getFullYear() + 5);
+  const vigencia = { inicioVigencia: fmt(hoje), fimVigencia: fmt(fim) };
+  return {
+    ...transportadora,
+    nome: tabela.transportadora,
+    origens: (transportadora.origens || []).map((origem) => ({
+      ...origem,
+      canal: origem.canal || tabela.canal || 'ATACADO',
+      rotas: (origem.rotas || []).map((rota) => ({ ...rota, ...vigencia })),
+      cotacoes: (origem.cotacoes || []).map((cotacao) => ({ ...cotacao, ...vigencia })),
+    })),
+  };
+}
+
 async function limparDadosOperacionaisNegociacaoPublicada(id, resumoAnterior = {}, promocaoOficial = {}) {
   const supabase = supabaseOrThrow();
   const agora = dataISO();
