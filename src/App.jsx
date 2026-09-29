@@ -268,7 +268,7 @@ export default function App() {
       />
       <main className="app-content">{content}</main>
       <IbgeRapidoModal />
-      {usuarioTemAcesso(sessao, 'faturas') && sessao?.perfil !== 'NEGOCIACAO_FRETES' && (
+      {usuarioTemAcesso(sessao, 'faturas') && ['GESTAO', 'GESTOR_AUDITORIA_FRETES', 'AUDITORIA_FRETES', 'AUDITORIA_LOTACAO'].includes(sessao?.perfil) && (
         <AvisoPrazoFaturas minimizavel oculto={avisosOcultos} sessao={sessao} onAbrir={(filtros) => { setFiltroFaturasExterno({ chave: Date.now(), ...filtros }); mudarPagina('faturas'); }} />
       )}
       {usuarioTemAcesso(sessao, 'autorizacoes-suprimentos') && paginaAtual !== 'autorizacoes-suprimentos' && (
