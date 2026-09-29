@@ -6886,16 +6886,6 @@ function Gestao({ state, onState }) {
   const [mapaVinculos, setMapaVinculos] = useState(null);
   useEffect(() => {
     let cancelado = false;
-    // Faturas gravadas com nome de filial/cidade mas CNPJ do cadastro: corrige
-    // o nome e o auditor uma vez por sessao e recarrega se algo mudou.
-    try {
-      if (!sessionStorage.getItem('cf_corrigiu_nomes_cnpj_v2')) {
-        sessionStorage.setItem('cf_corrigiu_nomes_cnpj_v2', '1');
-        corrigirNomesFaturasPorCnpj({ usuarioNome: sessao?.nome || sessao?.email || 'Sistema' })
-          .then((r) => { if (r?.renomeadas > 0) window.location.reload(); })
-          .catch((e) => console.warn('Correcao de nomes por CNPJ falhou.', e?.message || e));
-      }
-    } catch { /* sessionStorage indisponivel */ }
     carregarVinculosTransportadoras()
       .then((vinculos) => { if (!cancelado) setMapaVinculos(criarMapaVinculosTransportadoras(vinculos)); })
       .catch(() => { if (!cancelado) setMapaVinculos(new Map()); });
@@ -9179,6 +9169,23 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   useEffect(() => {
     carregarPlataformaAuditoria().then(setState).catch((error) => setErro(error.message));
   }, []);
+
+  // Faturas gravadas com nome de filial/cidade mas CNPJ do cadastro: grava o nome
+  // oficial (e o auditor da carteira) e recarrega os dados. Uma vez por sessao.
+  useEffect(() => {
+    if (!state || state.modo !== 'SUPABASE') return;
+    try {
+      if (sessionStorage.getItem('cf_corrigiu_nomes_cnpj_v3')) return;
+      sessionStorage.setItem('cf_corrigiu_nomes_cnpj_v3', '1');
+    } catch { /* sessionStorage indisponivel: roda mesmo assim */ }
+    const usuario = carregarSessao();
+    corrigirNomesFaturasPorCnpj({ usuarioNome: usuario?.nome || usuario?.email || 'Sistema' })
+      .then((r) => {
+        console.info('[auditoria] correcao de nomes por CNPJ:', r);
+        if (r?.renomeadas > 0) carregarPlataformaAuditoria().then(setState).catch(() => {});
+      })
+      .catch((e) => console.warn('[auditoria] correcao de nomes por CNPJ falhou:', e?.message || e));
+  }, [state?.modo]);
 
   useEffect(() => setTab(initialTab), [initialTab]);
 
