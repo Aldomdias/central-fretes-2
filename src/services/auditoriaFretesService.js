@@ -4,6 +4,7 @@ import { chaveFatura } from '../utils/auditoriaFretesImport';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 import { gerarTokenAleatorio } from './auditoriaCteJornadaService';
 import { carregarSaldosAutorizadosPorChave } from './transporteAutorizacoesService';
+import { buscarTrackingParaRealizado, enriquecerRealizadoComTracking, obterTrackingDaLinha } from './realizadoTrackingEnrichment';
 
 const STORAGE_KEY = 'central_fretes_plataforma_auditoria_440_v1';
 
@@ -446,6 +447,59 @@ export async function corrigirBaseCtesPeloTracking(chaves = [], onProgress = nul
     }
   }
   return resultado;
+}
+
+// Grava na base de CT-es (realizado_local_ctes) um CT-e lido do XML. Upsert por
+// chave_cte; colunas vazias nao sao enviadas pra nao apagar dado que ja exista.
+// Colunas que a tabela nao tiver sao descartadas uma a uma (como no salvamento
+// dos detalhes de fatura).
+export async function importarCteXmlNaBase(cte = {}, { canal = '' } = {}) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado: não é possível gravar na base de CT-es.');
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const { arquivo, ...campos } = cte;
+  // Cruza com o Tracking (por chave do CT-e, chave/numero da NF) do mesmo jeito que
+  // a importacao por planilha: traz canal, volumes, cubagem e, quando o Tracking
+  // tem IBGE valido de origem e destino, a rota dele (o tracking manda).
+  let tracking = null;
+  let trackingInfo = { encontrado: false };
+  try {
+    const entrada = { chaveCte: cte.chave_cte, chaveNfe: cte.chave_nfe, notaFiscal: cte.nota_fiscal, numeroCte: cte.numero_cte, peso: cte.peso, pesoDeclarado: cte.peso_declarado, valorNF: cte.valor_nf };
+    const mapas = await buscarTrackingParaRealizado([entrada]);
+    tracking = obterTrackingDaLinha(entrada, mapas) ? enriquecerRealizadoComTracking([entrada], mapas).linhas[0] : null;
+  } catch (erroTracking) {
+    console.warn('Tracking indisponivel ao importar XML de CT-e.', erroTracking?.message || erroTracking);
+  }
+  const dig7 = (v) => String(v || '').replace(/\D/g, '').slice(0, 7);
+  if (tracking?.trackingMatch) {
+    const rotaTracking = dig7(tracking.ibgeOrigem).length === 7 && dig7(tracking.ibgeDestino).length === 7;
+    Object.assign(campos, {
+      qtd_volumes: tracking.qtdVolumes || campos.qtd_volumes,
+      cubagem: tracking.cubagem || campos.cubagem,
+      peso_cubado: tracking.pesoCubado || campos.peso_cubado,
+      valor_nf: campos.valor_nf || tracking.valorNF,
+      documento_destinatario: campos.documento_destinatario || tracking.documentoDestinatario,
+    });
+    if (rotaTracking) {
+      Object.assign(campos, {
+        cidade_origem: tracking.cidadeOrigem, uf_origem: tracking.ufOrigem, ibge_origem: dig7(tracking.ibgeOrigem),
+        cidade_destino: tracking.cidadeDestino, uf_destino: tracking.ufDestino, ibge_destino: dig7(tracking.ibgeDestino),
+        chave_rota_ibge: `${dig7(tracking.ibgeOrigem)}-${dig7(tracking.ibgeDestino)}`,
+      });
+    }
+    trackingInfo = { encontrado: true, canal: tracking.canal || '', rota: rotaTracking };
+  }
+  const canalFinal = canal || tracking?.canal || '';
+  let linha = { ...campos, canal: canalFinal || undefined, canal_original: canalFinal || undefined, arquivo_origem: `XML ${arquivo || cte.chave_cte}`, ibge_ok: Boolean(cte.ibge_origem && cte.ibge_destino), updated_at: agora };
+  linha = Object.fromEntries(Object.entries(linha).filter(([, v]) => v !== undefined && v !== '' && v !== null));
+  for (let tentativa = 0; tentativa < 10; tentativa += 1) {
+    const { error } = await client.from('realizado_local_ctes').upsert([linha], { onConflict: 'chave_cte' });
+    if (!error) return { linha, tracking: trackingInfo };
+    const coluna = String(error.message || '').match(/'([^']+)' column/)?.[1];
+    if (!coluna || !(coluna in linha)) throw new Error(`Erro ao gravar o CT-e na base: ${error.message}`);
+    delete linha[coluna];
+  }
+  throw new Error('Erro ao gravar o CT-e na base: colunas incompatíveis.');
 }
 
 export async function buscarResumoOrigensFaturas(faturaIds = []) {

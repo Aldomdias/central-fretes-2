@@ -9,6 +9,7 @@ import ModalEnviarProtocoloFinanceiro from '../components/ModalEnviarProtocoloFi
 import DadosBancariosTransportadoras from '../components/DadosBancariosTransportadoras';
 import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
+import { lerCteXml } from '../utils/cteXml';
 import {
   atualizarStatusJornada,
   buscarJornadaPorIdentificadores,
@@ -54,6 +55,7 @@ import {
   atualizarFaturaAuditoria,
   atenderSolicitacaoFinanceira,
   buscarReferenciaCtes,
+  importarCteXmlNaBase,
   corrigirBaseCtesPeloTracking,
   buscarResumoOrigensFaturas,
   carregarPlataformaAuditoria,
@@ -1764,6 +1766,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [chaveNfVisivel, setChaveNfVisivel] = useState({});
   const [entregaCtes, setEntregaCtes] = useState(null);
   const [entregaErroFatura, setEntregaErroFatura] = useState('');
+  const [atualizandoEntregaPartida, setAtualizandoEntregaPartida] = useState(false);
+  const [msgEntregaPartida, setMsgEntregaPartida] = useState('');
   const [filtroEntregaCte, setFiltroEntregaCte] = useState('todos');
   // "Cobranca a menor" reflete a escolha salva na fatura (padrao: so a maior).
   const [opcoesLaudoTransportador, setOpcoesLaudoTransportador] = useState(() => ({ ...OPCOES_LAUDO_TRANSPORTADOR_PADRAO, mostrarCobrancaMenor: faturaConsideraMenor(fatura) }));
@@ -2783,6 +2787,39 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     }
   };
 
+  // Importa o XML de um CT-e "fora da base": grava na base de CT-es, vincula a
+  // chave ao item da fatura e recarrega a referencia (sem recalcular).
+  const [importandoXmlId, setImportandoXmlId] = useState(null);
+  const importarXmlDoCte = async (item, arquivo) => {
+    if (!arquivo) return;
+    setImportandoXmlId(item.id);
+    setErroDetalhes('');
+    try {
+      const cte = lerCteXml(await arquivo.text(), arquivo.name);
+      const numeroItem = String(item.numero_cte || '').replace(/\D/g, '').replace(/^0+/, '');
+      const numeroXml = String(cte.numero_cte || '').replace(/\D/g, '').replace(/^0+/, '');
+      if (item.chave_cte && normalizarChaveCte(item.chave_cte) !== cte.chave_cte) {
+        throw new Error(`O XML é do CT-e ${cte.numero_cte} (chave ...${cte.chave_cte.slice(-12)}), diferente da chave deste item (...${normalizarChaveCte(item.chave_cte).slice(-12)}).`);
+      }
+      if (numeroItem && numeroXml && numeroItem !== numeroXml
+        && !window.confirm(`O XML é do CT-e ${cte.numero_cte}, mas a linha é do CT-e ${item.numero_cte}. Importar mesmo assim?`)) return;
+      const canal = String(item.canal || fatura.canal || '').trim();
+      const gravado = await importarCteXmlNaBase(cte, { canal: /^(ATACADO|B2C|AMBOS)$/i.test(canal) ? canal.toUpperCase() : '' });
+      if (!item.chave_cte) await atualizarDetalheManual(item, { chave_cte: cte.chave_cte });
+      const nova = await buscarReferenciaCtes([cte.chave_cte, cte.numero_cte], { lancarErro: true });
+      setReferenciaCtes((atual) => {
+        const proximo = new Map(atual);
+        nova.forEach((valor, chave) => proximo.set(chave, valor));
+        return proximo;
+      });
+      setInfoRecalculo(`XML do CT-e ${cte.numero_cte} importado na base (${cte.cidade_origem}/${cte.uf_origem} → ${cte.cidade_destino}/${cte.uf_destino}, peso ${cte.peso}, NF ${cte.valor_nf}). ${gravado.tracking.encontrado ? `Cruzado com o Tracking${gravado.tracking.rota ? ' (rota do Tracking)' : ''}.` : 'CT-e sem registro no Tracking.'} Agora recalcule o CT-e.`);
+    } catch (error) {
+      setErroDetalhes(error.message || 'Erro ao importar o XML do CT-e.');
+    } finally {
+      setImportandoXmlId(null);
+    }
+  };
+
   // Corrige origem/destino da base pelo tracking (selecionados, ou os sem
   // calculo se nada estiver marcado) e ja recalcula esses CT-es.
   const [corrigindoTracking, setCorrigindoTracking] = useState(false);
@@ -2836,6 +2873,41 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     setFiltroStatusCte(ativo ? 'todos' : status);
   };
   const cardAtivo = (status) => tab === 'ctes' && filtroStatusCte === status;
+
+  // Reconsulta a entrega (tracking) dos CT-es e o pagamento/partida da fatura aberta,
+  // pra nao depender de reabrir a fatura ou recarregar a pagina apos a base do dia.
+  const atualizarEntregaEPartida = async () => {
+    setAtualizandoEntregaPartida(true);
+    setMsgEntregaPartida('');
+    setEntregaErroFatura('');
+    try {
+      const registros = detalhes.map((item) => {
+        const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte)) || referenciaCtes.get(normalizarChaveCte(item.numero_cte));
+        return { ...item, chave_nfe: item.chave_nfe || base?.chave_nfe };
+      });
+      const [mapa, extras] = await Promise.all([
+        buscarStatusEntregaCtes(registros),
+        carregarPlataformaAuditoriaFinanceiro(),
+      ]);
+      setEntregaCtes(mapa);
+      let next = { ...state, ...extras };
+      const jaPagas = ['PAGA', 'PAGA_COM_DIVERGENCIA', 'PAGA_COM_DESCONTO'];
+      const pagamentosFatura = (extras.pagamentos || []).filter((item) => item.fatura_id === fatura.id
+        && (item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE'));
+      let baixada = false;
+      if (pagamentosFatura.length && !jaPagas.includes(fatura.status)) {
+        next = await atualizarStatusFaturasPagasEmLote(next, pagamentosFatura, sessao?.nome || sessao?.email || 'Usuario local');
+        baixada = true;
+      }
+      onState(next);
+      const entregues = registros.filter((item) => mapa.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.ENTREGUE).length;
+      setMsgEntregaPartida(`Atualizado: ${entregues}/${registros.length} CT-e(s) entregue(s) · ${pagamentosFatura.length ? (baixada ? 'pagamento encontrado e fatura marcada como paga' : 'pagamento ja refletido na fatura') : 'sem pagamento compensado ainda'}.`);
+    } catch (error) {
+      setEntregaErroFatura(error.message || String(error));
+    } finally {
+      setAtualizandoEntregaPartida(false);
+    }
+  };
 
   const aplicarFiltrosCtes = (lista) => lista.filter((item) => {
     const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte))
@@ -2965,7 +3037,16 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                   <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selecionados.includes(item.id)} onChange={() => selecionar(item.id)} /></td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{item.numero_cte || '-'}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}><small>{item.chave_cte || '-'}</small></td>
-                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base ? <small>{base.cidade_origem || '?'}/{base.uf_origem || '?'} → {base.cidade_destino || '?'}/{base.uf_destino || '?'}</small> : <small className="error-text">Fora da base</small>}</td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base ? <small>{base.cidade_origem || '?'}/{base.uf_origem || '?'} → {base.cidade_destino || '?'}/{base.uf_destino || '?'}</small> : (
+                    <>
+                      <small className="error-text">Fora da base</small>
+                      <label className="btn-secondary" style={{ display: 'inline-block', marginLeft: 6, padding: '1px 8px', fontSize: 11, cursor: 'pointer' }} onClick={(e) => e.stopPropagation()} title="Importar o XML deste CT-e e gravar na base">
+                        {importandoXmlId === item.id ? 'Importando...' : 'Importar XML'}
+                        <input type="file" accept=".xml,text/xml,application/xml" style={{ display: 'none' }} disabled={importandoXmlId === item.id}
+                          onChange={(e) => { const arq = e.target.files?.[0]; e.target.value = ''; importarXmlDoCte(item, arq); }} />
+                      </label>
+                    </>
+                  )}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base?.canal || '-'}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base?.peso || item.peso ? Number(base?.peso || item.peso).toLocaleString('pt-BR') : '-'}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{numeroValorNfAuditoria(item, base) > 0 ? dinheiro(numeroValorNfAuditoria(item, base)) : '-'}</td>
@@ -3329,6 +3410,11 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         >
           ↻ Atualizar tabela
         </button>
+        <button className="btn-secondary" disabled={atualizandoEntregaPartida || !detalhes.length} onClick={atualizarEntregaEPartida}
+          title="Reconsulta a entrega dos CT-es no tracking e o pagamento/partida desta fatura">
+          {atualizandoEntregaPartida ? 'Atualizando...' : '↻ Atualizar entregas e partidas'}
+        </button>
+        {msgEntregaPartida && <span className="compact">{msgEntregaPartida}</span>}
         <button className="btn-secondary" disabled={!detalhes.length} onClick={() => baixarLaudoFatura('interno')}>Laudo HTML</button>
         <button className="btn-secondary" disabled={!detalhes.length} onClick={() => baixarLaudoFatura('transportador')}>Laudo transportador</button>
         <button className="btn-secondary" disabled={!detalhes.length} onClick={() => baixarLaudoFatura('email')}>HTML e-mail</button>
@@ -3806,6 +3892,39 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     } finally {
       setVerificandoEntregas(false);
       setProgressoEntregas(null);
+    }
+  };
+
+  // Atualiza a lista com o que entrou na base: descarta o resumo de entrega ja
+  // calculado (o preenchimento automatico refaz a pagina atual) e reaplica a
+  // baixa nas faturas com pagamento/partida compensado ja gravado.
+  const [atualizandoListaEP, setAtualizandoListaEP] = useState(false);
+  const [msgListaEP, setMsgListaEP] = useState('');
+  const atualizarEntregasEPartidas = async () => {
+    if (atualizandoListaEP) return;
+    setAtualizandoListaEP(true);
+    setMsgListaEP('');
+    setErroEntregas('');
+    try {
+      const extras = await carregarPlataformaAuditoriaFinanceiro();
+      let next = { ...state, ...extras };
+      const jaPagas = new Set(['PAGA', 'PAGA_COM_DIVERGENCIA', 'PAGA_COM_DESCONTO']);
+      const faturasPorId = new Map((state.faturas || []).map((item) => [item.id, item]));
+      const pendentes = (extras.pagamentos || []).filter((item) => (
+        item.fatura_id && (item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE')
+        && faturasPorId.has(item.fatura_id) && !jaPagas.has(faturasPorId.get(item.fatura_id).status)
+      ));
+      if (pendentes.length) {
+        next = await atualizarStatusFaturasPagasEmLote(next, pendentes, sessao?.nome || sessao?.email || 'Usuario local');
+      }
+      entregaEmAndamentoRef.current = new Set();
+      setEntregaFaturas(new Map());
+      onState(next);
+      setMsgListaEP(`Entregas recarregadas · ${(extras.pagamentos || []).length} pagamento(s) lido(s)${pendentes.length ? ` · ${pendentes.length} pagamento(s) aplicado(s) nas faturas` : ' · nenhuma fatura pendente de baixa'}.`);
+    } catch (error) {
+      setErroEntregas(`Erro ao atualizar entregas e partidas: ${error.message || error}`);
+    } finally {
+      setAtualizandoListaEP(false);
     }
   };
 
@@ -6389,11 +6508,19 @@ ${portaisLaudo.length ? `
                   : 'Entregas verificadas nas faturas filtradas'}
             </button>
           </div>
+          <div className="field">
+            <span>&nbsp;</span>
+            <button type="button" className="btn-secondary" disabled={atualizandoListaEP || verificandoEntregas} onClick={atualizarEntregasEPartidas}
+              title="Recarrega a entrega (tracking) e os pagamentos/partidas do banco e reaplica a baixa nas faturas">
+              {atualizandoListaEP ? 'Atualizando entregas e partidas...' : '↻ Atualizar entregas e partidas'}
+            </button>
+          </div>
         </div>
         {filtroEntregaFatura && faltamVerificarEntrega.length > 0 && !verificandoEntregas && (
           <div className="hint-box compact">O filtro de entrega só considera faturas já verificadas — clique em "Verificar entregas" para incluir as {faltamVerificarEntrega.length} restantes.</div>
         )}
         {erroEntregas && <div className="hint-box compact error-text">{erroEntregas}</div>}
+        {msgListaEP && !erroEntregas && <div className="hint-box compact">{msgListaEP}</div>}
         <button
           type="button"
           className="btn-secondary audit-small-button"
@@ -8427,6 +8554,7 @@ function Financeiro({ state, onState }) {
   const [processandoPagamentos, setProcessandoPagamentos] = useState(false);
   const [progressoPagamentos, setProgressoPagamentos] = useState(null);
   const [resumoPagamentosSap, setResumoPagamentosSap] = useState(null);
+  const [mensagemPartidas, setMensagemPartidas] = useState('');
   const fatura = state.faturas.find((item) => item.id === faturaId);
 
   // --- Fechar protocolo do dia (lote) e exportar a planilha do Financeiro ---
@@ -8667,6 +8795,41 @@ function Financeiro({ state, onState }) {
     ambiguos: (a?.ambiguos || 0) + b.ambiguos,
     cnpjDivergente: (a?.cnpjDivergente || 0) + b.cnpjDivergente,
   });
+
+  // Recarrega faturas e pagamentos do banco (a tela so carrega uma vez) e reaplica
+  // o status "paga" nas faturas cujo pagamento compensado ja esta gravado mas a
+  // fatura ficou pra tras (ex.: importacao feita por outra pessoa/sessao).
+  const atualizarPartidas = async () => {
+    setErroFinanceiro('');
+    setResumoPagamentosSap(null);
+    setProcessandoPagamentos(true);
+    setProgressoPagamentos({ etapa: 'recarregando faturas e pagamentos' });
+    try {
+      const [base, extras] = await Promise.all([carregarPlataformaAuditoria(), carregarPlataformaAuditoriaFinanceiro()]);
+      let next = { ...base, ...extras };
+      const jaPagas = new Set(['PAGA', 'PAGA_COM_DIVERGENCIA', 'PAGA_COM_DESCONTO']);
+      const faturasPorId = new Map((next.faturas || []).map((item) => [item.id, item]));
+      const pendentes = (next.pagamentos || []).filter((item) => (
+        item.fatura_id && (item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE')
+        && faturasPorId.has(item.fatura_id) && !jaPagas.has(faturasPorId.get(item.fatura_id).status)
+      ));
+      if (pendentes.length) {
+        next = await atualizarStatusFaturasPagasEmLote(
+          next, pendentes, sessao?.nome || sessao?.email || 'Usuario local',
+          (progresso) => setProgressoPagamentos({ etapa: 'atualizando_faturas', ...progresso }),
+        );
+      }
+      onState(next);
+      setErroFinanceiro('');
+      setMensagemPartidas(`Partidas atualizadas: ${(next.pagamentos || []).length} pagamento(s) carregado(s)` +
+        `${pendentes.length ? ` · ${pendentes.length} fatura(s) marcada(s) como paga(s)` : ' · nenhuma fatura pendente de baixa'}.`);
+    } catch (error) {
+      setErroFinanceiro(error.message || String(error));
+    } finally {
+      setProcessandoPagamentos(false);
+      setProgressoPagamentos(null);
+    }
+  };
 
   const importarPagamentos = async (event) => {
     const arquivos = Array.from(event.target.files || []).filter((file) => /\.(xlsx|xls|csv)$/i.test(file.name));
@@ -8909,6 +9072,7 @@ function Financeiro({ state, onState }) {
               <div className="audit-form-actions">
                 <button className="btn-primary" disabled={processandoPagamentos} onClick={() => pagamentoRef.current?.click()}>{processandoPagamentos ? 'Processando...' : 'Importar arquivo(s)'}</button>
                 <button className="btn-secondary" disabled={processandoPagamentos} onClick={() => pagamentoPastaRef.current?.click()}>{processandoPagamentos ? 'Processando...' : 'Importar pasta'}</button>
+                <button className="btn-secondary" disabled={processandoPagamentos} onClick={atualizarPartidas} title="Recarrega faturas e pagamentos do banco e da baixa nas faturas com pagamento ja compensado">{processandoPagamentos ? 'Processando...' : 'Atualizar partidas'}</button>
               </div>
             </div>
             <input ref={pagamentoRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={importarPagamentos} />
@@ -8919,6 +9083,7 @@ function Financeiro({ state, onState }) {
                 {progressoPagamentos?.total ? ` (${progressoPagamentos.carregados}/${progressoPagamentos.total})` : ''}
               </div>
             )}
+            {mensagemPartidas && !processandoPagamentos && <div className="hint-box compact">{mensagemPartidas}</div>}
             {resumoPagamentosSap && (
               <div className="hint-box compact">
                 {resumoPagamentosSap.arquivos > 1 ? `${resumoPagamentosSap.arquivos} arquivo(s) processado(s)` : 'Relatorio processado'}: {resumoPagamentosSap.totalLinhas} linha(s) · <strong>{resumoPagamentosSap.pagas}</strong> fatura(s) marcada(s) como paga(s) ·{' '}
