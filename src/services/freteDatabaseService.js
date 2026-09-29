@@ -1346,9 +1346,19 @@ export async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [] } =
   const supabase = ensureClient();
   const todasTransportadoras = await fetchAllRows(supabase, 'transportadoras', 'nome', true);
   const alvoNorm = nomesLimpos.map((nome) => normalizeTransportadoraBuscaDb(nome));
+  // O CNPJ pode estar cadastrado so nas origens (filial), nao na transportadora.
+  const idsPorCnpjOrigem = new Set();
+  if (raizesAlvo.size) {
+    const { data: origensPorCnpj } = await supabase
+      .from('origens')
+      .select('transportadora_id')
+      .in('cnpj_raiz', Array.from(raizesAlvo));
+    (origensPorCnpj || []).forEach((item) => item.transportadora_id && idsPorCnpjOrigem.add(item.transportadora_id));
+  }
   const transportadoras = (todasTransportadoras || []).filter((transportadora) => {
     const raiz = onlyDigitsDb(transportadora.cnpj_raiz || transportadora.cnpj).slice(0, 8);
     if (raiz && raizesAlvo.has(raiz)) return true;
+    if (idsPorCnpjOrigem.has(transportadora.id)) return true;
     const nomeNorm = normalizeTransportadoraBuscaDb(transportadora.nome || '');
     if (!nomeNorm) return false;
     // "F P TRANSPORTES" x "FP TRANSPORTES": compara tambem sem espacos.

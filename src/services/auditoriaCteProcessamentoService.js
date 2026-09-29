@@ -479,6 +479,9 @@ export function normalizarTransportadoras(transportadoras = []) {
     ...transportadora,
     __nomeNorm: normalizeTransportadoraCompare(transportadora.nome),
     __cnpjRaiz: obterRaizCnpj(transportadora.cnpjRaiz || transportadora.cnpj),
+    __cnpjRaizesOrigens: Array.from(new Set((transportadora.origens || [])
+      .map((origem) => obterRaizCnpj(origem.cnpjRaiz || origem.cnpj))
+      .filter(Boolean))),
     origens: (transportadora.origens || []).map((origem) => ({
       ...origem,
       __cidadeNorm: normalizeCompare(origem.cidade),
@@ -694,7 +697,8 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
 function localizarTransportadoras(transportadoras = [], nomeCte = '', cnpjCte = '') {
   const raizCte = obterRaizCnpj(cnpjCte);
   if (raizCte) {
-    const porCnpj = transportadoras.filter((item) => item.__cnpjRaiz === raizCte);
+    const porCnpj = transportadoras.filter((item) => item.__cnpjRaiz === raizCte
+      || (item.__cnpjRaizesOrigens || []).includes(raizCte));
     if (porCnpj.length) return porCnpj;
   }
 
