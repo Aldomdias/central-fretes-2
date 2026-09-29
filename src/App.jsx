@@ -12,6 +12,7 @@ import LotacaoOperacaoPage from './pages/LotacaoOperacaoPage';
 import LotacaoAuditoriaPage from './pages/LotacaoAuditoriaPage';
 import ConsultaIbgePage from './pages/ConsultaIbgePage';
 import IbgeRapidoModal from './components/IbgeRapidoModal';
+import CteRapidoModal from './components/CteRapidoModal';
 import AvisoAprovacoesSuprimentos from './components/AvisoAprovacoesSuprimentos';
 import AvisoPrazoFaturas from './components/AvisoPrazoFaturas';
 import LoginPage from './pages/LoginPage';
@@ -268,11 +269,12 @@ export default function App() {
       />
       <main className="app-content">{content}</main>
       <IbgeRapidoModal />
+      {(usuarioTemAcesso(sessao, 'cte') || usuarioTemAcesso(sessao, 'auditoria-cte')) && <CteRapidoModal onRecalcular={usuarioTemAcesso(sessao, 'auditoria-cte') ? () => mudarPagina('auditoria-cte') : undefined} />}
       {usuarioTemAcesso(sessao, 'faturas') && ['GESTAO', 'GESTOR_AUDITORIA_FRETES', 'AUDITORIA_FRETES', 'AUDITORIA_LOTACAO'].includes(sessao?.perfil) && (
         <AvisoPrazoFaturas minimizavel oculto={avisosOcultos} sessao={sessao} onAbrir={(filtros) => { setFiltroFaturasExterno({ chave: Date.now(), ...filtros }); mudarPagina('faturas'); }} />
       )}
-      {usuarioTemAcesso(sessao, 'autorizacoes-suprimentos') && paginaAtual !== 'autorizacoes-suprimentos' && (
-        <AvisoAprovacoesSuprimentos oculto={avisosOcultos} onAbrir={() => mudarPagina('autorizacoes-suprimentos')} />
+      {(usuarioTemAcesso(sessao, 'autorizacoes-suprimentos') || sessao?.perfil === 'NEGOCIACAO_FRETES') && paginaAtual !== 'autorizacoes-suprimentos' && (
+        <AvisoAprovacoesSuprimentos oculto={avisosOcultos && sessao?.perfil !== 'NEGOCIACAO_FRETES'} onAbrir={() => mudarPagina('autorizacoes-suprimentos')} />
       )}
       {/* Um botao so pra esconder/mostrar todos os avisos fixos de uma vez — em vez
           de cada um ter seu proprio minimizar, o que tampava outros botoes fixos. */}
