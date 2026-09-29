@@ -1175,6 +1175,22 @@ export async function salvarLancamentoAuditoriaSupabase(lancamento) {
   return { ok: true };
 }
 
+export async function removerLancamentoAuditoriaSupabase(lancamentoId) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const { error } = await supabase.from('lotacao_lancamentos').delete().eq('id', String(lancamentoId));
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}
+
+export async function removerSolicitacaoPagamentoSupabase(solicitacaoId) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const { error } = await supabase.from('lotacao_solicitacoes').delete().eq('id', String(solicitacaoId));
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}
+
 // ============================================================
 // SOLICITAÃ‡Ã•ES DE PAGAMENTO â€” Supabase
 // ============================================================

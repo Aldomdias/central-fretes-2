@@ -598,6 +598,77 @@ function resumirDetalhesAuditoria(lista = [], tolerancia = TOLERANCIA_PADRAO) {
   };
 }
 
+// Detalhes dos CT-es das faturas EXATAMENTE como a tela da fatura os monta:
+// fatura_detalhes deduplicado + resultado fresco da auditoria + saldo autorizado.
+// Lista, liberacao em lote e tela da fatura precisam usar o mesmo numero.
+async function carregarDetalhesExatosFaturas(faturaIds = []) {
+  const saida = new Map();
+  const ids = [...new Set(faturaIds.filter(Boolean))];
+  for (let i = 0; i < ids.length; i += 10) {
+    const parte = ids.slice(i, i + 10);
+    const brutos = await Promise.all(parte.map((id) => carregarDetalhesFaturaSupabase(id)));
+    const unicos = brutos.map((lista) => deduplicarDetalhesFatura(lista || []));
+    const todos = unicos.flat();
+    const referencia = await buscarReferenciaCtes(todos.flatMap((item) => [item.chave_cte, item.numero_cte]), { lancarErro: true });
+    const chaves = todos.flatMap((item) => [
+      item.chave_cte, item.chave_nfe,
+      referencia.get(normalizarChaveCte(item.chave_cte))?.chave_nfe,
+    ]).filter(Boolean);
+    const saldos = chaves.length ? await carregarSaldosAutorizadosPorChave(chaves) : new Map();
+    parte.forEach((id, idx) => {
+      saida.set(id, unicos[idx]
+        .map((item) => mesclarDetalheComReferenciaAuditoria(item, referencia))
+        .map((item) => aplicarSaldoTransporteNoDetalhe(item, saldos, referencia)));
+    });
+  }
+  return saida;
+}
+
+// Resumo exato por fatura para a lista: valor a descontar (mesmo calculo do
+// detalhe) + entrega dos CT-es (tracking/comprovantes).
+async function resumirFaturasExato(faturaIds = []) {
+  const resultado = new Map();
+  const detalhesPorFatura = await carregarDetalhesExatosFaturas(faturaIds);
+  const tolerancia = carregarToleranciaAuditoria();
+  const todos = [];
+  detalhesPorFatura.forEach((lista, id) => lista.forEach((item) => todos.push({ ...item, __fatura: id })));
+  let entrega = new Map();
+  try { entrega = await buscarStatusEntregaCtes(todos); } catch { entrega = null; }
+  detalhesPorFatura.forEach((lista, id) => {
+    const resumo = resumirDetalhesAuditoria(lista, tolerancia);
+    let entregues = 0;
+    let semTracking = 0;
+    lista.forEach((item) => {
+      const st = entrega?.get(chaveEntregaRegistro(item))?.status;
+      if (st === STATUS_ENTREGA.ENTREGUE) entregues += 1;
+      else if (st !== STATUS_ENTREGA.NAO_ENTREGUE) semTracking += 1;
+    });
+    resultado.set(id, {
+      total: lista.length,
+      calculados: resumo.calculados,
+      entregues,
+      pendentes: entrega ? lista.length - entregues : null,
+      semTracking,
+      fretePago: Number(resumo.fretePago.toFixed(2)),
+      calculoAmd: Number(resumo.calculoAmd.toFixed(2)),
+      maior: Number(resumo.cobrancaAcima.toFixed(2)),
+      menor: Number(resumo.cobrancaAbaixo.toFixed(2)),
+      semCalculo: resumo.semCalculo,
+      divergentes: resumo.divergentes,
+    });
+  });
+  return resultado;
+}
+
+// Valor a descontar da fatura conforme a escolha do auditor (salva na fatura):
+// considerar cobranca a menor = maior - menor (minimo zero); senao so a maior.
+function descontoConformeEscolha(cobrancaAcima, cobrancaAbaixo, considerarMenor) {
+  const maior = Number(cobrancaAcima || 0);
+  const menor = Number(cobrancaAbaixo || 0);
+  return Number((considerarMenor ? Math.max(0, maior - menor) : maior).toFixed(2));
+}
+const faturaConsideraMenor = (fatura) => Boolean(fatura?.auditoria_considerar_menor);
+
 const AUDITORIA_TOLERANCIA_KEY = 'amd_auditoria_cte_tolerancia_v1';
 const TOLERANCIA_PADRAO = { acima: 1, abaixo: 5 };
 
@@ -1694,8 +1765,10 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [entregaCtes, setEntregaCtes] = useState(null);
   const [entregaErroFatura, setEntregaErroFatura] = useState('');
   const [filtroEntregaCte, setFiltroEntregaCte] = useState('todos');
-  const [opcoesLaudoTransportador, setOpcoesLaudoTransportador] = useState(OPCOES_LAUDO_TRANSPORTADOR_PADRAO);
+  // "Cobranca a menor" reflete a escolha salva na fatura (padrao: so a maior).
+  const [opcoesLaudoTransportador, setOpcoesLaudoTransportador] = useState(() => ({ ...OPCOES_LAUDO_TRANSPORTADOR_PADRAO, mostrarCobrancaMenor: faturaConsideraMenor(fatura) }));
   const [protocoloAberto, setProtocoloAberto] = useState(false);
+  const [perguntaProtocolo, setPerguntaProtocolo] = useState(false);
   const toleranciaFatura = carregarToleranciaAuditoria();
   const detalhesOriginais = state.detalhes[fatura.id] || [];
   const detalhes = useMemo(
@@ -1721,6 +1794,27 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   }, [detalhesOriginais.length, fatura.id, mensagemLiberacao, referenciaCtes]);
   const saldoTransporteDoCte = (item) => Number(item.saldo_autorizado || 0);
   const resumoAuditoriaFatura = useMemo(() => resumirDetalhesAuditoria(detalhes, toleranciaFatura), [detalhes, toleranciaFatura.acima, toleranciaFatura.abaixo]);
+  const totalDescontarFatura = descontoConformeEscolha(resumoAuditoriaFatura.cobrancaAcima, resumoAuditoriaFatura.cobrancaAbaixo, faturaConsideraMenor(fatura));
+  const diferencaAtualFatura = Number((Number(fatura.valor_fatura || 0) - resumoAuditoriaFatura.calculoAmd).toFixed(2));
+  // Marcar/desmarcar "Cobranca a menor" grava a escolha na fatura: a lista e a
+  // liberacao (individual e em lote) passam a seguir a mesma regra.
+  const mudarOpcoesLaudo = async (novas) => {
+    setOpcoesLaudoTransportador(novas);
+    const marcada = Boolean(novas.mostrarCobrancaMenor);
+    if (marcada === faturaConsideraMenor(fatura)) return;
+    try {
+      const next = await atualizarFaturaAuditoria(state, { ...fatura, auditoria_considerar_menor: marcada }, {
+        acao: 'CONSIDERAR_COBRANCA_MENOR',
+        descricao: marcada ? 'Valor a descontar passa a considerar a cobranca a menor (maior - menor).' : 'Valor a descontar volta a considerar so a cobranca a maior.',
+        usuario_nome: sessao?.nome || sessao?.email || 'Usuario local',
+        usuario_email: sessao?.email || '',
+      });
+      onState(next);
+    } catch (error) {
+      setOpcoesLaudoTransportador((atual) => ({ ...atual, mostrarCobrancaMenor: faturaConsideraMenor(fatura) }));
+      setErroDetalhes(`Nao foi possivel salvar a escolha de cobranca a menor: ${error.message}`);
+    }
+  };
   const divergencias = detalhes.filter((item) =>
     Number(item.calculado_frete || 0) > 0
     && !dentroDaToleranciaAuditoria(Number(item.diferenca || 0), toleranciaFatura));
@@ -1935,9 +2029,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     // essas duas dependem da soma do valor_frete por CT-e, que fica errada
     // quando algum CT-e veio com valor_frete zerado/incompleto no arquivo.
     const saldo = Number((Number(fatura.valor_fatura || 0) - resumo.calculoAmd).toFixed(2));
-    // O desconto a cobrar e a cobranca a MAIOR por CT-e (o que foi a menos nao compensa):
+    // O desconto a cobrar e a cobranca a MAIOR por CT-e (a menor so compensa se a fatura foi marcada para considera-la):
     // o saldo liquido (fatura - calculado) pode ser negativo e esconder CT-es cobrados a mais.
-    const descontoDevido = Number(resumo.cobrancaAcima.toFixed(2));
+    const descontoDevido = descontoConformeEscolha(resumo.cobrancaAcima, resumo.cobrancaAbaixo, faturaConsideraMenor(fatura));
     const camposAuditoria = {
       valor_calculado: Number(resumo.calculoAmd.toFixed(2)),
       diferenca: saldo,
@@ -1968,8 +2062,10 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       ...camposAuditoria,
       descricaoHistorico: `Liberada para pagamento. Auditoria: ${resumo.total} CT-e(s), ${resumo.divergentes} divergente(s), cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}. Toler�ncia aplicada: +${dinheiro(toleranciaFatura.acima)} / -${dinheiro(toleranciaFatura.abaixo)}.`,
     });
-    setMensagemLiberacao('✓ Fatura liberada para pagamento — nao ha cobranca a maior. Confira o protocolo financeiro abaixo.');
-    setProtocoloAberto(true);
+    setMensagemLiberacao('✓ Fatura liberada para pagamento — nao ha cobranca a maior.');
+    // Nao abre o protocolo sozinho: protocolo e mais comum quando ha desconto,
+    // entao pergunta ao auditor se quer enviar agora.
+    setPerguntaProtocolo(true);
   };
 
   const baixarArquivo = (blob, nomeArquivo) => {
@@ -2393,6 +2489,11 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     const opts = { ...opcoesLaudoTransportador, transportador };
     const linhasParaResumo = aplicarMascaraLaudoTransportador(linhas, opts, toleranciaLaudo);
     const resumo = resumirDetalhesAuditoria(linhasParaResumo, toleranciaLaudo);
+    const totalDescontarLaudo = descontoConformeEscolha(
+      resumo.cobrancaAcima,
+      resumo.cobrancaAbaixo,
+      faturaConsideraMenor(fatura),
+    );
     const cards = [
       ['CT-es', resumo.total],
       ['Calculados AMD', resumo.calculados],
@@ -2402,7 +2503,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       ['Calculo AMD', dinheiro(resumo.calculoAmd)],
       ['Cobranca acima', dinheiro(resumo.cobrancaAcima)],
       ['Cobranca abaixo', dinheiro(resumo.cobrancaAbaixo)],
-      ['Total a descontar', dinheiro(resumo.totalDescontar)],
+      ['Total a descontar', dinheiro(totalDescontarLaudo)],
     ];
     const rows = linhas
       .map((item) => {
@@ -3086,7 +3187,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <Card label="Calculo AMD" value={dinheiro(resumoAuditoriaFatura.calculoAmd)} />
         <Card label="Cobranca acima" value={dinheiro(resumoAuditoriaFatura.cobrancaAcima)} color="#dc2626" onClick={() => cliqueCard('acima')} ativo={cardAtivo('acima')} />
         <Card label="Cobranca abaixo" value={dinheiro(resumoAuditoriaFatura.cobrancaAbaixo)} color="#d97706" onClick={() => cliqueCard('abaixo')} ativo={cardAtivo('abaixo')} />
-        <Card label="Total a descontar" value={dinheiro(resumoAuditoriaFatura.totalDescontar)} color={resumoAuditoriaFatura.totalDescontar ? '#d97706' : '#047857'} />
+        <Card label="Total a descontar" value={dinheiro(totalDescontarFatura)} color={totalDescontarFatura ? '#d97706' : '#047857'} detail={faturaConsideraMenor(fatura) ? 'Considerando cobranca a menor' : 'So cobranca a maior'} />
       </div>
       {duplicadosRemovidos > 0 && (
         <div className="hint-box compact">
@@ -3100,8 +3201,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <>
           <div className="summary-strip">
             <Card label="Valor fatura" value={dinheiro(fatura.valor_fatura)} />
-            <Card label="Valor calculado" value={dinheiro(fatura.valor_calculado)} color="#04a484" />
-            <Card label="Diferenca" value={dinheiro(fatura.diferenca)} color={Number(fatura.diferenca) ? '#9b1111' : '#04a484'} />
+            <Card label="Valor calculado" value={dinheiro(resumoAuditoriaFatura.calculoAmd)} color="#04a484" detail="CT-es atuais + saldo autorizado" />
+            <Card label="Diferenca" value={dinheiro(diferencaAtualFatura)} color={Number(diferencaAtualFatura) ? '#9b1111' : '#04a484'} detail="Valor da fatura - calculo atual" />
             <Card label="Quantidade CT-es" value={fatura.ctes_totais || detalhes.length} />
             <Card
               label="Confirmacao do transportador"
@@ -3205,7 +3306,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         cancelando={cancelandoRecalculo}
       />
       {infoRecalculo && <div className="hint-box compact">{infoRecalculo}</div>}
-      <OpcoesLaudoTransportador opcoes={opcoesLaudoTransportador} onMudar={setOpcoesLaudoTransportador} />
+      <OpcoesLaudoTransportador opcoes={opcoesLaudoTransportador} onMudar={mudarOpcoesLaudo} />
+      <p className="compact" style={{ marginTop: 4 }}>"Cobranca a menor" marcada = o valor a descontar abate a cobranca a menor (fica salvo nesta fatura). Desmarcada = so a cobranca a maior.</p>
       <div className="audit-action-bar">
         <span>{selecionados.length} CT-e(s) selecionado(s)</span>
         <button className="btn-primary" disabled={recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={recalcular} title={selecionados.length ? 'Recalcula só os CT-es selecionados' : tab === 'sem-calculo' ? `Recalcula só os ${semCalculo.length} CT-es sem cálculo` : tab === 'divergencias' ? `Recalcula só os ${divergencias.length} CT-es divergentes` : 'Recalcula todos os CT-es da fatura'}>
@@ -3329,6 +3431,18 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
             </div>
           </div>
         )}
+        {perguntaProtocolo && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="hint-box" style={{ background: '#fff', width: 'min(520px, 94vw)', padding: 20 }}>
+              <h3 style={{ marginTop: 0 }}>Enviar para o Protocolo Financeiro?</h3>
+              <p>A fatura foi liberada para pagamento. Deseja enviar para o Protocolo Financeiro agora? Em geral o protocolo e usado quando ha desconto.</p>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button className="btn-secondary" onClick={() => setPerguntaProtocolo(false)}>Nao, so liberar</button>
+                <button className="btn-primary" onClick={() => { setPerguntaProtocolo(false); setProtocoloAberto(true); }}>Sim, abrir protocolo</button>
+              </div>
+            </div>
+          </div>
+        )}
         <button className="btn-secondary" onClick={() => mudarStatus('AGUARDANDO_NOVA_FATURA')}>Solicitar nova fatura</button>
         <button className="btn-primary" onClick={liberarParaPagamento}>Liberar para pagamento</button>
         <button
@@ -3349,6 +3463,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
           fatura={fatura}
           detalhes={detalhes}
           tolerancia={toleranciaFatura}
+          descontoAutomaticoExato={totalDescontarFatura}
           sessao={sessao}
           onClose={() => setProtocoloAberto(false)}
           onState={onState}
@@ -3376,7 +3491,22 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [filtroRapido, setFiltroRapido] = useState(() => filtrosIniciais?.filtroRapido || '');
   const [paginaFaturas, setPaginaFaturas] = useState(1);
   const TAM_PAGINA_FATURAS = 100;
-  const [somenteAuditadas, setSomenteAuditadas] = useState(false);
+  const [somenteAuditadas, setSomenteAuditadas] = useState('');
+  // '' | 'zero' (sem valor a descontar) | 'com_desconto'
+  const [filtroDesconto, setFiltroDesconto] = useState('');
+  // '' | 'entregue' (todos os CT-es entregues) | 'pendente' (tem CT-e sem entrega)
+  const [filtroEntregaFatura, setFiltroEntregaFatura] = useState('');
+  // Map(faturaId -> { total, entregues, pendentes, semTracking }), preenchido sob demanda.
+  const [entregaFaturas, setEntregaFaturas] = useState(() => new Map());
+  const [verificandoEntregas, setVerificandoEntregas] = useState(false);
+  const [progressoEntregas, setProgressoEntregas] = useState(null);
+  const [erroEntregas, setErroEntregas] = useState('');
+  // O resumo calculado vale so para a versao da fatura em que foi feito (updated_at):
+  // recalculou/liberou/alterou na fatura -> o valor da lista e recalculado, nunca antigo.
+  const entregaDe = (fatura) => {
+    const ent = entregaFaturas.get(fatura.id);
+    return ent && ent.stamp === (fatura.updated_at || '') ? ent : null;
+  };
   const [detectandoCanais, setDetectandoCanais] = useState(false);
   const [atualizandoFaturas, setAtualizandoFaturas] = useState(false);
   const [progressoCanais, setProgressoCanais] = useState(null);
@@ -3418,6 +3548,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [emailAuditorLote, setEmailAuditorLote] = useState('');
   const [origemFiltroFatura, setOrigemFiltroFatura] = useState('');
   const [auditorFiltro, setAuditorFiltro] = useState(() => filtrosIniciais?.auditorFiltro || '');
+  const [transportadoraFiltroFatura, setTransportadoraFiltroFatura] = useState('');
   const [filtrosAvancadosAbertos, setFiltrosAvancadosAbertos] = useState(() => Boolean(filtrosIniciais));
   const [resumoOrigensFaturas, setResumoOrigensFaturas] = useState(new Map());
   const [recalculandoLote, setRecalculandoLote] = useState(false);
@@ -3608,7 +3739,22 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     status: (fatura) => !status || fatura.status === status,
     canal: (fatura) => !canalFiltro || fatura.canal === canalFiltro,
     auditor: (fatura) => !auditorFiltro || fatura.auditor_nome === auditorFiltro,
-    somenteAuditadas: (fatura) => !somenteAuditadas || faturaTotalmenteAuditada(fatura),
+    transportadora: (fatura) => !transportadoraFiltroFatura || fatura.transportadora === transportadoraFiltroFatura,
+    somenteAuditadas: (fatura) => !somenteAuditadas || (somenteAuditadas === 'completa' ? faturaTotalmenteAuditada(fatura) : !faturaTotalmenteAuditada(fatura)),
+    desconto: (fatura) => {
+      if (!filtroDesconto) return true;
+      const ent = entregaDe(fatura);
+      if (!ent) return false; // so valor exato (faturas ja verificadas)
+      const semDesconto = descontoConformeEscolha(ent.maior, ent.menor, faturaConsideraMenor(fatura)) <= TOLERANCIA_DESCONTO_PENDENTE;
+      return filtroDesconto === 'zero' ? semDesconto : !semDesconto;
+    },
+    // Só passa quem já teve a entrega verificada (botão "Verificar entregas").
+    entrega: (fatura) => {
+      if (!filtroEntregaFatura) return true;
+      const ent = entregaDe(fatura);
+      if (!ent || !ent.total || ent.pendentes == null) return false;
+      return filtroEntregaFatura === 'entregue' ? ent.pendentes === 0 : ent.pendentes > 0;
+    },
     competencia: (fatura) => !competenciaFiltro || (fatura.data_emissao || '').slice(0, 7) === competenciaFiltro,
     periodoInicio: (fatura) => !periodoInicio || ((fatura.data_emissao || '').slice(0, 10) >= periodoInicio),
     periodoFim: (fatura) => !periodoFim || ((fatura.data_emissao || '').slice(0, 10) <= periodoFim),
@@ -3618,8 +3764,11 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     visao: dentroVisaoFatura,
     rapido: dentroFiltroRapido,
   };
-  const passaFiltros = (fatura, ignorar) => Object.entries(predicadosFatura)
-    .every(([chave, predicado]) => chave === ignorar || predicado(fatura));
+  const passaFiltros = (fatura, ignorar = []) => {
+    const ignorados = new Set(Array.isArray(ignorar) ? ignorar : [ignorar]);
+    return Object.entries(predicadosFatura)
+      .every(([chave, predicado]) => ignorados.has(chave) || predicado(fatura));
+  };
 
   const lista = state.faturas
     .filter((fatura) => passaFiltros(fatura))
@@ -3631,9 +3780,41 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       return a.data_vencimento.localeCompare(b.data_vencimento);
     });
 
+  // Faturas alvo da verificação de entrega: as que passam nos demais filtros
+  // Ignora os dois filtros que dependem do proprio resumo. Se o filtro de
+  // desconto eliminasse as ainda nao calculadas, nao sobraria nenhuma fatura
+  // para o botao verificar (nem para o preenchimento automatico) calcular.
+  const faturasParaVerificarEntrega = state.faturas.filter((fatura) => passaFiltros(fatura, ['entrega', 'desconto']));
+  const faltamVerificarEntrega = faturasParaVerificarEntrega.filter((fatura) => !entregaDe(fatura));
+  const verificarEntregas = async () => {
+    const alvo = faltamVerificarEntrega;
+    if (!alvo.length || verificandoEntregas) return;
+    setVerificandoEntregas(true);
+    setErroEntregas('');
+    try {
+      const TAM = 25;
+      for (let i = 0; i < alvo.length; i += TAM) {
+        setProgressoEntregas({ carregados: i, total: alvo.length });
+        const lote = alvo.slice(i, i + TAM);
+        const carimbos = new Map(lote.map((item) => [item.id, item.updated_at || '']));
+        const parte = await resumirFaturasExato(lote.map((item) => item.id));
+        parte.forEach((ent, id) => parte.set(id, { ...ent, stamp: carimbos.get(id) }));
+        setEntregaFaturas((atual) => new Map([...atual, ...parte]));
+      }
+    } catch (error) {
+      setErroEntregas(`Erro ao verificar entregas: ${error.message || error}`);
+    } finally {
+      setVerificandoEntregas(false);
+      setProgressoEntregas(null);
+    }
+  };
+
   const canaisDisponiveis = [...new Set(
     state.faturas.filter((fatura) => passaFiltros(fatura, 'canal')).map((item) => item.canal).filter(Boolean)
   )].sort();
+  const transportadorasDisponiveis = [...new Set(
+    state.faturas.filter((fatura) => passaFiltros(fatura, 'transportadora')).map((item) => item.transportadora).filter(Boolean)
+  )].sort((a, b) => a.localeCompare(b, 'pt-BR'));
   const auditoresDisponiveis = [...new Set(
     state.faturas.filter((fatura) => passaFiltros(fatura, 'auditor')).map((item) => item.auditor_nome).filter(Boolean)
   )].sort();
@@ -3652,13 +3833,60 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     paginaFaturasAtual * TAM_PAGINA_FATURAS,
   );
   const chaveFiltrosFaturas = [
-    filtro, status, canalFiltro, auditorFiltro, filtroPagamento, origemFiltroFatura, somenteAuditadas,
+    filtro, status, canalFiltro, auditorFiltro, transportadoraFiltroFatura, filtroPagamento, origemFiltroFatura, somenteAuditadas,
+    filtroDesconto, filtroEntregaFatura,
     competenciaFiltro, periodoInicio, periodoFim, vencimentoInicio, vencimentoFim,
     filtroFaturasLote, visaoFatura, filtroRapido,
   ].join('|');
   useEffect(() => {
     setPaginaFaturas(1);
   }, [chaveFiltrosFaturas]);
+
+  // Preenche sozinho a coluna Entrega das faturas da pagina atual (sem precisar
+  // abrir cada uma). O botao "Verificar entregas" cobre o resto da lista filtrada.
+  const entregaEmAndamentoRef = useRef(new Set());
+  const basePaginaResumo = (filtroDesconto || filtroEntregaFatura)
+    ? faturasParaVerificarEntrega.slice(
+      (paginaFaturasAtual - 1) * TAM_PAGINA_FATURAS,
+      paginaFaturasAtual * TAM_PAGINA_FATURAS,
+    )
+    : listaPaginada;
+  const idsPendentesEntrega = basePaginaResumo.filter((item) => !entregaDe(item)).map((item) => item.id).join('|');
+  useEffect(() => {
+    if (!mostrarFaturas || !idsPendentesEntrega) return undefined;
+    const pendentes = idsPendentesEntrega.split('|').filter((id) => !entregaEmAndamentoRef.current.has(id));
+    if (!pendentes.length) return undefined;
+    const carimbos = new Map(state.faturas.map((item) => [item.id, item.updated_at || '']));
+    pendentes.forEach((id) => entregaEmAndamentoRef.current.add(id));
+    let ativo = true;
+    (async () => {
+      const TAM = 20;
+      for (let i = 0; i < pendentes.length && ativo; i += TAM) {
+        const lote = pendentes.slice(i, i + TAM);
+        try {
+          const parte = await resumirFaturasExato(lote);
+          parte.forEach((ent, id) => parte.set(id, { ...ent, stamp: carimbos.get(id) ?? '' }));
+          if (ativo) setEntregaFaturas((atual) => new Map([...atual, ...parte]));
+        } catch {
+          // Falha aqui so deixa "…" na coluna; o botao Verificar entregas tenta de novo.
+        } finally {
+          lote.forEach((id) => entregaEmAndamentoRef.current.delete(id));
+        }
+      }
+      pendentes.forEach((id) => entregaEmAndamentoRef.current.delete(id));
+    })();
+    return () => { ativo = false; };
+  }, [mostrarFaturas, idsPendentesEntrega]);
+
+  // Ao fechar uma fatura aberta, descarta o resumo dela: recalculo, saldo autorizado
+  // ou tracking feitos la dentro precisam aparecer na lista.
+  const abertaAnteriorRef = useRef(null);
+  useEffect(() => {
+    if (aberta) { abertaAnteriorRef.current = aberta.id; return; }
+    const id = abertaAnteriorRef.current;
+    abertaAnteriorRef.current = null;
+    if (id) setEntregaFaturas((atual) => { const prox = new Map(atual); prox.delete(id); return prox; });
+  }, [aberta]);
 
   const resultadoCtesAvulsosFiltrado = useMemo(() => resultadoCtesAvulsos.filter((row) => {
     const calculado = Number(row.valor_calculado || 0) > 0;
@@ -4823,60 +5051,80 @@ ${portaisLaudo.length ? `
 
   const faturasSelecionadas = state.faturas.filter((item) => selecionadasIds.includes(item.id));
 
-  // Resumo pre-laudo: usa os CT-es ja em cache (state.detalhes) quando a
-  // fatura ja foi aberta/recalculada; senao cai nos agregados salvos na
-  // propria fatura. Atualiza sozinho ao (des)selecionar faturas ou mudar as
-  // opcoes do laudo transportador, pra dar previa antes de gerar o arquivo.
+  // Selecionar uma fatura tambem garante o mesmo resumo exato usado pela lista
+  // e pela liberacao. Nao reaproveita state.detalhes nem agregados gravados.
+  const idsSelecionadasSemResumo = faturasSelecionadas.filter((item) => !entregaDe(item)).map((item) => item.id).join('|');
+  useEffect(() => {
+    if (!idsSelecionadasSemResumo) return undefined;
+    const ids = idsSelecionadasSemResumo.split('|');
+    const carimbos = new Map(state.faturas.map((item) => [item.id, item.updated_at || '']));
+    let ativo = true;
+    resumirFaturasExato(ids)
+      .then((parte) => {
+        parte.forEach((ent, id) => parte.set(id, { ...ent, stamp: carimbos.get(id) ?? '' }));
+        if (ativo) setEntregaFaturas((atual) => new Map([...atual, ...parte]));
+      })
+      .catch((error) => { if (ativo) setErroEntregas(`Erro ao calcular faturas selecionadas: ${error.message || error}`); });
+    return () => { ativo = false; };
+  }, [idsSelecionadasSemResumo]);
+
+  // Resumo das selecionadas: somente o snapshot exato usado pela lista.
+  // Enquanto alguma fatura ainda carrega, nao mistura o parcial com valores
+  // antigos gravados na fatura.
   const resumoSelecaoFaturas = useMemo(() => {
-    const toleranciaCfg = carregarToleranciaAuditoria();
-    const opts = { ...opcoesLaudoTransportadorLote, transportador: true };
+    let totalDescontarSel = 0;
     let ctes = 0, fretePago = 0, calculoAmd = 0, cobrancaAcima = 0, cobrancaAbaixo = 0, semCalculo = 0, tolerancia = 0, divergentes = 0;
+    let completos = 0;
     faturasSelecionadas.forEach((fatura) => {
-      const cache = state.detalhes?.[fatura.id];
-      if (cache && cache.length) {
-        const unicos = deduplicarDetalhesFatura(cache);
-        const mascarados = aplicarMascaraLaudoTransportador(unicos, opts, toleranciaCfg);
-        const resumo = resumirDetalhesAuditoria(mascarados, toleranciaCfg);
-        ctes += resumo.total;
-        fretePago += resumo.fretePago;
-        calculoAmd += resumo.calculoAmd;
-        cobrancaAcima += resumo.cobrancaAcima;
-        cobrancaAbaixo += resumo.cobrancaAbaixo;
-        semCalculo += resumo.semCalculo;
-        divergentes += resumo.divergentes;
-        unicos.forEach((item) => {
-          if (Number(item.calculado_frete || 0) > 0 && dentroDaToleranciaAuditoria(Number(item.diferenca || 0), toleranciaCfg)) tolerancia += 1;
-        });
-      } else {
-        ctes += Number(fatura.ctes_totais || 0);
-        fretePago += Number(fatura.valor_fatura || 0);
-        calculoAmd += Number(fatura.valor_calculado || 0);
-        cobrancaAcima += Number(fatura.auditoria_cobranca_acima || 0);
-        cobrancaAbaixo += Number(fatura.auditoria_cobranca_abaixo || 0);
-        semCalculo += Number(fatura.ctes_sem_calculo || 0);
-        divergentes += Number(fatura.ctes_divergentes || 0);
-      }
+      const resumo = entregaDe(fatura);
+      if (!resumo) return;
+      completos += 1;
+      totalDescontarSel += descontoConformeEscolha(resumo.maior, resumo.menor, faturaConsideraMenor(fatura));
+      ctes += Number(resumo.total || 0);
+      fretePago += Number(resumo.fretePago || 0);
+      calculoAmd += Number(resumo.calculoAmd || 0);
+      cobrancaAcima += Number(resumo.maior || 0);
+      cobrancaAbaixo += Number(resumo.menor || 0);
+      semCalculo += Number(resumo.semCalculo || 0);
+      divergentes += Number(resumo.divergentes || 0);
+      tolerancia += Math.max(0, Number(resumo.calculados || 0) - Number(resumo.divergentes || 0));
     });
     return {
       faturas: faturasSelecionadas.length,
+      carregando: completos !== faturasSelecionadas.length,
       ctes,
       fretePago,
       calculoAmd,
       cobrancaAcima,
       cobrancaAbaixo,
-      totalDescontar: Math.max(0, cobrancaAcima - cobrancaAbaixo),
+      totalDescontar: totalDescontarSel,
       semCalculo,
       tolerancia,
       divergentes,
     };
-  }, [faturasSelecionadas, state.detalhes, opcoesLaudoTransportadorLote]);
+  }, [faturasSelecionadas, entregaFaturas]);
 
-  // Estimativa barata (sem carregar CT-es) de quais faturas vao precisar de aprovacao da gestao.
-  const faturasComCobrancaAMaior = () => faturasSelecionadas.filter((item) => Number(item.valor_fatura || 0) - Number(item.valor_calculado || 0) > TOLERANCIA_DESCONTO_PENDENTE);
+  const faturasComCobrancaAMaior = (resumos = modalLiberacaoLote?.resumosExatos) => faturasSelecionadas.filter((item) => {
+    const exato = resumos?.get(item.id) || entregaDe(item);
+    return exato && descontoConformeEscolha(exato.maior, exato.menor, faturaConsideraMenor(item)) > TOLERANCIA_DESCONTO_PENDENTE;
+  });
 
-  const abrirLiberacaoLote = () => {
+  const abrirLiberacaoLote = async () => {
     if (!faturasSelecionadas.length) return;
-    setModalLiberacaoLote({ descontar: '', motivo: '', observacao: '', erro: '' });
+    setRecalculandoLote(true);
+    setMensagemImportacao('Conferindo os valores exatos antes da liberacao...');
+    try {
+      const resumos = await resumirFaturasExato(faturasSelecionadas.map((item) => item.id));
+      const carimbos = new Map(faturasSelecionadas.map((item) => [item.id, item.updated_at || '']));
+      resumos.forEach((ent, id) => resumos.set(id, { ...ent, stamp: carimbos.get(id) ?? '' }));
+      setEntregaFaturas((atual) => new Map([...atual, ...resumos]));
+      setMensagemImportacao('');
+      setModalLiberacaoLote({ descontar: '', motivo: '', observacao: '', erro: '', resumosExatos: resumos });
+    } catch (error) {
+      setMensagemImportacao(`Nao foi possivel conferir os valores para liberar: ${error.message || error}`);
+    } finally {
+      setRecalculandoLote(false);
+    }
   };
 
   const confirmarLiberacaoLote = () => {
@@ -4901,6 +5149,11 @@ ${portaisLaudo.length ? `
     try {
       let next = state;
       let enviadasParaAprovacao = 0;
+      // Uma unica carga agrupada garante o mesmo snapshot para todo o lote e
+      // evita repetir detalhes + referencia + saldos uma fatura por vez.
+      const detalhesExatosLote = tipo === 'liberar'
+        ? await carregarDetalhesExatosFaturas(faturasSelecionadas.map((item) => item.id))
+        : new Map();
       for (let i = 0; i < faturasSelecionadas.length; i += 1) {
         const fatura = next.faturas.find((item) => item.id === faturasSelecionadas[i].id) || faturasSelecionadas[i];
         setProgressoLote({ etapa: 'atualizando_faturas_lote', carregados: i + 1, total: faturasSelecionadas.length });
@@ -4922,7 +5175,7 @@ ${portaisLaudo.length ? `
           evento = { ...evento, acao: 'STATUS_EM_MASSA', status_anterior: fatura.status, status_novo: statusLote, descricao: `Status aplicado em massa: ${nomeStatus(statusLote)}.` };
         }
         if (tipo === 'liberar') {
-          const detalhesFatura = state.detalhes?.[fatura.id] || await carregarDetalhesFaturaSupabase(fatura.id);
+          const detalhesFatura = detalhesExatosLote.get(fatura.id) || [];
           const resumo = resumirDetalhesAuditoria(detalhesFatura, carregarToleranciaAuditoria());
           // valor_fatura (confiavel) - calculado, nao cobrancaAcima-cobrancaAbaixo:
           // essas duas dependem da soma do valor_frete por CT-e, que fica errada
@@ -4931,8 +5184,12 @@ ${portaisLaudo.length ? `
           // Em lote nao da pra perguntar item a item se o desconto vai ser
           // aplicado — quem nao fecha (saldo acima da tolerancia) vai direto
           // pra aprovacao da gestao em vez de liberar com a divergencia solta.
-          // Desconto = cobranca a MAIOR por CT-e (o saldo liquido pode ser negativo e esconder CT-es cobrados a mais).
-          const descontoDevido = Number(resumo.cobrancaAcima.toFixed(2));
+          // Desconto = cobranca a MAIOR por CT-e (o saldo liquido pode ser negativo e esconder CT-es cobrados a mais);
+          // so abate a cobranca a menor se a fatura foi marcada para considera-la.
+          const descontoDevido = descontoConformeEscolha(resumo.cobrancaAcima, resumo.cobrancaAbaixo, faturaConsideraMenor(fatura));
+          // A escolha de considerar a menor altera o valor, mas nao cria uma
+          // aprovacao sem valor: desconto final zero libera normalmente.
+          const cobrancaMenor = Number(resumo.cobrancaAbaixo.toFixed(2));
           const precisaAprovacao = descontoDevido > TOLERANCIA_DESCONTO_PENDENTE;
           const statusNovo = precisaAprovacao ? 'AGUARDANDO_APROVACAO_GESTAO' : 'PRONTA_PARA_PAGAMENTO';
           if (precisaAprovacao) enviadasParaAprovacao += 1;
@@ -4959,7 +5216,7 @@ ${portaisLaudo.length ? `
             status_anterior: fatura.status,
             status_novo: statusNovo,
             descricao: precisaAprovacao
-              ? `Enviada para aprovacao da gestao (liberacao em massa): cobranca a maior de ${dinheiro(descontoDevido)}.${respostaAuditor ? ` ${respostaAuditor}` : ''}`
+              ? `Enviada para aprovacao da gestao (liberacao em massa): valor a descontar de ${dinheiro(descontoDevido)}${faturaConsideraMenor(fatura) && cobrancaMenor > 0 ? `, ja abatendo cobranca a menor de ${dinheiro(cobrancaMenor)}` : ''}.${respostaAuditor ? ` ${respostaAuditor}` : ''}`
               : `Liberada em massa para pagamento. Cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}.`,
           };
         }
@@ -4968,7 +5225,7 @@ ${portaisLaudo.length ? `
       onState(next);
       setMensagemImportacao(
         `${faturasSelecionadas.length} fatura(s) atualizada(s) em massa.`
-        + (enviadasParaAprovacao ? ` ${enviadasParaAprovacao} foram para aprovacao da gestao (desconto nao fechado).` : ''),
+        + (enviadasParaAprovacao ? ` ${enviadasParaAprovacao} foram para aprovacao da gestao por terem valor a descontar.` : ''),
       );
     } catch (error) {
       setMensagemImportacao(`Erro na edicao em massa: ${error.message}`);
@@ -5000,21 +5257,24 @@ ${portaisLaudo.length ? `
       const laudoTransportador = tipoLaudo === 'transportador';
       const opts = { ...opcoesLaudoTransportadorLote, transportador: laudoTransportador };
       const blocos = [];
+      const detalhesExatosPorFatura = await carregarDetalhesExatosFaturas(faturasSelecionadas.map((item) => item.id));
       // Link de confirmacao e por fatura (nao um so pro lote inteiro) — cada
       // fatura e um documento distinto que o transportador confirma sozinho.
       let estadoComLinks = state;
       for (let i = 0; i < faturasSelecionadas.length; i += 1) {
         const fatura = faturasSelecionadas[i];
         setProgressoLote({ etapa: 'montando_laudo', carregados: i + 1, total: faturasSelecionadas.length });
-        const detalhesRaw = state.detalhes?.[fatura.id]?.length
-          ? state.detalhes[fatura.id]
-          : await carregarDetalhesFaturaSupabase(fatura.id);
-        const detalhesUnicos = deduplicarDetalhesFatura(detalhesRaw || []);
+        const detalhesUnicos = detalhesExatosPorFatura.get(fatura.id) || [];
         const refs = await buscarReferenciaCtes(detalhesUnicos.flatMap((item) => [item.chave_cte, item.numero_cte]), { comDetalhes: true });
         const detalhesLaudo = detalhesUnicos.map((item) => {
-          const mesclado = mesclarDetalheComReferenciaAuditoria(item, refs);
           const base = refs.get(normalizarChaveCte(item.chave_cte)) || refs.get(normalizarChaveCte(item.numero_cte));
-          return { ...mesclado, chave_nfe: mesclado.chave_nfe || base?.chave_nfe };
+          // O item ja foi mesclado com a auditoria e com saldo autorizado. Aqui
+          // acrescenta apenas o detalhamento do calculo para nao apagar o saldo.
+          return {
+            ...item,
+            detalhes_calculo: base?.detalhes_calculo || item.detalhes_calculo,
+            chave_nfe: item.chave_nfe || base?.chave_nfe,
+          };
         });
         let linkConfirmacao = '';
         let faturaAtual = fatura;
@@ -5062,6 +5322,15 @@ ${portaisLaudo.length ? `
         : [];
       const linhasParaResumo = aplicarMascaraLaudoTransportador(todosDetalhes, opts, toleranciaLaudo);
       const resumoGeral = resumirDetalhesAuditoria(linhasParaResumo, toleranciaLaudo);
+      const totalDescontarGeral = blocos.reduce((acc, bloco) => {
+        const linhasBloco = aplicarMascaraLaudoTransportador(bloco.detalhes, opts, toleranciaLaudo);
+        const resumoBloco = resumirDetalhesAuditoria(linhasBloco, toleranciaLaudo);
+        return acc + descontoConformeEscolha(
+          resumoBloco.cobrancaAcima,
+          resumoBloco.cobrancaAbaixo,
+          faturaConsideraMenor(bloco.fatura),
+        );
+      }, 0);
       const transportadoras = [...new Set(faturasSelecionadas.map((f) => f.transportadora).filter(Boolean))].join(', ');
       const cards = [
         ['Faturas', faturasSelecionadas.length],
@@ -5072,7 +5341,7 @@ ${portaisLaudo.length ? `
         ['Calculo AMD', dinheiro(resumoGeral.calculoAmd)],
         ['Cobranca acima', dinheiro(resumoGeral.cobrancaAcima)],
         ['Cobranca abaixo', dinheiro(resumoGeral.cobrancaAbaixo)],
-        ['Total a descontar', dinheiro(resumoGeral.totalDescontar)],
+        ['Total a descontar', dinheiro(totalDescontarGeral)],
         ['Sem entrega', semEntregaGeral.length],
       ];
       if (laudoTransportador) {
@@ -6063,6 +6332,12 @@ ${portaisLaudo.length ? `
           </label>
         </div>
         <div className="form-grid three">
+          <label className="field">Transportadora
+            <select value={transportadoraFiltroFatura} onChange={(e) => setTransportadoraFiltroFatura(e.target.value)}>
+              <option value="">Todas ({transportadorasDisponiveis.length})</option>
+              {transportadorasDisponiveis.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
           <label className="field">Pagamento
             <select value={filtroPagamento} onChange={(e) => setFiltroPagamento(e.target.value)}>
               <option value="">Todos</option>
@@ -6088,6 +6363,37 @@ ${portaisLaudo.length ? `
             </select>
           </label>
         </div>
+        <div className="form-grid three">
+          <label className="field">Valor a descontar
+            <select value={filtroDesconto} onChange={(e) => setFiltroDesconto(e.target.value)}>
+              <option value="">Todos</option>
+              <option value="zero">Zero (nada a descontar)</option>
+              <option value="com_desconto">Com desconto</option>
+            </select>
+          </label>
+          <label className="field">Entrega dos CT-es
+            <select value={filtroEntregaFatura} onChange={(e) => setFiltroEntregaFatura(e.target.value)}>
+              <option value="">Todas</option>
+              <option value="entregue">100% entregues (pode liberar)</option>
+              <option value="pendente">Com CT-e a entregar</option>
+            </select>
+          </label>
+          <div className="field">
+            <span>&nbsp;</span>
+            <button type="button" className="btn-secondary" disabled={verificandoEntregas || !faltamVerificarEntrega.length} onClick={verificarEntregas}
+              title="Consulta o tracking dos CT-es das faturas filtradas para preencher a coluna Entrega e habilitar o filtro ao lado">
+              {verificandoEntregas
+                ? `Verificando entregas... ${progressoEntregas?.carregados ?? 0}/${progressoEntregas?.total ?? faltamVerificarEntrega.length}`
+                : faltamVerificarEntrega.length
+                  ? `Verificar entregas (${faltamVerificarEntrega.length} fatura(s))`
+                  : 'Entregas verificadas nas faturas filtradas'}
+            </button>
+          </div>
+        </div>
+        {filtroEntregaFatura && faltamVerificarEntrega.length > 0 && !verificandoEntregas && (
+          <div className="hint-box compact">O filtro de entrega só considera faturas já verificadas — clique em "Verificar entregas" para incluir as {faltamVerificarEntrega.length} restantes.</div>
+        )}
+        {erroEntregas && <div className="hint-box compact error-text">{erroEntregas}</div>}
         <button
           type="button"
           className="btn-secondary audit-small-button"
@@ -6110,9 +6416,12 @@ ${portaisLaudo.length ? `
               <label className="field">Vencimento até<input type="date" value={vencimentoFim} onChange={(e) => setVencimentoFim(e.target.value)} /></label>
             </div>
             <div className="form-grid three">
-              <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <input type="checkbox" checked={somenteAuditadas} onChange={(e) => setSomenteAuditadas(e.target.checked)} />
-                Só faturas com todos os CT-es na base (100% auditadas)
+              <label className="field">Auditoria dos CT-es
+                <select value={somenteAuditadas} onChange={(e) => setSomenteAuditadas(e.target.value)}>
+                  <option value="">Todas</option>
+                  <option value="completa">100% auditadas</option>
+                  <option value="falta">Falta auditar</option>
+                </select>
               </label>
             </div>
             <div className="form-grid three">
@@ -6165,6 +6474,7 @@ ${portaisLaudo.length ? `
       </div>
       {selecionadasIds.length > 0 && (
         <>
+        {resumoSelecaoFaturas.carregando && <div className="hint-box compact">Calculando os valores exatos das faturas selecionadas...</div>}
         <div className="summary-strip auditoria-avulsa-summary">
           <Card label="Faturas selecionadas" value={resumoSelecaoFaturas.faturas} />
           <Card label="CT-es selecionados" value={resumoSelecaoFaturas.ctes} />
@@ -6198,7 +6508,21 @@ ${portaisLaudo.length ? `
                 <h3 style={{ marginTop: 0 }}>Liberar {faturasSelecionadas.length} fatura(s)</h3>
                 {faturasComCobrancaAMaior().length > 0
                   ? <p><strong>{faturasComCobrancaAMaior().length}</strong> fatura(s) tem cobranca a maior e vao para a aprovacao da gestao (Carol). Responda abaixo — a resposta vai junto para ela. As demais sao liberadas direto.</p>
-                  : <p>Nenhuma fatura com cobranca a maior identificada; serao liberadas para pagamento. (Se alguma tiver diferenca ao recalcular, vai para a gestao com a sua observacao.)</p>}
+                  : <p>Nenhuma fatura com cobranca a maior identificada; serao liberadas para pagamento, sem precisar justificar desconto. (Se alguma tiver diferenca ao recalcular, vai para a gestao com a sua observacao.)</p>}
+                {(() => {
+                  const semEntrega = faturasSelecionadas
+                    .map((item) => ({ item, ent: entregaDe(item) }))
+                    .filter(({ ent }) => ent && ent.pendentes > 0);
+                  const naoVerificadas = faturasSelecionadas.filter((item) => !entregaDe(item)).length;
+                  if (!semEntrega.length && !naoVerificadas) return null;
+                  return (
+                    <div className="hint-box compact" style={{ borderLeft: `4px solid ${semEntrega.length ? '#dc2626' : '#d97706'}` }}>
+                      {semEntrega.length > 0 && <div><strong>{semEntrega.length} fatura(s) com CT-e a entregar:</strong> {semEntrega.slice(0, 8).map(({ item, ent }) => `${item.numero_fatura} (${ent.pendentes})`).join(', ')}{semEntrega.length > 8 ? '...' : ''}</div>}
+                      {naoVerificadas > 0 && <div>{naoVerificadas} fatura(s) selecionada(s) sem a entrega verificada — use "Verificar entregas" na tela antes de liberar.</div>}
+                    </div>
+                  );
+                })()}
+                {faturasComCobrancaAMaior().length > 0 && (
                 <div className="field">
                   <span>Esse valor de diferenca sera descontado?{faturasComCobrancaAMaior().length > 0 ? ' *' : ''}</span>
                   <div style={{ display: 'flex', gap: 16, marginTop: 4 }}>
@@ -6206,6 +6530,7 @@ ${portaisLaudo.length ? `
                     <label><input type="radio" name="descontarLote" checked={modalLiberacaoLote.descontar === 'NAO'} onChange={() => setModalLiberacaoLote((p) => ({ ...p, descontar: 'NAO' }))} /> Nao</label>
                   </div>
                 </div>
+                )}
                 {modalLiberacaoLote.descontar === 'NAO' && (
                   <label className="field">Qual o motivo de nao descontar? * (minimo 10 caracteres)
                     <textarea rows={3} value={modalLiberacaoLote.motivo} onChange={(e) => setModalLiberacaoLote((p) => ({ ...p, motivo: e.target.value }))} />
@@ -6242,7 +6567,7 @@ ${portaisLaudo.length ? `
       <div className="table-card">
         <div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th><input type="checkbox" checked={todasFiltradasSelecionadas} disabled={!lista.length} onChange={alternarSelecaoFiltradas} title="Selecionar/desmarcar todas as faturas filtradas (todas as paginas)" /></th><th>Fatura</th><th>Transportadora</th><th>Origem</th><th>Vencimento</th><th>Valor</th><th>CT-es</th><th>Divergencia</th><th>Auditor</th><th>Status</th><th>Pagamento</th><th>Fornecedor</th><th></th></tr></thead>
+            <thead><tr><th><input type="checkbox" checked={todasFiltradasSelecionadas} disabled={!lista.length} onChange={alternarSelecaoFiltradas} title="Selecionar/desmarcar todas as faturas filtradas (todas as paginas)" /></th><th>Fatura</th><th>Transportadora</th><th>Origem</th><th>Vencimento</th><th>Valor</th><th>CT-es</th><th>Divergencia</th><th title="Cobranca a maior dos CT-es, no mesmo calculo da tela da fatura">A descontar</th><th title="Entrega dos CT-es (tracking). Use Verificar entregas para preencher.">Entrega</th><th>Auditor</th><th>Status</th><th>Pagamento</th><th>Fornecedor</th><th></th></tr></thead>
             <tbody>
               {listaPaginada.map((fatura) => {
                 const auditadaCompleta = faturaTotalmenteAuditada(fatura);
@@ -6263,7 +6588,49 @@ ${portaisLaudo.length ? `
                       {fatura.ctes_auditados || fatura.ctes_vinculados || 0}/{fatura.ctes_totais || 0}
                       {auditadaCompleta && <small style={{ display: 'block', color: '#16a34a', fontWeight: 700 }}>100% auditada</small>}
                     </td>
-                    <td className={Number(fatura.diferenca) ? 'negativo' : ''}>{dinheiro(fatura.diferenca)}</td>
+                    <td>
+                      {(() => {
+                        // Exato (CT-es + calculo atual): separa cobranca a maior e a menor,
+                        // em vez do saldo gravado na fatura, que misturava as duas.
+                        const ent = entregaDe(fatura);
+                        if (!ent) return <span style={{ color: '#94a3b8' }} title="Calculando...">…</span>;
+                        if (!(ent.maior > 0) && !(ent.menor > 0)) return <span style={{ color: '#047857' }}>R$ 0,00</span>;
+                        return (
+                          <>
+                            {ent.maior > 0 && <div style={{ color: '#dc2626', fontWeight: 700 }}>{dinheiro(ent.maior)} <small>a maior</small></div>}
+                            {ent.menor > 0 && <div style={{ color: '#d97706', fontWeight: 700 }}>{dinheiro(ent.menor)} <small>a menor</small></div>}
+                          </>
+                        );
+                      })()}
+                    </td>
+                    <td style={{ fontWeight: 700, color: '#94a3b8' }}>
+                      {(() => {
+                        const ent = entregaDe(fatura);
+                        if (!ent) return <span title="Calculando...">…</span>;
+                        const considera = faturaConsideraMenor(fatura);
+                        const valor = descontoConformeEscolha(ent.maior, ent.menor, considera);
+                        return (
+                          <span style={{ color: valor > TOLERANCIA_DESCONTO_PENDENTE ? '#d97706' : '#047857' }}
+                            title={`Cobranca a maior ${dinheiro(ent.maior)}; a menor ${dinheiro(ent.menor)} ${considera ? '(considerada — marcado na fatura)' : '(nao considerada)'}`}>
+                            {dinheiro(valor)}{considera ? ' ⚖' : ''}
+                          </span>
+                        );
+                      })()}
+                    </td>
+                    <td>
+                      {(() => {
+                        const ent = entregaDe(fatura);
+                        if (!ent) return <span style={{ color: '#94a3b8' }} title="Ainda nao verificada — clique em Verificar entregas">—</span>;
+                        if (!ent.total) return <span style={{ color: '#94a3b8' }} title="Fatura sem CT-es vinculados">sem CT-es</span>;
+                        if (ent.pendentes == null) return <span style={{ color: '#94a3b8' }} title="Nao foi possivel consultar o tracking">—</span>;
+                        if (!ent.pendentes) return <span style={{ color: '#166534', fontWeight: 700 }} title={`${ent.entregues}/${ent.total} CT-es entregues`}>✓ 100% entregue</span>;
+                        return (
+                          <span style={{ color: '#b91c1c', fontWeight: 700 }} title={`${ent.entregues}/${ent.total} entregues; ${ent.pendentes} sem entrega comprovada${ent.semTracking ? ` (${ent.semTracking} sem tracking)` : ''}`}>
+                            {ent.pendentes} a entregar
+                          </span>
+                        );
+                      })()}
+                    </td>
                     <td>{fatura.auditor_nome || <strong className="error-text">SEM AUDITOR DEFINIDO</strong>}</td>
                     <td><Status value={fatura.status} /></td>
                     <td
@@ -7148,9 +7515,7 @@ function Gestao({ state, onState }) {
 
 // CT-es de uma fatura ja cruzados com a base auditada (rota, peso, NF, calculo AMD).
 async function carregarCtesFaturaParaAprovacao(fatura) {
-  const lista = deduplicarDetalhesFatura((await carregarDetalhesFaturaSupabase(fatura.id)) || []);
-  const referencia = await buscarReferenciaCtes(lista.flatMap((item) => [item.chave_cte, item.numero_cte]));
-  return lista.map((item) => mesclarDetalheComReferenciaAuditoria(item, referencia));
+  return (await carregarDetalhesExatosFaturas([fatura.id])).get(fatura.id) || [];
 }
 
 // Fila de faturas onde a auditoria calculou cobranca a maior (desconto a
@@ -7458,7 +7823,12 @@ function AprovacaoGestao({ state, onState }) {
     ));
   }, [pendentesTodas, filtroTransportadora, filtroSolicitante, filtroBusca]);
 
-  const valorPendente = (item) => Number(item.desconto_pendente_valor || item.diferenca || 0);
+  const valorPendente = (item) => {
+    const ctes = ctesPorFatura[item.id]?.lista;
+    if (!ctes) return Number(item.desconto_pendente_valor || item.auditoria_total_descontar || 0);
+    const resumo = resumirDetalhesAuditoria(ctes, carregarToleranciaAuditoria());
+    return descontoConformeEscolha(resumo.cobrancaAcima, resumo.cobrancaAbaixo, faturaConsideraMenor(item));
+  };
   const escolhidas = pendentes.filter((item) => selecionadas.includes(item.id));
   const todasMarcadas = pendentes.length > 0 && escolhidas.length === pendentes.length;
 
@@ -7474,6 +7844,36 @@ function AprovacaoGestao({ state, onState }) {
       return null;
     }
   };
+
+  // Preenche os valores visiveis da fila com o mesmo pipeline exato usado na
+  // decisao. O valor salvo fica apenas como placeholder durante a leitura.
+  const idsPendentesSemResumo = pendentes.filter((item) => !ctesPorFatura[item.id]?.lista && !ctesPorFatura[item.id]?.carregando && !ctesPorFatura[item.id]?.erro).map((item) => item.id).join('|');
+  useEffect(() => {
+    if (!idsPendentesSemResumo) return undefined;
+    const ids = idsPendentesSemResumo.split('|');
+    let ativo = true;
+    setCtesPorFatura((prev) => {
+      const next = { ...prev };
+      ids.forEach((id) => { next[id] = { ...(next[id] || {}), carregando: true }; });
+      return next;
+    });
+    carregarDetalhesExatosFaturas(ids).then((mapa) => {
+      if (!ativo) return;
+      setCtesPorFatura((prev) => {
+        const next = { ...prev };
+        ids.forEach((id) => { next[id] = { lista: mapa.get(id) || [] }; });
+        return next;
+      });
+    }).catch((error) => {
+      if (!ativo) return;
+      setCtesPorFatura((prev) => {
+        const next = { ...prev };
+        ids.forEach((id) => { next[id] = { erro: error.message || String(error) }; });
+        return next;
+      });
+    });
+    return () => { ativo = false; };
+  }, [idsPendentesSemResumo]);
 
   const alternarExpansao = (fatura) => {
     setExpandidas((prev) => ({ ...prev, [fatura.id]: !prev[fatura.id] }));
@@ -7530,11 +7930,33 @@ function AprovacaoGestao({ state, onState }) {
     for (const fatura of escolhidas) {
       try {
         const nome = fatura.numero_fatura;
-        const valor = valorPendente(fatura);
+        // A fila pode ter sido aberta antes de um recalculo ou autorizacao de
+        // saldo. Reconfere os CT-es no momento da decisao para nao aprovar o
+        // desconto_pendente_valor antigo exibido na fatura.
+        const ctes = ctesPorFatura[fatura.id]?.lista || await carregarCtesFaturaParaAprovacao(fatura);
+        const resumoAtual = resumirDetalhesAuditoria(ctes, carregarToleranciaAuditoria());
+        const valor = descontoConformeEscolha(
+          resumoAtual.cobrancaAcima,
+          resumoAtual.cobrancaAbaixo,
+          faturaConsideraMenor(fatura),
+        );
         let statusNovo = 'LIBERADA_COM_DESCONTO';
         let acao = 'APROVACAO_GESTAO_CONFIRMOU_DESCONTO';
         let descricao = `Gestao aprovou: desconto de ${dinheiro(valor)} confirmado, fatura liberada para pagamento com desconto.${texto ? ` Obs.: ${texto}` : ''}`;
-        let campos = { desconto_aplicado_confirmado: true, desconto_pendente_valor: 0 };
+        let campos = {
+          desconto_aplicado_confirmado: true,
+          desconto_pendente_valor: 0,
+          valor_calculado: Number(resumoAtual.calculoAmd.toFixed(2)),
+          diferenca: Number((Number(fatura.valor_fatura || 0) - resumoAtual.calculoAmd).toFixed(2)),
+          valor_recuperado: valor,
+          auditoria_cobranca_acima: Number(resumoAtual.cobrancaAcima.toFixed(2)),
+          auditoria_cobranca_abaixo: Number(resumoAtual.cobrancaAbaixo.toFixed(2)),
+          auditoria_total_descontar: valor,
+          ctes_totais: resumoAtual.total,
+          ctes_auditados: resumoAtual.calculados,
+          ctes_divergentes: resumoAtual.divergentes,
+          ctes_sem_calculo: resumoAtual.semCalculo,
+        };
 
         if (tipo === 'RECUSAR') {
           statusNovo = 'COM_DIVERGENCIA';
@@ -7542,7 +7964,6 @@ function AprovacaoGestao({ state, onState }) {
           descricao = `Gestao recusou a liberacao: ${texto}. Fatura devolvida para a auditoria.`;
           campos = { desconto_aplicado_confirmado: false };
         } else if (tipo === 'SEM_DESCONTO' || tipo === 'SUPRIMENTOS') {
-          const ctes = ctesPorFatura[fatura.id]?.lista || await carregarCtesFaturaParaAprovacao(fatura);
           const itens = itensComAdicional(fatura, ctes);
           if (!itens.length) throw new Error('nenhum CT-e com adicional calculado pela AMD nesta fatura (sem simulacao ou sem diferenca positiva).');
           const totalAdicional = itens.reduce((acc, item) => acc + item.valor_divergente, 0);

@@ -636,11 +636,27 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
     // trazer concorrentes e deixar de fora justamente a transportadora do CT-e
     // (especialmente quando a origem real e liberada por equivalencia). Nesse
     // caso seguimos para a busca por transportadora/base completa.
-    const cobreTransportadorasDosCtes = baseRotas.length > 0 && (registros || []).every((cte) => {
+    // Achar a transportadora tambem nao basta: se outro CT-e do lote trouxe rota
+    // da mesma transportadora, os CT-es cuja rota NAO veio na consulta enxuta
+    // caiam em SEM_ROTA — e o resultado passava a depender de quais CT-es foram
+    // recalculados juntos (fatura inteira x so os "sem calculo"). Exige que cada
+    // CT-e (em alguma de suas variantes, ex.: endereco corrigido) tenha tabela e
+    // rota na base carregada; senao usa a busca completa por transportadora.
+    const chaveCobertura = (cte) => onlyDigits(pick(cte, ['chave_cte', 'chaveCte', 'chave'])) || onlyDigits(pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte'])) || String(pick(cte, ['id']) || '');
+    const porCte = new Map();
+    (registros || []).forEach((cte) => {
+      const chave = chaveCobertura(cte);
+      const variantes = porCte.get(chave) || [];
+      variantes.push(cte);
+      porCte.set(chave, variantes);
+    });
+    const cobreTransportadorasDosCtes = baseRotas.length > 0 && [...porCte.values()].every((variantes) => variantes.some((cte) => {
       const nome = nomeTransportadoraCte(cte, mapaVinculos);
       const cnpj = cnpjTransportadoraCte(cte);
-      return localizarTransportadoras(baseRotas, nome, cnpj).length > 0;
-    });
+      if (!localizarTransportadoras(baseRotas, nome, cnpj).length) return false;
+      const achou = localizarTabelaAuditoria(baseRotas, cte, mapaVinculos, '', { ignorarCubagem: true });
+      return !['SEM_TABELA', 'SEM_ORIGEM', 'SEM_ROTA'].includes(achou.status);
+    }));
     if (cobreTransportadorasDosCtes) return baseRotas;
   }
 
@@ -2225,11 +2241,23 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
   const faltaDocumentoDestinatario = ctesUnicos.some((cte) => (
     !pickDigits(cte, ['documento_destinatario', 'documentoDestinatario', 'cnpj_destinatario'], 14)
   ));
-  const deveConsultarTracking = opcoesCalculo.consultarTrackingAoVivo !== false
-    && (opcoesCalculo.apenasDadosCompletos === false || faltaDocumentoDestinatario);
-  const ctesParaCalculo = deveConsultarTracking
-    ? await enriquecerCtesComTrackingAoVivo(ctesUnicos, onProgress)
-    : ctesUnicos.map((cte) => ({ ...cte, trackingNaoConsultado: opcoesCalculo.apenasDadosCompletos === false }));
+  // Decisao por CT-e (nao pelo lote): antes, bastava UM CT-e sem documento do
+  // destinatario para o tracking reescrever peso/cubagem de TODOS do lote, e o
+  // mesmo CT-e calculava diferente conforme os outros recalculados junto.
+  const semDocumentoDestinatario = (cte) => !pickDigits(cte, ['documento_destinatario', 'documentoDestinatario', 'cnpj_destinatario'], 14);
+  const indicesTracking = opcoesCalculo.consultarTrackingAoVivo === false
+    ? []
+    : ctesUnicos.map((cte, indice) => indice).filter((indice) => (
+      opcoesCalculo.apenasDadosCompletos === false || semDocumentoDestinatario(ctesUnicos[indice])
+    ));
+  const deveConsultarTracking = indicesTracking.length > 0;
+  const enriquecidos = deveConsultarTracking
+    ? await enriquecerCtesComTrackingAoVivo(indicesTracking.map((indice) => ctesUnicos[indice]), onProgress)
+    : [];
+  const enriquecidoPorIndice = new Map(indicesTracking.map((indice, posicao) => [indice, enriquecidos[posicao]]));
+  const ctesParaCalculo = ctesUnicos.map((cte, indice) => (
+    enriquecidoPorIndice.get(indice) || { ...cte, trackingNaoConsultado: opcoesCalculo.apenasDadosCompletos === false }
+  ));
   verificarCancelamento();
   if (typeof window !== 'undefined') {
     ctesParaCalculo.forEach((cte) => {

@@ -35,6 +35,8 @@ import {
   atualizarSolicitacaoInfoSupabase,
   atualizarSolicitacaoSupabase,
   salvarLancamentoAuditoriaSupabase,
+  removerLancamentoAuditoriaSupabase,
+  removerSolicitacaoPagamentoSupabase,
   salvarPendenciaAuditoriaSupabase,
   salvarSolicitacaoInfoSupabase,
   salvarSolicitacaoSupabase,
@@ -2420,7 +2422,7 @@ function ExcecaoSemCteCard({ onEnviar, salvando }) {
   );
 }
 
-function HistoricoLancamentos({ viagem, lancamentos }) {
+function HistoricoLancamentos({ viagem, lancamentos, onDesfazer, salvando }) {
   if (!viagem) return null;
   const lista = lancamentosDaViagem(lancamentos, viagem.chaveViagem || consolidarChaveViagem(viagem.dist))
     .sort((a, b) => new Date(b.auditedAt || b.criadoEm).getTime() - new Date(a.auditedAt || a.criadoEm).getTime());
@@ -2437,7 +2439,7 @@ function HistoricoLancamentos({ viagem, lancamentos }) {
       <div className="sim-analise-tabela-wrap">
         <table className="sim-analise-tabela">
           <thead>
-            <tr><th>Data/Hora</th><th>Auditor</th><th>CT-e</th><th>Fatura</th><th>Valor lançado</th><th>Saldo anterior</th><th>Excedente</th><th>Status</th><th>Observação</th></tr>
+            <tr><th>Data/Hora</th><th>Auditor</th><th>CT-e</th><th>Fatura</th><th>Valor lançado</th><th>Saldo anterior</th><th>Excedente</th><th>Status</th><th>Observação</th>{onDesfazer && <th>Ação</th>}</tr>
           </thead>
           <tbody>
             {lista.map((item) => (
@@ -2451,6 +2453,13 @@ function HistoricoLancamentos({ viagem, lancamentos }) {
                 <td className={item.excedente > 0 ? 'negativo' : ''}>{formatarMoeda(item.excedente)}</td>
                 <td><span className={`status-pill ${item.excedente > 0 ? 'error' : ''}`}>{item.auditStatus || item.audit_status || item.status}</span></td>
                 <td>{item.observacao || item.audit_observation || '-'}</td>
+                {onDesfazer && (
+                  <td>
+                    <button type="button" className="btn-secondary" disabled={salvando} onClick={() => onDesfazer(item)}>
+                      Desfazer vínculo
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -4142,6 +4151,39 @@ export default function LotacaoAuditoriaPage() {
     setSalvando(false);
   }, [viagemParaAuditoria, loteSelecionados, loteResultados, lancamentos, solicitacoes, usuarioAtual]);
 
+  // Desfaz um vínculo CT-e x viagem feito por engano: remove o lançamento e a
+  // solicitação de excedente pendente gerada por ele (o saldo da viagem volta).
+  const desfazerLancamento = useCallback(async (item) => {
+    if (!item?.id) return;
+    const ok = window.confirm(`Desfazer o vínculo do CT-e ${item.cte || '-'} (${formatarMoeda(item.valorLancado)}) com esta viagem?`);
+    if (!ok) return;
+    setSalvando(true);
+    setMensagem('');
+    const mesmoCte = (s) => String(s.cte || '') === String(item.cte || '')
+      && String(s.distKey || s.dist_key || '') === String(item.distKey || item.dist_key || '');
+    const solicitacoesRemover = solicitacoes.filter((s) => mesmoCte(s)
+      && ['EXCEDEU_AGUARDANDO_OPERACAO', 'PENDENTE'].includes(String(s.status || '')));
+    try {
+      const restantes = lancamentos.filter((l) => String(l.id) !== String(item.id));
+      salvarLancamentosAuditoria(restantes);
+      setLancamentos(restantes);
+      const restantesSol = solicitacoes.filter((s) => !solicitacoesRemover.includes(s));
+      if (solicitacoesRemover.length) {
+        salvarSolicitacoesPagamento(restantesSol);
+        setSolicitacoes(restantesSol);
+      }
+      try {
+        await removerLancamentoAuditoriaSupabase(item.id);
+        for (const s of solicitacoesRemover) await removerSolicitacaoPagamentoSupabase(s.id);
+        setMensagem(`✓ Vínculo do CT-e ${item.cte || ''} desfeito.`);
+      } catch (error) {
+        setMensagem(`Vínculo desfeito localmente, mas não no Supabase: ${error.message || String(error)}`);
+      }
+    } finally {
+      setSalvando(false);
+    }
+  }, [lancamentos, solicitacoes]);
+
   const atualizarStatusHistorico = useCallback(async (item, statusNovoItem, respostaTratamento = '') => {
     if (!item?.id) {
       setMensagem('Não foi possível atualizar: registro sem identificador.');
@@ -4527,7 +4569,7 @@ export default function LotacaoAuditoriaPage() {
               cteSugerido={cteSelecionado?.numero_cte}
             />
           )}
-          <HistoricoLancamentos viagem={viagemParaAuditoria} lancamentos={lancamentos} />
+          <HistoricoLancamentos viagem={viagemParaAuditoria} lancamentos={lancamentos} onDesfazer={desfazerLancamento} salvando={salvando} />
           <MovimentosAutorizacao viagem={viagemParaAuditoria} solicitacoes={solicitacoes} />
         </>
       )}

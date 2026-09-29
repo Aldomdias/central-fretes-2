@@ -150,6 +150,8 @@ async function safeUpsert(table, payload) {
     // Coluna do link de confirmacao ausente (migration nao aplicada): nao
     // descartar em silencio, senao o link vai no laudo mas nao fica salvo.
     if (String(campoParaRemover || '').startsWith('confirmacao_transportador')) break;
+    // Escolha "considerar cobranca a menor": sem a coluna, falha em voz alta (nao perde a escolha em silencio).
+    if (String(campoParaRemover || '') === 'auditoria_considerar_menor') break;
     if (campoParaRemover && (mensagem.includes('schema cache') || mensagem.includes('column'))) {
       const limpar = (row) => {
         const next = { ...(row || {}) };

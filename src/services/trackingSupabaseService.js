@@ -305,6 +305,7 @@ export async function subirTrackingSupabase(rows = [], onProgress) {
   }
   const supabase = getSupabaseClient();
   const existentesPorNf = new Map();
+  const duplicadasNaBase = new Set();
   const chaves = [...new Set(rows.map((row) => getChaveNfeLookup(row)).filter(Boolean))];
   // Reutiliza o ID persistido: a chegada da chave CT-e não cria outra NF.
   for (let i = 0; i < chaves.length; i += CHAVE_NFE_LOOKUP_CHUNK) {
@@ -321,7 +322,11 @@ export async function subirTrackingSupabase(rows = [], onProgress) {
           if (!chave) continue;
           const anterior = existentesPorNf.get(chave);
           if (anterior && anterior.id !== registro.id) {
-            throw new Error(`A NF de chave ${chave} já possui mais de um registro na base. Envio cancelado; revise os registros existentes.`);
+            // Legado com mais de um registro para a mesma NF: não trava o envio.
+            // Atualiza o de ID canônico (nf-chave) ou o primeiro encontrado.
+            duplicadasNaBase.add(chave);
+            if (registro.id === `nf-${chave}`.slice(0, 240)) existentesPorNf.set(chave, registro);
+            continue;
           }
           existentesPorNf.set(chave, registro);
         }
@@ -359,7 +364,7 @@ export async function subirTrackingSupabase(rows = [], onProgress) {
   }).length;
   const novos = payload.length - jaNaBase;
   onProgress?.({
-    mensagem: `${jaNaBase.toLocaleString('pt-BR')} NF(s) já na base (serão atualizadas) e ${novos.toLocaleString('pt-BR')} nova(s).`,
+    mensagem: `${jaNaBase.toLocaleString('pt-BR')} NF(s) já na base (serão atualizadas) e ${novos.toLocaleString('pt-BR')} nova(s).${duplicadasNaBase.size ? ` Atenção: ${duplicadasNaBase.size.toLocaleString('pt-BR')} NF(s) já tinham registro repetido na base (só um foi atualizado).` : ''}`,
     verificacao: { jaNaBase, novos },
   });
   let enviados = 0;

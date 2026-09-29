@@ -24,6 +24,9 @@ const rotulo = (canal) => (canal === 'B2C' ? 'B2C' : canal === 'SUPRIMENTOS' ? '
 export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
   const sessao = carregarSessao();
   const usuarioNome = sessao?.nome || sessao?.email || '';
+  // So a gestao pode remover uma autorizacao ja liberada — quem aprova (B2C/Atacado)
+  // decide uma vez e nao pode mais desfazer depois.
+  const ehGestao = sessao?.perfil === 'GESTAO';
   const [aba, setAba] = useState('fila');
   const [itens, setItens] = useState([]);
   const [carregando, setCarregando] = useState(true);
@@ -204,6 +207,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
   };
 
   const remover = async (item) => {
+    if (!ehGestao) return;
     if (!window.confirm('Remover esta autorizacao? O saldo deixa de valer na auditoria.')) return;
     try { await desativarAutorizacao(item.id); await carregar(); } catch (error) { setMensagem(error.message || String(error)); }
   };
@@ -332,7 +336,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   <td>{dinheiro(item.valor_autorizado)}</td>
                   <td>{item.observacao_gestor || '-'}</td>
                   <td>{item.decidido_por || '-'}</td>
-                  <td>{item.status === 'AUTORIZADA' && <button className="btn-secondary" onClick={() => remover(item)}>Remover</button>}</td>
+                  <td>{ehGestao && item.status === 'AUTORIZADA' && <button className="btn-secondary" onClick={() => remover(item)}>Remover</button>}</td>
                 </tr>
               ))}
               {!decididas.length && <tr><td colSpan={10}>Nada decidido ainda.</td></tr>}

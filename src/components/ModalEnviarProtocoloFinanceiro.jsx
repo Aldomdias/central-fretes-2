@@ -35,7 +35,7 @@ const NOME_STATUS_PROTOCOLO = {
   MISTA: 'Mista',
 };
 
-export default function ModalEnviarProtocoloFinanceiro({ state, fatura, detalhes, tolerancia, sessao, onClose, onState }) {
+export default function ModalEnviarProtocoloFinanceiro({ state, fatura, detalhes, tolerancia, descontoAutomaticoExato, sessao, onClose, onState }) {
   const [carregando, setCarregando] = useState(true);
   const [contasBancarias, setContasBancarias] = useState([]);
   const [contaSelecionadaId, setContaSelecionadaId] = useState('');
@@ -97,7 +97,11 @@ export default function ModalEnviarProtocoloFinanceiro({ state, fatura, detalhes
   );
 
   const valorFatura = Number(fatura.valor_fatura || 0);
-  const descontoAutomaticoTotal = Number(fatura.auditoria_total_descontar ?? descontoAutomatico.total ?? 0);
+  // O protocolo precisa usar o mesmo snapshot exibido nos cards da fatura.
+  // auditoria_total_descontar e apenas o ultimo valor persistido e pode estar
+  // defasado depois de recalculo, saldo autorizado ou mudanca de opcao.
+  const descontoAutomaticoTotal = Number(descontoAutomaticoExato ?? descontoAutomatico.total ?? 0);
+  const compensacaoCobrancaMenor = Number((descontoAutomaticoTotal - descontoAutomatico.total).toFixed(2));
   const descontoManualNum = Number(descontoManual || 0) || 0;
   const descontoTotal = Number((descontoAutomaticoTotal + descontoManualNum).toFixed(2));
   const valorRealAPagar = Number((valorFatura - descontoTotal).toFixed(2));
@@ -279,6 +283,7 @@ export default function ModalEnviarProtocoloFinanceiro({ state, fatura, detalhes
               {mostrarComposicao ? 'Ocultar composicao dos descontos' : 'Ver composicao dos descontos'}
             </button>
             {mostrarComposicao && (
+              <>
               <table>
                 <thead><tr><th>CT-e</th><th>Valor original</th><th>Desconto</th><th>Motivo</th><th>Valor final</th></tr></thead>
                 <tbody>
@@ -294,6 +299,12 @@ export default function ModalEnviarProtocoloFinanceiro({ state, fatura, detalhes
                   {!descontoAutomatico.composicao.length && <tr><td colSpan="5">Nenhum CT-e carregado para esta fatura.</td></tr>}
                 </tbody>
               </table>
+              {Math.abs(compensacaoCobrancaMenor) > 0.009 && (
+                <div className="hint-box compact">
+                  Ajuste pela regra da fatura (cobranca a menor considerada): {dinheiro(compensacaoCobrancaMenor)}. O desconto automatico final e {dinheiro(descontoAutomaticoTotal)}.
+                </div>
+              )}
+              </>
             )}
 
             <div className="form-grid three">
