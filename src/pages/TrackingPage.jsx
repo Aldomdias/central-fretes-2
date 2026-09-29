@@ -70,6 +70,24 @@ function textoBaseSupabase(resumoSupabase, resumoSupabaseDetalhado, diagnosticoS
   return `${periodo} - ${formatarNumero(total)} linha(s) no Supabase, ${formatarNumero(base.volumes)} volume(s), ${formatarMoeda(base.valorNF)} em NF.${detalheParcial}`;
 }
 
+// Pasta selecionada traz tudo (PDF, temporarios "~$", etc.): so planilhas.
+function filtrarPlanilhas(lista = []) {
+  return lista
+    .filter((arquivo) => /\.(xlsx|xls|xlsm|csv)$/i.test(arquivo.name) && !arquivo.name.startsWith('~$'))
+    .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { numeric: true }));
+}
+
+const CHAVE_RETOMADA = 'tracking_import_feitos_v1';
+function chaveArquivo(arquivo, modo) {
+  return `${arquivo.name}|${arquivo.size}|${arquivo.lastModified}|${modo}`;
+}
+function lerFeitos() {
+  try { return new Set(JSON.parse(localStorage.getItem(CHAVE_RETOMADA) || '[]')); } catch { return new Set(); }
+}
+function gravarFeitos(set) {
+  try { localStorage.setItem(CHAVE_RETOMADA, JSON.stringify([...set])); } catch { /* sem storage: so nao retoma */ }
+}
+
 function resumirArquivosSelecionados(arquivos = []) {
   if (!arquivos.length) return 'Nenhum arquivo selecionado.';
   if (arquivos.length === 1) return arquivos[0].name;
@@ -85,6 +103,7 @@ export default function TrackingPage() {
   const [mensagem, setMensagem] = useState('');
   const [erro, setErro] = useState('');
   const [progresso, setProgresso] = useState(null);
+  const [andamento, setAndamento] = useState(null);
   const [atualizandoResumo, setAtualizandoResumo] = useState(false);
   const [diagnostico, setDiagnostico] = useState({ total: 0, ultimaAtualizacao: '' });
   const [diagnosticoSupabase, setDiagnosticoSupabase] = useState(null);
@@ -206,6 +225,7 @@ export default function TrackingPage() {
     setCarregando(true);
     setErro('');
     setProgresso(null);
+    setAndamento(null);
     setMensagem(usarLocal ? 'Preparando Tracking local para enviar ao Supabase...' : 'Lendo arquivo e comparando chaves NF no Supabase...');
 
     try {
@@ -233,19 +253,68 @@ export default function TrackingPage() {
           },
         });
       } else {
-        resultado = await importarTrackingSupabase({
-          arquivos,
-          modo: modoImportacao,
-          municipios,
-          onProgress: (event) => {
-            if (event.complementar) setProgresso(event.complementar);
-            if (event.mensagem) setMensagem(event.mensagem);
-            if (event.etapa === 'envio') {
-              const detalheDuplicados = event.duplicadosIgnorados ? ` Duplicados ignorados: ${formatarNumero(event.duplicadosIgnorados)}.` : '';
-              setMensagem(`${event.percentual}% - Lote ${event.lote}/${event.totalLotes}: ${formatarNumero(event.enviados)} de ${formatarNumero(event.total)} linha(s).${detalheDuplicados}`);
+        // Um arquivo por vez: nao acumula a pasta inteira na memoria (era a
+        // causa da tela branca), um arquivo com erro nao derruba os demais e o
+        // que ja foi enviado fica registrado pra retomar de onde parou.
+        const total = arquivos.length;
+        const acumulado = { enviados: 0, lidos: 0, jaNaBase: 0, novos: 0, semChave: 0 };
+        const feitos = [];
+        const falhas = [];
+        const jaEnviados = lerFeitos();
+        let pulados = 0;
+        for (let indice = 0; indice < total; indice += 1) {
+          const arquivo = arquivos[indice];
+          if (jaEnviados.has(chaveArquivo(arquivo, modoImportacao))) {
+            pulados += 1;
+            feitos.push({ arquivo: arquivo.name, enviados: 0, pulado: true });
+            continue;
+          }
+          const cabecalho = { indice: indice + 1, total, arquivo: arquivo.name, feitos: [...feitos], falhas: [...falhas], acumulado: { ...acumulado }, pulados };
+          setAndamento({ ...cabecalho, etapa: 'Lendo arquivo...' });
+          try {
+            const r = await importarTrackingSupabase({
+              arquivos: [arquivo],
+              modo: modoImportacao,
+              municipios,
+              onProgress: (event) => {
+                if (event.complementar) setProgresso(event.complementar);
+                let etapa = event.mensagem || '';
+                if (event.etapa === 'envio') {
+                  const detalheDuplicados = event.duplicadosIgnorados ? ` Duplicados ignorados: ${formatarNumero(event.duplicadosIgnorados)}.` : '';
+                  etapa = `Enviando ${event.percentual}% - lote ${event.lote}/${event.totalLotes}: ${formatarNumero(event.enviados)} de ${formatarNumero(event.total)} linha(s).${detalheDuplicados}`;
+                }
+                if (etapa) {
+                  setAndamento({ ...cabecalho, etapa });
+                  setMensagem(`Arquivo ${indice + 1}/${total} (${arquivo.name}): ${etapa}`);
+                }
+              },
+            });
+            acumulado.enviados += r.enviados || 0;
+            if (r.complementar) {
+              acumulado.lidos += r.complementar.lidos || 0;
+              acumulado.jaNaBase += r.complementar.jaNaBase || 0;
+              acumulado.novos += r.complementar.novos || 0;
+              acumulado.semChave += r.complementar.semChave || 0;
             }
-          },
-        });
+            feitos.push({ arquivo: arquivo.name, enviados: r.enviados || 0 });
+            jaEnviados.add(chaveArquivo(arquivo, modoImportacao));
+            gravarFeitos(jaEnviados);
+          } catch (erroArquivo) {
+            falhas.push({ arquivo: arquivo.name, motivo: erroArquivo.message || String(erroArquivo) });
+          }
+          setAndamento({ ...cabecalho, feitos: [...feitos], falhas: [...falhas], acumulado: { ...acumulado }, etapa: 'Arquivo concluido.' });
+          // Deixa o navegador respirar entre arquivos.
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        if (!falhas.length) {
+          try { localStorage.removeItem(CHAVE_RETOMADA); } catch { /* ok */ }
+        }
+        if (!feitos.length && falhas.length) throw new Error(`Nenhum arquivo foi enviado. Primeiro erro (${falhas[0].arquivo}): ${falhas[0].motivo}`);
+        resultado = {
+          enviados: acumulado.enviados,
+          complementar: acumulado,
+          mensagem: `${feitos.length - pulados}/${total} arquivo(s) enviado(s)${pulados ? ` (${pulados} ja enviado(s) antes, pulado(s))` : ''}, ${acumulado.enviados.toLocaleString('pt-BR')} linha(s) gravada(s)${falhas.length ? `; ${falhas.length} com erro - e so enviar de novo que continua de onde parou` : ''}.`,
+        };
       }
 
       const comp = resultado.complementar;
@@ -357,6 +426,23 @@ export default function TrackingPage() {
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {mensagem ? <div className="sim-alert info">{mensagem}</div> : null}
+      {andamento ? (
+        <section className="panel" style={{ marginBottom: 12 }}>
+          <h3 style={{ margin: 0 }}>Andamento da importacao</h3>
+          <div className="summary-strip lotacao-summary-mini" style={{ marginTop: 10 }}>
+            <div className="summary-card"><span>Arquivo</span><strong>{andamento.indice}/{andamento.total}</strong><small>{andamento.arquivo}</small></div>
+            <div className="summary-card"><span>Concluidos</span><strong>{andamento.feitos.length}</strong>{andamento.pulados ? <small>{andamento.pulados} ja enviados antes</small> : null}</div>
+            <div className="summary-card"><span>Com erro</span><strong>{andamento.falhas.length}</strong></div>
+            <div className="summary-card"><span>Linhas gravadas</span><strong>{formatarNumero(andamento.acumulado.enviados)}</strong></div>
+          </div>
+          <div className="hint-box compact" style={{ marginTop: 8 }}>{andamento.etapa}</div>
+          {andamento.falhas.length ? (
+            <div className="sim-alert error" style={{ marginTop: 8 }}>
+              {andamento.falhas.map((falha) => <div key={falha.arquivo}><strong>{falha.arquivo}</strong>: {falha.motivo}</div>)}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="panel-card">
         <div className="panel-title">Limpar competência do Tracking online</div>
@@ -406,11 +492,11 @@ export default function TrackingPage() {
         <div className="form-grid two">
           <label className="field">
             Arquivos Excel
-            <input type="file" accept=".xlsx,.xls,.xlsm,.csv" multiple onChange={(event) => setArquivos(Array.from(event.target.files || []))} />
+            <input type="file" accept=".xlsx,.xls,.xlsm,.csv" multiple onChange={(event) => setArquivos(filtrarPlanilhas(Array.from(event.target.files || [])))} />
           </label>
           <label className="field">
             Pasta compartilhada/local
-            <input type="file" accept=".xlsx,.xls,.xlsm,.csv" multiple webkitdirectory="true" directory="true" onChange={(event) => setArquivos(Array.from(event.target.files || []))} />
+            <input type="file" accept=".xlsx,.xls,.xlsm,.csv" multiple webkitdirectory="true" directory="true" onChange={(event) => setArquivos(filtrarPlanilhas(Array.from(event.target.files || [])))} />
           </label>
         </div>
 

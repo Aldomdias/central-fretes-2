@@ -45,7 +45,7 @@ import VisualConceptPage from './pages/VisualConceptPage';
 import IcmsUfPage from './pages/IcmsUfPage';
 import AuditoriaEcommercePage from './pages/AuditoriaEcommercePage';
 import ImportarDescontosObtidosPage from './pages/ImportarDescontosObtidosPage';
-import PainelDescontosObtidosPage from './pages/PainelDescontosObtidosPage';
+import CentralControlePage from './pages/CentralControlePage';
 import AutorizacoesTransportePage from './pages/AutorizacoesTransportePage';
 import GestaoContratosPage from './pages/GestaoContratosPage';
 import { useFreteStore } from './data/store';
@@ -245,7 +245,7 @@ export default function App() {
     'usuarios-ativos': <PainelUsuariosAtivosPage />,
     'minha-senha': <MinhaSenhaPage usuarioAtual={sessao} onSenhaAlterada={setSessao} />,
     'importar-descontos-obtidos': <ImportarDescontosObtidosPage />,
-    'painel-descontos-obtidos': <PainelDescontosObtidosPage />,
+    'painel-descontos-obtidos': <CentralControlePage />,
     'autorizacoes-transporte-b2c': <AutorizacoesTransportePage canal="B2C" />,
     'autorizacoes-transporte-atacado': <AutorizacoesTransportePage canal="ATACADO" />,
     'autorizacoes-suprimentos': <AutorizacoesTransportePage canal="SUPRIMENTOS" />,

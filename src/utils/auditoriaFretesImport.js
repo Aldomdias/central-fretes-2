@@ -41,8 +41,34 @@ export function excelDateToISO(valorData) {
   return iso ? `${iso[1]}-${iso[2].padStart(2, '0')}-${iso[3].padStart(2, '0')}` : null;
 }
 
+// Data+hora do Excel (serial com fracao) em horario de Brasilia -> ISO com fuso.
+export function excelDateTimeToISO(valorData) {
+  if (valorData === undefined || valorData === null || valorData === '') return null;
+  if (valorData instanceof Date && !Number.isNaN(valorData.getTime())) return valorData.toISOString();
+  if (typeof valorData === 'number') {
+    const parede = new Date(Math.round((valorData - 25569) * 86400 * 1000));
+    if (Number.isNaN(parede.getTime())) return null;
+    return new Date(parede.getTime() + 3 * 3600 * 1000).toISOString();
+  }
+  const dia = excelDateToISO(valorData);
+  return dia ? `${dia}T12:00:00-03:00` : null;
+}
+
+export function parseEnvioErpVerum(row) {
+  const dataEnvioErp = excelDateTimeToISO(valor(row, ['Data de envio para ERP']));
+  const enviadoPor = texto(row, ['Enviado por']);
+  const valorEnviado = valor(row, ['Valor Enviado']);
+  return {
+    ...(dataEnvioErp ? { data_envio_erp: dataEnvioErp } : {}),
+    ...(enviadoPor ? { enviado_por: enviadoPor } : {}),
+    ...(valorEnviado !== '' ? { valor_enviado: numero(row, ['Valor Enviado']) } : {}),
+  };
+}
+
 export function parseFaturaVerum(row) {
   return {
+    // So grava quando o arquivo traz (reimport sem essas colunas nao apaga o que ja existe).
+    ...parseEnvioErpVerum(row),
     transportadora: texto(row, ['Transportadora']),
     cnpj_transportadora: somenteDigitos(row, ['CNPJ Transportadora']),
     data_envio: excelDateToISO(valor(row, ['Data Envio'])),

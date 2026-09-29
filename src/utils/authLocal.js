@@ -42,7 +42,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'prazo-pagamento', label: 'Prazo de Pagamento', grupo: 'Financeiro' },
   { chave: 'tratativas', label: 'Tratativas', grupo: 'Auditoria' },
   { chave: 'importar-descontos-obtidos', label: 'Importar Descontos Obtidos', grupo: 'Financeiro' },
-  { chave: 'painel-descontos-obtidos', label: 'Painel Descontos Obtidos', grupo: 'Financeiro' },
+  { chave: 'painel-descontos-obtidos', label: 'Central de Controle (produtividade e descontos)', grupo: 'Financeiro' },
   { chave: 'autorizacoes-transporte-b2c', label: 'Autorizações Transporte B2C', grupo: 'Operação' },
   { chave: 'autorizacoes-transporte-atacado', label: 'Autorizações Transporte Atacado', grupo: 'Operação' },
   { chave: 'autorizacoes-suprimentos', label: 'Autorizações Suprimentos', grupo: 'Operação' },

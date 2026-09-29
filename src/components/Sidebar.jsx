@@ -55,7 +55,7 @@ const MENU_GRUPOS = [
       { chave: 'avaliacao-prazos', label: 'Prazos' },
       { chave: 'prazo-pagamento', label: 'Prazo de pagamento' },
       { chave: 'importar-descontos-obtidos', label: 'Importar descontos obtidos' },
-      { chave: 'painel-descontos-obtidos', label: 'Painel descontos obtidos' },
+      { chave: 'painel-descontos-obtidos', label: 'Central de controle' },
     ],
   },
   {

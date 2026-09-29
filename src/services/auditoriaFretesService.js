@@ -223,9 +223,92 @@ export async function carregarPlataformaAuditoriaFinanceiro() {
   const [protocolos, solicitacaoHistorico, pagamentos] = await Promise.all([
     selecionarTabela('financeiro_protocolos'),
     selecionarTabela('financeiro_solicitacao_historico'),
-    selecionarTabela('financeiro_pagamentos', 'data_pagamento'),
+    selecionarTabela('financeiro_pagamentos', 'imported_at'),
   ]);
   return { protocolos, solicitacaoHistorico, pagamentos };
+}
+
+// Eventos do historico de faturas que marcam auditoria/liberacao/envio, no
+// intervalo [inicioISO, fimISO). Alimenta o painel de produtividade por pessoa.
+export async function carregarHistoricoProdutividade(inicioISO, fimISO) {
+  if (!isSupabaseConfigured()) return [];
+  return paginarTudo(
+    getSupabaseClient(),
+    'auditoria_fatura_historico',
+    'id,fatura_id,acao,status_novo,usuario_nome,created_at',
+    undefined,
+    (q) => q.gte('created_at', inicioISO).lt('created_at', fimISO)
+      .or('status_novo.in.(PRONTA_PARA_PAGAMENTO,LIBERADA_COM_DESCONTO,AGUARDANDO_APROVACAO_GESTAO,AGUARDANDO_TRANSPORTADORA,ENVIADA_AO_FINANCEIRO),acao.eq.REAUDITORIA_CONCLUIDA'),
+  );
+}
+
+// Envios da auditoria para Suprimentos / Transporte (B2C, Atacado) no periodo.
+export async function carregarAutorizacoesProdutividade(inicioISO, fimISO) {
+  if (!isSupabaseConfigured()) return [];
+  try {
+    return await paginarTudo(
+      getSupabaseClient(),
+      'transporte_autorizacoes',
+      'id,canal,status,enviado_por,enviado_em,fatura_id',
+      undefined,
+      (q) => q.eq('ativo', true).gte('enviado_em', inicioISO).lt('enviado_em', fimISO),
+    );
+  } catch {
+    return [];
+  }
+}
+
+// Faturas enviadas ao ERP no periodo (coluna "Data de envio para ERP" do Verum).
+export async function carregarEnviosErpPeriodo(inicioISO, fimISO) {
+  if (!isSupabaseConfigured()) return [];
+  try {
+    return await paginarTudo(
+      getSupabaseClient(),
+      'faturas',
+      'id,enviado_por,data_envio_erp',
+      undefined,
+      (q) => q.gte('data_envio_erp', inicioISO).lt('data_envio_erp', fimISO),
+    );
+  } catch {
+    return [];
+  }
+}
+
+// Fotografia de agora: o que esta aguardando resposta (fornecedor, gestao, suprimentos, transporte).
+export async function carregarPendenciasAtuais() {
+  if (!isSupabaseConfigured()) return {};
+  const client = getSupabaseClient();
+  const contar = async (consulta) => {
+    const { count, error } = await consulta;
+    return error ? null : (count || 0);
+  };
+  const faturasStatus = (status) => client.from('faturas').select('id', { count: 'exact', head: true }).eq('status', status);
+  const autorizacoes = (canais) => client.from('transporte_autorizacoes').select('id', { count: 'exact', head: true })
+    .eq('ativo', true).eq('status', 'PENDENTE').in('canal', canais);
+  const [fornecedor, gestao, suprimentos, transporte] = await Promise.all([
+    contar(faturasStatus('AGUARDANDO_TRANSPORTADORA')),
+    contar(faturasStatus('AGUARDANDO_APROVACAO_GESTAO')),
+    contar(autorizacoes(['SUPRIMENTOS'])),
+    contar(autorizacoes(['B2C', 'ATACADO'])),
+  ]);
+  return { fornecedor, gestao, suprimentos, transporte };
+}
+
+// Faturas com so as colunas que o painel de produtividade usa (leve: sem CT-es).
+export async function carregarFaturasParaControle() {
+  if (!isSupabaseConfigured()) return [];
+  return paginarTudo(
+    getSupabaseClient(),
+    'faturas',
+    'id,numero_fatura,serie_fatura,cnpj_transportadora,transportadora,status,valor_fatura,valor_enviado,data_envio_erp,enviado_por,data_vencimento,partida,lancamento_financeiro',
+  );
+}
+
+// Todos os pagamentos compensados (PAGO/DIVERGENTE), sem o limite de 1000 do
+// carregamento inicial - usado pra reaplicar a baixa nas faturas.
+export async function carregarPagamentosCompensados() {
+  if (!isSupabaseConfigured()) return [];
+  return paginarTudo(getSupabaseClient(), 'financeiro_pagamentos', '*', undefined, (q) => q.in('resultado', ['PAGO', 'DIVERGENTE']));
 }
 
 // Busca faturas existentes por numero_fatura direto no banco, sem depender do
@@ -1126,15 +1209,101 @@ export async function salvarPagamentosFinanceiros(state, pagamentos) {
 // casaram com uma fatura (os demais nao dizem respeito a fretes) e em
 // lotes, pra nao estourar o limite de uma unica chamada ao Supabase nem
 // travar a aba com uma tabela gigante.
+// Um lancamento contabil de uma fatura e' uma linha so: chave = fatura +
+// lancamento + valor. Reimportar o mesmo arquivo nao duplica - a linha
+// existente e' reaproveitada e so e' regravada se algo mudou. Campo vazio no
+// arquivo novo nunca apaga dado que ja existia (ex.: partida/data de
+// pagamento), e uma linha compensada nao volta a "partida lancada".
+const CAMPOS_PAGAMENTO_COMPARAVEIS = [
+  'fatura_id', 'numero_fatura', 'resultado', 'valor_pago', 'diferenca', 'data_pagamento',
+  'documento_compensacao', 'partida', 'lancamento_contabil', 'data_lancamento', 'origem',
+];
+const RANK_RESULTADO_PAGAMENTO = { PAGO: 3, DIVERGENTE: 3, LANCADA_FINANCEIRO: 2, PARTIDA_LANCADA: 1 };
+
+function chavePagamento(item) {
+  return `${item.fatura_id}|${String(item.lancamento_contabil || '').trim()}|${Math.round(Number(item.valor_pago || 0) * 100)}`;
+}
+
+function campoVazio(valor) {
+  return valor == null || valor === '';
+}
+
+function mesclarPagamento(existente, novo) {
+  if (!existente) return novo;
+  const rank = (item) => RANK_RESULTADO_PAGAMENTO[item.resultado] || 0;
+  const [base, outro] = rank(novo) >= rank(existente) ? [novo, existente] : [existente, novo];
+  const mesclado = { ...existente };
+  for (const campo of CAMPOS_PAGAMENTO_COMPARAVEIS) {
+    mesclado[campo] = campoVazio(base[campo]) ? (outro[campo] ?? null) : base[campo];
+  }
+  return mesclado;
+}
+
+function pagamentoIgual(a, b) {
+  return CAMPOS_PAGAMENTO_COMPARAVEIS.every((campo) => {
+    const x = a[campo];
+    const y = b[campo];
+    if (campo === 'valor_pago' || campo === 'diferenca') return Number(x || 0) === Number(y || 0);
+    return (campoVazio(x) ? null : String(x)) === (campoVazio(y) ? null : String(y));
+  });
+}
+
+async function pagamentosExistentesDasFaturas(client, faturaIds) {
+  const existentes = [];
+  const TAM = 50;
+  for (let inicio = 0; inicio < faturaIds.length; inicio += TAM) {
+    const chunk = faturaIds.slice(inicio, inicio + TAM);
+    for (let pagina = 0; ; pagina += 1) {
+      const { data, error } = await client.from('financeiro_pagamentos').select('*')
+        .in('fatura_id', chunk).order('id').range(pagina * 1000, pagina * 1000 + 999);
+      if (error) throw new Error(`Erro ao ler pagamentos existentes: ${error.message}`);
+      existentes.push(...(data || []));
+      if ((data || []).length < 1000) break;
+    }
+  }
+  return existentes;
+}
+
+// Devolve, das faturas tocadas pelo arquivo, TODOS os lancamentos ja
+// consolidados (arquivo novo + o que ja estava no banco), pra quem chama
+// decidir a ultima partida/lancamento por data sem depender so do arquivo.
 export async function salvarPagamentosFinanceirosEmLote(pagamentosConciliados, onProgress) {
-  const comId = pagamentosConciliados
-    .filter((item) => item.fatura_id)
-    .map((item) => ({ id: item.id || uid('pag'), imported_at: new Date().toISOString(), ...item }));
   // transportadora/compensado/cnpj sao so pra conciliar e exibir na tela -
   // nao existem em financeiro_pagamentos.
-  const paraSalvar = comId.map(({ transportadora, compensado, cnpj, ...item }) => item);
-  if (!isSupabaseConfigured() || !paraSalvar.length) return comId;
+  const doArquivo = new Map();
+  for (const item of pagamentosConciliados.filter((p) => p.fatura_id)) {
+    const { transportadora, compensado, cnpj, ...limpo } = item;
+    const chave = chavePagamento(limpo);
+    doArquivo.set(chave, mesclarPagamento(doArquivo.get(chave), limpo));
+  }
+  if (!isSupabaseConfigured() || !doArquivo.size) {
+    return [...doArquivo.values()].map((item) => ({ id: item.id || uid('pag'), ...item }));
+  }
+
   const client = getSupabaseClient();
+  const faturaIds = [...new Set([...doArquivo.values()].map((item) => item.fatura_id))];
+  const existentes = await pagamentosExistentesDasFaturas(client, faturaIds);
+  const existentePorChave = new Map();
+  for (const linha of existentes) {
+    const chave = chavePagamento(linha);
+    const atual = existentePorChave.get(chave);
+    // Duplicatas antigas da mesma chave: a melhor prevalece, o id do primeiro fica.
+    existentePorChave.set(chave, atual ? { ...mesclarPagamento(atual, linha), id: atual.id } : linha);
+  }
+
+  const paraSalvar = [];
+  const finalPorChave = new Map(existentePorChave);
+  for (const [chave, novo] of doArquivo) {
+    const existente = existentePorChave.get(chave);
+    const final = existente
+      ? { ...mesclarPagamento(existente, novo), id: existente.id, imported_at: existente.imported_at }
+      : { id: novo.id || uid('pag'), imported_at: new Date().toISOString(), ...novo };
+    finalPorChave.set(chave, final);
+    if (!existente || !pagamentoIgual(existente, final)) {
+      paraSalvar.push({ ...final, imported_at: new Date().toISOString() });
+    }
+  }
+
   const LOTE = 500;
   for (let inicio = 0; inicio < paraSalvar.length; inicio += LOTE) {
     const lote = paraSalvar.slice(inicio, inicio + LOTE);
@@ -1142,7 +1311,8 @@ export async function salvarPagamentosFinanceirosEmLote(pagamentosConciliados, o
     if (error) throw new Error(`Erro ao salvar pagamentos: ${error.message}`);
     onProgress?.({ carregados: Math.min(inicio + LOTE, paraSalvar.length), total: paraSalvar.length });
   }
-  return comId;
+  const ids = new Set(faturaIds);
+  return [...finalPorChave.values()].filter((item) => ids.has(item.fatura_id));
 }
 
 // Atualiza em lote o status das faturas cujo pagamento SAP ja compensou
@@ -1221,6 +1391,7 @@ export async function marcarFaturasLancadasFinanceiroEmLote(state, pagamentosLan
   const agora = new Date().toISOString();
   const porFatura = new Map();
   for (const pagamento of pagamentosLancados) {
+    if (!pagamento.lancamento_contabil) continue;
     const atual = porFatura.get(pagamento.fatura_id);
     if (!atual) {
       porFatura.set(pagamento.fatura_id, {
@@ -1252,6 +1423,55 @@ export async function marcarFaturasLancadasFinanceiroEmLote(state, pagamentosLan
   };
 }
 
+// Reconcilia TODAS as faturas com o que ja esta gravado em financeiro_pagamentos
+// (sem limite de 1000): baixa as compensadas ("200...") e grava em cada fatura
+// o lancamento mais recente por data. Nunca troca dado preenchido por vazio.
+export async function reaplicarPagamentosNasFaturas(state, usuarioNome, onProgress) {
+  if (!isSupabaseConfigured()) return { state, pagas: 0, lancadas: 0, lidos: 0 };
+  const pagamentos = await paginarTudo(getSupabaseClient(), 'financeiro_pagamentos', '*');
+  const jaPagas = new Set(['PAGA', 'PAGA_COM_DIVERGENCIA', 'PAGA_COM_DESCONTO']);
+  const faturasPorId = new Map((state.faturas || []).map((item) => [item.id, item]));
+
+  const ultimaPartida = new Map();
+  const ultimoLancamento = new Map();
+  for (const item of pagamentos) {
+    const fatura = faturasPorId.get(item.fatura_id);
+    if (!fatura) continue;
+    if (item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE') {
+      const atual = ultimaPartida.get(item.fatura_id);
+      if (!atual || String(item.data_pagamento || '') > String(atual.data_pagamento || '')) ultimaPartida.set(item.fatura_id, item);
+    }
+    if (item.lancamento_contabil) {
+      const atual = ultimoLancamento.get(item.fatura_id);
+      if (!atual || String(item.data_lancamento || '') > String(atual.data_lancamento || '')) ultimoLancamento.set(item.fatura_id, item);
+    }
+  }
+
+  const compensadosParaAplicar = pagamentos.filter((item) => {
+    const fatura = faturasPorId.get(item.fatura_id);
+    if (!fatura || !(item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE')) return false;
+    const ultima = ultimaPartida.get(item.fatura_id);
+    return !jaPagas.has(fatura.status) || (ultima?.partida && fatura.partida !== ultima.partida);
+  });
+  const lancadosParaAplicar = [...ultimoLancamento.values()].filter((item) => (
+    faturasPorId.get(item.fatura_id)?.lancamento_financeiro !== item.lancamento_contabil
+  ));
+
+  let next = state;
+  if (compensadosParaAplicar.length) {
+    next = await atualizarStatusFaturasPagasEmLote(next, compensadosParaAplicar, usuarioNome, onProgress);
+  }
+  if (lancadosParaAplicar.length) {
+    next = await marcarFaturasLancadasFinanceiroEmLote(next, lancadosParaAplicar, onProgress);
+  }
+  return {
+    state: next,
+    pagas: new Set(compensadosParaAplicar.map((item) => item.fatura_id)).size,
+    lancadas: lancadosParaAplicar.length,
+    lidos: pagamentos.length,
+  };
+}
+
 // Le a tabela inteira em paginas de 1000 (limite do PostgREST), disparando um
 // lote de paginas em paralelo por vez. Era sequencial: com 14 mil faturas isso
 // segurava a Central de Auditoria em "Carregando..." por dezenas de segundos.
@@ -1262,7 +1482,7 @@ export async function marcarFaturasLancadasFinanceiroEmLote(state, pagamentosLan
 // o resultado e deduplicado por id no final.
 const PAGINACAO_LOTE = 8;
 
-async function paginarTudo(client, table, select, onProgress) {
+async function paginarTudo(client, table, select, onProgress, filtro) {
   const PAGE = 1000;
   const porId = new Map();
   const semId = [];
@@ -1276,7 +1496,9 @@ async function paginarTudo(client, table, select, onProgress) {
   };
 
   const lerPagina = async (inicio) => {
-    const { data, error } = await client.from(table).select(select).range(inicio, inicio + PAGE - 1);
+    let consulta = client.from(table).select(select);
+    if (filtro) consulta = filtro(consulta);
+    const { data, error } = await consulta.range(inicio, inicio + PAGE - 1);
     if (error) throw new Error(`Erro ao ler ${table}: ${error.message}`);
     return data || [];
   };

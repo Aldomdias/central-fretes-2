@@ -73,6 +73,7 @@ import {
   salvarCarteiraAuditoria,
   salvarPagamentosFinanceiros,
   salvarPagamentosFinanceirosEmLote,
+  reaplicarPagamentosNasFaturas,
   atualizarStatusFaturasPagasEmLote,
   marcarFaturasLancadasFinanceiroEmLote,
   vincularNovaFatura,
@@ -100,6 +101,7 @@ import { consultarMunicipiosIbge } from '../services/ibgeService';
 import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
 import { autorizarPelaGestao, normalizarCanalAutorizacao, carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarAnexosAutorizacao, enviarParaAutorizacao, enviarParaSuprimentos } from '../services/transporteAutorizacoesService';
 import AnaliseFreteTabela from '../components/AnaliseFreteTabela';
+import ProdutividadeDiaFaturas from '../components/ProdutividadeDiaFaturas';
 import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
 
 const TABS = [
@@ -3910,19 +3912,12 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     try {
       const extras = await carregarPlataformaAuditoriaFinanceiro();
       let next = { ...state, ...extras };
-      const jaPagas = new Set(['PAGA', 'PAGA_COM_DIVERGENCIA', 'PAGA_COM_DESCONTO']);
-      const faturasPorId = new Map((state.faturas || []).map((item) => [item.id, item]));
-      const pendentes = (extras.pagamentos || []).filter((item) => (
-        item.fatura_id && (item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE')
-        && faturasPorId.has(item.fatura_id) && !jaPagas.has(faturasPorId.get(item.fatura_id).status)
-      ));
-      if (pendentes.length) {
-        next = await atualizarStatusFaturasPagasEmLote(next, pendentes, sessao?.nome || sessao?.email || 'Usuario local');
-      }
+      const reaplicado = await reaplicarPagamentosNasFaturas(next, sessao?.nome || sessao?.email || 'Usuario local');
+      next = reaplicado.state;
       entregaEmAndamentoRef.current = new Set();
       setEntregaFaturas(new Map());
       onState(next);
-      setMsgListaEP(`Entregas recarregadas · ${(extras.pagamentos || []).length} pagamento(s) lido(s)${pendentes.length ? ` · ${pendentes.length} pagamento(s) aplicado(s) nas faturas` : ' · nenhuma fatura pendente de baixa'}.`);
+      setMsgListaEP(`Entregas recarregadas · ${reaplicado.lidos} pagamento(s) lido(s) · ${reaplicado.pagas} fatura(s) baixada(s) · ${reaplicado.lancadas} lancamento(s) atualizado(s).`);
     } catch (error) {
       setErroEntregas(`Erro ao atualizar entregas e partidas: ${error.message || error}`);
     } finally {
@@ -6383,6 +6378,7 @@ ${portaisLaudo.length ? `
 
       {mostrarFaturas && (
       <>
+      <ProdutividadeDiaFaturas compacto />
       <div className="panel-card">
         <div className="section-row compact-top">
           <div>
@@ -8737,9 +8733,13 @@ function Financeiro({ state, onState }) {
       const naoLocalizados = conciliados.length - matched.length - cnpjDivergente - ambiguos;
 
       const salvos = await salvarPagamentosFinanceirosEmLote(matched, (progresso) => setProgressoPagamentos({ etapa: `salvando_pagamentos (${file.name})`, ...progresso }));
+      // Baixa/lancamento a partir do historico consolidado das faturas tocadas
+      // (arquivo + banco), pra valer a ultima partida por data e nao so o arquivo.
+      const compensadosConsolidados = salvos.filter((item) => item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE');
+      const lancadosConsolidados = salvos.filter((item) => item.resultado === 'PARTIDA_LANCADA' || item.resultado === 'LANCADA_FINANCEIRO');
       let next = await atualizarStatusFaturasPagasEmLote(
         { ...stateAtual, pagamentos: [...salvos.slice(0, 500), ...stateAtual.pagamentos] },
-        compensados,
+        compensadosConsolidados,
         sessao?.nome || sessao?.email || 'Usuario local',
         (progresso) => setProgressoPagamentos({ etapa: `atualizando_faturas (${file.name})`, ...progresso }),
       );
@@ -8748,7 +8748,7 @@ function Financeiro({ state, onState }) {
       // pagamentos, mesmo ja tendo um lancamento contabil aberto no financeiro.
       next = await marcarFaturasLancadasFinanceiroEmLote(
         next,
-        [...partidas, ...lancadasFinanceiro],
+        lancadosConsolidados,
         (progresso) => setProgressoPagamentos({ etapa: `marcando_lancadas_financeiro (${file.name})`, ...progresso }),
       );
       return {
@@ -8816,22 +8816,14 @@ function Financeiro({ state, onState }) {
     try {
       const [base, extras] = await Promise.all([carregarPlataformaAuditoria(), carregarPlataformaAuditoriaFinanceiro()]);
       let next = { ...base, ...extras };
-      const jaPagas = new Set(['PAGA', 'PAGA_COM_DIVERGENCIA', 'PAGA_COM_DESCONTO']);
-      const faturasPorId = new Map((next.faturas || []).map((item) => [item.id, item]));
-      const pendentes = (next.pagamentos || []).filter((item) => (
-        item.fatura_id && (item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE')
-        && faturasPorId.has(item.fatura_id) && !jaPagas.has(faturasPorId.get(item.fatura_id).status)
-      ));
-      if (pendentes.length) {
-        next = await atualizarStatusFaturasPagasEmLote(
-          next, pendentes, sessao?.nome || sessao?.email || 'Usuario local',
-          (progresso) => setProgressoPagamentos({ etapa: 'atualizando_faturas', ...progresso }),
-        );
-      }
+      const reaplicado = await reaplicarPagamentosNasFaturas(
+        next, sessao?.nome || sessao?.email || 'Usuario local',
+        (progresso) => setProgressoPagamentos({ etapa: 'atualizando_faturas', ...progresso }),
+      );
+      next = reaplicado.state;
       onState(next);
       setErroFinanceiro('');
-      setMensagemPartidas(`Partidas atualizadas: ${(next.pagamentos || []).length} pagamento(s) carregado(s)` +
-        `${pendentes.length ? ` · ${pendentes.length} fatura(s) marcada(s) como paga(s)` : ' · nenhuma fatura pendente de baixa'}.`);
+      setMensagemPartidas(`Partidas atualizadas: ${reaplicado.lidos} pagamento(s) lido(s) · ${reaplicado.pagas} fatura(s) baixada(s) · ${reaplicado.lancadas} lancamento(s) atualizado(s).`);
     } catch (error) {
       setErroFinanceiro(error.message || String(error));
     } finally {
