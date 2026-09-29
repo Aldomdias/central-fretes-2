@@ -107,7 +107,12 @@ function formCtes(divergencias) {
 }
 
 function paginaPortalFatura({ fatura, enviado, acaoEnviada, divergencias = [] }) {
-  const saldo = Math.max(Number(fatura.diferenca || 0), 0);
+  // Com CT-es divergentes listados, o desconto e a soma deles (o que a
+  // transportadora vai responder); a diferenca da fatura inteira inclui CT-es
+  // sem calculo/abaixo e nao bate com a lista.
+  const saldo = divergencias.length
+    ? divergencias.reduce((soma, d) => soma + Math.max(Number(d.diferenca || 0), 0), 0)
+    : Math.max(Number(fatura.diferenca || 0), 0);
   const jaAprovada = fatura.confirmacao_transportador_status === 'APROVADO';
   const contestada = fatura.confirmacao_transportador_status === 'CONTESTADO';
   const avisoContestacao = contestada
