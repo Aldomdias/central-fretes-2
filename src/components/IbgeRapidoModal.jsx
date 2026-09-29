@@ -96,8 +96,7 @@ export default function IbgeRapidoModal() {
                   {item.cidade} - {item.uf}
                   {faixas[item.ibge]?.length ? (
                     <small style={{ display: 'block', color: '#64748b', fontSize: 11 }}>
-                      CEP: {faixas[item.ibge].slice(0, 3).map((f) => `${fmtCep(f.cepInicial)} a ${fmtCep(f.cepFinal)}`).join(' | ')}
-                      {faixas[item.ibge].length > 3 ? ` (+${faixas[item.ibge].length - 3})` : ''}
+                      {faixas[item.ibge].map((f) => <span key={`${f.cepInicial}-${f.cepFinal}`} style={{ display: 'block' }}>CEP {fmtCep(f.cepInicial)} a {fmtCep(f.cepFinal)}</span>)}
                     </small>
                   ) : null}
                 </span>
