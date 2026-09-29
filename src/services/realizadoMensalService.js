@@ -833,7 +833,7 @@ async function buscarTrackingImportacaoPorChave(rows = []) {
       if (!parte.length) continue;
       const { data, error } = await supabase
         .from('tracking_rows')
-        .select('chave_cte,chave_nfe,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes')
+        .select('chave_cte,chave_nfe,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,cubagem_final,quantidade_itens,valor_nf,qtd_volumes')
         .in(coluna, parte);
 
       if (error) {
@@ -841,7 +841,7 @@ async function buscarTrackingImportacaoPorChave(rows = []) {
         for (const chave of parte) {
           const individual = await supabase
             .from('tracking_rows')
-            .select('chave_cte,chave_nfe,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes')
+            .select('chave_cte,chave_nfe,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,cubagem_final,quantidade_itens,valor_nf,qtd_volumes')
             .eq(coluna, chave);
           if (individual.error) {
             erros += 1;

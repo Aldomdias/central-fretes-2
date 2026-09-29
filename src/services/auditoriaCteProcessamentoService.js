@@ -1275,11 +1275,15 @@ function anexarComparativoPesos(resultado, cte, transportadoras, mapaVinculos, t
     altCubado = resumirAlternativaPeso('Cubagem Tracking x fator tabela', cubado, valorPago, cubagem);
     if (altCubado?.peso_cubado_calculado > 0) {
       const pesoCubadoCalculado = altCubado.peso_cubado_calculado;
+      // Peso taxavel = maior entre fisico e cubado. Cubado menor que o peso do
+      // CT-e (ex.: cubagem unitaria gravada no lugar do total) nunca pode
+      // rebaixar o peso cobrado.
+      const pesoTaxavel = Math.max(pesoCubadoCalculado, pesoDeclarado);
       const cteComPesoCubado = {
         ...cte,
-        peso: pesoCubadoCalculado,
-        peso_declarado: pesoCubadoCalculado,
-        pesoDeclarado: pesoCubadoCalculado,
+        peso: pesoTaxavel,
+        peso_declarado: pesoTaxavel,
+        pesoDeclarado: pesoTaxavel,
         peso_cubado: 0,
         pesoCubado: 0,
         cubagem: 0,
