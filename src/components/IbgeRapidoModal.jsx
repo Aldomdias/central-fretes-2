@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { consultarMunicipiosIbge } from '../services/ibgeService';
+import { consultarFaixasCepIbgeLote, consultarMunicipiosIbge } from '../services/ibgeService';
 
 const UFS = ['', 'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO'];
 
@@ -14,6 +14,8 @@ const estilo = {
   item: { display: 'flex', justifyContent: 'space-between', gap: 8, padding: '6px 4px', borderBottom: '1px solid #e2e8f0', cursor: 'pointer', fontSize: 13 },
 };
 
+const fmtCep = (c) => { const d = String(c || '').replace(/\D/g, ''); return d.length === 8 ? `${d.slice(0, 5)}-${d.slice(5)}` : d; };
+
 export default function IbgeRapidoModal() {
   const [aberto, setAberto] = useState(false);
   const [termo, setTermo] = useState('');
@@ -21,6 +23,7 @@ export default function IbgeRapidoModal() {
   const [resultados, setResultados] = useState([]);
   const [carregando, setCarregando] = useState(false);
   const [msg, setMsg] = useState('');
+  const [faixas, setFaixas] = useState({});
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -48,7 +51,9 @@ export default function IbgeRapidoModal() {
     try {
       const rows = await consultarMunicipiosIbge({ termo, uf, limite: 30, usarOficialSeVazio: true });
       setResultados(rows);
-      if (!rows.length) setMsg('Nenhum município encontrado.');
+      setFaixas({});
+      consultarFaixasCepIbgeLote(rows.map((r) => r.ibge)).then(setFaixas);
+      if (!rows.length) setMsg(termo.replace(/\D/g, '').length === 8 ? 'CEP não está nas faixas da base e a consulta online (ViaCEP) não retornou. Verifique o CEP ou a conexão.' : 'Nenhum município encontrado.');
     } catch (err) {
       setMsg(err.message || 'Erro ao consultar IBGE.');
     } finally {
@@ -87,7 +92,15 @@ export default function IbgeRapidoModal() {
           <div style={estilo.lista}>
             {resultados.map((item) => (
               <div key={`${item.ibge}-${item.uf}`} style={estilo.item} onClick={() => copiar(item)} title="Clique para copiar o código IBGE">
-                <span>{item.cidade} - {item.uf}</span>
+                <span>
+                  {item.cidade} - {item.uf}
+                  {faixas[item.ibge]?.length ? (
+                    <small style={{ display: 'block', color: '#64748b', fontSize: 11 }}>
+                      CEP: {faixas[item.ibge].slice(0, 3).map((f) => `${fmtCep(f.cepInicial)} a ${fmtCep(f.cepFinal)}`).join(' | ')}
+                      {faixas[item.ibge].length > 3 ? ` (+${faixas[item.ibge].length - 3})` : ''}
+                    </small>
+                  ) : null}
+                </span>
                 <strong>{item.ibge}</strong>
               </div>
             ))}

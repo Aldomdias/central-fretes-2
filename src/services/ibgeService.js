@@ -300,11 +300,50 @@ export async function consultarMunicipiosIbge({ termo = '', uf = '', limite = 80
     resultados.push(...filtrados);
   }
 
+  // CEP sem faixa na base (ou base sem faixas): ViaCEP devolve o IBGE do CEP.
+  if (!resultados.length && somenteDigitos.length === 8) {
+    try {
+      const resp = await fetch(`https://viacep.com.br/ws/${somenteDigitos}/json/`);
+      const json = resp.ok ? await resp.json() : null;
+      const ibgeCep = limparIbge(json?.ibge);
+      if (ibgeCep && (!ufFiltro || String(json.uf).toUpperCase() === ufFiltro)) {
+        const item = normalizeMunicipio({ uf: json.uf, nome_municipio: json.localidade, codigo_municipio_completo: ibgeCep });
+        if (item) resultados.push({ ...item, fonte: 'ViaCEP' });
+      }
+    } catch {
+      // Sem internet/ViaCEP fora: segue sem resultado.
+    }
+  }
+
   const dedup = new Map();
   resultados.forEach((item) => {
     if (!dedup.has(item.ibge)) dedup.set(item.ibge, item);
   });
   return [...dedup.values()].sort((a, b) => `${a.uf}/${a.cidade}`.localeCompare(`${b.uf}/${b.cidade}`, 'pt-BR'));
+}
+
+// Faixas de CEP de varios municipios de uma vez: { [ibge]: [{cepInicial, cepFinal}] }.
+export async function consultarFaixasCepIbgeLote(ibges = []) {
+  const codigos = [...new Set((ibges || []).map((i) => String(i || '').replace(/\D/g, '').slice(0, 7)).filter(Boolean))];
+  const supabase = supabaseOrNull();
+  const mapa = {};
+  if (!supabase || !codigos.length) return mapa;
+  try {
+    const { data, error } = await supabase
+      .from('ibge_faixas_cep')
+      .select('cep_inicial, cep_final, ordem_faixa, codigo_municipio_completo')
+      .in('codigo_municipio_completo', codigos)
+      .order('ordem_faixa', { ascending: true })
+      .limit(5000);
+    if (error) return mapa;
+    (data || []).forEach((item) => {
+      const k = String(item.codigo_municipio_completo || '').replace(/\D/g, '').slice(0, 7);
+      (mapa[k] ||= []).push({ cepInicial: item.cep_inicial || '', cepFinal: item.cep_final || '' });
+    });
+  } catch {
+    // Sem faixas: a lista segue so com o IBGE.
+  }
+  return mapa;
 }
 
 export async function consultarFaixasCepIbgeDb(ibge) {

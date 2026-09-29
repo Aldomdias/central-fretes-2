@@ -3422,6 +3422,21 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [vencimentoInicio, setVencimentoInicio] = useState(() => filtrosIniciais?.vencimentoInicio || '');
   const [vencimentoFim, setVencimentoFim] = useState(() => filtrosIniciais?.vencimentoFim || '');
   const [buscaCtesAvulsa, setBuscaCtesAvulsa] = useState('');
+  // Vindo do botao "CT-e" (consulta rapida): preenche a chave na auditoria rapida.
+  useEffect(() => {
+    if (!mostrarAuditoriaAvulsa) return undefined;
+    const aplicar = (chave) => { if (chave) setBuscaCtesAvulsa(String(chave)); };
+    try {
+      const pendente = window.localStorage.getItem('central_fretes_recalcular_chave');
+      if (pendente) { window.localStorage.removeItem('central_fretes_recalcular_chave'); aplicar(pendente); }
+    } catch { /* sem localStorage: so o evento */ }
+    const onEvento = (e) => {
+      aplicar(e.detail);
+      try { window.localStorage.removeItem('central_fretes_recalcular_chave'); } catch { /* ignora */ }
+    };
+    window.addEventListener('central-fretes:recalcular-chave', onEvento);
+    return () => window.removeEventListener('central-fretes:recalcular-chave', onEvento);
+  }, [mostrarAuditoriaAvulsa]);
   const [auditandoCtesAvulsos, setAuditandoCtesAvulsos] = useState(false);
   const [progressoCtesAvulsos, setProgressoCtesAvulsos] = useState(null);
   const [resultadoCtesAvulsosBase, setResultadoCtesAvulsos] = useState([]);
