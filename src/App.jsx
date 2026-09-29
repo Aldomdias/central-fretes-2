@@ -49,7 +49,7 @@ import PainelDescontosObtidosPage from './pages/PainelDescontosObtidosPage';
 import AutorizacoesTransportePage from './pages/AutorizacoesTransportePage';
 import GestaoContratosPage from './pages/GestaoContratosPage';
 import { useFreteStore } from './data/store';
-import { carregarSessao, MODULOS_SISTEMA, sairLocal, usuarioPodeAdministrarUsuarios, usuarioTemAcesso } from './utils/authLocal';
+import { carregarSessao, carregarUsuariosAsync, MODULOS_SISTEMA, sairLocal, usuarioPodeAdministrarUsuarios, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
 import { entrarPresenca, sairPresenca } from './services/presencaService';
 import { sairSupabaseAuth } from './services/biometriaService';
@@ -87,6 +87,21 @@ export default function App() {
   const [transportadoraSelecionadaId, setTransportadoraSelecionadaId] = useState(null);
   const [origemSelecionadaId, setOrigemSelecionadaId] = useState(null);
   const transportadorasMemo = useMemo(() => store.transportadoras, [store.transportadoras]);
+
+  // Perfil/modulos vivem no Supabase; a sessao le do cache local, que so atualizava no
+  // login. Ao abrir o app, rebusca e atualiza a sessao (sem precisar sair e entrar).
+  const sessaoId = sessao?.id;
+  useEffect(() => {
+    if (!sessaoId) return undefined;
+    let ativo = true;
+    carregarUsuariosAsync({ migrarLocal: false }).then((r) => {
+      if (!ativo || !r?.sincronizado) return;
+      const nova = carregarSessao();
+      if (!nova) { setSessao(null); return; }
+      setSessao((atual) => (atual && (atual.perfil !== nova.perfil || JSON.stringify(atual.permissoesPaginas) !== JSON.stringify(nova.permissoesPaginas)) ? { ...atual, ...nova } : atual));
+    }).catch(() => {});
+    return () => { ativo = false; };
+  }, [sessaoId]);
 
   useEffect(() => {
     if (!sessao) return;
