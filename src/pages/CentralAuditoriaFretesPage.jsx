@@ -2234,7 +2234,14 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         const chave = normalizarChaveCte(item.chave_cte) || normalizarChaveCte(item.numero_cte);
         if (!chave) return;
         const valorNfPreservado = numeroValorNfAuditoria(item);
-        const pesoPreservado = numeroPesoAuditoria(item);
+        // O `peso` salvo na linha pode ser o peso da melhor alternativa que o
+        // motor escolheu sozinho (ex.: cubado errado de 75,6 kg), nao o do CT-e.
+        // So preserva o salvo quando o usuario aplicou o peso manualmente
+        // (alternativa_peso_aplicada); senao nao preserva e o calculo le o peso
+        // do CT-e na base (o proprio detalhe salvo pode carregar o peso errado).
+        const detalhesPeso = parseDetalhesCalculoAuditoria(item.detalhes_calculo);
+        const pesoManual = Boolean(detalhesPeso.alternativa_peso_aplicada) || item.tracking_manual_nf;
+        const pesoPreservado = pesoManual ? numeroPesoAuditoria(item) : 0;
         if (valorNfPreservado > 0) valorNfOverridePorChave[chave] = valorNfPreservado;
         if (pesoPreservado > 0 || valorNfPreservado > 0) {
           trackingOverridePorChave[chave] = {
