@@ -12,7 +12,6 @@ import LotacaoOperacaoPage from './pages/LotacaoOperacaoPage';
 import LotacaoAuditoriaPage from './pages/LotacaoAuditoriaPage';
 import ConsultaIbgePage from './pages/ConsultaIbgePage';
 import IbgeRapidoModal from './components/IbgeRapidoModal';
-import CteRapidoModal from './components/CteRapidoModal';
 import AvisoAprovacoesSuprimentos from './components/AvisoAprovacoesSuprimentos';
 import AvisoPrazoFaturas from './components/AvisoPrazoFaturas';
 import LoginPage from './pages/LoginPage';
@@ -269,7 +268,6 @@ export default function App() {
       />
       <main className="app-content">{content}</main>
       <IbgeRapidoModal />
-      {usuarioTemAcesso(sessao, 'auditoria-cte') && <CteRapidoModal onRecalcular={() => mudarPagina('auditoria-cte')} />}
       {usuarioTemAcesso(sessao, 'faturas') && sessao?.perfil !== 'NEGOCIACAO_FRETES' && (
         <AvisoPrazoFaturas minimizavel oculto={avisosOcultos} sessao={sessao} onAbrir={(filtros) => { setFiltroFaturasExterno({ chave: Date.now(), ...filtros }); mudarPagina('faturas'); }} />
       )}
