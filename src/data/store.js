@@ -19,7 +19,7 @@ import {
 import { registrarAlteracaoTransportadora } from '../services/auditoriaTransportadorasService';
 import { normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
 import { normalizarRegrasTde } from '../utils/tde.js';
-import { usuarioEhGestorAuditoria } from '../utils/authLocal';
+import { usuarioPodeEditarTransportadoras } from '../utils/authLocal';
 
 const STORAGE_KEY = 'simulador-fretes-local-v6';
 
@@ -345,7 +345,7 @@ export function useFreteStore(sessao = null) {
   // Só Gestão e Gestor de Auditoria de Fretes podem alterar cadastros de
   // transportadoras. Guard central: qualquer método que grave dado passa por
   // aqui primeiro, independente de qual botão da tela chamou.
-  const podeEditarTransportadoras = () => usuarioEhGestorAuditoria(sessao);
+  const podeEditarTransportadoras = () => usuarioPodeEditarTransportadoras(sessao);
   const ERRO_SEM_PERMISSAO = 'Apenas Gestão ou Gestor de Auditoria de Fretes podem alterar transportadoras.';
 
   function salvarAutomaticamente(next, acao = 'alteração', secao = 'cadastros') {

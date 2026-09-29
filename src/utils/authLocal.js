@@ -71,14 +71,30 @@ export const PERFIS_USUARIO = {
   },
   NEGOCIACAO_FRETES: {
     nome: 'Negociação de Fretes',
-    descricao: 'Mesmo acesso de páginas da Gestão (exceto administração de usuários), para ajustar tabelas.',
+    descricao: 'Acesso ao simulador, reajustes, transportadoras e tabelas em negociação.',
     paginas: [
-      ...CHAVES_MODULOS_USUARIO,
+      'dashboard',
+      'conceito-app',
+      'simulador',
       'simulador-reversa',
       'tabelas-negociacao',
+      'cte',
+      'tracking',
       'torre-controle',
       'reajustes',
       'avaliacao-prazos',
+      'perda-realizado',
+      'oportunidade-origem',
+      'oportunidade-transportadora',
+      'simular-saida-transportadora',
+      'gestao-contratos',
+      'formatacao',
+      'importar-template',
+      'importacao-ia-tabelas',
+      'consulta-ibge',
+      'icms-uf',
+      'ferramentas',
+      'transportadoras',
     ],
   },
   OPERACAO_LOTACAO: {
@@ -179,6 +195,11 @@ const PERFIS_GESTOR_AUDITORIA = new Set(['GESTAO', 'GESTOR_AUDITORIA_FRETES']);
 
 export function usuarioEhGestorAuditoria(usuario) {
   return PERFIS_GESTOR_AUDITORIA.has(usuario?.perfil);
+}
+
+// Edicao de transportadoras/tabelas: gestao + negociacao (nao vale para faturas).
+export function usuarioPodeEditarTransportadoras(usuario) {
+  return usuario?.perfil === 'GESTAO' || usuario?.perfil === 'NEGOCIACAO_FRETES' || usuarioEhGestorAuditoria(usuario);
 }
 
 function normalizarUsuario(usuario = {}) {
