@@ -268,8 +268,12 @@ export default function UserManagementPage({ usuarioAtual }) {
   };
 
   const alterarPerfilUsuario = (usuario, perfil) => {
-    const permissoesPaginas = permissoesPadraoPerfil(perfil, { ...usuario, perfil });
-    alterar(usuario.id, { perfil, permissoesPaginas }, 'Perfil e módulos atualizados.');
+    // Trocar o grupo de um usuario existente mantem os modulos que ele ja tem
+    // (ajuste os modulos na tela se quiser); so o admin/GESTAO recebe o padrao.
+    const permissoesPaginas = perfil === 'GESTAO'
+      ? permissoesPadraoPerfil(perfil, { ...usuario, perfil })
+      : permissoesUsuario(usuario);
+    alterar(usuario.id, { perfil, permissoesPaginas }, 'Perfil atualizado (módulos mantidos).');
   };
 
   const sincronizarAgora = async () => {
