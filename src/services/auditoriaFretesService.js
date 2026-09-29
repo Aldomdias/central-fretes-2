@@ -897,9 +897,10 @@ export async function carregarMapaNomeOficialPorRaizCnpj() {
   const mapa = new Map();
   if (!isSupabaseConfigured()) return mapa;
   const client = getSupabaseClient();
-  const [{ data: transportadoras }, { data: origens }] = await Promise.all([
-    client.from('transportadoras').select('id, nome, cnpj, cnpj_raiz').limit(5000),
-    client.from('origens').select('transportadora_id, cnpj, cnpj_raiz').limit(20000),
+  // Consultas sem paginar ficam limitadas a 1000 linhas pelo Supabase.
+  const [transportadoras, origens] = await Promise.all([
+    paginarTudo(client, 'transportadoras', 'id, nome, cnpj, cnpj_raiz'),
+    paginarTudo(client, 'origens', 'id, transportadora_id, cnpj, cnpj_raiz'),
   ]);
   const porId = new Map((transportadoras || []).map((item) => [item.id, item.nome]));
   const candidatos = new Map();
@@ -923,12 +924,11 @@ export async function carregarMapaNomeOficialPorRaizCnpj() {
 export async function corrigirNomesFaturasPorCnpj({ usuarioNome = 'Sistema' } = {}) {
   if (!isSupabaseConfigured()) return { renomeadas: 0, comAuditor: 0 };
   const client = getSupabaseClient();
-  const [mapa, carteiras, { data: faturas, error }] = await Promise.all([
+  const [mapa, carteiras, faturas] = await Promise.all([
     carregarMapaNomeOficialPorRaizCnpj(),
     listarCarteirasAuditoria(),
-    client.from('faturas').select('id, transportadora, cnpj_transportadora, auditor_nome, status').limit(50000),
+    paginarTudo(client, 'faturas', 'id, transportadora, cnpj_transportadora, auditor_nome, status'),
   ]);
-  if (error) throw new Error(error.message || 'Erro ao carregar faturas.');
   const carteiraPorNome = new Map();
   (carteiras || []).forEach((c) => { if (c.auditor_nome) carteiraPorNome.set(normalizarTexto(c.transportadora), c); });
   const agora = new Date().toISOString();

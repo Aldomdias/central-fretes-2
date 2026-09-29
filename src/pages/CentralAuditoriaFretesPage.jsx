@@ -6889,8 +6889,8 @@ function Gestao({ state, onState }) {
     // Faturas gravadas com nome de filial/cidade mas CNPJ do cadastro: corrige
     // o nome e o auditor uma vez por sessao e recarrega se algo mudou.
     try {
-      if (!sessionStorage.getItem('cf_corrigiu_nomes_cnpj')) {
-        sessionStorage.setItem('cf_corrigiu_nomes_cnpj', '1');
+      if (!sessionStorage.getItem('cf_corrigiu_nomes_cnpj_v2')) {
+        sessionStorage.setItem('cf_corrigiu_nomes_cnpj_v2', '1');
         corrigirNomesFaturasPorCnpj({ usuarioNome: sessao?.nome || sessao?.email || 'Sistema' })
           .then((r) => { if (r?.renomeadas > 0) window.location.reload(); })
           .catch((e) => console.warn('Correcao de nomes por CNPJ falhou.', e?.message || e));
