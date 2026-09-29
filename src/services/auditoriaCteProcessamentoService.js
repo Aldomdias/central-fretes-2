@@ -2197,7 +2197,23 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
   });
 
   onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: null });
-  const transportadoras = await carregarBaseFreteParaRegistros(ctesUnicos, onProgress, [], mapaVinculos);
+  // Endereco/canal corrigidos manualmente mudam a rota calculada: a busca
+  // direcionada de tabelas precisa incluir a rota corrigida, senao a rota nova
+  // nunca e carregada e o CT-e cai em SEM_ROTA.
+  const ctesParaBuscaBase = ctesUnicos.flatMap((cte) => {
+    const ov = opcoesCalculo.trackingOverridePorChave?.[onlyDigits(pick(cte, ['chave_cte', 'chaveCte', 'chave']))]
+      ?? opcoesCalculo.trackingOverridePorChave?.[onlyDigits(pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']))];
+    if (!ov || !(ov.ibgeOrigem || ov.ibgeDestino || ov.canal)) return [cte];
+    return [cte, {
+      ...cte,
+      ibge_origem: ov.ibgeOrigem || cte.ibge_origem,
+      ibge_destino: ov.ibgeDestino || cte.ibge_destino,
+      cidade_origem: ov.cidadeOrigem || cte.cidade_origem,
+      canal: ov.canal || cte.canal,
+      canal_original: ov.canal || cte.canal_original,
+    }];
+  });
+  const transportadoras = await carregarBaseFreteParaRegistros(ctesParaBuscaBase, onProgress, [], mapaVinculos);
   verificarCancelamento();
   if (!transportadoras.length) {
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para recalcular.');
