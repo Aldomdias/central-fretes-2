@@ -17,7 +17,7 @@ function ascii(valor) {
   return String(valor ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x20-\x7e]/g, '?');
 }
 
-function vbs(valor) {
+export function vbs(valor) {
   return `"${ascii(valor).replace(/"/g, '""')}"`;
 }
 
@@ -30,7 +30,7 @@ function linhasEmbutidas(linhas, campos) {
   return out;
 }
 
-const CONEXAO = [
+export const CONEXAO = [
   'Sub Conectar()',
   '    On Error Resume Next',
   '    Set sapGuiAuto = GetObject("SAPGUI")',
@@ -92,7 +92,7 @@ function utilitarios({ pasta, arquivoResultado }) {
   ];
 }
 
-function cabecalho(titulo) {
+export function cabecalho(titulo) {
   return [
     `' ${ascii(titulo)}`,
     "' Gerado pela Central de Fretes (modulo Automacao). Rode com o SAP Logon aberto e logado.",
@@ -232,7 +232,7 @@ export function gerarScriptCte({ linhas = [], pasta = PASTA_CTE } = {}) {
     `    v_pedido = Pedidos(kk) : v_tp = r(${I.tpEmis}) : v_c8 = r(${I.cNF}) : v_dv = r(${I.dv}) : v_centro1 = r(${I.centro1})`,
     `    Valor = r(${I.liquido})`,
     `    DtaEmissao = r(${I.dtEmissao}) : DtaVencimento = r(${I.dtVenc})`,
-    `    aliquota = CDbl(r(${I.aliquota}))`,
+    `    aliquota = Val(r(${I.aliquota}))`,
     'End Sub',
     '',
     'Sub CriarPedidoLinha()',

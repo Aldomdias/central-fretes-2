@@ -15,15 +15,14 @@ import {
   baixarXlsx,
   carregarParametros,
   criarIndices,
-  extrairParametrosDeArquivo,
   hojeIso,
   isoParaBr,
   lerPlanilhaArquivo,
   lerResultadoCsv,
-  salvarParametros,
   tsvParaMatriz,
 } from '../../utils/robos/lancamentoComum';
 import { PASTA_NFSE, gerarScriptNfse } from '../../utils/robos/sapLancamentoVbs';
+import ParametrosLancamentoCard from './ParametrosLancamentoCard';
 
 const CHAVE_LOTE = 'central_fretes_robo_nfse_lote_v1';
 const CHAVE_HISTORICO = 'central_fretes_robo_nfse_historico_v1';
@@ -51,7 +50,6 @@ export default function LancamentoNfseRobo() {
   const [removidos, setRemovidos] = useState(() => ler(CHAVE_LOTE, {}).removidos || []);
   const [erro, setErro] = useState('');
   const [feedback, setFeedback] = useState('');
-  const refParam = useRef(null);
   const refArquivo = useRef(null);
   const refResultado = useRef(null);
 
@@ -70,18 +68,6 @@ export default function LancamentoNfseRobo() {
   const semMiro = prontas.filter((l) => l.pedido && !l.miro).length;
   const concluidas = linhas.filter((l) => l.miro).length;
   const semTabelas = !parametros.filiais.length || !parametros.escritorios.length;
-
-  async function importarParametros(arquivo) {
-    if (!arquivo) return;
-    setErro(''); setFeedback('');
-    try {
-      const r = await extrairParametrosDeArquivo(arquivo);
-      const novo = salvarParametros(r);
-      setParametros(novo);
-      setFeedback(`Tabelas atualizadas: ${fmt(novo.filiais.length)} filiais e ${fmt(novo.escritorios.length)} escritorios/centros de custo.`);
-    } catch (e) { setErro(e.message || 'Nao consegui ler as tabelas.'); }
-    finally { if (refParam.current) refParam.current.value = ''; }
-  }
 
   function carregarEntradas(matriz, origem) {
     try {
@@ -163,16 +149,7 @@ export default function LancamentoNfseRobo() {
       {erro ? <div style={{ padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{erro}</div> : null}
       {feedback && !erro ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}
 
-      <div className="panel-card">
-        <div className="panel-title">Tabelas de parametros</div>
-        <p>Filiais (empresa e centro pelo CNPJ do tomador) e Escritorios BI (centro de custo). Importe uma vez o <code>Parâmetros.xlsx</code> (ou qualquer planilha de lançamento que tenha as abas Filiais_Cantu e Escritorios BI); ficam guardadas neste navegador.</p>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <input ref={refParam} type="file" accept=".xlsx,.xlsm,.xls" onChange={(e) => importarParametros(e.target.files?.[0])} />
-          <span style={{ color: semTabelas ? '#b91c1c' : '#334155' }}>
-            {semTabelas ? 'Tabelas ainda nao importadas.' : `${fmt(parametros.filiais.length)} filiais · ${fmt(parametros.escritorios.length)} centros de custo · atualizado em ${isoParaBr((parametros.atualizadoEm || '').slice(0, 10))}`}
-          </span>
-        </div>
-      </div>
+      <ParametrosLancamentoCard parametros={parametros} onChange={setParametros} onErro={setErro} onFeedback={setFeedback} />
 
       <div className="panel-card">
         <div style={passoStyle}>
