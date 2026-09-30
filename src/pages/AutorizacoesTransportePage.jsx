@@ -18,6 +18,25 @@ import {
 
 const dinheiro = (valor) => Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const dataHora = (valor) => (valor ? new Date(valor).toLocaleString('pt-BR') : '-');
+// Chave da NF (44 digitos): posicoes 23-25 = serie, 26-34 = numero da NF.
+// Destaca numero e serie em negrito vermelho pra leitura rapida.
+function ChaveNfeDestaque({ chave }) {
+  const digitos = String(chave || '').replace(/\D/g, '');
+  if (digitos.length !== 44) return <>{chave || '-'}</>;
+  const serie = String(Number(digitos.slice(22, 25)));
+  const numero = String(Number(digitos.slice(25, 34)));
+  return (
+    <>
+      <div style={{ color: '#b91c1c', fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap' }}>NF {numero} · Série {serie}</div>
+      <span style={{ wordBreak: 'break-all' }}>
+        {digitos.slice(0, 22)}
+        <strong style={{ color: '#b91c1c' }}>{digitos.slice(22, 34)}</strong>
+        {digitos.slice(34)}
+      </span>
+    </>
+  );
+}
+
 const rotulo = (canal) => (canal === 'B2C' ? 'B2C' : canal === 'SUPRIMENTOS' ? 'Suprimentos' : 'Atacado');
 
 // Um modulo por canal (B2C / Atacado): cada gestor so ve a fila do seu.
@@ -275,7 +294,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   <td><strong>{canaisReais.get(String(item.chave_cte || '').replace(/\D/g, '')) || (item.canal === 'SUPRIMENTOS' ? '-' : rotulo(item.canal))}</strong></td>
                   {canal === 'SUPRIMENTOS' && <td>{item.protocolo_amd || '-'}<br /><small>{item.tipo_ajuste || ''}</small>{(item.anexos || []).map((a) => <div key={a.path}><a href={a.url} target="_blank" rel="noreferrer" style={{ fontSize: 11 }}>📎 {a.nome}</a></div>)}</td>}
                   <td style={{ fontSize: 11 }}>{item.chave_cte || '-'}</td>
-                  <td style={{ fontSize: 11 }}>{item.chave_nfe || (
+                  <td style={{ fontSize: 11 }}>{item.chave_nfe ? <ChaveNfeDestaque chave={item.chave_nfe} /> : (
                     <div style={{ display: 'flex', gap: 4, minWidth: 190 }}>
                       <input style={{ width: 150, fontSize: 11 }} placeholder="Chave NF (44 dig.)" value={campo(item.id, 'chaveNfe', '')} onChange={(e) => editar(item.id, 'chaveNfe', e.target.value.replace(/\D/g, '').slice(0, 44))} />
                       <button className="btn-secondary" disabled={processando === 'nfe-' + item.id} onClick={() => informarChaveNfe(item)}>Salvar</button>
@@ -352,7 +371,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   <td>{item.status}</td>
                   <td>{item.numero_pedido || '-'}</td>
                   <td style={{ fontSize: 11 }}>{item.chave_cte || '-'}</td>
-                  <td style={{ fontSize: 11 }}>{item.chave_nfe || '-'}</td>
+                  <td style={{ fontSize: 11 }}>{item.chave_nfe ? <ChaveNfeDestaque chave={item.chave_nfe} /> : '-'}</td>
                   <td>{dinheiro(item.valor_autorizado)}</td>
                   <td>{item.observacao_gestor || '-'}</td>
                   <td>{item.decidido_por || '-'}</td>
