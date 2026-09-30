@@ -74,3 +74,30 @@ test('parametros reais: as planilhas de lancamento trazem Filiais e Escritorios 
   assert.ok(esc.length > 500);
   assert.ok(esc.some((e) => e.conc === '1420ZTRD'));
 });
+
+test('exportar e importar de volta as tabelas de parametros (ida e volta)', async () => {
+  const { baixarParametrosXlsx: _ignorado, ...resto } = await import('../src/utils/robos/lancamentoComum.js');
+  assert.ok(resto.tratarEscritoriosBi);
+  // o que a exportacao escreve precisa ser lido pelo importador: Conc = Empresa + Escritorio
+  const escritorios = [{ conc: '1420Z044', titulo: 'C420130045' }, { conc: '1710ZTRD', titulo: 'C1' }];
+  const linhas = escritorios.map((e) => ({ titulo: e.titulo, escritorio: String(e.conc).slice(4), empresa: String(e.conc).slice(0, 4) }));
+  const volta = tratarEscritoriosBi(linhas);
+  assert.deepEqual(volta, [{ conc: '1420Z044', titulo: 'C420130045' }]); // 1710ZTRD esta na lista de excluidos do Power Query
+});
+
+test('importar arquivo exportado: mantem linha ajustada a mao (inclusive Conc da lista de exclusao)', async () => {
+  const { baixarParametrosXlsx, extrairParametrosDeArquivo } = await import('../src/utils/robos/lancamentoComum.js');
+  let bytes = null;
+  globalThis.window = { localStorage: { getItem: () => null, setItem: () => {} } };
+  globalThis.document = { createElement: () => ({ click() {}, remove() {} }), body: { appendChild() {} } };
+  globalThis.URL.createObjectURL = (b) => { bytes = b; return 'blob:x'; };
+  globalThis.URL.revokeObjectURL = () => {};
+  await baixarParametrosXlsx({
+    filiais: [{ cnpj: '10158356013866', emp: '1420', centro: 'X138' }],
+    escritorios: [{ conc: '1420Z044', titulo: 'C420130045' }, { conc: '1710ZTRD', titulo: 'C171010200' }],
+  });
+  const arq = { arrayBuffer: async () => bytes.arrayBuffer() };
+  const r = await extrairParametrosDeArquivo(arq);
+  assert.deepEqual(r.filiais, [{ cnpj: '10158356013866', emp: '1420', centro: 'X138' }]);
+  assert.deepEqual(r.escritorios.map((e) => e.conc), ['1420Z044', '1710ZTRD']);
+});

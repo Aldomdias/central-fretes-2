@@ -151,6 +151,7 @@ const ALIAS_ESCRITORIOS = {
   titulo: ['Titulo', 'Título'],
   escritorio: ['Escritorio', 'Escritório'],
   empresa: ['Empresa'],
+  conc: ['Conc'],
 };
 
 // Procura, entre as abas de um arquivo, a de Filiais (CNPJ OK + FILIAL SAP) e a de
@@ -178,8 +179,20 @@ export async function extrairParametrosDeArquivo(arquivo) {
       return;
     }
     const me = mapearColunas(cab, ALIAS_ESCRITORIOS);
-    if (!escritorios && me.titulo !== undefined && me.escritorio !== undefined && me.empresa !== undefined && matriz.length > 50) {
-      escritorios = tratarEscritoriosBi(matriz.slice(1).map((r) => ({ titulo: r[me.titulo], escritorio: r[me.escritorio], empresa: r[me.empresa] })));
+    if (!escritorios && me.titulo !== undefined && me.escritorio !== undefined && me.empresa !== undefined && (me.conc !== undefined || matriz.length > 50)) {
+      if (me.conc !== undefined) {
+        // tabela ja tratada (aba da planilha de lancamento ou exportada daqui): vale como esta,
+        // para respeitar ajustes feitos de proposito (nao reaplica as exclusoes do Power Query)
+        const vistos = new Map();
+        matriz.slice(1).forEach((r) => {
+          const titulo = String(r[me.titulo] ?? '').trim();
+          const conc = String(r[me.conc] ?? '').trim() || `${String(r[me.empresa] ?? '').trim()}${String(r[me.escritorio] ?? '').trim()}`;
+          if (titulo && conc && !vistos.has(conc)) vistos.set(conc, { conc, titulo });
+        });
+        escritorios = [...vistos.values()];
+      } else {
+        escritorios = tratarEscritoriosBi(matriz.slice(1).map((r) => ({ titulo: r[me.titulo], escritorio: r[me.escritorio], empresa: r[me.empresa] })));
+      }
     }
   });
   if (!filiais && !escritorios) throw new Error('Nao encontrei as abas de Filiais (colunas "CNPJ OK" e "FILIAL SAP") nem de Escritorios BI neste arquivo.');
@@ -202,6 +215,13 @@ export function salvarParametros({ filiais, escritorios }) {
     atualizadoEm: new Date().toISOString(),
   };
   window.localStorage.setItem(CHAVE_PARAMETROS, JSON.stringify(novo));
+  return novo;
+}
+
+// Grava a copia local exatamente como veio do banco (mantem a data de atualizacao original).
+export function guardarCopiaLocal({ filiais, escritorios, atualizadoEm }) {
+  const novo = { filiais: filiais || [], escritorios: escritorios || [], atualizadoEm: atualizadoEm || new Date().toISOString() };
+  try { window.localStorage.setItem(CHAVE_PARAMETROS, JSON.stringify(novo)); } catch { /* localStorage indisponivel */ }
   return novo;
 }
 
@@ -255,4 +275,20 @@ export async function baixarXlsx(nome, linhas, cabecalho) {
   XLSX.utils.book_append_sheet(wb, ws, 'Dados');
   const out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
   baixarArquivo(nome, new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+}
+
+// Exporta as tabelas de parametros para Excel (abas Filiais_Cantu e Escritorios BI), com os
+// mesmos cabecalhos que o importador reconhece: da para ajustar no Excel e importar de volta.
+export async function baixarParametrosXlsx(parametros) {
+  const XLSX = await import('xlsx');
+  const filiais = [['CNPJ OK', 'FILIAL SAP', 'FILIAL SAP_1'], ...(parametros.filiais || []).map((f) => [f.cnpj, f.emp, f.centro])];
+  const escritorios = [
+    ['Título', 'Escritório', 'Empresa', 'Conc'],
+    ...(parametros.escritorios || []).map((e) => [e.titulo, String(e.conc).slice(4), String(e.conc).slice(0, 4), e.conc]),
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(filiais), 'Filiais_Cantu');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(escritorios), 'Escritorios BI');
+  const out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+  baixarArquivo('parametros-lancamento.xlsx', new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
 }
