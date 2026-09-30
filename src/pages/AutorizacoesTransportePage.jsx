@@ -18,23 +18,14 @@ import {
 
 const dinheiro = (valor) => Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const dataHora = (valor) => (valor ? new Date(valor).toLocaleString('pt-BR') : '-');
-// Chave da NF (44 digitos): posicoes 23-25 = serie, 26-34 = numero da NF.
-// Destaca numero e serie em negrito vermelho pra leitura rapida.
-function ChaveNfeDestaque({ chave }) {
+// Numero e serie da NF extraidos da chave (44 digitos): posicoes 23-25 = serie,
+// 26-34 = numero. Vai numa coluna propria, em negrito vermelho, pra leitura rapida.
+function NfSerieDestaque({ chave }) {
   const digitos = String(chave || '').replace(/\D/g, '');
-  if (digitos.length !== 44) return <>{chave || '-'}</>;
+  if (digitos.length !== 44) return <>-</>;
   const serie = String(Number(digitos.slice(22, 25)));
   const numero = String(Number(digitos.slice(25, 34)));
-  return (
-    <>
-      <div style={{ color: '#b91c1c', fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap' }}>NF {numero} · Série {serie}</div>
-      <span style={{ wordBreak: 'break-all' }}>
-        {digitos.slice(0, 22)}
-        <strong style={{ color: '#b91c1c' }}>{digitos.slice(22, 34)}</strong>
-        {digitos.slice(34)}
-      </span>
-    </>
-  );
+  return <strong style={{ color: '#b91c1c', fontSize: 13, whiteSpace: 'nowrap' }}>{numero} / Série {serie}</strong>;
 }
 
 const rotulo = (canal) => (canal === 'B2C' ? 'B2C' : canal === 'SUPRIMENTOS' ? 'Suprimentos' : 'Atacado');
@@ -285,7 +276,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
           )}
           <div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th><input type="checkbox" checked={todosMarcados} onChange={alternarTodos} title="Marcar todos" /></th><th>Pedido</th><th>Canal</th>{canal === 'SUPRIMENTOS' && <th>Chamado AMD</th>}<th>Chave CT-e</th><th>Chave NF</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor NF</th><th>Valor CT-e</th><th>Frete atual (AMD)</th><th>% NF atual</th><th>Adicional</th><th>Frete c/ adicional</th><th>% NF c/ adicional</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Justificativa *</th><th /></tr></thead>
+            <thead><tr><th><input type="checkbox" checked={todosMarcados} onChange={alternarTodos} title="Marcar todos" /></th><th>Pedido</th><th>Canal</th>{canal === 'SUPRIMENTOS' && <th>Chamado AMD</th>}<th>Chave CT-e</th><th>Chave NF</th><th>NF / Série</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor NF</th><th>Valor CT-e</th><th>Frete atual (AMD)</th><th>% NF atual</th><th>Adicional</th><th>Frete c/ adicional</th><th>% NF c/ adicional</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Justificativa *</th><th /></tr></thead>
             <tbody>
               {pendentes.map((item) => (
                 <tr key={item.id}>
@@ -294,12 +285,13 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   <td><strong>{canaisReais.get(String(item.chave_cte || '').replace(/\D/g, '')) || (item.canal === 'SUPRIMENTOS' ? '-' : rotulo(item.canal))}</strong></td>
                   {canal === 'SUPRIMENTOS' && <td>{item.protocolo_amd || '-'}<br /><small>{item.tipo_ajuste || ''}</small>{(item.anexos || []).map((a) => <div key={a.path}><a href={a.url} target="_blank" rel="noreferrer" style={{ fontSize: 11 }}>📎 {a.nome}</a></div>)}</td>}
                   <td style={{ fontSize: 11 }}>{item.chave_cte || '-'}</td>
-                  <td style={{ fontSize: 11 }}>{item.chave_nfe ? <ChaveNfeDestaque chave={item.chave_nfe} /> : (
+                  <td style={{ fontSize: 11 }}>{item.chave_nfe || (
                     <div style={{ display: 'flex', gap: 4, minWidth: 190 }}>
                       <input style={{ width: 150, fontSize: 11 }} placeholder="Chave NF (44 dig.)" value={campo(item.id, 'chaveNfe', '')} onChange={(e) => editar(item.id, 'chaveNfe', e.target.value.replace(/\D/g, '').slice(0, 44))} />
                       <button className="btn-secondary" disabled={processando === 'nfe-' + item.id} onClick={() => informarChaveNfe(item)}>Salvar</button>
                     </div>
                   )}</td>
+                  <td><NfSerieDestaque chave={item.chave_nfe} /></td>
                   <td>{item.cidade_origem || '-'} → {item.cidade_destino || '-'}</td>
                   <td>{item.transportadora || '-'}</td>
                   <td>{Number(item.valor_nf) > 0 ? dinheiro(item.valor_nf) : '-'}</td>
@@ -331,7 +323,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   </td>
                 </tr>
               ))}
-              {!pendentes.length && <tr><td colSpan={18}>{carregando ? 'Carregando...' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
+              {!pendentes.length && <tr><td colSpan={19}>{carregando ? 'Carregando...' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
             </tbody>
           </table>
         </div></div>
@@ -362,7 +354,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
           </div>
           <div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th>Decidido em</th><th>Fonte</th><th>Status</th><th>Pedido</th><th>Chave CT-e</th><th>Chave NF</th><th>Valor autorizado</th><th>Observacao</th><th>Por</th><th /></tr></thead>
+            <thead><tr><th>Decidido em</th><th>Fonte</th><th>Status</th><th>Pedido</th><th>Chave CT-e</th><th>Chave NF</th><th>NF / Série</th><th>Valor autorizado</th><th>Observacao</th><th>Por</th><th /></tr></thead>
             <tbody>
               {decididas.filter((item) => !filtroFonte || fonteAutorizacao(item) === filtroFonte).map((item) => (
                 <tr key={item.id}>
@@ -371,14 +363,15 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   <td>{item.status}</td>
                   <td>{item.numero_pedido || '-'}</td>
                   <td style={{ fontSize: 11 }}>{item.chave_cte || '-'}</td>
-                  <td style={{ fontSize: 11 }}>{item.chave_nfe ? <ChaveNfeDestaque chave={item.chave_nfe} /> : '-'}</td>
+                  <td style={{ fontSize: 11 }}>{item.chave_nfe || '-'}</td>
+                  <td><NfSerieDestaque chave={item.chave_nfe} /></td>
                   <td>{dinheiro(item.valor_autorizado)}</td>
                   <td>{item.observacao_gestor || '-'}</td>
                   <td>{item.decidido_por || '-'}</td>
                   <td>{ehGestao && item.status === 'AUTORIZADA' && <button className="btn-secondary" onClick={() => remover(item)}>Remover</button>}</td>
                 </tr>
               ))}
-              {!decididas.length && <tr><td colSpan={10}>Nada decidido ainda.</td></tr>}
+              {!decididas.length && <tr><td colSpan={11}>Nada decidido ainda.</td></tr>}
             </tbody>
           </table>
         </div></div>
