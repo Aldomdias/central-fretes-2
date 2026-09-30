@@ -38,6 +38,8 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
   const [justificativaMassa, setJustificativaMassa] = useState('');
   const [canaisReais, setCanaisReais] = useState(new Map());
   const [destinoTransferencia, setDestinoTransferencia] = useState('');
+  // Aviso de validacao ao lado do botao da linha (a mensagem geral fica la no topo, fora da vista).
+  const [avisoLinha, setAvisoLinha] = useState({ id: '', texto: '' });
   const [filtroFonte, setFiltroFonte] = useState('');
   const [importando, setImportando] = useState('');
   const arquivoRef = useRef(null);
@@ -96,21 +98,27 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
 
   // Suprimentos -> transporte (B2C/Atacado): vale pra um item (justificativa da linha)
   // ou pra todos os marcados (justificativa em massa).
-  const transferir = async (alvo, motivo) => {
-    if (!alvo.length) { setMensagem('Marque ao menos um CT-e.'); return; }
-    if (!destinoTransferencia) { setMensagem('Escolha o destino da transferencia (B2C ou Atacado).'); return; }
-    if (!String(motivo).trim()) { setMensagem('Informe a justificativa (obrigatoria) para transferir.'); return; }
-    if (!window.confirm(`Transferir ${alvo.length} CT-e(s) para o transporte ${destinoTransferencia === 'B2C' ? 'B2C' : 'Atacado'}?`)) return;
+  const transferir = async (alvo, motivo, destinoEscolhido = destinoTransferencia, idLinha = '') => {
+    const avisar = (texto) => {
+      setMensagem(texto);
+      setAvisoLinha({ id: idLinha, texto });
+    };
+    setAvisoLinha({ id: '', texto: '' });
+    if (!alvo.length) { avisar('Marque ao menos um CT-e.'); return; }
+    if (!destinoEscolhido) { avisar('Escolha o destino da transferencia (B2C ou Atacado).'); return; }
+    if (!String(motivo).trim()) { avisar('Informe a justificativa (obrigatoria) para transferir.'); return; }
+    if (!window.confirm(`Transferir ${alvo.length} CT-e(s) para o transporte ${destinoEscolhido === 'B2C' ? 'B2C' : 'Atacado'}?`)) return;
     setProcessando('transferir');
     setMensagem('');
     try {
-      const res = await transferirParaTransporte(alvo, { destino: destinoTransferencia, motivo, usuarioNome });
+      const res = await transferirParaTransporte(alvo, { destino: destinoEscolhido, motivo, usuarioNome });
       setMensagem(`${res.transferidos} CT-e(s) transferido(s) para a fila do transporte ${res.destino === 'B2C' ? 'B2C' : 'Atacado'}.`);
       setMarcados([]);
       setJustificativaMassa('');
       await carregar();
     } catch (error) {
       setMensagem(error.message || String(error));
+      setAvisoLinha({ id: idLinha, texto: error.message || String(error) });
     } finally {
       setProcessando('');
     }
@@ -288,7 +296,19 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn-primary" disabled={processando === item.id} onClick={() => decidir(item, true)}>Autorizar</button>{' '}
                     <button className="btn-secondary" disabled={processando === item.id} onClick={() => decidir(item, false)}>Recusar</button>
-                    {canal === 'SUPRIMENTOS' && <>{' '}<button className="btn-secondary" disabled={processando === 'transferir'} onClick={() => transferir([item], campo(item.id, 'obs', ''))} title="Nao e de Suprimentos: passa para o transporte (destino escolhido na barra acima)">Transferir p/ transporte</button></>}
+                    {canal === 'SUPRIMENTOS' && (
+                      <>
+                        {' '}
+                        <select value={campo(item.id, 'destino', destinoTransferencia)} onChange={(e) => editar(item.id, 'destino', e.target.value)} title="Destino da transferencia">
+                          <option value="">Destino...</option>
+                          <option value="B2C">Transporte B2C</option>
+                          <option value="ATACADO">Transporte Atacado</option>
+                        </select>
+                        {' '}
+                        <button className="btn-secondary" disabled={processando === 'transferir'} onClick={() => transferir([item], campo(item.id, 'obs', ''), campo(item.id, 'destino', destinoTransferencia), item.id)} title="Nao e de Suprimentos: escolha o destino e preencha a justificativa da linha">Transferir p/ transporte</button>
+                      </>
+                    )}
+                    {avisoLinha.id === item.id && avisoLinha.texto ? <div style={{ color: '#9b1111', fontSize: 12, marginTop: 4, whiteSpace: 'normal', maxWidth: 260 }}>{avisoLinha.texto}</div> : null}
                   </td>
                 </tr>
               ))}
