@@ -289,7 +289,7 @@ export default function App() {
         <AvisoPrazoFaturas minimizavel oculto={avisosOcultos} sessao={sessao} onAbrir={(filtros) => { setFiltroFaturasExterno({ chave: Date.now(), ...filtros }); mudarPagina('faturas'); }} />
       )}
       {(usuarioTemAcesso(sessao, 'autorizacoes-suprimentos') || sessao?.perfil === 'NEGOCIACAO_FRETES') && paginaAtual !== 'autorizacoes-suprimentos' && (
-        <AvisoAprovacoesSuprimentos movivel={usuarioPodeAdministrarUsuarios(sessao) || sessao?.perfil === 'NEGOCIACAO_FRETES'} usuarioId={sessao?.id || sessao?.email || ''} oculto={avisosOcultos && sessao?.perfil !== 'NEGOCIACAO_FRETES'} onAbrir={() => mudarPagina('autorizacoes-suprimentos')} />
+        <AvisoAprovacoesSuprimentos movivel usuarioId={sessao?.id || sessao?.email || ''} oculto={avisosOcultos && sessao?.perfil !== 'NEGOCIACAO_FRETES'} onAbrir={() => mudarPagina('autorizacoes-suprimentos')} />
       )}
       {/* Um botao so pra esconder/mostrar todos os avisos fixos de uma vez — em vez
           de cada um ter seu proprio minimizar, o que tampava outros botoes fixos. */}
