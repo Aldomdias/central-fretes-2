@@ -59,6 +59,12 @@ const MENU_GRUPOS = [
     ],
   },
   {
+    titulo: 'Automacao',
+    itens: [
+      { chave: 'robos', label: 'Robos (Automacao)' },
+    ],
+  },
+  {
     titulo: 'Base e cadastros',
     itens: [
       { chave: 'importacao', label: 'Importacao' },
@@ -93,6 +99,7 @@ const ICONS = {
   'torre-controle': 'M5 20V9h4v11H5zm5 0V4h4v16h-4zm5 0v-7h4v7h-4z',
   reajustes: 'M4 17l6-6 4 4 6-8m0 0h-5m5 0v5',
   'gestao-contratos': 'M7 3h7l5 5v13H7a2 2 0 01-2-2V5a2 2 0 012-2zm7 0v5h5M9 13h6M9 17h4',
+  robos: 'M9 3h6v3H9V3zm-4 5h14a1 1 0 011 1v9a1 1 0 01-1 1H5a1 1 0 01-1-1V9a1 1 0 011-1zm4 4h.01M15 12h.01M9 16h6',
   importacao: 'M12 3v12m0 0l-4-4m4 4l4-4M5 19h14',
   'importacao-ia-tabelas': 'M12 3l2.2 4.5L19 8.2l-3.5 3.3.8 4.8L12 14l-4.3 2.3.8-4.8L5 8.2l4.8-.7L12 3z',
   formatacao: 'M4 6h16M4 11h16M4 16h10',

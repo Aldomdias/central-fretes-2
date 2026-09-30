@@ -1,0 +1,33 @@
+import { useState } from 'react';
+import ReprocessarCteRobo from './robos/ReprocessarCteRobo';
+
+const ROBOS = [
+  { chave: 'reprocessar-cte', titulo: 'Reprocessar CT-e', descricao: 'Exporta os CT-e com erro de saldo do SAP e reprocessa em lotes. Substitui a planilha “Reprocessar Cte”.', componente: ReprocessarCteRobo },
+];
+
+export default function RobosPage() {
+  const [ativo, setAtivo] = useState(ROBOS[0].chave);
+  const robo = ROBOS.find((r) => r.chave === ativo) || ROBOS[0];
+  const Componente = robo.componente;
+
+  return (
+    <div className="page-stack">
+      <div className="page-header">
+        <div>
+          <h1>Automação</h1>
+          <p>Robôs que substituem planilhas e rotinas manuais. Cada robô prepara os dados aqui e gera o script que roda no seu computador.</p>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+        {ROBOS.map((r) => (
+          <button key={r.chave} type="button" onClick={() => setAtivo(r.chave)} className={r.chave === ativo ? 'btn-primary' : 'btn-secondary'} title={r.descricao}>{r.titulo}</button>
+        ))}
+        <button type="button" className="btn-secondary" disabled title="Novos robôs entram aqui">+ Novo robô (em breve)</button>
+      </div>
+
+      <p style={{ margin: '0 0 12px', color: '#475569' }}>{robo.descricao}</p>
+      <Componente />
+    </div>
+  );
+}

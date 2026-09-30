@@ -56,6 +56,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'simular-saida-transportadora', label: 'Simular Saída de Transportadora', grupo: 'Transportadoras' },
   { chave: 'gestao-contratos', label: 'Gestão de Contratos', grupo: 'Transportadoras' },
   { chave: 'gestao-base-cte', label: 'Gestão da Base CT-e', grupo: 'Auditoria' },
+  { chave: 'robos', label: 'Automação (Robôs)', grupo: 'Automação' },
   { chave: 'usuarios', label: 'Gestão de Usuários', grupo: 'Administração', somenteAdmin: true },
   { chave: 'usuarios-ativos', label: 'Usuários Ativos', grupo: 'Administração', somenteAdmin: true },
 ];
