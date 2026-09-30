@@ -67,6 +67,7 @@ import {
   buscarFaturasExistentesPorNumero,
   detectarCanaisFaturas,
   reauditarFatura,
+  excluirFaturasAuditoria,
   registrarDoccob,
   restaurarDemonstracaoAuditoria,
   salvarBoletoFinanceiro,
@@ -4486,6 +4487,28 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     }
   };
 
+  // Apaga faturas selecionadas (ex.: importada em duplicidade). So gestao.
+  const excluirSelecionadas = async () => {
+    if (!usuarioEhGestorAuditoria(sessao)) return;
+    const alvo = state.faturas.filter((item) => selecionadasIds.includes(item.id));
+    if (!alvo.length) return;
+    const lista = alvo.slice(0, 8).map((f) => `${f.numero_fatura || f.numero || f.id} - ${f.transportadora || ''}`).join('\n');
+    const resumo = alvo.length > 8 ? `${lista}\n... e mais ${alvo.length - 8}` : lista;
+    if (!window.confirm(`Apagar ${alvo.length} fatura(s) definitivamente? Os CT-es/detalhes e o historico dela tambem serao removidos.\n\n${resumo}`)) return;
+    setRecalculandoLote(true);
+    try {
+      const { state: novo, excluidas, erros } = await excluirFaturasAuditoria(state, alvo.map((f) => f.id));
+      onState(novo);
+      setSelecionadasIds((atual) => atual.filter((id) => !excluidas.includes(id)));
+      const falhas = erros.length ? ` Nao apagadas: ${erros.map((e) => `${e.numero} (${e.motivo})`).join('; ')}.` : '';
+      setMensagemImportacao(`${excluidas.length} fatura(s) apagada(s).${falhas}`);
+    } catch (error) {
+      setMensagemImportacao(`Erro ao apagar faturas: ${error.message}`);
+    } finally {
+      setRecalculandoLote(false);
+    }
+  };
+
   const aplicarTabelaAlternativaAvulsa = async (row, alternativa) => {
     const chaveAlvo = chaveResultadoAuditoria(row);
     if (!chaveAlvo || !alternativa) return;
@@ -6634,6 +6657,11 @@ ${portaisLaudo.length ? `
           <input value={emailAuditorLote} onChange={(e) => setEmailAuditorLote(e.target.value)} placeholder="E-mail auditor" disabled={recalculandoLote} style={{ maxWidth: 210 }} />
           <button className="btn-secondary" disabled={recalculandoLote || !auditorLote.trim()} onClick={() => atualizarFaturasEmMassa('auditor')}>Aplicar auditor</button>
           <button className="btn-primary" disabled={recalculandoLote} onClick={abrirLiberacaoLote}>Liberar selecionadas</button>
+          {usuarioEhGestorAuditoria(sessao) && (
+            <button className="btn-secondary" style={{ color: '#dc2626', borderColor: '#dc2626' }} disabled={recalculandoLote} onClick={excluirSelecionadas} title="Apaga as faturas selecionadas (ex.: duplicidade)">
+              Apagar selecionadas ({selecionadasIds.length})
+            </button>
+          )}
           {modalLiberacaoLote && (
             <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <div className="hint-box" style={{ background: '#fff', width: 'min(640px, 94vw)', maxHeight: '92vh', overflow: 'auto', padding: 20 }}>

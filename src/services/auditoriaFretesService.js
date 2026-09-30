@@ -373,6 +373,41 @@ export async function atualizarFaturaAuditoria(state, fatura, evento) {
   return writeLocal(next);
 }
 
+// Exclui faturas (ex.: importada em duplicidade). Detalhes/historico saem por
+// cascade no banco; o que estiver preso por FK sem cascade (pagamento,
+// solicitacao financeira, fatura que substitui outra) bloqueia a exclusao da
+// fatura especifica e volta em `erros` com o motivo.
+export async function excluirFaturasAuditoria(state, ids = []) {
+  const alvo = [...new Set((ids || []).filter(Boolean))];
+  const excluidas = [];
+  const erros = [];
+  if (isSupabaseConfigured()) {
+    const client = getSupabaseClient();
+    for (const id of alvo) {
+      await client.from('fatura_cte_divergencias').delete().eq('fatura_id', String(id));
+      const { error } = await client.from('faturas').delete().eq('id', id);
+      if (error) {
+        const fatura = state.faturas.find((item) => item.id === id);
+        const motivo = error.code === '23503'
+          ? 'tem vinculos (pagamento, solicitacao financeira ou substituicao de outra fatura)'
+          : error.message;
+        erros.push({ id, numero: fatura?.numero_fatura || fatura?.numero || id, motivo });
+      } else {
+        excluidas.push(id);
+      }
+    }
+  } else {
+    excluidas.push(...alvo);
+  }
+  const fora = new Set(excluidas);
+  const next = {
+    ...state,
+    faturas: state.faturas.filter((item) => !fora.has(item.id)),
+    historico: (state.historico || []).filter((item) => !fora.has(item.fatura_id)),
+  };
+  return { state: writeLocal(next), excluidas, erros };
+}
+
 // Atribui um auditor a varias faturas de uma vez (lote), usado pra corrigir o
 // vinculo de uma transportadora cujo nome na fatura nao casa com a carteira.
 // So mexe nas faturas informadas que ainda estao SEM auditor.
