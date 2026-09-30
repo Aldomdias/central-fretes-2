@@ -310,9 +310,10 @@ export function gerarScriptReprocessarVbs({ chaves = [], dataInicial, dataFinal 
   return linhas.join('\r\n') + '\r\n';
 }
 
-export function baixarTexto(nomeArquivo, conteudo, mime = 'text/plain') {
+export function baixarTexto(nomeArquivo, conteudo, mime = 'application/octet-stream') {
+  // octet-stream (e nao text/plain): senao Edge/Chrome anexam ".txt" ao nome e o .vbs nao executa.
   // BOM ausente de proposito: o VBScript le ANSI e o conteudo gerado e ASCII.
-  const blob = new Blob([conteudo], { type: `${mime};charset=windows-1252` });
+  const blob = new Blob([conteudo], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

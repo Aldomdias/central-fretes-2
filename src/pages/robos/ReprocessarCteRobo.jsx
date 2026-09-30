@@ -196,6 +196,7 @@ export default function ReprocessarCteRobo() {
         <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>
           <li>Abra o SAP Logon e entre no sistema (o scripting do SAP GUI precisa estar habilitado — o mesmo requisito da planilha).</li>
           <li>Se o navegador avisar sobre o download do .vbs, escolha “Manter”. Dê dois cliques no arquivo para executar.</li>
+          <li>Se o arquivo abrir no Bloco de Notas ou ficar com nome terminado em <code>.vbs.txt</code>, renomeie para terminar em <code>.vbs</code> (ative “Extensões de nomes de arquivos” na aba Exibir do Explorador).</li>
           <li>Não mexa no SAP enquanto o script roda. Ao terminar aparece uma mensagem.</li>
         </ol>
       </div>
