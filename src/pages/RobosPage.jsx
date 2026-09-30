@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import ReprocessarCteRobo from './robos/ReprocessarCteRobo';
+import LancamentoNfseRobo from './robos/LancamentoNfseRobo';
 
 const ROBOS = [
   { chave: 'reprocessar-cte', titulo: 'Reprocessar CT-e', descricao: 'Exporta os CT-e com erro de saldo do SAP e reprocessa em lotes. Substitui a planilha “Reprocessar Cte”.', componente: ReprocessarCteRobo },
+  { chave: 'lancamento-nfse', titulo: 'Lançamento NFS-e', descricao: 'Cria o pedido (ME21N) e a MIRO das notas de serviço das transportadoras. Substitui a planilha “Lançamento NFS-e”.', componente: LancamentoNfseRobo },
 ];
 
 export default function RobosPage() {
