@@ -57,10 +57,32 @@ export function lerEntradaNfse(matriz = []) {
     }));
 }
 
-// Equivale a consulta "Lancamento (2)" do Power Query + regras das colunas.
+// Linha em branco da grade (nada digitado): nao entra no calculo.
+export function entradaVazia(e = {}) {
+  return ['nf', 'transportadora', 'cnpjTransp', 'dataEmissao', 'valor', 'codImp', 'cfop', 'cnpjTomador', 'escrV', 'fatura']
+    .every((c) => String(e[c] ?? '').trim() === '');
+}
+
+export function novaEntradaNfse(uid, base = {}) {
+  return { uid, nf: '', transportadora: '', cnpjTransp: '', dataEmissao: '', valor: '', codImp: '', cfop: '', cnpjTomador: '', escrV: '', fatura: '', vencimento: '', ...base };
+}
+
+// Equivale a consulta "Lancamento (2)" do Power Query + regras das colunas. Aceita os campos
+// como vieram da grade (texto digitado) ou de importacao.
 export function montarLancamentoNfse(entradas = [], indices, { vencimento = hojeIso() } = {}) {
-  const ids = gerarIds(entradas, (e) => `${e.nf}/${e.cnpjTransp}`);
-  return entradas.map((e, i) => {
+  const ids = gerarIds(entradas, (e) => `${String(e.nf ?? '').trim()}/${normalizarCnpj(e.cnpjTransp)}`);
+  return entradas.map((e0, i) => {
+    const e = {
+      ...e0,
+      nf: String(e0.nf ?? '').trim(),
+      cnpjTransp: normalizarCnpj(e0.cnpjTransp),
+      cnpjTomador: normalizarCnpj(e0.cnpjTomador),
+      dataEmissao: dataParaIso(e0.dataEmissao),
+      valor: numeroPlanilha(e0.valor),
+      codImp: String(e0.codImp ?? '').trim().toUpperCase(),
+      cfop: String(e0.cfop ?? '').trim().toUpperCase(),
+      escrV: String(e0.escrV ?? '').trim().toUpperCase(),
+    };
     const filial = indices.filiais.get(e.cnpjTomador);
     const emp = filial?.emp || '';
     const centro = filial?.centro || '';
@@ -72,31 +94,37 @@ export function montarLancamentoNfse(entradas = [], indices, { vencimento = hoje
     if (!(e.valor > 0)) erros.push('valor invalido');
     if (!e.codImp) erros.push('codigo de imposto vazio');
     if (!e.cfop) erros.push('CFOP vazio');
-    if (!emp) erros.push('CNPJ do tomador nao esta em Filiais');
+    if (!e.cnpjTomador) erros.push('CNPJ do tomador vazio');
+    else if (!emp) erros.push('CNPJ do tomador nao esta em Filiais');
     else if (!e.escrV) erros.push('escritorio de vendas vazio');
     else if (!cc) erros.push(`sem centro de custo para ${emp}${e.escrV}`);
     return {
+      uid: e0.uid,
       id: ids[i],
       emp,
       nf: e.nf,
-      transportadora: e.transportadora,
+      transportadora: String(e0.transportadora ?? '').trim(),
       cnpjTransp: e.cnpjTransp,
       dataEmissao: e.dataEmissao,
       valor: e.valor,
       codImp: e.codImp,
       cfop: e.cfop,
-      vencimento,
+      vencimento: dataParaIso(e0.vencimento) || vencimento,
       centro,
       cc,
       escrV: e.escrV,
       cnpjTomador: e.cnpjTomador,
-      fatura: e.fatura,
+      fatura: String(e0.fatura ?? '').trim(),
       pedido: '',
       miro: '',
       erros,
     };
   });
 }
+
+// Modelo de importacao (mesmas colunas da antiga aba "Preencher Dados") com uma linha de exemplo.
+export const CABECALHO_MODELO_NFSE = ['NF', 'Transportadora', 'CNPJ Transp', 'Data Emissão', 'Valor', 'Cod', 'CFOP', 'CNPJ Tomador', 'EscrV', 'Fatura'];
+export const EXEMPLO_MODELO_NFSE = { NF: '1428-F', Transportadora: 'ROCHA E MIURA TRANSPORTES LTDA', 'CNPJ Transp': '16615755000130', 'Data Emissão': '30/06/2026', Valor: '57,53', Cod: 'IQ', CFOP: '1933AA', 'CNPJ Tomador': '10158356013866', EscrV: 'Z044', Fatura: '5199' };
 
 // Linhas no formato esperado por gerarScriptNfse.
 export function linhasParaScriptNfse(linhas = []) {

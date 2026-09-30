@@ -24,6 +24,8 @@ import {
   lerResultadoCsv,
 } from '../../utils/robos/lancamentoComum';
 import { PASTA_CTE, gerarScriptCte } from '../../utils/robos/sapLancamentoVbs';
+import { registrarLancamentos } from '../../services/robosLancamentosService';
+import { carregarSessao } from '../../utils/authLocal';
 import { PASTA_ETAPAS_CTE, gerarScriptConsultaNotasCte, gerarScriptPartidasCte } from '../../utils/robos/sapConsultasCte';
 
 const CHAVE = 'central_fretes_robo_cte_lote_v1';
@@ -156,9 +158,27 @@ export default function LancamentoCteRobo() {
         novos[l.id] = { ...(manuais[l.id] || {}), pedido: r.pedido || l.pedido, miro: r.miro || l.miro };
       });
       setManuais((a) => ({ ...a, ...novos })); setErro('');
-      setFeedback(n ? `Resultado aplicado em ${fmt(n)} CT-e.` : 'Nenhum CT-e do arquivo bate com o lote atual.');
+      let extra = '';
+      if (n) {
+        const r = await registrarHistorico(linhas.map((l) => ({ ...l, ...(novos[l.id] || {}) })));
+        if (r) extra = ` ${fmt(r.novos)} novo(s) registrado(s) ${r.onde === 'banco' ? 'no historico' : 'no historico (so neste navegador: migration pendente)'}.`;
+      }
+      setFeedback(n ? `Resultado aplicado em ${fmt(n)} CT-e.${extra}` : 'Nenhum CT-e do arquivo bate com o lote atual.');
     } catch (e) { setErro(e.message || 'Nao consegui ler o resultado.'); }
     finally { if (refRes.current) refRes.current.value = ''; }
+  }
+
+  async function registrarHistorico(lista) {
+    const com = lista.filter((l) => l.miro);
+    if (!com.length) return null;
+    const sessao = carregarSessao();
+    return registrarLancamentos('CTE', com, sessao?.nome || sessao?.email || '');
+  }
+
+  async function guardarHistoricoManual() {
+    const r = await registrarHistorico(linhas);
+    if (!r) { setErro('Nenhum CT-e com MIRO para registrar no historico.'); return; }
+    setErro(''); setFeedback(`Historico atualizado. ${fmt(r.novos)} novo(s) registrado(s).`);
   }
 
   async function baixarEnviar() {
@@ -287,10 +307,11 @@ export default function LancamentoCteRobo() {
               <span style={numStyle}>4</span>
               <div>
                 <div className="panel-title" style={{ margin: 0 }}>Trazer o resultado</div>
-                <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue <code>{PASTA_CTE}\resultado_cte.csv</code> para preencher pedido e MIRO. O script para no primeiro erro e diz qual CT-e falhou; ao rodar de novo pula o que já tem número.</p>
+                <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue <code>{PASTA_CTE}\resultado_cte.csv</code> para preencher pedido e MIRO; os CT-e com MIRO entram sozinhos no histórico (aba “Acompanhamento de lançamentos”). O script para no primeiro erro e diz qual CT-e falhou; ao rodar de novo pula o que já tem número.</p>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <input ref={refRes} type="file" accept=".csv,.txt" onChange={(e) => importarResultado(e.target.files?.[0])} />
                   <button type="button" className="btn-secondary" onClick={baixarEnviar}>Baixar resumo (Enviar) .xlsx</button>
+                  <button type="button" className="btn-secondary" onClick={guardarHistoricoManual}>Registrar no histórico</button>
                 </div>
               </div>
             </div>

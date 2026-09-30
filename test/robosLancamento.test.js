@@ -101,3 +101,23 @@ test('importar arquivo exportado: mantem linha ajustada a mao (inclusive Conc da
   assert.deepEqual(r.filiais, [{ cnpj: '10158356013866', emp: '1420', centro: 'X138' }]);
   assert.deepEqual(r.escritorios.map((e) => e.conc), ['1420Z044', '1710ZTRD']);
 });
+
+import { agregarPorMes, anosDisponiveis, linhaParaRegistro, chaveRegistro } from '../src/utils/robos/historicoLancamentos.js';
+
+test('historico: so entra o que tem MIRO e agrega por mes', () => {
+  assert.equal(linhaParaRegistro('NFSE', { nf: '1', miro: '' }), null);
+  const r = linhaParaRegistro('NFSE', { nf: '1428-F', miro: '5110000002', pedido: '4500000001', valor: 57.53, emp: '1420', cnpjTransp: '1', transportadora: 'RM', dataEmissao: '2026-06-30', vencimento: '' });
+  assert.deepEqual([r.tipo, r.documento, r.valor, r.vencimento, chaveRegistro(r)], ['NFSE', '1428-F', 57.53, null, 'NFSE|5110000002|1428-F']);
+  const c = linhaParaRegistro('CTE', { cte: '123-1', bruto: 100, miro: '5110000003' });
+  assert.deepEqual([c.documento, c.valor], ['123-1', 100]);
+  const regs = [
+    { tipo: 'NFSE', valor: 10, transportadora: 'A', lancado_em: '2026-09-05T12:00:00Z' },
+    { tipo: 'NFSE', valor: 5.5, transportadora: 'A', lancado_em: '2026-09-20T12:00:00Z' },
+    { tipo: 'CTE', valor: 100, transportadora: 'B', lancado_em: '2026-09-21T12:00:00Z' },
+    { tipo: 'CTE', valor: 1, transportadora: 'B', lancado_em: '2025-01-21T12:00:00Z' },
+  ];
+  const set = agregarPorMes(regs, '2026')[8];
+  assert.deepEqual([set.nfse, set.cte, set.total, set.valor, set.transportadoras], [2, 1, 3, 115.5, 2]);
+  assert.equal(agregarPorMes(regs, '2026', 'CTE')[8].total, 1);
+  assert.ok(anosDisponiveis(regs).includes('2025'));
+});
