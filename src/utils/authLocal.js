@@ -365,6 +365,8 @@ export function usuarioTemAcesso(usuario, pagina) {
   if (pagina === 'minha-senha') return true;
   // Gestao decide a fila de Suprimentos mesmo com lista de paginas personalizada.
   if (pagina === 'autorizacoes-suprimentos' && usuario.perfil === 'GESTAO') return true;
+  // Modulo novo: Gestao ve sempre, mesmo com lista de paginas salva antes dele existir.
+  if (pagina === 'robos' && usuario.perfil === 'GESTAO') return true;
   if (pagina === 'usuarios' || pagina === 'usuarios-ativos') return usuarioPodeAdministrarUsuarios(usuario);
 
   const permissoes = permissoesUsuario(usuario);
