@@ -965,6 +965,7 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress, so
   let totalPulados = 0;
   let totalLido = 0;
   let totalAlertas = 0;
+  const idsAlertasNovos = [];
   const configAlerta = await carregarConfigAlertaCte();
 
   // Contagem só estimada (planner) e uma vez — count exato em temporária grande
@@ -1024,7 +1025,7 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress, so
       await gravarLocalComRetry(supabase, payload);
       totalInserido += payload.length;
       // CT-e de valor alto viram alerta (e e-mail ao final). Nao derruba a importacao.
-      totalAlertas += await registrarAlertasValorCte(payload, configAlerta);
+      totalAlertas += await registrarAlertasValorCte(payload, configAlerta, idsAlertasNovos);
     }
 
     const idsRemover = lote.map((row) => row.id).filter(Boolean);
@@ -1057,7 +1058,8 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress, so
 
   if (totalAlertas > 0) {
     onProgress?.({ etapa: 'alerta_valor', mensagem: `${totalAlertas.toLocaleString('pt-BR')} CT-e(s) acima do limite de alerta. Enviando e-mail...` });
-    await enviarEmailAlertasPendentes();
+    // So os alertas criados nesta importacao (nao arrasta pendentes antigos de varredura).
+    await enviarEmailAlertasPendentes(idsAlertasNovos);
   }
 
   return {

@@ -64,17 +64,21 @@ function linhaAlerta(row = {}, limiar) {
  * valor >= limiar e grava como alerta (sem sobrescrever os que ja foram analisados).
  * Nunca lanca erro - o alerta e acessorio e nao pode derrubar a importacao.
  */
-export async function registrarAlertasValorCte(rows = [], config = null) {
+export async function registrarAlertasValorCte(rows = [], config = null, coletorIds = null) {
   try {
     const cfg = config || await carregarConfigAlertaCte();
     if (!cfg.ativo) return 0;
     const altos = rows.filter((row) => row?.chave_cte && Number(row.valor_cte || 0) >= cfg.limiar);
     if (!altos.length) return 0;
-    const { error } = await client()
+    // ignoreDuplicates + select devolve so os alertas realmente criados agora (os que ja
+    // existiam ficam de fora) - a importacao envia e-mail apenas desses.
+    const { data, error } = await client()
       .from(TABELA)
-      .upsert(altos.map((row) => linhaAlerta(row, cfg.limiar)), { onConflict: 'chave_cte', ignoreDuplicates: true });
+      .upsert(altos.map((row) => linhaAlerta(row, cfg.limiar)), { onConflict: 'chave_cte', ignoreDuplicates: true })
+      .select('id');
     if (error) throw error;
-    return altos.length;
+    if (coletorIds) (data || []).forEach((r) => coletorIds.push(r.id));
+    return (data || []).length;
   } catch (error) {
     console.warn('Alerta de CT-e de valor alto não registrado:', error?.message || error);
     return 0;
