@@ -527,11 +527,27 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
       const candidatasPorCnpj = cnpjValido
         ? candidatas.filter((fatura) => obterRaizCnpj(fatura.cnpj_transportadora) === raizPagamento)
         : [];
+      // Mesma transportadora cadastrada com mais de um CNPJ (ex.: matriz e outra
+      // raiz): se o nome bate e o valor da fatura e' exatamente o do SAP, casa
+      // mesmo com a raiz diferente - so quando ha uma unica fatura assim.
+      let porNomeEValor = [];
       if (cnpjValido && !candidatasPorCnpj.length) {
+        const nomeBase = (txt) => String(txt || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
+          .replace(/[^A-Z0-9 ]/g, ' ').replace(/(LTDA|ME|EPP|EIRELI|SA|S A)/g, ' ').replace(/\s+/g, ' ').trim();
+        const nomeSap = nomeBase(pagamento.transportadora);
+        const mesmoNome = (fatura) => {
+          const nomeFatura = nomeBase(fatura.transportadora);
+          return nomeSap && nomeFatura && (nomeSap === nomeFatura || nomeSap.startsWith(nomeFatura) || nomeFatura.startsWith(nomeSap));
+        };
+        const abertasNome = candidatas.filter((fatura) => mesmoNome(fatura) && Math.abs(Number(fatura.valor_fatura || 0) - Number(pagamento.valor_pago || 0)) <= 0.01);
+        const unicas = [...new Set(abertasNome.map((fatura) => fatura.id))];
+        if (unicas.length === 1 || (abertasNome.length > 1 && abertasNome.every((f) => [f.valor_fatura, f.data_emissao, f.data_vencimento].join('|') === [abertasNome[0].valor_fatura, abertasNome[0].data_emissao, abertasNome[0].data_vencimento].join('|')))) porNomeEValor = abertasNome;
+      }
+      if (cnpjValido && !candidatasPorCnpj.length && !porNomeEValor.length) {
         return [{ ...pagamento, resultado: 'CNPJ_DIVERGENTE' }];
       }
 
-      let alvo = candidatasPorCnpj.length ? candidatasPorCnpj : candidatas;
+      let alvo = candidatasPorCnpj.length ? candidatasPorCnpj : (porNomeEValor.length ? porNomeEValor : candidatas);
       const abertas = alvo.filter((fatura) => !ENCERRADOS.has(fatura.status));
       if (abertas.length) alvo = abertas;
 
