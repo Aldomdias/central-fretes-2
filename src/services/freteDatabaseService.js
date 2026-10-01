@@ -218,6 +218,8 @@ async function fetchAllRows(supabase, table, orderBy = null, ascending = true, o
 // pode incluir uma linha por tabela alternativa cadastrada (ver
 // 20260922_002_generalidades_taxas_grupo_alternativo.sql). Aceita também uma
 // única linha "solta" (ou null) pra não quebrar chamadas antigas.
+const MARCADOR_SOMENTE_VIGENCIA = '__somente_vigencia__';
+
 function mapGeneralidadeRow(generalidade) {
   return {
     incideIcms: Boolean(generalidade?.incide_icms),
@@ -243,8 +245,20 @@ function normalizeOrigemFromDb(origem, generalidadesRows, rotas, cotacoes, taxas
     ? generalidadesRows
     : (generalidadesRows ? [generalidadesRows] : []);
   const generalidadePrincipal = listaGeneralidades.find((item) => !item?.grupo_tabela_alternativa) || null;
+  // Vigência da tabela alternativa (reajuste com data de início). Vive na linha
+  // de `generalidades` do grupo; quando a linha só existe pra guardar a vigência
+  // (marcador em observacoes) ela NÃO conta como generalidade própria do grupo.
+  const vigenciasAlternativas = {};
+  listaGeneralidades.forEach((item) => {
+    if (!item?.grupo_tabela_alternativa) return;
+    if (!item.vigencia_inicio && !item.vigencia_fim) return;
+    vigenciasAlternativas[String(item.grupo_tabela_alternativa)] = {
+      inicio: item.vigencia_inicio || '',
+      fim: item.vigencia_fim || '',
+    };
+  });
   const generalidadesAlternativas = listaGeneralidades
-    .filter((item) => item?.grupo_tabela_alternativa)
+    .filter((item) => item?.grupo_tabela_alternativa && item.observacoes !== MARCADOR_SOMENTE_VIGENCIA)
     .map((item) => ({
       grupoTabelaAlternativa: String(item.grupo_tabela_alternativa),
       ...mapGeneralidadeRow(item),
@@ -265,6 +279,8 @@ function normalizeOrigemFromDb(origem, generalidadesRows, rotas, cotacoes, taxas
     // grupo cadastrado). Vazio = nenhuma alternativa tem generalidade
     // própria; o motor de Auditoria cai de volta na principal acima.
     generalidadesAlternativas,
+    // { [grupo]: { inicio, fim } } — janela de vigência por tabela alternativa.
+    vigenciasAlternativas,
     // Indicador leve (mesmo campo que carregarResumoBaseDb calcula por
     // query) pra listas mostrarem o badge sem precisar varrer rotas de novo.
     temTabelaAlternativa: Boolean(
@@ -1639,6 +1655,66 @@ export async function excluirGeneralidadesAlternativaDb(origemId, grupoTabelaAlt
   if (error) throw error;
   invalidarCacheBaseCompletaDb();
   return { ok: true };
+}
+
+// Grava a janela de vigência de uma tabela alternativa (ex.: reajuste que entra
+// em 01/10). Fica nas colunas vigencia_inicio/vigencia_fim da linha de
+// `generalidades` do grupo (ver 20261001_001_generalidades_vigencia_alternativa.sql).
+// Se o grupo ainda não tem linha de generalidades, cria uma só pra guardar a
+// vigência (marcador em observacoes, que a leitura ignora como generalidade).
+export async function salvarVigenciaTabelaAlternativaDb(origemId, grupoTabelaAlternativa, vigencia = {}, {
+  transportadoraId = '',
+  transportadoraNome = '',
+  cidade = '',
+  canal = '',
+} = {}) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  if (!origemId || !grupoTabelaAlternativa) throw new Error('Origem e tabela alternativa são obrigatórias para gravar a vigência.');
+  const origemIdPersistencia = await resolverOrigemIdParaGravacao(origemId, {
+    transportadoraId, transportadoraNome, cidade, canal,
+  });
+  const supabase = ensureClient();
+  const inicio = vigencia.inicio || null;
+  const fim = vigencia.fim || null;
+
+  const { data: existente, error: erroBusca } = await supabase
+    .from('generalidades')
+    .select('origem_id, observacoes')
+    .eq('origem_id', origemIdPersistencia)
+    .eq('grupo_tabela_alternativa', grupoTabelaAlternativa)
+    .limit(1);
+  if (erroBusca) throw erroBusca;
+  const linha = (existente || [])[0] || null;
+
+  if (linha) {
+    if (!inicio && !fim && linha.observacoes === MARCADOR_SOMENTE_VIGENCIA) {
+      const { error } = await supabase
+        .from('generalidades')
+        .delete()
+        .eq('origem_id', origemIdPersistencia)
+        .eq('grupo_tabela_alternativa', grupoTabelaAlternativa);
+      if (error) throw error;
+    } else {
+      const { error } = await supabase
+        .from('generalidades')
+        .update({ vigencia_inicio: inicio, vigencia_fim: fim })
+        .eq('origem_id', origemIdPersistencia)
+        .eq('grupo_tabela_alternativa', grupoTabelaAlternativa);
+      if (error) throw error;
+    }
+  } else if (inicio || fim) {
+    await upsertRows(supabase, 'generalidades', [{
+      origem_id: origemIdPersistencia,
+      grupo_tabela_alternativa: grupoTabelaAlternativa,
+      incide_icms: false,
+      tipo_calculo: 'PERCENTUAL',
+      observacoes: MARCADOR_SOMENTE_VIGENCIA,
+      vigencia_inicio: inicio,
+      vigencia_fim: fim,
+    }], 'origem_id,grupo_tabela_alternativa');
+  }
+  invalidarCacheBaseCompletaDb();
+  return { ok: true, origemId: origemIdPersistencia };
 }
 
 // `secao` aceita uma string ('rotas') ou um array (['rotas', 'cotacoes']) para

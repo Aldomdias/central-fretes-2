@@ -12,6 +12,7 @@ import {
   excluirTransportadoraDb,
   limparSecaoOrigemDb,
   salvarGeneralidadesOrigemDb,
+  salvarVigenciaTabelaAlternativaDb,
   excluirGeneralidadesAlternativaDb,
   salvarBaseCompletaDb,
   salvarSecaoDb,
@@ -71,6 +72,10 @@ function normalizeOrigem(origem = {}) {
     generalidadesAlternativas: Array.isArray(origem.generalidadesAlternativas)
       ? origem.generalidadesAlternativas.filter((item) => item?.grupoTabelaAlternativa)
       : [],
+    // { [grupo]: { inicio, fim } } — vigência por tabela alternativa (reajuste).
+    vigenciasAlternativas: origem.vigenciasAlternativas && typeof origem.vigenciasAlternativas === 'object'
+      ? origem.vigenciasAlternativas
+      : {},
     rotas: Array.isArray(origem.rotas)
       ? origem.rotas.map((item) => ({ ...item, id: item.id ?? safeRandomId() }))
       : [],
@@ -1093,6 +1098,48 @@ export function useFreteStore(sessao = null) {
         aplicarAlteracao((prev) => mergeImport(prev, payload, tipo, grupoTabelaAlternativa, alvo), tipo, tipo);
         return true;
       },
+      // Define a janela de vigência de uma tabela alternativa (reajuste que entra
+      // em uma data). Auditoria usa a data de emissão do CT-e pra escolher a tabela.
+      async salvarVigenciaTabelaAlternativa(transportadoraId, origemId, grupoTabelaAlternativa, vigencia = {}) {
+        if (!podeEditarTransportadoras()) return { ok: false, erro: new Error(ERRO_SEM_PERMISSAO) };
+        if (!grupoTabelaAlternativa) return { ok: false, erro: new Error('Informe a tabela alternativa.') };
+        const inicio = vigencia.inicio || '';
+        const fim = vigencia.fim || '';
+        const origemAnterior = (transportadoras || []).find((t) => String(t.id) === String(transportadoraId))
+          ?.origens?.find((o) => String(o.id) === String(origemId));
+        const next = (transportadoras || []).map((t) =>
+          String(t.id) !== String(transportadoraId)
+            ? t
+            : {
+                ...t,
+                origens: (t.origens || []).map((o) => {
+                  if (String(o.id) !== String(origemId)) return o;
+                  const vigencias = { ...(o.vigenciasAlternativas || {}) };
+                  if (inicio || fim) vigencias[grupoTabelaAlternativa] = { inicio, fim };
+                  else delete vigencias[grupoTabelaAlternativa];
+                  return { ...o, vigenciasAlternativas: vigencias };
+                }),
+              }
+        ).map(normalizeTransportadora);
+        setTransportadoras(next);
+        persistLocalState(next);
+
+        if (!bancoConfigurado()) return { ok: true, modo: 'local' };
+
+        try {
+          const atual = next.find((item) => String(item.id) === String(transportadoraId));
+          await salvarVigenciaTabelaAlternativaDb(origemId, grupoTabelaAlternativa, { inicio, fim }, {
+            transportadoraId,
+            transportadoraNome: atual?.nome || '',
+            cidade: origemAnterior?.cidade || '',
+            canal: origemAnterior?.canal || '',
+          });
+          return { ok: true };
+        } catch (error) {
+          setSyncStatus((prev) => ({ ...prev, sincronizando: false, erro: error?.message || 'Erro ao salvar a vigência da tabela alternativa.' }));
+          return { ok: false, erro: error };
+        }
+      },
       // Remove de uma vez as rotas, cotações, generalidades e taxas especiais
       // de uma tabela alternativa (grupoTabelaAlternativa) desta origem, sem
       // afetar a tabela principal nem outras alternativas. Usado pelo botão
@@ -1112,7 +1159,7 @@ export function useFreteStore(sessao = null) {
           .map((item) => item.id);
         const tinhaGeneralidadeAlternativa = (origem?.generalidadesAlternativas || []).some(
           (item) => item.grupoTabelaAlternativa === grupoTabelaAlternativa
-        );
+        ) || Boolean(origem?.vigenciasAlternativas?.[grupoTabelaAlternativa]);
 
         setTransportadoras((prev) =>
           (prev || []).map((t) =>
@@ -1129,6 +1176,9 @@ export function useFreteStore(sessao = null) {
                       taxasEspeciais: (o.taxasEspeciais || []).filter((item) => !pertence(item)),
                       generalidadesAlternativas: (o.generalidadesAlternativas || []).filter(
                         (item) => item.grupoTabelaAlternativa !== grupoTabelaAlternativa
+                      ),
+                      vigenciasAlternativas: Object.fromEntries(
+                        Object.entries(o.vigenciasAlternativas || {}).filter(([grupo]) => grupo !== grupoTabelaAlternativa)
                       ),
                     });
                   }),

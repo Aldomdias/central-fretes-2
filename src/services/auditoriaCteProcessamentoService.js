@@ -556,6 +556,56 @@ function coletarGruposAlternativosTransportadora(transportadora = {}) {
   return Array.from(grupos);
 }
 
+// Vigência de um grupo (reajuste com data de início): início mais antigo e fim
+// mais tardio entre as origens da transportadora que definiram vigência pro grupo.
+// Origens sem vigência cadastrada não entram na conta. Vazio = alternativa comum.
+function vigenciaDoGrupoTransportadora(transportadora = {}, grupo) {
+  let inicio = '';
+  let fim = '';
+  (transportadora.origens || []).forEach((origem) => {
+    const v = origem?.vigenciasAlternativas?.[grupo];
+    if (!v) return;
+    if (v.inicio && (!inicio || v.inicio < inicio)) inicio = v.inicio;
+    if (v.fim && v.fim > fim) fim = v.fim;
+  });
+  return { inicio, fim };
+}
+
+// Data de emissão do CT-e em YYYY-MM-DD (aceita ISO e dd/mm/aaaa); '' se ausente.
+function dataEmissaoIsoCte(cte = {}) {
+  const valor = pick(cte, ['data_emissao', 'emissao', 'dataEmissao']);
+  if (!valor) return '';
+  const texto = String(valor).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(texto)) return texto.slice(0, 10);
+  const br = texto.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  return br ? `${br[3]}-${br[2]}-${br[1]}` : '';
+}
+
+// Aplica a vigência das tabelas alternativas de um grupo (principal + alternativas)
+// à data de emissão do CT-e. Alternativa com vigência é reajuste: só vale dentro da
+// janela. Se alguma está em vigor, ela SUBSTITUI a principal (e reajustes mais
+// antigos), de forma determinística pela data — sem escolher "a mais próxima do
+// valor cobrado", que deixaria uma cobrança indevida passar. Alternativas sem
+// vigência (OTR, rodas) continuam concorrendo como sempre. Se o CT-e ainda é
+// anterior ao início do reajuste, ele é descartado e a principal segue valendo.
+// Sem data de emissão não dá pra decidir: mantém o comportamento anterior.
+export function aplicarVigenciaNoGrupo(entradas = [], dataIso = '') {
+  const comVigencia = (entradas || []).filter((e) => e?.vigenciaInicio || e?.vigenciaFim);
+  if (!comVigencia.length) return { entradas, porVigencia: false };
+  if (!dataIso) return { entradas, porVigencia: false };
+
+  const semVigencia = entradas.filter((e) => !(e?.vigenciaInicio || e?.vigenciaFim));
+  const emVigor = comVigencia.filter((e) => (
+    (!e.vigenciaInicio || dataIso >= e.vigenciaInicio) && (!e.vigenciaFim || dataIso <= e.vigenciaFim)
+  ));
+  if (!emVigor.length) return { entradas: semVigencia, porVigencia: false };
+
+  const maisRecente = emVigor.reduce((max, e) => ((e.vigenciaInicio || '') > max ? (e.vigenciaInicio || '') : max), '');
+  const vigentes = emVigor.filter((e) => (e.vigenciaInicio || '') === maisRecente);
+  const alternativasComuns = semVigencia.filter((e) => e.tabelaAlternativaDe);
+  return { entradas: [...vigentes, ...alternativasComuns], porVigencia: true };
+}
+
 export function expandirTabelasAlternativasOficiais(transportadoras = []) {
   const expandido = [];
   (transportadoras || []).forEach((transportadora) => {
@@ -575,12 +625,15 @@ export function expandirTabelasAlternativasOficiais(transportadoras = []) {
     });
 
     grupos.forEach((grupo) => {
+      const vigencia = vigenciaDoGrupoTransportadora(transportadora, grupo);
       expandido.push({
         ...transportadora,
         id: `${idPrincipal}::alt::${grupo}`,
         negociacaoId: `${idPrincipal}::alt::${grupo}`,
         tabelaAlternativaDe: idPrincipal,
         varianteTabela: grupo,
+        vigenciaInicio: vigencia.inicio,
+        vigenciaFim: vigencia.fim,
         origens: (transportadora.origens || []).map((origem) => filtrarOrigemPorGrupoAlternativo(origem, grupo)),
       });
     });
@@ -1024,8 +1077,11 @@ function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, de
   ))) || (grupos.length === 1 ? grupos[0] : null);
   if (!grupoAlvo || grupoAlvo.length <= 1) return null;
 
+  // Reajuste com vigência: pela data de emissão decide quais tabelas concorrem
+  // (a tabela em vigor substitui a principal).
+  const { entradas: entradasGrupo, porVigencia } = aplicarVigenciaNoGrupo(grupoAlvo, dataEmissaoIsoCte(cte));
   const valorCtePago = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
-  const candidatos = grupoAlvo.map((entrada) => {
+  const candidatos = entradasGrupo.map((entrada) => {
     const detalhe = calcularValorParaTabelaEspecifica(cte, entrada, canaisTentativa, cidadePorIbge, opcoes, usarRotaInvertida);
     if (!detalhe) return null;
     const valorCalculado = toNumber(detalhe.valorSimulado);
@@ -1037,6 +1093,8 @@ function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, de
         || entrada.descricaoTabela
         || (entrada.tabelaAlternativaDe ? 'Alternativa' : 'Principal'),
       principal: !entrada.tabelaAlternativaDe,
+      vigenciaInicio: entrada.vigenciaInicio || '',
+      vigenciaFim: entrada.vigenciaFim || '',
       transportadoraNome: entrada.nome,
       valorCalculado,
       divergencia: Math.abs(valorCtePago - valorCalculado),
@@ -1044,10 +1102,18 @@ function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, de
     };
   }).filter(Boolean);
 
-  if (candidatos.length <= 1) return null;
+  // Reajuste em vigor mas sem cálculo possível nele (ex.: rota ausente na tabela
+  // nova): não escolhe outra "por proximidade"; o chamador mantém o cálculo pela
+  // principal e sinaliza o aviso.
+  const vigenteCalculou = candidatos.some((c) => c.vigenciaInicio || c.vigenciaFim);
+  if (porVigencia && !vigenteCalculou) {
+    return { candidatos: [], melhor: null, porVigencia: true, semCalculoVigente: true };
+  }
+  if (!candidatos.length) return null;
+  if (candidatos.length <= 1 && !porVigencia) return null;
 
   const melhor = escolherMelhorTabela(candidatos, valorCtePago);
-  return { candidatos, melhor };
+  return { candidatos, melhor, porVigencia };
 }
 
 // processarCteComMotorSimulador roda uma vez por CT-e do lote. transportadorasPrincipais
@@ -1160,11 +1226,23 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
   const comparativoTabelas = montarComparativoTabelas(cte, transportadoras, transportadoraTabela, detalhe, canaisTentativa, cidadePorIbge, opcoes, calculoInvertido);
   if (!comparativoTabelas) return resultado;
 
-  const { candidatos, melhor } = comparativoTabelas;
+  if (comparativoTabelas.semCalculoVigente) {
+    return {
+      ...resultado,
+      detalhes_calculo: {
+        ...resultado.detalhes_calculo,
+        aviso_vigencia: 'Há tabela de reajuste em vigor na data do CT-e, mas ela não calculou este CT-e (rota/cotação ausente); calculado pela tabela principal.',
+      },
+    };
+  }
+
+  const { candidatos, melhor, porVigencia } = comparativoTabelas;
   const candidatosResumo = candidatos.map((c) => ({
     tabela_id: c.tabelaId,
     variante: c.variante,
     principal: c.principal,
+    vigencia_inicio: c.vigenciaInicio || null,
+    vigencia_fim: c.vigenciaFim || null,
     transportadora_tabela: c.detalhe?.transportadoraSimulada || c.transportadoraNome,
     tabela_nome: c.detalhe?.tabelaNome || c.variante,
     tipo_calculo: c.detalhe?.detalhes?.frete?.tipoCalculo || null,
@@ -1186,7 +1264,10 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
   }));
 
   const diferencaAtual = diferencaAbs;
-  const usarMelhor = melhor && melhor.detalhe && melhor.divergencia + 0.0001 < diferencaAtual;
+  // Com reajuste em vigor a escolha é pela data, não pela proximidade do valor
+  // cobrado: usa a tabela vigente mesmo que a principal "fechasse" melhor.
+  const usarMelhor = melhor && melhor.detalhe
+    && (porVigencia || melhor.divergencia + 0.0001 < diferencaAtual);
   if (!usarMelhor) {
     return {
       ...resultado,
@@ -1229,6 +1310,8 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
       comparativo_tabelas: candidatosResumo,
       melhor_comparativo_tabela: melhor.variante || '',
       tabela_alternativa_aplicada: melhor.variante || '',
+      tabela_por_vigencia: Boolean(porVigencia),
+      vigencia_inicio_aplicada: melhor.vigenciaInicio || null,
     },
   };
 }
@@ -1515,7 +1598,9 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
     )));
     if (!entradasVinculadas?.length) return resultadoDireto;
 
-    const candidatos = entradasVinculadas.map((entrada) => {
+    // Reajuste com vigência: a data de emissão decide quais tabelas concorrem.
+    const { entradas: entradasVigentes, porVigencia } = aplicarVigenciaNoGrupo(entradasVinculadas, dataEmissaoIsoCte(cte));
+    const candidatos = entradasVigentes.map((entrada) => {
       const calculadoTabela = processarCte(cteCalculo, [entrada], mapaVinculos, entrada.nome, opcoes);
       if (calculadoTabela?.status_calculo !== 'CALCULADO' || !(Number(calculadoTabela.valor_calculado) > 0)) return null;
       if (calculadoTabela.detalhes_calculo?.calculo_devolucao_invertida) return null;
@@ -1531,6 +1616,8 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
         tabela_nome: nomeTabela,
         variante: nomeTabela,
         principal: !entrada.tabelaAlternativaDe,
+        vigencia_inicio: entrada.vigenciaInicio || null,
+        vigencia_fim: entrada.vigenciaFim || null,
         valor_calculado: Number(calculadoTabela.valor_calculado),
         divergencia: Math.abs(Number(cte.valor_cte ?? cte.valorCte ?? cte.valor_frete ?? 0) - Number(calculadoTabela.valor_calculado)),
         origem_cidade: detalhesTabela.origem_cidade,
@@ -1549,7 +1636,9 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
         resultado: calculadoTabela,
       };
     }).filter(Boolean);
-    if (candidatos.length <= 1) return resultadoDireto;
+    const vigenteCalculou = candidatos.some((c) => c.vigencia_inicio || c.vigencia_fim);
+    if (porVigencia && !vigenteCalculou) return resultadoDireto;
+    if (candidatos.length <= 1 && !porVigencia) return resultadoDireto;
 
     const melhor = candidatos.toSorted((a, b) => a.divergencia - b.divergencia)[0];
     const escolhido = melhor?.resultado || resultadoDireto;
@@ -1560,6 +1649,7 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
         comparativo_tabelas: candidatos.map(({ resultado: _resultado, ...resumo }) => resumo),
         melhor_comparativo_tabela: melhor?.tabela_nome || '',
         tabela_alternativa_aplicada: escolhido.detalhes_calculo?.tabela_nome_aplicada || '',
+        tabela_por_vigencia: Boolean(porVigencia),
       },
     };
   } catch (error) {

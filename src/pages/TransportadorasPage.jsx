@@ -2315,6 +2315,43 @@ function CadastroOrigemTab({ transportadoraId, origem, store }) {
 // Rótulos de tabela alternativa cadastrados em rotas/cotações desta origem
 // (grupoTabelaAlternativa preenchido). Nulo/vazio = tabela principal, não
 // entra na lista — a lista é só das alternativas existentes.
+function formatarDataVigencia(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : String(iso || '');
+}
+
+// Janela de vigência da tabela alternativa em edição. Preenchida = a tabela só
+// vale pra CT-es emitidos nessa janela (ex.: reajuste que entra em 01/10; a
+// principal segue valendo para os CT-es anteriores). Vazia = alternativa comum.
+function VigenciaTabelaAlternativa({ vigencia, onSalvar }) {
+  const [inicio, setInicio] = useState(vigencia?.inicio || '');
+  const [fim, setFim] = useState(vigencia?.fim || '');
+  const [salvando, setSalvando] = useState(false);
+  const [mensagem, setMensagem] = useState('');
+  const alterado = inicio !== (vigencia?.inicio || '') || fim !== (vigencia?.fim || '');
+
+  const salvar = async () => {
+    setSalvando(true);
+    setMensagem('');
+    const resultado = await onSalvar({ inicio, fim });
+    setSalvando(false);
+    setMensagem(resultado?.ok ? 'Vigência salva.' : (resultado?.erro?.message || 'Não foi possível salvar a vigência.'));
+  };
+
+  return (
+    <div style={{ width: '100%', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+      <strong style={{ fontSize: 12, color: '#64748b' }}>Vigência (reajuste):</strong>
+      <label style={{ fontSize: 12 }}>Início <input type="date" value={inicio} onChange={(e) => setInicio(e.target.value)} /></label>
+      <label style={{ fontSize: 12 }}>Fim <input type="date" value={fim} onChange={(e) => setFim(e.target.value)} /></label>
+      <button className="btn-secondary" onClick={salvar} disabled={salvando || !alterado}>{salvando ? 'Salvando…' : 'Salvar vigência'}</button>
+      {mensagem ? <span style={{ fontSize: 12, color: '#64748b' }}>{mensagem}</span> : null}
+      <span style={{ width: '100%', fontSize: 12, color: '#64748b' }}>
+        Na Auditoria, CT-e emitido a partir do início usa esta tabela no lugar da principal; antes do início continua pela principal. Deixe em branco para uma alternativa comum (OTR, rodas).
+      </span>
+    </div>
+  );
+}
+
 function gruposAlternativosDaOrigem(origem) {
   const grupos = new Set();
   [...(origem?.rotas || []), ...(origem?.cotacoes || [])].forEach((item) => {
@@ -2429,7 +2466,9 @@ function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
           <strong style={{ fontSize: 12, color: '#64748b' }}>Tabela em edição:</strong>
           <button className={grupoAtivo === null ? 'tab-btn active' : 'tab-btn'} onClick={() => setGrupoAtivo(null)}>Tabela principal</button>
           {gruposExistentes.map((grupo) => (
-            <button key={grupo} className={grupoAtivo === grupo ? 'tab-btn active' : 'tab-btn'} onClick={() => setGrupoAtivo(grupo)}>{grupo}</button>
+            <button key={grupo} className={grupoAtivo === grupo ? 'tab-btn active' : 'tab-btn'} onClick={() => setGrupoAtivo(grupo)}>
+              {grupo}{origem.vigenciasAlternativas?.[grupo]?.inicio ? ` · desde ${formatarDataVigencia(origem.vigenciasAlternativas[grupo].inicio)}` : ''}
+            </button>
           ))}
           <input
             type="text"
@@ -2450,6 +2489,13 @@ function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
             >
               Excluir esta tabela alternativa
             </button>
+          ) : null}
+          {grupoAtivo ? (
+            <VigenciaTabelaAlternativa
+              key={`${origem.id}::${grupoAtivo}`}
+              vigencia={origem.vigenciasAlternativas?.[grupoAtivo]}
+              onSalvar={(vigencia) => store.salvarVigenciaTabelaAlternativa(transportadora.id, origem.id, grupoAtivo, vigencia)}
+            />
           ) : null}
           <span style={{ width: '100%', fontSize: 12, color: '#64748b' }}>
             Rotas, cotações, generalidades e taxas especiais cadastradas aqui valem só pra esta origem e só pra esta tabela ({grupoAtivo || 'principal'}). Generalidades e taxas especiais sem cadastro próprio na tabela alternativa usam as da tabela principal. Sem nenhuma alternativa cadastrada, o comportamento é idêntico ao de sempre.

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { escolherMelhorTabela, expandirTabelasAlternativasOficiais } from '../src/services/auditoriaCteProcessamentoService.js';
+import { escolherMelhorTabela, expandirTabelasAlternativasOficiais, aplicarVigenciaNoGrupo } from '../src/services/auditoriaCteProcessamentoService.js';
 
 test('escolherMelhorTabela escolhe o candidato com menor divergência absoluta do valor pago no CT-e', () => {
   const candidatos = [
@@ -101,4 +101,45 @@ test('expandirTabelasAlternativasOficiais gera uma entrada sintética por grupo 
   assert.equal(alternativa.origens[0].rotas.length, 1);
   assert.equal(alternativa.origens[0].rotas[0].id, 'r2');
   assert.equal(alternativa.origens[0].cotacoes[0].valorFixo, 180);
+});
+
+test('aplicarVigenciaNoGrupo: reajuste em vigor substitui a principal pela data de emissão', () => {
+  const principal = { id: 'p', nome: 'FLORESTA' };
+  const reajuste = { id: 'r', nome: 'FLORESTA', tabelaAlternativaDe: 'p', vigenciaInicio: '2026-10-01', vigenciaFim: '' };
+  const antes = aplicarVigenciaNoGrupo([principal, reajuste], '2026-09-30');
+  assert.deepEqual(antes.entradas.map((e) => e.id), ['p']);
+  assert.equal(antes.porVigencia, false);
+  const depois = aplicarVigenciaNoGrupo([principal, reajuste], '2026-10-01');
+  assert.deepEqual(depois.entradas.map((e) => e.id), ['r']);
+  assert.equal(depois.porVigencia, true);
+});
+
+test('aplicarVigenciaNoGrupo: sem vigência ou sem data de emissão mantém o comportamento anterior', () => {
+  const principal = { id: 'p', nome: 'X' };
+  const otr = { id: 'o', nome: 'X', tabelaAlternativaDe: 'p' };
+  assert.deepEqual(aplicarVigenciaNoGrupo([principal, otr], '2026-10-01').entradas.map((e) => e.id), ['p', 'o']);
+  const reajuste = { id: 'r', nome: 'X', tabelaAlternativaDe: 'p', vigenciaInicio: '2026-10-01' };
+  assert.equal(aplicarVigenciaNoGrupo([principal, reajuste], '').entradas.length, 2);
+});
+
+test('aplicarVigenciaNoGrupo: reajuste vencido sai e o mais recente vence; alternativa comum continua concorrendo', () => {
+  const principal = { id: 'p', nome: 'X' };
+  const otr = { id: 'o', nome: 'X', tabelaAlternativaDe: 'p' };
+  const r1 = { id: 'r1', nome: 'X', tabelaAlternativaDe: 'p', vigenciaInicio: '2026-01-01', vigenciaFim: '2026-09-30' };
+  const r2 = { id: 'r2', nome: 'X', tabelaAlternativaDe: 'p', vigenciaInicio: '2026-10-01' };
+  const r = aplicarVigenciaNoGrupo([principal, otr, r1, r2], '2026-11-05');
+  assert.deepEqual(r.entradas.map((e) => e.id), ['r2', 'o']);
+});
+
+test('expandirTabelasAlternativasOficiais propaga a vigência do grupo para a entrada alternativa', () => {
+  const base = [{
+    id: 't1', nome: 'FLORESTA',
+    origens: [{
+      id: 'o1', cidade: 'X', rotas: [{ id: 'r1', grupoTabelaAlternativa: 'Reajuste 10/2026' }], cotacoes: [], taxasEspeciais: [],
+      vigenciasAlternativas: { 'Reajuste 10/2026': { inicio: '2026-10-01', fim: '' } },
+    }],
+  }];
+  const expandido = expandirTabelasAlternativasOficiais(base);
+  const alt = expandido.find((e) => e.tabelaAlternativaDe);
+  assert.equal(alt.vigenciaInicio, '2026-10-01');
 });
