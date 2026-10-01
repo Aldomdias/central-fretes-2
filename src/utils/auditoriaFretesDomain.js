@@ -517,10 +517,10 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
     // da auditoria e foi lancada no financeiro, aguardando o pagamento final.
     .filter((item) => !item.autoReferenciada)
     .map(({ autoReferenciada, ...pagamento }) => pagamento)
-    .map((pagamento) => {
+    .flatMap((pagamento) => {
       const numero = normalizar(pagamento.numero_fatura);
       const candidatas = porNumero.get(numero) || [];
-      if (!candidatas.length) return { ...pagamento, resultado: 'NAO_LOCALIZADO' };
+      if (!candidatas.length) return [{ ...pagamento, resultado: 'NAO_LOCALIZADO' }];
 
       const raizPagamento = obterRaizCnpj(pagamento.cnpj);
       const cnpjValido = raizCnpjValida(raizPagamento);
@@ -528,7 +528,7 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
         ? candidatas.filter((fatura) => obterRaizCnpj(fatura.cnpj_transportadora) === raizPagamento)
         : [];
       if (cnpjValido && !candidatasPorCnpj.length) {
-        return { ...pagamento, resultado: 'CNPJ_DIVERGENTE' };
+        return [{ ...pagamento, resultado: 'CNPJ_DIVERGENTE' }];
       }
 
       let alvo = candidatasPorCnpj.length ? candidatasPorCnpj : candidatas;
@@ -543,10 +543,14 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
         if (porNome.length) alvo = porNome;
       }
 
-      if (alvo.length > 1) return { ...pagamento, resultado: 'AMBIGUO' };
-      if (!alvo.length) return { ...pagamento, resultado: 'NAO_LOCALIZADO' };
+      // Mesma fatura importada duas vezes (mesmo numero, CNPJ, valor, emissao e
+      // vencimento): nao ha ambiguidade real, o pagamento vale pras copias.
+      const assinatura = (f) => [f.valor_fatura, f.data_emissao, f.data_vencimento, f.serie_fatura || ''].join('|');
+      const duplicatasIdenticas = alvo.length > 1 && alvo.every((f) => assinatura(f) === assinatura(alvo[0]));
+      if (alvo.length > 1 && !duplicatasIdenticas) return [{ ...pagamento, resultado: 'AMBIGUO' }];
+      if (!alvo.length) return [{ ...pagamento, resultado: 'NAO_LOCALIZADO' }];
 
-      const fatura = alvo[0];
+      return alvo.map((fatura) => {
       const pago = Number(pagamento.valor_pago || 0);
       const esperado = Number(fatura.valor_fatura || 0);
       const diferenca = Number((pago - esperado).toFixed(2));
@@ -560,6 +564,7 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
       // conclusivo (a fatura pode ter sido agrupada com outras nesse
       // documento), entao nao expomos diferenca nem contamos como pago.
       return { ...resto, fatura_id: fatura.id, resultado, diferenca: lancadaFinanceiro ? 0 : diferenca };
+      });
     });
 }
 
