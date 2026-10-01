@@ -1673,6 +1673,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   const [feedbackChamado, setFeedbackChamado] = useState('');
   // null = fechado; objeto = origem escolhida para mover de transportadora
   const [origemTransferindo, setOrigemTransferindo] = useState(null);
+  const [unificarOpen, setUnificarOpen] = useState(false);
   const [salvandoOrigemId, setSalvandoOrigemId] = useState(null);
   const [testandoTabela, setTestandoTabela] = useState(false);
   const [resultadoTeste, setResultadoTeste] = useState(null);
@@ -1701,6 +1702,12 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   };
   const origensBase = Array.isArray(transportadora?.origens) ? transportadora.origens : [];
   const origens = origensBase.filter((origem) => String(origem?.cidade || '').toLowerCase().includes(busca.toLowerCase()));
+  const paresDuplicados = detectarOrigensDuplicadas(origensBase);
+  const papelDuplicada = (origem) => {
+    const par = paresDuplicados.find((item) => item.destino.id === origem.id || item.partida.id === origem.id);
+    if (!par) return null;
+    return par.destino.id === origem.id ? 'anterior' : 'nova';
+  };
   const saveOrigem = (form) => {
     const origem = { ...editing, ...form, id: editing?.id ?? nextId(origensBase) };
     store.salvarOrigem(transportadora.id, origem);
@@ -1811,6 +1818,15 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
         </div>
       ) : null}
       <TdeSection transportadora={transportadora} store={store} />
+      {paresDuplicados.length ? (
+        <div className="hint-box alert-warn top-space" style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <strong>⚠ {paresDuplicados.length} origem(ns) duplicada(s)</strong> (mesma cidade e canal, ex.: {paresDuplicados[0].destino.cidade} / {paresDuplicados[0].partida.cidade}).
+            Se for um reajuste publicado que não casou com a origem existente, unifique: a nova vira tabela alternativa com vigência.
+          </div>
+          {podeEditar ? <button className="btn-primary" onClick={() => setUnificarOpen(true)}>Unificar como reajuste</button> : null}
+        </div>
+      ) : null}
       <input className="search-input" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar cidade de origem..." />
       <div className="section-row"><div className="inline-meta"><span className="tag-yellow">ATACADO</span><span>{origensBase.length} origem(ns)</span></div></div>
       <div className="list-stack">
@@ -1823,7 +1839,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
               : 'list-card';
           return (
             <div key={origem.id} className={cardClass} onClick={() => onOpenOrigin(origem.id)}>
-              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#ede9fe':canaisOrigem(origem).includes('B2C')?'#dbeafe':'#dcfce7',color:canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#6d28d9':canaisOrigem(origem).includes('B2C')?'#1d4ed8':'#166534'}}>{canalOrigemLabel(origem)}</span><BadgeTabelaAlternativa origem={origem} /></div><div className="list-subtitle">{(origem.rotas || []).length} rota(s) · {(origem.cotacoes || []).length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#ede9fe':canaisOrigem(origem).includes('B2C')?'#dbeafe':'#dcfce7',color:canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#6d28d9':canaisOrigem(origem).includes('B2C')?'#1d4ed8':'#166534'}}>{canalOrigemLabel(origem)}</span><BadgeTabelaAlternativa origem={origem} />{papelDuplicada(origem) ? <span className="status-pill" style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#fee2e2', color: '#991b1b' }} title="Origem duplicada (mesma cidade e canal)">{papelDuplicada(origem) === 'anterior' ? 'Duplicada · tabela anterior' : 'Duplicada · tabela nova'}</span> : null}</div><div className="list-subtitle">{(origem.rotas || []).length} rota(s) · {(origem.cotacoes || []).length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={transportadora.detalheCarregado ? analise.cobertura : 'Resumo'} severidade={transportadora.detalheCarregado ? analise.severidade : 'ok'} />
                 <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
@@ -1921,6 +1937,14 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
         transportadoras={store.transportadoras || []}
         onConfirmar={(destinoId) => transferirOrigem(origemTransferindo, destinoId)}
         onClose={() => setOrigemTransferindo(null)}
+      />
+      <UnificarOrigensModal
+        open={unificarOpen}
+        pares={paresDuplicados}
+        transportadora={transportadora}
+        store={store}
+        onClose={() => setUnificarOpen(false)}
+        onConcluido={() => setFeedbackSalvar('Origem unificada como reajuste com vigência.')}
       />
       <OrigemModal open={modalOpen} initialValue={editing} onSave={saveOrigem} onClose={() => { setModalOpen(false); setEditing(null); }} />
       <InconsistenciasModal open={!!inconsistenciasOpen} title={typeof inconsistenciasOpen === 'number' ? 'Inconsistências da origem' : 'Inconsistências da transportadora'} transportadora={transportadora} origem={typeof inconsistenciasOpen === 'number' ? origensBase.find((item) => item.id === inconsistenciasOpen) : null} onClose={() => setInconsistenciasOpen(false)} />
@@ -2315,6 +2339,89 @@ function CadastroOrigemTab({ transportadoraId, origem, store }) {
 // Rótulos de tabela alternativa cadastrados em rotas/cotações desta origem
 // (grupoTabelaAlternativa preenchido). Nulo/vazio = tabela principal, não
 // entra na lista — a lista é só das alternativas existentes.
+function cidadeSemAcento(valor) {
+  return String(valor || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+}
+
+// Origens da mesma transportadora com a mesma cidade (sem acento) e canal: típico
+// de reajuste publicado que não casou com a origem existente ("Goiania" x
+// "Goiânia"). Só pares: com 3+ a unificação é manual. Sugere como destino a
+// origem validada (a anterior) ou, na falta, a com mais fretes.
+function detectarOrigensDuplicadas(origens = []) {
+  const grupos = new Map();
+  origens.forEach((origem) => {
+    const chave = `${cidadeSemAcento(origem.cidade)}__${canalOrigemLabel(origem)}`;
+    if (!grupos.has(chave)) grupos.set(chave, []);
+    grupos.get(chave).push(origem);
+  });
+  const pares = [];
+  grupos.forEach((lista) => {
+    if (lista.length !== 2) return;
+    const [a, b] = lista;
+    const pontuacao = (o) => (o.validado ? 1000000 : 0) + (o.cotacoes || []).length;
+    const [destino, partida] = pontuacao(a) >= pontuacao(b) ? [a, b] : [b, a];
+    pares.push({ destino, partida });
+  });
+  return pares;
+}
+
+function UnificarOrigensModal({ open, pares, transportadora, store, onClose, onConcluido }) {
+  const [inicio, setInicio] = useState('');
+  const [processando, setProcessando] = useState('');
+  const [mensagens, setMensagens] = useState([]);
+
+  useEffect(() => {
+    if (open) { setInicio(''); setProcessando(''); setMensagens([]); }
+  }, [open]);
+
+  if (!open) return null;
+
+  const unificar = async (par) => {
+    if (!inicio) { setMensagens((m) => [...m, 'Informe a data de início da vigência do reajuste.']); return; }
+    const ok = window.confirm(
+      `Unificar "${par.partida.cidade}" em "${par.destino.cidade}"?\n\n`
+      + `• Tabela anterior (fica como principal): ${par.destino.cidade} · ${(par.destino.rotas || []).length} rota(s) · ${(par.destino.cotacoes || []).length} frete(s)\n`
+      + `• Tabela nova (vira "Reajuste ${inicio.split('-').reverse().join('/')}"): ${par.partida.cidade} · ${(par.partida.rotas || []).length} rota(s) · ${(par.partida.cotacoes || []).length} frete(s)\n\n`
+      + 'A origem duplicada é removida depois de mover os dados.'
+    );
+    if (!ok) return;
+    setProcessando(String(par.partida.id));
+    const resultado = await store.converterOrigemEmReajuste(transportadora.id, par.partida.id, par.destino.id, inicio);
+    setProcessando('');
+    setMensagens((m) => [...m, resultado?.ok
+      ? `${par.partida.cidade}: unificada como "${resultado.grupo}"${resultado.origemRemovida ? '' : ' (a origem duplicada não pôde ser removida: apague-a manualmente)'}.`
+      : `${par.partida.cidade}: ${resultado?.erro || 'não foi possível unificar.'}`]);
+    if (resultado?.ok) onConcluido?.();
+  };
+
+  return (
+    <Modal open={open} title="Unificar origens duplicadas (reajuste)" onClose={onClose}>
+      <p style={{ color: 'var(--text-muted, #64748b)', marginTop: 0 }}>
+        Origens com a mesma cidade e canal. A <strong>validada / com mais fretes</strong> é tratada como a tabela anterior (fica como principal) e a outra como a tabela nova do reajuste, que vira tabela alternativa com vigência. Confira os números antes de unificar.
+      </p>
+      <label style={{ display: 'block', marginBottom: 12 }}>Início da vigência do reajuste
+        <input type="date" value={inicio} onChange={(e) => setInicio(e.target.value)} />
+      </label>
+      {pares.map((par) => (
+        <div key={par.partida.id} className="hint-box" style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 13 }}>
+            <div><strong>Anterior (principal):</strong> {par.destino.cidade} · {(par.destino.rotas || []).length} rota(s) · {(par.destino.cotacoes || []).length} frete(s) · {par.destino.validado ? '✓ validada' : 'pendente'}</div>
+            <div><strong>Nova (vira reajuste):</strong> {par.partida.cidade} · {(par.partida.rotas || []).length} rota(s) · {(par.partida.cotacoes || []).length} frete(s) · {par.partida.validado ? '✓ validada' : 'pendente'}</div>
+          </div>
+          <button className="btn-primary" disabled={Boolean(processando)} onClick={() => unificar(par)}>
+            {processando === String(par.partida.id) ? 'Unificando...' : 'Unificar'}
+          </button>
+        </div>
+      ))}
+      {!pares.length ? <div className="mini-feedback info">Nenhuma origem duplicada encontrada.</div> : null}
+      {mensagens.map((texto, indice) => <div key={indice} className="mini-feedback info top-space">{texto}</div>)}
+      <div className="actions-right gap-row top-space">
+        <button className="btn-secondary" onClick={onClose} disabled={Boolean(processando)}>Fechar</button>
+      </div>
+    </Modal>
+  );
+}
+
 function formatarDataVigencia(iso) {
   const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? `${m[3]}/${m[2]}/${m[1]}` : String(iso || '');
@@ -2389,6 +2496,20 @@ function transportadoraTemTabelaAlternativa(transportadora) {
 function BadgeTabelaAlternativa({ origem, style }) {
   if (!origemTemTabelaAlternativa(origem)) return null;
   const qtd = contarTabelasAlternativasOrigem(origem);
+  // Reajuste com vigência: mostra "desde dd/mm/aaaa" (a vigência mais recente).
+  const inicios = Object.values(origem?.vigenciasAlternativas || {}).map((v) => v?.inicio).filter(Boolean).sort();
+  if (inicios.length) {
+    const maisRecente = inicios[inicios.length - 1];
+    return (
+      <span
+        className="status-pill dark"
+        title={`Tabela de reajuste com vigência: CT-e emitido a partir de ${formatarDataVigencia(maisRecente)} usa a tabela alternativa; antes disso, a principal.`}
+        style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#fef3c7', color: '#92400e', ...style }}
+      >
+        🔀 Reajuste desde {formatarDataVigencia(maisRecente)}{qtd > 1 ? ` (+${qtd - 1} alt.)` : ''}
+      </span>
+    );
+  }
   return (
     <span
       className="status-pill dark"

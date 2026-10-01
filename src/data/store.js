@@ -13,6 +13,7 @@ import {
   limparSecaoOrigemDb,
   salvarGeneralidadesOrigemDb,
   salvarVigenciaTabelaAlternativaDb,
+  converterOrigemEmReajusteDb,
   excluirGeneralidadesAlternativaDb,
   salvarBaseCompletaDb,
   salvarSecaoDb,
@@ -1097,6 +1098,30 @@ export function useFreteStore(sessao = null) {
         if (!podeEditarTransportadoras()) return false;
         aplicarAlteracao((prev) => mergeImport(prev, payload, tipo, grupoTabelaAlternativa, alvo), tipo, tipo);
         return true;
+      },
+      // Unifica uma origem duplicada (criada por publicação de reajuste que não
+      // casou com a origem existente) como tabela alternativa com vigência da
+      // origem de destino, e recarrega a transportadora do banco.
+      async converterOrigemEmReajuste(transportadoraId, origemPartidaId, origemDestinoId, inicioIso) {
+        if (!podeEditarTransportadoras()) return { ok: false, erro: ERRO_SEM_PERMISSAO };
+        if (!bancoConfigurado()) return { ok: false, erro: 'Disponível só com o Supabase configurado.' };
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        try {
+          const resultado = await converterOrigemEmReajusteDb(origemPartidaId, origemDestinoId, inicioIso);
+          await this.carregarTransportadoraCompleta(transportadoraId);
+          setSyncStatus((prev) => ({ ...prev, sincronizando: false, erro: '', ultimaSincronizacao: new Date().toISOString() }));
+          registrarAlteracaoTransportadora(sessao, {
+            tipo: 'unificacao_origem_reajuste',
+            transportadoraId,
+            origemId: origemDestinoId,
+            detalhe: `Unificou a origem ${origemPartidaId} em ${resultado.grupo} (vigência desde ${inicioIso})`,
+          });
+          return resultado;
+        } catch (error) {
+          const mensagem = error?.message || 'Erro ao unificar a origem.';
+          setSyncStatus((prev) => ({ ...prev, sincronizando: false, erro: mensagem }));
+          return { ok: false, erro: mensagem };
+        }
       },
       // Define a janela de vigência de uma tabela alternativa (reajuste que entra
       // em uma data). Auditoria usa a data de emissão do CT-e pra escolher a tabela.

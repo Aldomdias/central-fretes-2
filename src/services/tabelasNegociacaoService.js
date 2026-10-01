@@ -1795,7 +1795,7 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
       baseOficial[0].nome,
       baseOficial[0].origens.map((origem) => ({ cidade: origem.cidade, canal: origem.canal })),
     );
-    const chaveOrigem = (origem) => `${String(origem.cidade || '').trim().toLowerCase()}__${String(origem.canal || 'ATACADO').trim().toUpperCase()}`;
+    const chaveOrigem = (origem) => `${String(origem.cidade || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase()}__${String(origem.canal || 'ATACADO').trim().toUpperCase()}`;
     const chavesExistentes = new Set(existentes.map((item) => item.chave));
     const origensReajuste = baseOficial[0].origens.filter((origem) => chavesExistentes.has(chaveOrigem(origem)));
     origensNormais = baseOficial[0].origens.filter((origem) => !chavesExistentes.has(chaveOrigem(origem)));

@@ -1733,7 +1733,9 @@ export async function localizarOrigensOficiaisDb(nomeTransportadora, origens = [
     .eq('transportadora_id', alvo.id);
   if (error) throw error;
   const existentes = data || [];
-  const norm = (v) => String(v || '').trim().toLowerCase();
+  // Sem acento: "Goiania" e "Goiânia" são a mesma origem (a publicação já falhou
+  // em casar por causa disso e criou uma origem duplicada).
+  const norm = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
   const encontrados = [];
   origens.forEach((origem) => {
     const canal = String(origem.canal || 'ATACADO').trim().toUpperCase();
@@ -1743,6 +1745,47 @@ export async function localizarOrigensOficiaisDb(nomeTransportadora, origens = [
     if (escolhida) encontrados.push({ ...escolhida, chave: `${norm(origem.cidade)}__${canal}` });
   });
   return encontrados;
+}
+
+// Converte uma origem criada por engano (publicação de reajuste que não casou
+// com a origem existente) em tabela alternativa com vigência da origem certa:
+// move rotas, cotações, taxas e a generalidade da origem de partida para a de
+// destino sob o grupo "Reajuste dd/mm/aaaa", grava a vigência, encerra a
+// vigência de reajustes anteriores e remove a origem de partida (se possível).
+export async function converterOrigemEmReajusteDb(origemPartidaId, origemDestinoId, inicioIso) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  if (!origemPartidaId || !origemDestinoId || String(origemPartidaId) === String(origemDestinoId)) {
+    throw new Error('Escolha uma origem de destino diferente da origem de partida.');
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(inicioIso || ''))) throw new Error('Informe a data de início da vigência.');
+  const supabase = ensureClient();
+  const [ano, mes, dia] = inicioIso.split('-');
+  const grupo = `Reajuste ${dia}/${mes}/${ano}`;
+
+  await limparGrupoTabelaAlternativaOrigensDb([origemDestinoId], grupo);
+
+  for (const tabela of ['rotas', 'cotacoes', 'taxas_especiais']) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await supabase
+      .from(tabela)
+      .update({ origem_id: origemDestinoId, grupo_tabela_alternativa: grupo })
+      .eq('origem_id', origemPartidaId)
+      .is('grupo_tabela_alternativa', null);
+    if (error) throw new Error(`Erro ao mover ${tabela}: ${error.message}`);
+  }
+  const { error: erroGeneralidades } = await supabase
+    .from('generalidades')
+    .update({ origem_id: origemDestinoId, grupo_tabela_alternativa: grupo })
+    .eq('origem_id', origemPartidaId)
+    .eq('grupo_tabela_alternativa', '');
+  if (erroGeneralidades) throw new Error(`Erro ao mover generalidades: ${erroGeneralidades.message}`);
+
+  await salvarVigenciaTabelaAlternativaDb(origemDestinoId, grupo, { inicio: inicioIso, fim: '' });
+  await encerrarVigenciasAnterioresDb([origemDestinoId], grupo, inicioIso);
+
+  const { error: erroRemocao } = await supabase.from('origens').delete().eq('id', origemPartidaId);
+  invalidarCacheBaseCompletaDb();
+  return { ok: true, grupo, origemRemovida: !erroRemocao };
 }
 
 // Remove as linhas de um grupo (rotas/cotações/taxas/generalidades) das origens
