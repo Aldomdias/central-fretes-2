@@ -8,8 +8,9 @@
  * Nao aceita destinatario nem conteudo do cliente: tudo vem do banco, entao a rota
  * nao serve para disparar e-mail para terceiros.
  *
- * Envio: Resend (RESEND_API_KEY + ALERTA_EMAIL_FROM com remetente de dominio verificado).
- * Sem a chave, cai no "resend-email" da Central de Solicitacoes (modelo fixo de chamado,
+ * Envio (modelo proprio + Excel anexo): Resend direto (RESEND_API_KEY + ALERTA_EMAIL_FROM) ou a
+ * funcao "alerta-cte-email" do Supabase da Central (ALERTA_EMAIL_TOKEN; supabase/central-solicitacoes/).
+ * Sem nenhum dos dois, cai no "resend-email" da Central de Solicitacoes (modelo fixo de chamado,
  * so texto, sem anexo).
  * Variaveis no Vercel: SUPABASE_SERVICE_ROLE_KEY, RESEND_API_KEY, ALERTA_EMAIL_FROM, APP_URL.
  */
@@ -152,27 +153,30 @@ export default async function handler(req, res) {
     const assunto = `CT-e acima do target de ${brl(limiar)} — ${alertas.length} CT-e(s) na importação`;
     const html = montarHtml(alertas, limiar, appUrl);
 
-    if (process.env.RESEND_API_KEY) {
+    const centralUrl = process.env.CENTRAL_SOLICITACOES_SUPABASE_URL || process.env.VITE_CENTRAL_SOLICITACOES_SUPABASE_URL || 'https://zejguyckbnmyxkuagsyj.supabase.co';
+    const centralKey = process.env.CENTRAL_SOLICITACOES_SUPABASE_KEY || process.env.VITE_CENTRAL_SOLICITACOES_SUPABASE_KEY || 'sb_publishable_J0i_Olz3JBp_86-Xcd4MPQ_uH5vnHUS';
+
+    if (process.env.RESEND_API_KEY || process.env.ALERTA_EMAIL_TOKEN) {
       const anexo = { filename: `cte-acima-do-target-${hoje}.xlsx`, content: await xlsxAnexo(supabase, alertas) };
-      const resposta = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          from: process.env.ALERTA_EMAIL_FROM || 'Central de Fretes <onboarding@resend.dev>',
-          to: destinatarios,
-          subject: assunto,
-          html,
-          attachments: [anexo],
-        }),
-      });
+      const dados = { to: destinatarios, subject: assunto, html, attachments: [anexo] };
+      // Resend direto, ou a funcao "alerta-cte-email" do Supabase da Central (usa a chave de la).
+      const resposta = process.env.RESEND_API_KEY
+        ? await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: process.env.ALERTA_EMAIL_FROM || 'Central de Fretes <onboarding@resend.dev>', ...dados }),
+        })
+        : await fetch(`${centralUrl}/functions/v1/alerta-cte-email`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${centralKey}`, apikey: centralKey, 'x-alerta-token': process.env.ALERTA_EMAIL_TOKEN, 'Content-Type': 'application/json' },
+          body: JSON.stringify(dados),
+        });
       if (!resposta.ok) {
         const detalhe = await resposta.text().catch(() => '');
         return res.status(502).json({ ok: false, erro: `Provedor de e-mail recusou o envio (${resposta.status}). ${detalhe.slice(0, 300)}` });
       }
     } else {
       // Plano B: funcao "resend-email" da Central de Solicitacoes (modelo fixo, so texto).
-      const centralUrl = process.env.CENTRAL_SOLICITACOES_SUPABASE_URL || process.env.VITE_CENTRAL_SOLICITACOES_SUPABASE_URL || 'https://zejguyckbnmyxkuagsyj.supabase.co';
-      const centralKey = process.env.CENTRAL_SOLICITACOES_SUPABASE_KEY || process.env.VITE_CENTRAL_SOLICITACOES_SUPABASE_KEY || 'sb_publishable_J0i_Olz3JBp_86-Xcd4MPQ_uH5vnHUS';
       const mensagem = resumoTexto(alertas, limiar);
       for (const to of destinatarios) {
         const resposta = await fetch(`${centralUrl}/functions/v1/resend-email`, {
