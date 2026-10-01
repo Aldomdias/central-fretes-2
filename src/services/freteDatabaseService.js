@@ -1717,6 +1717,86 @@ export async function salvarVigenciaTabelaAlternativaDb(origemId, grupoTabelaAlt
   return { ok: true, origemId: origemIdPersistencia };
 }
 
+// Reajuste aprovado em Negociações: localiza, na base oficial, as origens da
+// transportadora que já existem (mesma cidade e canal; se o canal diferir mas só
+// houver uma origem na cidade, usa ela). Devolve [{ id, cidade, canal, chave }]
+// onde `chave` é a cidade+canal da origem informada (pra o chamador casar).
+export async function localizarOrigensOficiaisDb(nomeTransportadora, origens = []) {
+  if (!isSupabaseConfigured() || !nomeTransportadora || !origens.length) return [];
+  const supabase = ensureClient();
+  const transportadoras = await fetchTransportadorasByNome(supabase, [nomeTransportadora]);
+  const alvo = transportadoras.find((t) => String(t.nome || '').trim().toLowerCase() === String(nomeTransportadora).trim().toLowerCase());
+  if (!alvo) return [];
+  const { data, error } = await supabase
+    .from('origens')
+    .select('id, cidade, canal')
+    .eq('transportadora_id', alvo.id);
+  if (error) throw error;
+  const existentes = data || [];
+  const norm = (v) => String(v || '').trim().toLowerCase();
+  const encontrados = [];
+  origens.forEach((origem) => {
+    const canal = String(origem.canal || 'ATACADO').trim().toUpperCase();
+    const daCidade = existentes.filter((o) => norm(o.cidade) === norm(origem.cidade));
+    const exata = daCidade.find((o) => String(o.canal || 'ATACADO').trim().toUpperCase() === canal);
+    const escolhida = exata || (daCidade.length === 1 ? daCidade[0] : null);
+    if (escolhida) encontrados.push({ ...escolhida, chave: `${norm(origem.cidade)}__${canal}` });
+  });
+  return encontrados;
+}
+
+// Remove as linhas de um grupo (rotas/cotações/taxas/generalidades) das origens
+// informadas, pra republicar o mesmo reajuste sem duplicar.
+export async function limparGrupoTabelaAlternativaOrigensDb(origemIds = [], grupo) {
+  if (!isSupabaseConfigured() || !grupo || !origemIds.length) return;
+  const supabase = ensureClient();
+  for (const tabela of ['rotas', 'cotacoes', 'taxas_especiais', 'generalidades']) {
+    for (const lote of chunksDb(origemIds, 50)) {
+      // eslint-disable-next-line no-await-in-loop
+      const { error } = await supabase
+        .from(tabela)
+        .delete()
+        .in('origem_id', lote)
+        .eq('grupo_tabela_alternativa', grupo);
+      if (error) throw error;
+    }
+  }
+}
+
+// Ao entrar um reajuste com vigência, fecha a vigência das outras tabelas
+// alternativas em aberto da origem no dia anterior ao início da nova. A tabela
+// principal não tem janela: ela vale até o início do reajuste por consequência.
+export async function encerrarVigenciasAnterioresDb(origemIds = [], grupoNovo, inicioIso) {
+  if (!isSupabaseConfigured() || !origemIds.length || !inicioIso) return 0;
+  const supabase = ensureClient();
+  const dia = new Date(`${inicioIso}T00:00:00Z`);
+  dia.setUTCDate(dia.getUTCDate() - 1);
+  const fimAnterior = dia.toISOString().slice(0, 10);
+  const { data, error } = await supabase
+    .from('generalidades')
+    .select('origem_id, grupo_tabela_alternativa, vigencia_inicio, vigencia_fim')
+    .in('origem_id', origemIds)
+    .neq('grupo_tabela_alternativa', '')
+    .neq('grupo_tabela_alternativa', grupoNovo)
+    .not('vigencia_inicio', 'is', null);
+  if (error) throw error;
+  let atualizadas = 0;
+  for (const linha of data || []) {
+    if (linha.vigencia_inicio >= inicioIso) continue;
+    if (linha.vigencia_fim && linha.vigencia_fim < inicioIso) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const { error: erroUpdate } = await supabase
+      .from('generalidades')
+      .update({ vigencia_fim: fimAnterior })
+      .eq('origem_id', linha.origem_id)
+      .eq('grupo_tabela_alternativa', linha.grupo_tabela_alternativa);
+    if (erroUpdate) throw erroUpdate;
+    atualizadas += 1;
+  }
+  invalidarCacheBaseCompletaDb();
+  return atualizadas;
+}
+
 // `secao` aceita uma string ('rotas') ou um array (['rotas', 'cotacoes']) para
 // resolver os IDs existentes uma única vez e evitar N idas e vindas ao Supabase
 // quando várias seções da mesma origem precisam ser salvas juntas.
@@ -1770,8 +1850,14 @@ export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHA
     origensExistentes
   ));
 
-  await upsertRows(supabase, 'transportadoras', transportadorasRows, 'id');
-  await upsertRows(supabase, 'origens', origensRows, 'id');
+  // Publicação de reajuste como tabela alternativa com vigência: grava só as
+  // linhas do grupo, preservando a generalidade principal já cadastrada.
+  if (options.somenteAlternativas === true) {
+    generalidadesRows = generalidadesRows.filter((row) => row.grupo_tabela_alternativa);
+  } else {
+    await upsertRows(supabase, 'transportadoras', transportadorasRows, 'id');
+    await upsertRows(supabase, 'origens', origensRows, 'id');
+  }
 
   if (secoes.includes('generalidades')) {
     await upsertRows(supabase, 'generalidades', generalidadesRows, 'origem_id,grupo_tabela_alternativa');

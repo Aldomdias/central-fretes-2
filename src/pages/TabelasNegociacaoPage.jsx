@@ -2665,6 +2665,9 @@ export default function TabelasNegociacaoPage() {
     if (!modalAprovacao) return;
     if (!aprovacao.justificativa_aprovacao.trim()) return setErro('Informe uma justificativa.');
     if (!cnpjPreenchidoValido(aprovacao.cnpj_transportadora)) return setErro('Informe o CNPJ completo da transportadora.');
+    if (aprovacao.modo === 'publicar' && aprovacao.substituir_tabela_anterior && !aprovacao.data_inicio_vigencia) {
+      return setErro('Informe a data de início da vigência: o reajuste entra a partir dela e a tabela anterior vale até o dia anterior.');
+    }
     const dadosAprovacao = Object.assign({}, aprovacao, {
       cnpj_transportadora: normalizarCnpj(aprovacao.cnpj_transportadora),
       cnpj_raiz_transportadora: obterRaizCnpj(aprovacao.cnpj_transportadora),
@@ -2804,6 +2807,8 @@ export default function TabelasNegociacaoPage() {
     if (destinoOficial === null) return;
     var ok = window.confirm('Aprovar e publicar ' + tabela.transportadora + ' dentro de "' + destinoOficial + '" na base oficial agora? A tabela operacional será movida para a base oficial e os itens pesados serão limpos da negociação.');
     if (!ok) return;
+    var inicioVigenciaPublicacao = pedirInicioVigenciaReajuste(tabela);
+    if (inicioVigenciaPublicacao === null) return;
     setProcessamentoPublicacao({ etapa: 'Aprovando negociação', transportadora: tabela.transportadora });
     setSalvandoGestao(true); setErro(''); setSucesso('');
     try {
@@ -2819,7 +2824,7 @@ export default function TabelasNegociacaoPage() {
       var publicada = await publicarNegociacaoNaBaseOficial(aprovada.id, {
         usuario: sessao,
         cnpj_transportadora: cnpjPublicacao,
-        data_inicio_vigencia: hojeISO(),
+        data_inicio_vigencia: inicioVigenciaPublicacao,
         substituir_tabela_anterior: isReajusteNegociacao(aprovada),
         transportadora_oficial_nome: destinoOficial,
         observacao: obs || 'Aprovada pelo gestor e publicada na base oficial',
@@ -2871,11 +2876,30 @@ export default function TabelasNegociacaoPage() {
     finally { setGerandoVerum(false); }
   }
 
+  // Reajuste publicado entra como tabela alternativa com vigência (a anterior
+  // continua valendo até o dia anterior). Pergunta o início; devolve ISO ou null
+  // se cancelar. Negociação que não é reajuste segue com a data de hoje.
+  function pedirInicioVigenciaReajuste(tabela) {
+    if (!isReajusteNegociacao(tabela)) return hojeISO();
+    var resposta = window.prompt(
+      'Reajuste: a nova tabela entra como alternativa com vigência e a anterior vale até o dia anterior.\nInforme o início da vigência (dd/mm/aaaa):',
+      hojeISO().split('-').reverse().join('/')
+    );
+    if (resposta === null) return null;
+    var texto = String(resposta).trim();
+    var br = texto.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    var iso = br ? br[3] + '-' + br[2] + '-' + br[1] : texto;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) { setErro('Data de vigência inválida. Use dd/mm/aaaa.'); return null; }
+    return iso;
+  }
+
   async function handlePublicarOficial(tabela) {
     var cnpjPublicar = await garantirCnpjTransportadora(tabela, 'publicar na base oficial');
     if (!cnpjPublicar) return;
     var destinoPublicacao = await escolherTransportadoraOficial(tabela);
     if (destinoPublicacao === null) return;
+    var inicioVigenciaPublicar = pedirInicioVigenciaReajuste(tabela);
+    if (inicioVigenciaPublicar === null) return;
     var ok = window.confirm('Publicar ' + tabela.transportadora + ' dentro de "' + destinoPublicacao + '" na base oficial? Esta ação só é permitida após aprovação do gestor.');
     if (!ok) return;
     setProcessamentoPublicacao({ etapa: 'Publicando na base oficial', transportadora: tabela.transportadora });
@@ -2884,7 +2908,7 @@ export default function TabelasNegociacaoPage() {
       var at = await publicarNegociacaoNaBaseOficial(tabela.id, {
         usuario: sessao,
         cnpj_transportadora: cnpjPublicar,
-        data_inicio_vigencia: hojeISO(),
+        data_inicio_vigencia: inicioVigenciaPublicar,
         substituir_tabela_anterior: isReajusteNegociacao(tabela),
         transportadora_oficial_nome: destinoPublicacao,
       });
@@ -4684,7 +4708,7 @@ export default function TabelasNegociacaoPage() {
             ) : null}
             {isReajusteNegociacao(modalAprovacao) ? (
               <div className="sim-alert info" style={{ marginTop: 12 }}>
-                Reajuste aprovado: a tabela anterior sera mantida no historico e a nova proposta podera ser promovida como oficial a partir da vigencia informada.
+                Reajuste aprovado: ao publicar com "Substitui tabela anterior" marcado, a nova tabela entra na base oficial como alternativa "Reajuste dd/mm/aaaa" com vigência a partir da data informada. A tabela anterior não é apagada: continua valendo para CT-es emitidos antes dessa data (e vigências de reajustes anteriores são encerradas no dia anterior). Origens que ainda não existem na base entram como tabela principal.
               </div>
             ) : null}
             <label style={{ marginTop: 12 }}>Observacao da aprovacao

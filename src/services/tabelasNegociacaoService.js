@@ -14,7 +14,14 @@ import {
   listarNegociacoesResumo,
   obterNegociacaoCapa,
 } from './tabelasNegociacaoSnapshotService';
-import { carregarTransportadoraCompletaDb, salvarSecaoDb } from './freteDatabaseService';
+import {
+  carregarTransportadoraCompletaDb,
+  salvarSecaoDb,
+  localizarOrigensOficiaisDb,
+  limparGrupoTabelaAlternativaOrigensDb,
+  salvarVigenciaTabelaAlternativaDb,
+  encerrarVigenciasAnterioresDb,
+} from './freteDatabaseService';
 import {
   converterTabelaNegociacaoParaSimulador,
   converterTransportadoraOficialParaNegociacao,
@@ -1774,10 +1781,72 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
     })),
   }];
 
-  await salvarSecaoDb(baseOficial, 'generalidades');
-  await salvarSecaoDb(baseOficial, 'rotas');
-  await salvarSecaoDb(baseOficial, 'cotacoes');
-  await salvarSecaoDb(baseOficial, 'taxas');
+  // Reajuste com vigência: em vez de sobrescrever a tabela anterior, as origens
+  // que já existem na base oficial recebem a nova tabela como alternativa
+  // "Reajuste dd/mm/aaaa" com início de vigência; a anterior continua valendo
+  // para CT-es emitidos antes. Origens novas seguem o fluxo normal (principal).
+  const inicioVigencia = String(dados.data_inicio_vigencia || '').slice(0, 10);
+  const comoReajuste = Boolean(dados.substituir_tabela_anterior) && /^\d{4}-\d{2}-\d{2}$/.test(inicioVigencia);
+  let reajusteVigencia = null;
+  let origensNormais = baseOficial[0].origens;
+
+  if (comoReajuste) {
+    const existentes = await localizarOrigensOficiaisDb(
+      baseOficial[0].nome,
+      baseOficial[0].origens.map((origem) => ({ cidade: origem.cidade, canal: origem.canal })),
+    );
+    const chaveOrigem = (origem) => `${String(origem.cidade || '').trim().toLowerCase()}__${String(origem.canal || 'ATACADO').trim().toUpperCase()}`;
+    const chavesExistentes = new Set(existentes.map((item) => item.chave));
+    const origensReajuste = baseOficial[0].origens.filter((origem) => chavesExistentes.has(chaveOrigem(origem)));
+    origensNormais = baseOficial[0].origens.filter((origem) => !chavesExistentes.has(chaveOrigem(origem)));
+
+    if (origensReajuste.length) {
+      const [ano, mes, dia] = inicioVigencia.split('-');
+      const grupo = `Reajuste ${dia}/${mes}/${ano}`;
+      const marcarGrupo = (lista) => (lista || []).map((item) => ({ ...item, grupoTabelaAlternativa: grupo }));
+      const baseReajuste = [{
+        ...baseOficial[0],
+        origens: origensReajuste.map((origem) => ({
+          ...origem,
+          rotas: marcarGrupo(origem.rotas),
+          cotacoes: marcarGrupo(origem.cotacoes),
+          taxasEspeciais: marcarGrupo(origem.taxasEspeciais),
+          generalidadesAlternativas: [{ ...(origem.generalidades || {}), grupoTabelaAlternativa: grupo }],
+        })),
+      }];
+      const idsOrigens = existentes
+        .filter((item) => origensReajuste.some((origem) => chaveOrigem(origem) === item.chave))
+        .map((item) => item.id);
+
+      // Republicar o mesmo reajuste não pode duplicar linhas do grupo.
+      await limparGrupoTabelaAlternativaOrigensDb(idsOrigens, grupo);
+      const opcoesGrupo = { somenteAlternativas: true };
+      await salvarSecaoDb(baseReajuste, 'generalidades', undefined, opcoesGrupo);
+      await salvarSecaoDb(baseReajuste, 'rotas', undefined, opcoesGrupo);
+      await salvarSecaoDb(baseReajuste, 'cotacoes', undefined, opcoesGrupo);
+      await salvarSecaoDb(baseReajuste, 'taxas', undefined, opcoesGrupo);
+
+      for (const origemId of idsOrigens) {
+        // eslint-disable-next-line no-await-in-loop
+        await salvarVigenciaTabelaAlternativaDb(origemId, grupo, { inicio: inicioVigencia, fim: '' });
+      }
+      const anterioresEncerradas = await encerrarVigenciasAnterioresDb(idsOrigens, grupo, inicioVigencia);
+      reajusteVigencia = {
+        grupo,
+        inicio: inicioVigencia,
+        origens: idsOrigens.length,
+        vigencias_anteriores_encerradas: anterioresEncerradas,
+      };
+    }
+  }
+
+  if (origensNormais.length || !reajusteVigencia) {
+    const baseNormal = [{ ...baseOficial[0], origens: origensNormais }];
+    await salvarSecaoDb(baseNormal, 'generalidades');
+    await salvarSecaoDb(baseNormal, 'rotas');
+    await salvarSecaoDb(baseNormal, 'cotacoes');
+    await salvarSecaoDb(baseNormal, 'taxas');
+  }
 
   return {
     transportadora: baseOficial[0].nome,
@@ -1785,6 +1854,7 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
     rotas: baseOficial[0].origens.reduce((acc, origem) => acc + (origem.rotas || []).length, 0),
     cotacoes: baseOficial[0].origens.reduce((acc, origem) => acc + (origem.cotacoes || []).length, 0),
     taxas: baseOficial[0].origens.reduce((acc, origem) => acc + (origem.taxasEspeciais || []).length, 0),
+    ...(reajusteVigencia ? { reajuste_vigencia: reajusteVigencia } : {}),
   };
 }
 
