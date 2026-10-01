@@ -15,7 +15,8 @@
  * Variaveis no Vercel: SUPABASE_SERVICE_ROLE_KEY, RESEND_API_KEY, ALERTA_EMAIL_FROM, APP_URL.
  */
 import { createClient } from '@supabase/supabase-js';
-import XLSX from 'xlsx';
+import XLSX from 'xlsx-js-style';
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 
 const LINHAS_NO_CORPO = 10;
 const COLUNAS_OCULTAS = new Set(['id', 'raw', 'created_at', 'updated_at', 'inserted_at']);
@@ -45,6 +46,113 @@ function textoVerum(a) {
   return `${brl(a.valor_calculado_verum)} (${dif >= 0 ? '+' : ''}${brl(dif)})${verumSuspeito(a) ? ' — conferir' : ''}`;
 }
 
+const OCULTAS_BASE = new Set([
+  'numero_cte', 'data_emissao', 'transportadora', 'tomador_servico', 'canal', 'valor_cte', 'valor_nf', 'peso',
+  'valor_calculado', 'diferenca', 'cidade_origem', 'uf_origem', 'cidade_destino', 'uf_destino',
+]);
+const FMT = { moeda: '"R$" #,##0.00;[Red]-"R$" #,##0.00', num: '#,##0.00', int: '#,##0', data: 'dd/mm/yyyy' };
+
+function tipoColunaBase(chave) {
+  if (/^(valor|diferenca|frete)/.test(chave)) return 'moeda';
+  if (/(peso|cubagem|percentual)/.test(chave)) return 'num';
+  if (/^qtd/.test(chave)) return 'int';
+  if (/^data/.test(chave)) return 'data';
+  return 'texto';
+}
+
+function serialData(v) {
+  const m = String(v || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86400000 + 25569 : null;
+}
+
+// Planilha formatada: cabecalho colorido, linhas zebradas, R$ nos valores, datas reais,
+// filtro e titulo congelado. `porChave` traz a linha completa da base de cada CT-e.
+function montarPlanilha(alertas, porChave) {
+  const colunas = [
+    { t: 'CT-e', tipo: 'texto', get: (a) => a.numero_cte },
+    { t: 'Emissão', tipo: 'data', get: (a) => a.data_emissao },
+    { t: 'Transportadora', tipo: 'texto', get: (a) => a.transportadora },
+    { t: 'Tomador', tipo: 'texto', get: (a) => a.tomador_servico },
+    { t: 'Canal', tipo: 'texto', get: (a) => a.canal },
+    { t: 'Valor cobrado', tipo: 'moeda', get: (a) => Number(a.valor_cte) },
+    { t: 'Valor da NF', tipo: 'moeda', get: (a) => a.valor_nf },
+    { t: 'Peso (kg)', tipo: 'num', get: (a) => a.peso },
+    { t: 'Cálculo Verum', tipo: 'moeda', get: (a) => (a.valor_calculado_verum == null ? 'SEM CÁLCULO' : Number(a.valor_calculado_verum)) },
+    { t: 'Diferença vs Verum', tipo: 'moeda', get: (a) => a.diferenca_verum },
+    { t: 'Verum para conferir', tipo: 'texto', get: (a) => (verumSuspeito(a) ? 'SIM' : '') },
+    { t: 'Origem', tipo: 'texto', get: (a) => [a.cidade_origem, a.uf_origem].filter(Boolean).join('/') },
+    { t: 'Destino', tipo: 'texto', get: (a) => [a.cidade_destino, a.uf_destino].filter(Boolean).join('/') },
+    { t: 'Status do alerta', tipo: 'texto', get: (a) => a.status },
+  ];
+  const chavesBase = [];
+  alertas.forEach((a) => Object.keys(porChave.get(a.chave_cte) || {}).forEach((k) => {
+    if (COLUNAS_OCULTAS.has(k) || OCULTAS_BASE.has(k) || chavesBase.includes(k)) return;
+    if (alertas.some((x) => { const v = (porChave.get(x.chave_cte) || {})[k]; return v != null && v !== '' && typeof v !== 'object'; })) chavesBase.push(k);
+  }));
+  chavesBase.forEach((k) => colunas.push({
+    t: k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()),
+    tipo: tipoColunaBase(k),
+    get: (a) => (porChave.get(a.chave_cte) || {})[k],
+  }));
+
+  const borda = { style: 'thin', color: { rgb: 'D9E1F2' } };
+  const bordas = { top: borda, bottom: borda, left: borda, right: borda };
+  const ws = {};
+  colunas.forEach((c, ci) => {
+    ws[XLSX.utils.encode_cell({ r: 0, c: ci })] = {
+      t: 's', v: c.t,
+      s: { font: { bold: true, color: { rgb: 'FFFFFF' }, name: 'Calibri', sz: 11 }, fill: { fgColor: { rgb: '1F3864' } }, alignment: { horizontal: 'center', vertical: 'center', wrapText: true }, border: bordas },
+    };
+  });
+  const largura = colunas.map((c) => c.t.length + 4);
+  alertas.forEach((a, ri) => {
+    const fundo = ri % 2 ? { fgColor: { rgb: 'F2F6FC' } } : { fgColor: { rgb: 'FFFFFF' } };
+    colunas.forEach((c, ci) => {
+      let v = c.get(a);
+      const estilo = { fill: fundo, border: bordas, font: { name: 'Calibri', sz: 10 }, alignment: { vertical: 'top' } };
+      let cel;
+      if (v == null || v === '') {
+        cel = { t: 's', v: '', s: estilo };
+      } else if (c.tipo === 'data') {
+        const serial = serialData(v);
+        cel = serial == null ? { t: 's', v: String(v), s: estilo } : { t: 'n', v: serial, z: FMT.data, s: { ...estilo, alignment: { horizontal: 'center' } } };
+      } else if (['moeda', 'num', 'int'].includes(c.tipo) && Number.isFinite(Number(v)) && typeof v !== 'boolean') {
+        cel = { t: 'n', v: Number(v), z: FMT[c.tipo], s: estilo };
+      } else {
+        const texto = String(v);
+        cel = { t: 's', v: texto, s: texto === 'SIM' || texto === 'SEM CÁLCULO' ? { ...estilo, font: { ...estilo.font, bold: true, color: { rgb: 'B45309' } } } : estilo };
+      }
+      if (c.t === 'Valor cobrado') cel.s = { ...cel.s, font: { ...cel.s.font, bold: true } };
+      ws[XLSX.utils.encode_cell({ r: ri + 1, c: ci })] = cel;
+      largura[ci] = Math.max(largura[ci], Math.min(42, String(cel.t === 'n' ? '99.999.999,99' : cel.v).length + 3));
+    });
+  });
+  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: alertas.length, c: colunas.length - 1 } });
+  ws['!cols'] = largura.map((wch) => ({ wch }));
+  ws['!rows'] = [{ hpt: 30 }];
+  ws['!autofilter'] = { ref: ws['!ref'] };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'CT-e acima do target');
+  return congelarTitulo(Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }))).toString('base64');
+}
+
+// A biblioteca de estilos nao grava "congelar painel": injeta no XML da planilha
+// (cabecalho + 3 primeiras colunas fixos ao rolar).
+function congelarTitulo(buffer) {
+  try {
+    const arquivos = unzipSync(new Uint8Array(buffer));
+    const nome = 'xl/worksheets/sheet1.xml';
+    const xml = strFromU8(arquivos[nome]).replace(
+      /<sheetView workbookViewId="0"\/>/,
+      '<sheetView workbookViewId="0"><pane xSplit="3" ySplit="1" topLeftCell="D2" activePane="bottomRight" state="frozen"/></sheetView>',
+    );
+    arquivos[nome] = strToU8(xml);
+    return Buffer.from(zipSync(arquivos));
+  } catch {
+    return buffer;
+  }
+}
+
 // Planilha com TODAS as colunas que a base tem do CT-e, mais as colunas de analise na frente.
 async function xlsxAnexo(supabase, alertas) {
   const porChave = new Map();
@@ -53,39 +161,7 @@ async function xlsxAnexo(supabase, alertas) {
     const { data } = await supabase.from('realizado_local_ctes').select('*').in('chave_cte', chaves.slice(i, i + 150));
     (data || []).forEach((r) => porChave.set(r.chave_cte, r));
   }
-
-  const linhas = alertas.map((a) => {
-    const base = porChave.get(a.chave_cte) || {};
-    const linha = {
-      'CT-e': a.numero_cte,
-      'Emissão': dataBr(a.data_emissao),
-      Transportadora: a.transportadora,
-      Canal: a.canal,
-      'Valor cobrado': Number(a.valor_cte),
-      'Valor da NF': a.valor_nf == null ? null : Number(a.valor_nf),
-      'Peso (kg)': a.peso == null ? null : Number(a.peso),
-      'Cálculo Verum': a.valor_calculado_verum == null ? 'SEM CÁLCULO' : Number(a.valor_calculado_verum),
-      'Diferença vs Verum': a.diferenca_verum == null ? null : Number(a.diferenca_verum),
-      'Verum para conferir': verumSuspeito(a) ? 'SIM' : '',
-      Origem: [a.cidade_origem, a.uf_origem].filter(Boolean).join('/'),
-      Destino: [a.cidade_destino, a.uf_destino].filter(Boolean).join('/'),
-      'Status do alerta': a.status,
-    };
-    Object.entries(base).forEach(([k, v]) => {
-      if (COLUNAS_OCULTAS.has(k) || v == null || typeof v === 'object') return;
-      linha[`base_${k}`] = v;
-    });
-    return linha;
-  });
-
-  // Une todas as colunas (algumas linhas podem nao ter campos que outras tem).
-  const cab = [];
-  linhas.forEach((l) => Object.keys(l).forEach((k) => { if (!cab.includes(k)) cab.push(k); }));
-  const ws = XLSX.utils.json_to_sheet(linhas, { header: cab });
-  ws['!cols'] = cab.map((c) => ({ wch: Math.min(40, Math.max(12, c.length + 2)) }));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'CT-e acima do target');
-  return Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })).toString('base64');
+  return montarPlanilha(alertas, porChave);
 }
 
 function resumoTexto(alertas, limiar) {
@@ -124,6 +200,8 @@ function montarHtml(alertas, limiar, link) {
 ${link ? `<p style="margin-top:14px">Para marcar como verificado ou anomalia, acesse a tela <a href="${esc(link)}">Alerta CT-e valor alto</a>.</p>` : ''}
 </div>`;
 }
+
+export { montarPlanilha };
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
