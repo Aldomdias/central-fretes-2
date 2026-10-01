@@ -543,9 +543,9 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
         if (porNome.length) alvo = porNome;
       }
 
-      // Mesma fatura importada duas vezes (mesmo numero, CNPJ, valor, emissao e
-      // vencimento): nao ha ambiguidade real, o pagamento vale pras copias.
-      const assinatura = (f) => [f.valor_fatura, f.data_emissao, f.data_vencimento, f.serie_fatura || ''].join('|');
+      // Mesma fatura importada duas vezes (mesmo numero, raiz do CNPJ, valor, emissao e
+      // vencimento; serie e filial podem variar): nao ha ambiguidade real, o pagamento vale pras copias.
+      const assinatura = (f) => [f.valor_fatura, f.data_emissao, f.data_vencimento].join('|');
       const duplicatasIdenticas = alvo.length > 1 && alvo.every((f) => assinatura(f) === assinatura(alvo[0]));
       if (alvo.length > 1 && !duplicatasIdenticas) return [{ ...pagamento, resultado: 'AMBIGUO' }];
       if (!alvo.length) return [{ ...pagamento, resultado: 'NAO_LOCALIZADO' }];
