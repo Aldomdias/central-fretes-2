@@ -533,7 +533,7 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
       let porNomeEValor = [];
       if (cnpjValido && !candidatasPorCnpj.length) {
         const nomeBase = (txt) => String(txt || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
-          .replace(/[^A-Z0-9 ]/g, ' ').replace(/(LTDA|ME|EPP|EIRELI|SA|S A)/g, ' ').replace(/\s+/g, ' ').trim();
+          .replace(/[^A-Z0-9 ]/g, ' ').replace(/\b(LTDA|ME|EPP|EIRELI|SA|S A)\b/g, ' ').replace(/\s+/g, ' ').trim();
         const nomeSap = nomeBase(pagamento.transportadora);
         const mesmoNome = (fatura) => {
           const nomeFatura = nomeBase(fatura.transportadora);
