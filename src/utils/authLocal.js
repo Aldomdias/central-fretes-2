@@ -56,6 +56,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'simular-saida-transportadora', label: 'Simular Saída de Transportadora', grupo: 'Transportadoras' },
   { chave: 'gestao-contratos', label: 'Gestão de Contratos', grupo: 'Transportadoras' },
   { chave: 'gestao-base-cte', label: 'Gestão da Base CT-e', grupo: 'Auditoria' },
+  { chave: 'alertas-cte-valor', label: 'Alerta CT-e valor alto', grupo: 'Auditoria' },
   { chave: 'robos', label: 'Automação (Robôs)', grupo: 'Automação' },
   { chave: 'usuarios', label: 'Gestão de Usuários', grupo: 'Administração', somenteAdmin: true },
   { chave: 'usuarios-ativos', label: 'Usuários Ativos', grupo: 'Administração', somenteAdmin: true },
@@ -116,7 +117,7 @@ export const PERFIS_USUARIO = {
   GESTOR_AUDITORIA_FRETES: {
     nome: 'Gestor de Auditoria de Fretes',
     descricao: 'Gestao de carteiras, produtividade, riscos, vencimentos e SLA.',
-    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'gestao-base-cte', 'icms-uf', 'prazo-pagamento', 'importar-descontos-obtidos', 'painel-descontos-obtidos'],
+    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'gestao-base-cte', 'alertas-cte-valor', 'icms-uf', 'prazo-pagamento', 'importar-descontos-obtidos', 'painel-descontos-obtidos'],
   },
   FINANCEIRO: {
     nome: 'Financeiro',

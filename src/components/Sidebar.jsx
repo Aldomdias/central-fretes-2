@@ -44,6 +44,7 @@ const MENU_GRUPOS = [
       { chave: 'cte', label: 'CT-e' },
       { chave: 'cte-origem-destino', label: 'CT-e Origem x Destino' },
       { chave: 'auditoria-cte', label: 'Auditoria CT-e' },
+      { chave: 'alertas-cte-valor', label: 'Alerta CT-e valor alto' },
       { chave: 'auditoria-ecommerce', label: 'Auditoria E-commerce' },
       { chave: 'lotacao-auditoria', label: 'Auditoria lotacao' },
       { chave: 'painel-auditoria', label: 'Painel auditoria' },

@@ -49,6 +49,7 @@ import CentralControlePage from './pages/CentralControlePage';
 import AutorizacoesTransportePage from './pages/AutorizacoesTransportePage';
 import GestaoContratosPage from './pages/GestaoContratosPage';
 import RobosPage from './pages/RobosPage';
+import AlertasCteValorPage from './pages/AlertasCteValorPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, carregarUsuariosAsync, MODULOS_SISTEMA, sairLocal, usuarioPodeAdministrarUsuarios, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
@@ -67,7 +68,7 @@ const PAGINAS_PERMITIDAS = [
   'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
   'icms-uf', 'auditoria-ecommerce', 'usuarios-ativos',
   'importar-descontos-obtidos', 'painel-descontos-obtidos',
-  'gestao-contratos', 'autorizacoes-transporte-b2c', 'autorizacoes-transporte-atacado', 'autorizacoes-suprimentos', 'robos',
+  'gestao-contratos', 'autorizacoes-transporte-b2c', 'autorizacoes-transporte-atacado', 'autorizacoes-suprimentos', 'robos', 'alertas-cte-valor',
 ];
 
 function primeiraPaginaPermitida(usuario) {
@@ -252,6 +253,7 @@ export default function App() {
     'autorizacoes-suprimentos': <AutorizacoesTransportePage canal="SUPRIMENTOS" />,
     'gestao-contratos': <GestaoContratosPage sessao={sessao} />,
     robos: <RobosPage />,
+    'alertas-cte-valor': <AlertasCteValorPage sessao={sessao} />,
     transportadoras: <TransportadorasPage transportadoras={transportadorasMemo} transportadoraSelecionadaId={transportadoraSelecionadaId} origemSelecionadaId={origemSelecionadaId} onOpenTransportadora={abrirTransportadora} onOpenOrigem={setOrigemSelecionadaId} onVoltar={voltarTransportadoras} store={store} sessao={sessao} />,
   };
 

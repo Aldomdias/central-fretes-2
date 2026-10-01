@@ -3,6 +3,7 @@ import { resolverCubagemFinal } from '../utils/trackingCubagem';
 import { carregarMunicipiosIbgeDb } from './freteDatabaseService';
 import { carregarAliasesCidadeIbge } from './cidadeIbgeAliasService';
 import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
+import { carregarConfigAlertaCte, registrarAlertasValorCte, enviarEmailAlertasPendentes } from './cteAlertasValorService';
 import { compactarCidadeIbge, normalizarCidadeIbge, resolverIbgeComRegras } from '../utils/ibgeCidadeMatch';
 
 const TMP_CHUNK_SIZE = 1000;
@@ -963,6 +964,8 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress, so
   let totalInserido = 0;
   let totalPulados = 0;
   let totalLido = 0;
+  let totalAlertas = 0;
+  const configAlerta = await carregarConfigAlertaCte();
 
   // Contagem só estimada (planner) e uma vez — count exato em temporária grande
   // estoura statement timeout. Serve apenas para o "restante" da barra.
@@ -1020,6 +1023,8 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress, so
 
       await gravarLocalComRetry(supabase, payload);
       totalInserido += payload.length;
+      // CT-e de valor alto viram alerta (e e-mail ao final). Nao derruba a importacao.
+      totalAlertas += await registrarAlertasValorCte(payload, configAlerta);
     }
 
     const idsRemover = lote.map((row) => row.id).filter(Boolean);
@@ -1050,10 +1055,16 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress, so
     await sleep(40);
   }
 
+  if (totalAlertas > 0) {
+    onProgress?.({ etapa: 'alerta_valor', mensagem: `${totalAlertas.toLocaleString('pt-BR')} CT-e(s) acima do limite de alerta. Enviando e-mail...` });
+    await enviarEmailAlertasPendentes();
+  }
+
   return {
     totalInserido,
     totalPulados,
     totalLido,
+    totalAlertas,
     ultimoRetorno: { inseridos: totalInserido, restante: 0, modo: 'cliente' },
   };
 }
