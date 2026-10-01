@@ -51,6 +51,9 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
   // Aviso de validacao ao lado do botao da linha (a mensagem geral fica la no topo, fora da vista).
   const [avisoLinha, setAvisoLinha] = useState({ id: '', texto: '' });
   const [filtroFonte, setFiltroFonte] = useState('');
+  const [filtroTransp, setFiltroTransp] = useState('');
+  const [filtroChamado, setFiltroChamado] = useState('');
+  const [filtroBusca, setFiltroBusca] = useState('');
   const [importando, setImportando] = useState('');
   const arquivoRef = useRef(null);
   const [form, setForm] = useState({ chave: '', pedido: '', valor: '', observacao: '' });
@@ -78,6 +81,25 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
   useEffect(() => { carregar(); }, [canal]);
 
   const pendentes = useMemo(() => itens.filter((item) => item.status === 'PENDENTE'), [itens]);
+  const transportadorasFila = useMemo(
+    () => [...new Set(pendentes.map((item) => item.transportadora).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR')),
+    [pendentes],
+  );
+  // Filtros da fila: transportadora, chamado AMD e busca livre (pedido, chaves, NF, cidades).
+  const pendentesFiltrados = useMemo(() => {
+    const chamado = filtroChamado.trim().toLowerCase();
+    const busca = filtroBusca.trim().toLowerCase();
+    return pendentes.filter((item) => {
+      if (filtroTransp && item.transportadora !== filtroTransp) return false;
+      if (chamado && !String(item.protocolo_amd || '').toLowerCase().includes(chamado)) return false;
+      if (busca) {
+        const texto = [item.numero_pedido, item.chave_cte, item.chave_nfe, item.cidade_origem, item.cidade_destino, item.transportadora, item.observacao_auditoria]
+          .map((v) => String(v || '').toLowerCase()).join(' ');
+        if (!texto.includes(busca)) return false;
+      }
+      return true;
+    });
+  }, [pendentes, filtroTransp, filtroChamado, filtroBusca]);
   const decididas = useMemo(() => itens.filter((item) => item.status !== 'PENDENTE'), [itens]);
   const totalAutorizado = decididas.filter((item) => item.status === 'AUTORIZADA').reduce((acc, item) => acc + Number(item.valor_autorizado || 0), 0);
 
@@ -134,14 +156,19 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
     }
   };
 
-  const todosMarcados = pendentes.length > 0 && pendentes.every((item) => marcados.includes(item.id));
+  const marcadosVisiveis = pendentesFiltrados.filter((item) => marcados.includes(item.id));
+  const todosMarcados = pendentesFiltrados.length > 0 && pendentesFiltrados.every((item) => marcados.includes(item.id));
   const alternarMarcado = (id) => setMarcados((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  const alternarTodos = () => setMarcados(todosMarcados ? [] : pendentes.map((item) => item.id));
+  // Marca/desmarca so o que esta visivel (respeita os filtros).
+  const alternarTodos = () => {
+    const ids = pendentesFiltrados.map((item) => item.id);
+    setMarcados((prev) => (todosMarcados ? prev.filter((id) => !ids.includes(id)) : [...new Set([...prev, ...ids])]));
+  };
 
   // Decide varios de uma vez com a mesma justificativa. O valor autorizado de
   // cada item continua sendo o do campo da linha (padrao: o adicional).
   const decidirEmMassa = async (autorizar) => {
-    const alvo = pendentes.filter((item) => marcados.includes(item.id));
+    const alvo = marcadosVisiveis;
     if (!alvo.length) { setMensagem('Marque ao menos um CT-e.'); return; }
     if (!justificativaMassa.trim()) { setMensagem('Informe a justificativa em massa (obrigatoria).'); return; }
     if (!window.confirm(`${autorizar ? 'Autorizar' : 'Recusar'} ${alvo.length} CT-e(s) com a mesma justificativa?`)) return;
@@ -257,11 +284,25 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
       {aba === 'fila' && (
         <div className="table-card">
           {pendentes.length > 0 && (
+            <div className="audit-action-bar" style={{ alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+              <select value={filtroTransp} onChange={(e) => setFiltroTransp(e.target.value)} title="Filtrar por transportadora">
+                <option value="">Todas as transportadoras</option>
+                {transportadorasFila.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
+              </select>
+              <input style={{ width: 160 }} value={filtroChamado} onChange={(e) => setFiltroChamado(e.target.value)} placeholder="Chamado AMD (ex.: AMD-942114)" />
+              <input style={{ flex: '1 1 240px' }} value={filtroBusca} onChange={(e) => setFiltroBusca(e.target.value)} placeholder="Buscar pedido, chave CT-e/NF, cidade..." />
+              {(filtroTransp || filtroChamado || filtroBusca) && (
+                <button className="btn-secondary" onClick={() => { setFiltroTransp(''); setFiltroChamado(''); setFiltroBusca(''); }}>Limpar filtros</button>
+              )}
+              <span style={{ fontSize: 12 }}>{pendentesFiltrados.length} de {pendentes.length} na tela</span>
+            </div>
+          )}
+          {pendentes.length > 0 && (
             <div className="audit-action-bar" style={{ alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <span>{marcados.length} de {pendentes.length} marcado(s)</span>
+              <span>{marcadosVisiveis.length} de {pendentesFiltrados.length} marcado(s)</span>
               <input style={{ flex: '1 1 320px' }} value={justificativaMassa} onChange={(e) => setJustificativaMassa(e.target.value)} placeholder="Justificativa em massa (obrigatoria) — vale para todos os marcados" />
-              <button className="btn-primary" disabled={processando === 'massa' || !marcados.length} onClick={() => decidirEmMassa(true)}>Autorizar marcados</button>
-              <button className="btn-secondary" disabled={processando === 'massa' || !marcados.length} onClick={() => decidirEmMassa(false)}>Recusar marcados</button>
+              <button className="btn-primary" disabled={processando === 'massa' || !marcadosVisiveis.length} onClick={() => decidirEmMassa(true)}>Autorizar marcados</button>
+              <button className="btn-secondary" disabled={processando === 'massa' || !marcadosVisiveis.length} onClick={() => decidirEmMassa(false)}>Recusar marcados</button>
               {canal === 'SUPRIMENTOS' && (
                 <>
                   <select value={destinoTransferencia} onChange={(e) => setDestinoTransferencia(e.target.value)} title="Destino da transferencia">
@@ -269,7 +310,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                     <option value="B2C">Transporte B2C</option>
                     <option value="ATACADO">Transporte Atacado</option>
                   </select>
-                  <button className="btn-secondary" disabled={processando === 'transferir' || !marcados.length} onClick={() => transferir(pendentes.filter((item) => marcados.includes(item.id)), justificativaMassa)} title="Nao e de Suprimentos: passa os marcados para a fila do transporte">Transferir para transporte</button>
+                  <button className="btn-secondary" disabled={processando === 'transferir' || !marcadosVisiveis.length} onClick={() => transferir(marcadosVisiveis, justificativaMassa)} title="Nao e de Suprimentos: passa os marcados para a fila do transporte">Transferir para transporte</button>
                 </>
               )}
             </div>
@@ -278,7 +319,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
           <table className="sim-analise-tabela">
             <thead><tr><th><input type="checkbox" checked={todosMarcados} onChange={alternarTodos} title="Marcar todos" /></th><th>Pedido</th><th>Canal</th>{canal === 'SUPRIMENTOS' && <th>Chamado AMD</th>}<th>Chave CT-e</th><th>Chave NF</th><th>NF / Série</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor NF</th><th>Valor CT-e</th><th>Frete atual (AMD)</th><th>% NF atual</th><th>Adicional</th><th>Frete c/ adicional</th><th>% NF c/ adicional</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Justificativa *</th><th /></tr></thead>
             <tbody>
-              {pendentes.map((item) => (
+              {pendentesFiltrados.map((item) => (
                 <tr key={item.id}>
                   <td><input type="checkbox" checked={marcados.includes(item.id)} onChange={() => alternarMarcado(item.id)} /></td>
                   <td>{item.numero_pedido || '-'}</td>
@@ -323,7 +364,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   </td>
                 </tr>
               ))}
-              {!pendentes.length && <tr><td colSpan={19}>{carregando ? 'Carregando...' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
+              {!pendentesFiltrados.length && <tr><td colSpan={19}>{carregando ? 'Carregando...' : pendentes.length ? 'Nenhum CT-e com esses filtros.' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
             </tbody>
           </table>
         </div></div>
