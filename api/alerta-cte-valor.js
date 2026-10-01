@@ -7,7 +7,8 @@
  * Nao aceita destinatario nem conteudo do cliente: tudo vem do banco, entao a rota
  * nao serve para disparar e-mail para terceiros.
  *
- * Variaveis no Vercel: SUPABASE_SERVICE_ROLE_KEY, RESEND_API_KEY e (opcional)
+ * Envio: funcao resend-email da Central de Solicitacoes (padrao) ou Resend proprio se houver
+ * RESEND_API_KEY. Variaveis no Vercel: SUPABASE_SERVICE_ROLE_KEY e (opcional)
  * ALERTA_EMAIL_FROM (ex.: "Central de Fretes <alertas@seudominio.com.br>"),
  * APP_URL (link para a tela no e-mail).
  */
@@ -50,6 +51,16 @@ function csvAnexo(alertas) {
   return Buffer.from(texto, 'utf8').toString('base64');
 }
 
+function resumoTexto(alertas, limiar) {
+  const total = alertas.reduce((s, a) => s + Number(a.valor_cte || 0), 0);
+  const verum = (a) => (a.valor_calculado_verum == null
+    ? 'sem cálculo Verum'
+    : `Verum ${brl(a.valor_calculado_verum)} (dif. ${brl(a.diferenca_verum)})`);
+  const linhas = alertas.slice(0, 30).map((a) => `CT-e ${a.numero_cte || '—'} | ${a.transportadora || '—'} | ${a.canal || '—'} | ${num(a.peso)} kg | NF ${brl(a.valor_nf)} | cobrado ${brl(a.valor_cte)} | ${verum(a)}`);
+  const resto = alertas.length > 30 ? ` (+ ${alertas.length - 30} CT-e(s) na tela de alertas)` : '';
+  return `${alertas.length} CT-e(s) acima de ${brl(limiar)}, somando ${brl(total)}${resto}. ${linhas.join(' • ')}`;
+}
+
 function montarHtml(alertas, limiar, link) {
   const total = alertas.reduce((s, a) => s + Number(a.valor_cte || 0), 0);
   const exibidos = alertas.slice(0, MAX_LINHAS_EMAIL);
@@ -84,8 +95,6 @@ export default async function handler(req, res) {
     return res.status(405).json({ ok: false, erro: 'Método não permitido.' });
   }
   try {
-    const apiKey = process.env.RESEND_API_KEY;
-    if (!apiKey) return res.status(503).json({ ok: false, erro: 'RESEND_API_KEY não configurada no Vercel — alertas gravados, e-mail não enviado.' });
 
     const supabase = getClient();
     const { data: cfg } = await supabase.from('cte_alerta_config').select('*').eq('id', 1).maybeSingle();
@@ -105,20 +114,48 @@ export default async function handler(req, res) {
 
     const limiar = Number(cfg.limiar || 10000);
     const appUrl = process.env.APP_URL || (req.headers.host ? `https://${req.headers.host}` : '');
-    const resposta = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: process.env.ALERTA_EMAIL_FROM || 'Central de Fretes <onboarding@resend.dev>',
-        to: destinatarios,
-        subject: `[Alerta] ${alertas.length} CT-e acima de ${brl(limiar)} na importação`,
-        html: montarHtml(alertas, limiar, appUrl),
-        attachments: [{ filename: `cte-acima-${limiar}-${new Date().toISOString().slice(0, 10)}.csv`, content: csvAnexo(alertas) }],
-      }),
-    });
-    if (!resposta.ok) {
-      const detalhe = await resposta.text().catch(() => '');
-      return res.status(502).json({ ok: false, erro: `Provedor de e-mail recusou o envio (${resposta.status}). ${detalhe.slice(0, 300)}` });
+    const assunto = `[Alerta] ${alertas.length} CT-e acima de ${brl(limiar)} na importação`;
+    const html = montarHtml(alertas, limiar, appUrl);
+    const anexo = { filename: `cte-acima-${limiar}-${new Date().toISOString().slice(0, 10)}.csv`, content: csvAnexo(alertas) };
+
+    if (process.env.RESEND_API_KEY) {
+      // Resend proprio (HTML completo + planilha anexa).
+      const resposta = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: process.env.ALERTA_EMAIL_FROM || 'Central de Fretes <onboarding@resend.dev>',
+          to: destinatarios,
+          subject: assunto,
+          html,
+          attachments: [anexo],
+        }),
+      });
+      if (!resposta.ok) {
+        const detalhe = await resposta.text().catch(() => '');
+        return res.status(502).json({ ok: false, erro: `Provedor de e-mail recusou o envio (${resposta.status}). ${detalhe.slice(0, 300)}` });
+      }
+    } else {
+      // Envio da Central de Solicitacoes (funcao "resend-email" do Supabase dela).
+      // Ela aceita {to, nome, protocolo, status, mensagem, link}; html/anexo vao junto e
+      // so aparecem se a funcao for estendida para usa-los.
+      const centralUrl = process.env.CENTRAL_SOLICITACOES_SUPABASE_URL || process.env.VITE_CENTRAL_SOLICITACOES_SUPABASE_URL || 'https://zejguyckbnmyxkuagsyj.supabase.co';
+      const centralKey = process.env.CENTRAL_SOLICITACOES_SUPABASE_KEY || process.env.VITE_CENTRAL_SOLICITACOES_SUPABASE_KEY || 'sb_publishable_J0i_Olz3JBp_86-Xcd4MPQ_uH5vnHUS';
+      const mensagem = resumoTexto(alertas, limiar);
+      for (const to of destinatarios) {
+        const resposta = await fetch(`${centralUrl}/functions/v1/resend-email`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${centralKey}`, apikey: centralKey, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to, nome: 'Controle de CT-e', protocolo: `ALERTA-CTE-${new Date().toISOString().slice(0, 10)}`,
+            status: assunto, mensagem, link: appUrl, subject: assunto, html, attachments: [anexo],
+          }),
+        });
+        if (!resposta.ok) {
+          const detalhe = await resposta.text().catch(() => '');
+          return res.status(502).json({ ok: false, erro: `Envio da Central de Solicitações recusou (${resposta.status}). ${detalhe.slice(0, 300)}` });
+        }
+      }
     }
 
     const ids = alertas.map((a) => a.id);
