@@ -181,6 +181,7 @@ function montarHtml(alertas, limiar, link) {
   const linhas = exibidos.map((a) => `<tr>
 <td style="${td}"><strong>${esc(a.numero_cte || '—')}</strong><br><span style="color:#64748b">${dataBr(a.data_emissao)}</span></td>
 <td style="${td}">${esc(a.transportadora || '—')}<br><span style="color:#64748b">${esc(a.canal || '—')}</span></td>
+<td style="${td}">${esc([a.cidade_origem, a.uf_origem].filter(Boolean).join('/') || '—')}<br><span style="color:#64748b">→ ${esc([a.cidade_destino, a.uf_destino].filter(Boolean).join('/') || '—')}</span></td>
 <td style="${td};text-align:right">${num(a.peso)} kg</td>
 <td style="${td};text-align:right">${brl(a.valor_nf)}</td>
 <td style="${td};text-align:right"><strong>${brl(a.valor_cte)}</strong></td>
@@ -195,7 +196,7 @@ function montarHtml(alertas, limiar, link) {
 </ul>
 <p style="margin:0 0 6px;color:#475569">Maiores valores (${exibidos.length} de ${alertas.length}):</p>
 <table style="border-collapse:collapse;width:100%"><thead><tr>
-<th style="${th}">CT-e</th><th style="${th}">Transportadora / canal</th><th style="${th}">Peso</th><th style="${th}">Valor da NF</th><th style="${th}">Valor cobrado</th><th style="${th}">Cálculo Verum</th>
+<th style="${th}">CT-e</th><th style="${th}">Transportadora / canal</th><th style="${th}">Origem → destino</th><th style="${th}">Peso</th><th style="${th}">Valor da NF</th><th style="${th}">Valor cobrado</th><th style="${th}">Cálculo Verum</th>
 </tr></thead><tbody>${linhas}</tbody></table>
 ${link ? `<p style="margin-top:14px">Para marcar como verificado ou anomalia, acesse a tela <a href="${esc(link)}">Alerta CT-e valor alto</a>.</p>` : ''}
 </div>`;
