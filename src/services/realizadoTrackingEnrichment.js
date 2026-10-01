@@ -53,10 +53,18 @@ const validarCubagemTracking = validarCubagemOperacional;
 // criarTrackingAgregado/somarTrackingAgregado agora vivem em utils/trackingCubagem.js
 // (compartilhados com o SimuladorPage e testados em test/freteCalcEngine.test.js).
 
-function adicionarTrackingNoMapa(mapa, chave, item) {
+function adicionarTrackingNoMapa(mapa, chave, item, cubagemBruta = 0) {
   if (!chave) return;
   const atual = mapa.get(chave);
-  mapa.set(chave, somarTrackingAgregado(atual, item));
+  const somado = somarTrackingAgregado(atual, item);
+  // Cubagem exatamente como gravada no Tracking (cubagem_final, senao
+  // cubagem_total), sem as correcoes de multiplicacao por volumes: o agregado
+  // passa por criarTrackingAgregado duas vezes e pode inflar (1,008 -> 4,032).
+  // Mesma NF repetida em varias linhas conta uma vez; NFs distintas somam.
+  const mesmaNf = atual && apenasDigitosTracking(atual.chave_nfe) && apenasDigitosTracking(atual.chave_nfe) === apenasDigitosTracking(item.chave_nfe);
+  const anterior = numero(atual?.cubagem_bruta_tracking);
+  somado.cubagem_bruta_tracking = !atual ? cubagemBruta : (mesmaNf ? Math.max(anterior, cubagemBruta) : anterior + cubagemBruta);
+  mapa.set(chave, somado);
 }
 
 export async function buscarTrackingParaRealizado(rows = []) {
@@ -122,10 +130,11 @@ export async function buscarTrackingParaRealizado(rows = []) {
 
       (data || []).forEach((item) => {
         totalEncontrado += 1;
-        if (tipo === 'CHAVE_CTE') adicionarTrackingNoMapa(mapaChaveCte, normalizarChaveLongaTracking(item.chave_cte), criarTrackingAgregado(item, 'RAW_CHAVE_CTE'));
-        if (tipo === 'CHAVE_NFE') adicionarTrackingNoMapa(mapaChaveNfe, normalizarChaveLongaTracking(item.chave_nfe), criarTrackingAgregado(item, 'RAW_CHAVE_NFE'));
-        if (tipo === 'NOTA') adicionarTrackingNoMapa(mapaNota, apenasDigitosTracking(item.nota_fiscal), criarTrackingAgregado(item, 'RAW_NOTA_FISCAL'));
-        if (tipo === 'NUMERO_CTE') adicionarTrackingNoMapa(mapaNumeroCte, apenasDigitosTracking(item.cte_numero), criarTrackingAgregado(item, 'RAW_NUMERO_CTE'));
+        const bruta = numero(item.cubagem_final) || numero(item.cubagem_total);
+        if (tipo === 'CHAVE_CTE') adicionarTrackingNoMapa(mapaChaveCte, normalizarChaveLongaTracking(item.chave_cte), criarTrackingAgregado(item, 'RAW_CHAVE_CTE'), bruta);
+        if (tipo === 'CHAVE_NFE') adicionarTrackingNoMapa(mapaChaveNfe, normalizarChaveLongaTracking(item.chave_nfe), criarTrackingAgregado(item, 'RAW_CHAVE_NFE'), bruta);
+        if (tipo === 'NOTA') adicionarTrackingNoMapa(mapaNota, apenasDigitosTracking(item.nota_fiscal), criarTrackingAgregado(item, 'RAW_NOTA_FISCAL'), bruta);
+        if (tipo === 'NUMERO_CTE') adicionarTrackingNoMapa(mapaNumeroCte, apenasDigitosTracking(item.cte_numero), criarTrackingAgregado(item, 'RAW_NUMERO_CTE'), bruta);
       });
     }
   }
@@ -165,6 +174,27 @@ export async function buscarTrackingParaRealizado(rows = []) {
     erro: '',
     aviso: erroView ? `View agregada indisponivel, usado fallback raw: ${erroView}` : '',
   };
+}
+
+// Peso "calculado pelo Tracking" por CT-e: maior entre o peso fisico e o peso
+// cubado (cubagem final x 300). Usado so para exibir/comparar na fatura.
+// Retorna Map chave_cte (so digitos) -> { pesoFisico, pesoCubado, pesoCalculado }.
+export async function buscarPesosTrackingPorChaves(chaves = []) {
+  const unicas = [...new Set((chaves || []).map((c) => apenasDigitosTracking(c)).filter((c) => c.length >= 20))];
+  const resultado = new Map();
+  for (const parte of chunksTracking(unicas, 300)) {
+    const linhas = parte.map((chaveCte) => ({ chaveCte, peso: 0 }));
+    const mapas = await buscarTrackingParaRealizado(linhas);
+    const enriquecidas = enriquecerRealizadoComTracking(linhas, mapas).linhas || [];
+    enriquecidas.forEach((linha) => {
+      if (!linha.trackingMatch) return;
+      const pesoFisico = numero(linha.pesoTracking);
+      const pesoCubado = numero(linha.pesoCubadoTracking300);
+      const pesoCalculado = Math.max(pesoFisico, pesoCubado);
+      if (pesoCalculado > 0) resultado.set(normalizarChaveLongaTracking(linha.chaveCte), { pesoFisico, pesoCubado, pesoCalculado });
+    });
+  }
+  return resultado;
 }
 
 export function obterTrackingDaLinha(row = {}, mapas) {
@@ -284,6 +314,16 @@ export function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
 
       // Preserva o peso físico do CT-e; Tracking é somente fallback.
       pesoDeclarado: pesoFisico,
+      // Peso original que veio no Tracking (nao sobrescreve o do CT-e acima).
+      pesoTracking: numero(tracking.peso) || numero(tracking.peso_declarado),
+      // Peso cubado "da tela de Tracking": cubagem total/final x 300, sem passar
+      // pelas heuristicas de correcao acima (que podem multiplicar por volumes
+      // de novo ou tratar a cubagem unitaria como peso cubado).
+      pesoCubadoTracking300: validarCubagemTracking({
+        cubagemTotal: numero(tracking.cubagem_bruta_tracking),
+        qtdVolumes: qtdVolumesTracking,
+        peso: pesoFisico,
+      }).cubagemTotal * 300,
       valorNF: numero(row.valorNF) || numero(tracking.valor_nf),
 
       canal: row.canal || tracking.canal || '',

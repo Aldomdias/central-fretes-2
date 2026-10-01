@@ -1415,7 +1415,9 @@ function anexarComparativoPesos(resultado, cte, transportadoras, mapaVinculos, t
   if (alternativas.length < 2) return resultado;
   const melhor = alternativas.slice().sort((a, b) => a.diferenca_abs - b.diferenca_abs)[0];
   const diferencaAtual = Math.abs(toNumber(valorPago) - toNumber(resultado.valor_calculado));
-  const usarMelhor = melhor && melhor.diferenca_abs + 0.0001 < diferencaAtual;
+  // Com o modo de peso escolhido na fatura (Tracking), nao troca sozinho pela
+  // alternativa mais proxima do valor pago: respeita a escolha do usuario.
+  const usarMelhor = !opcoes.pesoForcado && melhor && melhor.diferenca_abs + 0.0001 < diferencaAtual;
   const resultadoBase = usarMelhor
     ? {
       ...resultado,
@@ -2109,6 +2111,8 @@ async function enriquecerCtesComTrackingAoVivo(ctes = [], onProgress) {
         peso_cubado: enriquecida.pesoCubado || cte.peso_cubado,
         cubagem: enriquecida.cubagemTotal || cte.cubagem,
         cubagemTotal: enriquecida.cubagemTotal || cte.cubagemTotal,
+        peso_tracking: enriquecida.pesoTracking || 0,
+        peso_cubado_tracking_300: enriquecida.pesoCubadoTracking300 || 0,
         documento_destinatario: enriquecida.documentoDestinatario || cte.documento_destinatario || '',
       };
     });
@@ -2339,10 +2343,19 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
   // destinatario para o tracking reescrever peso/cubagem de TODOS do lote, e o
   // mesmo CT-e calculava diferente conforme os outros recalculados junto.
   const semDocumentoDestinatario = (cte) => !pickDigits(cte, ['documento_destinatario', 'documentoDestinatario', 'cnpj_destinatario'], 14);
+  // modoPeso: 'cte' (padrao) | 'tracking' (peso do Tracking x cubagem, maior
+  // vale) | 'tracking_original' (so o peso fisico que veio no Tracking).
+  // Pode vir por CT-e (modoPesoPorChave, escolhido na linha da fatura) ou geral.
+  const modoValido = (valor) => (['tracking', 'tracking_original'].includes(valor) ? valor : 'cte');
+  const modoPesoDoCte = (cte) => {
+    const chave = onlyDigits(pick(cte, ['chave_cte', 'chaveCte', 'chave']));
+    const numero = onlyDigits(pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']));
+    return modoValido(opcoesCalculo.modoPesoPorChave?.[chave] ?? opcoesCalculo.modoPesoPorChave?.[numero] ?? opcoesCalculo.modoPeso);
+  };
   const indicesTracking = opcoesCalculo.consultarTrackingAoVivo === false
     ? []
     : ctesUnicos.map((cte, indice) => indice).filter((indice) => (
-      opcoesCalculo.apenasDadosCompletos === false || semDocumentoDestinatario(ctesUnicos[indice])
+      modoPesoDoCte(ctesUnicos[indice]) !== 'cte' || opcoesCalculo.apenasDadosCompletos === false || semDocumentoDestinatario(ctesUnicos[indice])
     ));
   const deveConsultarTracking = indicesTracking.length > 0;
   const enriquecidos = deveConsultarTracking
@@ -2454,11 +2467,51 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
         cubagemTotal: 0,
       }
       : cteComNfManual;
-    const registro = processarCte(cteParaMotor, transportadoras, mapaVinculos, '', {
+    // Modo de peso do CT-e. Peso manual (pesoOverride) sempre tem prioridade.
+    const modoPeso = modoPesoDoCte(cteBase);
+    const pesoTracking = toNumber(cteParaMotor.peso_tracking);
+    const aplicaModoTracking = modoPeso !== 'cte' && pesoOverride <= 0 && pesoTracking > 0 && cteParaMotor.trackingMatch;
+    let cteFinal = cteParaMotor;
+    let ignorarCubagemFinal = pesoOverride > 0 ? true : opcoesCalculo.ignorarCubagem;
+    if (aplicaModoTracking) {
+      // Peso cubado do proprio Tracking (cubagem final x 300), igual ao que a
+      // tela de Tracking mostra; nao depende do fator cadastrado na tabela.
+      // Cubagem total do Tracking x 300 (ex.: 1,008 -> 302,4). Nao usa a cubagem
+      // enriquecida (pode vir multiplicada de novo pelos volumes) nem o
+      // peso_cubado agregado (pode vir como a cubagem unitaria, 0,252).
+      const pesoCubadoTracking = toNumber(cteParaMotor.peso_cubado_tracking_300);
+      const pesoModo = modoPeso === 'tracking' ? Math.max(pesoTracking, pesoCubadoTracking) : pesoTracking;
+      cteFinal = {
+        ...cteParaMotor,
+        peso: pesoModo,
+        peso_declarado: pesoModo,
+        pesoDeclarado: pesoModo,
+        peso_cubado: 0,
+        pesoCubado: 0,
+        cubagem: 0,
+        cubagem_total: 0,
+        cubagemTotal: 0,
+      };
+      ignorarCubagemFinal = true;
+    }
+    const registroBase = processarCte(cteFinal, transportadoras, mapaVinculos, '', {
       ...opcoesCalculo,
-      ignorarCubagem: pesoOverride > 0 ? true : opcoesCalculo.ignorarCubagem,
-      percentualContingenciaPeso: pesoOverride > 0 ? 0 : opcoesCalculo.percentualContingenciaPeso,
+      ignorarCubagem: ignorarCubagemFinal,
+      percentualContingenciaPeso: (pesoOverride > 0 || aplicaModoTracking) ? 0 : opcoesCalculo.percentualContingenciaPeso,
+      pesoForcado: aplicaModoTracking,
     });
+    // A grade da fatura le `peso`; no modo Tracking ele precisa refletir o peso
+    // realmente usado no calculo (cubado), nao so o peso fisico do Tracking.
+    const pesoUsadoModo = toNumber(registroBase.detalhes_calculo?.peso_considerado);
+    const registro = modoPeso === 'cte' ? registroBase : {
+      ...registroBase,
+      ...(aplicaModoTracking && pesoUsadoModo > 0 ? { peso: pesoUsadoModo } : {}),
+      detalhes_calculo: {
+        ...(registroBase.detalhes_calculo || {}),
+        modo_peso_fatura: aplicaModoTracking ? modoPeso : 'cte_sem_tracking',
+        peso_tracking_original: pesoTracking,
+      },
+    };
     if (reentrega && Number(registro.valor_calculado || 0) > 0) {
       const valorOriginal = Number(registro.valor_calculado || 0);
       const valorReentrega = Number((valorOriginal * 0.5).toFixed(2));

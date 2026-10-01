@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { carregarRespostasEntregaFatura, salvarPendenciasEntrega, urlAnexoEntrega, urlPortalEntrega, validarRespostaEntrega } from '../services/entregaPortalService';
 import { carregarDivergenciasFatura, ctesCobrancaAcima, salvarDivergenciasFatura, validarRespostaDivergencia } from '../services/divergenciaPortalService';
+import { buscarPesosTrackingPorChaves } from '../services/realizadoTrackingEnrichment';
 import { buscarStatusEntregaCtes, chaveEntregaRegistro, ROTULO_ENTREGA, STATUS_ENTREGA } from '../services/auditoriaEntregaCteService';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
@@ -1750,6 +1751,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [novaFaturaId, setNovaFaturaId] = useState('');
   const [reauditando, setReauditando] = useState(false);
   const [recalculando, setRecalculando] = useState(false);
+  const [pesosTracking, setPesosTracking] = useState(() => new Map());
+  const [pesosCteBase, setPesosCteBase] = useState(() => new Map());
+  const [modoPesoCte, setModoPesoCte] = useState({});
   const [cancelandoRecalculo, setCancelandoRecalculo] = useState(false);
   const cancelarRecalculoRef = useRef(false);
   const [mensagemLiberacao, setMensagemLiberacao] = useState('');
@@ -1864,6 +1868,23 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         // Cruza com a base auditada para exibir rota, peso, canal e valores de referencia.
         const referencia = await buscarReferenciaCtes(listaUnica.flatMap((item) => [item.chave_cte, item.numero_cte]));
         if (ativo) setReferenciaCtes(referencia);
+        // Peso calculado pelo Tracking (maior entre fisico e cubagem x 300), so para comparar.
+        // Peso original do CT-e (base de CT-es), independente do que foi usado no ultimo calculo.
+        buscarCtesPorIdentificadores(listaUnica.map((item) => item.chave_cte))
+          .then(({ ctes }) => {
+            if (!ativo) return;
+            const mapa = new Map();
+            (ctes || []).forEach((cte) => {
+              const peso = Number(cte.peso || cte.peso_declarado || 0);
+              const chave = normalizarChaveCte(cte.chave_cte);
+              if (chave && peso > 0) mapa.set(chave, peso);
+            });
+            setPesosCteBase(mapa);
+          })
+          .catch(() => { if (ativo) setPesosCteBase(new Map()); });
+        buscarPesosTrackingPorChaves(listaUnica.map((item) => item.chave_cte))
+          .then((mapa) => { if (ativo) setPesosTracking(mapa); })
+          .catch(() => { if (ativo) setPesosTracking(new Map()); });
         // Status de entrega (tracking): fatura só pode ser paga com todos os CT-es entregues.
         setEntregaCtes(null);
         setEntregaErroFatura('');
@@ -2314,7 +2335,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   // auditoria + tabelas cadastradas), salva o resultado em
   // auditoria_cte_resultados e, na sequência, reauditar a fatura pra puxar os
   // valores recém-calculados pros detalhes e agregados da fatura.
-  const recalcular = async (idsAlvo) => {
+  const recalcular = async (idsAlvo, modoPorId = null) => {
     cancelarRecalculoRef.current = false;
     setCancelandoRecalculo(false);
     setRecalculando(true);
@@ -2335,9 +2356,15 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       const valorNfOverridePorChave = {};
       const trackingOverridePorChave = {};
       const reentregaPorChave = {};
+      const modoPesoPorChave = {};
       alvo.forEach((item) => {
         const chave = normalizarChaveCte(item.chave_cte) || normalizarChaveCte(item.numero_cte);
         if (!chave) return;
+        // Modo de peso do CT-e: o escolhido agora na linha, senao o que ja estava
+        // gravado no ultimo calculo. Padrao = peso do CT-e.
+        const modoGravado = parseDetalhesCalculoAuditoria(item.detalhes_calculo).modo_peso_fatura;
+        const modoEscolhido = modoPorId?.[item.id] ?? (['tracking', 'tracking_original'].includes(modoGravado) ? modoGravado : 'cte');
+        if (modoEscolhido !== 'cte') modoPesoPorChave[chave] = modoEscolhido;
         const valorNfPreservado = numeroValorNfAuditoria(item);
         // O `peso` salvo na linha pode ser o peso da melhor alternativa que o
         // motor escolheu sozinho (ex.: cubado errado de 75,6 kg), nao o do CT-e.
@@ -2395,6 +2422,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       });
       const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(chaves, setProgressoRecalculo, {
         ignorarCubagem: true,
+        modoPesoPorChave,
         valorNfOverridePorChave,
         trackingOverridePorChave,
         reentregaPorChave,
@@ -3022,7 +3050,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
               }}
             />
           </th>
-          <th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th>Peso</th><th>Valor NF</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Saldo autorizado</th><th>Motivo</th><th>Status</th><th>Entrega</th>
+          <th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th title="Peso do CT-e (base). Fundo verde = peso usado no calculo.">Peso CT-e</th><th title="Peso calculado pelo Tracking: maior entre peso fisico e cubagem x 300. Vermelho = diverge do peso usado no calculo.">Peso Tracking</th><th>Valor NF</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Saldo autorizado</th><th>Motivo</th><th>Status</th><th>Entrega</th>
         </tr></thead>
         <tbody>
           {lista.map((item) => {
@@ -3053,7 +3081,40 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                     </>
                   )}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base?.canal || '-'}</td>
-                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base?.peso || item.peso ? Number(base?.peso || item.peso).toLocaleString('pt-BR') : '-'}</td>
+                  {(() => {
+                    const pt = pesosTracking.get(normalizarChaveCte(item.chave_cte));
+                    const pesoUsado = Number(base?.peso || item.peso || 0);
+                    const pesoCte = pesosCteBase.get(normalizarChaveCte(item.chave_cte)) || pesoUsado;
+                    const diverge = Boolean(pt) && Math.abs(pt.pesoCalculado - pesoCte) > 0.5;
+                    const usaTracking = Boolean(pt) && diverge && Math.abs(pesoUsado - pt.pesoCalculado) <= 0.5;
+                    const fmt = (v) => Number(v).toLocaleString('pt-BR');
+                    const pilula = (cores) => ({ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 9px', borderRadius: 999, border: `1px solid ${cores.borda}`, background: cores.fundo, color: cores.texto, fontWeight: 600, whiteSpace: 'nowrap' });
+                    const corEmUso = { fundo: '#ecfdf5', borda: '#86efac', texto: '#166534' };
+                    const corAlerta = { fundo: '#fef2f2', borda: '#fca5a5', texto: '#b91c1c' };
+                    const ponto = (cor) => <span style={{ width: 7, height: 7, borderRadius: '50%', background: cor, display: 'inline-block' }} />;
+                    return (
+                      <>
+                        <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)} title={usaTracking ? 'Peso do CT-e (nao esta sendo usado no calculo)' : 'Peso do CT-e: EM USO no calculo'}>
+                          {pesoCte > 0 ? (
+                            <span style={!usaTracking ? pilula(corEmUso) : undefined}>
+                              {!usaTracking && ponto('#16a34a')}{fmt(pesoCte)}
+                            </span>
+                          ) : '-'}
+                        </td>
+                        {pt ? (
+                          <td
+                            style={{ cursor: 'pointer' }}
+                            onClick={() => alternarDetalheCte(item)}
+                            title={`Fisico no Tracking: ${fmt(pt.pesoFisico)} kg | Cubado: ${fmt(pt.pesoCubado)} kg${usaTracking ? ' | EM USO no calculo' : diverge ? ' | DIVERGE do peso do CT-e. Abra o CT-e para trocar a forma de calculo.' : ''}`}
+                          >
+                            <span style={usaTracking ? pilula(corEmUso) : diverge ? pilula(corAlerta) : undefined}>
+                              {usaTracking && ponto('#16a34a')}{diverge && !usaTracking && ponto('#dc2626')}{fmt(pt.pesoCalculado)}
+                            </span>
+                          </td>
+                        ) : <td style={{ color: '#94a3b8' }}>—</td>}
+                      </>
+                    );
+                  })()}
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{numeroValorNfAuditoria(item, base) > 0 ? dinheiro(numeroValorNfAuditoria(item, base)) : '-'}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{dinheiro(item.valor_frete)}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{Number(item.calculado_frete_verum || 0) ? dinheiro(item.calculado_frete_verum) : 'Sem calculo'}</td>
@@ -3089,7 +3150,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                 </tr>
                 {expandido && (
                   <tr>
-                    <td colSpan="16" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
+                    <td colSpan="17" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
                       <div className="hint-box compact" style={{ marginBottom: 10, borderColor: semValorNf ? '#fdba74' : '#dbe3ef', background: semValorNf ? '#fff7ed' : '#f8fafc' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                           <strong>{semValorNf ? 'CT-e sem valor NF identificado.' : 'Ajustes manuais do CT-e'}</strong>
@@ -3106,6 +3167,32 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                             Chave da NF: <strong>{chaveNfAuditoria(item, base) || 'Nao identificada para este CT-e.'}</strong>
                           </p>
                         ) : null}
+                        {(() => {
+                          const pt = pesosTracking.get(normalizarChaveCte(item.chave_cte));
+                          if (!pt) return null;
+                          const modoGravado = parseDetalhesCalculoAuditoria(item.detalhes_calculo).modo_peso_fatura;
+                          const modoAtual = modoPesoCte[item.id] ?? (['tracking', 'tracking_original'].includes(modoGravado) ? modoGravado : 'cte');
+                          const diverge = Math.abs(pt.pesoCalculado - (pesosCteBase.get(normalizarChaveCte(item.chave_cte)) || Number(base?.peso || item.peso || 0))) > 0.5;
+                          return (
+                            <div className="hint-box compact" style={{ marginTop: 8, borderColor: diverge ? '#fca5a5' : '#dbe3ef', background: diverge ? '#fef2f2' : '#f8fafc' }}>
+                              <strong style={{ color: diverge ? '#b91c1c' : undefined }}>
+                                Peso: CT-e {Number(pesosCteBase.get(normalizarChaveCte(item.chave_cte)) || base?.peso || item.peso || 0).toLocaleString('pt-BR')} kg | usado no calculo {Number(base?.peso || item.peso || 0).toLocaleString('pt-BR')} kg | Tracking {pt.pesoCalculado.toLocaleString('pt-BR')} kg (fisico {pt.pesoFisico.toLocaleString('pt-BR')}, cubado {pt.pesoCubado.toLocaleString('pt-BR')})
+                              </strong>
+                              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
+                                <label className="compact">Forma de calculo deste CT-e:
+                                  <select style={{ marginLeft: 6 }} value={modoAtual} disabled={recalculando} onChange={(e) => setModoPesoCte((atual) => ({ ...atual, [item.id]: e.target.value }))}>
+                                    <option value="cte">Peso do CT-e (padrao)</option>
+                                    <option value="tracking">Tracking com cubagem (maior vale)</option>
+                                    <option value="tracking_original">Tracking, peso original (sem cubagem)</option>
+                                  </select>
+                                </label>
+                                <button className="btn-primary audit-small-button" type="button" disabled={recalculando} onClick={() => recalcular([item.id], { [item.id]: modoAtual })}>
+                                  Aplicar e recalcular
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })()}
                         <div className="form-grid three" style={{ marginTop: 8 }}>
                           {semValorNf ? (
                             <label className="field">Chave NF para buscar no Tracking
