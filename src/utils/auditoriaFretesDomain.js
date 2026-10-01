@@ -506,6 +506,20 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
     porNumero.set(numero, [...(porNumero.get(numero) || []), fatura]);
   }
 
+  const nomeBase = (txt) => String(txt || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
+    .replace(/[^A-Z0-9 ]/g, ' ').replace(/\b(LTDA|ME|EPP|EIRELI|SA|S A)\b/g, ' ').replace(/\s+/g, ' ').trim();
+  // Nomes de transportadora ja vistos por raiz de CNPJ nas faturas: a mesma
+  // transportadora pode ter mais de uma raiz cadastrada.
+  const nomesPorRaiz = new Map();
+  for (const fatura of faturas) {
+    const raiz = obterRaizCnpj(fatura.cnpj_transportadora);
+    if (!raiz) continue;
+    if (!nomesPorRaiz.has(raiz)) nomesPorRaiz.set(raiz, new Set());
+    nomesPorRaiz.get(raiz).add(nomeBase(fatura.transportadora));
+  }
+  // Orgaos de imposto (retencao) nao sao pagamento de frete.
+  const ehOrgaoImposto = (nome) => /\b(RECEITA|FAZENDA|SECRETARIA|PREFEITURA|INSS|TRIBUT)/.test(nomeBase(nome));
+
   return linhasSap
     .map(mapearPagamentoSap)
     .filter((item) => item.numero_fatura)
@@ -524,6 +538,7 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
 
       const raizPagamento = obterRaizCnpj(pagamento.cnpj);
       const cnpjValido = raizCnpjValida(raizPagamento);
+      if (!cnpjValido && ehOrgaoImposto(pagamento.transportadora)) return [{ ...pagamento, resultado: 'NAO_LOCALIZADO' }];
       const candidatasPorCnpj = cnpjValido
         ? candidatas.filter((fatura) => obterRaizCnpj(fatura.cnpj_transportadora) === raizPagamento)
         : [];
@@ -532,11 +547,10 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
       // mesmo com a raiz diferente - so quando ha uma unica fatura assim.
       let porNomeEValor = [];
       if (cnpjValido && !candidatasPorCnpj.length) {
-        const nomeBase = (txt) => String(txt || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
-          .replace(/[^A-Z0-9 ]/g, ' ').replace(/\b(LTDA|ME|EPP|EIRELI|SA|S A)\b/g, ' ').replace(/\s+/g, ' ').trim();
         const nomeSap = nomeBase(pagamento.transportadora);
         const mesmoNome = (fatura) => {
           const nomeFatura = nomeBase(fatura.transportadora);
+          if (nomesPorRaiz.get(raizPagamento)?.has(nomeFatura)) return true;
           return nomeSap && nomeFatura && (nomeSap === nomeFatura || nomeSap.startsWith(nomeFatura) || nomeFatura.startsWith(nomeSap));
         };
         const abertasNome = candidatas.filter((fatura) => mesmoNome(fatura) && Math.abs(Number(fatura.valor_fatura || 0) - Number(pagamento.valor_pago || 0)) <= 0.01);
