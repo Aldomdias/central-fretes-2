@@ -138,14 +138,30 @@ export default async function handler(req, res) {
     const destinatarios = String(cfg.emails || '').split(/[;,\s]+/).map((e) => e.trim()).filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
     if (!destinatarios.length) return res.status(200).json({ ok: true, enviados: 0, aviso: 'Nenhum e-mail destinatário cadastrado.' });
 
-    const { data: alertas, error } = await supabase
-      .from('cte_alertas_valor')
-      .select('*')
-      .is('email_enviado_em', null)
-      .order('valor_cte', { ascending: false })
-      .limit(2000);
-    if (error) throw error;
-    if (!alertas?.length) return res.status(200).json({ ok: true, enviados: 0 });
+    // Sem ids: so os ainda nao enviados (fluxo da importacao). Com ids (tela): exatamente esses,
+    // mesmo os ja enviados antes (reenvio). Os destinatarios sempre vem da configuracao.
+    const ids = Array.isArray(req.body?.ids)
+      ? [...new Set(req.body.ids.map(Number).filter(Number.isInteger))].slice(0, 2000)
+      : null;
+    let alertas = [];
+    if (ids) {
+      for (let i = 0; i < ids.length; i += 200) {
+        const { data, error } = await supabase.from('cte_alertas_valor').select('*').in('id', ids.slice(i, i + 200));
+        if (error) throw error;
+        alertas.push(...(data || []));
+      }
+      alertas.sort((x, y) => Number(y.valor_cte) - Number(x.valor_cte));
+    } else {
+      const { data, error } = await supabase
+        .from('cte_alertas_valor')
+        .select('*')
+        .is('email_enviado_em', null)
+        .order('valor_cte', { ascending: false })
+        .limit(2000);
+      if (error) throw error;
+      alertas = data || [];
+    }
+    if (!alertas.length) return res.status(200).json({ ok: true, enviados: 0 });
 
     const limiar = Number(cfg.limiar || 10000);
     const appUrl = process.env.APP_URL || (req.headers.host ? `https://${req.headers.host}` : '');
@@ -191,9 +207,9 @@ export default async function handler(req, res) {
       }
     }
 
-    const ids = alertas.map((a) => a.id);
-    for (let i = 0; i < ids.length; i += 200) {
-      await supabase.from('cte_alertas_valor').update({ email_enviado_em: new Date().toISOString() }).in('id', ids.slice(i, i + 200));
+    const enviadosIds = alertas.map((a) => a.id);
+    for (let i = 0; i < enviadosIds.length; i += 200) {
+      await supabase.from('cte_alertas_valor').update({ email_enviado_em: new Date().toISOString() }).in('id', enviadosIds.slice(i, i + 200));
     }
     return res.status(200).json({ ok: true, enviados: alertas.length, destinatarios: destinatarios.length });
   } catch (error) {

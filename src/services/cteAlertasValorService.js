@@ -80,10 +80,17 @@ export async function registrarAlertasValorCte(rows = [], config = null) {
   }
 }
 
-/** Dispara o e-mail dos alertas ainda nao enviados (funcao serverless). Nunca lanca erro. */
-export async function enviarEmailAlertasPendentes() {
+/**
+ * Dispara o e-mail (funcao serverless). Sem `ids`: so os ainda nao enviados.
+ * Com `ids`: exatamente esses alertas, inclusive os ja enviados (reenvio). Nunca lanca erro.
+ */
+export async function enviarEmailAlertasPendentes(ids = null) {
   try {
-    const resposta = await fetch('/api/alerta-cte-valor', { method: 'POST' });
+    const resposta = await fetch('/api/alerta-cte-valor', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ids ? { ids } : {}),
+    });
     const json = await resposta.json().catch(() => null);
     if (!json) {
       return { ok: false, erro: `O envio de e-mail só funciona no site publicado (Vercel); aqui no teste local a rota /api não existe (HTTP ${resposta.status}).` };
@@ -94,10 +101,28 @@ export async function enviarEmailAlertasPendentes() {
   }
 }
 
-export async function listarAlertasValorCte({ status = '', limiarMinimo = 0, busca = '', limite = 1000 } = {}) {
+/** Zera a marca de "enviado" para poder mandar de novo. */
+export async function limparEnvioAlertasCte(ids = []) {
+  for (let i = 0; i < ids.length; i += 200) {
+    const { error } = await client().from(TABELA).update({ email_enviado_em: null }).in('id', ids.slice(i, i + 200));
+    if (error) throw new Error(`Não foi possível limpar o envio. Detalhe: ${error.message}`);
+  }
+}
+
+export const LIMITE_LISTA_ALERTAS = 2000;
+
+export async function listarAlertasValorCte({
+  status = '', limiarMinimo = 0, busca = '', email = '', canal = '', transportadora = '', dataInicio = '', dataFim = '', limite = LIMITE_LISTA_ALERTAS,
+} = {}) {
   let query = client().from(TABELA).select('*').order('valor_cte', { ascending: false }).limit(limite);
   if (status) query = query.eq('status', status);
   if (Number(limiarMinimo) > 0) query = query.gte('valor_cte', Number(limiarMinimo));
+  if (email === 'enviado') query = query.not('email_enviado_em', 'is', null);
+  if (email === 'pendente') query = query.is('email_enviado_em', null);
+  if (canal) query = query.eq('canal', canal);
+  if (transportadora.trim()) query = query.ilike('transportadora', `%${transportadora.trim().replace(/[%,]/g, ' ')}%`);
+  if (dataInicio) query = query.gte('data_emissao', dataInicio);
+  if (dataFim) query = query.lte('data_emissao', dataFim);
   const { data, error } = await query;
   if (error) throw new Error(`Não foi possível carregar os alertas. Detalhe: ${error.message}`);
   const termo = String(busca || '').trim().toLowerCase();

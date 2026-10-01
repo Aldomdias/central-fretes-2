@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  LIMITE_LISTA_ALERTAS,
   atualizarStatusAlertaCte,
   carregarConfigAlertaCte,
   enviarEmailAlertasPendentes,
+  limparEnvioAlertasCte,
   listarAlertasValorCte,
   salvarConfigAlertaCte,
   varrerBaseAlertasValorCte,
@@ -10,11 +12,23 @@ import {
 
 const moeda = (n) => (n == null || n === '' ? '—' : Number(n).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '—');
+const dataHoraBr = (v) => (v ? new Date(v).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '');
 const th = { textAlign: 'left', padding: '6px 8px', fontSize: 12, color: '#475569', borderBottom: '1px solid #e2e8f0', whiteSpace: 'nowrap' };
 const td = { padding: '5px 8px', fontSize: 12, borderBottom: '1px solid #f1f5f9', verticalAlign: 'top' };
 const LIMIARES_RAPIDOS = [10000, 15000, 20000, 30000];
+const CANAIS = ['ATACADO', 'B2C', 'INTERCOMPANY', 'A DEFINIR'];
 const ROTULO_STATUS = { novo: 'Novo', ok: 'Verificado (ok)', anomalia: 'Anomalia' };
 const COR_STATUS = { novo: '#b45309', ok: '#15803d', anomalia: '#b91c1c' };
+const CHAVE_FILTROS = 'central-fretes:alertas-cte-valor:filtros';
+const FILTROS_PADRAO = { status: '', visao: '0', busca: '', email: '', canal: '', transportadora: '', dataInicio: '', dataFim: '' };
+
+function carregarFiltrosSalvos() {
+  try {
+    return { ...FILTROS_PADRAO, ...(JSON.parse(localStorage.getItem(CHAVE_FILTROS) || '{}')) };
+  } catch {
+    return { ...FILTROS_PADRAO };
+  }
+}
 
 function CalculoVerum({ alerta }) {
   if (alerta.valor_calculado_verum == null) return <span style={{ color: '#b45309', fontWeight: 600 }}>Sem cálculo na Verum</span>;
@@ -36,24 +50,41 @@ export default function AlertasCteValorPage({ sessao }) {
   const [config, setConfig] = useState({ limiar: 10000, ativo: true, enviar_email: true, emails: '' });
   const [limiarEdit, setLimiarEdit] = useState('10000');
   const [alertas, setAlertas] = useState([]);
-  const [status, setStatus] = useState('');
-  const [visao, setVisao] = useState('0');
-  const [busca, setBusca] = useState('');
+  const [filtros, setFiltros] = useState(carregarFiltrosSalvos);
+  const [selecionados, setSelecionados] = useState(() => new Set());
   const [carregando, setCarregando] = useState(true);
   const [msg, setMsg] = useState('');
   const [varredura, setVarredura] = useState({ inicio: '', fim: '' });
   const [ocupado, setOcupado] = useState(false);
 
+  const setFiltro = (campo, valor) => setFiltros((f) => ({ ...f, [campo]: valor }));
+
+  // Os filtros ficam salvos no navegador: o que está na tela é o que será enviado.
+  useEffect(() => {
+    try { localStorage.setItem(CHAVE_FILTROS, JSON.stringify(filtros)); } catch { /* sem armazenamento: segue sem salvar */ }
+  }, [filtros]);
+
   const carregar = useCallback(async () => {
     setCarregando(true);
     try {
-      setAlertas(await listarAlertasValorCte({ status, limiarMinimo: Number(visao) || 0, busca }));
+      const lista = await listarAlertasValorCte({
+        status: filtros.status,
+        limiarMinimo: Number(filtros.visao) || 0,
+        busca: filtros.busca,
+        email: filtros.email,
+        canal: filtros.canal,
+        transportadora: filtros.transportadora,
+        dataInicio: filtros.dataInicio,
+        dataFim: filtros.dataFim,
+      });
+      setAlertas(lista);
+      setSelecionados((atual) => new Set(lista.filter((a) => atual.has(a.id)).map((a) => a.id)));
     } catch (e) {
       setMsg(e.message);
     } finally {
       setCarregando(false);
     }
-  }, [status, visao, busca]);
+  }, [filtros]);
 
   useEffect(() => {
     carregarConfigAlertaCte().then((c) => { setConfig(c); setLimiarEdit(String(c.limiar)); });
@@ -65,7 +96,21 @@ export default function AlertasCteValorPage({ sessao }) {
     total: alertas.reduce((s, a) => s + Number(a.valor_cte || 0), 0),
     novos: alertas.filter((a) => a.status === 'novo').length,
     semVerum: alertas.filter((a) => a.valor_calculado_verum == null).length,
+    enviados: alertas.filter((a) => a.email_enviado_em).length,
   }), [alertas]);
+
+  // Alvo das ações de envio/limpeza: os marcados, ou, sem marcação, tudo que o filtro mostra.
+  const alvo = useMemo(() => (selecionados.size ? alertas.filter((a) => selecionados.has(a.id)) : alertas), [alertas, selecionados]);
+  const alvoRotulo = selecionados.size ? `${alvo.length} selecionado(s)` : `${alvo.length} do filtro`;
+  const todosMarcados = alertas.length > 0 && selecionados.size === alertas.length;
+
+  function alternar(id) {
+    setSelecionados((atual) => {
+      const novo = new Set(atual);
+      if (novo.has(id)) novo.delete(id); else novo.add(id);
+      return novo;
+    });
+  }
 
   async function salvarConfig(parcial = {}) {
     setOcupado(true);
@@ -97,12 +142,33 @@ export default function AlertasCteValorPage({ sessao }) {
     }
   }
 
-  async function enviarPendentes() {
+  async function enviarAlvo() {
+    if (!alvo.length) { setMsg('Nenhum CT-e para enviar com o filtro atual.'); return; }
+    if (!config.emails.trim()) { setMsg('Cadastre os e-mails de destino e salve antes de enviar.'); return; }
+    const jaEnviados = alvo.filter((a) => a.email_enviado_em).length;
+    const aviso = `Enviar e-mail com ${alvo.length} CT-e(s) (${selecionados.size ? 'selecionados' : 'todos do filtro atual'}) para:\n${config.emails}\n${jaEnviados ? `\n${jaEnviados} deles já foram enviados antes e serão enviados de novo.` : ''}`;
+    if (!window.confirm(aviso)) return;
     setOcupado(true);
-    const r = await enviarEmailAlertasPendentes();
-    setMsg(r.ok ? (r.enviados ? `E-mail enviado com ${r.enviados} CT-e(s).` : (r.aviso || 'Nenhum alerta pendente de e-mail.')) : (r.erro || 'Falha no envio.'));
+    const r = await enviarEmailAlertasPendentes(alvo.map((a) => a.id));
+    setMsg(r.ok ? (r.enviados ? `E-mail enviado com ${r.enviados} CT-e(s).` : (r.aviso || 'Nada para enviar.')) : (r.erro || 'Falha no envio.'));
     setOcupado(false);
     carregar();
+  }
+
+  async function limparEnvio() {
+    const comEnvio = alvo.filter((a) => a.email_enviado_em);
+    if (!comEnvio.length) { setMsg('Nenhum CT-e com envio registrado neste filtro/seleção.'); return; }
+    if (!window.confirm(`Limpar a marca de "enviado" de ${comEnvio.length} CT-e(s) (${selecionados.size ? 'selecionados' : 'do filtro atual'})? Eles voltam a ficar como não enviados.`)) return;
+    setOcupado(true);
+    try {
+      await limparEnvioAlertasCte(comEnvio.map((a) => a.id));
+      setMsg(`Envio limpo em ${comEnvio.length} CT-e(s).`);
+      await carregar();
+    } catch (e) {
+      setMsg(e.message);
+    } finally {
+      setOcupado(false);
+    }
   }
 
   async function marcar(alerta, novoStatus) {
@@ -148,9 +214,8 @@ export default function AlertasCteValorPage({ sessao }) {
         </label>
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', fontSize: 13 }}>
           <label><input type="checkbox" checked={config.ativo} onChange={(e) => setConfig({ ...config, ativo: e.target.checked })} /> Detectar na importação</label>
-          <label><input type="checkbox" checked={config.enviar_email} onChange={(e) => setConfig({ ...config, enviar_email: e.target.checked })} /> Enviar e-mail automático</label>
+          <label><input type="checkbox" checked={config.enviar_email} onChange={(e) => setConfig({ ...config, enviar_email: e.target.checked })} /> Enviar e-mail automático na importação</label>
           <button type="button" className="btn-secondary" disabled={ocupado} onClick={() => salvarConfig({ limiar: config.limiar })}>Salvar e-mails e opções</button>
-          <button type="button" className="btn-secondary" disabled={ocupado} onClick={enviarPendentes}>Enviar e-mail dos pendentes agora</button>
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', borderTop: '1px solid #e2e8f0', paddingTop: 10 }}>
           <span style={{ fontSize: 12, color: '#475569' }}>Buscar no que já está na base (usa o limite acima):</span>
@@ -164,39 +229,73 @@ export default function AlertasCteValorPage({ sessao }) {
       <div className="panel-card">
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 10 }}>
           <label style={{ fontSize: 12 }}>Status
-            <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ display: 'block' }}>
+            <select value={filtros.status} onChange={(e) => setFiltro('status', e.target.value)} style={{ display: 'block' }}>
               <option value="">Todos</option>
               <option value="novo">Novos</option>
               <option value="anomalia">Anomalia</option>
               <option value="ok">Verificados (ok)</option>
             </select>
           </label>
-          <label style={{ fontSize: 12 }}>Ver apenas a partir de
-            <select value={visao} onChange={(e) => setVisao(e.target.value)} style={{ display: 'block' }}>
+          <label style={{ fontSize: 12 }}>E-mail
+            <select value={filtros.email} onChange={(e) => setFiltro('email', e.target.value)} style={{ display: 'block' }}>
+              <option value="">Todos</option>
+              <option value="pendente">Não enviados</option>
+              <option value="enviado">Já enviados</option>
+            </select>
+          </label>
+          <label style={{ fontSize: 12 }}>Canal
+            <select value={filtros.canal} onChange={(e) => setFiltro('canal', e.target.value)} style={{ display: 'block' }}>
+              <option value="">Todos</option>
+              {CANAIS.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          <label style={{ fontSize: 12 }}>Valor a partir de
+            <select value={filtros.visao} onChange={(e) => setFiltro('visao', e.target.value)} style={{ display: 'block' }}>
               <option value="0">Todos os alertas</option>
               {LIMIARES_RAPIDOS.map((v) => <option key={v} value={v}>{moeda(v)}</option>)}
             </select>
           </label>
-          <label style={{ fontSize: 12 }}>Busca
-            <input type="text" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="CT-e, transportadora, cidade" style={{ display: 'block' }} />
+          <label style={{ fontSize: 12 }}>Transportadora
+            <input type="text" value={filtros.transportadora} onChange={(e) => setFiltro('transportadora', e.target.value)} placeholder="nome" style={{ display: 'block' }} />
           </label>
+          <label style={{ fontSize: 12 }}>Emissão de
+            <input type="date" value={filtros.dataInicio} onChange={(e) => setFiltro('dataInicio', e.target.value)} style={{ display: 'block' }} />
+          </label>
+          <label style={{ fontSize: 12 }}>até
+            <input type="date" value={filtros.dataFim} onChange={(e) => setFiltro('dataFim', e.target.value)} style={{ display: 'block' }} />
+          </label>
+          <label style={{ fontSize: 12 }}>Busca
+            <input type="text" value={filtros.busca} onChange={(e) => setFiltro('busca', e.target.value)} placeholder="CT-e, cidade" style={{ display: 'block' }} />
+          </label>
+          <button type="button" className="btn-secondary" onClick={() => setFiltros({ ...FILTROS_PADRAO })}>Limpar filtros</button>
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+          <button type="button" className="btn-primary" disabled={ocupado || !alvo.length} onClick={enviarAlvo}>Enviar e-mail ({alvoRotulo})</button>
+          <button type="button" className="btn-secondary" disabled={ocupado || !alvo.length} onClick={limparEnvio}>Limpar envio ({alvoRotulo})</button>
           <span style={{ fontSize: 12, color: '#475569' }}>
-            {resumo.qtd} CT-e(s) · {moeda(resumo.total)} · {resumo.novos} novo(s) · {resumo.semVerum} sem cálculo Verum
+            {resumo.qtd} CT-e(s) · {moeda(resumo.total)} · {resumo.novos} novo(s) · {resumo.enviados} já enviado(s) · {resumo.semVerum} sem cálculo Verum
+            {resumo.qtd >= LIMITE_LISTA_ALERTAS ? ` · mostrando os ${LIMITE_LISTA_ALERTAS.toLocaleString('pt-BR')} maiores: afine o filtro` : ''}
           </span>
         </div>
+        <p style={{ margin: '0 0 8px', fontSize: 12, color: '#64748b' }}>O e-mail leva os CT-e marcados; se nenhum estiver marcado, leva tudo que o filtro mostra. Os filtros ficam salvos neste navegador.</p>
 
         <div style={{ overflowX: 'auto' }}>
           <table style={{ borderCollapse: 'collapse', width: '100%' }}>
             <thead>
               <tr>
-                {['CT-e', 'Emissão', 'Transportadora', 'Canal', 'Rota', 'Peso (kg)', 'Valor NF', 'Valor cobrado', 'Cálculo Verum', 'Status', 'Ação'].map((h) => <th key={h} style={th}>{h}</th>)}
+                <th style={th}>
+                  <input type="checkbox" checked={todosMarcados} onChange={() => setSelecionados(todosMarcados ? new Set() : new Set(alertas.map((a) => a.id)))} title="Marcar todos do filtro" />
+                </th>
+                {['CT-e', 'Emissão', 'Transportadora', 'Canal', 'Rota', 'Peso (kg)', 'Valor NF', 'Valor cobrado', 'Cálculo Verum', 'E-mail', 'Status', 'Ação'].map((h) => <th key={h} style={th}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
-              {carregando ? <tr><td style={td} colSpan={11}>Carregando...</td></tr> : null}
-              {!carregando && !alertas.length ? <tr><td style={td} colSpan={11}>Nenhum alerta encontrado. Eles aparecem após a próxima importação ou ao usar “Varrer base”.</td></tr> : null}
+              {carregando ? <tr><td style={td} colSpan={13}>Carregando...</td></tr> : null}
+              {!carregando && !alertas.length ? <tr><td style={td} colSpan={13}>Nenhum alerta encontrado. Eles aparecem após a próxima importação ou ao usar “Varrer base”.</td></tr> : null}
               {alertas.map((a) => (
-                <tr key={a.id}>
+                <tr key={a.id} style={selecionados.has(a.id) ? { background: '#eff6ff' } : undefined}>
+                  <td style={td}><input type="checkbox" checked={selecionados.has(a.id)} onChange={() => alternar(a.id)} /></td>
                   <td style={td}><strong>{a.numero_cte || '—'}</strong>{a.observacao ? <div style={{ color: '#64748b' }}>{a.observacao}</div> : null}</td>
                   <td style={td}>{dataBr(a.data_emissao)}</td>
                   <td style={td}>{a.transportadora || '—'}</td>
@@ -206,6 +305,9 @@ export default function AlertasCteValorPage({ sessao }) {
                   <td style={{ ...td, textAlign: 'right' }}>{moeda(a.valor_nf)}</td>
                   <td style={{ ...td, textAlign: 'right' }}><strong>{moeda(a.valor_cte)}</strong></td>
                   <td style={td}><CalculoVerum alerta={a} /></td>
+                  <td style={{ ...td, whiteSpace: 'nowrap', color: a.email_enviado_em ? '#15803d' : '#64748b' }}>
+                    {a.email_enviado_em ? <>✔ Enviado<div style={{ fontSize: 11 }}>{dataHoraBr(a.email_enviado_em)}</div></> : 'Não enviado'}
+                  </td>
                   <td style={{ ...td, color: COR_STATUS[a.status], fontWeight: 600 }}>{ROTULO_STATUS[a.status] || a.status}</td>
                   <td style={{ ...td, whiteSpace: 'nowrap' }}>
                     <button type="button" className="btn-secondary" onClick={() => marcar(a, 'ok')}>Ok</button>{' '}
