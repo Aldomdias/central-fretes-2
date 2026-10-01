@@ -40,6 +40,7 @@ function linhaAlerta(row = {}, limiar) {
     chave_cte: row.chave_cte,
     numero_cte: row.numero_cte || null,
     transportadora: row.transportadora || null,
+    tomador_servico: row.tomador_servico || null,
     cnpj_transportadora: row.cnpj_transportadora || null,
     competencia: row.competencia || null,
     data_emissao: row.data_emissao ? String(row.data_emissao).slice(0, 10) : null,
@@ -112,7 +113,7 @@ export async function limparEnvioAlertasCte(ids = []) {
 export const LIMITE_LISTA_ALERTAS = 2000;
 
 export async function listarAlertasValorCte({
-  status = '', limiarMinimo = 0, busca = '', email = '', canal = '', transportadora = '', dataInicio = '', dataFim = '', limite = LIMITE_LISTA_ALERTAS,
+  status = '', limiarMinimo = 0, busca = '', email = '', canal = '', tomadores = [], transportadora = '', dataInicio = '', dataFim = '', limite = LIMITE_LISTA_ALERTAS,
 } = {}) {
   let query = client().from(TABELA).select('*').order('valor_cte', { ascending: false }).limit(limite);
   if (status) query = query.eq('status', status);
@@ -120,6 +121,8 @@ export async function listarAlertasValorCte({
   if (email === 'enviado') query = query.not('email_enviado_em', 'is', null);
   if (email === 'pendente') query = query.is('email_enviado_em', null);
   if (canal) query = query.eq('canal', canal);
+  const termosTomador = tomadores.map((t) => String(t).trim().replace(/[%,()*]/g, ' ')).filter(Boolean);
+  if (termosTomador.length) query = query.or(termosTomador.map((t) => `tomador_servico.ilike.%${t}%`).join(','));
   if (transportadora.trim()) query = query.ilike('transportadora', `%${transportadora.trim().replace(/[%,]/g, ' ')}%`);
   if (dataInicio) query = query.gte('data_emissao', dataInicio);
   if (dataFim) query = query.lte('data_emissao', dataFim);
@@ -154,7 +157,7 @@ export async function varrerBaseAlertasValorCte({ limiar, dataInicio, dataFim })
   for (;;) {
     let query = supabase
       .from('realizado_local_ctes')
-      .select('chave_cte,numero_cte,transportadora,cnpj_transportadora,competencia,data_emissao,valor_cte,canal,cidade_origem,uf_origem,cidade_destino,uf_destino,peso,valor_nf,valor_calculado,arquivo_origem')
+      .select('chave_cte,numero_cte,transportadora,tomador_servico,cnpj_transportadora,competencia,data_emissao,valor_cte,canal,cidade_origem,uf_origem,cidade_destino,uf_destino,peso,valor_nf,valor_calculado,arquivo_origem')
       .gte('valor_cte', cfg.limiar)
       .order('valor_cte', { ascending: false })
       .range(de, de + pagina - 1);

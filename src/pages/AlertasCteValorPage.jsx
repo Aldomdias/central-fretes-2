@@ -9,6 +9,7 @@ import {
   salvarConfigAlertaCte,
   varrerBaseAlertasValorCte,
 } from '../services/cteAlertasValorService';
+import { TOMADORES_CTE_PADRAO } from '../services/cteBasePolicy';
 
 const moeda = (n) => (n == null || n === '' ? '—' : Number(n).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '—');
@@ -20,7 +21,7 @@ const CANAIS = ['ATACADO', 'B2C', 'INTERCOMPANY', 'A DEFINIR'];
 const ROTULO_STATUS = { novo: 'Novo', ok: 'Verificado (ok)', anomalia: 'Anomalia' };
 const COR_STATUS = { novo: '#b45309', ok: '#15803d', anomalia: '#b91c1c' };
 const CHAVE_FILTROS = 'central-fretes:alertas-cte-valor:filtros';
-const FILTROS_PADRAO = { status: '', visao: '0', busca: '', email: '', canal: '', transportadora: '', dataInicio: '', dataFim: '' };
+const FILTROS_PADRAO = { status: '', visao: '0', busca: '', email: '', canal: '', transportadora: '', dataInicio: '', dataFim: '', tomadores: [...TOMADORES_CTE_PADRAO] };
 
 function carregarFiltrosSalvos() {
   try {
@@ -73,6 +74,7 @@ export default function AlertasCteValorPage({ sessao }) {
         busca: filtros.busca,
         email: filtros.email,
         canal: filtros.canal,
+        tomadores: filtros.tomadores,
         transportadora: filtros.transportadora,
         dataInicio: filtros.dataInicio,
         dataFim: filtros.dataFim,
@@ -227,6 +229,22 @@ export default function AlertasCteValorPage({ sessao }) {
       </div>
 
       <div className="panel-card">
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10, fontSize: 12 }}>
+          <span style={{ color: '#475569' }}>Tomador:</span>
+          {TOMADORES_CTE_PADRAO.map((t) => {
+            const ativo = filtros.tomadores.includes(t);
+            return (
+              <button
+                key={t}
+                type="button"
+                className={ativo ? 'btn-primary' : 'btn-secondary'}
+                onClick={() => setFiltro('tomadores', ativo ? filtros.tomadores.filter((x) => x !== t) : [...filtros.tomadores, t])}
+              >{t}</button>
+            );
+          })}
+          <button type="button" className="btn-secondary" onClick={() => setFiltro('tomadores', [])} title="Sem filtro de tomador">Todos os tomadores</button>
+          <span style={{ color: '#64748b' }}>{filtros.tomadores.length ? 'Mostrando só os tomadores marcados.' : 'Mostrando todos os tomadores.'}</span>
+        </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 10 }}>
           <label style={{ fontSize: 12 }}>Status
             <select value={filtros.status} onChange={(e) => setFiltro('status', e.target.value)} style={{ display: 'block' }}>
@@ -287,18 +305,19 @@ export default function AlertasCteValorPage({ sessao }) {
                 <th style={th}>
                   <input type="checkbox" checked={todosMarcados} onChange={() => setSelecionados(todosMarcados ? new Set() : new Set(alertas.map((a) => a.id)))} title="Marcar todos do filtro" />
                 </th>
-                {['CT-e', 'Emissão', 'Transportadora', 'Canal', 'Rota', 'Peso (kg)', 'Valor NF', 'Valor cobrado', 'Cálculo Verum', 'E-mail', 'Status', 'Ação'].map((h) => <th key={h} style={th}>{h}</th>)}
+                {['CT-e', 'Emissão', 'Transportadora', 'Tomador', 'Canal', 'Rota', 'Peso (kg)', 'Valor NF', 'Valor cobrado', 'Cálculo Verum', 'E-mail', 'Status', 'Ação'].map((h) => <th key={h} style={th}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
-              {carregando ? <tr><td style={td} colSpan={13}>Carregando...</td></tr> : null}
-              {!carregando && !alertas.length ? <tr><td style={td} colSpan={13}>Nenhum alerta encontrado. Eles aparecem após a próxima importação ou ao usar “Varrer base”.</td></tr> : null}
+              {carregando ? <tr><td style={td} colSpan={14}>Carregando...</td></tr> : null}
+              {!carregando && !alertas.length ? <tr><td style={td} colSpan={14}>Nenhum alerta encontrado. Eles aparecem após a próxima importação ou ao usar “Varrer base”.</td></tr> : null}
               {alertas.map((a) => (
                 <tr key={a.id} style={selecionados.has(a.id) ? { background: '#eff6ff' } : undefined}>
                   <td style={td}><input type="checkbox" checked={selecionados.has(a.id)} onChange={() => alternar(a.id)} /></td>
                   <td style={td}><strong>{a.numero_cte || '—'}</strong>{a.observacao ? <div style={{ color: '#64748b' }}>{a.observacao}</div> : null}</td>
                   <td style={td}>{dataBr(a.data_emissao)}</td>
                   <td style={td}>{a.transportadora || '—'}</td>
+                  <td style={td}>{a.tomador_servico || '—'}</td>
                   <td style={td}>{a.canal || '—'}</td>
                   <td style={td}>{[a.cidade_origem, a.uf_origem].filter(Boolean).join('/')} → {[a.cidade_destino, a.uf_destino].filter(Boolean).join('/')}</td>
                   <td style={{ ...td, textAlign: 'right' }}>{a.peso != null ? Number(a.peso).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) : '—'}</td>
