@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { carregarHistoricoProdutividade, carregarAutorizacoesProdutividade, carregarPendenciasAtuais, carregarEnviosErpPeriodo } from '../services/auditoriaFretesService';
+import React, { useEffect, useMemo, useState } from 'react';
+import { carregarHistoricoProdutividade, carregarAutorizacoesProdutividade, carregarPendenciasAtuais, carregarEnviosErpPeriodo, carregarFaturasPorIds } from '../services/auditoriaFretesService';
 
 const inteiro = (v) => Number(v || 0).toLocaleString('pt-BR');
 const FUSO = 'America/Sao_Paulo';
@@ -81,7 +81,15 @@ export default function ProdutividadeDiaFaturas({ compacto = false }) {
     carregar();
     // Atualiza sozinho a cada 2 minutos enquanto a tela esta aberta.
     const timer = setInterval(carregar, 120000);
-    return () => clearInterval(timer);
+    // Recarrega logo apos uma importacao de envios ao ERP e ao voltar para a aba.
+    const aoVoltar = () => { if (document.visibilityState === 'visible') carregar(); };
+    window.addEventListener('envios-erp-atualizados', carregar);
+    document.addEventListener('visibilitychange', aoVoltar);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('envios-erp-atualizados', carregar);
+      document.removeEventListener('visibilitychange', aoVoltar);
+    };
   }, [periodo]);
 
   const linhas = useMemo(() => {
@@ -113,7 +121,7 @@ export default function ProdutividadeDiaFaturas({ compacto = false }) {
       else p.transporte.add(id);
     }
     return [...porPessoa.values()]
-      .map((p) => ({ nome: p.nome, auditadas: p.auditadas.size, liberadas: p.liberadas.size, aprovacao: p.aprovacao.size, enviadas: p.enviadas.size, fornecedor: p.fornecedor.size, suprimentos: p.suprimentos.size, transporte: p.transporte.size, erp: p.erp.size }))
+      .map((p) => ({ ids: { auditadas: [...p.auditadas], liberadas: [...p.liberadas], aprovacao: [...p.aprovacao], enviadas: [...p.enviadas], fornecedor: [...p.fornecedor], suprimentos: [...p.suprimentos], transporte: [...p.transporte], erp: [...p.erp] }, nome: p.nome, auditadas: p.auditadas.size, liberadas: p.liberadas.size, aprovacao: p.aprovacao.size, enviadas: p.enviadas.size, fornecedor: p.fornecedor.size, suprimentos: p.suprimentos.size, transporte: p.transporte.size, erp: p.erp.size }))
       .sort((a, b) => (b.auditadas + b.enviadas + b.erp) - (a.auditadas + a.enviadas + a.erp));
   }, [eventos, autorizacoes, enviosErp]);
 
@@ -127,6 +135,42 @@ export default function ProdutividadeDiaFaturas({ compacto = false }) {
     transporte: t.transporte + l.transporte,
     erp: t.erp + l.erp,
   }), { auditadas: 0, liberadas: 0, aprovacao: 0, enviadas: 0, fornecedor: 0, suprimentos: 0, transporte: 0, erp: 0 });
+
+  const [detalhe, setDetalhe] = useState(null);
+
+  const abrirDetalhe = async (pessoa, coluna, ids) => {
+    if (!ids.length) return;
+    setDetalhe({ pessoa, coluna, itens: [], carregando: true, erro: '', total: ids.length });
+    try {
+      const faturas = await carregarFaturasPorIds(ids);
+      const mapa = new Map(faturas.map((f) => [f.id, f]));
+      const itens = ids.map((id) => mapa.get(id) || { id, numero_fatura: '(nao encontrada)' });
+      setDetalhe({ pessoa, coluna, itens, carregando: false, erro: '', total: ids.length });
+    } catch (e) {
+      setDetalhe({ pessoa, coluna, itens: [], carregando: false, erro: e.message || String(e), total: ids.length });
+    }
+  };
+
+  const celula = (pessoa, coluna, chave, ids, valor, forte) => {
+    const conteudo = forte ? <strong>{inteiro(valor)}</strong> : inteiro(valor);
+    return (
+      <td style={{ textAlign: 'right' }}>
+        {valor > 0 ? (
+          <button type="button" title="Ver faturas" onClick={() => abrirDetalhe(pessoa, coluna, ids)}
+            style={{ background: 'none', border: 0, padding: 0, color: '#1d4ed8', textDecoration: 'underline', cursor: 'pointer', font: 'inherit' }}>
+            {conteudo}
+          </button>
+        ) : conteudo}
+      </td>
+    );
+  };
+
+  const colunas = [
+    ['auditadas', 'Auditadas', true], ['liberadas', 'Liberadas p/ pagamento'], ['aprovacao', 'Enviadas p/ aprovacao gestao'],
+    ['erp', 'Enviadas ao ERP'], ['enviadas', 'Enviadas ao financeiro'], ['fornecedor', 'Enviadas ao fornecedor'],
+    ['suprimentos', 'Enviadas p/ Suprimentos'], ['transporte', 'Enviadas p/ Transporte'],
+  ];
+  const idsTotal = (chave) => [...new Set(linhas.flatMap((l) => l.ids[chave]))];
 
   const rotulo = { hoje: 'Hoje', ontem: 'Ontem', '7d': 'Ultimos 7 dias', mes: 'Mes atual' }[periodo];
 
@@ -176,33 +220,48 @@ export default function ProdutividadeDiaFaturas({ compacto = false }) {
             {linhas.map((l) => (
               <tr key={l.nome}>
                 <td>{l.nome}</td>
-                <td style={{ textAlign: 'right' }}><strong>{inteiro(l.auditadas)}</strong></td>
-                <td style={{ textAlign: 'right' }}>{inteiro(l.liberadas)}</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(l.aprovacao)}</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(l.erp)}</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(l.enviadas)}</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(l.fornecedor)}</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(l.suprimentos)}</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(l.transporte)}</td>
+                {colunas.map(([k, rot, forte]) => <React.Fragment key={k}>{celula(l.nome, rot, k, l.ids[k], l[k], forte)}</React.Fragment>)}
               </tr>
             ))}
             {!linhas.length ? <tr><td colSpan={9} style={{ color: '#64748b' }}>{carregando ? 'Carregando...' : 'Nenhuma movimentacao no periodo.'}</td></tr> : null}
             {linhas.length ? (
               <tr style={{ fontWeight: 700, background: '#f1f5f9' }}>
                 <td>Total</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(total.auditadas)}</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(total.liberadas)}</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(total.aprovacao)}</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(total.erp)}</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(total.enviadas)}</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(total.fornecedor)}</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(total.suprimentos)}</td>
-                <td style={{ textAlign: 'right' }}>{inteiro(total.transporte)}</td>
+                {colunas.map(([k, rot]) => <React.Fragment key={k}>{celula('Total', rot, k, idsTotal(k), total[k])}</React.Fragment>)}
               </tr>
             ) : null}
           </tbody>
         </table>
       </div>
+      {detalhe ? (
+        <div onClick={() => setDetalhe(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 10, padding: 16, width: 'min(820px, 100%)', maxHeight: '80vh', overflow: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+              <h4 style={{ margin: 0 }}>{detalhe.pessoa} - {detalhe.coluna} ({inteiro(detalhe.total)}) - {rotulo}</h4>
+              <button type="button" className="btn-secondary" onClick={() => setDetalhe(null)}>Fechar</button>
+            </div>
+            {detalhe.erro ? <div className="sim-alert error" style={{ marginTop: 8 }}>{detalhe.erro}</div> : null}
+            {detalhe.carregando ? <p>Carregando...</p> : (
+              <table style={{ marginTop: 8 }}>
+                <thead>
+                  <tr><th>Fatura</th><th>Transportadora</th><th>Status atual</th><th style={{ textAlign: 'right' }}>Valor</th><th>Vencimento</th></tr>
+                </thead>
+                <tbody>
+                  {detalhe.itens.map((f) => (
+                    <tr key={f.id}>
+                      <td>{f.numero_fatura}{f.serie_fatura ? `-${f.serie_fatura}` : ''}</td>
+                      <td>{f.transportadora || '-'}</td>
+                      <td>{f.status || '-'}</td>
+                      <td style={{ textAlign: 'right' }}>{f.valor_fatura == null ? '-' : Number(f.valor_fatura).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                      <td>{f.data_vencimento ? String(f.data_vencimento).slice(0, 10).split('-').reverse().join('/') : '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

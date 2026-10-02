@@ -1,4 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { carregarAguardandoNovaFatura } from './baixaEntregaService';
 import { buscarBaseSimulacaoPorRotasDb, carregarBaseCompletaDb, carregarBaseTransportadorasDb, invalidarCacheBaseCompletaDb } from './freteDatabaseService';
 import { calcularFreteFaixaPeso, calcularFretePercentual } from './freteCalcEngine';
 import { filtrarCpComercialCte } from './cteBasePolicy';
@@ -16,8 +17,8 @@ import { buscarTrackingParaRealizado, enriquecerRealizadoComTracking } from './r
 import { obterRaizCnpj } from '../utils/cnpj.js';
 import { carregarMapaEquivalenciasOrigem } from './origemEquivalenciaService';
 import { ibgesOrigemEquivalentes, origemAceitaPorExcecao } from '../utils/origemEquivalencia';
-
 import { cederThread, esperarLeve } from '../utils/cederThread';
+
 
 const PAGE_SIZE = 1000;
 const INSERT_CHUNK = 500;
@@ -1926,6 +1927,11 @@ export async function enriquecerCtesComFaturas(registros = []) {
       porIdentificador.get(id).set(fatura.id, fatura);
     });
   });
+  // CT-es retirados de uma fatura por falta de entrega e ainda sem nova fatura.
+  const chavesSemFatura = registros
+    .map((row) => somenteDigitos(row.chave_cte) || somenteDigitos(row.numero_cte))
+    .filter((id) => id && !porIdentificador.has(id));
+  const aguardandoPorChave = await carregarAguardandoNovaFatura(chavesSemFatura);
   return registros.map((row) => {
     const vinculadas = new Map();
     const chave = somenteDigitos(row.chave_cte);
@@ -1941,6 +1947,8 @@ export async function enriquecerCtesComFaturas(registros = []) {
     return {
       ...row,
       tem_fatura: lista.length > 0,
+      aguardando_nova_fatura: lista.length === 0 && aguardandoPorChave.has(idsLinha[0]),
+      aguardando_nova_fatura_info: lista.length === 0 ? (aguardandoPorChave.get(idsLinha[0]) || null) : null,
       faturas_vinculadas: lista,
       numeros_fatura: lista.map((fatura) => fatura.numero_fatura).filter(Boolean),
       transportadora_validada_atual: validacaoAtual?.validada,

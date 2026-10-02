@@ -1,5 +1,6 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarEntregasAprovadas } from './entregaPortalService';
+import { carregarBaixasAprovadas } from './baixaEntregaService';
 
 // Status de entrega dos CT-es da auditoria, lido do tracking (tracking_rows).
 // Regra de pagamento: fatura só é liberada quando TODOS os CT-es estão entregues.
@@ -11,6 +12,8 @@ export const STATUS_ENTREGA = {
 
 // Comprovante enviado pela transportadora (portal) e aprovado pelo auditor conta como entregue.
 export const ORIGEM_COMPROVANTE = 'COMPROVANTE';
+// Baixa em massa por planilha, aprovada pela gestao.
+export const ORIGEM_BAIXA_MANUAL = 'BAIXA_MANUAL';
 
 export const ROTULO_ENTREGA = {
   ENTREGUE: 'Entregue',
@@ -102,6 +105,14 @@ export async function buscarStatusEntregaCtes(registros = []) {
     const aprovadas = await carregarEntregasAprovadas(pendentes);
     aprovadas.forEach((linha, id) => {
       resultado.set(id, { status: STATUS_ENTREGA.ENTREGUE, dataEntrega: linha.validado_em || null, origem: ORIGEM_COMPROVANTE });
+    });
+  }
+  // Baixa em massa (planilha) aprovada pela gestao tambem vale como entrega.
+  const aindaPendentes = [...resultado.entries()].filter(([, v]) => v.status !== STATUS_ENTREGA.ENTREGUE).map(([id]) => id);
+  if (aindaPendentes.length) {
+    const baixas = await carregarBaixasAprovadas(aindaPendentes);
+    baixas.forEach((linha, id) => {
+      resultado.set(id, { status: STATUS_ENTREGA.ENTREGUE, dataEntrega: linha.data_entrega || linha.decidido_em || null, origem: ORIGEM_BAIXA_MANUAL });
     });
   }
   return resultado;

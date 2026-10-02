@@ -1,4 +1,5 @@
 ﻿import { getSupabaseClient, getSupabaseInfo, isSupabaseConfigured } from '../lib/supabaseClient';
+import { resolverAguardandoNovaFatura } from './baixaEntregaService';
 import { normalizarTexto, normalizarTipoTabela } from '../utils/lotacaoTables';
 import { filtrarCpComercialCte } from './cteBasePolicy';
 
@@ -1795,6 +1796,9 @@ export async function salvarDetalhesFaturaSupabase(detalhes) {
       if (tentativa === 7) throw new Error(detalheErroSupabase(error));
     }
   }
+  // CT-e que voltou a ter fatura deixa de "aguardar nova fatura" (melhor esforco).
+  const chavesComFatura = detalhes.map((d) => String(d.chave_cte || '').replace(/\D/g, '')).filter(Boolean);
+  if (chavesComFatura.length) resolverAguardandoNovaFatura(chavesComFatura).catch(() => {});
   return { ok: true };
 }
 

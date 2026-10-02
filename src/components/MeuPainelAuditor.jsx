@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import CtesSemFaturaPainel from './CtesSemFaturaPainel';
 import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
+import { listarAguardandoNovaFaturaAbertos } from '../services/baixaEntregaService';
+import { buscarStatusEntregaCtes, chaveEntregaRegistro, STATUS_ENTREGA } from '../services/auditoriaEntregaCteService';
 import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
 import { diasAte, ENCERRADOS } from '../utils/auditoriaFretesDomain';
 import {
@@ -96,6 +99,9 @@ export default function MeuPainelAuditor({ state, onAbrirFatura }) {
   const [mesDesconto, setMesDesconto] = useState(mesAtual);
   const [protocolos, setProtocolos] = useState(null);
   useEffect(() => { listarProtocolosComDesconto().then(setProtocolos).catch(() => setProtocolos([])); }, []);
+  const [ctesAguardando, setCtesAguardando] = useState(null);
+  const [verCtesAguardando, setVerCtesAguardando] = useState(false);
+  useEffect(() => { listarAguardandoNovaFaturaAbertos().then(setCtesAguardando); }, []);
 
   // Gestor que tambem e auditor abre ja no proprio recorte.
   useEffect(() => { if (gestor && temMinhas) setAuditorSel((atual) => atual || 'MINHAS'); }, [gestor, temMinhas]);
@@ -163,6 +169,76 @@ export default function MeuPainelAuditor({ state, onAbrirFatura }) {
   const descontoEmAprovacao = doAuditor
     .filter((f) => f.status === 'AGUARDANDO_APROVACAO_GESTAO')
     .reduce((acc, f) => acc + Number(f.desconto_pendente_valor || f.auditoria_total_descontar || 0), 0);
+
+  // CT-es retirados de fatura por falta de entrega e ainda sem fatura nova, do recorte do auditor.
+  const aguardandoCtes = useMemo(() => {
+    const donas = new Set((state.faturas || []).filter((f) => {
+      if (auditorSel === 'MINHAS') return eMinha(f);
+      if (auditorSel) return (f.auditor_nome || 'SEM AUDITOR') === auditorSel;
+      return true;
+    }).map((f) => String(f.id)));
+    const linhas = (ctesAguardando || []).filter((r) => donas.has(String(r.fatura_origem_id)));
+    const valor = linhas.reduce((acc, r) => acc + Number(r.valor_cte || 0), 0);
+    const porFatura = new Map();
+    linhas.forEach((r) => {
+      const k = `${r.numero_fatura_origem || '-'}::${r.transportadora || '-'}`;
+      const g = porFatura.get(k) || { fatura: r.numero_fatura_origem, transportadora: r.transportadora, qtd: 0, valor: 0, desde: r.criado_em };
+      g.qtd += 1; g.valor += Number(r.valor_cte || 0);
+      if (r.criado_em && (!g.desde || r.criado_em < g.desde)) g.desde = r.criado_em;
+      porFatura.set(k, g);
+    });
+    return { qtd: linhas.length, valor, linhas, grupos: [...porFatura.values()].sort((a, b) => String(a.desde).localeCompare(String(b.desde))) };
+  }, [ctesAguardando, state.faturas, auditorSel, meuEmail, meuNome]);
+  const [buscaAguardando, setBuscaAguardando] = useState('');
+  const [entregaAguardando, setEntregaAguardando] = useState(null);
+  useEffect(() => {
+    if (!verCtesAguardando || !ctesAguardando?.length) return undefined;
+    let ativo = true;
+    setEntregaAguardando(null);
+    buscarStatusEntregaCtes(ctesAguardando.map((r) => ({ chave_cte: r.chave, numero_cte: r.numero_cte })))
+      .then((m) => { if (ativo) setEntregaAguardando(m); })
+      .catch(() => { if (ativo) setEntregaAguardando(new Map()); });
+    return () => { ativo = false; };
+  }, [verCtesAguardando, ctesAguardando]);
+  const exportarAguardando = () => {
+    const linhas = linhasAguardando.map((r) => {
+      const fat = faturaPorId.get(String(r.fatura_origem_id));
+      return {
+        'CT-e': r.numero_cte || '',
+        'Chave do CT-e': String(r.chave || '').length >= 44 ? String(r.chave) : '',
+        'Transportadora': r.transportadora || fat?.transportadora || '',
+        'Fatura de origem': r.numero_fatura_origem || '',
+        'Status da fatura de origem': fat ? (ROTULO_STATUS[fat.status] || fat.status) : '',
+        'Situacao do CT-e': 'Aguardando nova fatura',
+        'Entrega': rotuloEntrega(r).texto,
+        'Valor': Number(r.valor_cte || 0),
+        'Retirado em': dataBr(r.criado_em),
+        'Dias': diasDesde(r.criado_em) ?? '',
+        'Retirado por': r.criado_por || '',
+        'Motivo': r.motivo || '',
+      };
+    });
+    const ws = XLSX.utils.json_to_sheet(linhas);
+    // Chave de 44 digitos como texto, para o Excel nao virar notacao cientifica.
+    ws['!cols'] = [{ wch: 10 }, { wch: 48 }, { wch: 26 }, { wch: 14 }, { wch: 24 }, { wch: 22 }, { wch: 26 }, { wch: 12 }, { wch: 12 }, { wch: 6 }, { wch: 16 }, { wch: 40 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Aguardando nova fatura');
+    XLSX.writeFile(wb, `CTES_AGUARDANDO_NOVA_FATURA_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+  const rotuloEntrega = (r) => {
+    if (!entregaAguardando) return { texto: 'Consultando...', cor: '#64748b' };
+    const e = entregaAguardando.get(chaveEntregaRegistro({ chave_cte: r.chave, numero_cte: r.numero_cte }));
+    if (e?.status === STATUS_ENTREGA.ENTREGUE) return { texto: `Entregue${e.dataEntrega ? ` em ${dataBr(e.dataEntrega)}` : ''}`, cor: '#14733b' };
+    if (e?.status === STATUS_ENTREGA.NAO_ENTREGUE) return { texto: 'Sem entrega (no tracking)', cor: '#b91c1c' };
+    return { texto: 'Sem tracking', cor: '#64748b' };
+  };
+  const faturaPorId = useMemo(() => new Map((state.faturas || []).map((f) => [String(f.id), f])), [state.faturas]);
+  const linhasAguardando = useMemo(() => {
+    const termo = norm(buscaAguardando);
+    return aguardandoCtes.linhas
+      .filter((r) => !termo || [r.numero_cte, r.chave, r.numero_fatura_origem, r.transportadora].some((v) => norm(v).includes(termo)))
+      .sort((a, b) => String(a.criado_em).localeCompare(String(b.criado_em)));
+  }, [aguardandoCtes, buscaAguardando]);
 
   const contagemEtapa =(id) => doAuditor.filter((f) => dentroDaEtapa(id, f, ctx)).length;
   const contagemFaixa = (fx) => doAuditor.filter((f) => { const d = diasAte(f.data_vencimento); return d != null && fx.ok(d); }).length;
@@ -320,8 +396,51 @@ export default function MeuPainelAuditor({ state, onAbrirFatura }) {
           <div style={{ fontSize: 26, fontWeight: 800, color: '#7c3aed' }}>{dinheiro(descontoEmAprovacao)}</div>
           <div style={{ fontSize: 11, color: '#64748b' }}>ainda nao confirmado — depende da decisao da gestao</div>
         </div>
+        <div style={{ flex: '1 1 220px', border: '2px solid #b45309', borderRadius: 12, padding: '10px 14px', background: '#fffbeb', cursor: aguardandoCtes.qtd ? 'pointer' : 'default' }} onClick={() => aguardandoCtes.qtd && setVerCtesAguardando((v) => !v)} title="CT-es retirados da fatura por falta de entrega, esperando entrar em fatura nova (saem sozinhos da lista quando entram)">
+          <div style={{ fontSize: 12, color: '#475569' }}>CT-es aguardando nova fatura</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: '#b45309' }}>{ctesAguardando == null ? '...' : aguardandoCtes.qtd}</div>
+          <div style={{ fontSize: 11, color: '#64748b' }}>{ctesAguardando == null ? '' : `${dinheiro(aguardandoCtes.valor)} em ${aguardandoCtes.grupos.length} fatura(s) de origem${aguardandoCtes.qtd ? ' — clique para ver' : ''}`}</div>
+        </div>
       </div>
 
+      {verCtesAguardando && aguardandoCtes.qtd > 0 && (
+        <div className="table-card" style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
+            <div className="panel-title audit-table-title">CT-es aguardando nova fatura — {linhasAguardando.length} de {aguardandoCtes.qtd}</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input value={buscaAguardando} onChange={(e) => setBuscaAguardando(e.target.value)} placeholder="CT-e, fatura ou transportadora" style={{ minWidth: 240 }} />
+              <button type="button" className="btn-secondary" disabled={!linhasAguardando.length} onClick={exportarAguardando} title="Exporta a lista (respeita a busca) em Excel">Exportar</button>
+              <button type="button" className="btn-secondary" onClick={() => setVerCtesAguardando(false)}>Fechar</button>
+            </div>
+          </div>
+          <div style={{ overflow: 'auto', maxHeight: 420 }}>
+            <table>
+              <thead><tr><th>CT-e</th><th>Chave do CT-e</th><th>Transportadora</th><th>Fatura de origem</th><th>Status da fatura de origem</th><th>Situacao do CT-e</th><th>Entrega</th><th>Valor</th><th>Retirado em</th><th>Dias</th><th>Por</th><th></th></tr></thead>
+              <tbody>
+                {linhasAguardando.map((r) => {
+                  const fat = faturaPorId.get(String(r.fatura_origem_id));
+                  return (
+                    <tr key={`${r.chave}-${r.fatura_origem_id}`}>
+                      <td title={r.chave}>{r.numero_cte || String(r.chave || '').slice(-9)}</td>
+                      <td style={{ fontFamily: 'monospace', fontSize: 11, whiteSpace: 'nowrap' }}>{String(r.chave || '').length >= 44 ? r.chave : '-'}</td>
+                      <td>{r.transportadora || fat?.transportadora || '-'}</td>
+                      <td>{r.numero_fatura_origem || '-'}</td>
+                      <td>{fat ? (ROTULO_STATUS[fat.status] || fat.status) : '-'}</td>
+                      <td title={r.motivo || ''}><strong style={{ color: '#b45309' }}>Aguardando nova fatura</strong></td>
+                      <td>{(() => { const e = rotuloEntrega(r); return <strong style={{ color: e.cor }}>{e.texto}</strong>; })()}</td>
+                      <td>{dinheiro(r.valor_cte)}</td>
+                      <td>{dataBr(r.criado_em)}</td>
+                      <td>{diasDesde(r.criado_em) ?? '-'}</td>
+                      <td>{r.criado_por || '-'}</td>
+                      <td>{fat && onAbrirFatura ? <button type="button" className="btn-secondary" onClick={() => onAbrirFatura(fat)}>Abrir fatura</button> : null}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
       <div style={{ fontWeight: 700, fontSize: 13, margin: '4px 0 6px' }}>Por vencimento</div>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
         {FAIXAS.map((fx) => (

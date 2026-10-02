@@ -166,6 +166,7 @@ export default function EnviosErpPainel({ state, onState }) {
       }
       const porId = new Map(lista.map((u) => [u.id, u]));
       onState?.({ ...state, faturas: (state.faturas || []).map((f) => (porId.has(f.id) ? { ...f, ...porId.get(f.id) } : f)) });
+      window.dispatchEvent(new Event('envios-erp-atualizados'));
       setMensagem(`${lista.length} fatura(s) atualizada(s) com o envio ao ERP · ${lidas} lida(s) na(s) planilha(s) · ${semEnvio} sem data de envio · ${naoEncontradas} nao encontrada(s) no sistema.`);
     } catch (e) {
       setErro(e.message || String(e));

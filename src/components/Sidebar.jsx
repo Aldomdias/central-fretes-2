@@ -28,6 +28,7 @@ const MENU_GRUPOS = [
     titulo: 'Operacao',
     itens: [
       { chave: 'tracking', label: 'Tracking' },
+      { chave: 'consulta-tracking', label: 'Consulta Tracking' },
       { chave: 'tracking-prazos', label: 'Acompanhar entregas' },
       { chave: 'torre-controle', label: 'Torre de controle' },
       { chave: 'painel-operacao', label: 'Painel operacao' },

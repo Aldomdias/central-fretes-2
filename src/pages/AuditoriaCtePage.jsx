@@ -1036,7 +1036,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         if (!canalSet.has(canal)) return false;
       }
       if (faturaSet.size) {
-        const situacao = r.tem_fatura ? 'com_fatura' : 'sem_fatura';
+        const situacao = r.tem_fatura ? 'com_fatura' : (r.aguardando_nova_fatura ? 'aguardando_nova_fatura' : 'sem_fatura');
         if (!faturaSet.has(situacao)) return false;
       }
       if (critSet.size) {
@@ -3061,7 +3061,8 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
               <MultiCheckList
                 titulo="Situação de faturamento"
                 opcoes={[
-                  { value: 'sem_fatura', label: 'Sem fatura', sub: `${fmtN(registrosAnalise.filter((r) => !r.tem_fatura).length)}` },
+                  { value: 'sem_fatura', label: 'Sem fatura', sub: `${fmtN(registrosAnalise.filter((r) => !r.tem_fatura && !r.aguardando_nova_fatura).length)}` },
+                  { value: 'aguardando_nova_fatura', label: 'Aguardando nova fatura', sub: `${fmtN(registrosAnalise.filter((r) => r.aguardando_nova_fatura).length)}` },
                   { value: 'com_fatura', label: 'Com fatura', sub: `${fmtN(registrosAnalise.filter((r) => r.tem_fatura).length)}` },
                 ]}
                 selecionados={filtroSituacaoFatura}
@@ -3820,7 +3821,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                         <td style={{ whiteSpace: 'nowrap' }}>{r.numero_cte || '—'}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>{fmtDataEmissaoAuditoria(r)}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>
-                          {r.tem_fatura ? <strong style={{ color: '#166534' }}>{(r.numeros_fatura || []).join(', ') || 'Com fatura'}</strong> : <span style={{ color: '#b45309' }}>Sem fatura</span>}
+                          {r.tem_fatura ? <strong style={{ color: '#166534' }}>{(r.numeros_fatura || []).join(', ') || 'Com fatura'}</strong> : r.aguardando_nova_fatura ? <span style={{ color: '#7c3aed', fontWeight: 700 }} title={`Retirado da fatura ${r.aguardando_nova_fatura_info?.numero_fatura_origem || ''}: ${r.aguardando_nova_fatura_info?.motivo || 'sem entrega comprovada'}`}>Aguardando nova fatura</span> : <span style={{ color: '#b45309' }}>Sem fatura</span>}
                         </td>
                         <td><strong>{r.transportadora || '—'}</strong></td>
                         <td style={{ whiteSpace: 'nowrap' }}>

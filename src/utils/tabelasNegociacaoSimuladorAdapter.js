@@ -324,8 +324,9 @@ function normalizarOrigemItem(item = {}, tabela = {}) {
   const dados = parseDadosOriginais(item.dados_originais);
   const contexto = getContextoOrigemTabela(tabela);
   const cidade = contexto.cidadeOrigem || texto(item.cidade_origem || item.origem || dados.origem || dados.cidadeOrigem);
-  const uf = contexto.ufOrigem || upper(item.uf_origem || item.ufOrigem || dados.ufOrigem || dados.uf_origem);
   const ibge = contexto.ibgeOrigem || pareceIbge(item.ibge_origem || item.ibgeOrigem || dados.ibgeOrigem || dados.ibge_origem);
+  // Negociacao sem UF de origem cadastrada (ex.: Verum so traz IBGE): deduz a UF do IBGE.
+  const uf = contexto.ufOrigem || upper(item.uf_origem || item.ufOrigem || dados.ufOrigem || dados.uf_origem) || ufPorIbge(ibge);
 
   return {
     cidadeOrigem: cidade,

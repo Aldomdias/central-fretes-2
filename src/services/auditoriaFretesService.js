@@ -467,6 +467,15 @@ export async function atribuirAuditorEmLote(state, ids = [], { auditorNome, audi
   return { state: writeLocal(next), atualizadas: afetadas.length };
 }
 
+async function consultarResultadosLote(client, lote, comDetalhes) {
+  // A listagem precisa apenas do resumo. `detalhes_calculo` pode conter a memoria completa e
+  // comparativos de tabelas; so e pedido na geracao de laudo (comDetalhes).
+  return client
+    .from('auditoria_cte_resultados')
+    .select(`chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at${comDetalhes ? ', detalhes_calculo' : ''}`)
+    .in('chave_cte', lote);
+}
+
 // Enriquecimento: puxa da base reauditada (auditoria_cte_resultados) o que ja
 // sabemos de cada CT-e da fatura - rota, peso, canal, competencia e valores.
 // E consulta de referencia: falha aqui nao pode travar a tela da fatura.
@@ -475,20 +484,27 @@ export async function buscarReferenciaCtes(chaves = [], { comDetalhes = false, l
   if (!isSupabaseConfigured() || !chaves.length) return referencia;
   const normalizadas = [...new Set(chaves.map(normalizarChaveCte).filter(Boolean))];
   const client = getSupabaseClient();
-  for (let inicio = 0; inicio < normalizadas.length; inicio += 200) {
-    const lote = normalizadas.slice(inicio, inicio + 200);
-    const { data, error } = await client
-      .from('auditoria_cte_resultados')
-      // A listagem precisa apenas do resumo. `detalhes_calculo` pode conter a
-      // memória completa e comparativos de tabelas; transferi-lo para todos os
-      // CT-es fazia até uma fatura de 6 itens exceder 12 s. O JSON completo é
-      // buscado sob demanda quando o usuário abre o detalhe de um CT-e.
-      // `comDetalhes` e usado na geracao de laudo, que precisa da memoria de calculo.
-      .select(`chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at${comDetalhes ? ', detalhes_calculo' : ''}`)
-      .in('chave_cte', lote);
+  // Com detalhes_calculo cada linha e pesada: lotes pequenos evitam timeout (que antes
+  // era engolido e o laudo saia "sem detalhe de calculo").
+  const tamanhoLote = comDetalhes ? 25 : 200;
+  referencia.falhas = 0;
+  for (let inicio = 0; inicio < normalizadas.length; inicio += tamanhoLote) {
+    const lote = normalizadas.slice(inicio, inicio + tamanhoLote);
+    let { data, error } = await consultarResultadosLote(client, lote, comDetalhes);
+    if (error && comDetalhes && lote.length > 1) {
+      // Falhou o lote: tenta CT-e a CT-e para nao perder todos.
+      data = [];
+      error = null;
+      for (const unico of lote) {
+        // eslint-disable-next-line no-await-in-loop
+        const r = await consultarResultadosLote(client, [unico], comDetalhes);
+        if (r.error) referencia.falhas += 1; else data.push(...(r.data || []));
+      }
+    }
     if (error) {
       if (lancarErro) throw new Error(`Erro ao consultar a base: ${error.message}`);
-      break;
+      referencia.falhas += lote.length;
+      continue;
     }
     // Podem existir registros duplicados pra mesma chave/competencia (recalculos
     // antigos que inseriram em vez de atualizar) — sempre ficar com o mais

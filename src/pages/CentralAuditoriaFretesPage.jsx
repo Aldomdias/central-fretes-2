@@ -10,6 +10,8 @@ import ModalEnviarProtocoloFinanceiro from '../components/ModalEnviarProtocoloFi
 import DadosBancariosTransportadoras from '../components/DadosBancariosTransportadoras';
 import VincularPagamentosSap from '../components/VincularPagamentosSap';
 import DesfazerVinculosSap from '../components/DesfazerVinculosSap';
+import BaixaEntregaFatura, { BaixaEntregaAprovacaoGestao } from '../components/BaixaEntregaFatura';
+import { listarRetiradasDaFatura, MOTIVOS_RETIRADA_CTE, registrarAguardandoNovaFatura, registrarRetiradaCtes } from '../services/baixaEntregaService';
 import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
 import { montarCorpoEmailLaudo, montarEml, slugArquivoEmail } from '../utils/emailLaudoTransportador';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
@@ -217,6 +219,79 @@ function aplicarMascaraLaudoTransportador(linhas = [], opts = OPCOES_LAUDO_TRANS
     return { ...item, diferenca: diffPublico, calculado_frete: calculadoPublico, status: 'OK' };
   });
 }
+
+// Script (ES5) embutido nos laudos HTML: monta o Excel detalhado e formatado (cabecalho agrupado,
+// numeros como numero, chave como texto, cores e colunas ajustadas). Usado pelo laudo da fatura e pelo consolidado.
+const SCRIPT_EXCEL_LAUDO = `
+    function mapaDetalheLaudo(det){
+      var mapa={};
+      if(det&&det.classList.contains('detail-row')){
+        det.querySelectorAll('.calc-box').forEach(function(box){
+          var t=String(box.querySelector('h4')&&box.querySelector('h4').textContent||'Detalhes').trim();
+          box.querySelectorAll('.calc-line').forEach(function(l){
+            var k=String(l.querySelector('span')&&l.querySelector('span').textContent||'').trim();
+            var v=String(l.querySelector('strong')&&l.querySelector('strong').textContent||'').trim();
+            if(k)mapa[t+' - '+k]=v;
+          });
+        });
+      }
+      return mapa;
+    }
+    function escXls(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+    function celulaXls(v,texto){
+      var t=String(v==null?'':v).replace(/\\u00a0/g,' ').trim();
+      if(texto)return '<td style="mso-number-format:\\'\\\\@\\'">'+escXls(t)+'</td>';
+      var m;
+      if((m=t.match(/^R\\$\\s*(-?[\\d.]+,\\d+)$/))){var n=m[1].replace(/\\./g,'').replace(',','.');return '<td x:num="'+n+'" style="mso-number-format:\\'#,##0.00\\'">'+escXls(m[1])+'</td>'}
+      if((m=t.match(/^(-?[\\d.]+,\\d+)\\s*%$/))){var p=(parseFloat(m[1].replace(/\\./g,'').replace(',','.'))/100);return '<td x:num="'+p+'" style="mso-number-format:\\'0.00%\\'">'+escXls(t)+'</td>'}
+      if((m=t.match(/^(-?[\\d.]*\\d,\\d+)\\s*kg$/))){var k=m[1].replace(/\\./g,'').replace(',','.');return '<td x:num="'+k+'" style="mso-number-format:\\'#,##0.000\\'">'+escXls(m[1])+'</td>'}
+      if(/^-?\\d+(\\.\\d{3})*,\\d+$/.test(t)){var d=t.replace(/\\./g,'').replace(',','.');return '<td x:num="'+d+'" style="mso-number-format:\\'#,##0.00\\'">'+escXls(t)+'</td>'}
+      return '<td>'+escXls(t)+'</td>';
+    }
+    function gerarXlsLaudo(fixas,registros,nomeArquivo){
+      var grupos=[];var colunas=[];
+      registros.forEach(function(r){Object.keys(r.mapa).forEach(function(k){
+        if(colunas.indexOf(k)<0){colunas.push(k)}
+      })});
+      var porGrupo={};var ordemGrupos=[];
+      colunas.forEach(function(k){
+        var i=k.indexOf(' - ');var g=i>0?k.slice(0,i):'Detalhes';var campo=i>0?k.slice(i+3):k;
+        if(!porGrupo[g]){porGrupo[g]=[];ordemGrupos.push(g)}
+        porGrupo[g].push({chave:k,campo:campo});
+      });
+      var cores=['#1d4ed8','#0f766e','#9a3412','#6d28d9','#475569','#0e7490'];
+      var th='border:1px solid #94a3b8;color:#ffffff;font-weight:bold;text-align:center;vertical-align:middle;white-space:nowrap;';
+      var l1='<tr><th colspan="'+fixas.length+'" style="'+th+'background:#071d49">'+'CT-e'+'</th>';
+      var l2='<tr>';
+      fixas.forEach(function(n){l2+='<th style="'+th+'background:#071d49">'+escXls(n)+'</th>'});
+      var ordemCols=[];
+      ordemGrupos.forEach(function(g,gi){
+        var cor=cores[gi%cores.length];
+        l1+='<th colspan="'+porGrupo[g].length+'" style="'+th+'background:'+cor+'">'+escXls(g)+'</th>';
+        porGrupo[g].forEach(function(c){l2+='<th style="'+th+'background:'+cor+'">'+escXls(c.campo)+'</th>';ordemCols.push(c.chave)});
+      });
+      l1+='</tr>';l2+='</tr>';
+      var textoFixas={};fixas.forEach(function(n,i){if(/chave|cte|fatura|rota|canal|status|entrega|transportadora/i.test(n))textoFixas[i]=1});
+      var corpo='';
+      registros.forEach(function(r,idx){
+        var bg=idx%2?'#f1f5f9':'#ffffff';
+        var tr='<tr style="background:'+bg+'">';
+        r.base.forEach(function(v,i){tr+=celulaXls(v,/chave/i.test(fixas[i])||/^CT-e$/i.test(fixas[i])||!/peso|frete|calculo|diferenca/i.test(fixas[i]))});
+        ordemCols.forEach(function(k){tr+=celulaXls(r.mapa[k]||'',false)});
+        corpo+=tr+'</tr>';
+      });
+      var cab='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8">'
+        +'<!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Laudo</x:Name><x:WorksheetOptions><x:FreezePanes/><x:FrozenNoSplit/><x:SplitHorizontal>2</x:SplitHorizontal><x:TopRowBottomPane>2</x:TopRowBottomPane><x:ActivePane>2</x:ActivePane></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->'
+        +'<style>table{border-collapse:collapse;font-family:Calibri,Arial;font-size:11px}td{border:1px solid #cbd5e1;padding:3px 6px;mso-number-format:General}</style></head><body>';
+      var html=cab+'<table>'+l1+l2+corpo+'</table></body></html>';
+      var blob=new Blob(['\\ufeff',html],{type:'application/vnd.ms-excel;charset=utf-8'});
+      var url=URL.createObjectURL(blob);
+      var link=document.createElement('a');
+      link.href=url;link.download=nomeArquivo;
+      document.body.appendChild(link);link.click();link.remove();
+      setTimeout(function(){URL.revokeObjectURL(url)},1000);
+    }
+`;
 
 function detalhesCalculoHtmlFatura(item = {}, opts = {}) {
   const { masked = false, calculadoPublico, diffPublico } = opts;
@@ -1748,6 +1823,12 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const detalheRef = useRef(null);
   const [tab, setTab] = useState('resumo');
   const [selecionados, setSelecionados] = useState([]);
+  const [modalRetirada, setModalRetirada] = useState(false);
+  const [retiradaMotivo, setRetiradaMotivo] = useState(MOTIVOS_RETIRADA_CTE[0]);
+  const [retiradaJustificativa, setRetiradaJustificativa] = useState('');
+  const [retiradaSalvando, setRetiradaSalvando] = useState(false);
+  const [retiradaErro, setRetiradaErro] = useState('');
+  const [retiradas, setRetiradas] = useState([]);
   const [buscaCtes, setBuscaCtes] = useState('');
   const [filtroStatusCte, setFiltroStatusCte] = useState('todos');
   const [filtroCanalCte, setFiltroCanalCte] = useState('todos');
@@ -2112,19 +2193,19 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     URL.revokeObjectURL(link.href);
   };
 
-  const exportarDoccob = async (formato) => {
-    const linhas = montarLinhasDoccob(fatura, detalhes, selecionados);
+  const exportarDoccob = async (formato, ids = selecionados) => {
+    const linhas = montarLinhasDoccob(fatura, detalhes, ids);
     if (!linhas.length) return;
     const nome = montarNomeDoccob(fatura);
     if (formato === 'EDI') {
       // Layout PROCEDA 3.0A (registros fixos de 170 posicoes) para importacao no Verum.
-      const conteudo = montarArquivoDoccobEdi(fatura, detalhes, selecionados);
+      const conteudo = montarArquivoDoccobEdi(fatura, detalhes, ids);
       baixarArquivo(new Blob([conteudo], { type: 'text/plain;charset=utf-8' }), `${nome}.txt`);
       const next = await registrarDoccob(state, {
         fatura_id: fatura.id,
         nome_arquivo: `${nome}.txt`,
         formato: 'EDI',
-        cte_ids: selecionados,
+        cte_ids: ids,
         quantidade_ctes: linhas.length,
         valor_total: linhas.reduce((total, item) => total + Number(item.Valor || 0), 0),
         gerado_por_nome: sessao?.nome || sessao?.email || 'Usuario local',
@@ -2150,7 +2231,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       fatura_id: fatura.id,
       nome_arquivo: `${nome}.${formato.toLowerCase()}`,
       formato,
-      cte_ids: selecionados,
+      cte_ids: ids,
       quantidade_ctes: linhas.length,
       valor_total: linhas.reduce((total, item) => total + Number(item.Valor || 0), 0),
       gerado_por_nome: sessao?.nome || sessao?.email || 'Usuario local',
@@ -2527,6 +2608,10 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     } catch (error) {
       console.warn('Nao foi possivel carregar os detalhes de calculo para o laudo.', error);
     }
+    {
+      const semDetalheLaudo = linhas.filter((item) => !item.detalhes_calculo).length;
+      if (semDetalheLaudo) setInfoRecalculo(`Atencao: ${semDetalheLaudo} CT-e(s) ficaram sem detalhe de calculo no laudo (falha ao consultar a base ou CT-e nunca calculado). Recalcule esses CT-es e gere o laudo de novo.`);
+    }
     const titulo = transportador ? 'Relatorio de divergencias de frete' : 'Laudo interno de auditoria de fatura';
     const toleranciaLaudo = carregarToleranciaAuditoria();
     const opts = { ...opcoesLaudoTransportador, transportador };
@@ -2672,51 +2757,16 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       document.getElementById('filtro-status').value='';
       aplicarFiltros();
     }
-    function montarTabelaExcelDetalhada(tabela){
-      var linhas=Array.from(tabela.querySelectorAll('tbody .main-row')).filter(function(r){return r.style.display!=='none'});
-      var detalhes=linhas.map(function(row){
-        var mapa={};var det=row.nextElementSibling;
-        if(det&&det.classList.contains('detail-row')){
-          det.querySelectorAll('.calc-box').forEach(function(box){
-            var t=String(box.querySelector('h4')&&box.querySelector('h4').textContent||'Detalhes').trim();
-            box.querySelectorAll('.calc-line').forEach(function(l){
-              var k=String(l.querySelector('span')&&l.querySelector('span').textContent||'').trim();
-              var v=String(l.querySelector('strong')&&l.querySelector('strong').textContent||'').trim();
-              if(k)mapa[t+' - '+k]=v;
-            });
-          });
-        }
-        return mapa;
-      });
-      var colunas=[];
-      detalhes.forEach(function(m){Object.keys(m).forEach(function(k){if(colunas.indexOf(k)<0)colunas.push(k)})});
-      var nova=document.createElement('table');
-      var cab=tabela.tHead.cloneNode(true);
-      colunas.forEach(function(n){var th=document.createElement('th');th.textContent=n;cab.rows[0].appendChild(th)});
-      nova.appendChild(cab);
-      var corpo=document.createElement('tbody');
-      linhas.forEach(function(row,i){
-        var c=row.cloneNode(true);c.removeAttribute('onclick');c.removeAttribute('style');
-        colunas.forEach(function(n){var td=document.createElement('td');td.textContent=detalhes[i][n]||'';c.appendChild(td)});
-        corpo.appendChild(c);
-      });
-      nova.appendChild(corpo);
-      return nova;
-    }
+    ${SCRIPT_EXCEL_LAUDO}
     function exportarExcel(){
-      var corpo=document.getElementById('tabela-fatura-body');
-      var tabela=corpo.closest('table');
-      var copia=montarTabelaExcelDetalhada(tabela);
-      var conteudo='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>'+copia.outerHTML+'</body></html>';
-      var blob=new Blob(['\\ufeff',conteudo],{type:'application/vnd.ms-excel;charset=utf-8'});
-      var url=URL.createObjectURL(blob);
-      var link=document.createElement('a');
-      link.href=url;
-      link.download='laudo_fatura_${escapeHtmlAuditoria(fatura.numero_fatura)}.xls';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(function(){URL.revokeObjectURL(url)},1000);
+      var tabela=document.getElementById('tabela-fatura-body').closest('table');
+      var fixas=['CT-e','Chave','Rota','Canal','Peso','Frete pago','Calculo AMD','Diferenca','Status'];
+      var regs=[];
+      tabela.querySelectorAll('tbody .main-row').forEach(function(row){
+        if(row.style.display==='none')return;
+        regs.push({base:Array.from(row.cells).map(function(c){return c.textContent.trim()}),mapa:mapaDetalheLaudo(row.nextElementSibling)});
+      });
+      gerarXlsLaudo(fixas,regs,'laudo_fatura_${escapeHtmlAuditoria(fatura.numero_fatura)}.xls');
     }
     aplicarFiltros();
   </script>
@@ -2973,6 +3023,128 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     }
   };
 
+  // Retira (inativa) CT-es selecionados da fatura, com motivo e justificativa obrigatorios.
+  // A linha completa fica guardada em fatura_cte_retiradas (permite restaurar) e a acao vai ao historico.
+  const recarregarRetiradas = () => listarRetiradasDaFatura(fatura.id).then(setRetiradas);
+  useEffect(() => { recarregarRetiradas(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [fatura.id]);
+
+  const retirarCtesDaFatura = async () => {
+    const justificativa = retiradaJustificativa.trim();
+    if (justificativa.length < 5) { setRetiradaErro('Informe a justificativa (minimo 5 caracteres).'); return; }
+    const usuarioNome = sessao?.nome || sessao?.email || 'Usuario local';
+    const alvo = detalhes.filter((item) => selecionados.includes(item.id));
+    if (!alvo.length) return;
+    setRetiradaSalvando(true);
+    setRetiradaErro('');
+    try {
+      const chavesSaida = new Set(alvo.map((item) => chaveEntregaRegistro(item)));
+      const idsSaida = detalhesOriginais.filter((item) => chavesSaida.has(chaveEntregaRegistro(item))).map((item) => item.id);
+      const restantes = detalhesOriginais.filter((item) => !chavesSaida.has(chaveEntregaRegistro(item)));
+      const restantesUnicos = detalhes.filter((item) => !chavesSaida.has(chaveEntregaRegistro(item)));
+      const valorSaida = alvo.reduce((total, item) => total + Number(item.valor_frete || 0), 0);
+      // 1) Registro primeiro: se falhar, a fatura nao e alterada.
+      await registrarRetiradaCtes({ fatura, itens: alvo, motivo: retiradaMotivo, justificativa, usuarioNome });
+      const client = getSupabaseClient();
+      for (let i = 0; i < idsSaida.length; i += 100) {
+        const { error } = await client.from('fatura_detalhes').delete().in('id', idsSaida.slice(i, i + 100));
+        if (error) throw new Error(`Erro ao retirar CT-es da fatura: ${error.message}`);
+      }
+      const resumo = resumirDetalhesAuditoria(restantesUnicos, toleranciaFatura);
+      const valorNovo = Number(Math.max(Number(fatura.valor_fatura || 0) - valorSaida, 0).toFixed(2));
+      const faturaNova = {
+        ...fatura,
+        valor_fatura: valorNovo,
+        ctes_totais: resumo.total,
+        ctes_vinculados: resumo.total,
+        ctes_auditados: resumo.calculados,
+        ctes_divergentes: resumo.divergentes,
+        ctes_sem_calculo: resumo.semCalculo,
+        valor_calculado: Number(resumo.calculoAmd.toFixed(2)),
+        diferenca: Number((valorNovo - resumo.calculoAmd).toFixed(2)),
+      };
+      let next = await atualizarFaturaAuditoria(state, faturaNova, {
+        acao: 'CTE_RETIRADO_DA_FATURA',
+        status_anterior: fatura.status,
+        status_novo: fatura.status,
+        descricao: `${alvo.length} CT-e(s) retirado(s) da fatura (${dinheiro(valorSaida)}). Motivo: ${retiradaMotivo}. Justificativa: ${justificativa}. Valor original ${dinheiro(fatura.valor_fatura)}.`,
+        metadata: { valor_fatura_original: Number(fatura.valor_fatura || 0), motivo: retiradaMotivo, justificativa, retirados: alvo.map((item) => item.numero_cte || item.chave_cte) },
+        usuario_nome: usuarioNome,
+        usuario_email: sessao?.email || '',
+      });
+      next = { ...next, detalhes: { ...next.detalhes, [fatura.id]: restantes } };
+      onState(next);
+      setSelecionados([]);
+      setModalRetirada(false);
+      setRetiradaJustificativa('');
+      recarregarRetiradas();
+    } catch (error) {
+      setRetiradaErro(error.message || String(error));
+    } finally {
+      setRetiradaSalvando(false);
+    }
+  };
+
+  // Separa a fatura pela entrega: entregues ficam (e geram o DOCCOB EDI); sem entrega saem da
+  // fatura, nao geram DOCCOB e passam a "aguardando nova fatura" (fila de espera por CT-e).
+  const separarFaturaPorEntrega = async ({ entregues, semEntrega }) => {
+    const usuarioNome = sessao?.nome || sessao?.email || 'Usuario local';
+    const chavesSaida = new Set(semEntrega.map((item) => chaveEntregaRegistro(item)));
+    const idsSaida = detalhesOriginais.filter((item) => chavesSaida.has(chaveEntregaRegistro(item))).map((item) => item.id);
+    const restantes = detalhesOriginais.filter((item) => !chavesSaida.has(chaveEntregaRegistro(item)));
+    const restantesUnicos = detalhes.filter((item) => !chavesSaida.has(chaveEntregaRegistro(item)));
+    const valorSaida = semEntrega.reduce((total, item) => total + Number(item.valor_frete || 0), 0);
+
+    // 1) Registra a espera antes de mexer na fatura: se falhar, nada foi alterado.
+    await registrarAguardandoNovaFatura({ fatura, itens: semEntrega, usuarioNome, motivo: `Retirado da fatura ${fatura.numero_fatura} por falta de entrega comprovada.` });
+    // 2) Tira os CT-es sem entrega da fatura.
+    if (idsSaida.length) {
+      const client = getSupabaseClient();
+      for (let i = 0; i < idsSaida.length; i += 100) {
+        const { error } = await client.from('fatura_detalhes').delete().in('id', idsSaida.slice(i, i + 100));
+        if (error) throw new Error(`Erro ao retirar CT-es da fatura: ${error.message}`);
+      }
+    }
+    // 3) Fatura passa a valer so o que ficou; agregados da auditoria recalculados.
+    const resumo = resumirDetalhesAuditoria(restantesUnicos, toleranciaFatura);
+    const valorNovo = Number(Math.max(Number(fatura.valor_fatura || 0) - valorSaida, 0).toFixed(2));
+    const faturaNova = {
+      ...fatura,
+      valor_fatura: valorNovo,
+      ctes_totais: resumo.total,
+      ctes_vinculados: resumo.total,
+      ctes_auditados: resumo.calculados,
+      ctes_divergentes: resumo.divergentes,
+      ctes_sem_calculo: resumo.semCalculo,
+      valor_calculado: Number(resumo.calculoAmd.toFixed(2)),
+      diferenca: Number((valorNovo - resumo.calculoAmd).toFixed(2)),
+    };
+    let next = await atualizarFaturaAuditoria(state, faturaNova, {
+      acao: 'FATURA_SEPARADA_POR_ENTREGA',
+      status_anterior: fatura.status,
+      status_novo: fatura.status,
+      descricao: `Fatura separada por entrega: ${entregues.length} CT-e(s) entregue(s) mantido(s) (${dinheiro(valorNovo)}); ${semEntrega.length} sem entrega retirado(s) (${dinheiro(valorSaida)}) e aguardando nova fatura. Valor original ${dinheiro(fatura.valor_fatura)}.`,
+      metadata: { valor_fatura_original: Number(fatura.valor_fatura || 0), retirados: semEntrega.map((item) => item.numero_cte || item.chave_cte) },
+      usuario_nome: usuarioNome,
+      usuario_email: sessao?.email || '',
+    });
+    next = { ...next, detalhes: { ...next.detalhes, [fatura.id]: restantes } };
+    // 4) DOCCOB (EDI) so dos entregues, ja com a fatura no valor novo.
+    const nome = montarNomeDoccob(faturaNova);
+    const conteudo = montarArquivoDoccobEdi(faturaNova, restantesUnicos, []);
+    baixarArquivo(new Blob([conteudo], { type: 'text/plain;charset=utf-8' }), `${nome}.txt`);
+    next = await registrarDoccob(next, {
+      fatura_id: fatura.id,
+      nome_arquivo: `${nome}.txt`,
+      formato: 'EDI',
+      cte_ids: restantesUnicos.map((item) => item.id),
+      quantidade_ctes: restantesUnicos.length,
+      valor_total: restantesUnicos.reduce((total, item) => total + Number(item.valor_frete || 0), 0),
+      gerado_por_nome: usuarioNome,
+    });
+    onState(next);
+    setSelecionados([]);
+    return `✓ Fatura separada: ${restantesUnicos.length} entregue(s) mantido(s) com DOCCOB gerado; ${semEntrega.length} CT-e(s) sem entrega aguardando nova fatura.`;
+  };
 
   const aplicarFiltrosCtes = (lista) => lista.filter((item) => {
     const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte))
@@ -3038,6 +3210,24 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
             return { ...item, chave_nfe: item.chave_nfe || base?.chave_nfe };
           })).then(setEntregaCtes).catch((error) => setEntregaErroFatura(error.message || String(error)));
         }}
+      />
+      {retiradas.length > 0 && (
+        <div className="hint-box compact" style={{ marginBottom: 10 }}>
+          <strong>CT-es retirados desta fatura ({retiradas.length})</strong>
+          {retiradas.map((r) => (
+            <div key={r.id} style={{ fontSize: 12, marginTop: 4 }}>
+              CT-e {r.numero_cte || r.chave} · {dinheiro(r.valor_cte)} · {r.motivo} — {r.justificativa} ({r.retirado_por || '-'}, {r.retirado_em ? new Date(r.retirado_em).toLocaleString('pt-BR') : '-'})
+            </div>
+          ))}
+        </div>
+      )}
+      <BaixaEntregaFatura
+        fatura={fatura}
+        detalhes={detalhes}
+        entregaCtes={entregaCtes}
+        sessao={sessao}
+        ehEntregue={(item) => entregaCtes?.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.ENTREGUE}
+        aoSeparar={separarFaturaPorEntrega}
       />
       <div className="form-grid three" style={{ marginBottom: 10 }}>
         <label className="field">Entrega
@@ -3545,11 +3735,34 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         {emlLaudoFatura && (
           <button className="btn-secondary" title="Rascunho de e-mail com o laudo anexado (abre no Outlook)" onClick={() => baixarArquivo(new Blob([emlLaudoFatura.conteudo], { type: 'message/rfc822' }), emlLaudoFatura.nome)}>Baixar e-mail (.eml)</button>
         )}
-        <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('EDI')}>Gerar DOCCOB EDI (Verum)</button>
+        <button className="btn-primary" disabled={!detalhes.length} onClick={() => exportarDoccob('EDI', detalhes.map((item) => item.id))} title="Gera o DOCCOB (EDI para o Verum) com todos os CT-es desta fatura">DOCCOB da fatura toda ({detalhes.length})</button>
+        <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('EDI')} title="Gera o DOCCOB (EDI para o Verum) so com os CT-es marcados na lista">DOCCOB só dos selecionados ({selecionados.length})</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('CSV')}>Gerar DOCCOB CSV</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('XLSX')}>Gerar DOCCOB XLSX</button>
+        <button className="btn-secondary" disabled={!selecionados.length} onClick={() => { setRetiradaErro(''); setModalRetirada(true); }} title="Retira da fatura os CT-es marcados (ex.: CT-e cancelado). Exige justificativa e fica registrado">Retirar da fatura ({selecionados.length})</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={abrirModalSuprimentos} title="Abre um chamado AMD e envia os CT-es marcados para a fila de Suprimentos aprovar o valor">Enviar p/ Suprimentos</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={enviarParaAutorizacaoTransporte} title="Envia os CT-es marcados para o responsavel do transporte (B2C/Atacado) autorizar um saldo">Enviar p/ autorizacao transporte</button>
+        {modalRetirada && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="hint-box" style={{ background: '#fff', width: 'min(560px, 96vw)', padding: 20 }}>
+              <strong>Retirar {selecionados.length} CT-e(s) da fatura {fatura.numero_fatura}</strong>
+              <p className="compact">Os CT-es saem da fatura e o valor da fatura diminui. Fica registrado quem retirou, o motivo e a justificativa. O DOCCOB ja gerado nao e alterado: gere outro se precisar.</p>
+              <label className="field">Motivo
+                <select value={retiradaMotivo} onChange={(e) => setRetiradaMotivo(e.target.value)}>
+                  {MOTIVOS_RETIRADA_CTE.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </label>
+              <label className="field">Justificativa (obrigatoria)
+                <textarea rows={3} value={retiradaJustificativa} onChange={(e) => setRetiradaJustificativa(e.target.value)} placeholder="Ex.: transportadora informou cancelamento do CT-e em 02/10" />
+              </label>
+              {retiradaErro && <div className="hint-box compact error-text">{retiradaErro}</div>}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10 }}>
+                <button className="btn-secondary" disabled={retiradaSalvando} onClick={() => setModalRetirada(false)}>Cancelar</button>
+                <button className="btn-primary" disabled={retiradaSalvando} onClick={retirarCtesDaFatura}>{retiradaSalvando ? 'Retirando...' : 'Confirmar retirada'}</button>
+              </div>
+            </div>
+          </div>
+        )}
         {modalSuprimentos && (
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <div className="hint-box" style={{ background: '#fff', width: 'min(900px, 96vw)', maxHeight: '92vh', overflow: 'auto', padding: 20 }}>
@@ -5787,59 +6000,22 @@ ${portaisLaudo.length ? `
             document.getElementById('filtro-status').value='';
             aplicarFiltros();
           }
-              function montarTabelaExcelDetalhada(tabela){
-            var nova=document.createElement('table');
-            var cab=document.createElement('tr');
+          ${SCRIPT_EXCEL_LAUDO}
+          function exportarExcel(){
+            var tabela=document.getElementById('tabela-faturas-body').closest('table');
             var fixas=['Fatura','Transportadora','CT-e','Chave','Rota','Canal','Peso','Frete pago','Calculo AMD','Diferenca','Status','Entrega'];
-            var registros=[];
+            var regs=[];
             tabela.querySelectorAll('tbody > .main-row').forEach(function(fat){
               if(fat.style.display==='none')return;
               var grupo=fat.nextElementSibling;
               if(!grupo||!grupo.classList.contains('detail-row'))return;
               grupo.querySelectorAll('tbody .main-row').forEach(function(cte){
-                var det=cte.nextElementSibling;var mapa={};
-                if(det&&det.classList.contains('detail-row')){
-                  det.querySelectorAll('.calc-box').forEach(function(box){
-                    var t=String(box.querySelector('h4')&&box.querySelector('h4').textContent||'Detalhes').trim();
-                    box.querySelectorAll('.calc-line').forEach(function(l){
-                      var k=String(l.querySelector('span')&&l.querySelector('span').textContent||'').trim();
-                      var v=String(l.querySelector('strong')&&l.querySelector('strong').textContent||'').trim();
-                      if(k)mapa[t+' - '+k]=v;
-                    });
-                  });
-                }
-                var c=cte.cells;var base=[fat.cells[0].textContent.trim(),fat.cells[1].textContent.trim()];
-                for(var j=0;j<c.length;j++)base.push(c[j].textContent.trim());
-                registros.push({base:base,mapa:mapa});
+                var base=[fat.cells[0].textContent.trim(),fat.cells[1].textContent.trim()];
+                for(var j=0;j<cte.cells.length;j++)base.push(cte.cells[j].textContent.trim());
+                regs.push({base:base,mapa:mapaDetalheLaudo(cte.nextElementSibling)});
               });
             });
-            var colunas=[];
-            registros.forEach(function(r){Object.keys(r.mapa).forEach(function(k){if(colunas.indexOf(k)<0)colunas.push(k)})});
-            fixas.concat(colunas).forEach(function(n){var th=document.createElement('th');th.textContent=n;cab.appendChild(th)});
-            var thead=document.createElement('thead');thead.appendChild(cab);nova.appendChild(thead);
-            var corpo=document.createElement('tbody');
-            registros.forEach(function(r){
-              var tr=document.createElement('tr');
-              r.base.concat(colunas.map(function(n){return r.mapa[n]||''})).forEach(function(v){var td=document.createElement('td');td.textContent=v;tr.appendChild(td)});
-              corpo.appendChild(tr);
-            });
-            nova.appendChild(corpo);
-            return nova;
-          }
-          function exportarExcel(){
-            var corpo=document.getElementById('tabela-faturas-body');
-            var tabela=corpo.closest('table');
-      var copia=montarTabelaExcelDetalhada(tabela);
-            var conteudo='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>'+copia.outerHTML+'</body></html>';
-            var blob=new Blob(['\\ufeff',conteudo],{type:'application/vnd.ms-excel;charset=utf-8'});
-            var url=URL.createObjectURL(blob);
-            var link=document.createElement('a');
-            link.href=url;
-            link.download='laudo-consolidado-faturas-${new Date().toISOString().slice(0, 10)}.xls';
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            setTimeout(function(){URL.revokeObjectURL(url)},1000);
+            gerarXlsLaudo(fixas,regs,'laudo-consolidado-faturas-${new Date().toISOString().slice(0, 10)}.xls');
           }
           function confirmarTodas(){
             var nomeInput=document.getElementById('confirmar-todas-nome');
@@ -8403,6 +8579,7 @@ function AprovacaoGestao({ state, onState }) {
         <button type="button" className={aba === 'historico' ? 'btn-primary' : 'btn-secondary'} onClick={() => setAba('historico')}>Historico de decisoes</button>
       </div>
       {aba === 'historico' ? <HistoricoAprovacaoGestao state={state} /> : (<>
+      <BaixaEntregaAprovacaoGestao ehGestor={ehGestor} usuarioNome={usuarioNome} />
       <p style={{ margin: '0 0 10px', fontSize: 13, color: '#64748b' }}>
         Faturas com cobranca a maior enviadas pela auditoria, ja com a resposta do auditor (sera descontado? por que nao?). Clique na fatura pra ver os CT-es e a analise do frete.
         {ehGestor ? ' Marque uma ou mais faturas e escolha a decisao.' : ' Apenas gestao pode decidir — auditores acompanham aqui, mas as acoes ficam bloqueadas.'}

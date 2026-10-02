@@ -570,6 +570,7 @@ function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigenc
       rota: item.cotacaoFinal || item.cotacao || (item.origem + ' - ' + item.ufDestino + ' - ' + item.cotacaoBase),
       origem: origemFallback || item.origem || '',
       ufOrigem: ufOrigemFallback || item.ufOrigem || '',
+      ufDestino: item.ufDestino || '',
       cotacaoBase: item.cotacaoBase || '', faixaPeso: item.faixaPeso || '',
       pesoMin: item.pesoInicial != null ? item.pesoInicial : '',
       pesoMax: item.pesoFinal != null ? item.pesoFinal : '',
@@ -1058,6 +1059,18 @@ export default function TabelasNegociacaoPage() {
     if (!formatado) return [];
     return montarItensVerum(formatado);
   }, [formatado]);
+  // Para a Revisão: quantas rotas (destinos) e quais UFs cada cotação cobre.
+  const resumoRotasPorCotacao = useMemo(function() {
+    var mapa = {};
+    ((formatado && formatado.rotas) || []).forEach(function(r) {
+      var chave = normalizarChaveImportacaoNegociacao(r.cotacaoFinal || r.nomeRota);
+      if (!mapa[chave]) mapa[chave] = { qtd: 0, ufsSet: {} };
+      mapa[chave].qtd += 1;
+      if (r.ufDestino) mapa[chave].ufsSet[r.ufDestino] = true;
+    });
+    Object.keys(mapa).forEach(function(k) { mapa[k].ufs = Object.keys(mapa[k].ufsSet).join(', ') || '-'; });
+    return mapa;
+  }, [formatado]);
   const resumoVerumParaSalvar = useMemo(function() {
     return itensVerumParaSalvar.reduce(function(acc, item) {
       if (getTipoItem(item) === 'ROTA') acc.rotas += 1;
@@ -1187,6 +1200,8 @@ export default function TabelasNegociacaoPage() {
   }, [itensBase, filtroItens]);
 
   function itemSemDestino(item) {
+    // Cotação/faixa é só preço (o destino vem das rotas de mesmo nome): não é "sem destino".
+    if (getTipoItem(item) !== 'ROTA') return false;
     return !String(item.uf_destino || '').trim() && !String(item.ibge_destino || '').trim();
   }
 
@@ -1256,7 +1271,11 @@ export default function TabelasNegociacaoPage() {
       return ibge + (uf ? '/' + uf : '');
     }
 
-    return uf || '-';
+    if (uf) return uf;
+    // Cotação/faixa não tem destino próprio: mostra a UF do nome (ex.: "RS-INTERIOR | 0 a 30" -> RS)
+    var nomeUf = String(item.faixa_peso || '').toUpperCase().match(/^([A-Z]{2})\s*-/);
+    if (getTipoItem(item) !== 'ROTA' && nomeUf) return nomeUf[1] + ' (todas as rotas deste grupo)';
+    return '-';
   }
 
   function origemItem(item) {
@@ -3672,6 +3691,7 @@ export default function TabelasNegociacaoPage() {
                     <button className="sim-tab" type="button" onClick={formatarVerum} disabled={!resultadoTemplate || lendoVerum || salvando}>Formatar no padrão do sistema</button>
                     <button className="sim-tab" type="button" onClick={function() { setMostrarPreview(function(p) { return !p; }); }} disabled={!formatado || lendoVerum || salvando}>{mostrarPreview ? 'Recolher' : 'Visualizar tabela'}</button>
                     <button className="sim-tab" type="button" onClick={function() { exportarXlsx(formatado ? formatado.cotacoes : [], 'fretes-negoc-' + normalizarTexto(selecionada.transportadora) + '.xlsx', 'Fretes'); }} disabled={!formatado || lendoVerum || salvando}>Baixar fretes</button>
+                    <button className="sim-tab" type="button" onClick={function() { exportarXlsx(formatado ? formatado.rotas : [], 'rotas-negoc-' + normalizarTexto(selecionada.transportadora) + '.xlsx', 'Rotas'); }} disabled={!formatado || lendoVerum || salvando}>Baixar rotas</button>
                     <button className="primary" type="button" onClick={function() {
                       salvarItens(itensVerumParaSalvar, 'VERUM_ROTAS_FRETES', null, {
                         onProgress: reportarStatusImportacao,
@@ -3685,7 +3705,7 @@ export default function TabelasNegociacaoPage() {
                         <div className="summary-card"><span>Quebras</span><strong>{resultadoTemplate.quebrasFaixa.length}</strong></div>
                         <div className="summary-card"><span>Fretes lidos</span><strong>{resultadoTemplate.fretes.length}</strong></div>
                         <div className="summary-card"><span>Rotas para salvar</span><strong>{formatado ? resumoVerumParaSalvar.rotas.toLocaleString('pt-BR') : '-'}</strong></div>
-                        <div className="summary-card"><span>CotaÃ§Ãµes para salvar</span><strong>{formatado ? resumoVerumParaSalvar.cotacoes.toLocaleString('pt-BR') : '-'}</strong></div>
+                        <div className="summary-card"><span>Cotações para salvar</span><strong>{formatado ? resumoVerumParaSalvar.cotacoes.toLocaleString('pt-BR') : '-'}</strong></div>
                         <div className="summary-card"><span>Total real para salvar</span><strong>{formatado ? resumoVerumParaSalvar.total.toLocaleString('pt-BR') : '-'}</strong></div>
                       </div>
                       {formatado && ((formatado.rotas || []).length + (formatado.cotacoes || []).length) !== resumoVerumParaSalvar.total ? (
@@ -3721,8 +3741,8 @@ export default function TabelasNegociacaoPage() {
                                 <tr key={item.id}>
                                   <td>{faixaLabel}</td>
                                   <td>{item.origem}</td>
-                                  <td>{item.cidadeDestino || item.ufDestino || '-'}</td>
-                                  <td style={{ fontSize: 11, color: '#64748b' }}>{item.ibgeDestino || '-'}</td>
+                                  <td>{item.cidadeDestino || item.ufDestino || (resumoRotasPorCotacao[normalizarChaveImportacaoNegociacao(item.rota)] ? resumoRotasPorCotacao[normalizarChaveImportacaoNegociacao(item.rota)].ufs : '-')}</td>
+                                  <td style={{ fontSize: 11, color: '#64748b' }}>{item.ibgeDestino || (resumoRotasPorCotacao[normalizarChaveImportacaoNegociacao(item.rota)] ? resumoRotasPorCotacao[normalizarChaveImportacaoNegociacao(item.rota)].qtd.toLocaleString('pt-BR') + ' rotas' : 'sem rota')}</td>
                                   <td>{numeroOuVazio(item.pesoMin)}</td>
                                   <td>{numeroOuVazio(item.pesoMax)}</td>
                                   <td>{numeroOuVazio(item.taxaAplicada)}</td>
@@ -3740,6 +3760,24 @@ export default function TabelasNegociacaoPage() {
                         </table>
                       </div>
                       {formatado.cotacoes.length > 100 ? <div className="empty-note">Primeiras 100 linhas.</div> : null}
+                      <div className="empty-note" style={{ marginTop: 12 }}>
+                        Rotas (destino/IBGE ficam aqui, não nas cotações): {formatado.rotas.length.toLocaleString('pt-BR')} total, {formatado.rotas.filter(function(r) { return r.ibgeDestino; }).length.toLocaleString('pt-BR')} com IBGE de destino.
+                      </div>
+                      <div className="sim-analise-tabela-wrap" style={{ marginTop: 8 }}>
+                        <table className="sim-analise-tabela">
+                          <thead><tr><th>Rota</th><th>IBGE origem</th><th>IBGE destino</th><th>UF destino</th><th>CEP inicial</th><th>CEP final</th><th>Prazo</th></tr></thead>
+                          <tbody>
+                            {formatado.rotas.slice(0, 20).map(function(r) {
+                              return (
+                                <tr key={r.id}>
+                                  <td>{r.nomeRota}</td><td>{r.ibgeOrigem || '-'}</td><td>{r.ibgeDestino || '-'}</td><td>{r.ufDestino || '-'}</td>
+                                  <td>{r.cepInicial || '-'}</td><td>{r.cepFinal || '-'}</td><td>{r.prazoEntregaDias || '-'}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   ) : null}
                 </div>
