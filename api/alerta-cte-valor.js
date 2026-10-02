@@ -251,6 +251,17 @@ export default async function handler(req, res) {
     const assunto = `CT-e acima do target de ${brl(limiar)} — ${alertas.length} CT-e(s) na importação`;
     const html = montarHtml(alertas, limiar, appUrl);
 
+    // Diagnostico: monta e-mail e planilha, mede tempo e tamanho, e NAO envia nada.
+    if (req.body?.dryRun === true) {
+      const t0 = Date.now();
+      const planilha = await xlsxAnexo(supabase, alertas);
+      return res.status(200).json({
+        ok: true, dryRun: true, alertas: alertas.length, destinatarios: destinatarios.length,
+        htmlKb: Math.round(html.length / 1024), xlsxKb: Math.round(planilha.length / 1024), planilhaMs: Date.now() - t0,
+        via: process.env.RESEND_API_KEY ? 'resend' : (process.env.ALERTA_EMAIL_TOKEN ? 'central-alerta-cte-email' : 'central-resend-email (antigo)'),
+      });
+    }
+
     const centralUrl = process.env.CENTRAL_SOLICITACOES_SUPABASE_URL || process.env.VITE_CENTRAL_SOLICITACOES_SUPABASE_URL || 'https://zejguyckbnmyxkuagsyj.supabase.co';
     const centralKey = process.env.CENTRAL_SOLICITACOES_SUPABASE_KEY || process.env.VITE_CENTRAL_SOLICITACOES_SUPABASE_KEY || 'sb_publishable_J0i_Olz3JBp_86-Xcd4MPQ_uH5vnHUS';
 
