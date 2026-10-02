@@ -2018,3 +2018,93 @@ export async function vincularLinhaSapAFatura(state, linha, fatura, usuarioNome)
   if (error) throw new Error(`Pagamento gravado, mas nao consegui marcar a linha como vinculada: ${error.message}`);
   return next;
 }
+
+// ---------------------------------------------------------------------------
+// Desfazer vinculo de pagamento SAP feito errado (conciliacao automatica ou a
+// mao): a linha do pagamento sai da fatura, volta pra fila "sem vinculo" pra
+// ser vinculada na fatura certa, e a fatura recupera o estado anterior.
+// ---------------------------------------------------------------------------
+export async function listarPagamentosDaFatura(faturaId) {
+  if (!isSupabaseConfigured()) return [];
+  const { data, error } = await getSupabaseClient().from('financeiro_pagamentos').select('*').eq('fatura_id', faturaId);
+  if (error) throw new Error(`Erro ao ler pagamentos da fatura: ${error.message}`);
+  return data || [];
+}
+
+export async function desfazerPagamentoFatura(state, pagamento, fatura, usuarioNome) {
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const { data: apagados, error: erroApagar } = await client.from('financeiro_pagamentos').delete().eq('id', pagamento.id).select('id');
+  if (erroApagar) throw new Error(`Erro ao remover o pagamento: ${erroApagar.message}`);
+  if (!apagados?.length) throw new Error('O banco nao removeu o pagamento (sem permissao de exclusao em financeiro_pagamentos ou ja removido).');
+
+  // Devolve a linha do SAP pra fila de vinculo manual (nao perde o dado do pagamento).
+  try {
+    const { data: reabertas } = await client.from(TABELA_SAP_SEM_VINCULO)
+      .update({ vinculado_fatura_id: null, vinculado_por: null, vinculado_em: null })
+      .eq('vinculado_fatura_id', fatura.id)
+      .eq('numero_fatura', pagamento.numero_fatura || '')
+      .eq('valor_pago', Number(pagamento.valor_pago || 0))
+      .select('id');
+    if (!reabertas?.length) {
+      await client.from(TABELA_SAP_SEM_VINCULO).upsert([{
+        chave: chaveSapSemVinculo({ ...pagamento, cnpj: '' }),
+        numero_fatura: pagamento.numero_fatura || null,
+        valor_pago: Number(pagamento.valor_pago || 0),
+        documento_compensacao: pagamento.documento_compensacao || null,
+        partida: pagamento.partida || null,
+        lancamento_contabil: pagamento.lancamento_contabil || null,
+        data_pagamento: pagamento.data_pagamento || null,
+        data_lancamento: pagamento.data_lancamento || null,
+        compensado: pagamento.resultado === 'PAGO' || pagamento.resultado === 'DIVERGENTE',
+        lancada_financeiro: pagamento.resultado === 'LANCADA_FINANCEIRO',
+        motivo: 'VINCULO_DESFEITO',
+      }], { onConflict: 'chave' });
+    }
+  } catch (error) {
+    console.warn('[Pagamentos SAP] linha nao devolvida a fila sem vinculo:', error?.message || error);
+  }
+
+  // Recalcula o que a fatura mostra a partir dos pagamentos que sobraram.
+  const restantes = await listarPagamentosDaFatura(fatura.id);
+  const compensados = restantes.filter((p) => p.resultado === 'PAGO' || p.resultado === 'DIVERGENTE');
+  const lancados = restantes.filter((p) => p.resultado === 'LANCADA_FINANCEIRO');
+  const maisRecente = (lista, campo) => lista.slice().sort((a, b) => String(b[campo] || '').localeCompare(String(a[campo] || '')))[0];
+  const ultimaCompensacao = maisRecente(compensados, 'data_pagamento');
+  const ultimoLancamento = maisRecente(lancados, 'data_lancamento');
+  const ultimaPartida = maisRecente(restantes.filter((p) => p.partida), 'data_pagamento');
+  const patch = {
+    partida: ultimaCompensacao?.partida || ultimaPartida?.partida || null,
+    valor_pago: compensados.length ? Number(compensados.reduce((acc, p) => acc + Number(p.valor_pago || 0), 0).toFixed(2)) : null,
+    data_pagamento: ultimaCompensacao?.data_pagamento || null,
+    lancamento_financeiro: ultimoLancamento?.lancamento_contabil || null,
+    lancamento_financeiro_em: ultimoLancamento?.data_lancamento || null,
+    updated_at: agora,
+  };
+  let statusNovo = fatura.status;
+  if (!compensados.length && String(fatura.status).startsWith('PAGA')) {
+    const anteriores = ['ENVIADA_AO_FINANCEIRO', 'LIBERADA_COM_DESCONTO', 'PRONTA_PARA_PAGAMENTO'];
+    const ultimoEvento = (state.historico || [])
+      .filter((h) => h.fatura_id === fatura.id && anteriores.includes(h.status_novo))
+      .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))[0];
+    statusNovo = ultimoEvento?.status_novo || (fatura.status === 'PAGA_COM_DESCONTO' ? 'LIBERADA_COM_DESCONTO' : 'PRONTA_PARA_PAGAMENTO');
+    patch.status = statusNovo;
+  }
+  const { error: erroFatura } = await client.from('faturas').update(patch).eq('id', fatura.id);
+  if (erroFatura) throw new Error(`Pagamento removido, mas nao consegui atualizar a fatura: ${erroFatura.message}`);
+
+  const historico = {
+    id: uid('hist'), fatura_id: fatura.id, created_at: agora, acao: 'VINCULO_PAGAMENTO_DESFEITO',
+    status_anterior: fatura.status, status_novo: statusNovo,
+    descricao: `Vinculo de pagamento SAP desfeito (doc. ${pagamento.partida || pagamento.lancamento_contabil || pagamento.documento_compensacao || '-'}, valor ${Number(pagamento.valor_pago || 0).toFixed(2)}): vinculado a fatura errada.`,
+    usuario_nome: usuarioNome || 'Usuario',
+  };
+  await client.from('auditoria_fatura_historico').insert(historico);
+
+  return {
+    ...state,
+    faturas: state.faturas.map((f) => (f.id === fatura.id ? { ...f, ...patch } : f)),
+    historico: [historico, ...(state.historico || [])],
+    pagamentos: (state.pagamentos || []).filter((p) => p.id !== pagamento.id),
+  };
+}

@@ -9,6 +9,7 @@ import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import ModalEnviarProtocoloFinanceiro from '../components/ModalEnviarProtocoloFinanceiro';
 import DadosBancariosTransportadoras from '../components/DadosBancariosTransportadoras';
 import VincularPagamentosSap from '../components/VincularPagamentosSap';
+import DesfazerVinculosSap from '../components/DesfazerVinculosSap';
 import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 import { lerCteXml } from '../utils/cteXml';
@@ -9268,6 +9269,7 @@ function Financeiro({ state, onState }) {
             )}
           </div>
           <VincularPagamentosSap state={state} onState={onState} sessao={sessao} />
+          <DesfazerVinculosSap state={state} onState={onState} sessao={sessao} />
           <SimpleTable
             headers={['Fatura', 'Transportadora', 'Vencimento', 'Valor pago', 'Data', 'Partida (compensação)', 'Lançamento contábil', 'Resultado', 'Diferenca']}
             rows={state.pagamentos.map((item) => {
