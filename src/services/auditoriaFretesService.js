@@ -274,6 +274,23 @@ export async function carregarEnviosErpPeriodo(inicioISO, fimISO) {
   }
 }
 
+// Dados basicos das faturas por id (detalhe dos numeros da Produtividade).
+export async function carregarFaturasPorIds(ids) {
+  if (!isSupabaseConfigured() || !ids?.length) return [];
+  const client = getSupabaseClient();
+  const lista = [...new Set(ids)];
+  const saida = [];
+  for (let i = 0; i < lista.length; i += 100) {
+    const { data, error } = await client
+      .from('faturas')
+      .select('id,numero_fatura,serie_fatura,transportadora,status,valor_fatura,data_vencimento')
+      .in('id', lista.slice(i, i + 100));
+    if (error) throw new Error(error.message);
+    saida.push(...(data || []));
+  }
+  return saida;
+}
+
 // Fotografia de agora: o que esta aguardando resposta (fornecedor, gestao, suprimentos, transporte).
 export async function carregarPendenciasAtuais() {
   if (!isSupabaseConfigured()) return {};
@@ -385,13 +402,21 @@ export async function excluirFaturasAuditoria(state, ids = []) {
     const client = getSupabaseClient();
     for (const id of alvo) {
       await client.from('fatura_cte_divergencias').delete().eq('fatura_id', String(id));
-      const { error } = await client.from('faturas').delete().eq('id', id);
+      // A jornada do CT-e so aponta pra fatura (sem cascade): desvincula em vez de bloquear a exclusao.
+      await client.from('auditoria_cte_jornada').update({ fatura_id: null }).eq('fatura_id', id);
+      const { data: apagadas, error } = await client.from('faturas').delete().eq('id', id).select('id');
+      const fatura = state.faturas.find((item) => item.id === id);
+      const numero = fatura?.numero_fatura || fatura?.numero || id;
       if (error) {
-        const fatura = state.faturas.find((item) => item.id === id);
+        // "is still referenced from table X" diz exatamente qual vinculo segura a fatura.
+        const tabela = String(error.details || error.message || '').match(/table "([^"]+)"/i)?.[1];
         const motivo = error.code === '23503'
-          ? 'tem vinculos (pagamento, solicitacao financeira ou substituicao de outra fatura)'
+          ? `tem vinculos${tabela ? ` na tabela ${tabela}` : ' (pagamento, solicitacao financeira ou substituicao de outra fatura)'}`
           : error.message;
-        erros.push({ id, numero: fatura?.numero_fatura || fatura?.numero || id, motivo });
+        erros.push({ id, numero, motivo });
+      } else if (!apagadas?.length) {
+        // O banco nao devolveu erro mas nao removeu nada (permissao/RLS ou fatura ja inexistente).
+        erros.push({ id, numero, motivo: 'o banco nao removeu a fatura (sem permissao de exclusao ou ja nao existe)' });
       } else {
         excluidas.push(id);
       }

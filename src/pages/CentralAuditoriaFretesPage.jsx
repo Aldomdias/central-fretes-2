@@ -3707,13 +3707,17 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       ? encontradas.filter((item) => String(item.transportadora || '').toLowerCase().includes(termoTransportadora))
       : encontradas;
     const alvoFinal = filtradasPorTransportadora.length ? filtradasPorTransportadora : encontradas;
-    if (alvoFinal.length === 1) {
+    if (termoTransportadora && encontradas.length && !filtradasPorTransportadora.length) {
+      // O pedaco da transportadora nao bateu com nenhuma: nao abre uma fatura de outra transportadora em silencio.
+      setFiltro(alvo);
+      setMensagemImportacao(`Nenhuma fatura ${alvo} da transportadora "${termoTransportadora}" — mostrando as ${encontradas.length} com esse número.`);
+    } else if (alvoFinal.length === 1) {
       setAberta(alvoFinal[0]);
     } else if (alvoFinal.length > 1) {
       // Mais de uma fatura com esse numero (reenviada, transportadoras diferentes
       // etc.) mesmo apos o desempate pela transportadora — nao da pra escolher
       // sozinho: deixa so a lista filtrada, ja com o numero na busca, pra clicar na certa.
-      setFiltro(alvo);
+      setFiltro(termoTransportadora ? `${alvo} ${termoTransportadora}` : alvo);
       setMensagemImportacao(`${alvoFinal.length} faturas com o número ${alvo}${termoTransportadora ? ` (transportadora "${termoTransportadora}")` : ''} — escolha na lista abaixo.`);
     } else {
       setMensagemImportacao(`Fatura ${alvo} não encontrada.`);
@@ -3909,7 +3913,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     busca: (fatura) => {
       if (!filtro) return true;
       const texto = `${fatura.numero_fatura} ${fatura.transportadora} ${fatura.auditor_nome}`.toLowerCase();
-      return texto.includes(filtro.toLowerCase());
+      // Varias palavras (ex.: "328 dex"): todas precisam aparecer, em qualquer ordem.
+      return filtro.toLowerCase().split(/\s+/).filter(Boolean).every((parte) => texto.includes(parte));
     },
     lote: (fatura) => !numerosFaturasLoteSet.size || numerosFaturasLoteSet.has(normalizarChaveCte(fatura.numero_fatura)),
     origem: (fatura) => {
@@ -4593,6 +4598,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       setSelecionadasIds((atual) => atual.filter((id) => !excluidas.includes(id)));
       const falhas = erros.length ? ` Nao apagadas: ${erros.map((e) => `${e.numero} (${e.motivo})`).join('; ')}.` : '';
       setMensagemImportacao(`${excluidas.length} fatura(s) apagada(s).${falhas}`);
+      if (erros.length) window.alert(`${excluidas.length} fatura(s) apagada(s).${falhas}`);
     } catch (error) {
       setMensagemImportacao(`Erro ao apagar faturas: ${error.message}`);
     } finally {

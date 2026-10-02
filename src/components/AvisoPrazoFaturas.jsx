@@ -128,7 +128,7 @@ export default function AvisoPrazoFaturas({ sessao, onAbrir, minimizavel = false
     const numero = espaco === -1 ? texto : texto.slice(0, espaco).trim();
     const transportadora = espaco === -1 ? '' : texto.slice(espaco + 1).trim();
     if (!numero) return;
-    abrirFaturas({ abrirNumeroFatura: numero, abrirTransportadora: transportadora, filtro: numero });
+    abrirFaturas({ abrirNumeroFatura: numero, abrirTransportadora: transportadora, filtro: texto });
     setNumeroBusca('');
     setBuscaAberta(false);
   };

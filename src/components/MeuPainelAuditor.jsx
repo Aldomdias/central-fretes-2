@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import CtesSemFaturaPainel from './CtesSemFaturaPainel';
+import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
 import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
 import { diasAte, ENCERRADOS } from '../utils/auditoriaFretesDomain';
 import {
@@ -60,6 +61,9 @@ function dentroDaEtapa(etapa, f, ctx) {
   }
 }
 
+const chaveFatura = (numero, transportadora) => `${String(numero || '').trim().toUpperCase().replace(/^0+(?=.)/, '')}::${norm(transportadora).replace(/[^a-z0-9]+/g, ' ').trim()}`;
+const mesAtual = () => new Date().toISOString().slice(0, 7);
+
 function diasDesde(iso) {
   if (!iso) return null;
   const t = new Date(iso).getTime();
@@ -89,6 +93,9 @@ export default function MeuPainelAuditor({ state, onAbrirFatura }) {
   const [copiado, setCopiado] = useState('');
   const [form, setForm] = useState({ titulo: '', numero: '', prazo: '', observacao: '' });
   const tituloRef = useRef(null);
+  const [mesDesconto, setMesDesconto] = useState(mesAtual);
+  const [protocolos, setProtocolos] = useState(null);
+  useEffect(() => { listarProtocolosComDesconto().then(setProtocolos).catch(() => setProtocolos([])); }, []);
 
   // Gestor que tambem e auditor abre ja no proprio recorte.
   useEffect(() => { if (gestor && temMinhas) setAuditorSel((atual) => atual || 'MINHAS'); }, [gestor, temMinhas]);
@@ -132,7 +139,32 @@ export default function MeuPainelAuditor({ state, onAbrirFatura }) {
     return mapa;
   }, [demandas]);
 
-  const contagemEtapa = (id) => doAuditor.filter((f) => dentroDaEtapa(id, f, ctx)).length;
+  // Desconto confirmado = protocolos com desconto enviados ao financeiro no mes, atribuidos ao auditor da fatura.
+  const descontoMes = useMemo(() => {
+    const donoPorChave = new Map();
+    (state.faturas || []).forEach((f) => donoPorChave.set(chaveFatura(f.numero_fatura, f.transportadora), f));
+    const porAuditor = new Map();
+    let total = 0;
+    let qtd = 0;
+    (protocolos || []).forEach((p) => {
+      if (String(p.enviado_em || p.created_at || '').slice(0, 7) !== mesDesconto) return;
+      const f = donoPorChave.get(chaveFatura(p.numero_fatura, p.transportadora));
+      const nome = f?.auditor_nome || 'SEM AUDITOR';
+      const meu = f && ((!!meuEmail && norm(f.auditor_email) === meuEmail) || (!!meuNome && norm(f.auditor_nome) === meuNome));
+      const entra = auditorSel === 'MINHAS' ? meu : auditorSel ? nome === auditorSel : true;
+      const valor = Number(p.desconto_total || 0);
+      const r = porAuditor.get(nome) || { nome, valor: 0 };
+      r.valor += valor;
+      porAuditor.set(nome, r);
+      if (entra) { total += valor; qtd += 1; }
+    });
+    return { total, qtd, porAuditor };
+  }, [protocolos, state.faturas, mesDesconto, auditorSel, meuEmail, meuNome]);
+  const descontoEmAprovacao = doAuditor
+    .filter((f) => f.status === 'AGUARDANDO_APROVACAO_GESTAO')
+    .reduce((acc, f) => acc + Number(f.desconto_pendente_valor || f.auditoria_total_descontar || 0), 0);
+
+  const contagemEtapa =(id) => doAuditor.filter((f) => dentroDaEtapa(id, f, ctx)).length;
   const contagemFaixa = (fx) => doAuditor.filter((f) => { const d = diasAte(f.data_vencimento); return d != null && fx.ok(d); }).length;
 
   const lista = useMemo(() => {
@@ -274,6 +306,22 @@ export default function MeuPainelAuditor({ state, onAbrirFatura }) {
         <div className="hint-box compact">Nenhuma fatura em aberto esta atribuida ao seu usuario ({sessao?.nome || sessao?.email}). A atribuicao e feita na carteira de transportadoras.</div>
       )}
 
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'stretch', marginBottom: 12 }}>
+        <div style={{ flex: '1 1 220px', border: '2px solid #14733b', borderRadius: 12, padding: '10px 14px', background: '#f0fdf4' }}>
+          <div style={{ fontSize: 12, color: '#475569', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            Desconto confirmado no mes
+            <input type="month" value={mesDesconto} onChange={(e) => setMesDesconto(e.target.value || mesAtual())} style={{ fontSize: 12 }} />
+          </div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: '#14733b' }}>{protocolos == null ? '...' : dinheiro(descontoMes.total)}</div>
+          <div style={{ fontSize: 11, color: '#64748b' }}>{descontoMes.qtd} fatura(s) com desconto enviadas ao financeiro</div>
+        </div>
+        <div style={{ flex: '1 1 220px', border: '2px solid #9153F0', borderRadius: 12, padding: '10px 14px', background: '#faf5ff' }}>
+          <div style={{ fontSize: 12, color: '#475569' }}>Desconto aguardando a gestao</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: '#7c3aed' }}>{dinheiro(descontoEmAprovacao)}</div>
+          <div style={{ fontSize: 11, color: '#64748b' }}>ainda nao confirmado — depende da decisao da gestao</div>
+        </div>
+      </div>
+
       <div style={{ fontWeight: 700, fontSize: 13, margin: '4px 0 6px' }}>Por vencimento</div>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
         {FAIXAS.map((fx) => (
@@ -311,7 +359,7 @@ export default function MeuPainelAuditor({ state, onAbrirFatura }) {
           <div className="panel-title audit-table-title">Resumo por auditor (clique no nome para abrir o painel dele)</div>
           <div className="sim-analise-tabela-wrap">
             <table className="sim-analise-tabela">
-              <thead><tr><th>Auditor</th><th>Em aberto</th><th>Vencidas</th><th>Para auditar</th><th>Fornecedor</th><th>Gestao</th><th>ERP sem liberacao</th></tr></thead>
+              <thead><tr><th>Auditor</th><th>Em aberto</th><th>Vencidas</th><th>Para auditar</th><th>Fornecedor</th><th>Gestao</th><th>ERP sem liberacao</th><th>Desconto no mes</th></tr></thead>
               <tbody>
                 {resumoPorAuditor.map((r) => (
                   <tr key={r.nome}>
@@ -320,6 +368,7 @@ export default function MeuPainelAuditor({ state, onAbrirFatura }) {
                     <td style={{ color: r.vencidas ? '#b91c1c' : undefined, fontWeight: r.vencidas ? 700 : 400 }}>{r.vencidas}</td>
                     <td>{r.auditar}</td><td>{r.fornecedor}</td><td>{r.gestao}</td>
                     <td style={{ color: r.erp ? '#b91c1c' : undefined, fontWeight: r.erp ? 700 : 400 }}>{r.erp}</td>
+                    <td>{dinheiro(descontoMes.porAuditor.get(r.nome)?.valor || 0)}</td>
                   </tr>
                 ))}
               </tbody>
