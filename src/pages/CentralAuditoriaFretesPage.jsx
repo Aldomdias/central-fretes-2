@@ -106,9 +106,11 @@ import { listarProtocolosComDesconto } from '../services/descontosObtidosService
 import { autorizarPelaGestao, normalizarCanalAutorizacao, carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarAnexosAutorizacao, enviarParaAutorizacao, enviarParaSuprimentos } from '../services/transporteAutorizacoesService';
 import AnaliseFreteTabela from '../components/AnaliseFreteTabela';
 import ProdutividadeDiaFaturas from '../components/ProdutividadeDiaFaturas';
+import MeuPainelAuditor from '../components/MeuPainelAuditor';
 import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
 
 const TABS = [
+  ['meu-painel', 'Meu Painel'],
   ['dashboard', 'Dashboard'],
   ['painel', 'Painel'],
   ['faturas', 'Faturas'],
@@ -8099,30 +8101,35 @@ function AprovacaoGestao({ state, onState }) {
   // decisao. O valor salvo fica apenas como placeholder durante a leitura.
   const idsPendentesSemResumo = pendentes.filter((item) => !ctesPorFatura[item.id]?.lista && !ctesPorFatura[item.id]?.carregando && !ctesPorFatura[item.id]?.erro).map((item) => item.id).join('|');
   useEffect(() => {
-    if (!idsPendentesSemResumo) return undefined;
+    if (!idsPendentesSemResumo) return;
     const ids = idsPendentesSemResumo.split('|');
-    let ativo = true;
     setCtesPorFatura((prev) => {
       const next = { ...prev };
       ids.forEach((id) => { next[id] = { ...(next[id] || {}), carregando: true }; });
       return next;
     });
-    carregarDetalhesExatosFaturas(ids).then((mapa) => {
-      if (!ativo) return;
-      setCtesPorFatura((prev) => {
-        const next = { ...prev };
-        ids.forEach((id) => { next[id] = { lista: mapa.get(id) || [] }; });
-        return next;
-      });
-    }).catch((error) => {
-      if (!ativo) return;
-      setCtesPorFatura((prev) => {
-        const next = { ...prev };
-        ids.forEach((id) => { next[id] = { erro: error.message || String(error) }; });
-        return next;
-      });
-    });
-    return () => { ativo = false; };
+    // Sem guarda de "cancelado": marcar como carregando muda a chave do efeito e
+    // dispararia o cleanup, descartando o resultado e deixando os CT-es presos em
+    // "Carregando". Em lotes pequenos, pra o detalhe aparecer logo e nao esperar a fila toda.
+    (async () => {
+      for (let i = 0; i < ids.length; i += 8) {
+        const lote = ids.slice(i, i + 8);
+        try {
+          const mapa = await carregarDetalhesExatosFaturas(lote);
+          setCtesPorFatura((prev) => {
+            const next = { ...prev };
+            lote.forEach((id) => { next[id] = { lista: mapa.get(id) || [] }; });
+            return next;
+          });
+        } catch (error) {
+          setCtesPorFatura((prev) => {
+            const next = { ...prev };
+            lote.forEach((id) => { next[id] = { erro: error.message || String(error) }; });
+            return next;
+          });
+        }
+      }
+    })();
   }, [idsPendentesSemResumo]);
 
   const alternarExpansao = (fatura) => {
@@ -8254,11 +8261,39 @@ function AprovacaoGestao({ state, onState }) {
     else setDecisao(null);
   };
 
+  // O historico carregado na tela tem so os 1000 eventos mais recentes; os envios
+  // antigos caem fora e a resposta do auditor sumia. Busca direto os envios das pendentes.
+  const [enviosGestao, setEnviosGestao] = useState({});
+  const chavePendentes = pendentesTodas.map((item) => item.id).join(',');
+  useEffect(() => {
+    const ids = chavePendentes ? chavePendentes.split(',') : [];
+    if (!ids.length) return undefined;
+    let cancelado = false;
+    (async () => {
+      try {
+        const client = getSupabaseClient();
+        const mapa = {};
+        for (let i = 0; i < ids.length; i += 100) {
+          const { data } = await client.from('auditoria_fatura_historico')
+            .select('fatura_id, descricao, usuario_nome, created_at')
+            .eq('status_novo', 'AGUARDANDO_APROVACAO_GESTAO')
+            .in('fatura_id', ids.slice(i, i + 100))
+            .order('created_at', { ascending: false });
+          (data || []).forEach((h) => { if (!mapa[h.fatura_id]) mapa[h.fatura_id] = h; });
+        }
+        if (!cancelado) setEnviosGestao(mapa);
+      } catch {
+        // Sem a consulta direta, cai no historico ja carregado em state.
+      }
+    })();
+    return () => { cancelado = true; };
+  }, [chavePendentes]);
+
   const respostaAuditor = (fatura) => {
     // A coluna observacao_aprovacao nao existe na tabela faturas (o upsert a descarta),
     // entao a resposta do auditor tambem e lida do evento de envio no historico.
-    const envio = (state.historico || []).find((h) => h.fatura_id === fatura.id && h.status_novo === 'AGUARDANDO_APROVACAO_GESTAO');
-    const doHistorico = envio ? String(envio.descricao || '').replace(/^.*?cobranca a maior de R\$[\s ]*[\d.]+,\d{2}\.\s*/i, '') : '';
+    const envio = enviosGestao[fatura.id] || (state.historico || []).find((h) => h.fatura_id === fatura.id && h.status_novo === 'AGUARDANDO_APROVACAO_GESTAO');
+    const doHistorico = envio ? String(envio.descricao || '').replace(/^.*?(?:cobranca a maior|valor a descontar) de R\$[\s ]*[\d.]+,\d{2}\.\s*/i, '') : '';
     const texto = fatura.observacao_aprovacao || doHistorico;
     const sim = texto.includes('[DESCONTO: SIM]');
     const nao = texto.includes('[DESCONTO: NAO]');
@@ -8346,7 +8381,8 @@ function AprovacaoGestao({ state, onState }) {
                   <td>
                     {resposta.sim && <strong style={{ color: '#14733b' }}>Vai descontar. </strong>}
                     {resposta.nao && <strong style={{ color: '#9b1111' }}>Nao vai descontar. </strong>}
-                    {resposta.texto || (!resposta.sim && !resposta.nao ? <span style={{ color: '#94a3b8' }}>—</span> : null)}
+                    {!resposta.sim && !resposta.nao && <strong style={{ color: '#b45309' }}>Auditor nao informou se vai descontar. </strong>}
+                    {resposta.texto}
                     {resposta.quem && <div style={{ fontSize: 11, color: '#64748b' }}>Enviado por {resposta.quem}</div>}
                   </td>
                 </tr>,
@@ -9361,6 +9397,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
       <div className="tabs-row audit-main-tabs">
         {TABS.map(([id, label]) => <button key={id} className={`toggle-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>{label}</button>)}
       </div>
+      {tab === 'meu-painel' && <MeuPainelAuditor state={state} onAbrirFatura={(f) => irParaFaturasComFiltro({ abrirNumeroFatura: f.numero_fatura, abrirTransportadora: f.transportadora })} />}
       {tab === 'dashboard' && <Dashboard state={state} />}
       {tab === 'painel' && (
         <PainelAcompanhamento
