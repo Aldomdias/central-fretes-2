@@ -106,6 +106,17 @@ export async function enviarEmailAlertasPendentes(ids = null) {
   }
 }
 
+const CHAVE_ULTIMO_ENVIO = 'central-fretes:alertas-cte-valor:ultimo-envio';
+
+/** Guarda o resultado do envio automatico da importacao, para a tela de alertas mostrar. */
+export function registrarUltimoEnvioAuto(dados) {
+  try { localStorage.setItem(CHAVE_ULTIMO_ENVIO, JSON.stringify({ em: new Date().toISOString(), ...dados })); } catch { /* sem armazenamento */ }
+}
+
+export function lerUltimoEnvioAuto() {
+  try { return JSON.parse(localStorage.getItem(CHAVE_ULTIMO_ENVIO) || 'null'); } catch { return null; }
+}
+
 /** Zera a marca de "enviado" para poder mandar de novo. */
 export async function limparEnvioAlertasCte(ids = []) {
   for (let i = 0; i < ids.length; i += 200) {
@@ -117,7 +128,7 @@ export async function limparEnvioAlertasCte(ids = []) {
 export const LIMITE_LISTA_ALERTAS = 2000;
 
 export async function listarAlertasValorCte({
-  status = '', limiarMinimo = 0, busca = '', email = '', canal = '', tomadores = [], transportadora = '', dataInicio = '', dataFim = '', limite = LIMITE_LISTA_ALERTAS,
+  status = '', limiarMinimo = 0, busca = '', email = '', canal = '', tomadores = [], transportadora = '', dataInicio = '', dataFim = '', criadoDesde = '', limite = LIMITE_LISTA_ALERTAS,
 } = {}) {
   let query = client().from(TABELA).select('*').order('valor_cte', { ascending: false }).limit(limite);
   if (status) query = query.eq('status', status);
@@ -130,6 +141,7 @@ export async function listarAlertasValorCte({
   if (transportadora.trim()) query = query.ilike('transportadora', `%${transportadora.trim().replace(/[%,]/g, ' ')}%`);
   if (dataInicio) query = query.gte('data_emissao', dataInicio);
   if (dataFim) query = query.lte('data_emissao', dataFim);
+  if (criadoDesde) query = query.gte('criado_em', `${criadoDesde}T00:00:00-03:00`);
   const { data, error } = await query;
   if (error) throw new Error(`Não foi possível carregar os alertas. Detalhe: ${error.message}`);
   const termo = String(busca || '').trim().toLowerCase();

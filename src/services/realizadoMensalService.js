@@ -3,7 +3,7 @@ import { resolverCubagemFinal } from '../utils/trackingCubagem';
 import { carregarMunicipiosIbgeDb } from './freteDatabaseService';
 import { carregarAliasesCidadeIbge } from './cidadeIbgeAliasService';
 import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
-import { carregarConfigAlertaCte, registrarAlertasValorCte, enviarEmailAlertasPendentes } from './cteAlertasValorService';
+import { carregarConfigAlertaCte, registrarAlertasValorCte, enviarEmailAlertasPendentes, registrarUltimoEnvioAuto } from './cteAlertasValorService';
 import { compactarCidadeIbge, normalizarCidadeIbge, resolverIbgeComRegras } from '../utils/ibgeCidadeMatch';
 
 const TMP_CHUNK_SIZE = 1000;
@@ -1059,7 +1059,14 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress, so
   if (totalAlertas > 0) {
     onProgress?.({ etapa: 'alerta_valor', mensagem: `${totalAlertas.toLocaleString('pt-BR')} CT-e(s) acima do limite de alerta. Enviando e-mail...` });
     // So os alertas criados nesta importacao (nao arrasta pendentes antigos de varredura).
-    await enviarEmailAlertasPendentes(idsAlertasNovos);
+    const envio = await enviarEmailAlertasPendentes(idsAlertasNovos);
+    registrarUltimoEnvioAuto({ qtd: idsAlertasNovos.length, ok: Boolean(envio.ok), enviados: envio.enviados || 0, aviso: envio.aviso || '', erro: envio.erro || '' });
+    onProgress?.({
+      etapa: 'alerta_valor',
+      mensagem: envio.ok
+        ? (envio.enviados ? `E-mail de alerta enviado com ${envio.enviados} CT-e(s) acima do limite.` : `Alerta de CT-e: ${envio.aviso || 'nenhum e-mail enviado.'}`)
+        : `Alerta de CT-e: e-mail NÃO enviado (${envio.erro || 'erro desconhecido'}). Os CT-e estão na tela "Alerta CT-e valor alto" para reenviar.`,
+    });
   }
 
   return {

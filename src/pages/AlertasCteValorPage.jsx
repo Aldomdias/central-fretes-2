@@ -4,6 +4,7 @@ import {
   atualizarStatusAlertaCte,
   carregarConfigAlertaCte,
   enviarEmailAlertasPendentes,
+  lerUltimoEnvioAuto,
   limparEnvioAlertasCte,
   listarAlertasValorCte,
   salvarConfigAlertaCte,
@@ -21,7 +22,7 @@ const CANAIS = ['ATACADO', 'B2C', 'INTERCOMPANY', 'A DEFINIR'];
 const ROTULO_STATUS = { novo: 'Novo', ok: 'Verificado (ok)', anomalia: 'Anomalia' };
 const COR_STATUS = { novo: '#b45309', ok: '#15803d', anomalia: '#b91c1c' };
 const CHAVE_FILTROS = 'central-fretes:alertas-cte-valor:filtros';
-const FILTROS_PADRAO = { status: '', visao: '0', busca: '', email: '', canal: '', transportadora: '', dataInicio: '', dataFim: '', tomadores: [...TOMADORES_CTE_PADRAO] };
+const FILTROS_PADRAO = { status: '', visao: '0', busca: '', email: '', canal: '', transportadora: '', dataInicio: '', dataFim: '', criadoDesde: '', tomadores: [...TOMADORES_CTE_PADRAO] };
 
 function carregarFiltrosSalvos() {
   try {
@@ -57,6 +58,7 @@ export default function AlertasCteValorPage({ sessao }) {
   const [msg, setMsg] = useState('');
   const [varredura, setVarredura] = useState({ inicio: '', fim: '' });
   const [ocupado, setOcupado] = useState(false);
+  const ultimoEnvio = useMemo(() => lerUltimoEnvioAuto(), []);
 
   const setFiltro = (campo, valor) => setFiltros((f) => ({ ...f, [campo]: valor }));
 
@@ -78,6 +80,7 @@ export default function AlertasCteValorPage({ sessao }) {
         transportadora: filtros.transportadora,
         dataInicio: filtros.dataInicio,
         dataFim: filtros.dataFim,
+        criadoDesde: filtros.criadoDesde,
       });
       setAlertas(lista);
       setSelecionados((atual) => new Set(lista.filter((a) => atual.has(a.id)).map((a) => a.id)));
@@ -197,6 +200,12 @@ export default function AlertasCteValorPage({ sessao }) {
         </div>
       </div>
 
+      {ultimoEnvio && !ultimoEnvio.ok ? (
+        <div className="hint-box compact" style={{ borderColor: '#b91c1c' }}>
+          O e-mail automático da última importação ({dataHoraBr(ultimoEnvio.em)}, {ultimoEnvio.qtd} CT-e) <strong>não foi enviado</strong>: {ultimoEnvio.erro || 'erro desconhecido'}. Use o filtro “Não enviados” + “Alerta criado desde” e o botão Enviar e-mail.
+        </div>
+      ) : null}
+
       <div className="panel-card" style={{ display: 'grid', gap: 12 }}>
         <div className="panel-title">Configuração</div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end' }}>
@@ -281,6 +290,9 @@ export default function AlertasCteValorPage({ sessao }) {
           </label>
           <label style={{ fontSize: 12 }}>até
             <input type="date" value={filtros.dataFim} onChange={(e) => setFiltro('dataFim', e.target.value)} style={{ display: 'block' }} />
+          </label>
+          <label style={{ fontSize: 12 }} title="Alertas criados (na importação) a partir desta data">Alerta criado desde
+            <input type="date" value={filtros.criadoDesde} onChange={(e) => setFiltro('criadoDesde', e.target.value)} style={{ display: 'block' }} />
           </label>
           <label style={{ fontSize: 12 }}>Busca
             <input type="text" value={filtros.busca} onChange={(e) => setFiltro('busca', e.target.value)} placeholder="CT-e, cidade" style={{ display: 'block' }} />

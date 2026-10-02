@@ -204,6 +204,9 @@ ${link ? `<p style="margin-top:14px">Para marcar como verificado ou anomalia, ac
 
 export { montarPlanilha };
 
+// Planilha + envio podem passar de 10s com muitos CT-e.
+export const config = { maxDuration: 60 };
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
