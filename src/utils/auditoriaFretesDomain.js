@@ -598,6 +598,32 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
     });
 }
 
+// Pagamento a partir de uma linha do SAP que o auditor vinculou a mao a uma
+// fatura: mesma regra de resultado da conciliacao automatica.
+export function montarPagamentoVinculado(linha = {}, fatura = {}) {
+  const pago = Number(linha.valor_pago || 0);
+  const diferenca = Number((pago - Number(fatura.valor_fatura || 0)).toFixed(2));
+  const resultado = linha.lancada_financeiro
+    ? 'LANCADA_FINANCEIRO'
+    : !linha.compensado
+      ? 'PARTIDA_LANCADA'
+      : (Math.abs(diferenca) <= 0.01 ? 'PAGO' : 'DIVERGENTE');
+  return {
+    numero_fatura: fatura.numero_fatura,
+    fatura_id: fatura.id,
+    valor_pago: pago,
+    documento_compensacao: linha.documento_compensacao || null,
+    partida: linha.partida || null,
+    lancamento_contabil: linha.lancamento_contabil || null,
+    data_pagamento: linha.data_pagamento || null,
+    data_lancamento: linha.data_lancamento || null,
+    compensado: Boolean(linha.compensado),
+    origem: 'SAP_EXPORTACAO',
+    resultado,
+    diferenca: linha.lancada_financeiro ? 0 : diferenca,
+  };
+}
+
 export function conciliarPagamentos(faturas = [], pagamentos = []) {
   const normalizar = (valor) => String(valor || '').trim().toUpperCase();
   const porNumero = new Map();

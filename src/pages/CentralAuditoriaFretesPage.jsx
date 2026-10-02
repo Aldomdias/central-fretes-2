@@ -8,6 +8,7 @@ import BaseCtesStatus from '../components/BaseCtesStatus';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import ModalEnviarProtocoloFinanceiro from '../components/ModalEnviarProtocoloFinanceiro';
 import DadosBancariosTransportadoras from '../components/DadosBancariosTransportadoras';
+import VincularPagamentosSap from '../components/VincularPagamentosSap';
 import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 import { lerCteXml } from '../utils/cteXml';
@@ -75,6 +76,7 @@ import {
   salvarCarteiraAuditoria,
   salvarPagamentosFinanceiros,
   salvarPagamentosFinanceirosEmLote,
+  salvarSapSemVinculo,
   reaplicarPagamentosNasFaturas,
   atualizarStatusFaturasPagasEmLote,
   marcarFaturasLancadasFinanceiroEmLote,
@@ -6020,6 +6022,7 @@ ${portaisLaudo.length ? `
       localStorage.setItem(ULTIMA_CARGA_FATURAS_KEY, JSON.stringify(resumoErro));
       setMensagemImportacao(`Erro na importacao: ${error.message}`);
     } finally {
+      window.dispatchEvent(new Event('envios-erp-atualizados'));
       setImportando(false);
       setProgressoImportacao(null);
     }
@@ -8847,6 +8850,16 @@ function Financeiro({ state, onState }) {
       const ambiguos = conciliados.filter((item) => item.resultado === 'AMBIGUO').length;
       const naoLocalizados = conciliados.length - matched.length - cnpjDivergente - ambiguos;
 
+      // Linhas que nao casaram sozinhas mas o auditor pode vincular a mao:
+      // numero de fatura existente (CNPJ divergente / ambiguo) ou valor igual ao de uma fatura em aberto.
+      const STATUS_FECHADOS = new Set(['PAGA', 'PAGA_COM_DESCONTO', 'PAGA_COM_DIVERGENCIA', 'CANCELADA', 'SUBSTITUIDA']);
+      const valoresEmAberto = new Set(stateAtual.faturas.filter((f) => !STATUS_FECHADOS.has(f.status)).map((f) => Math.round(Number(f.valor_fatura || 0) * 100)));
+      const paraVincular = conciliados.filter((item) => !item.fatura_id && (
+        item.resultado === 'CNPJ_DIVERGENTE' || item.resultado === 'AMBIGUO'
+        || (item.resultado === 'NAO_LOCALIZADO' && valoresEmAberto.has(Math.round(Number(item.valor_pago || 0) * 100)))
+      ));
+      const guardadas = await salvarSapSemVinculo(paraVincular);
+
       const salvos = await salvarPagamentosFinanceirosEmLote(matched, (progresso) => setProgressoPagamentos({ etapa: `salvando_pagamentos (${file.name})`, ...progresso }));
       // Baixa/lancamento a partir do historico consolidado das faturas tocadas
       // (arquivo + banco), pra valer a ultima partida por data e nao so o arquivo.
@@ -8870,7 +8883,7 @@ function Financeiro({ state, onState }) {
         next,
         resumo: {
           totalLinhas: conciliados.length, pagas: compensados.length, partidasLancadas: partidas.length,
-          lancadasFinanceiro: lancadasFinanceiro.length, naoLocalizados, ambiguos, cnpjDivergente,
+          lancadasFinanceiro: lancadasFinanceiro.length, naoLocalizados, ambiguos, cnpjDivergente, paraVincular: guardadas.salvas || 0,
         },
       };
     }
@@ -8918,6 +8931,7 @@ function Financeiro({ state, onState }) {
     naoLocalizados: (a?.naoLocalizados || 0) + b.naoLocalizados,
     ambiguos: (a?.ambiguos || 0) + b.ambiguos,
     cnpjDivergente: (a?.cnpjDivergente || 0) + b.cnpjDivergente,
+    paraVincular: (a?.paraVincular || 0) + (b.paraVincular || 0),
   });
 
   // Recarrega faturas e pagamentos do banco (a tela so carrega uma vez) e reaplica
@@ -9207,9 +9221,11 @@ function Financeiro({ state, onState }) {
                 <strong>{resumoPagamentosSap.partidasLancadas}</strong> com partida lancada aguardando compensacao · {resumoPagamentosSap.naoLocalizados} sem fatura correspondente
                 {resumoPagamentosSap.cnpjDivergente ? ` · ${resumoPagamentosSap.cnpjDivergente} com numero de fatura batendo mas CNPJ da transportadora divergente (nao casado por seguranca)` : ''}
                 {resumoPagamentosSap.ambiguos ? ` · ${resumoPagamentosSap.ambiguos} ambiguo(s) (numero de fatura repetido para o mesmo CNPJ)` : ''}.
+                {resumoPagamentosSap.paraVincular ? <> <strong>{resumoPagamentosSap.paraVincular}</strong> linha(s) do SAP guardada(s) para vincular a mao no painel abaixo.</> : null}
               </div>
             )}
           </div>
+          <VincularPagamentosSap state={state} onState={onState} sessao={sessao} />
           <SimpleTable
             headers={['Fatura', 'Transportadora', 'Vencimento', 'Valor pago', 'Data', 'Partida (compensação)', 'Lançamento contábil', 'Resultado', 'Diferenca']}
             rows={state.pagamentos.map((item) => {

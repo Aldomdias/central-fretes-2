@@ -1,5 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { aplicarReauditoriaDetalhes, ENCERRADOS, gerarProtocolo, isoDate, normalizarChaveCte } from '../utils/auditoriaFretesDomain';
+import { aplicarReauditoriaDetalhes, ENCERRADOS, gerarProtocolo, isoDate, montarPagamentoVinculado, normalizarChaveCte } from '../utils/auditoriaFretesDomain';
 import { chaveFatura } from '../utils/auditoriaFretesImport';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 import { gerarTokenAleatorio } from './auditoriaCteJornadaService';
@@ -1920,4 +1920,76 @@ export async function registrarDevolutivaProtocolo(protocolo, { statusPagamento,
   };
   await client.from('auditoria_fatura_historico').insert(historico);
   return { ...payload, historico };
+}
+
+// ---------------------------------------------------------------------------
+// Linhas do SAP sem vinculo automatico: o importador guarda as que nao casaram
+// (CNPJ divergente, ambiguas, ou valor igual ao de uma fatura em aberto) e o
+// auditor vincula a mao na aba Financeiro > Pagamentos.
+// ---------------------------------------------------------------------------
+const TABELA_SAP_SEM_VINCULO = 'financeiro_sap_sem_vinculo';
+
+function chaveSapSemVinculo(linha) {
+  return [linha.numero_fatura, linha.lancamento_contabil || '', linha.documento_compensacao || '', Math.round(Number(linha.valor_pago || 0) * 100), linha.cnpj || ''].join('|');
+}
+
+// Nunca quebra a importacao: se a tabela ainda nao existe (migration pendente), so avisa.
+export async function salvarSapSemVinculo(linhas = []) {
+  if (!isSupabaseConfigured() || !linhas.length) return { salvas: 0 };
+  const porChave = new Map();
+  for (const linha of linhas) {
+    const chave = chaveSapSemVinculo(linha);
+    porChave.set(chave, {
+      chave,
+      numero_fatura: linha.numero_fatura || null,
+      transportadora_sap: linha.transportadora || null,
+      cnpj: linha.cnpj || null,
+      valor_pago: Number(linha.valor_pago || 0),
+      documento_compensacao: linha.documento_compensacao || null,
+      partida: linha.partida || null,
+      lancamento_contabil: linha.lancamento_contabil || null,
+      data_pagamento: linha.data_pagamento || null,
+      data_lancamento: linha.data_lancamento || null,
+      compensado: Boolean(linha.compensado),
+      lancada_financeiro: Boolean(linha.lancadaFinanceiro),
+      motivo: linha.resultado || null,
+    });
+  }
+  const lista = [...porChave.values()];
+  const client = getSupabaseClient();
+  try {
+    // ignoreDuplicates: reimportar nao desfaz um vinculo ja feito.
+    for (let inicio = 0; inicio < lista.length; inicio += 500) {
+      const { error } = await client.from(TABELA_SAP_SEM_VINCULO).upsert(lista.slice(inicio, inicio + 500), { onConflict: 'chave', ignoreDuplicates: true });
+      if (error) throw error;
+    }
+    return { salvas: lista.length };
+  } catch (error) {
+    console.warn('[Pagamentos SAP] linhas sem vinculo nao salvas (migration 20261002_001 aplicada?).', error?.message || error);
+    return { salvas: 0, erro: error?.message || String(error) };
+  }
+}
+
+export async function listarSapSemVinculo() {
+  if (!isSupabaseConfigured()) return [];
+  return paginarTudo(getSupabaseClient(), TABELA_SAP_SEM_VINCULO, '*', undefined, (q) => q.is('vinculado_em', null));
+}
+
+// Vincula a linha do SAP a fatura escolhida: grava o pagamento como a
+// conciliacao automatica faria e marca a linha como vinculada.
+export async function vincularLinhaSapAFatura(state, linha, fatura, usuarioNome) {
+  const pagamento = montarPagamentoVinculado(linha, fatura);
+  const salvos = await salvarPagamentosFinanceirosEmLote([pagamento]);
+  const compensados = salvos.filter((item) => item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE');
+  const lancados = salvos.filter((item) => item.resultado === 'PARTIDA_LANCADA' || item.resultado === 'LANCADA_FINANCEIRO');
+  let next = { ...state, pagamentos: [...salvos, ...(state.pagamentos || [])] };
+  next = await atualizarStatusFaturasPagasEmLote(next, compensados, usuarioNome || 'Usuario local');
+  next = await marcarFaturasLancadasFinanceiroEmLote(next, lancados);
+  const { error } = await getSupabaseClient().from(TABELA_SAP_SEM_VINCULO).update({
+    vinculado_fatura_id: fatura.id,
+    vinculado_por: usuarioNome || null,
+    vinculado_em: new Date().toISOString(),
+  }).eq('id', linha.id);
+  if (error) throw new Error(`Pagamento gravado, mas nao consegui marcar a linha como vinculada: ${error.message}`);
+  return next;
 }
