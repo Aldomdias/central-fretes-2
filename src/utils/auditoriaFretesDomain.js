@@ -508,15 +508,6 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
 
   const nomeBase = (txt) => String(txt || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
     .replace(/[^A-Z0-9 ]/g, ' ').replace(/\b(LTDA|ME|EPP|EIRELI|SA|S A)\b/g, ' ').replace(/\s+/g, ' ').trim();
-  // Nomes de transportadora ja vistos por raiz de CNPJ nas faturas: a mesma
-  // transportadora pode ter mais de uma raiz cadastrada.
-  const nomesPorRaiz = new Map();
-  for (const fatura of faturas) {
-    const raiz = obterRaizCnpj(fatura.cnpj_transportadora);
-    if (!raiz) continue;
-    if (!nomesPorRaiz.has(raiz)) nomesPorRaiz.set(raiz, new Set());
-    nomesPorRaiz.get(raiz).add(nomeBase(fatura.transportadora));
-  }
   // Orgaos de imposto (retencao) nao sao pagamento de frete.
   const ehOrgaoImposto = (nome) => /\b(RECEITA|FAZENDA|SECRETARIA|PREFEITURA|INSS|TRIBUT)/.test(nomeBase(nome));
 
@@ -542,36 +533,15 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
       const candidatasPorCnpj = cnpjValido
         ? candidatas.filter((fatura) => obterRaizCnpj(fatura.cnpj_transportadora) === raizPagamento)
         : [];
-      // Mesma transportadora cadastrada com mais de um CNPJ (ex.: matriz e outra
-      // raiz): se o nome bate e o valor da fatura e' exatamente o do SAP, casa
-      // mesmo com a raiz diferente - so quando ha uma unica fatura assim.
-      let porNomeEValor = [];
-      if (cnpjValido && !candidatasPorCnpj.length) {
-        const nomeSap = nomeBase(pagamento.transportadora);
-        const mesmoNome = (fatura) => {
-          const nomeFatura = nomeBase(fatura.transportadora);
-          if (nomesPorRaiz.get(raizPagamento)?.has(nomeFatura)) return true;
-          return nomeSap && nomeFatura && (nomeSap === nomeFatura || nomeSap.startsWith(nomeFatura) || nomeFatura.startsWith(nomeSap));
-        };
-        const abertasNome = candidatas.filter((fatura) => mesmoNome(fatura) && Math.abs(Number(fatura.valor_fatura || 0) - Number(pagamento.valor_pago || 0)) <= 0.01);
-        const unicas = [...new Set(abertasNome.map((fatura) => fatura.id))];
-        if (unicas.length === 1 || (abertasNome.length > 1 && abertasNome.every((f) => [f.valor_fatura, f.data_emissao, f.data_vencimento].join('|') === [abertasNome[0].valor_fatura, abertasNome[0].data_emissao, abertasNome[0].data_vencimento].join('|')))) porNomeEValor = abertasNome;
-      }
-      if (cnpjValido && !candidatasPorCnpj.length && !porNomeEValor.length) {
+      // CNPJ e' obrigatorio: sem raiz valida na linha ou sem fatura com a mesma raiz, nada casa sozinho
+      // (nem por nome + valor); a linha vai pro painel de vinculo manual.
+      if (!cnpjValido || !candidatasPorCnpj.length) {
         return [{ ...pagamento, resultado: 'CNPJ_DIVERGENTE' }];
       }
 
-      let alvo = candidatasPorCnpj.length ? candidatasPorCnpj : (porNomeEValor.length ? porNomeEValor : candidatas);
+      let alvo = candidatasPorCnpj;
       const abertas = alvo.filter((fatura) => !ENCERRADOS.has(fatura.status));
       if (abertas.length) alvo = abertas;
-
-      if (!cnpjValido) {
-        // Sem CNPJ confiavel na linha do relatorio: so aceita se o nome do
-        // fornecedor bater com a transportadora, senao fica ambiguo.
-        const nomePagamento = normalizar(pagamento.transportadora);
-        const porNome = alvo.filter((fatura) => normalizar(fatura.transportadora) === nomePagamento);
-        if (porNome.length) alvo = porNome;
-      }
 
       // Mesma fatura importada duas vezes (mesmo numero, raiz do CNPJ, valor, emissao e
       // vencimento; serie e filial podem variar): nao ha ambiguidade real, o pagamento vale pras copias.

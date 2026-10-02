@@ -32,8 +32,12 @@ function pontuar(fatura, linha, raizesDaTransportadora) {
   if (dif <= 0.01) { pontos += 30; motivos.push('valor igual'); }
   else if (Number(fatura.valor_fatura) > 0 && dif / Number(fatura.valor_fatura) <= 0.05) { pontos += 10; motivos.push('valor proximo'); }
   if (nomeParecido(linha.transportadora_sap, fatura.transportadora)) { pontos += 15; motivos.push('nome parecido'); }
-  if (raizesDaTransportadora.has(obterRaizCnpj(linha.cnpj))) { pontos += 10; motivos.push('CNPJ ja usado pela transportadora'); }
-  return { pontos, motivos };
+  const raizLinha = obterRaizCnpj(linha.cnpj);
+  const cnpjIgual = Boolean(raizLinha) && raizLinha === obterRaizCnpj(fatura.cnpj_transportadora);
+  if (cnpjIgual) { pontos += 40; motivos.push('mesmo CNPJ'); }
+  else if (raizesDaTransportadora.has(raizLinha)) { pontos += 10; motivos.push('CNPJ ja usado pela transportadora'); }
+  const nomeIgual = nomeParecido(linha.transportadora_sap, fatura.transportadora);
+  return { pontos, motivos, cnpjIgual, nomeIgual };
 }
 
 export default function VincularPagamentosSap({ state, onState, sessao }) {
@@ -109,7 +113,7 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
     }
     return base
       .map((linha) => ({ linha, ...pontuar(fatura, linha, raizes) }))
-      .filter((s) => manual || s.pontos >= 40)
+      .filter((s) => manual || (s.pontos >= 40 && (s.cnpjIgual || s.nomeIgual)))
       .sort((a, b) => b.pontos - a.pontos)
       .slice(0, 5);
   };
@@ -121,7 +125,11 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
   }, [pendentes, linhas, soComSugestao, buscaManual, raizesPorTransportadora]);
 
   const vincular = async (fatura, linha) => {
-    if (!window.confirm(`Vincular o pagamento do SAP (${linha.transportadora_sap || '-'}, ${dinheiro(linha.valor_pago)}, doc. ${linha.partida || linha.lancamento_contabil || '-'}) a fatura ${fatura.numero_fatura} de ${fatura.transportadora}?`)) return;
+    const alerta = obterRaizCnpj(linha.cnpj) && obterRaizCnpj(linha.cnpj) !== obterRaizCnpj(fatura.cnpj_transportadora)
+      ? `ATENCAO: o CNPJ do SAP (${linha.cnpj}) e diferente do CNPJ da fatura (${fatura.cnpj_transportadora || '-'}).
+
+` : '';
+    if (!window.confirm(`${alerta}Vincular o pagamento do SAP (${linha.transportadora_sap || '-'}, ${dinheiro(linha.valor_pago)}, doc. ${linha.partida || linha.lancamento_contabil || '-'}) a fatura ${fatura.numero_fatura} de ${fatura.transportadora}?`)) return;
     setVinculando(linha.id);
     setErro('');
     setMensagem('');
@@ -183,13 +191,13 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
                     <td>{dinheiro(fatura.valor_fatura)}</td>
                     <td>{fatura.auditor_nome || '-'}</td>
                     <td>
-                      {itens.map(({ linha, pontos, motivos }) => (
+                      {itens.map(({ linha, pontos, motivos, cnpjIgual }) => (
                         <div key={linha.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '4px 0', borderBottom: '1px solid #eef2f7' }}>
                           <span style={{ fontSize: 12 }}>
                             <strong>{linha.transportadora_sap || '-'}</strong> · CNPJ {linha.cnpj || '-'} · fatura SAP {linha.numero_fatura} · {dinheiro(linha.valor_pago)}
                             {' '}· doc. {linha.partida || linha.lancamento_contabil || '-'}{linha.data_pagamento ? ` em ${dataBr(linha.data_pagamento)}` : ''}
                             {' '}· {linha.compensado ? 'compensado' : linha.lancada_financeiro ? 'lancado no financeiro' : 'partida lancada'}
-                            <br /><small style={{ color: pontos >= 80 ? '#14733b' : '#64748b' }}>{motivos.join(' + ') || 'busca manual'} ({pontos} pts)</small>
+                            <br /><small style={{ color: cnpjIgual ? '#14733b' : '#b91c1c' }}>{motivos.join(' + ') || 'busca manual'} ({pontos} pts)</small>
                           </span>
                           <button className="btn-primary" disabled={vinculando === linha.id} onClick={() => vincular(fatura, linha)}>{vinculando === linha.id ? 'Vinculando...' : 'Vincular'}</button>
                         </div>
