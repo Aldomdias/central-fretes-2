@@ -10,7 +10,7 @@ import { listarCarteirasAuditoria, salvarCarteiraAuditoria, propagarAuditorParaF
 import { carregarSessao } from '../utils/authLocal';
 import { listarHistoricoAlteracoesTransportadoras } from '../services/auditoriaTransportadorasService';
 import { cnpjPreenchidoValido, formatarCnpj, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
-import { atualizarCnpjsOrigensDb } from '../services/freteDatabaseService';
+import { atualizarCnpjsOrigensDb, listarLinhasOrigemPaginadoDb } from '../services/freteDatabaseService';
 import { normalizarRegrasTde } from '../utils/tde.js';
 import { testarTransportadoraRapido } from '../utils/testeRapidoTransportadora.js';
 
@@ -1069,6 +1069,110 @@ function GeneralidadesTab({ transportadoraId, origem, store, grupoTabelaAlternat
   );
 }
 
+const LINHAS_POR_PAGINA = 100;
+
+// Modo rápido: lê rotas/fretes/taxas de UMA origem por página direto do banco,
+// com busca no servidor. Não baixa a tabela inteira; é só leitura. Para
+// editar/importar/reajustar o usuário carrega tudo (botão "Carregar tudo").
+function TabelaPaginadaServidor({ title, secao, origem, grupo, columns, total, onCarregarTudo }) {
+  const [busca, setBusca] = useState('');
+  const [buscaAplicada, setBuscaAplicada] = useState('');
+  const [pagina, setPagina] = useState(1);
+  const [estado, setEstado] = useState({ linhas: [], total: 0, carregando: true, erro: '' });
+  const execucaoRef = useRef(0);
+
+  useEffect(() => {
+    const timer = setTimeout(() => { setBuscaAplicada(busca.trim()); setPagina(1); }, 400);
+    return () => clearTimeout(timer);
+  }, [busca]);
+
+  useEffect(() => { setBusca(''); setBuscaAplicada(''); setPagina(1); }, [origem.id, grupo, secao]);
+
+  useEffect(() => {
+    const execucao = execucaoRef.current + 1;
+    execucaoRef.current = execucao;
+    setEstado((prev) => ({ ...prev, carregando: true, erro: '' }));
+    listarLinhasOrigemPaginadoDb({ origemId: origem.id, secao, grupo, busca: buscaAplicada, pagina, tamanho: LINHAS_POR_PAGINA })
+      .then((resposta) => {
+        if (execucaoRef.current !== execucao) return;
+        setEstado({ linhas: resposta.linhas, total: resposta.total, carregando: false, erro: '' });
+      })
+      .catch((error) => {
+        if (execucaoRef.current !== execucao) return;
+        setEstado({ linhas: [], total: 0, carregando: false, erro: error?.message || 'Não foi possível ler a tabela.' });
+      });
+  }, [origem.id, secao, grupo, buscaAplicada, pagina]);
+
+  const totalPaginas = Math.max(1, Math.ceil(estado.total / LINHAS_POR_PAGINA));
+  const inicio = (pagina - 1) * LINHAS_POR_PAGINA;
+
+  return (
+    <div className="tab-panel">
+      <div className="tab-panel-header spaced">
+        <p>
+          {buscaAplicada
+            ? `${estado.total.toLocaleString('pt-BR')} ${title.toLowerCase()}(s) encontrada(s) para "${buscaAplicada}"`
+            : `${((estado.carregando && !estado.linhas.length) ? total : estado.total).toLocaleString('pt-BR')} ${title.toLowerCase()}(s) cadastrada(s)`}
+        </p>
+        <div className="toolbar-wrap compact">
+          <button className="btn-secondary" onClick={onCarregarTudo} title="Baixa a tabela inteira para poder editar, importar, exportar e reajustar">Carregar tudo para editar</button>
+        </div>
+      </div>
+      <div className="hint-box">Modo rápido (somente leitura): mostrando {LINHAS_POR_PAGINA} por página direto do banco. Use a busca para achar uma rota específica.</div>
+      <input
+        type="text"
+        value={busca}
+        onChange={(e) => setBusca(e.target.value)}
+        placeholder={`Buscar ${title.toLowerCase()} (nome, cidade, IBGE...)`}
+        style={{ width: '100%', maxWidth: 420, marginBottom: 10 }}
+      />
+      {estado.erro ? <div className="mini-feedback error">{estado.erro}</div> : null}
+      <div className="table-card" style={{ opacity: estado.carregando ? 0.6 : 1 }}>
+        <table>
+          <thead><tr>{columns.map((c) => <th key={c.key}>{c.label}</th>)}</tr></thead>
+          <tbody>
+            {estado.linhas.length ? estado.linhas.map((row) => (
+              <tr key={row.id}>
+                {columns.map((c) => <td key={c.key}>{c.render ? c.render(row[c.key], row) : (row[c.key] ?? '—')}</td>)}
+              </tr>
+            )) : <tr><td colSpan={columns.length} className="empty-cell">{estado.carregando ? 'Carregando...' : (buscaAplicada ? 'Nenhum registro encontrado para a busca.' : 'Nenhum registro cadastrado.')}</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {estado.total > LINHAS_POR_PAGINA ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', margin: '10px 0' }}>
+          <button className="btn-secondary" disabled={pagina <= 1 || estado.carregando} onClick={() => setPagina(1)}>«</button>
+          <button className="btn-secondary" disabled={pagina <= 1 || estado.carregando} onClick={() => setPagina(pagina - 1)}>Anterior</button>
+          <span className="status-pill">
+            {(inicio + 1).toLocaleString('pt-BR')}–{Math.min(inicio + LINHAS_POR_PAGINA, estado.total).toLocaleString('pt-BR')} de {estado.total.toLocaleString('pt-BR')} · página {pagina} de {totalPaginas}
+          </span>
+          <button className="btn-secondary" disabled={pagina >= totalPaginas || estado.carregando} onClick={() => setPagina(pagina + 1)}>Próxima</button>
+          <button className="btn-secondary" disabled={pagina >= totalPaginas || estado.carregando} onClick={() => setPagina(totalPaginas)}>»</button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// Contagem de rotas/fretes de uma origem: usa as linhas em memória quando a
+// transportadora foi carregada por completo; senão, a contagem vinda do banco
+// no resumo rápido (as linhas só são lidas por página, sob demanda).
+function contagemOrigem(origem) {
+  const memoria = { rotas: (origem?.rotas || []).length, cotacoes: (origem?.cotacoes || []).length, taxas: (origem?.taxasEspeciais || []).length };
+  if (origem?.resumoCarregado && !memoria.rotas && !memoria.cotacoes) {
+    return { rotas: origem.totalRotas || 0, cotacoes: origem.totalCotacoes || 0, taxas: origem.totalTaxas || 0 };
+  }
+  return memoria;
+}
+
+// Cobertura simples a partir só das contagens (sem baixar as linhas).
+function analiseOrigemPorContagem(origem) {
+  const { rotas, cotacoes } = contagemOrigem(origem);
+  if (!rotas && !cotacoes) return { cobertura: 'Sem tabela', severidade: 'warn', rotasSemCotacao: [], cotacoesSemRota: [] };
+  if (!rotas || !cotacoes) return { cobertura: 'Parcial', severidade: 'warn', rotasSemCotacao: [], cotacoesSemRota: [] };
+  return { cobertura: 'Resumo', severidade: 'ok', rotasSemCotacao: [], cotacoesSemRota: [] };
+}
+
 function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, columns, fields, hint, grupoTabelaAlternativa = null }) {
   const podeEditar = store.podeEditarTransportadoras;
   const [modalOpen, setModalOpen] = useState(false);
@@ -1111,6 +1215,18 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
     if (!termo) return rows;
     return rows.filter((row) => columns.some((c) => normalizeText(row[c.key]).includes(termo)));
   }, [rows, filtroTexto, columns]);
+
+  // Tabelas grandes (milhares de rotas/fretes): renderiza só uma página por vez.
+  // Filtro, exportação e reajuste em massa continuam usando todas as linhas.
+  const [paginaLinhas, setPaginaLinhas] = useState(1);
+  const totalPaginasLinhas = Math.max(1, Math.ceil(rowsFiltradas.length / LINHAS_POR_PAGINA));
+  const paginaLinhasAtual = Math.min(paginaLinhas, totalPaginasLinhas);
+  const inicioLinhas = (paginaLinhasAtual - 1) * LINHAS_POR_PAGINA;
+  const rowsPagina = useMemo(
+    () => rowsFiltradas.slice(inicioLinhas, inicioLinhas + LINHAS_POR_PAGINA),
+    [rowsFiltradas, inicioLinhas]
+  );
+  React.useEffect(() => { setPaginaLinhas(1); }, [origem.id, grupoTabelaAlternativa, filtroTexto, secao]);
 
   const colunasReajustaveis = columns.filter((c) => c.key !== 'rota');
 
@@ -1258,7 +1374,7 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
         <table>
           <thead><tr>{columns.map((c) => <th key={c.key}>{c.label}</th>)}<th></th></tr></thead>
           <tbody>
-            {rowsFiltradas.length ? rowsFiltradas.map((row) => (
+            {rowsFiltradas.length ? rowsPagina.map((row) => (
               <tr key={row.id}>
                 {columns.map((c) => <td key={c.key}>{c.render ? c.render(row[c.key], row) : (row[c.key] ?? '—')}</td>)}
                 <td className="row-actions">
@@ -1270,6 +1386,17 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
           </tbody>
         </table>
       </div>
+      {rowsFiltradas.length > LINHAS_POR_PAGINA ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', margin: '10px 0' }}>
+          <button className="btn-secondary" disabled={paginaLinhasAtual <= 1} onClick={() => setPaginaLinhas(1)}>«</button>
+          <button className="btn-secondary" disabled={paginaLinhasAtual <= 1} onClick={() => setPaginaLinhas(paginaLinhasAtual - 1)}>Anterior</button>
+          <span className="status-pill">
+            {(inicioLinhas + 1).toLocaleString('pt-BR')}–{Math.min(inicioLinhas + LINHAS_POR_PAGINA, rowsFiltradas.length).toLocaleString('pt-BR')} de {rowsFiltradas.length.toLocaleString('pt-BR')} · página {paginaLinhasAtual} de {totalPaginasLinhas}
+          </span>
+          <button className="btn-secondary" disabled={paginaLinhasAtual >= totalPaginasLinhas} onClick={() => setPaginaLinhas(paginaLinhasAtual + 1)}>Próxima</button>
+          <button className="btn-secondary" disabled={paginaLinhasAtual >= totalPaginasLinhas} onClick={() => setPaginaLinhas(totalPaginasLinhas)}>»</button>
+        </div>
+      ) : null}
       <LinhaModal open={modalOpen} title={editing ? `Editar ${title}` : `Novo ${title}`} fields={fields} initialValue={editing || fields.reduce((acc, field) => ({ ...acc, [field.name]: field.defaultValue ?? '' }), {})} onSave={save} onClose={() => { setModalOpen(false); setEditing(null); }} />
     </div>
   );
@@ -1368,9 +1495,9 @@ function TransportadorasList({ items, onOpen, store }) {
   }, [store]);
 
   useEffect(() => {
-    if (!idsVisiveis || !store?.carregarTransportadoraCompleta || store?.syncStatus?.rascunhoLocal) return undefined;
+    if (!idsVisiveis || !store?.carregarResumoTransportadora || store?.syncStatus?.rascunhoLocal) return undefined;
 
-    const pendentes = visiveis.filter((item) => !item.detalheCarregado);
+    const pendentes = visiveis.filter((item) => !item.detalheCarregado && !item.resumoDetalhado);
     if (!pendentes.length) return undefined;
 
     const runId = autoRefreshRunRef.current + 1;
@@ -1386,7 +1513,7 @@ function TransportadorasList({ items, onOpen, store }) {
         if (cancelado || autoRefreshRunRef.current !== runId) break;
         const lote = pendentes.slice(inicio, inicio + 3);
         // eslint-disable-next-line no-await-in-loop
-        await Promise.allSettled(lote.map((item) => store.carregarTransportadoraCompleta(item.id)));
+        await Promise.allSettled(lote.map((item) => store.carregarResumoTransportadora(item.id)));
       }
 
       if (!cancelado && autoRefreshRunRef.current === runId) setAutoAtualizando(false);
@@ -1534,7 +1661,7 @@ function TransportadorasList({ items, onOpen, store }) {
               : 'list-card';
           return (
             <div key={item.id} className={cardClass} onClick={() => onOpen(item.id)}>
-              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>{item.nome}{(() => { const cs = [...new Set((item.origens||[]).flatMap(canaisOrigem))]; const temAtacado = cs.includes('ATACADO'); const temB2c = cs.includes('B2C'); return (<>{temAtacado&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dcfce7',color:'#166534'}}>ATACADO</span>}{temB2c&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8'}}>B2C</span>}</>); })()}{transportadoraTemTabelaAlternativa(item) ? <span className="status-pill dark" title="Alguma origem desta transportadora tem tabela alternativa cadastrada" style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#ede9fe',color:'#6d28d9'}}>🔀 Tabela alternativa</span> : null}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{carregandoItem ? <div className="list-meta-text" style={{ color: '#1d4ed8', fontWeight: 700 }}>⏳ Atualizando rotas, fretes, taxas e pendências...</div> : item.detalheCarregado && resumo.totalRotas !== undefined ? <div className="list-meta-text">{resumo.totalRotas} rota(s) · {resumo.totalCotacoes || 0} frete(s)</div> : <div className="list-meta-text" style={{ color: '#64748b' }}>Resumo rápido disponível · detalhes na fila de atualização</div>}{!carregandoItem && item.detalheCarregado && resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>{item.nome}{(() => { const cs = [...new Set((item.origens||[]).flatMap(canaisOrigem))]; const temAtacado = cs.includes('ATACADO'); const temB2c = cs.includes('B2C'); return (<>{temAtacado&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dcfce7',color:'#166534'}}>ATACADO</span>}{temB2c&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8'}}>B2C</span>}</>); })()}{transportadoraTemTabelaAlternativa(item) ? <span className="status-pill dark" title="Alguma origem desta transportadora tem tabela alternativa cadastrada" style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#ede9fe',color:'#6d28d9'}}>🔀 Tabela alternativa</span> : null}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{carregandoItem ? <div className="list-meta-text" style={{ color: '#1d4ed8', fontWeight: 700 }}>⏳ Atualizando rotas, fretes, taxas e pendências...</div> : item.detalheCarregado && resumo.totalRotas !== undefined ? <div className="list-meta-text">{resumo.totalRotas} rota(s) · {resumo.totalCotacoes || 0} frete(s)</div> : item.resumoDetalhado ? <div className="list-meta-text">{item.origens.reduce((acc, o) => acc + (o.totalRotas || 0), 0).toLocaleString('pt-BR')} rota(s) · {item.origens.reduce((acc, o) => acc + (o.totalCotacoes || 0), 0).toLocaleString('pt-BR')} frete(s)</div> : <div className="list-meta-text" style={{ color: '#64748b' }}>Carregando contagens...</div>}{!carregandoItem && item.detalheCarregado && resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 {(() => {
                   const totalOrig = (item.origens || []).length;
@@ -1681,6 +1808,13 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   const podeEditar = store.podeEditarTransportadoras;
   const tituloSemPermissao = 'Apenas Gestão ou Gestor de Auditoria de Fretes podem alterar transportadoras.';
 
+  // Ao abrir a transportadora: generalidades + contagens na hora (sem baixar
+  // milhares de rotas/fretes). As linhas são lidas por página, sob demanda.
+  useEffect(() => {
+    if (transportadora?.detalheCarregado || transportadora?.resumoDetalhado) return;
+    store.carregarResumoTransportadora?.(transportadora.id);
+  }, [transportadora?.id]);
+
   // Mesma pergunta de 2 etapas que existe no Centro de Gestores, agora tambem
   // aqui: sem isso, atribuir auditor pela tela de Transportadoras nunca
   // perguntava nada, so preenchia faturas vazias silenciosamente.
@@ -1773,7 +1907,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   return (
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← Transportadoras</button>
-      <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{origensBase.length} origem(ns)</span>{store.syncStatus?.rascunhoLocal ? <span className="status-pill light">Rascunho local</span> : null}{!podeEditar ? <span className="status-pill light" title={tituloSemPermissao}>Somente leitura</span> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={atualizarDadosTransportadora} disabled={store.syncStatus?.carregandoDetalheId === transportadora.id}>Atualizar dados</button><button className="btn-secondary" onClick={testarTabela} disabled={testandoTabela || !transportadora.detalheCarregado} title="Executa uma amostra rápida usando o mesmo motor de cálculo da auditoria">{testandoTabela ? 'Testando...' : '🧪 Testar tabela'}</button>{podeEditar ? <button className="btn-primary" onClick={salvarTransportadoraAtual} disabled={salvando || store.syncStatus?.carregandoDetalheId === transportadora.id}>{salvando ? 'Salvando...' : 'Salvar alterações'}</button> : null}<button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmd({ origem: '', canal: '' })} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button>{podeEditar ? <button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button> : null}</div></div>
+      <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{origensBase.length} origem(ns)</span>{store.syncStatus?.rascunhoLocal ? <span className="status-pill light">Rascunho local</span> : null}{!podeEditar ? <span className="status-pill light" title={tituloSemPermissao}>Somente leitura</span> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={atualizarDadosTransportadora} disabled={store.syncStatus?.carregandoDetalheId === transportadora.id}>Atualizar dados</button><button className="btn-secondary" onClick={testarTabela} disabled={testandoTabela || !transportadora.detalheCarregado} title="Executa uma amostra rápida usando o mesmo motor de cálculo da auditoria">{testandoTabela ? 'Testando...' : '🧪 Testar tabela'}</button>{podeEditar ? <button className="btn-primary" onClick={salvarTransportadoraAtual} disabled={salvando || store.syncStatus?.carregandoDetalheId === transportadora.id}>{salvando ? 'Salvando...' : 'Salvar alterações'}</button> : null}<button className="btn-secondary" disabled={!transportadora.detalheCarregado} title={transportadora.detalheCarregado ? undefined : 'Clique em Carregar tudo primeiro'} onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" disabled={!transportadora.detalheCarregado} title={transportadora.detalheCarregado ? undefined : 'Clique em Carregar tudo primeiro'} onClick={() => gerarArquivosVerum(transportadora)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmd({ origem: '', canal: '' })} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button>{podeEditar ? <button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button> : null}</div></div>
       {resultadoTeste ? (
         <div className={`hint-box top-space ${resultadoTeste.status === 'bloqueada' ? 'alert-error' : resultadoTeste.status === 'alerta' ? 'alert-warn' : ''}`}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
@@ -1801,10 +1935,18 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
           <strong>Carregando detalhes da transportadora...</strong><br />
           Buscando rotas, cotações, taxas e generalidades direto do Supabase.
         </div>
-      ) : !transportadora.detalheCarregado ? (
+      ) : !transportadora.detalheCarregado && !transportadora.resumoDetalhado ? (
         <div className="hint-box top-space">
-          <strong>Resumo carregado.</strong><br />
-          Abrindo os detalhes desta transportadora para buscar fretes e cotações no Supabase.
+          <strong>Carregando resumo...</strong><br />
+          Buscando generalidades e a contagem de rotas e fretes de cada origem.
+        </div>
+      ) : !transportadora.detalheCarregado ? (
+        <div className="hint-box top-space" style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <strong>Modo rápido.</strong> Generalidades e contagens já estão carregadas. As rotas e fretes são lidos por página direto do banco ao abrir a origem.
+            Para editar, importar, ver inconsistências, gerar Verum ou testar a tabela, carregue tudo.
+          </div>
+          <button className="btn-secondary" onClick={atualizarDadosTransportadora}>Carregar tudo</button>
         </div>
       ) : null}
       {feedbackSalvar ? <div className="mini-feedback info top-space">{feedbackSalvar}</div> : null}
@@ -1831,7 +1973,8 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
       <div className="section-row"><div className="inline-meta"><span className="tag-yellow">ATACADO</span><span>{origensBase.length} origem(ns)</span></div></div>
       <div className="list-stack">
         {origens.map((origem) => {
-          const analise = analisarCoberturaOrigem(origem);
+          const analise = transportadora.detalheCarregado ? analisarCoberturaOrigem(origem) : analiseOrigemPorContagem(origem);
+          const contagem = contagemOrigem(origem);
           const cardClass = analise.severidade === 'error'
             ? 'list-card alert-error'
             : analise.severidade === 'warn'
@@ -1839,9 +1982,9 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
               : 'list-card';
           return (
             <div key={origem.id} className={cardClass} onClick={() => onOpenOrigin(origem.id)}>
-              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#ede9fe':canaisOrigem(origem).includes('B2C')?'#dbeafe':'#dcfce7',color:canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#6d28d9':canaisOrigem(origem).includes('B2C')?'#1d4ed8':'#166534'}}>{canalOrigemLabel(origem)}</span><BadgeTabelaAlternativa origem={origem} />{papelDuplicada(origem) ? <span className="status-pill" style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#fee2e2', color: '#991b1b' }} title="Origem duplicada (mesma cidade e canal)">{papelDuplicada(origem) === 'anterior' ? 'Duplicada · tabela anterior' : 'Duplicada · tabela nova'}</span> : null}</div><div className="list-subtitle">{(origem.rotas || []).length} rota(s) · {(origem.cotacoes || []).length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#ede9fe':canaisOrigem(origem).includes('B2C')?'#dbeafe':'#dcfce7',color:canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#6d28d9':canaisOrigem(origem).includes('B2C')?'#1d4ed8':'#166534'}}>{canalOrigemLabel(origem)}</span><BadgeTabelaAlternativa origem={origem} />{papelDuplicada(origem) ? <span className="status-pill" style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#fee2e2', color: '#991b1b' }} title="Origem duplicada (mesma cidade e canal)">{papelDuplicada(origem) === 'anterior' ? 'Duplicada · tabela anterior' : 'Duplicada · tabela nova'}</span> : null}</div><div className="list-subtitle">{origem.resumoCarregado || transportadora.detalheCarregado ? `${contagem.rotas.toLocaleString('pt-BR')} rota(s) · ${contagem.cotacoes.toLocaleString('pt-BR')} frete(s)` : 'Carregando contagem...'}</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
-                <CoberturaBadge cobertura={transportadora.detalheCarregado ? analise.cobertura : 'Resumo'} severidade={transportadora.detalheCarregado ? analise.severidade : 'ok'} />
+                <CoberturaBadge cobertura={transportadora.detalheCarregado || origem.resumoCarregado ? analise.cobertura : 'Resumo'} severidade={transportadora.detalheCarregado || origem.resumoCarregado ? analise.severidade : 'ok'} />
                 <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
                   <button
                     type="button"
@@ -1994,7 +2137,7 @@ function TransferirOrigemModal({ open, origem, transportadoraAtual, transportado
   return (
     <Modal open={open} title="Mover origem para outra transportadora" onClose={onClose}>
       <p style={{ color: 'var(--text-muted, #64748b)', marginTop: 0 }}>
-        <strong>{origem?.cidade}</strong> ({canalOrigemLabel(origem)}) · {(origem?.rotas || []).length} rota(s) · {(origem?.cotacoes || []).length} frete(s)
+        <strong>{origem?.cidade}</strong> ({canalOrigemLabel(origem)}) · {contagemOrigem(origem).rotas} rota(s) · {contagemOrigem(origem).cotacoes} frete(s)
         <br />Sai de <strong>{transportadoraAtual?.nome}</strong>. As rotas, fretes, taxas e generalidades vão junto.
       </p>
       <input
@@ -2464,6 +2607,10 @@ function gruposAlternativosDaOrigem(origem) {
   [...(origem?.rotas || []), ...(origem?.cotacoes || [])].forEach((item) => {
     if (item?.grupoTabelaAlternativa) grupos.add(String(item.grupoTabelaAlternativa));
   });
+  (origem?.gruposAlternativos || []).forEach((grupo) => grupos.add(String(grupo)));
+  (origem?.generalidadesAlternativas || []).forEach((item) => {
+    if (item?.grupoTabelaAlternativa) grupos.add(String(item.grupoTabelaAlternativa));
+  });
   return Array.from(grupos).sort((a, b) => a.localeCompare(b));
 }
 
@@ -2480,6 +2627,7 @@ function contarTabelasAlternativasOrigem(origem) {
   (origem?.generalidadesAlternativas || []).forEach((item) => {
     if (item?.grupoTabelaAlternativa) grupos.add(String(item.grupoTabelaAlternativa));
   });
+  (origem?.gruposAlternativos || []).forEach((grupo) => grupos.add(String(grupo)));
   return grupos.size;
 }
 
@@ -2579,7 +2727,7 @@ function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
   return (
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← {transportadora.nome}</button>
-      <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{canalOrigemLabel(origem)}</strong> · {origem.rotas.length} rota(s){gruposExistentes.length ? <> · <span className="status-pill dark" title="Tabelas alternativas cadastradas nesta origem">{gruposExistentes.length} tabela(s) alternativa(s)</span></> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmdOpen(true)} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button><span className="status-pill dark">{origem.status}</span></div></div>
+      <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{canalOrigemLabel(origem)}</strong> · {contagemOrigem(origem).rotas.toLocaleString('pt-BR')} rota(s) · {contagemOrigem(origem).cotacoes.toLocaleString('pt-BR')} frete(s){gruposExistentes.length ? <> · <span className="status-pill dark" title="Tabelas alternativas cadastradas nesta origem">{gruposExistentes.length} tabela(s) alternativa(s)</span></> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" disabled={!transportadora.detalheCarregado} title={transportadora.detalheCarregado ? undefined : 'Volte e clique em Carregar tudo primeiro'} onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" disabled={!transportadora.detalheCarregado} title={transportadora.detalheCarregado ? undefined : 'Volte e clique em Carregar tudo primeiro'} onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar arquivo Verum</button><button className="btn-secondary" onClick={() => setChamadoAmdOpen(true)} title="Abrir chamado de ajuste de tabela na Central de Solicitações (AMD)">🎫 Abrir chamado AMD</button><span className="status-pill dark">{origem.status}</span></div></div>
       {feedbackChamado ? <div className="mini-feedback success top-space">{feedbackChamado}</div> : null}
       <div className="tabs-row"><TabButton active={aba === 'cadastro'} onClick={() => setAba('cadastro')}>Cadastro</TabButton><TabButton active={aba === 'canal'} onClick={() => setAba('canal')}>Canal</TabButton><TabButton active={aba === 'generalidades'} onClick={() => setAba('generalidades')}>Generalidades</TabButton><TabButton active={aba === 'rotas'} onClick={() => setAba('rotas')}>Rotas</TabButton><TabButton active={aba === 'cotacoes'} onClick={() => setAba('cotacoes')}>Cotações</TabButton><TabButton active={aba === 'taxas'} onClick={() => setAba('taxas')}>Taxas Especiais</TabButton></div>
       {(aba === 'rotas' || aba === 'cotacoes' || aba === 'generalidades' || aba === 'taxas') ? (
@@ -2626,9 +2774,20 @@ function OrigemDetail({ transportadora, origem, onBack, store, sessao }) {
       {aba === 'cadastro' && <CadastroOrigemTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'canal' && <CanalTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'generalidades' && <GeneralidadesTab transportadoraId={transportadora.id} origem={origem} store={store} grupoTabelaAlternativa={grupoAtivo} />}
-      {aba === 'rotas' && <CrudTab title="Rota" secao="rotas" tipoImportacao="rotas" origem={origem} transportadora={transportadora} store={store} columns={rotasColumns} fields={rotasFields} grupoTabelaAlternativa={grupoAtivo} hint={<>Use <strong>Baixar Modelo</strong> para subir rotas no padrão do seu arquivo real. Também há <strong>Exportar</strong> e <strong>Excluir Tudo</strong>.</>} />}
-      {aba === 'cotacoes' && <CrudTab title="Cotação" secao="cotacoes" tipoImportacao="cotacoes" origem={origem} transportadora={transportadora} store={store} columns={cotacoesColumns} fields={cotacoesFields} grupoTabelaAlternativa={grupoAtivo} hint={<>Fretes/cotações aceitam importação no modelo com <strong>Rota do frete</strong>, pesos, excesso, taxa aplicada e percentual.</>} />}
-      {aba === 'taxas' && <TaxasEspeciaisTab origem={origem} transportadora={transportadora} store={store} grupoTabelaAlternativa={grupoAtivo} />}
+      {!transportadora.detalheCarregado && origem.resumoCarregado && (aba === 'rotas' || aba === 'cotacoes' || aba === 'taxas') && (
+        <TabelaPaginadaServidor
+          title={aba === 'rotas' ? 'Rota' : aba === 'cotacoes' ? 'Frete' : 'Taxa especial'}
+          secao={aba}
+          origem={origem}
+          grupo={grupoAtivo}
+          columns={aba === 'rotas' ? rotasColumns : aba === 'cotacoes' ? cotacoesColumns : taxasColumns}
+          total={aba === 'rotas' ? contagemOrigem(origem).rotas : aba === 'cotacoes' ? contagemOrigem(origem).cotacoes : contagemOrigem(origem).taxas}
+          onCarregarTudo={() => store.carregarTransportadoraCompleta?.(transportadora.id)}
+        />
+      )}
+      {aba === 'rotas' && (transportadora.detalheCarregado || !origem.resumoCarregado) && <CrudTab title="Rota" secao="rotas" tipoImportacao="rotas" origem={origem} transportadora={transportadora} store={store} columns={rotasColumns} fields={rotasFields} grupoTabelaAlternativa={grupoAtivo} hint={<>Use <strong>Baixar Modelo</strong> para subir rotas no padrão do seu arquivo real. Também há <strong>Exportar</strong> e <strong>Excluir Tudo</strong>.</>} />}
+      {aba === 'cotacoes' && (transportadora.detalheCarregado || !origem.resumoCarregado) && <CrudTab title="Cotação" secao="cotacoes" tipoImportacao="cotacoes" origem={origem} transportadora={transportadora} store={store} columns={cotacoesColumns} fields={cotacoesFields} grupoTabelaAlternativa={grupoAtivo} hint={<>Fretes/cotações aceitam importação no modelo com <strong>Rota do frete</strong>, pesos, excesso, taxa aplicada e percentual.</>} />}
+      {aba === 'taxas' && (transportadora.detalheCarregado || !origem.resumoCarregado) && <TaxasEspeciaisTab origem={origem} transportadora={transportadora} store={store} grupoTabelaAlternativa={grupoAtivo} />}
       <InconsistenciasModal open={inconsistenciasOpen} title="Inconsistências da origem" transportadora={transportadora} origem={origem} onClose={() => setInconsistenciasOpen(false)} />
       <ModalChamadoAmdTabela
         open={chamadoAmdOpen}

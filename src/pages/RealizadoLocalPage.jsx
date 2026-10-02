@@ -44,6 +44,7 @@ import {
   formatPercent,
   regraTomadorServicoRealizadoTexto,
 } from '../utils/realizadoCtes';
+import { cederThread, esperarLeve } from '../utils/cederThread';
 
 const DEFAULT_FILTROS = {
   competencia: '',
@@ -602,8 +603,7 @@ function FornecedorInsightPanel({ resultado, transportadora }) {
 
 function nextFrame() {
   return new Promise((resolve) => {
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
-    else setTimeout(resolve, 0);
+    cederThread().then(resolve);
   });
 }
 

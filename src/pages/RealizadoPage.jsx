@@ -20,6 +20,7 @@ import {
   normalizeHeaderRealizado,
   parseRealizadoCtesFile,
 } from '../utils/realizadoCtes';
+import { cederThread, esperarLeve } from '../utils/cederThread';
 
 const DEFAULT_FILTROS = {
   inicio: '',
@@ -273,11 +274,7 @@ function textoContagem(value) {
 
 function nextFrame() {
   return new Promise((resolve) => {
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(() => resolve());
-    } else {
-      setTimeout(resolve, 0);
-    }
+    cederThread().then(resolve);
   });
 }
 

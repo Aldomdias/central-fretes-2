@@ -17,6 +17,8 @@ import { obterRaizCnpj } from '../utils/cnpj.js';
 import { carregarMapaEquivalenciasOrigem } from './origemEquivalenciaService';
 import { ibgesOrigemEquivalentes, origemAceitaPorExcecao } from '../utils/origemEquivalencia';
 
+import { cederThread, esperarLeve } from '../utils/cederThread';
+
 const PAGE_SIZE = 1000;
 const INSERT_CHUNK = 500;
 const TABELA_CTES = 'realizado_local_ctes';
@@ -1827,7 +1829,7 @@ export async function resimularRegistros({ registros, transportadorasAlvo, onPro
 
     if (index % 200 === 0 || index === registros.length - 1) {
       onProgress?.({ etapa: 'resimulando', carregados: index + 1, total: registros.length });
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await cederThread();
     }
   }
 
@@ -1841,7 +1843,7 @@ export async function carregarOpcoesPreFiltroAuditoria() {
     for (let tentativa = 0; tentativa < 3; tentativa += 1) {
       resposta = await consulta();
       if (!resposta.error || !/PGRST002|schema cache|503/i.test(`${resposta.error.code || ''} ${resposta.error.message || ''}`)) return resposta;
-      await new Promise((resolve) => setTimeout(resolve, 350 * (tentativa + 1)));
+      await esperarLeve(350 * (tentativa + 1));
     }
     return resposta;
   };
@@ -1957,7 +1959,7 @@ export async function enriquecerCtesComFaturasEmLotes(registros = [], { tamanhoL
     resultado.push(...await enriquecerCtesComFaturas(lote));
     const carregados = Math.min(inicio + lote.length, registros.length);
     onProgress?.({ etapa: 'enriquecendo_faturas', carregados, total: registros.length });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await cederThread();
   }
   return resultado;
 }
@@ -2124,7 +2126,7 @@ async function enriquecerCtesComTrackingAoVivo(ctes = [], onProgress) {
   for (let inicio = 0; inicio < lotes.length; inicio += concorrenciaMaxima) {
     const grupo = lotes.slice(inicio, inicio + concorrenciaMaxima);
     await Promise.all(grupo.map((loteCtes, offset) => processarLote(loteCtes, inicio + offset)));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await cederThread();
   }
 
   return resultadoPorLote.flat();
@@ -2182,7 +2184,7 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
 
     if (index % 500 === 0 || index === ctes.length - 1) {
       onProgress?.({ etapa: 'processando_ctes', carregados: index + 1, total: ctes.length });
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await cederThread();
     }
   }
 
@@ -2382,7 +2384,7 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
     });
   }
   onProgress?.({ etapa: 'calculando_amd', carregados: 0, total: ctesUnicos.length });
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await cederThread();
 
   const registros = [];
   for (let index = 0; index < ctesUnicos.length; index += 1) {
@@ -2537,7 +2539,7 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
     // trabalho por CT-e. Devolver o controle ao navegador a cada registro
     // mantém a interface e o botao Cancelar responsivos durante lotes grandes.
     onProgress?.({ etapa: 'calculando_amd', carregados: index + 1, total: ctesUnicos.length });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await cederThread();
     verificarCancelamento();
   }
   return { registros, encontrados: ctesUnicos.length, naoEncontrados: Math.max(0, normalizadas.length - ctesUnicos.length) };

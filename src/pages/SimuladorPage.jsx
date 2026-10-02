@@ -76,10 +76,12 @@ import {
   somarTrackingAgregado,
 } from '../utils/trackingCubagem';
 import { resolverPesoCteRealizado } from '../utils/pesoRealizadoSimulador';
+import { cederThread, esperarLeve } from '../utils/cederThread';
+
 
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return esperarLeve(ms);
 }
 
 function isFetchNetworkError(error) {
@@ -6608,7 +6610,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
 
       atualizarProcessamentoUi('Calculando aderência, saving e ranking da origem...', 84);
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      await cederThread();
 
       const resultado = analisarTransportadoraPorGrade({
         transportadoras: baseAnaliseComNegoc,
@@ -7228,7 +7230,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           atualizarProcessamentoPesado(tarefaFila.id, { etapa: 'simulando', total: rowsBase.length });
         }, 15000);
       }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await cederThread();
       const ehReajusteSelecionado = ctx.ehReajusteSelecionado;
       const transportadoraBaseReajuste = ctx.transportadoraBaseReajuste;
       const nomeTabelaSelecionada = ctx.nomeTabelaSelecionada;

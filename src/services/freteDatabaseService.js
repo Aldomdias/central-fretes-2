@@ -2632,6 +2632,128 @@ export async function buscarBaseSimulacaoPorRotasDb({ routeKeys = [], canal = ''
 }
 
 
+// Carga RÁPIDA ao abrir uma transportadora: origens + generalidades (leves) e
+// só a CONTAGEM de rotas/fretes/taxas por origem. As linhas em si (milhares em
+// transportadoras como a Atual Carga) ficam no banco e são lidas por página em
+// listarLinhasOrigemPaginadoDb, só quando o usuário abre/pesquisa a tabela.
+export async function carregarResumoDetalheTransportadoraDb(transportadoraId) {
+  if (!isSupabaseConfigured() || !transportadoraId) return null;
+  const supabase = ensureClient();
+
+  const { data: origens, error: origensError } = await supabase
+    .from('origens')
+    .select('*')
+    .eq('transportadora_id', transportadoraId)
+    .order('cidade', { ascending: true });
+  if (origensError) throw origensError;
+
+  const origemIds = (origens || []).map((item) => item.id);
+  const generalidades = await fetchRowsByOrigemIds(supabase, 'generalidades', origemIds);
+
+  // Rótulos das tabelas alternativas por origem (pra montar as abas sem baixar as linhas).
+  const gruposPorOrigem = new Map();
+  for (const tabela of ['rotas', 'cotacoes', 'taxas_especiais']) {
+    for (let i = 0; i < origemIds.length; i += 100) {
+      const lote = origemIds.slice(i, i + 100);
+      // eslint-disable-next-line no-await-in-loop
+      const linhas = await paginarEmParaleloDb(() => supabase
+        .from(tabela)
+        .select('id, origem_id, grupo_tabela_alternativa')
+        .in('origem_id', lote)
+        .not('grupo_tabela_alternativa', 'is', null)
+        .order('id', { ascending: true }));
+      linhas.forEach((linha) => {
+        const chave = String(linha.origem_id);
+        const set = gruposPorOrigem.get(chave) || new Set();
+        set.add(String(linha.grupo_tabela_alternativa));
+        gruposPorOrigem.set(chave, set);
+      });
+    }
+  }
+
+  const contar = async (tabela, origemId) => {
+    const { count, error } = await supabase
+      .from(tabela)
+      .select('id', { count: 'exact', head: true })
+      .eq('origem_id', origemId);
+    if (error) throw error;
+    return count || 0;
+  };
+
+  const generalidadesPorOrigem = groupByOrigemId(generalidades);
+  const resultado = new Array((origens || []).length);
+  const CONCORRENCIA = 6;
+  let proximo = 0;
+  const trabalhador = async () => {
+    while (proximo < resultado.length) {
+      const indice = proximo;
+      proximo += 1;
+      const origem = origens[indice];
+      // eslint-disable-next-line no-await-in-loop
+      const [totalRotas, totalCotacoes, totalTaxas] = await Promise.all([
+        contar('rotas', origem.id),
+        contar('cotacoes', origem.id),
+        contar('taxas_especiais', origem.id),
+      ]);
+      const mapeada = normalizeOrigemFromDb(origem, generalidadesPorOrigem.get(String(origem.id)), [], [], []);
+      const gruposAlternativos = Array.from(gruposPorOrigem.get(String(origem.id)) || []);
+      resultado[indice] = {
+        ...mapeada,
+        totalRotas,
+        totalCotacoes,
+        totalTaxas,
+        gruposAlternativos,
+        temTabelaAlternativa: mapeada.temTabelaAlternativa || gruposAlternativos.length > 0,
+        resumoCarregado: true,
+      };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCORRENCIA, resultado.length) }, trabalhador));
+  return resultado;
+}
+
+const SECOES_PAGINADAS_DB = {
+  rotas: { tabela: 'rotas', colunasBusca: ['nome_rota', 'ibge_destino', 'ibge_origem'] },
+  cotacoes: { tabela: 'cotacoes', colunasBusca: ['rota'] },
+  taxas: { tabela: 'taxas_especiais', colunasBusca: ['ibge_destino'] },
+};
+
+// Lê uma página de rotas/cotações/taxas de UMA origem direto do banco, com
+// busca opcional no servidor. Devolve as linhas já no formato da tela.
+export async function listarLinhasOrigemPaginadoDb({
+  origemId, secao, grupo = null, busca = '', pagina = 1, tamanho = 100,
+} = {}) {
+  const config = SECOES_PAGINADAS_DB[secao];
+  if (!config || !origemId) return { linhas: [], total: 0 };
+  if (!isSupabaseConfigured()) return { linhas: [], total: 0 };
+  const supabase = ensureClient();
+
+  let query = supabase.from(config.tabela).select('*', { count: 'exact' }).eq('origem_id', origemId);
+  query = grupo ? query.eq('grupo_tabela_alternativa', grupo) : query.is('grupo_tabela_alternativa', null);
+
+  const termo = String(busca || '').trim().replace(/[,()%*\\]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (termo) {
+    query = query.or(config.colunasBusca.map((coluna) => `${coluna}.ilike.%${termo}%`).join(','));
+  }
+
+  const inicio = Math.max(0, (pagina - 1) * tamanho);
+  const { data, error, count } = await query
+    .order('id', { ascending: true })
+    .range(inicio, inicio + tamanho - 1);
+  if (error) throw error;
+
+  const origemBase = { id: origemId, canal: 'ATACADO' };
+  const mapeada = normalizeOrigemFromDb(
+    origemBase,
+    [],
+    secao === 'rotas' ? data || [] : [],
+    secao === 'cotacoes' ? data || [] : [],
+    secao === 'taxas' ? data || [] : []
+  );
+  const campo = secao === 'taxas' ? 'taxasEspeciais' : secao;
+  return { linhas: mapeada[campo] || [], total: count || 0 };
+}
+
 export async function carregarTransportadoraCompletaDb(transportadoraId, transportadoraNome = '') {
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);

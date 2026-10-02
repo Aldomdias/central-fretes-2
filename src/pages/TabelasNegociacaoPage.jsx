@@ -83,6 +83,7 @@ import {
   limparNegociacaoDaUrl,
   escreverEstadoUrlNegociacao,
 } from '../utils/negociacaoUrlState';
+import { cederThread, esperarLeve } from '../utils/cederThread';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -521,11 +522,7 @@ function exportarXlsx(linhas, nomeArquivo, aba) {
 
 function aguardarTela() {
   return new Promise(function(resolve) {
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(function() { setTimeout(resolve, 0); });
-    } else {
-      setTimeout(resolve, 0);
-    }
+    cederThread().then(resolve);
   });
 }
 

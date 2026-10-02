@@ -5,6 +5,7 @@ import {
   carregarResumoBaseDb,
   carregarSnapshotFretesDb,
   carregarTransportadoraCompletaDb,
+  carregarResumoDetalheTransportadoraDb,
   atualizarValidacaoOrigemDb,
   excluirLinhaSecaoDb,
   excluirOrigemDb,
@@ -575,6 +576,50 @@ export function useFreteStore(sessao = null) {
             erro: error.message || 'Erro ao salvar lote.',
           }));
           return { ok: false, erro: error };
+        }
+      },
+      // Carga rápida: generalidades + contagem de rotas/fretes/taxas por origem.
+      // Não traz as linhas (a tela lê por página direto do banco) e nunca
+      // sobrescreve uma transportadora já carregada por completo.
+      async carregarResumoTransportadora(transportadoraId) {
+        if (!transportadoraId || !bancoConfigurado()) return false;
+        const atual = (transportadoras || []).find((item) => String(item.id) === String(transportadoraId));
+        if (!atual || atual.detalheCarregado || atual.resumoDetalhado) return true;
+        if (syncStatus?.rascunhoLocal) return false;
+        try {
+          const origensResumo = await carregarResumoDetalheTransportadoraDb(transportadoraId);
+          if (!origensResumo) return false;
+          const porId = new Map(origensResumo.map((item) => [String(item.id), item]));
+          setTransportadoras((prev) =>
+            (prev || []).map((item) => {
+              if (String(item.id) !== String(transportadoraId) || item.detalheCarregado) return item;
+              return normalizeTransportadora({
+                ...item,
+                resumoDetalhado: true,
+                origens: (item.origens || []).map((origem) => {
+                  const resumo = porId.get(String(origem.id));
+                  return resumo
+                    ? {
+                        ...origem,
+                        generalidades: resumo.generalidades,
+                        generalidadesAlternativas: resumo.generalidadesAlternativas,
+                        vigenciasAlternativas: resumo.vigenciasAlternativas,
+                        temTabelaAlternativa: resumo.temTabelaAlternativa,
+                        totalRotas: resumo.totalRotas,
+                        totalCotacoes: resumo.totalCotacoes,
+                        totalTaxas: resumo.totalTaxas,
+                        gruposAlternativos: resumo.gruposAlternativos,
+                        resumoCarregado: true,
+                      }
+                    : origem;
+                }),
+              });
+            })
+          );
+          return true;
+        } catch (error) {
+          setSyncStatus((prev) => ({ ...prev, erro: error.message || 'Erro ao carregar resumo da transportadora.' }));
+          return false;
         }
       },
       async carregarTransportadoraCompleta(transportadoraId) {

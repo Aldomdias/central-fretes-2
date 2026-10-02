@@ -5,6 +5,7 @@ import { carregarAliasesCidadeIbge } from './cidadeIbgeAliasService';
 import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
 import { carregarConfigAlertaCte, registrarAlertasValorCte, enviarEmailAlertasPendentes, registrarUltimoEnvioAuto } from './cteAlertasValorService';
 import { compactarCidadeIbge, normalizarCidadeIbge, resolverIbgeComRegras } from '../utils/ibgeCidadeMatch';
+import { esperarLeve } from '../utils/cederThread';
 
 const TMP_CHUNK_SIZE = 1000;
 const TMP_INSERT_RETRIES = 3;
@@ -233,7 +234,7 @@ function getChaveCte(row = {}) {
 }
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return esperarLeve(ms);
 }
 
 async function insertChunkWithRetry({ supabase, chunk, tentativa = 1 }) {

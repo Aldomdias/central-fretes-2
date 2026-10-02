@@ -609,9 +609,25 @@ export function exportarSecao(tipo, rows, fileName) {
   downloadWorkbook({ tipo, rows: sheetRowsForTipo(tipo, rows), fileName });
 }
 
+// A análise percorre todas as rotas/cotações da origem e era refeita a cada
+// render da lista (digitar na busca já recalculava tudo). Guarda o resultado
+// enquanto as listas de rotas/cotações forem as mesmas referências.
+const cacheCoberturaOrigem = new WeakMap();
+
 export function analisarCoberturaOrigem(origem) {
   const rotas = Array.isArray(origem?.rotas) ? origem.rotas : [];
   const cotacoes = Array.isArray(origem?.cotacoes) ? origem.cotacoes : [];
+  if (origem && typeof origem === 'object') {
+    const cache = cacheCoberturaOrigem.get(origem);
+    if (cache && cache.rotas === rotas && cache.cotacoes === cotacoes) return cache.resultado;
+    const resultado = analisarCoberturaOrigemSemCache(rotas, cotacoes);
+    cacheCoberturaOrigem.set(origem, { rotas, cotacoes, resultado });
+    return resultado;
+  }
+  return analisarCoberturaOrigemSemCache(rotas, cotacoes);
+}
+
+function analisarCoberturaOrigemSemCache(rotas, cotacoes) {
 
   const chavesRotas = new Set(
     rotas.map((item) => normalizeRouteName(item?.cotacao || item?.nomeRota || item?.rota)).filter(Boolean)

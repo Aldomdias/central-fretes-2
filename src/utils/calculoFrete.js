@@ -1,5 +1,6 @@
 import { calcularFreteFaixaPeso, calcularFretePercentual } from '../services/freteCalcEngine.js';
 import { resolverAliquotaIcmsUfContexto } from './icmsUfMatrix.js';
+import { cederThread, esperarLeve } from './cederThread';
 
 const UF_POR_CODIGO = {
   '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
@@ -1639,11 +1640,7 @@ export function simularRealizadoPorTransportadora({
 
 function aguardarProximoFrameRealizado() {
   return new Promise((resolve) => {
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(() => resolve());
-    } else {
-      setTimeout(resolve, 0);
-    }
+    cederThread().then(resolve);
   });
 }
 
