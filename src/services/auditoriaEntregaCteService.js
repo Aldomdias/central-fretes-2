@@ -140,3 +140,27 @@ export function resumirEntregaPorFatura(registros = [], statusPorChave = new Map
     .map((f) => ({ ...f, liberada: f.carregando === 0 && f.pendentes.length === 0 }))
     .sort((a, b) => (a.liberada - b.liberada) || (b.pendentes.length - a.pendentes.length));
 }
+
+/** Chave da NF de cada CT-e pelo tracking: Map(chave_cte -> chave_nfe de 44 digitos). Falha = mapa vazio. */
+export async function buscarChavesNfeTracking(chavesCte = []) {
+  const mapa = new Map();
+  const unicas = [...new Set(chavesCte.map(soDigitos).filter((c) => c.length === 44))];
+  if (!isSupabaseConfigured() || !unicas.length) return mapa;
+  try {
+    const supabase = getSupabaseClient();
+    for (let i = 0; i < unicas.length; i += LOTE) {
+      const { data, error } = await supabase.from('tracking_rows')
+        .select('chave_cte,chave_nfe')
+        .in('chave_cte', unicas.slice(i, i + LOTE))
+        .limit(2000);
+      if (error) throw error;
+      (data || []).forEach((l) => {
+        const nfe = soDigitos(l.chave_nfe);
+        if (nfe.length === 44 && !mapa.has(soDigitos(l.chave_cte))) mapa.set(soDigitos(l.chave_cte), nfe);
+      });
+    }
+  } catch (error) {
+    console.warn('[Chave NF] tracking indisponivel.', error?.message || error);
+  }
+  return mapa;
+}

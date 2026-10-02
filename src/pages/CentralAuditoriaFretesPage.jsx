@@ -3,7 +3,7 @@ import * as XLSX from 'xlsx';
 import { carregarRespostasEntregaFatura, salvarPendenciasEntrega, urlAnexoEntrega, urlPortalEntrega, validarRespostaEntrega } from '../services/entregaPortalService';
 import { carregarDivergenciasFatura, ctesCobrancaAcima, salvarDivergenciasFatura, validarRespostaDivergencia } from '../services/divergenciaPortalService';
 import { buscarPesosTrackingPorChaves } from '../services/realizadoTrackingEnrichment';
-import { buscarStatusEntregaCtes, chaveEntregaRegistro, ROTULO_ENTREGA, STATUS_ENTREGA } from '../services/auditoriaEntregaCteService';
+import { buscarChavesNfeTracking, buscarStatusEntregaCtes, chaveEntregaRegistro, ROTULO_ENTREGA, STATUS_ENTREGA } from '../services/auditoriaEntregaCteService';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import ModalEnviarProtocoloFinanceiro from '../components/ModalEnviarProtocoloFinanceiro';
@@ -2087,9 +2087,10 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       setModalSuprimentos((prev) => ({ ...prev, erro: `Nao da pra enviar para aprovacao: ${modalSuprimentos.foraDaPremissa} CT-e(s) com calculo da AMD mas sem diferenca positiva (nao foi cobrado a mais) e nao e complementar.` }));
       return;
     }
-    if (complementar) {
+    if (destino === 'TRANSPORTE') {
+      if (modalSuprimentos.buscandoNf) { setModalSuprimentos((prev) => ({ ...prev, erro: 'Aguarde: ainda buscando a chave da NF no tracking.' })); return; }
       const semNf = itens.filter((i) => String(i.chave_nfe || '').replace(/\D/g, '').length !== 44);
-      if (semNf.length) { setModalSuprimentos((prev) => ({ ...prev, erro: `CT-e complementar exige a chave da NF (44 digitos): faltam ${semNf.length} CT-e(s).` })); return; }
+      if (semNf.length) { setModalSuprimentos((prev) => ({ ...prev, erro: `A chave da NF (44 digitos) e obrigatoria: faltam ${semNf.length} CT-e(s).` })); return; }
     }
     setModalSuprimentos((prev) => ({ ...prev, enviando: true, erro: '' }));
     try {
@@ -2112,7 +2113,22 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     const alvo = detalhes.filter((item) => selecionados.includes(item.id));
     if (!alvo.length) return;
     const foraDaPremissa = casosForaDaPremissa(alvo).length;
-    setModalSuprimentos({ destino: 'TRANSPORTE', itens: montarItensEnvio(alvo), tipoAjuste: '', justificativa: '', enviando: false, foraDaPremissa });
+    const nfValida = (v) => String(v || '').replace(/\D/g, '').length === 44;
+    // Chave da NF: usa a que ja existe (base/tracking); so pede ao usuario o que nao for localizado.
+    const itens = montarItensEnvio(alvo).map((item) => ({ ...item, chave_nfe_automatica: nfValida(item.chave_nfe) }));
+    setModalSuprimentos({ destino: 'TRANSPORTE', itens, tipoAjuste: '', justificativa: '', enviando: false, foraDaPremissa, buscandoNf: itens.some((i) => !i.chave_nfe_automatica) });
+    const faltando = itens.filter((i) => !i.chave_nfe_automatica);
+    if (!faltando.length) return;
+    buscarChavesNfeTracking(faltando.map((i) => i.chave_cte)).then((achadas) => {
+      setModalSuprimentos((prev) => (prev && prev.destino === 'TRANSPORTE' ? {
+        ...prev,
+        buscandoNf: false,
+        itens: prev.itens.map((i) => {
+          const nfe = achadas.get(String(i.chave_cte || '').replace(/\D/g, ''));
+          return !i.chave_nfe_automatica && nfe ? { ...i, chave_nfe: nfe, chave_nfe_automatica: true } : i;
+        }),
+      } : prev));
+    });
   };
 
   const confirmarLiberacaoComDiferenca = async () => {
@@ -3784,19 +3800,33 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                       </label>
                     ))}
                   </div>
-                  {modalSuprimentos.complementar === 'SIM' && (
-                    <div>
-                      <span className="compact">Anexe a chave da NF (44 digitos) de cada CT-e complementar:</span>
-                      {modalSuprimentos.itens.map((it, idx) => (
-                        <div key={it.chave_cte || idx} style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
-                          <span style={{ fontSize: 11, minWidth: 120 }}>CT-e ...{String(it.chave_cte || '').slice(25, 34)}</span>
-                          <input style={{ flex: 1 }} placeholder="Chave da NF (44 digitos)" value={it.chave_nfe || ''} onChange={(e) => setModalSuprimentos((p) => ({ ...p, itens: p.itens.map((x, j) => (j === idx ? { ...x, chave_nfe: e.target.value.replace(/\D/g, '').slice(0, 44) } : x)) }))} />
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
               )}
+              {modalSuprimentos.destino === 'TRANSPORTE' && (() => {
+                if (modalSuprimentos.buscandoNf) return <div className="compact" style={{ margin: '6px 0' }}>Buscando a chave da NF no tracking...</div>;
+                const pendentes = modalSuprimentos.itens.map((it, idx) => ({ it, idx })).filter(({ it }) => !it.chave_nfe_automatica);
+                const localizadas = modalSuprimentos.itens.length - pendentes.length;
+                return (
+                  <div className="field">
+                    {localizadas > 0 && <div className="compact" style={{ color: '#166534' }}>✓ Chave da NF localizada automaticamente (base/tracking) em {localizadas} CT-e(s).</div>}
+                    {pendentes.length > 0 && (
+                      <>
+                        <strong>Chave da NF * — nao localizada no tracking em {pendentes.length} CT-e(s); informe (44 digitos):</strong>
+                        {pendentes.map(({ it, idx }) => {
+                          const ok = String(it.chave_nfe || '').replace(/\D/g, '').length === 44;
+                          return (
+                            <div key={it.chave_cte || idx} style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
+                              <span style={{ fontSize: 11, minWidth: 120 }}>CT-e {it.numero_cte || `...${String(it.chave_cte || '').slice(25, 34)}`}</span>
+                              <input style={{ flex: 1, borderColor: ok ? undefined : '#dc2626' }} placeholder="Chave da NF (44 digitos)" value={it.chave_nfe || ''} onChange={(e) => setModalSuprimentos((p) => ({ ...p, itens: p.itens.map((x, j) => (j === idx ? { ...x, chave_nfe: e.target.value.replace(/\D/g, '').slice(0, 44) } : x)) }))} />
+                              <span style={{ fontSize: 11, color: ok ? '#166534' : '#b91c1c' }}>{ok ? '✓' : `${String(it.chave_nfe || '').length}/44`}</span>
+                            </div>
+                          );
+                        })}
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
               {modalSuprimentos.destino === 'SUPRIMENTOS' && (
                 <label className="field">Tipo de ajuste
                   <select value={modalSuprimentos.tipoAjuste} onChange={(e) => setModalSuprimentos((p) => ({ ...p, tipoAjuste: e.target.value }))}>
