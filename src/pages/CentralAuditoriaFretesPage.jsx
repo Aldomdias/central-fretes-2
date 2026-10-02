@@ -11,6 +11,7 @@ import DadosBancariosTransportadoras from '../components/DadosBancariosTransport
 import VincularPagamentosSap from '../components/VincularPagamentosSap';
 import DesfazerVinculosSap from '../components/DesfazerVinculosSap';
 import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
+import { montarCorpoEmailLaudo, montarEml, slugArquivoEmail } from '../utils/emailLaudoTransportador';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 import { lerCteXml } from '../utils/cteXml';
 import {
@@ -1752,6 +1753,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [filtroCanalCte, setFiltroCanalCte] = useState('todos');
   const [carregandoDetalhes, setCarregandoDetalhes] = useState(false);
   const [erroDetalhes, setErroDetalhes] = useState('');
+  const [emlLaudoFatura, setEmlLaudoFatura] = useState(null);
   const [novaFaturaId, setNovaFaturaId] = useState('');
   const [reauditando, setReauditando] = useState(false);
   const [recalculando, setRecalculando] = useState(false);
@@ -2721,7 +2723,32 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
 </body>
 </html>`;
     const sufixo = versao === 'email' ? 'email_transportador' : versao;
-    baixarArquivo(new Blob([html], { type: 'text/html;charset=utf-8' }), `laudo_fatura_${fatura.numero_fatura}_${sufixo}.html`);
+    const nomeLaudoFatura = `laudo_fatura_${fatura.numero_fatura}_${sufixo}.html`;
+    baixarArquivo(new Blob([html], { type: 'text/html;charset=utf-8' }), nomeLaudoFatura);
+    // Laudo para o transportador: baixa tambem o rascunho de e-mail (.eml) com o
+    // laudo anexado. O botao "Baixar e-mail" garante o arquivo se o navegador
+    // bloquear o 2o download automatico.
+    if (transportador) {
+      const corpoEmail = montarCorpoEmailLaudo({
+        transportadora: fatura.transportadora,
+        faturas: [{ numero: fatura.numero_fatura, url: linkConfirmacao }],
+        totalCtes: resumo.total,
+        divergentes: resumo.divergentes,
+        semEntrega: semEntrega.length,
+        cobrancaAcima: resumo.cobrancaAcima,
+        totalDescontar: totalDescontarLaudo,
+        assinatura: sessao?.nome,
+      }, dinheiro);
+      const eml = montarEml({
+        assunto: `Laudo de auditoria de fretes${fatura.transportadora ? ` - ${fatura.transportadora}` : ''} - fatura ${fatura.numero_fatura}`,
+        corpoHtml: corpoEmail,
+        anexoHtml: html,
+        anexoNome: nomeLaudoFatura,
+      });
+      const nomeEml = `email-laudo-fatura-${fatura.numero_fatura}-${slugArquivoEmail(fatura.transportadora) || 'transportadora'}.eml`;
+      setEmlLaudoFatura({ conteudo: eml, nome: nomeEml });
+      setTimeout(() => baixarArquivo(new Blob([eml], { type: 'message/rfc822' }), nomeEml), 600);
+    }
   };
 
   const selecionar = (id) => setSelecionados((lista) =>
@@ -2945,6 +2972,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       setAtualizandoEntregaPartida(false);
     }
   };
+
 
   const aplicarFiltrosCtes = (lista) => lista.filter((item) => {
     const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte))
@@ -3514,6 +3542,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <button className="btn-secondary" disabled={!detalhes.length} onClick={() => baixarLaudoFatura('interno')}>Laudo HTML</button>
         <button className="btn-secondary" disabled={!detalhes.length} onClick={() => baixarLaudoFatura('transportador')}>Laudo transportador</button>
         <button className="btn-secondary" disabled={!detalhes.length} onClick={() => baixarLaudoFatura('email')}>HTML e-mail</button>
+        {emlLaudoFatura && (
+          <button className="btn-secondary" title="Rascunho de e-mail com o laudo anexado (abre no Outlook)" onClick={() => baixarArquivo(new Blob([emlLaudoFatura.conteudo], { type: 'message/rfc822' }), emlLaudoFatura.nome)}>Baixar e-mail (.eml)</button>
+        )}
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('EDI')}>Gerar DOCCOB EDI (Verum)</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('CSV')}>Gerar DOCCOB CSV</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('XLSX')}>Gerar DOCCOB XLSX</button>
@@ -3727,6 +3758,9 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   }, [numeroFaturaAbrirAuto, transportadoraFaturaAbrirAuto, state.faturas]);
   const [importando, setImportando] = useState(false);
   const [mensagemImportacao, setMensagemImportacao] = useState('');
+  // E-mail (.eml) do laudo guardado para baixar com um clique: o navegador costuma
+  // bloquear o 2o download automatico, entao o botao abaixo garante o arquivo.
+  const [emlLaudoPendente, setEmlLaudoPendente] = useState(null);
   const [ultimaCargaFaturas, setUltimaCargaFaturas] = useState(carregarUltimaCargaFaturas);
   const [selecionadasIds, setSelecionadasIds] = useState([]);
   const [statusLote, setStatusLote] = useState('');
@@ -5263,7 +5297,28 @@ ${portaisLaudo.length ? `
     const sufixoArquivo = transportadoraGrupo
       ? `-${transportadoraGrupo.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase().slice(0, 40)}`
       : '';
-    baixarArquivoAuditoria(html, `${laudoTransportador ? 'laudo-transportador-cte' : 'laudo-interno-auditoria-cte'}${sufixoArquivo}-${new Date().toISOString().slice(0, 10)}.html`, 'text/html;charset=utf-8');
+    const nomeLaudoAvulso = `${laudoTransportador ? 'laudo-transportador-cte' : 'laudo-interno-auditoria-cte'}${sufixoArquivo}-${new Date().toISOString().slice(0, 10)}.html`;
+    baixarArquivoAuditoria(html, nomeLaudoAvulso, 'text/html;charset=utf-8');
+    if (laudoTransportador) {
+      const corpoEmail = montarCorpoEmailLaudo({
+        transportadora: transportadoraGrupo,
+        faturas: portaisLaudo.map((portal) => ({ url: portal.url })),
+        totalCtes: total,
+        divergentes,
+        assinatura: carregarSessao()?.nome,
+      }, dinheiro);
+      const eml = montarEml({
+        assunto: `Laudo de auditoria de fretes${transportadoraGrupo ? ` - ${transportadoraGrupo}` : ''}`,
+        corpoHtml: corpoEmail,
+        anexoHtml: html,
+        anexoNome: nomeLaudoAvulso,
+      });
+      const nomeEmlAvulso = `email-laudo${sufixoArquivo}-${new Date().toISOString().slice(0, 10)}.eml`;
+      setEmlLaudoPendente({ conteudo: eml, nome: nomeEmlAvulso });
+      setTimeout(() => {
+        baixarArquivoAuditoria(eml, nomeEmlAvulso, 'message/rfc822');
+      }, 600);
+    }
     }
   };
 
@@ -5819,8 +5874,31 @@ ${portaisLaudo.length ? `
           aplicarFiltros();
         </script>
         </body></html>`;
-      baixarArquivoAuditoria(html, `laudo-consolidado-faturas-${new Date().toISOString().slice(0, 10)}.html`, 'text/html;charset=utf-8');
-      setMensagemImportacao(`Laudo consolidado gerado com ${faturasSelecionadas.length} fatura(s).`);
+      const nomeLaudoConsolidado = `laudo-consolidado-faturas-${new Date().toISOString().slice(0, 10)}.html`;
+      baixarArquivoAuditoria(html, nomeLaudoConsolidado, 'text/html;charset=utf-8');
+      // Laudo do transportador: baixa tambem o rascunho de e-mail (.eml, abre
+      // no Outlook) ja com resumo, passo a passo e o laudo anexado.
+      if (laudoTransportador) {
+        const corpoEmail = montarCorpoEmailLaudo({
+          transportadora: transportadoras,
+          faturas: blocos.map((bloco) => ({ numero: bloco.fatura.numero_fatura, url: bloco.linkConfirmacao })),
+          totalCtes: resumoGeral.total,
+          divergentes: resumoGeral.divergentes,
+          semEntrega: semEntregaGeral.length,
+          cobrancaAcima: resumoGeral.cobrancaAcima,
+          totalDescontar: totalDescontarGeral,
+          assinatura: sessao?.nome,
+        }, dinheiro);
+        const numerosFaturas = blocos.map((bloco) => bloco.fatura.numero_fatura).filter(Boolean);
+        const assuntoEmail = `Laudo de auditoria de fretes${transportadoras ? ` - ${transportadoras}` : ''} - fatura(s) ${numerosFaturas.slice(0, 5).join(', ')}${numerosFaturas.length > 5 ? '...' : ''}`;
+        const eml = montarEml({ assunto: assuntoEmail, corpoHtml: corpoEmail, anexoHtml: html, anexoNome: nomeLaudoConsolidado });
+        const nomeEmlConsolidado = `email-laudo-${slugArquivoEmail(transportadoras) || 'transportadora'}-${new Date().toISOString().slice(0, 10)}.eml`;
+        setEmlLaudoPendente({ conteudo: eml, nome: nomeEmlConsolidado });
+        setTimeout(() => {
+          baixarArquivoAuditoria(eml, nomeEmlConsolidado, 'message/rfc822');
+        }, 600);
+      }
+      setMensagemImportacao(`Laudo consolidado gerado com ${faturasSelecionadas.length} fatura(s).${laudoTransportador ? ' O e-mail pronto (.eml) também foi baixado: abra no Outlook, preencha o destinatário e envie.' : ''}`);
     } catch (error) {
       setMensagemImportacao(`Erro ao gerar laudo consolidado: ${error.message}`);
     } finally {
@@ -6722,6 +6800,13 @@ ${portaisLaudo.length ? `
           </div>
         )}
         {mensagemImportacao && <div className="hint-box compact">{mensagemImportacao}</div>}
+        {emlLaudoPendente && (
+          <div className="hint-box compact" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span>E-mail pronto do laudo (abre como rascunho no Outlook). Se não baixou sozinho, clique aqui:</span>
+            <button type="button" className="primary-button" onClick={() => baixarArquivoAuditoria(emlLaudoPendente.conteudo, emlLaudoPendente.nome, 'message/rfc822')}>Baixar e-mail (.eml)</button>
+            <button type="button" className="secondary-button" onClick={() => setEmlLaudoPendente(null)}>Fechar</button>
+          </div>
+        )}
         <p className="compact">Layout esperado: abas Faturas e Detalhes, com Transportadora, Numero Fatura, Data Vencimento, Valor Fatura e Chave CTe.</p>
       </div>
       {selecionadasIds.length > 0 && (
