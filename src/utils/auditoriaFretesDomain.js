@@ -555,15 +555,14 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
       const esperado = Number(fatura.valor_fatura || 0);
       const diferenca = Number((pago - esperado).toFixed(2));
       const { lancadaFinanceiro, ...resto } = pagamento;
-      const resultado = lancadaFinanceiro
+      // Partida lancada e reclassificacao interna sao a mesma situacao: lancada no financeiro, aguardando pagamento.
+      const resultado = (lancadaFinanceiro || !pagamento.compensado)
         ? 'LANCADA_FINANCEIRO'
-        : !pagamento.compensado
-          ? 'PARTIDA_LANCADA'
-          : (Math.abs(diferenca) <= 0.01 ? 'PAGO' : 'DIVERGENTE');
+        : (Math.abs(diferenca) <= 0.01 ? 'PAGO' : 'DIVERGENTE');
       // Reclassificacao interna: o valor comparado com a fatura nao e'
       // conclusivo (a fatura pode ter sido agrupada com outras nesse
       // documento), entao nao expomos diferenca nem contamos como pago.
-      return { ...resto, fatura_id: fatura.id, resultado, diferenca: lancadaFinanceiro ? 0 : diferenca };
+      return { ...resto, fatura_id: fatura.id, resultado, diferenca: resultado === 'LANCADA_FINANCEIRO' ? 0 : diferenca };
       });
     });
 }
@@ -573,11 +572,9 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
 export function montarPagamentoVinculado(linha = {}, fatura = {}) {
   const pago = Number(linha.valor_pago || 0);
   const diferenca = Number((pago - Number(fatura.valor_fatura || 0)).toFixed(2));
-  const resultado = linha.lancada_financeiro
+  const resultado = (linha.lancada_financeiro || !linha.compensado)
     ? 'LANCADA_FINANCEIRO'
-    : !linha.compensado
-      ? 'PARTIDA_LANCADA'
-      : (Math.abs(diferenca) <= 0.01 ? 'PAGO' : 'DIVERGENTE');
+    : (Math.abs(diferenca) <= 0.01 ? 'PAGO' : 'DIVERGENTE');
   return {
     numero_fatura: fatura.numero_fatura,
     fatura_id: fatura.id,
@@ -590,7 +587,7 @@ export function montarPagamentoVinculado(linha = {}, fatura = {}) {
     compensado: Boolean(linha.compensado),
     origem: 'SAP_EXPORTACAO',
     resultado,
-    diferenca: linha.lancada_financeiro ? 0 : diferenca,
+    diferenca: resultado === 'LANCADA_FINANCEIRO' ? 0 : diferenca,
   };
 }
 

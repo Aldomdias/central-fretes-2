@@ -1067,8 +1067,7 @@ function faturaTotalmenteAuditada(fatura) {
 function situacaoPagamentoFatura(fatura) {
   if (fatura.status === 'PAGA' || fatura.status === 'PAGA_COM_DESCONTO') return 'PAGO';
   if (fatura.status === 'PAGA_COM_DIVERGENCIA') return 'PAGO_DIVERGENTE';
-  if (fatura.partida) return 'PARTIDA_LANCADA';
-  if (fatura.lancamento_financeiro) return 'LANCADA_FINANCEIRO';
+  if (fatura.partida || fatura.lancamento_financeiro) return 'LANCADA_FINANCEIRO';
   return 'NAO_PAGO';
 }
 
@@ -6589,7 +6588,6 @@ ${portaisLaudo.length ? `
               <option value="">Todos</option>
               <option value="PAGO">Pago</option>
               <option value="PAGO_DIVERGENTE">Pago com divergencia</option>
-              <option value="PARTIDA_LANCADA">Partida lancada (aguardando)</option>
               <option value="LANCADA_FINANCEIRO">Lancada no financeiro (aguardando)</option>
               <option value="NAO_PAGO">Nao pago</option>
             </select>
@@ -9261,7 +9259,7 @@ function Financeiro({ state, onState }) {
               <div className="hint-box compact">
                 {resumoPagamentosSap.arquivos > 1 ? `${resumoPagamentosSap.arquivos} arquivo(s) processado(s)` : 'Relatorio processado'}: {resumoPagamentosSap.totalLinhas} linha(s) · <strong>{resumoPagamentosSap.pagas}</strong> fatura(s) marcada(s) como paga(s) ·{' '}
                 <strong>{resumoPagamentosSap.lancadasFinanceiro || 0}</strong> ja lancada(s) no financeiro (aguardando pagamento final) ·{' '}
-                <strong>{resumoPagamentosSap.partidasLancadas}</strong> com partida lancada aguardando compensacao · {resumoPagamentosSap.naoLocalizados} sem fatura correspondente
+                {resumoPagamentosSap.naoLocalizados} sem fatura correspondente
                 {resumoPagamentosSap.cnpjDivergente ? ` · ${resumoPagamentosSap.cnpjDivergente} com numero de fatura batendo mas CNPJ da transportadora divergente (nao casado por seguranca)` : ''}
                 {resumoPagamentosSap.ambiguos ? ` · ${resumoPagamentosSap.ambiguos} ambiguo(s) (numero de fatura repetido para o mesmo CNPJ)` : ''}.
                 {resumoPagamentosSap.paraVincular ? <> <strong>{resumoPagamentosSap.paraVincular}</strong> linha(s) do SAP guardada(s) para vincular a mao no painel abaixo.</> : null}
