@@ -1014,6 +1014,15 @@ export default function ReajustesPage() {
     persistir(novos, options);
   }
 
+  function excluirItem(item) {
+    const resumo = `${item.transportadoraInformada || 'sem nome'}${item.canal ? ` (${item.canal})` : ''}`;
+    if (!window.confirm(`Excluir o lançamento de reajuste de ${resumo}? Essa ação remove o registro do controle e do Supabase.`)) return;
+    persistir(itens.filter((atual) => atual.id !== item.id));
+    if (vinculoAtivoId === item.id) setVinculoAtivoId(null);
+    setMensagem(`Lançamento de ${resumo} excluído.`);
+    setErro('');
+  }
+
   function salvarPercentualItem(id, campo, valorVisual) {
     const decimal = parsePercentReajuste(valorVisual);
     alterarItem(id, campo, decimal, { recalcularImpacto: true });
@@ -1814,6 +1823,7 @@ export default function ReajustesPage() {
                     <td>
                       <strong>{item.transportadoraInformada}</strong>
                       <small style={{ display: 'block', color: '#64748b' }}>{item.canal || 'Sem canal'}</small>
+                      <button type="button" className="btn-link" style={{ color: '#b91c1c', marginTop: 6 }} onClick={() => excluirItem(item)}>Excluir lançamento</button>
                     </td>
                     <td>
                       <ResumoVinculoLinha
