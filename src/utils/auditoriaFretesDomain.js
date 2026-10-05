@@ -1,5 +1,6 @@
 import { excelDateToISO } from './auditoriaFretesImport.js';
 import { obterRaizCnpj, raizCnpjValida } from './cnpj.js';
+import { transportadoraTemRaiz } from './vinculoCnpjTransportadora.js';
 
 export const FATURA_STATUS = [
   'RECEBIDA',
@@ -532,9 +533,10 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdici
       if (!cnpjValido && ehOrgaoImposto(pagamento.transportadora)) return [{ ...pagamento, resultado: 'NAO_LOCALIZADO' }];
       const candidatasPorCnpj = cnpjValido
         ? candidatas.filter((fatura) => {
-          const raizPrincipal = obterRaizCnpj(fatura.cnpj_transportadora);
-          const adicionais = raizesAdicionaisPorTransportadora.get(normalizar(fatura.transportadora)) || [];
-          return raizPrincipal === raizPagamento || adicionais.includes(raizPagamento);
+          return transportadoraTemRaiz({
+            cnpj: fatura.cnpj_transportadora,
+            raizesAdicionais: raizesAdicionaisPorTransportadora.get(normalizar(fatura.transportadora)) || [],
+          }, raizPagamento);
         })
         : [];
       // CNPJ e' obrigatorio: sem raiz valida na linha ou sem fatura com a mesma raiz, nada casa sozinho

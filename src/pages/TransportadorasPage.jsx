@@ -25,6 +25,7 @@ import {
 } from '../services/lotacaoSupabaseService.js';
 import {
   adicionarCnpjTransportadora,
+  contarVinculosPorRaiz,
   listarCnpjsAdicionaisTransportadora,
   removerCnpjTransportadora,
 } from '../services/transportadoraCnpjsService.js';
@@ -1804,6 +1805,7 @@ function HistoricoAlteracoesModal({ open, onClose }) {
 
 function CnpjsAdicionaisTransportadoraSection({ transportadora, podeEditar }) {
   const [itens, setItens] = useState([]);
+  const [contagens, setContagens] = useState({});
   const [cnpj, setCnpj] = useState('');
   const [descricao, setDescricao] = useState('');
   const [carregando, setCarregando] = useState(false);
@@ -1813,7 +1815,9 @@ function CnpjsAdicionaisTransportadoraSection({ transportadora, podeEditar }) {
     if (!transportadora?.id) return;
     setCarregando(true);
     try {
-      setItens(await listarCnpjsAdicionaisTransportadora(transportadora.id));
+      const lista = await listarCnpjsAdicionaisTransportadora(transportadora.id);
+      setItens(lista);
+      contarVinculosPorRaiz(lista.map((item) => item.cnpj_raiz)).then(setContagens).catch(() => setContagens({}));
     } catch (error) {
       setFeedback(error.message || 'Não foi possível carregar os CNPJs adicionais.');
     } finally {
@@ -1834,7 +1838,7 @@ function CnpjsAdicionaisTransportadoraSection({ transportadora, podeEditar }) {
       setCnpj('');
       setDescricao('');
       await carregar();
-      setFeedback('CNPJ adicional salvo. Novas conciliações do SAP já considerarão este vínculo.');
+      setFeedback('CNPJ adicional salvo. Novas conciliações do SAP e recálculos da auditoria de CT-es já considerarão este vínculo.');
     } catch (error) {
       setFeedback(error.message || 'Erro ao adicionar CNPJ.');
       setCarregando(false);
@@ -1857,14 +1861,17 @@ function CnpjsAdicionaisTransportadoraSection({ transportadora, podeEditar }) {
   return (
     <div className="panel-card top-space">
       <div className="panel-title">CNPJs adicionais para vínculo</div>
-      <p className="compact">Cadastre filiais ou CNPJs usados nos lançamentos do SAP. O pagamento só será vinculado automaticamente por CNPJ principal ou adicional cadastrado, nunca por aproximação de nome.</p>
+      <p className="compact">Cadastre outros CNPJs desta transportadora. O CNPJ adicional vale para pagamentos (SAP) e para CT-es na auditoria. O vínculo é pela raiz do CNPJ (8 primeiros dígitos): filiais da mesma raiz entram automaticamente. Nunca há vínculo por aproximação de nome, e a mesma raiz não pode estar em duas transportadoras.</p>
       <div className="summary-strip top-space-sm" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
         <div><span>CNPJ principal</span><strong>{formatarCnpj(transportadora.cnpj) || '-'}</strong></div>
         <div><span>CNPJs adicionais</span><strong>{itens.length}</strong></div>
       </div>
       {itens.length ? <div className="list-stack top-space-sm">
         {itens.map((item) => <div key={item.id} className="list-card" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-          <div><strong>{formatarCnpj(item.cnpj)}</strong>{item.descricao ? <span className="list-subtitle" style={{ marginLeft: 8 }}>{item.descricao}</span> : null}</div>
+          <div>
+            <strong>{formatarCnpj(item.cnpj)}</strong>{item.descricao ? <span className="list-subtitle" style={{ marginLeft: 8 }}>{item.descricao}</span> : null}
+            <div className="list-subtitle">Raiz {item.cnpj_raiz} · {contagens[item.cnpj_raiz] ? `${contagens[item.cnpj_raiz].ctes} CT-es · ${contagens[item.cnpj_raiz].pagamentos} pagamentos vinculados` : 'contando vínculos...'}</div>
+          </div>
           {podeEditar ? <button type="button" className="btn-link" onClick={() => remover(item)} disabled={carregando}>Remover</button> : null}
         </div>)}
       </div> : <div className="footer-note top-space-sm">Nenhum CNPJ adicional cadastrado.</div>}

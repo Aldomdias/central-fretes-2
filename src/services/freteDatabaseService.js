@@ -1370,6 +1370,13 @@ export async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [] } =
       .select('transportadora_id')
       .in('cnpj_raiz', Array.from(raizesAlvo));
     (origensPorCnpj || []).forEach((item) => item.transportadora_id && idsPorCnpjOrigem.add(item.transportadora_id));
+    // CNPJs adicionais cadastrados na transportadora (vinculo por raiz).
+    const { data: adicionaisPorCnpj } = await supabase
+      .from('transportadora_cnpjs')
+      .select('transportadora_id')
+      .eq('ativo', true)
+      .in('cnpj_raiz', Array.from(raizesAlvo));
+    (adicionaisPorCnpj || []).forEach((item) => item.transportadora_id && idsPorCnpjOrigem.add(item.transportadora_id));
   }
   const transportadoras = (todasTransportadoras || []).filter((transportadora) => {
     const raiz = onlyDigitsDb(transportadora.cnpj_raiz || transportadora.cnpj).slice(0, 8);

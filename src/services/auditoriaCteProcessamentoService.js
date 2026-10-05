@@ -1,5 +1,6 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarAguardandoNovaFatura } from './baixaEntregaService';
+import { carregarRaizesAdicionaisPorId } from './transportadoraCnpjsService';
 import { buscarBaseSimulacaoPorRotasDb, carregarBaseCompletaDb, carregarBaseTransportadorasDb, invalidarCacheBaseCompletaDb } from './freteDatabaseService';
 import { calcularFreteFaixaPeso, calcularFretePercentual } from './freteCalcEngine';
 import { filtrarCpComercialCte } from './cteBasePolicy';
@@ -477,9 +478,24 @@ function origemTemIcmsAtivoAuditoria(origem = {}) {
   );
 }
 
+// Raizes de CNPJ adicionais (Transportadoras > CNPJs adicionais), por id.
+// Preenchido por precarregarRaizesAdicionaisAuditoria nos pontos async de entrada.
+let _cacheRaizesAdicionaisPorId = new Map();
+
+export async function precarregarRaizesAdicionaisAuditoria() {
+  try {
+    _cacheRaizesAdicionaisPorId = await carregarRaizesAdicionaisPorId();
+  } catch (error) {
+    console.warn('[Auditoria CT-e] CNPJs adicionais indisponíveis; seguindo sem eles.', error?.message || error);
+    _cacheRaizesAdicionaisPorId = new Map();
+  }
+  return _cacheRaizesAdicionaisPorId;
+}
+
 export function normalizarTransportadoras(transportadoras = []) {
   return (transportadoras || []).map((transportadora) => ({
     ...transportadora,
+    raizesAdicionais: _cacheRaizesAdicionaisPorId.get(transportadora.id) || [],
     __nomeNorm: normalizeTransportadoraCompare(transportadora.nome),
     __cnpjRaiz: obterRaizCnpj(transportadora.cnpjRaiz || transportadora.cnpj),
     __cnpjRaizesOrigens: Array.from(new Set((transportadora.origens || [])
@@ -684,6 +700,7 @@ function routeKeysRegistros(registros = []) {
 }
 
 async function carregarBaseFreteParaRegistros(registros = [], onProgress, transportadorasAlvo = [], mapaVinculos = null) {
+  await precarregarRaizesAdicionaisAuditoria();
   const routeKeys = routeKeysRegistros(registros);
   if (routeKeys.length > 0 && routeKeys.length <= 2500 && !(transportadorasAlvo || []).length) {
     onProgress?.({ etapa: 'carregando_tabelas_rotas', carregados: 0, total: routeKeys.length });
@@ -754,7 +771,8 @@ function localizarTransportadoras(transportadoras = [], nomeCte = '', cnpjCte = 
   const raizCte = obterRaizCnpj(cnpjCte);
   if (raizCte) {
     const porCnpj = transportadoras.filter((item) => item.__cnpjRaiz === raizCte
-      || (item.__cnpjRaizesOrigens || []).includes(raizCte));
+      || (item.__cnpjRaizesOrigens || []).includes(raizCte)
+      || (item.raizesAdicionais || []).includes(raizCte));
     if (porCnpj.length) return porCnpj;
   }
 
@@ -2285,6 +2303,7 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
   const mapaVinculos = await carregarMapaVinculosAuditoria();
   const contextoLotacao = await carregarContextoLotacaoAuditoria(supabase, mapaVinculos);
   await precarregarEquivalenciasOrigemAuditoria();
+  await precarregarRaizesAdicionaisAuditoria();
 
   onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: null });
   if (!_cacheBaseFrete) {
