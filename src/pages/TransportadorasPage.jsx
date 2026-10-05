@@ -1897,6 +1897,7 @@ function LotacaoTransportadoraSection({
   const [tabelasDisponiveis, setTabelasDisponiveis] = useState([]);
   const [buscaTabela, setBuscaTabela] = useState('');
   const [tabelaParaVincularId, setTabelaParaVincularId] = useState('');
+  const [secaoAberta, setSecaoAberta] = useState(false);
   const [validacaoOpen, setValidacaoOpen] = useState(false);
   const [tabelaAberta, setTabelaAberta] = useState(false);
   const [buscaCombinacao, setBuscaCombinacao] = useState('');
@@ -1935,6 +1936,7 @@ function LotacaoTransportadoraSection({
     setFeedback('');
     setBuscaTabela('');
     setTabelaParaVincularId('');
+    setSecaoAberta(false);
     carregar();
   }, [transportadora?.id, transportadora?.nome, configurado]);
 
@@ -2054,15 +2056,21 @@ function LotacaoTransportadoraSection({
               {tabela.validado ? '✓ Validada' : 'Pendente de validação'}
             </button> : null}
           </div>
-          {tabela?.validado && tabela.validadoEm ? <div className="footer-note">Validada por {tabela.validadoPor || 'Não identificado'} em {new Date(tabela.validadoEm).toLocaleDateString('pt-BR')}</div> : null}
-          <p className="compact">
+          {secaoAberta && tabela?.validado && tabela.validadoEm ? <div className="footer-note">Validada por {tabela.validadoPor || 'Não identificado'} em {new Date(tabela.validadoEm).toLocaleDateString('pt-BR')}</div> : null}
+          {secaoAberta ? <p className="compact">
             Lotação não exige uma origem fixa. O arquivo pode conter várias combinações de origem, destino e tipo de veículo.
             Ao salvar aqui, a tela Tabelas Lotação passa a usar esta tabela automaticamente.
-          </p>
+          </p> : null}
         </div>
-        {tabela && podeEditar ? <button type="button" className="btn-link" onClick={remover} disabled={carregando}>Excluir tabela</button> : null}
+        <div className="toolbar-wrap" style={{ justifyContent: 'flex-end' }}>
+          {secaoAberta && tabela && podeEditar ? <button type="button" className="btn-link" onClick={remover} disabled={carregando}>Excluir tabela</button> : null}
+          <button type="button" className="btn-secondary" onClick={() => setSecaoAberta((aberta) => !aberta)} aria-expanded={secaoAberta}>
+            {secaoAberta ? 'Recolher lotação' : tabela ? 'Expandir lotação' : 'Cadastrar lotação'}
+          </button>
+        </div>
       </div>
 
+      {secaoAberta ? <>
       {carregando && !tabela ? <div className="footer-note">Carregando tabela de lotação...</div> : null}
       {tabela ? (
         <>
@@ -2172,6 +2180,7 @@ function LotacaoTransportadoraSection({
       ) : null}
       {!configurado ? <div className="mini-feedback error top-space-sm">Supabase não está configurado neste ambiente.</div> : null}
       {feedback ? <div className="mini-feedback info top-space-sm">{feedback}</div> : null}
+      </> : null}
       <ConfirmarValidacaoModal
         open={validacaoOpen}
         transportadora={transportadora}
@@ -2606,6 +2615,21 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
         alertas: [],
         totais: { rotas: totalRotas, cotacoes: totalRotas },
         simulacoes: { sucesso: totalRotas > 0 ? 1 : 0, executadas: totalRotas > 0 ? 1 : 0 },
+      });
+      return;
+    }
+    const linhasEmMemoria = (origem.rotas || []).length + (origem.cotacoes || []).length;
+    if (origem.resumoCarregado && !linhasEmMemoria) {
+      const totais = contagemOrigem(origem);
+      const erros = [];
+      if (!totais.rotas) erros.push(`${origem.cidade || 'Origem'}: nenhuma rota cadastrada.`);
+      if (!totais.cotacoes) erros.push(`${origem.cidade || 'Origem'}: nenhuma cotação cadastrada.`);
+      setResultadoPreTeste({
+        status: erros.length ? 'bloqueada' : 'alerta',
+        erros,
+        alertas: erros.length ? [] : ['Conferência feita pelo resumo salvo no banco. Para executar cenários de cálculo, carregue todos os detalhes da transportadora.'],
+        totais: { origens: 1, rotas: totais.rotas, cotacoes: totais.cotacoes, taxas: totais.taxas },
+        simulacoes: { sucesso: 0, executadas: 0, falhas: 0 },
       });
       return;
     }
