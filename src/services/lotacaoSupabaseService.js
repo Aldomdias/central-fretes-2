@@ -283,6 +283,7 @@ function dbParaRota(row = {}) {
 }
 
 function dbParaTabela(row = {}, linhas = []) {
+  const governanca = row.fontes_valor?.__governanca || {};
   return {
     id: row.id,
     nome: row.nome || '',
@@ -299,6 +300,9 @@ function dbParaTabela(row = {}, linhas = []) {
     abasImportadas: Array.isArray(row.abas_importadas) ? row.abas_importadas : [],
     abasIgnoradas: Array.isArray(row.abas_ignoradas) ? row.abas_ignoradas : [],
     fontesValor: row.fontes_valor || {},
+    validado: Boolean(governanca.validado),
+    validadoEm: governanca.validado_em || '',
+    validadoPor: governanca.validado_por || '',
     resumoFontesValor: row.resumo_fontes_valor || '',
     vigenciaInicio: row.vigencia_inicio || '',
     vigenciaFim: row.vigencia_fim || '',
@@ -344,6 +348,112 @@ export async function carregarTabelasLotacaoSupabase() {
   });
   const tabelas = tabelasDb.map((row) => dbParaTabela(row, rotasPorTabela.get(row.id) || []));
   return { fonte: 'supabase', tabelas };
+}
+
+export async function marcarTabelaLotacaoValidadaSupabase(tabelaId, validado, usuarioNome = '') {
+  const supabase = ensureClient();
+  const { data, error: leituraError } = await supabase
+    .from('lotacao_tabelas')
+    .select('fontes_valor')
+    .eq('id', tabelaId)
+    .maybeSingle();
+  if (leituraError) throw new Error(detalheErroSupabase(leituraError));
+  if (!data) throw new Error('Tabela de lotação não encontrada.');
+
+  const fontesValor = data.fontes_valor && typeof data.fontes_valor === 'object' ? data.fontes_valor : {};
+  const governanca = validado
+    ? { validado: true, validado_em: new Date().toISOString(), validado_por: String(usuarioNome || 'Não identificado') }
+    : { validado: false, validado_em: null, validado_por: null };
+  const { error } = await supabase
+    .from('lotacao_tabelas')
+    .update({ fontes_valor: { ...fontesValor, __governanca: governanca }, updated_at: new Date().toISOString() })
+    .eq('id', tabelaId);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return governanca;
+}
+
+// Consulta direcionada para a tela de Transportadoras. Mantemos Lotacao como
+// dona das rotas, mas permitimos que o cadastro da transportadora seja o ponto
+// de entrada da tabela, sem inventar uma origem para representar a lotacao.
+export async function carregarTabelasLotacaoTransportadoraSupabase(nomeTransportadora) {
+  const supabase = ensureClient();
+  const nomeNormalizado = normalizarTexto(nomeTransportadora || '');
+  if (!nomeNormalizado) return { fonte: 'supabase', tabelas: [] };
+
+  const tabelasDb = await fetchAllRows(
+    supabase,
+    'lotacao_tabelas',
+    'created_at',
+    false,
+    (query) => query.eq('tipo', 'TRANSPORTADORA').eq('nome_normalizado', nomeNormalizado)
+  );
+  if (!tabelasDb.length) return { fonte: 'supabase', tabelas: [] };
+
+  const tabelaIds = tabelasDb.map((item) => item.id);
+  const rotasDb = await fetchAllRows(
+    supabase,
+    'lotacao_rotas',
+    'created_at',
+    true,
+    (query) => query.in('tabela_id', tabelaIds)
+  );
+  const rotasPorTabela = new Map();
+  rotasDb.forEach((row) => {
+    const atual = rotasPorTabela.get(row.tabela_id) || [];
+    atual.push(dbParaRota(row));
+    rotasPorTabela.set(row.tabela_id, atual);
+  });
+
+  return {
+    fonte: 'supabase',
+    tabelas: tabelasDb.map((row) => dbParaTabela(row, rotasPorTabela.get(row.id) || [])),
+  };
+}
+
+export async function listarTabelasLotacaoTransportadorasSupabase() {
+  const supabase = ensureClient();
+  const tabelasDb = await fetchAllRows(
+    supabase,
+    'lotacao_tabelas',
+    'nome',
+    true,
+    (query) => query.eq('tipo', 'TRANSPORTADORA')
+  );
+  return tabelasDb.map((row) => dbParaTabela(row, []));
+}
+
+// O cadastro historico de lotacao identifica a transportadora pelo nome da
+// tabela. Vincular preserva o ID e todas as rotas; apenas adota o nome oficial
+// do cadastro de Transportadoras, tornando as duas telas uma unica fonte.
+export async function vincularTabelaLotacaoTransportadoraSupabase(tabelaId, nomeTransportadora) {
+  const supabase = ensureClient();
+  const nome = String(nomeTransportadora || '').trim();
+  const nomeNormalizado = normalizarTexto(nome);
+  if (!tabelaId || !nomeNormalizado) throw new Error('Selecione uma tabela e uma transportadora válidas.');
+
+  const tipoNomeKey = `TRANSPORTADORA|${nomeNormalizado}`;
+  const { data: conflito, error: conflitoError } = await supabase
+    .from('lotacao_tabelas')
+    .select('id,nome')
+    .eq('tipo_nome_key', tipoNomeKey)
+    .neq('id', tabelaId)
+    .maybeSingle();
+  if (conflitoError) throw new Error(detalheErroSupabase(conflitoError));
+  if (conflito?.id) {
+    throw new Error(`Já existe uma tabela de lotação vinculada a ${nome}: ${conflito.nome}.`);
+  }
+
+  const { error } = await supabase
+    .from('lotacao_tabelas')
+    .update({
+      nome,
+      nome_normalizado: nomeNormalizado,
+      tipo_nome_key: tipoNomeKey,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', tabelaId);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true, tabelaId, nome };
 }
 
 export async function salvarTabelaLotacaoSupabase(tabela) {

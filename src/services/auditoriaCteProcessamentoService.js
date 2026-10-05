@@ -961,6 +961,140 @@ function inverterOrigemDestinoCte(cte = {}) {
   };
 }
 
+async function carregarContextoLotacaoAuditoria(supabase, mapaVinculos = null) {
+  const { data: tabelasDb, error: tabelasError } = await supabase
+    .from('lotacao_tabelas')
+    .select('id,nome,nome_normalizado,fontes_valor')
+    .eq('tipo', 'TRANSPORTADORA');
+  if (tabelasError) return { tabelas: [], origensFracionadoPorNome: new Map() };
+
+  const tabelasValidas = (tabelasDb || []).filter((tabela) => tabela.fontes_valor?.__governanca?.validado === true);
+  const ids = tabelasValidas.map((tabela) => tabela.id);
+  const rotas = [];
+  for (let inicio = 0; inicio < ids.length; inicio += 100) {
+    const loteIds = ids.slice(inicio, inicio + 100);
+    let pagina = 0;
+    while (loteIds.length) {
+      const { data, error } = await supabase
+        .from('lotacao_rotas')
+        .select('id,tabela_id,origem,uf_origem,destino,uf_destino,tipo_veiculo,valor,pedagio,prazo')
+        .in('tabela_id', loteIds)
+        .range(pagina * PAGE_SIZE, (pagina + 1) * PAGE_SIZE - 1);
+      if (error || !data?.length) break;
+      rotas.push(...data);
+      if (data.length < PAGE_SIZE) break;
+      pagina += 1;
+    }
+  }
+
+  const [{ data: transportadorasDb }, { data: origensDb }] = await Promise.all([
+    supabase.from('transportadoras').select('id,nome'),
+    supabase.from('origens').select('transportadora_id'),
+  ]);
+  const contagemPorId = new Map();
+  (origensDb || []).forEach((origem) => contagemPorId.set(origem.transportadora_id, (contagemPorId.get(origem.transportadora_id) || 0) + 1));
+  const origensFracionadoPorNome = new Map((transportadorasDb || []).map((transportadora) => [
+    normalizeTransportadoraCompare(transportadora.nome),
+    contagemPorId.get(transportadora.id) || 0,
+  ]));
+  const rotasPorTabela = new Map();
+  rotas.forEach((rota) => {
+    const lista = rotasPorTabela.get(rota.tabela_id) || [];
+    lista.push(rota);
+    rotasPorTabela.set(rota.tabela_id, lista);
+  });
+
+  return {
+    tabelas: tabelasValidas.map((tabela) => ({ ...tabela, rotas: rotasPorTabela.get(tabela.id) || [] })),
+    origensFracionadoPorNome,
+    mapaVinculos,
+  };
+}
+
+function localizarTabelaLotacaoContexto(cte = {}, contexto = null, mapaVinculos = null) {
+  if (!contexto?.tabelas?.length) return null;
+  const nomeBruto = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);
+  const nomeCanonico = aplicarVinculoTransportadora(nomeBruto, mapaVinculos) || nomeBruto;
+  const nomeNorm = normalizeTransportadoraCompare(nomeCanonico);
+  const tabela = contexto.tabelas.find((item) => nomeCompativel(item.nome, nomeCanonico));
+  if (!tabela) return null;
+
+  const totalOrigensFracionado = contexto.origensFracionadoPorNome.get(nomeNorm)
+    ?? contexto.origensFracionadoPorNome.get(normalizeTransportadoraCompare(tabela.nome))
+    ?? 0;
+  const canal = canalCategoria(pick(cte, ['canal', 'canal_original']));
+  const somenteLotacao = totalOrigensFracionado === 0;
+  const canalLotacao = canal === 'INTERCOMPANY' || canal === 'LOTACAO' || canal === 'LOTAÇÃO';
+  if (!somenteLotacao && !canalLotacao) return null;
+  return { tabela, somenteLotacao, totalOrigensFracionado };
+}
+
+export function calcularCtePelaTabelaLotacao(cte = {}, contexto = null, mapaVinculos = null) {
+  const localizada = localizarTabelaLotacaoContexto(cte, contexto, mapaVinculos);
+  if (!localizada) return null;
+  const { tabela, somenteLotacao } = localizada;
+  const origem = normalizeCompare(pick(cte, ['cidade_origem', 'cidadeOrigem', 'origem']));
+  const destino = normalizeCompare(pick(cte, ['cidade_destino', 'cidadeDestino', 'destino']));
+  const ufOrigem = normalizeText(pick(cte, ['uf_origem', 'ufOrigem']));
+  const ufDestino = normalizeText(pick(cte, ['uf_destino', 'ufDestino']));
+  const candidatas = (tabela.rotas || []).filter((rota) => (
+    normalizeCompare(rota.origem) === origem
+    && normalizeCompare(rota.destino) === destino
+    && (!ufOrigem || !rota.uf_origem || normalizeText(rota.uf_origem) === ufOrigem)
+    && (!ufDestino || !rota.uf_destino || normalizeText(rota.uf_destino) === ufDestino)
+  ));
+
+  if (!candidatas.length) {
+    return montarResultadoBase(cte, 'SEM_ROTA_LOTACAO', 'Rota não cadastrada na tabela de Lotação.', {
+      transportadora_tabela: tabela.nome,
+      tipo_calculo: 'LOTACAO',
+      detalhes_calculo: { tabela_id_aplicada: tabela.id, modalidade: 'LOTACAO', somente_lotacao: somenteLotacao },
+    });
+  }
+
+  const valores = candidatas.filter((rota) => toNumber(rota.valor) > 0);
+  if (!valores.length) {
+    return montarResultadoBase(cte, 'SEM_VALOR_LOTACAO', 'Rota encontrada, mas sem valor válido na tabela de Lotação.', {
+      transportadora_tabela: tabela.nome,
+      tipo_calculo: 'LOTACAO',
+    });
+  }
+  const tiposValores = new Set(valores.map((rota) => `${normalizeText(rota.tipo_veiculo)}|${toNumber(rota.valor).toFixed(2)}`));
+  if (tiposValores.size > 1) {
+    return montarResultadoBase(cte, 'SELECIONAR_VEICULO_LOTACAO', 'A rota possui mais de um tipo de veículo na tabela de Lotação; selecione a DIST/viagem para definir o valor.', {
+      transportadora_tabela: tabela.nome,
+      tipo_calculo: 'LOTACAO',
+    });
+  }
+
+  const rota = valores[0];
+  const base = montarResultadoBase(cte, 'CALCULADO', '', {
+    transportadora_tabela: tabela.nome,
+    tipo_calculo: 'LOTACAO',
+    detalhes_calculo: {
+      tabela_id_aplicada: tabela.id,
+      tabela_nome_aplicada: tabela.nome,
+      modalidade: 'LOTACAO',
+      somente_lotacao: somenteLotacao,
+      origem_cidade: rota.origem,
+      destino_cidade: rota.destino,
+      tipo_veiculo: rota.tipo_veiculo,
+      pedagio: rota.pedagio,
+      prazo: rota.prazo,
+      motor: 'tabela_lotacao',
+    },
+  });
+  const valorCalculado = toNumber(rota.valor);
+  const diferenca = base.valor_cte - valorCalculado;
+  return {
+    ...base,
+    valor_calculado: valorCalculado,
+    diferenca,
+    diferenca_abs: Math.abs(diferenca),
+    percentual_diferenca: valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0,
+  };
+}
+
 function cteParaLinhaSimulador(cte = {}, transportadoraSimulada = '', canalOverride = '') {
   const cubagemTotal = toNumber(pick(cte, ['cubagem', 'cubagem_total', 'cubagemTotal']));
   return {
@@ -1793,6 +1927,7 @@ export async function resimularRegistros({ registros, transportadorasAlvo, onPro
   await onCheckpoint?.({ etapa: 'cruzado', registros: registrosParaCalcular });
 
   const mapaVinculos = await carregarMapaVinculosAuditoria();
+  const contextoLotacao = await carregarContextoLotacaoAuditoria(ensureSupabase(), mapaVinculos);
   await precarregarEquivalenciasOrigemAuditoria();
   const transportadoras = await carregarBaseFreteParaRegistros(registrosParaCalcular, onProgress, transportadorasAlvo, mapaVinculos);
   const alvosNormalizados = Array.from(new Set(
@@ -1803,7 +1938,7 @@ export async function resimularRegistros({ registros, transportadorasAlvo, onPro
   ));
   const transportadoraAlvo = alvosNormalizados.length === 1 ? alvosNormalizados[0] : '';
 
-  if (!transportadoras.length) {
+  if (!transportadoras.length && !contextoLotacao.tabelas.length) {
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para resimular.');
   }
 
@@ -1811,7 +1946,8 @@ export async function resimularRegistros({ registros, transportadorasAlvo, onPro
   for (let index = 0; index < registros.length; index += 1) {
     const original = registros[index] || {};
     const paraCalculo = registrosParaCalcular[index] || original;
-    const novo = processarCte(paraCalculo, transportadoras, mapaVinculos, transportadoraAlvo, { ignorarCubagem, percentualContingenciaPeso });
+    const novo = calcularCtePelaTabelaLotacao(paraCalculo, contextoLotacao, mapaVinculos)
+      || processarCte(paraCalculo, transportadoras, mapaVinculos, transportadoraAlvo, { ignorarCubagem, percentualContingenciaPeso });
 
     const temVerum = original.valor_calculado_verum !== undefined && original.valor_calculado_verum !== null;
     const verum = temVerum ? toNumber(original.valor_calculado_verum) : novo.valor_calculado_verum;
@@ -2147,11 +2283,8 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
 
   const supabase = ensureSupabase();
   const mapaVinculos = await carregarMapaVinculosAuditoria();
+  const contextoLotacao = await carregarContextoLotacaoAuditoria(supabase, mapaVinculos);
   await precarregarEquivalenciasOrigemAuditoria();
-
-  if (!ctesUnicos.length) {
-    return { registros: [], encontrados: 0, naoEncontrados: normalizadas.length };
-  }
 
   onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: null });
   if (!_cacheBaseFrete) {
@@ -2166,7 +2299,7 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
   }
   const transportadoras = _cacheBaseFrete;
 
-  if (!transportadoras.length) {
+  if (!transportadoras.length && !contextoLotacao.tabelas.length) {
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para processar a auditoria.');
   }
 
@@ -2188,7 +2321,10 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
   const registros = [];
 
   for (let index = 0; index < ctes.length; index += 1) {
-    registros.push(processarCte(ctes[index], transportadoras, mapaVinculos, '', { ignorarCubagem, percentualContingenciaPeso }));
+    registros.push(
+      calcularCtePelaTabelaLotacao(ctes[index], contextoLotacao, mapaVinculos)
+      || processarCte(ctes[index], transportadoras, mapaVinculos, '', { ignorarCubagem, percentualContingenciaPeso })
+    );
 
     if (index % 500 === 0 || index === ctes.length - 1) {
       onProgress?.({ etapa: 'processando_ctes', carregados: index + 1, total: ctes.length });
@@ -2287,6 +2423,7 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
   await carregarMatrizIcmsUfCentralizada();
   verificarCancelamento();
   const mapaVinculos = await carregarMapaVinculosAuditoria();
+  const contextoLotacao = await carregarContextoLotacaoAuditoria(supabase, mapaVinculos);
   verificarCancelamento();
   await precarregarEquivalenciasOrigemAuditoria();
   verificarCancelamento();
@@ -2339,7 +2476,7 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
   });
   const transportadoras = await carregarBaseFreteParaRegistros(ctesParaBuscaBase, onProgress, [], mapaVinculos);
   verificarCancelamento();
-  if (!transportadoras.length) {
+  if (!transportadoras.length && !contextoLotacao.tabelas.length) {
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para recalcular.');
   }
 
@@ -2504,12 +2641,13 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
       };
       ignorarCubagemFinal = true;
     }
-    const registroBase = processarCte(cteFinal, transportadoras, mapaVinculos, '', {
+    const registroBase = calcularCtePelaTabelaLotacao(cteFinal, contextoLotacao, mapaVinculos)
+      || processarCte(cteFinal, transportadoras, mapaVinculos, '', {
       ...opcoesCalculo,
       ignorarCubagem: ignorarCubagemFinal,
       percentualContingenciaPeso: (pesoOverride > 0 || aplicaModoTracking) ? 0 : opcoesCalculo.percentualContingenciaPeso,
       pesoForcado: aplicaModoTracking,
-    });
+      });
     // A grade da fatura le `peso`; no modo Tracking ele precisa refletir o peso
     // realmente usado no calculo (cubado), nao so o peso fisico do Tracking.
     const pesoUsadoModo = toNumber(registroBase.detalhes_calculo?.peso_considerado);

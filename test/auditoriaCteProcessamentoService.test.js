@@ -1,7 +1,54 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { escolherMelhorTabela, expandirTabelasAlternativasOficiais, aplicarVigenciaNoGrupo } from '../src/services/auditoriaCteProcessamentoService.js';
+import { escolherMelhorTabela, expandirTabelasAlternativasOficiais, aplicarVigenciaNoGrupo, calcularCtePelaTabelaLotacao } from '../src/services/auditoriaCteProcessamentoService.js';
+
+const contextoLotacao = (totalOrigensFracionado = 0) => ({
+  tabelas: [{
+    id: 'lotacao-scapini',
+    nome: 'SCAPINI TRANSPORTE E LOGISTICA LTDA',
+    rotas: [{
+      origem: 'Itupeva',
+      uf_origem: 'SP',
+      destino: 'Goiania',
+      uf_destino: 'GO',
+      tipo_veiculo: 'CARRETA',
+      valor: 7207.5,
+    }],
+  }],
+  origensFracionadoPorNome: new Map([['scapini e', totalOrigensFracionado]]),
+});
+
+const cteLotacao = (overrides = {}) => ({
+  transportadora: 'SCAPINI TRANSPORTE E LOGISTICA LTDA',
+  cidade_origem: 'ITUPEVA',
+  uf_origem: 'SP',
+  cidade_destino: 'GOIÂNIA',
+  uf_destino: 'GO',
+  canal: 'B2C',
+  valor_cte: 7500,
+  ...overrides,
+});
+
+test('Lotação exclusiva ignora o canal B2C e calcula pela tabela vinculada', () => {
+  const resultado = calcularCtePelaTabelaLotacao(cteLotacao(), contextoLotacao(0));
+  assert.equal(resultado.tipo_calculo, 'LOTACAO');
+  assert.equal(resultado.status_calculo, 'CALCULADO');
+  assert.equal(resultado.valor_calculado, 7207.5);
+});
+
+test('transportadora mista usa fracionado no B2C e Lotação no INTERCOMPANY', () => {
+  assert.equal(calcularCtePelaTabelaLotacao(cteLotacao(), contextoLotacao(2)), null);
+  const resultado = calcularCtePelaTabelaLotacao(cteLotacao({ canal: 'INTERCOMPANY' }), contextoLotacao(2));
+  assert.equal(resultado.tipo_calculo, 'LOTACAO');
+  assert.equal(resultado.valor_calculado, 7207.5);
+});
+
+test('Lotação identificada informa claramente quando a rota não existe', () => {
+  const resultado = calcularCtePelaTabelaLotacao(cteLotacao({ cidade_destino: 'UBERLANDIA', uf_destino: 'MG' }), contextoLotacao(0));
+  assert.equal(resultado.status_calculo, 'SEM_ROTA_LOTACAO');
+  assert.match(resultado.motivo_sem_calculo, /não cadastrada/i);
+});
 
 test('escolherMelhorTabela escolhe o candidato com menor divergência absoluta do valor pago no CT-e', () => {
   const candidatos = [

@@ -497,7 +497,7 @@ export function mapearPagamentoSap(row = {}) {
 // legitimamente diferir); ele so define o resultado (PAGO/DIVERGENTE) depois
 // que a fatura ja foi identificada com seguranca. Linhas com numero batendo
 // mas CNPJ divergente ficam como CNPJ_DIVERGENTE em vez de casar errado.
-export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
+export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdicionaisPorTransportadora = new Map()) {
   const normalizar = (valor) => String(valor || '').trim().toUpperCase();
   const porNumero = new Map();
   for (const fatura of faturas) {
@@ -531,7 +531,11 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = []) {
       const cnpjValido = raizCnpjValida(raizPagamento);
       if (!cnpjValido && ehOrgaoImposto(pagamento.transportadora)) return [{ ...pagamento, resultado: 'NAO_LOCALIZADO' }];
       const candidatasPorCnpj = cnpjValido
-        ? candidatas.filter((fatura) => obterRaizCnpj(fatura.cnpj_transportadora) === raizPagamento)
+        ? candidatas.filter((fatura) => {
+          const raizPrincipal = obterRaizCnpj(fatura.cnpj_transportadora);
+          const adicionais = raizesAdicionaisPorTransportadora.get(normalizar(fatura.transportadora)) || [];
+          return raizPrincipal === raizPagamento || adicionais.includes(raizPagamento);
+        })
         : [];
       // CNPJ e' obrigatorio: sem raiz valida na linha ou sem fatura com a mesma raiz, nada casa sozinho
       // (nem por nome + valor); a linha vai pro painel de vinculo manual.

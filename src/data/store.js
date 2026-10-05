@@ -697,10 +697,6 @@ export function useFreteStore(sessao = null) {
         const normalized = normalizeTransportadora(baseSalvar);
         const contagem = contarItensTransportadora(normalized);
 
-        if (!contagem.origens) {
-          return { ok: false, erro: new Error('Nenhuma origem encontrada para salvar.') };
-        }
-
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
 
         try {
@@ -713,6 +709,9 @@ export function useFreteStore(sessao = null) {
             ultimaSincronizacao: new Date().toISOString(),
             fonte: 'supabase-detalhe-salvo',
             resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
+            rascunhoLocal: false,
+            mensagemLocal: '',
+            secaoRascunho: '',
           }));
 
           registrarAlteracaoTransportadora(sessao, {
@@ -726,7 +725,9 @@ export function useFreteStore(sessao = null) {
           return {
             ok: true,
             contagem,
-            mensagem: `Salvo no Supabase: ${montarMensagemContagem(contagem)}.`,
+            mensagem: contagem.origens
+              ? `Salvo no Supabase: ${montarMensagemContagem(contagem)}.`
+              : 'Cadastro da transportadora salvo no Supabase. A modalidade Lotação não exige origem.',
           };
         } catch (error) {
           setSyncStatus((prev) => ({

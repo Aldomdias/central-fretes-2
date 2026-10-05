@@ -227,6 +227,19 @@ function getTransportadoraOriginal(row) {
   return campo(row, 'transportadora_cte_original', 'transportadora_original_cte', 'transportadora_original') || getTransportadora(row);
 }
 
+function getCnpjTransportadora(row) {
+  const informado = String(campo(row, 'cnpj_transportadora', 'cnpjTransportadora', 'cnpj_transportador') || '').replace(/\D/g, '');
+  if (informado.length === 14) return informado;
+  const chave = String(getChaveCte(row) || '').replace(/\D/g, '');
+  return chave.length === 44 ? chave.slice(6, 20) : '';
+}
+
+function fmtCnpj(value) {
+  const digits = String(value || '').replace(/\D/g, '').slice(0, 14);
+  if (digits.length !== 14) return digits || '-';
+  return digits.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5');
+}
+
 function aplicarVinculosTransportadorasRows(rows = [], mapaVinculos) {
   if (!mapaVinculos || !mapaVinculos.size) return rows || [];
 
@@ -4349,6 +4362,7 @@ export default function CtePage() {
                     <th>Data</th>
                     <th>Competência</th>
                     <th>Transportadora</th>
+                    <th>CNPJ transportadora</th>
                     <th>Tomador</th>
                     <th>Origem</th>
                     <th>Destino</th>
@@ -4369,7 +4383,7 @@ export default function CtePage() {
                 <tbody>
                   {(!rowsFiltradas || rowsFiltradas.length === 0) && (
                     <tr>
-                      <td colSpan={18} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>
+                      <td colSpan={19} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>
                         Nenhum CT-e encontrado. Ajuste os filtros.
                       </td>
                     </tr>
@@ -4379,6 +4393,7 @@ export default function CtePage() {
                     const dataEmissao = getDataEmissao(row);
                     const transp = getTransportadora(row);
                     const transpOriginal = getTransportadoraOriginal(row);
+                    const cnpjTransportadora = getCnpjTransportadora(row);
                     const transpVinculada = transp && transpOriginal && transp !== transpOriginal;
                     const tomador = getTomador(row);
                     const cidOrig = getOrigem(row);
@@ -4421,6 +4436,7 @@ export default function CtePage() {
                             </div>
                           )}
                         </td>
+                        <td style={{ whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{fmtCnpj(cnpjTransportadora)}</td>
                         <td style={{ fontSize: 12 }}>{tomador}</td>
                         <td
                           onClick={() => toggleInteractiveFilter('origem', getOrigemLabel(row))}

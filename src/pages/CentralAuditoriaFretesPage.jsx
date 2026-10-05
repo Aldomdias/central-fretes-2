@@ -15,6 +15,7 @@ import { listarRetiradasDaFatura, MOTIVOS_RETIRADA_CTE, registrarAguardandoNovaF
 import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
 import { montarCorpoEmailLaudo, montarEml, slugArquivoEmail } from '../utils/emailLaudoTransportador';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
+import { carregarRaizesAdicionaisPorTransportadora } from '../services/transportadoraCnpjsService';
 import { lerCteXml } from '../utils/cteXml';
 import {
   atualizarStatusJornada,
@@ -9174,7 +9175,8 @@ function Financeiro({ state, onState }) {
     if (pareceRelatorioPagamentosSap(headers)) {
       // Relatorio SAP: cobre a empresa inteira (dezenas de milhares de
       // linhas), so persistimos e mudamos status das faturas que casaram.
-      const conciliados = conciliarPagamentosSap(stateAtual.faturas, rows);
+      const raizesAdicionais = await carregarRaizesAdicionaisPorTransportadora();
+      const conciliados = conciliarPagamentosSap(stateAtual.faturas, rows, raizesAdicionais);
       const matched = conciliados.filter((item) => item.fatura_id);
       const compensados = matched.filter((item) => item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE');
       const partidas = matched.filter((item) => item.resultado === 'PARTIDA_LANCADA');
@@ -9720,4 +9722,3 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
     </div>
   );
 }
-
