@@ -3938,6 +3938,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const arquivoRef = useRef(null);
   const [filtro, setFiltro] = useState(() => filtrosIniciais?.filtro || '');
   const [filtroFaturasLote, setFiltroFaturasLote] = useState('');
+  const [mapaVinculosLaudo, setMapaVinculosLaudo] = useState(null);
   const [status, setStatus] = useState(() => filtrosIniciais?.status || '');
   const [filtroPagamento, setFiltroPagamento] = useState(() => filtrosIniciais?.filtroPagamento || '');
   const [canalFiltro, setCanalFiltro] = useState('');
@@ -5779,9 +5780,28 @@ ${portaisLaudo.length ? `
     // faturas de transportadoras diferentes no mesmo arquivo confunde quem
     // recebe (e o link de confirmacao por fatura nao resolve isso sozinho).
     if (tipoLaudo === 'transportador') {
-      const transportadorasDistintas = [...new Set(faturasSelecionadas.map((item) => item.transportadora))];
-      if (transportadorasDistintas.length > 1) {
-        setMensagemImportacao(`Selecione faturas de um unico fornecedor por vez para gerar o laudo transportador. Voce selecionou: ${transportadorasDistintas.join(', ')}.`);
+      // Mesmo fornecedor = mesmo nome apos o vinculo de Ferramentas OU mesma raiz
+      // de CNPJ (a razao social varia entre faturas do mesmo fornecedor).
+      let vinculosLaudo = mapaVinculosLaudo;
+      if (!vinculosLaudo) {
+        vinculosLaudo = criarMapaVinculosTransportadoras(await carregarVinculosTransportadoras().catch(() => []));
+        setMapaVinculosLaudo(vinculosLaudo);
+      }
+      const grupoDe = new Map();
+      const achar = (chave) => { let atual = chave; while (grupoDe.get(atual) !== atual) atual = grupoDe.get(atual); return atual; };
+      const unir = (a, b) => {
+        [a, b].forEach((chave) => { if (!grupoDe.has(chave)) grupoDe.set(chave, chave); });
+        grupoDe.set(achar(a), achar(b));
+      };
+      faturasSelecionadas.forEach((item) => {
+        const nome = `N:${normalizarNomeTransportadora(aplicarVinculoTransportadora(item.transportadora, vinculosLaudo) || item.transportadora)}`;
+        const raiz = obterRaizCnpj(item.cnpj_transportadora);
+        unir(nome, raiz && raizCnpjValida(raiz) ? `C:${raiz}` : nome);
+      });
+      const gruposDistintos = new Set(faturasSelecionadas.map((item) => achar(`N:${normalizarNomeTransportadora(aplicarVinculoTransportadora(item.transportadora, vinculosLaudo) || item.transportadora)}`)));
+      if (gruposDistintos.size > 1) {
+        const transportadorasDistintas = [...new Set(faturasSelecionadas.map((item) => item.transportadora))];
+        setMensagemImportacao(`Selecione faturas de um unico fornecedor por vez para gerar o laudo transportador. Nomes sem vinculo em Ferramentas e com CNPJ diferente: ${transportadorasDistintas.join(', ')}.`);
         return;
       }
     }
