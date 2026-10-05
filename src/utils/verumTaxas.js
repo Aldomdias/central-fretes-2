@@ -8,6 +8,12 @@ const valor = (v) => String(numero(v)).replace('.', ',');
 const chaveNome = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
 export const VERUM_VERSAO_SEM_TAXA_PADRAO = { tda: true, tdr: true, trt: true, suframa: true, outras: true };
 
+// Mesma regra do motor (freteCalcEngine): taxa fixa > 0 => "Sem regra" (soma);
+// taxa fixa = 0 => "Maior valor". Nao usa o texto guardado na cotacao.
+export function regraCalculoVerum(cotacao = {}) {
+  return numero(cotacao.valorFixo ?? cotacao.taxaAplicada) > 0 ? 'Sem regra' : 'Maior valor';
+}
+
 export function excessoVerum(cotacao = {}) {
   return String(cotacao.tipoCalculo || '').toUpperCase() === 'PERCENTUAL'
     ? numero(cotacao.rsKg) || cotacao.excesso || 0

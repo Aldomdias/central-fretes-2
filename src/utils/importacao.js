@@ -1,4 +1,4 @@
-import { gerarDadosVerum, excessoVerum } from './verumTaxas.js';
+import { gerarDadosVerum, excessoVerum, regraCalculoVerum } from './verumTaxas.js';
 import { baixarXlsxVerum } from './verumXlsx.js';
 import * as XLSX from 'xlsx';
 
@@ -142,7 +142,7 @@ function sheetRowsForTipoVerum(tipo, rows = []) {
       'Código da unidade':
         item.codigoUnidade ||
         (String(item.canal || '').toUpperCase() === 'B2C' ? '0001 - B2C' : '0001 - B2B'),
-      'Regra de cálculo': item.regraCalculo || 'Sem regra',
+      'Regra de cálculo': regraCalculoVerum(item),
       'Rota do frete': item.rota || '',
       'Peso mínimo': item.pesoMin ?? '',
       'Peso limite': item.pesoMax ?? '',
@@ -509,7 +509,7 @@ function sheetRowsForTipo(tipo, rows = []) {
       'Nome da transportadora': item.transportadora || '',
       'Código da unidade': item.codigoUnidade || (String(item.canal || '').toUpperCase() === 'B2C' ? '0001 - B2C' : '0001 - B2B'),
       Canal: item.canal || '',
-      'Regra de cálculo': item.regraCalculo || 'Sem regra',
+      'Regra de cálculo': regraCalculoVerum(item),
       'Tipo de cálculo': item.tipoCalculo || '',
       'Rota do frete': item.rota || '',
       'Peso mínimo': item.pesoMin ?? '',
