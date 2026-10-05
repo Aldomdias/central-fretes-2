@@ -58,6 +58,11 @@ import {
 } from '../services/lotacaoPendenciaFlow';
 import { carregarSessao } from '../utils/authLocal';
 import AlocacaoDiariaLotacao from '../components/AlocacaoDiariaLotacao';
+import {
+  aplicarVinculoTransportadora,
+  carregarVinculosTransportadoras,
+  criarMapaVinculosTransportadoras,
+} from '../services/vinculosTransportadorasService';
 
 const ABAS_OPERACAO = [
   { id: 'visao', label: 'Visão geral' },
@@ -429,13 +434,37 @@ function calcularIndicadoresAprovacoes(solicitacoes = []) {
   }, { total: 0, pendentes: 0, aprovadas: 0, recusadas: 0, outros: 0, custosExtras: 0, valorPendente: 0, valorAprovado: 0 });
 }
 
+const TERMOS_GENERICOS_TRANSPORTADORA = new Set([
+  'TRANSPORTE', 'TRANSPORTES', 'TRANSPORTADORA', 'LOGISTICA', 'RODOVIARIO', 'RODOVIARIA',
+  'LTDA', 'EIRELI', 'EPP', 'ME', 'SA', 'S', 'A', 'DE', 'DA', 'DO', 'DAS', 'DOS', 'E',
+]);
+
+export function chavesCoberturaTransportadora(nome = '', mapaVinculos = new Map()) {
+  const nomes = new Set([String(nome || '').trim()]);
+  const vinculado = aplicarVinculoTransportadora(nome, mapaVinculos);
+  if (vinculado) nomes.add(vinculado);
+  const chaves = new Set();
+
+  nomes.forEach((valor) => {
+    String(valor || '').split(/[\/;+]/).forEach((parte) => {
+      const completa = normalizarTexto(parte).replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!completa) return;
+      chaves.add(completa);
+      const base = completa.split(' ').filter((termo) => termo && !TERMOS_GENERICOS_TRANSPORTADORA.has(termo)).join(' ');
+      if (base) chaves.add(base);
+    });
+  });
+
+  return chaves;
+}
+
 function nomesTransportadorasComTabela(tabelas = []) {
   const set = new Set();
   (tabelas || []).forEach((tabela) => {
     if (String(tabela?.tipo || '').toUpperCase() !== 'TRANSPORTADORA') return;
     if (!tabela?.nome) return;
     if (!Array.isArray(tabela.linhas) || tabela.linhas.length === 0) return;
-    set.add(normalizarTexto(tabela.nome));
+    chavesCoberturaTransportadora(tabela.nome).forEach((chave) => set.add(chave));
   });
   return set;
 }
@@ -446,7 +475,7 @@ function mesReferenciaCarga(carga = {}) {
   return /^\d{4}-\d{2}$/.test(iso) ? iso : 'Sem data';
 }
 
-function calcularCoberturaTabelaPorMes(cargas = [], nomesComTabela = new Set()) {
+export function calcularCoberturaTabelaPorMes(cargas = [], nomesComTabela = new Set(), mapaVinculos = new Map()) {
   const porMes = new Map();
 
   (cargas || []).forEach((carga) => {
@@ -456,7 +485,8 @@ function calcularCoberturaTabelaPorMes(cargas = [], nomesComTabela = new Set()) 
     }
     const grupo = porMes.get(mes);
     const nomeTransportadora = carga.transportadora || 'Sem transportadora';
-    const temTabela = Boolean(carga.transportadora) && nomesComTabela.has(normalizarTexto(carga.transportadora));
+    const temTabela = Boolean(carga.transportadora)
+      && [...chavesCoberturaTransportadora(carga.transportadora, mapaVinculos)].some((chave) => nomesComTabela.has(chave));
 
     grupo.total += 1;
     if (temTabela) grupo.comTabela += 1; else grupo.semTabela += 1;
@@ -477,10 +507,10 @@ function calcularCoberturaTabelaPorMes(cargas = [], nomesComTabela = new Set()) 
     .sort((a, b) => String(b.mes).localeCompare(String(a.mes)));
 }
 
-function CoberturaTabelaOperacao({ cargas = [], tabelas = [] }) {
+function CoberturaTabelaOperacao({ cargas = [], tabelas = [], mapaVinculos = new Map() }) {
   const [mesExpandido, setMesExpandido] = useState('');
   const nomesComTabela = useMemo(() => nomesTransportadorasComTabela(tabelas), [tabelas]);
-  const meses = useMemo(() => calcularCoberturaTabelaPorMes(cargas, nomesComTabela), [cargas, nomesComTabela]);
+  const meses = useMemo(() => calcularCoberturaTabelaPorMes(cargas, nomesComTabela, mapaVinculos), [cargas, nomesComTabela, mapaVinculos]);
 
   const totalGeral = meses.reduce((acc, m) => acc + m.total, 0);
   const totalComTabela = meses.reduce((acc, m) => acc + m.comTabela, 0);
@@ -1866,6 +1896,7 @@ export default function LotacaoOperacaoPage({ onRespostaConcluida }) {
   const [baseFluxo, setBaseFluxo] = useState(() => carregarFluxoCargasLotacao());
   const [carregandoHistorico, setCarregandoHistorico] = useState(false);
   const [tabelas, setTabelas] = useState([]);
+  const [mapaVinculos, setMapaVinculos] = useState(() => new Map());
   const [fonte, setFonte] = useState('ambos');
   const [filtros, setFiltros] = useState({ origem: '', destino: '', tipo: '', transportadora: '' });
   const [solicitacoes, setSolicitacoes] = useState(() => carregarSolicitacoesPagamento());
@@ -1878,10 +1909,14 @@ export default function LotacaoOperacaoPage({ onRespostaConcluida }) {
     let cancelado = false;
     (async () => {
       try {
-        const resultado = await carregarTabelasLotacaoSupabase();
+        const [resultado, vinculos] = await Promise.all([
+          carregarTabelasLotacaoSupabase(),
+          carregarVinculosTransportadoras().catch(() => []),
+        ]);
         if (!cancelado && Array.isArray(resultado?.tabelas) && resultado.tabelas.length > 0) {
           setTabelas(resultado.tabelas);
         }
+        if (!cancelado) setMapaVinculos(criarMapaVinculosTransportadoras(vinculos));
       } catch (erroTabelaSupabase) {
         console.warn('[Operação] Tabelas de lotação via Supabase indisponíveis, usando localStorage:', erroTabelaSupabase.message);
       }
@@ -2245,7 +2280,7 @@ export default function LotacaoOperacaoPage({ onRespostaConcluida }) {
       )}
 
       {abaAtiva === 'cobertura' && (
-        <CoberturaTabelaOperacao cargas={baseFluxo.cargas} tabelas={tabelas} />
+        <CoberturaTabelaOperacao cargas={baseFluxo.cargas} tabelas={tabelas} mapaVinculos={mapaVinculos} />
       )}
 
       {abaAtiva === 'aprovacoes' && (
