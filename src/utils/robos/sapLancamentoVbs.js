@@ -30,6 +30,21 @@ function linhasEmbutidas(linhas, campos) {
   return out;
 }
 
+// Marca cada comando do SAP com o passo atual (variavel "passo"), para o erro dizer onde parou.
+function marcarPassos(corpo, etapa) {
+  let n = 0;
+  return corpo
+    .split('\n')
+    .map((linha) => {
+      const m = linha.match(/^(\s+)(session\.findById\(.*)$/);
+      if (!m) return linha;
+      n += 1;
+      const alvo = (linha.match(/\/([a-z]{3,4}[A-Za-z0-9_\-]*)(\[[0-9,]+\])?"\)/) || [])[1] || '';
+      return `${m[1]}passo = ${vbs(`${etapa} #${n} ${alvo}`)} : ${m[2]}`;
+    })
+    .join('\n');
+}
+
 export const CONEXAO = [
   'Sub Conectar()',
   '    On Error Resume Next',
@@ -83,7 +98,7 @@ function utilitarios({ pasta, arquivoResultado }) {
     'End Sub',
     '',
     'Sub Falhar(etapa, rotulo)',
-    '    Dim msg : msg = "ERRO em " & etapa & " (" & rotulo & "): " & Err.Description & " | SAP: " & StatusSap()',
+    '    Dim msg : msg = "ERRO em " & etapa & " (" & rotulo & "): " & Err.Description & " [erro " & Err.Number & ", passo: " & passo & "] | SAP: " & StatusSap()',
     '    Log msg',
     '    logf.Close',
     '    MsgBox msg & vbCrLf & vbCrLf & "O que ja foi lancado esta salvo em " & pastaLog & ". Corrija no SAP e rode de novo: o robo pula o que ja tem numero.", vbCritical, "Robo de lancamento"',
@@ -117,7 +132,7 @@ export function gerarScriptNfse({ linhas = [], pasta = PASTA_NFSE } = {}) {
     'Dim fso, logf, sapGuiAuto, appl, con, session, L(), k, kk, n, pend, r, Pedidos, Miros',
     'Dim tentativas, CNPJ, OrgCompra, Centro, Valor, C_Custo, CodImposto, NrPedido',
     'Dim Empresa, DtaEmissao, DtaVencimento, Referencia, Ctg, CFOP, nrMiro, rotulo',
-    `Dim pastaLog : pastaLog = ${vbs(pasta)}`,
+    `Dim passo, pastaLog : pastaLog = ${vbs(pasta)}`,
     '',
     ...utilitarios({ pasta, arquivoResultado: 'resultado_nfse.csv' }),
     '',
@@ -131,7 +146,7 @@ export function gerarScriptNfse({ linhas = [], pasta = PASTA_NFSE } = {}) {
     `    Valor = r(${I.valor})`,
     `    C_Custo = r(${I.cc})`,
     `    CodImposto = r(${I.codImp})`,
-    CORPO_NFSE_PEDIDO,
+    marcarPassos(CORPO_NFSE_PEDIDO, 'pedido'),
     `    NrPedido = NumeroSap(NrPedido, "Pedido")`,
     `    GravarResultado r(${I.id}), "pedido", NrPedido`,
     `    Pedidos(kk) = NrPedido`,
@@ -148,7 +163,7 @@ export function gerarScriptNfse({ linhas = [], pasta = PASTA_NFSE } = {}) {
     '    NrPedido = Pedidos(kk)',
     '    Ctg = "YZ"',
     `    CFOP = r(${I.cfop})`,
-    CORPO_NFSE_MIRO,
+    marcarPassos(CORPO_NFSE_MIRO, 'miro'),
     `    nrMiro = NumeroSap(nrMiro, "MIRO")`,
     `    GravarResultado r(${I.id}), "miro", nrMiro`,
     `    Miros(kk) = nrMiro`,
@@ -219,7 +234,7 @@ export function gerarScriptCte({ linhas = [], pasta = PASTA_CTE } = {}) {
     'Dim fso, logf, sapGuiAuto, appl, con, session, L(), k, kk, n, pend, r, Pedidos, Miros',
     'Dim tentativas, Valor, aliquota, NrPedido, nrMiro, rotulo, DtaEmissao, DtaVencimento',
     'Dim v_emp, v_cte, v_bruto, v_prot, v_cnpj, v_centro, v_cc, v_imp, v_pedido, v_tp, v_c8, v_dv, v_centro1',
-    `Dim pastaLog : pastaLog = ${vbs(pasta)}`,
+    `Dim passo, pastaLog : pastaLog = ${vbs(pasta)}`,
     '',
     ...utilitarios({ pasta, arquivoResultado: 'resultado_cte.csv' }),
     '',
@@ -237,7 +252,7 @@ export function gerarScriptCte({ linhas = [], pasta = PASTA_CTE } = {}) {
     '',
     'Sub CriarPedidoLinha()',
     '    CarregarLinha',
-    CORPO_CTE_PEDIDO,
+    marcarPassos(CORPO_CTE_PEDIDO, 'pedido'),
     '    NrPedido = Right(session.findById("wnd[0]/sbar").Text, 10)',
     `    NrPedido = NumeroSap(NrPedido, "Pedido")`,
     `    GravarResultado r(${I.id}), "pedido", NrPedido`,
@@ -246,7 +261,7 @@ export function gerarScriptCte({ linhas = [], pasta = PASTA_CTE } = {}) {
     '',
     'Sub CriarMiroLinha()',
     '    CarregarLinha',
-    CORPO_CTE_MIRO,
+    marcarPassos(CORPO_CTE_MIRO, 'miro'),
     '    nrMiro = Mid(session.findById("wnd[0]/sbar").Text, 14, 10)',
     `    nrMiro = NumeroSap(nrMiro, "MIRO")`,
     `    GravarResultado r(${I.id}), "miro", nrMiro`,
