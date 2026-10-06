@@ -237,7 +237,7 @@ export function linhasParaScriptCte(linhas = []) {
     cnpj: apenasDigitos(l.cnpjTransp),
     centro: l.centro,
     liquido: valorParaSap(l.liquido),
-    aliquota: String(Math.round(l.icms * 10000) / 100), // ponto decimal: o script usa Val()
+    aliquota: String(Math.round(l.icms * 10000) / 100), // ponto decimal: o script converte com ParaNumero()
     cc: l.cc,
     codImp: l.codImp,
     dtEmissao: isoParaDdmmaaaa(l.dataEmissao),
