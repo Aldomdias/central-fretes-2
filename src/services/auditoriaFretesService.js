@@ -341,15 +341,29 @@ export async function buscarFaturasExistentesPorNumero(numeros = []) {
     const lote = unicos.slice(inicio, inicio + 200);
     const { data, error } = await client
       .from('faturas')
-      .select('id, numero_fatura, serie_fatura, transportadora')
+      .select('id, numero_fatura, serie_fatura, transportadora, cnpj_transportadora, created_at')
       .in('numero_fatura', lote);
     if (error) throw new Error(`Erro ao verificar faturas existentes: ${error.message}`);
-    for (const row of data || []) {
+    // Se ja existem duplicatas, reaproveita sempre a mais antiga.
+    const maisAntigoPrimeiro = [...(data || [])].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+    for (const row of maisAntigoPrimeiro) {
       const chave = `${chaveFatura(row.numero_fatura, row.serie_fatura)}::${String(row.transportadora || '').trim().toUpperCase()}`;
-      mapa.set(chave, row.id);
+      if (!mapa.has(chave)) mapa.set(chave, row.id);
+      // A importacao regrava o nome pelo cadastro (via CNPJ), entao o nome do
+      // banco pode diferir do nome do arquivo e a chave por nome nao casa mais:
+      // por isso tambem indexa por CNPJ completo.
+      const chaveCnpj = chaveFaturaPorCnpj(row.numero_fatura, row.serie_fatura, row.cnpj_transportadora);
+      if (chaveCnpj && !mapa.has(chaveCnpj)) mapa.set(chaveCnpj, row.id);
     }
   }
   return mapa;
+}
+
+// Chave de reimportacao por CNPJ (14 digitos); '' quando a fatura nao tem CNPJ valido.
+export function chaveFaturaPorCnpj(numero, serie, cnpj) {
+  const digitos = String(cnpj || '').replace(/\D/g, '');
+  if (digitos.length !== 14) return '';
+  return `${chaveFatura(numero, serie)}::CNPJ:${digitos}`;
 }
 
 // Campos do link de confirmacao: um objeto de fatura velho (carregado antes do
@@ -394,13 +408,51 @@ export async function atualizarFaturaAuditoria(state, fatura, evento) {
 // cascade no banco; o que estiver preso por FK sem cascade (pagamento,
 // solicitacao financeira, fatura que substitui outra) bloqueia a exclusao da
 // fatura especifica e volta em `erros` com o motivo.
-export async function excluirFaturasAuditoria(state, ids = []) {
+const TABELA_FATURAS_EXCLUIDAS = 'auditoria_faturas_excluidas';
+
+// Controle da gestao: lista as exclusoes mais recentes (mais nova primeiro).
+export async function listarFaturasExcluidas(limite = 100) {
+  if (!isSupabaseConfigured()) return [];
+  const { data, error } = await getSupabaseClient()
+    .from(TABELA_FATURAS_EXCLUIDAS)
+    .select('id,numero_fatura,serie_fatura,transportadora,valor_fatura,status,motivo,excluido_por,excluido_em')
+    .order('excluido_em', { ascending: false })
+    .limit(limite);
+  if (error) throw new Error(error.message || 'Erro ao carregar faturas excluidas.');
+  return data || [];
+}
+
+// Quem exclui uma fatura fica registrado (e a gestao ve na aba Faturas).
+// Excluir exige conseguir registrar: sem o registro nao ha controle.
+export async function excluirFaturasAuditoria(state, ids = [], { usuarioNome = '', usuarioEmail = '', motivo = '' } = {}) {
   const alvo = [...new Set((ids || []).filter(Boolean))];
   const excluidas = [];
   const erros = [];
   if (isSupabaseConfigured()) {
     const client = getSupabaseClient();
     for (const id of alvo) {
+      const faturaLog = state.faturas.find((item) => item.id === id);
+      const numeroLog = faturaLog?.numero_fatura || faturaLog?.numero || id;
+      const { data: registro, error: erroLog } = await client.from(TABELA_FATURAS_EXCLUIDAS).insert({
+        fatura_id: id,
+        numero_fatura: faturaLog?.numero_fatura || null,
+        serie_fatura: faturaLog?.serie_fatura || null,
+        transportadora: faturaLog?.transportadora || null,
+        cnpj_transportadora: faturaLog?.cnpj_transportadora || null,
+        valor_fatura: faturaLog?.valor_fatura ?? null,
+        data_emissao: faturaLog?.data_emissao || null,
+        data_vencimento: faturaLog?.data_vencimento || null,
+        status: faturaLog?.status || null,
+        ctes_totais: faturaLog?.ctes_totais ?? null,
+        motivo: motivo || null,
+        excluido_por: usuarioNome || null,
+        excluido_por_email: usuarioEmail || null,
+        snapshot: faturaLog || null,
+      }).select('id').single();
+      if (erroLog) {
+        erros.push({ id, numero: numeroLog, motivo: 'nao foi possivel registrar a exclusao (migration 20261006120000 aplicada?)' });
+        continue;
+      }
       await client.from('fatura_cte_divergencias').delete().eq('fatura_id', String(id));
       // A jornada do CT-e so aponta pra fatura (sem cascade): desvincula em vez de bloquear a exclusao.
       await client.from('auditoria_cte_jornada').update({ fatura_id: null }).eq('fatura_id', id);
@@ -414,9 +466,11 @@ export async function excluirFaturasAuditoria(state, ids = []) {
           ? `tem vinculos${tabela ? ` na tabela ${tabela}` : ' (pagamento, solicitacao financeira ou substituicao de outra fatura)'}`
           : error.message;
         erros.push({ id, numero, motivo });
+        await client.from(TABELA_FATURAS_EXCLUIDAS).delete().eq('id', registro.id);
       } else if (!apagadas?.length) {
         // O banco nao devolveu erro mas nao removeu nada (permissao/RLS ou fatura ja inexistente).
         erros.push({ id, numero, motivo: 'o banco nao removeu a fatura (sem permissao de exclusao ou ja nao existe)' });
+        await client.from(TABELA_FATURAS_EXCLUIDAS).delete().eq('id', registro.id);
       } else {
         excluidas.push(id);
       }

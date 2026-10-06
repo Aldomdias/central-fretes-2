@@ -72,6 +72,8 @@ import {
   registrarDevolutivaProtocolo,
   criarSolicitacaoFinanceira,
   buscarFaturasExistentesPorNumero,
+  chaveFaturaPorCnpj,
+  listarFaturasExcluidas,
   detectarCanaisFaturas,
   reauditarFatura,
   excluirFaturasAuditoria,
@@ -3931,6 +3933,55 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
 }
 
 
+// Controle da gestao: exclusoes de faturas feitas pela equipe (quem, quando, motivo).
+function FaturasExcluidasGestao({ versao = 0 }) {
+  const [itens, setItens] = useState([]);
+  const [aberto, setAberto] = useState(false);
+  const [erro, setErro] = useState('');
+
+  useEffect(() => {
+    let cancelado = false;
+    listarFaturasExcluidas(100)
+      .then((lista) => { if (!cancelado) { setItens(lista); setErro(''); } })
+      .catch((error) => { if (!cancelado) setErro(error.message || 'Nao foi possivel carregar as exclusoes.'); });
+    return () => { cancelado = true; };
+  }, [versao]);
+
+  const limite7Dias = Date.now() - 7 * 24 * 3600 * 1000;
+  const recentes = itens.filter((item) => new Date(item.excluido_em).getTime() >= limite7Dias);
+  if (!itens.length && !erro) return null;
+
+  return (
+    <div style={{ margin: '8px 0 12px', padding: '12px 14px', borderRadius: 10, border: '1px solid #cbd5e1', background: '#f8fafc' }}>
+      <button type="button" onClick={() => setAberto((v) => !v)} style={{ all: 'unset', cursor: 'pointer', display: 'block', width: '100%' }}>
+        <strong>🗑 Faturas excluídas (últimos 7 dias): {recentes.length}</strong>
+        <small style={{ marginLeft: 8, color: '#64748b' }}>{aberto ? 'ocultar' : 'ver quem excluiu, quando e o motivo'}</small>
+      </button>
+      {erro && <div className="mini-feedback info top-space-sm">{erro}</div>}
+      {aberto && (
+        <div className="sim-analise-tabela-wrap top-space-sm">
+          <table className="sim-analise-tabela">
+            <thead><tr><th>Quando</th><th>Quem</th><th>Fatura</th><th>Transportadora</th><th>Valor</th><th>Status</th><th>Motivo</th></tr></thead>
+            <tbody>
+              {itens.map((item) => (
+                <tr key={item.id}>
+                  <td>{new Date(item.excluido_em).toLocaleString('pt-BR')}</td>
+                  <td>{item.excluido_por || '-'}</td>
+                  <td><strong>{item.numero_fatura}</strong>{item.serie_fatura ? ` / ${item.serie_fatura}` : ''}</td>
+                  <td>{item.transportadora || '-'}</td>
+                  <td>{item.valor_fatura != null ? dinheiro(item.valor_fatura) : '-'}</td>
+                  <td>{item.status || '-'}</td>
+                  <td>{item.motivo || '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTransportadoras, filtrosIniciais = null }) {
   const mostrarAuditoriaAvulsa = modo === 'auditoria-cte';
   const mostrarFaturas = modo === 'faturas';
@@ -3939,6 +3990,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [filtro, setFiltro] = useState(() => filtrosIniciais?.filtro || '');
   const [filtroFaturasLote, setFiltroFaturasLote] = useState('');
   const [mapaVinculosLaudo, setMapaVinculosLaudo] = useState(null);
+  const [versaoExclusoes, setVersaoExclusoes] = useState(0);
   const [status, setStatus] = useState(() => filtrosIniciais?.status || '');
   const [filtroPagamento, setFiltroPagamento] = useState(() => filtrosIniciais?.filtroPagamento || '');
   const [canalFiltro, setCanalFiltro] = useState('');
@@ -4862,18 +4914,29 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     }
   };
 
-  // Apaga faturas selecionadas (ex.: importada em duplicidade). So gestao.
+  // Apaga faturas selecionadas (ex.: importada em duplicidade). Liberado para
+  // todos, mas cada exclusao fica registrada (quem, quando, motivo) e a gestao
+  // acompanha na aba Faturas.
   const excluirSelecionadas = async () => {
-    if (!usuarioEhGestorAuditoria(sessao)) return;
     const alvo = state.faturas.filter((item) => selecionadasIds.includes(item.id));
     if (!alvo.length) return;
     const lista = alvo.slice(0, 8).map((f) => `${f.numero_fatura || f.numero || f.id} - ${f.transportadora || ''}`).join('\n');
     const resumo = alvo.length > 8 ? `${lista}\n... e mais ${alvo.length - 8}` : lista;
-    if (!window.confirm(`Apagar ${alvo.length} fatura(s) definitivamente? Os CT-es/detalhes e o historico dela tambem serao removidos.\n\n${resumo}`)) return;
+    if (!window.confirm(`Apagar ${alvo.length} fatura(s) definitivamente? Os CT-es/detalhes e o historico dela tambem serao removidos. A gestao sera avisada.\n\n${resumo}`)) return;
+    const motivo = (window.prompt('Motivo da exclusao (obrigatorio). Ex.: fatura duplicada', 'Fatura duplicada') || '').trim();
+    if (!motivo) {
+      setMensagemImportacao('Exclusao cancelada: informe o motivo.');
+      return;
+    }
     setRecalculandoLote(true);
     try {
-      const { state: novo, excluidas, erros } = await excluirFaturasAuditoria(state, alvo.map((f) => f.id));
+      const { state: novo, excluidas, erros } = await excluirFaturasAuditoria(state, alvo.map((f) => f.id), {
+        usuarioNome: sessao?.nome || sessao?.email || 'Usuario local',
+        usuarioEmail: sessao?.email || '',
+        motivo,
+      });
       onState(novo);
+      setVersaoExclusoes((v) => v + 1);
       setSelecionadasIds((atual) => atual.filter((id) => !excluidas.includes(id)));
       const falhas = erros.length ? ` Nao apagadas: ${erros.map((e) => `${e.numero} (${e.motivo})`).join('; ')}.` : '';
       setMensagemImportacao(`${excluidas.length} fatura(s) apagada(s).${falhas}`);
@@ -6231,10 +6294,15 @@ ${portaisLaudo.length ? `
         // Reimportacao atualiza a fatura existente em vez de duplicar:
         // reaproveita o id quando numero+serie+transportadora ja existem.
         const chaveExistente = `${chaveFatura(fatura.numero_fatura, fatura.serie_fatura)}::${String(fatura.transportadora || '').trim().toUpperCase()}`;
-        const anterior = emAndamentoPorChave.get(chaveExistente);
+        // CNPJ tem prioridade: o nome gravado no banco pode ser o oficial do
+        // cadastro (diferente do nome do arquivo) e a chave por nome nao casava,
+        // criando uma fatura nova a cada reimportacao.
+        const chaveCnpj = chaveFaturaPorCnpj(fatura.numero_fatura, fatura.serie_fatura, fatura.cnpj_transportadora);
+        const chaveSerial = chaveCnpj || chaveExistente;
+        const anterior = emAndamentoPorChave.get(chaveSerial);
         const execucao = (async () => {
           if (anterior) await anterior.catch(() => {});
-          const existenteId = existentesPorChave.get(chaveExistente);
+          const existenteId = (chaveCnpj && existentesPorChave.get(chaveCnpj)) || existentesPorChave.get(chaveExistente);
           const raizFatura = obterRaizCnpj(fatura.cnpj_transportadora);
           // CNPJ manda sobre o nome: fatura que vem com nome de filial/cidade
           // ("PORTO ALEGRE") grava com o nome oficial do cadastro, senao fica
@@ -6259,6 +6327,7 @@ ${portaisLaudo.length ? `
           if (existenteId) faturasAtualizadas += 1;
           else faturasNovas += 1;
           existentesPorChave.set(chaveExistente, resultado.id);
+          if (chaveCnpj) existentesPorChave.set(chaveCnpj, resultado.id);
           const detalhes = detalhesDaFatura(grupos, fatura.numero_fatura, fatura.serie_fatura, fatura.cnpj_transportadora, nomeOriginalFatura)
             .map((item) => parseDetalheFaturaVerum(item, resultado.id, fatura));
           if (detalhes.length) {
@@ -6269,7 +6338,7 @@ ${portaisLaudo.length ? `
             detalhesPorFaturaImportada.set(resultado.id, detalhes);
           }
         })();
-        emAndamentoPorChave.set(chaveExistente, execucao);
+        emAndamentoPorChave.set(chaveSerial, execucao);
         await execucao;
         processadas += 1;
         setProgressoImportacao({ etapa: 'salvando_faturas', carregados: processadas, total: rowsFaturas.length });
@@ -6832,6 +6901,7 @@ ${portaisLaudo.length ? `
           {visaoFatura === 'minhas' ? 'Mostrando suas faturas.' : visaoFatura === 'sem_auditor' ? 'Mostrando faturas sem auditor definido.' : 'Mostrando todas as faturas.'}
           {' '}Clique em um card para filtrar rápido; clique de novo para tirar o filtro.
         </p>
+        {ehGestorAlerta && <FaturasExcluidasGestao versao={versaoExclusoes} />}
         {(alertaPrazo.aVencer.length + alertaPrazo.vencidas.length) > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, margin: '8px 0 12px' }}>
             <button type="button" onClick={() => { setVisaoFatura(ehGestorAlerta ? 'todas' : 'minhas'); setFiltroRapido('alerta_a_vencer'); }} style={{ flex: '1 1 260px', cursor: 'pointer', textAlign: 'left', font: 'inherit', padding: '12px 14px', borderRadius: 10, border: '1px solid #e67e22', background: '#fff6ea' }}>
@@ -7066,11 +7136,9 @@ ${portaisLaudo.length ? `
           <input value={emailAuditorLote} onChange={(e) => setEmailAuditorLote(e.target.value)} placeholder="E-mail auditor" disabled={recalculandoLote} style={{ maxWidth: 210 }} />
           <button className="btn-secondary" disabled={recalculandoLote || !auditorLote.trim()} onClick={() => atualizarFaturasEmMassa('auditor')}>Aplicar auditor</button>
           <button className="btn-primary" disabled={recalculandoLote} onClick={abrirLiberacaoLote}>Liberar selecionadas</button>
-          {usuarioEhGestorAuditoria(sessao) && (
-            <button className="btn-secondary" style={{ color: '#dc2626', borderColor: '#dc2626' }} disabled={recalculandoLote} onClick={excluirSelecionadas} title="Apaga as faturas selecionadas (ex.: duplicidade)">
-              Apagar selecionadas ({selecionadasIds.length})
-            </button>
-          )}
+          <button className="btn-secondary" style={{ color: '#dc2626', borderColor: '#dc2626' }} disabled={recalculandoLote} onClick={excluirSelecionadas} title="Apaga as faturas selecionadas (ex.: duplicidade). A gestao e avisada.">
+            Excluir faturas ({selecionadasIds.length})
+          </button>
           {modalLiberacaoLote && (
             <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <div className="hint-box" style={{ background: '#fff', width: 'min(640px, 94vw)', maxHeight: '92vh', overflow: 'auto', padding: 20 }}>
