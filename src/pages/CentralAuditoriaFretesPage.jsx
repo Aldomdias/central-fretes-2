@@ -6393,6 +6393,7 @@ ${portaisLaudo.length ? `
           const resultado = await salvarFaturaSupabase({
             ...(existenteId ? { id: existenteId } : {}),
             ...fatura,
+            ...(existenteId ? {} : { status: fatura.status || 'RECEBIDA' }),
             ...(auditorDaCarteira || {}),
             importado_por: sessao?.nome || sessao?.email || '',
             importado_em: new Date().toISOString(),

@@ -83,7 +83,12 @@ export function parseFaturaVerum(row) {
     valor_calculado: numero(row, ['Valor Calculado']),
     diferenca: numero(row, ['Diferenca', 'Diferença']),
     banco: texto(row, ['Banco']),
-    status: texto(row, ['Status']) || 'RECEBIDA',
+    // A coluna "Status" do Verum (Disponivel/Indisponivel/Todos Disponiveis) NAO
+    // e o status do nosso fluxo: gravar isso escondia a fatura dos filtros e
+    // apagava o andamento na reimportacao. So aceita status interno
+    // (MAIUSCULO_COM_UNDERSCORE); a importacao usa RECEBIDA so p/ fatura nova
+    // e preserva o status de quem ja existe.
+    ...(/^[A-Z][A-Z_]+$/.test(texto(row, ['Status'])) ? { status: texto(row, ['Status']) } : {}),
     status_fatura: texto(row, ['Status da fatura', 'Status Fatura']),
     status_pagamento: texto(row, ['Status pagamento', 'Status Pagamento']),
     cnpj_tomador: somenteDigitos(row, ['CNPJ Tomador da Fatura', 'CNPJ Tomador']),
