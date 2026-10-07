@@ -110,6 +110,7 @@ import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, apli
 import { buscarTrackingPorChaveNfeManual } from '../services/trackingSupabaseService';
 import { consultarMunicipiosIbge } from '../services/ibgeService';
 import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
+import { salvarDemanda } from '../services/auditoriaDemandasService';
 import { autorizarPelaGestao, normalizarCanalAutorizacao, carregarDecisoesPorChave, carregarSaldosAutorizadosPorChave, enviarAnexosAutorizacao, enviarParaAutorizacao, enviarParaSuprimentos } from '../services/transporteAutorizacoesService';
 import AnaliseFreteTabela from '../components/AnaliseFreteTabela';
 import ProdutividadeDiaFaturas from '../components/ProdutividadeDiaFaturas';
@@ -8365,6 +8366,7 @@ function RespostasDivergenciaFatura({ faturaId, usuarioNome, aoMudarConfirmacao 
 const DECISOES_GESTAO = {
   APROVACAO_GESTAO_CONFIRMOU_DESCONTO: 'Aprovada COM desconto',
   APROVACAO_GESTAO_SEM_DESCONTO: 'Aprovada SEM desconto',
+  APROVACAO_GESTAO_LIBEROU_AUDITORIA_FUTURA: 'Liberada — auditoria futura',
   APROVACAO_GESTAO_AUTORIZOU_E_ENVIOU_SUPRIMENTOS: 'Enviada p/ Suprimentos',
   APROVACAO_GESTAO_RECUSOU: 'Recusada',
 };
@@ -8434,6 +8436,7 @@ function HistoricoAprovacaoGestao({ state }) {
         <Card label="Decisoes" value={filtrados.length} color="#9153F0" />
         <Card label="Aprovado c/ desconto" value={dinheiro(somaPor('APROVACAO_GESTAO_CONFIRMOU_DESCONTO'))} color="#14733b" />
         <Card label="Aprovado s/ desconto (autorizado)" value={dinheiro(somaPor('APROVACAO_GESTAO_SEM_DESCONTO'))} color="#9b1111" />
+        <Card label="Liberado p/ auditoria futura" value={dinheiro(somaPor('APROVACAO_GESTAO_LIBEROU_AUDITORIA_FUTURA'))} color="#7c3aed" />
         <Card label="Enviado p/ Suprimentos" value={dinheiro(somaPor('APROVACAO_GESTAO_AUTORIZOU_E_ENVIOU_SUPRIMENTOS'))} color="#b45309" />
       </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', margin: '10px 0' }}>
@@ -8603,12 +8606,17 @@ function AprovacaoGestao({ state, onState }) {
     const descontos = tipo === 'COM_DESCONTO'
       ? Object.fromEntries(escolhidas.map((fatura) => [fatura.id, Number(valorPendente(fatura) || 0).toFixed(2)]))
       : {};
-    setDecisao({ tipo, justificativa: '', tipoAjuste: TIPOS_AJUSTE_TABELA[0].valor, descontos, erro: '' });
+    const prazoPadrao = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+    const demandaIds = tipo === 'AUDITORIA_FUTURA'
+      ? Object.fromEntries(escolhidas.map((fatura) => [fatura.id, crypto.randomUUID()]))
+      : {};
+    setDecisao({ tipo, justificativa: '', tipoAjuste: TIPOS_AJUSTE_TABELA[0].valor, descontos, prazoAuditoria: prazoPadrao, demandaIds, erro: '' });
   };
 
   const TITULOS_DECISAO = {
     COM_DESCONTO: 'Aprovar COM desconto',
     SEM_DESCONTO: 'Aprovar SEM desconto (autorizar o adicional)',
+    AUDITORIA_FUTURA: 'Liberar pagamento e auditar depois',
     SUPRIMENTOS: 'Autorizar e enviar para Suprimentos',
     RECUSAR: 'Recusar (devolver para a auditoria)',
   };
@@ -8629,6 +8637,8 @@ function AprovacaoGestao({ state, onState }) {
     }
     if (tipo === 'RECUSAR' && texto.length < 5) { setDecisao((p) => ({ ...p, erro: 'Informe o motivo da recusa.' })); return; }
     if (tipo === 'SEM_DESCONTO' && texto.length < 10) { setDecisao((p) => ({ ...p, erro: 'Informe a justificativa de aprovar sem desconto (minimo 10 caracteres).' })); return; }
+    if (tipo === 'AUDITORIA_FUTURA' && texto.length < 10) { setDecisao((p) => ({ ...p, erro: 'Explique por que a fatura sera paga antes da auditoria (minimo 10 caracteres).' })); return; }
+    if (tipo === 'AUDITORIA_FUTURA' && !decisao.prazoAuditoria) { setDecisao((p) => ({ ...p, erro: 'Informe o prazo para concluir a auditoria futura.' })); return; }
     if (tipo === 'SUPRIMENTOS' && texto.length < 30) { setDecisao((p) => ({ ...p, erro: `Justificativa muito curta (${texto.length}/30 caracteres). Explique o ajuste que Suprimentos precisa fazer.` })); return; }
     setProcessando(true);
     setDecisao((p) => ({ ...p, erro: '' }));
@@ -8681,6 +8691,29 @@ function AprovacaoGestao({ state, onState }) {
           acao = 'APROVACAO_GESTAO_RECUSOU';
           descricao = `Gestao recusou a liberacao: ${texto}. Fatura devolvida para a auditoria.`;
           campos = { desconto_aplicado_confirmado: false };
+        } else if (tipo === 'AUDITORIA_FUTURA') {
+          await salvarDemanda({
+            id: decisao.demandaIds?.[fatura.id],
+            auditor_nome: fatura.auditor_nome || null,
+            auditor_email: fatura.auditor_email || null,
+            fatura_id: String(fatura.id),
+            numero_fatura: fatura.numero_fatura || null,
+            transportadora: fatura.transportadora || null,
+            titulo: `Auditoria futura da fatura ${fatura.numero_fatura}`,
+            observacao: `Pagamento liberado antes da conclusao da auditoria pela gestao (${usuarioNome}). Diferenca identificada: ${dinheiro(diferencaCalculada)}. Motivo: ${texto}`,
+            prazo: decisao.prazoAuditoria,
+            status: 'ABERTA',
+            criado_por: usuarioNome,
+          });
+          statusNovo = 'PRONTA_PARA_PAGAMENTO';
+          acao = 'APROVACAO_GESTAO_LIBEROU_AUDITORIA_FUTURA';
+          descricao = `Gestao liberou a fatura para pagamento antes da auditoria final. Auditoria futura registrada para ${dataBr(decisao.prazoAuditoria)}, responsavel ${fatura.auditor_nome || 'a definir'}, diferenca atual ${dinheiro(diferencaCalculada)}. Motivo: ${texto}`;
+          campos = {
+            desconto_aplicado_confirmado: false,
+            desconto_pendente_valor: 0,
+            valor_recuperado: 0,
+            auditoria_total_descontar: 0,
+          };
         } else if (tipo === 'SEM_DESCONTO' || tipo === 'SUPRIMENTOS') {
           const itens = itensComAdicional(fatura, ctes);
           if (!itens.length) throw new Error('nenhum CT-e com adicional calculado pela AMD nesta fatura (sem simulacao ou sem diferenca positiva).');
@@ -8706,10 +8739,15 @@ function AprovacaoGestao({ state, onState }) {
           usuario_nome: usuarioNome,
           usuario_email: sessao?.email || '',
           metadata: tipo === 'COM_DESCONTO' ? {
-            diferenca_calculada: Number(diferencaCalculada.toFixed(2)),
-            desconto_aprovado: valor,
-            valor_reconhecido_devido: valorReconhecidoDevido,
-          } : {},
+              diferenca_calculada: Number(diferencaCalculada.toFixed(2)),
+              desconto_aprovado: valor,
+              valor_reconhecido_devido: valorReconhecidoDevido,
+            } : tipo === 'AUDITORIA_FUTURA' ? {
+              auditoria_futura: true,
+              demanda_id: decisao.demandaIds?.[fatura.id],
+              prazo_auditoria: decisao.prazoAuditoria,
+              diferenca_calculada: Number(diferencaCalculada.toFixed(2)),
+            } : {},
         });
         resultados.push({ ok: true, nome });
       } catch (error) {
@@ -8813,6 +8851,7 @@ function AprovacaoGestao({ state, onState }) {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0' }}>
           {botao('COM_DESCONTO', 'Aprovar com desconto', 'btn-primary')}
           {botao('SEM_DESCONTO', 'Aprovar sem desconto')}
+          {botao('AUDITORIA_FUTURA', 'Liberar agora / auditar depois')}
           {botao('SUPRIMENTOS', 'Autorizar e enviar p/ Suprimentos')}
           {botao('RECUSAR', 'Recusar')}
         </div>
@@ -8937,6 +8976,15 @@ function AprovacaoGestao({ state, onState }) {
               </>
             )}
             {decisao.tipo === 'SEM_DESCONTO' && <p>O adicional de cada CT-e cobrado a mais vira <strong>saldo autorizado</strong> (gestao/auditoria) e a fatura e liberada para pagamento sem desconto.</p>}
+            {decisao.tipo === 'AUDITORIA_FUTURA' && (
+              <div className="hint-box compact" style={{ borderLeft: '4px solid #7c3aed' }}>
+                <strong>Pagamento liberado agora, auditoria mantida como pendencia.</strong>
+                <p style={{ margin: '4px 0 8px' }}>Sera criada uma demanda aberta no Meu Painel do auditor de cada fatura, ligada ao numero da fatura e ao motivo informado.</p>
+                <label className="field">Prazo para concluir a auditoria futura *
+                  <input type="date" value={decisao.prazoAuditoria || ''} onChange={(e) => setDecisao((p) => ({ ...p, prazoAuditoria: e.target.value }))} />
+                </label>
+              </div>
+            )}
             {decisao.tipo === 'SUPRIMENTOS' && <p>O adicional ja fica <strong>autorizado</strong> na auditoria, a fatura e liberada e um chamado AMD e aberto para Suprimentos assumir e ajustar a tabela.</p>}
             {decisao.tipo === 'RECUSAR' && <p>As faturas voltam para a auditoria tratar a divergencia.</p>}
             {decisao.tipo === 'SUPRIMENTOS' && (
@@ -8947,7 +8995,7 @@ function AprovacaoGestao({ state, onState }) {
               </label>
             )}
             <label className="field">
-              {decisao.tipo === 'RECUSAR' ? 'Motivo da recusa *' : decisao.tipo === 'SEM_DESCONTO' ? 'Justificativa * (minimo 10 caracteres)' : decisao.tipo === 'SUPRIMENTOS' ? 'Justificativa / o que Suprimentos deve ajustar * (minimo 30 caracteres)' : 'Observacao (opcional)'}
+              {decisao.tipo === 'RECUSAR' ? 'Motivo da recusa *' : decisao.tipo === 'SEM_DESCONTO' ? 'Justificativa * (minimo 10 caracteres)' : decisao.tipo === 'AUDITORIA_FUTURA' ? 'Motivo da liberacao antes da auditoria * (minimo 10 caracteres)' : decisao.tipo === 'SUPRIMENTOS' ? 'Justificativa / o que Suprimentos deve ajustar * (minimo 30 caracteres)' : 'Observacao (opcional)'}
               <textarea rows={4} value={decisao.justificativa} onChange={(e) => setDecisao((p) => ({ ...p, justificativa: e.target.value }))} />
             </label>
             {decisao.erro && <div className="hint-box compact error-text">{decisao.erro}</div>}
