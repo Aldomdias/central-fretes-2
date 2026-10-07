@@ -691,6 +691,13 @@ function resumirDetalhesAuditoria(lista = [], tolerancia = TOLERANCIA_PADRAO) {
   };
 }
 
+function auditoriaEstaIncompleta(resumo = {}) {
+  const total = Number(resumo.total || 0);
+  const calculados = Number(resumo.calculados || 0);
+  const semCalculo = Number(resumo.semCalculo || 0);
+  return total === 0 || semCalculo > 0 || calculados < total;
+}
+
 // Detalhes dos CT-es das faturas EXATAMENTE como a tela da fatura os monta:
 // fatura_detalhes deduplicado + resultado fresco da auditoria + saldo autorizado.
 // Lista, liberacao em lote e tela da fatura precisam usar o mesmo numero.
@@ -2171,6 +2178,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
 
   const liberarParaPagamento = async () => {
     const resumo = resumirDetalhesAuditoria(detalhes, toleranciaFatura);
+    const auditoriaIncompleta = auditoriaEstaIncompleta(resumo);
     // valor_fatura (confiavel) - calculado, nao cobrancaAcima-cobrancaAbaixo:
     // essas duas dependem da soma do valor_frete por CT-e, que fica errada
     // quando algum CT-e veio com valor_frete zerado/incompleto no arquivo.
@@ -2192,6 +2200,21 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       auditoria_tolerancia_acima: Number(toleranciaFatura.acima || 0),
       auditoria_tolerancia_abaixo: Number(toleranciaFatura.abaixo || 0),
     };
+
+    // Sem calculo nao existe base confiavel para liberar nem para propor um
+    // desconto. A fatura precisa da decisao explicita da gestao.
+    if (auditoriaIncompleta) {
+      const motivo = `${resumo.semCalculo} de ${resumo.total} CT-e(s) sem calculo`;
+      await mudarStatus('AGUARDANDO_APROVACAO_GESTAO', {
+        ...camposAuditoria,
+        desconto_aplicado_confirmado: false,
+        desconto_pendente_valor: 0,
+        observacao_aprovacao: `[AUDITORIA INCOMPLETA] ${motivo}.`,
+        descricaoHistorico: `Enviada para aprovacao da gestao: auditoria incompleta, com ${motivo}. A liberacao para pagamento exige decisao da gestao.`,
+      });
+      setMensagemLiberacao(`⚠ Fatura enviada para "Aprovacao da Gestao": ${motivo}.`);
+      return;
+    }
 
     // Valor calculado nao fechou com o cobrado (saldo a descontar): nunca
     // libera direto pro pagamento so no clique do auditor — vai sempre pra
@@ -5834,7 +5857,8 @@ ${portaisLaudo.length ? `
           // A escolha de considerar a menor altera o valor, mas nao cria uma
           // aprovacao sem valor: desconto final zero libera normalmente.
           const cobrancaMenor = Number(resumo.cobrancaAbaixo.toFixed(2));
-          const precisaAprovacao = descontoDevido > TOLERANCIA_DESCONTO_PENDENTE;
+          const auditoriaIncompleta = auditoriaEstaIncompleta(resumo);
+          const precisaAprovacao = auditoriaIncompleta || descontoDevido > TOLERANCIA_DESCONTO_PENDENTE;
           const statusNovo = precisaAprovacao ? 'AGUARDANDO_APROVACAO_GESTAO' : 'PRONTA_PARA_PAGAMENTO';
           if (precisaAprovacao) enviadasParaAprovacao += 1;
           payload = {
@@ -5851,8 +5875,12 @@ ${portaisLaudo.length ? `
             auditoria_cobranca_abaixo: Number(resumo.cobrancaAbaixo.toFixed(2)),
             auditoria_total_descontar: descontoDevido,
             desconto_aplicado_confirmado: !precisaAprovacao,
-            desconto_pendente_valor: precisaAprovacao ? descontoDevido : 0,
-            ...(precisaAprovacao ? { observacao_aprovacao: respostaAuditor } : {}),
+            desconto_pendente_valor: precisaAprovacao && !auditoriaIncompleta ? descontoDevido : 0,
+            ...(precisaAprovacao ? {
+              observacao_aprovacao: auditoriaIncompleta
+                ? `[AUDITORIA INCOMPLETA] ${resumo.semCalculo} de ${resumo.total} CT-e(s) sem calculo.${respostaAuditor ? ` ${respostaAuditor}` : ''}`
+                : respostaAuditor,
+            } : {}),
           };
           evento = {
             ...evento,
@@ -5860,7 +5888,9 @@ ${portaisLaudo.length ? `
             status_anterior: fatura.status,
             status_novo: statusNovo,
             descricao: precisaAprovacao
-              ? `Enviada para aprovacao da gestao (liberacao em massa): valor a descontar de ${dinheiro(descontoDevido)}${faturaConsideraMenor(fatura) && cobrancaMenor > 0 ? `, ja abatendo cobranca a menor de ${dinheiro(cobrancaMenor)}` : ''}.${respostaAuditor ? ` ${respostaAuditor}` : ''}`
+              ? (auditoriaIncompleta
+                ? `Enviada para aprovacao da gestao (liberacao em massa): auditoria incompleta, com ${resumo.semCalculo} de ${resumo.total} CT-e(s) sem calculo. A liberacao para pagamento exige decisao da gestao.`
+                : `Enviada para aprovacao da gestao (liberacao em massa): valor a descontar de ${dinheiro(descontoDevido)}${faturaConsideraMenor(fatura) && cobrancaMenor > 0 ? `, ja abatendo cobranca a menor de ${dinheiro(cobrancaMenor)}` : ''}.${respostaAuditor ? ` ${respostaAuditor}` : ''}`)
               : `Liberada em massa para pagamento. Cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}.`,
           };
         }
@@ -5869,7 +5899,7 @@ ${portaisLaudo.length ? `
       onState(next);
       setMensagemImportacao(
         `${faturasSelecionadas.length} fatura(s) atualizada(s) em massa.`
-        + (enviadasParaAprovacao ? ` ${enviadasParaAprovacao} foram para aprovacao da gestao por terem valor a descontar.` : ''),
+        + (enviadasParaAprovacao ? ` ${enviadasParaAprovacao} foram para aprovacao da gestao por desconto ou auditoria incompleta.` : ''),
       );
     } catch (error) {
       setMensagemImportacao(`Erro na edicao em massa: ${error.message}`);
@@ -8883,7 +8913,14 @@ function AprovacaoGestao({ state, onState }) {
                   <td>{dataBr(item.data_vencimento)}</td>
                   <td>{dinheiro(item.valor_fatura)}</td>
                   <td>{dinheiro(item.valor_calculado)}</td>
-                  <td><strong style={{ color: '#9b1111' }}>{dinheiro(valorPendente(item))}</strong></td>
+                  <td>
+                    <strong style={{ color: '#9b1111' }}>{dinheiro(valorPendente(item))}</strong>
+                    {Number(item.ctes_sem_calculo || 0) > 0 && (
+                      <div style={{ color: '#b45309', fontSize: 11, fontWeight: 700 }}>
+                        {item.ctes_sem_calculo} CT-e(s) sem calculo — exige decisao
+                      </div>
+                    )}
+                  </td>
                   <td>
                     {resposta.sim && <strong style={{ color: '#14733b' }}>Vai descontar. </strong>}
                     {resposta.nao && <strong style={{ color: '#9b1111' }}>Nao vai descontar. </strong>}
