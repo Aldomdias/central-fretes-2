@@ -1950,6 +1950,19 @@ export function urlPortalFatura(token) {
   return `${base}/api/portal-fatura/${token}`;
 }
 
+// Guarda os numeros que o laudo do transportador mostrou, pra pagina de
+// confirmacao exibir o mesmo (e nao o calculo AMD cheio). Silencioso: sem a
+// migration (colunas ausentes) a pagina cai no comportamento antigo.
+export async function registrarNumerosLaudoConfirmacao(faturaId, { calculado, desconto } = {}) {
+  if (!faturaId || !isSupabaseConfigured()) return;
+  try {
+    await getSupabaseClient().from('faturas').update({
+      confirmacao_laudo_calculado: Number(Number(calculado || 0).toFixed(2)),
+      confirmacao_laudo_desconto: Number(Number(desconto || 0).toFixed(2)),
+    }).eq('id', faturaId);
+  } catch { /* coluna inexistente: ignora */ }
+}
+
 // Gera (uma vez) o link de confirmacao da fatura pro transportador clicar OK
 // direto no laudo — reaproveita o mesmo token em reenvios, ate ele confirmar.
 export async function gerarLinkConfirmacaoFatura(state, fatura) {

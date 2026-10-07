@@ -91,6 +91,7 @@ import {
   registrarHistoricoCarteiraAuditoria,
   listarHistoricoCarteiraAuditoria,
   gerarLinkConfirmacaoFatura,
+  registrarNumerosLaudoConfirmacao,
   atribuirAuditorEmLote,
   carregarMapaNomeOficialPorRaizCnpj,
   corrigirNomesFaturasPorCnpj,
@@ -2674,6 +2675,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       resumo.cobrancaAbaixo,
       faturaConsideraMenor(fatura),
     );
+    if (transportador) registrarNumerosLaudoConfirmacao(fatura.id, { calculado: resumo.calculoAmd, desconto: totalDescontarLaudo });
     const cards = [
       ['CT-es', resumo.total],
       ['Calculados AMD', resumo.calculados],
@@ -5995,6 +5997,13 @@ ${portaisLaudo.length ? `
             });
             faturaAtual = estadoComLinks.faturas.find((item) => item.id === fatura.id) || faturaAtual;
           }
+        }
+        if (laudoTransportador) {
+          const resumoBlocoLaudo = resumirDetalhesAuditoria(aplicarMascaraLaudoTransportador(detalhesLaudo, opts, carregarToleranciaAuditoria()), carregarToleranciaAuditoria());
+          await registrarNumerosLaudoConfirmacao(fatura.id, {
+            calculado: resumoBlocoLaudo.calculoAmd,
+            desconto: descontoConformeEscolha(resumoBlocoLaudo.cobrancaAcima, resumoBlocoLaudo.cobrancaAbaixo, faturaConsideraMenor(faturaAtual)),
+          });
         }
         blocos.push({ fatura: faturaAtual, detalhes: detalhesLaudo, linkConfirmacao });
       }

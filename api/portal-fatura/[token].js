@@ -55,11 +55,15 @@ h1{margin:0 0 10px;font-size:20px}p{color:#475569;line-height:1.5}</style></head
 }
 
 async function carregarFatura(supabase, token) {
-  const { data: fatura, error } = await supabase
-    .from('faturas')
-    .select('id, numero_fatura, transportadora, valor_fatura, valor_calculado, diferenca, data_vencimento, status, confirmacao_transportador_status, confirmacao_transportador_em, confirmacao_transportador_por, confirmacao_transportador_token, confirmacao_transportador_observacao, confirmacao_transportador_evidencias')
-    .eq('confirmacao_transportador_token', token)
-    .maybeSingle();
+  const base = 'id, numero_fatura, transportadora, valor_fatura, valor_calculado, diferenca, data_vencimento, status, confirmacao_transportador_status, confirmacao_transportador_em, confirmacao_transportador_por, confirmacao_transportador_token, confirmacao_transportador_observacao, confirmacao_transportador_evidencias';
+  // confirmacao_laudo_* (numeros mostrados no laudo) so existem apos a migration:
+  // sem elas, cai na consulta antiga em vez de quebrar o link.
+  let { data: fatura, error } = await supabase
+    .from('faturas').select(base + ', confirmacao_laudo_calculado, confirmacao_laudo_desconto')
+    .eq('confirmacao_transportador_token', token).maybeSingle();
+  if (error) {
+    ({ data: fatura, error } = await supabase.from('faturas').select(base).eq('confirmacao_transportador_token', token).maybeSingle());
+  }
   if (error) throw error;
   if (!fatura) return { erro: { titulo: 'Link inválido', detalhe: 'Este link de confirmação não foi encontrado. Solicite um novo link ao time de auditoria.' } };
   return { fatura };
@@ -110,9 +114,16 @@ function paginaPortalFatura({ fatura, enviado, acaoEnviada, divergencias = [] })
   // Com CT-es divergentes listados, o desconto e a soma deles (o que a
   // transportadora vai responder); a diferenca da fatura inteira inclui CT-es
   // sem calculo/abaixo e nao bate com a lista.
+  // Sem lista de CT-es, segue o que o laudo mostrou (ja com as opcoes do
+  // laudo aplicadas); so cai no calculo cheio da fatura se o laudo nunca
+  // registrou os numeros.
+  const temNumerosLaudo = fatura.confirmacao_laudo_calculado != null && fatura.confirmacao_laudo_desconto != null;
   const saldo = divergencias.length
     ? divergencias.reduce((soma, d) => soma + Math.max(Number(d.diferenca || 0), 0), 0)
-    : Math.max(Number(fatura.diferenca || 0), 0);
+    : temNumerosLaudo
+      ? Math.max(Number(fatura.confirmacao_laudo_desconto || 0), 0)
+      : Math.max(Number(fatura.diferenca || 0), 0);
+  const calculadoExibido = temNumerosLaudo ? fatura.confirmacao_laudo_calculado : fatura.valor_calculado;
   const jaAprovada = fatura.confirmacao_transportador_status === 'APROVADO';
   const contestada = fatura.confirmacao_transportador_status === 'CONTESTADO';
   const avisoContestacao = contestada
@@ -159,7 +170,7 @@ footer{padding:16px 30px;color:#64748b;font-size:12px;border-top:1px solid #e2e8
   </header>
   <div class="resumo">
     <div class="card"><small>Valor cobrado</small><strong>${dinheiro(fatura.valor_fatura)}</strong></div>
-    <div class="card"><small>Calculado pela auditoria</small><strong>${dinheiro(fatura.valor_calculado)}</strong></div>
+    <div class="card"><small>Calculado pela auditoria</small><strong>${dinheiro(calculadoExibido)}</strong></div>
     <div class="card"><small>Desconto identificado</small><strong class="${saldo > 0 ? 'destaque' : ''}">${dinheiro(saldo)}</strong></div>
     <div class="card"><small>Status atual</small><strong>${esc((fatura.status || '').replaceAll('_', ' '))}</strong></div>
   </div>
