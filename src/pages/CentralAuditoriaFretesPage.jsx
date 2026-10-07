@@ -2138,8 +2138,15 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     const { saldo, camposAuditoria, descontar, motivo, observacao } = modalLiberacao;
     if (!descontar) { setModalLiberacao((prev) => ({ ...prev, erro: 'Responda se o valor sera descontado (Sim ou Nao).' })); return; }
     if (descontar === 'NAO' && String(motivo).trim().length < 10) { setModalLiberacao((prev) => ({ ...prev, erro: 'Informe o motivo de nao descontar (minimo 10 caracteres).' })); return; }
+    const descontoProposto = descontar === 'SIM' ? Number(modalLiberacao.descontoProposto) : 0;
+    if (descontar === 'SIM' && (!Number.isFinite(descontoProposto) || descontoProposto <= 0 || descontoProposto > saldo + 0.01)) {
+      setModalLiberacao((prev) => ({ ...prev, erro: 'Informe um desconto maior que zero e menor ou igual a diferenca calculada.' }));
+      return;
+    }
+    const valorDevido = Number(Math.max(saldo - descontoProposto, 0).toFixed(2));
     const texto = [
       `[DESCONTO: ${descontar === 'SIM' ? 'SIM' : 'NAO'}]`,
+      descontar === 'SIM' ? `Desconto proposto: ${dinheiro(descontoProposto)} de uma diferenca de ${dinheiro(saldo)}. Valor devido: ${dinheiro(valorDevido)}.` : '',
       descontar === 'NAO' ? `Motivo de nao descontar: ${String(motivo).trim()}.` : '',
       String(observacao).trim() ? `Obs.: ${String(observacao).trim()}` : '',
     ].filter(Boolean).join(' ');
@@ -2148,9 +2155,11 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       await mudarStatus('AGUARDANDO_APROVACAO_GESTAO', {
         ...camposAuditoria,
         desconto_aplicado_confirmado: false,
-        desconto_pendente_valor: Math.max(saldo, 0),
+        desconto_pendente_valor: descontoProposto,
+        valor_recuperado: descontoProposto,
+        auditoria_total_descontar: descontoProposto,
         observacao_aprovacao: texto,
-        descricaoHistorico: `Enviada para aprovacao da gestao: cobranca a maior de ${dinheiro(saldo)}. ${texto}`,
+        descricaoHistorico: `Enviada para aprovacao da gestao: diferenca calculada de ${dinheiro(saldo)}, desconto proposto de ${dinheiro(descontoProposto)} e valor devido de ${dinheiro(valorDevido)}. ${texto}`,
       });
       setModalLiberacao(null);
       setMensagemLiberacao(`⚠ Nao liberada direto: ha cobranca a maior de ${dinheiro(saldo)}. Fatura enviada para "Aprovacao da Gestao" com as suas respostas.`);
@@ -2190,7 +2199,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     // (volta pra COM_DIVERGENCIA). Sem confirm() ambiguo no meio do caminho.
     if (descontoDevido > TOLERANCIA_DESCONTO_PENDENTE) {
       // Questionario pro auditor (vai descontar? por que nao?) antes de ir pra gestao.
-      setModalLiberacao({ saldo: descontoDevido, camposAuditoria, itens: montarItensEnvio(detalhes.filter((item) => Number(item.calculado_frete || 0) > 0 && Number(item.diferenca || 0) > 0)), descontar: '', motivo: '', observacao: '', enviando: false, erro: '' });
+      setModalLiberacao({ saldo: descontoDevido, descontoProposto: descontoDevido.toFixed(2), camposAuditoria, itens: montarItensEnvio(detalhes.filter((item) => Number(item.calculado_frete || 0) > 0 && Number(item.diferenca || 0) > 0)), descontar: '', motivo: '', observacao: '', enviando: false, erro: '' });
       return;
     }
 
@@ -3874,6 +3883,19 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                   <label><input type="radio" name="descontar" checked={modalLiberacao.descontar === 'NAO'} onChange={() => setModalLiberacao((p) => ({ ...p, descontar: 'NAO' }))} /> Nao</label>
                 </div>
               </div>
+              {modalLiberacao.descontar === 'SIM' && (() => {
+                const proposto = Number(modalLiberacao.descontoProposto);
+                const devido = Number.isFinite(proposto) ? Math.max(modalLiberacao.saldo - proposto, 0) : modalLiberacao.saldo;
+                return (
+                  <div className="hint-box compact" style={{ marginTop: 10 }}>
+                    <label className="field">Valor do desconto proposto *
+                      <input type="number" min="0.01" max={Number(modalLiberacao.saldo).toFixed(2)} step="0.01" value={modalLiberacao.descontoProposto ?? ''} onChange={(e) => setModalLiberacao((p) => ({ ...p, descontoProposto: e.target.value }))} />
+                    </label>
+                    <div>Diferenca calculada: <strong>{dinheiro(modalLiberacao.saldo)}</strong></div>
+                    <div>Valor reconhecido como devido: <strong style={{ color: devido > 0.005 ? '#b45309' : '#14733b' }}>{dinheiro(devido)}</strong></div>
+                  </div>
+                );
+              })()}
               {modalLiberacao.descontar === 'NAO' && (
                 <label className="field">Qual o motivo de nao descontar? * (minimo 10 caracteres)
                   <textarea rows={3} value={modalLiberacao.motivo} onChange={(e) => setModalLiberacao((p) => ({ ...p, motivo: e.target.value }))} />
@@ -4188,6 +4210,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   };
   const dentroFiltroRapido = (fatura) => {
     if (!filtroRapido) return true;
+    if (filtroRapido === 'repetidas') return repetidasPorId.has(fatura.id);
     if (filtroRapido === 'vencidas') return faixaVencimento(fatura) === 'VENCIDA';
     if (filtroRapido === 'a_vencer') {
       const dias = diasAte(fatura.data_vencimento);
@@ -4207,7 +4230,22 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   // demais filtros - assim os numeros ficam estaveis enquanto o auditor
   // pesquisa/filtra a tabela abaixo.
   const faturasEscopo = useMemo(() => state.faturas.filter(dentroVisaoFatura), [state.faturas, visaoFatura, sessao?.email, sessao?.nome]);
+  // Faturas repetidas: mesmo numero + serie da MESMA transportadora (CNPJ; sem
+  // CNPJ, pelo nome). Mapa id -> { chave, total } so para as que se repetem.
+  const repetidasPorId = useMemo(() => {
+    const grupos = new Map();
+    state.faturas.forEach((fatura) => {
+      const cnpj = String(fatura.cnpj_transportadora || '').replace(/\D/g, '');
+      const quem = cnpj.length === 14 ? `C:${cnpj}` : `N:${normalizarNomeTransportadora(fatura.transportadora)}`;
+      const chave = `${chaveFatura(fatura.numero_fatura, fatura.serie_fatura)}::${quem}`;
+      grupos.set(chave, [...(grupos.get(chave) || []), fatura.id]);
+    });
+    const mapa = new Map();
+    grupos.forEach((ids, chave) => { if (ids.length > 1) ids.forEach((id) => mapa.set(id, { chave, total: ids.length })); });
+    return mapa;
+  }, [state.faturas]);
   const resumoCards = useMemo(() => ({
+    repetidas: faturasEscopo.filter((fatura) => repetidasPorId.has(fatura.id)).length,
     vencidas: faturasEscopo.filter((fatura) => faixaVencimento(fatura) === 'VENCIDA').length,
     aVencer: faturasEscopo.filter((fatura) => {
       const dias = diasAte(fatura.data_vencimento);
@@ -4218,7 +4256,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     lancadas: faturasEscopo.filter((fatura) => ['PARTIDA_LANCADA', 'LANCADA_FINANCEIRO'].includes(situacaoPagamentoFatura(fatura))).length,
     pagas: faturasEscopo.filter((fatura) => ['PAGO', 'PAGO_DIVERGENTE'].includes(situacaoPagamentoFatura(fatura))).length,
     pagasDivergentes: faturasEscopo.filter((fatura) => situacaoPagamentoFatura(fatura) === 'PAGO_DIVERGENTE').length,
-  }), [faturasEscopo]);
+  }), [faturasEscopo, repetidasPorId]);
   // Alerta fixo com as faturas DO PROPRIO auditor (independe da visao escolhida).
   const alertaPrazo = useMemo(() => {
     const meuEmail = String(sessao?.email || '').trim().toLowerCase();
@@ -4292,6 +4330,12 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     .filter((fatura) => passaFiltros(fatura))
     // Vencimento do menor pro maior - fatura sem vencimento vai pro final.
     .sort((a, b) => {
+      // No filtro "Repetidas", as copias da mesma fatura ficam juntas.
+      if (filtroRapido === 'repetidas') {
+        const porGrupo = String(repetidasPorId.get(a.id)?.chave || '').localeCompare(String(repetidasPorId.get(b.id)?.chave || ''));
+        if (porGrupo) return porGrupo;
+        return String(a.created_at || '').localeCompare(String(b.created_at || ''));
+      }
       if (!a.data_vencimento && !b.data_vencimento) return 0;
       if (!a.data_vencimento) return 1;
       if (!b.data_vencimento) return -1;
@@ -6918,6 +6962,7 @@ ${portaisLaudo.length ? `
         )}
         <div className="summary-strip audit-quick-cards">
           {[
+            ['repetidas', 'Repetidas (mesma transportadora)', resumoCards.repetidas, resumoCards.repetidas ? '#b45309' : '#047857'],
             ['vencidas', 'Vencidas', resumoCards.vencidas, resumoCards.vencidas ? '#9b1111' : '#047857'],
             ['a_vencer', 'A vencer (7 dias)', resumoCards.aVencer, resumoCards.aVencer ? '#d97706' : '#047857'],
             ['novas', 'Novas (recebidas)', resumoCards.novas, '#0369a1'],
@@ -7208,10 +7253,11 @@ ${portaisLaudo.length ? `
             <tbody>
               {listaPaginada.map((fatura) => {
                 const auditadaCompleta = faturaTotalmenteAuditada(fatura);
+                const repetida = repetidasPorId.get(fatura.id);
                 return (
-                  <tr key={fatura.id} onClick={() => setAberta(fatura)} style={{ cursor: 'pointer', ...(auditadaCompleta ? { background: '#f0fdf4', borderLeft: '3px solid #16a34a' } : {}) }}>
+                  <tr key={fatura.id} onClick={() => setAberta(fatura)} style={{ cursor: 'pointer', ...(auditadaCompleta ? { background: '#f0fdf4', borderLeft: '3px solid #16a34a' } : {}), ...(repetida ? { background: '#fff7ed', borderLeft: '4px solid #ea580c' } : {}) }}>
                     <td onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selecionadasIds.includes(fatura.id)} onChange={() => alternarSelecao(fatura.id)} /></td>
-                    <td><strong>{fatura.numero_fatura}</strong>{fatura.ocorrencia_texto && <span title={`Ocorrencia: ${fatura.ocorrencia_texto}`} style={{ marginLeft: 4 }}>📌</span>}</td>
+                    <td><strong>{fatura.numero_fatura}</strong>{repetida && <span title={`Esta fatura aparece ${repetida.total}x para a mesma transportadora (mesmo numero e serie). Use "Excluir faturas" para apagar as copias.`} style={{ display: 'inline-block', marginLeft: 6, padding: '1px 6px', borderRadius: 999, background: '#ea580c', color: '#fff', fontSize: 11, fontWeight: 700 }}>REPETIDA ×{repetida.total}</span>}{fatura.ocorrencia_texto && <span title={`Ocorrencia: ${fatura.ocorrencia_texto}`} style={{ marginLeft: 4 }}>📌</span>}</td>
                     <td>{fatura.transportadora}</td>
                     <td title={resumoOrigensFaturas.get(fatura.id)?.tooltip || 'Origem ainda nao carregada/auditada'}>
                       {resumoOrigensFaturas.get(fatura.id)?.principal || '-'}
@@ -8346,7 +8392,7 @@ function HistoricoAprovacaoGestao({ state }) {
           data: h.created_at || '',
           decisao: h.acao,
           quem: h.usuario_nome || '-',
-          valor: achou ? Number(achou[1].replace(/\./g, '').replace(',', '.')) : null,
+          valor: h.metadata?.desconto_aprovado ?? (achou ? Number(achou[1].replace(/\./g, '').replace(',', '.')) : null),
           descricao: h.descricao || '',
           numero: fatura.numero_fatura || '-',
           transportadora: fatura.transportadora || '-',
@@ -8460,11 +8506,16 @@ function AprovacaoGestao({ state, onState }) {
     ));
   }, [pendentesTodas, filtroTransportadora, filtroSolicitante, filtroBusca]);
 
-  const valorPendente = (item) => {
+  const diferencaAtual = (item) => {
     const ctes = ctesPorFatura[item.id]?.lista;
     if (!ctes) return Number(item.desconto_pendente_valor || item.auditoria_total_descontar || 0);
     const resumo = resumirDetalhesAuditoria(ctes, carregarToleranciaAuditoria());
     return descontoConformeEscolha(resumo.cobrancaAcima, resumo.cobrancaAbaixo, faturaConsideraMenor(item));
+  };
+  const valorPendente = (item) => {
+    const diferenca = diferencaAtual(item);
+    const proposto = Number(item.desconto_pendente_valor);
+    return proposto > 0 && proposto <= diferenca + 0.01 ? proposto : diferenca;
   };
   const escolhidas = pendentes.filter((item) => selecionadas.includes(item.id));
   const todasMarcadas = pendentes.length > 0 && escolhidas.length === pendentes.length;
@@ -8549,7 +8600,10 @@ function AprovacaoGestao({ state, onState }) {
   const abrirDecisao = (tipo) => {
     if (!escolhidas.length) return;
     escolhidas.forEach((fatura) => { carregarCtes(fatura); });
-    setDecisao({ tipo, justificativa: '', tipoAjuste: TIPOS_AJUSTE_TABELA[0].valor, erro: '' });
+    const descontos = tipo === 'COM_DESCONTO'
+      ? Object.fromEntries(escolhidas.map((fatura) => [fatura.id, Number(valorPendente(fatura) || 0).toFixed(2)]))
+      : {};
+    setDecisao({ tipo, justificativa: '', tipoAjuste: TIPOS_AJUSTE_TABELA[0].valor, descontos, erro: '' });
   };
 
   const TITULOS_DECISAO = {
@@ -8562,6 +8616,17 @@ function AprovacaoGestao({ state, onState }) {
   const confirmarDecisao = async () => {
     const { tipo, justificativa, tipoAjuste } = decisao;
     const texto = String(justificativa || '').trim();
+    if (tipo === 'COM_DESCONTO') {
+      const invalida = escolhidas.find((fatura) => {
+        const desconto = Number(decisao.descontos?.[fatura.id]);
+        const diferenca = Number(diferencaAtual(fatura) || 0);
+        return !Number.isFinite(desconto) || desconto <= 0 || desconto > diferenca + 0.01;
+      });
+      if (invalida) {
+        setDecisao((p) => ({ ...p, erro: `Confira o desconto da fatura ${invalida.numero_fatura}: informe um valor maior que zero e menor ou igual a diferenca calculada.` }));
+        return;
+      }
+    }
     if (tipo === 'RECUSAR' && texto.length < 5) { setDecisao((p) => ({ ...p, erro: 'Informe o motivo da recusa.' })); return; }
     if (tipo === 'SEM_DESCONTO' && texto.length < 10) { setDecisao((p) => ({ ...p, erro: 'Informe a justificativa de aprovar sem desconto (minimo 10 caracteres).' })); return; }
     if (tipo === 'SUPRIMENTOS' && texto.length < 30) { setDecisao((p) => ({ ...p, erro: `Justificativa muito curta (${texto.length}/30 caracteres). Explique o ajuste que Suprimentos precisa fazer.` })); return; }
@@ -8577,14 +8642,25 @@ function AprovacaoGestao({ state, onState }) {
         // desconto_pendente_valor antigo exibido na fatura.
         const ctes = ctesPorFatura[fatura.id]?.lista || await carregarCtesFaturaParaAprovacao(fatura);
         const resumoAtual = resumirDetalhesAuditoria(ctes, carregarToleranciaAuditoria());
-        const valor = descontoConformeEscolha(
+        const diferencaCalculada = descontoConformeEscolha(
           resumoAtual.cobrancaAcima,
           resumoAtual.cobrancaAbaixo,
           faturaConsideraMenor(fatura),
         );
+        const descontoInformado = Number(decisao.descontos?.[fatura.id]);
+        if (tipo === 'COM_DESCONTO' && (!Number.isFinite(descontoInformado) || descontoInformado <= 0)) {
+          throw new Error('informe um desconto maior que zero.');
+        }
+        if (tipo === 'COM_DESCONTO' && descontoInformado > diferencaCalculada + 0.01) {
+          throw new Error(`o desconto informado (${dinheiro(descontoInformado)}) nao pode superar a diferenca recalculada (${dinheiro(diferencaCalculada)}).`);
+        }
+        const valor = tipo === 'COM_DESCONTO'
+          ? Number(descontoInformado.toFixed(2))
+          : Number(diferencaCalculada.toFixed(2));
+        const valorReconhecidoDevido = Number(Math.max(diferencaCalculada - valor, 0).toFixed(2));
         let statusNovo = 'LIBERADA_COM_DESCONTO';
         let acao = 'APROVACAO_GESTAO_CONFIRMOU_DESCONTO';
-        let descricao = `Gestao aprovou: desconto de ${dinheiro(valor)} confirmado, fatura liberada para pagamento com desconto.${texto ? ` Obs.: ${texto}` : ''}`;
+        let descricao = `Gestao aprovou desconto de ${dinheiro(valor)} sobre a diferenca calculada de ${dinheiro(diferencaCalculada)}. ${dinheiro(valorReconhecidoDevido)} reconhecido(s) como valor devido, sem desconto. Fatura liberada para pagamento com desconto.${texto ? ` Obs.: ${texto}` : ''}`;
         let campos = {
           desconto_aplicado_confirmado: true,
           desconto_pendente_valor: 0,
@@ -8629,6 +8705,11 @@ function AprovacaoGestao({ state, onState }) {
           descricao,
           usuario_nome: usuarioNome,
           usuario_email: sessao?.email || '',
+          metadata: tipo === 'COM_DESCONTO' ? {
+            diferenca_calculada: Number(diferencaCalculada.toFixed(2)),
+            desconto_aprovado: valor,
+            valor_reconhecido_devido: valorReconhecidoDevido,
+          } : {},
         });
         resultados.push({ ok: true, nome });
       } catch (error) {
@@ -8819,7 +8900,42 @@ function AprovacaoGestao({ state, onState }) {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div className="hint-box" style={{ background: '#fff', width: 'min(900px, 96vw)', maxHeight: '92vh', overflow: 'auto', padding: 20 }}>
             <h3 style={{ marginTop: 0 }}>{TITULOS_DECISAO[decisao.tipo]} — {escolhidas.length} fatura(s), {dinheiro(totalEscolhido)}</h3>
-            {decisao.tipo === 'COM_DESCONTO' && <p>A fatura e liberada para pagamento com o desconto de cobranca a maior.</p>}
+            {decisao.tipo === 'COM_DESCONTO' && (
+              <>
+                <p>Ajuste o desconto real de cada fatura. A diferenca nao descontada sera registrada como valor reconhecido como devido.</p>
+                <div className="table-card" style={{ marginBottom: 12 }}><div className="sim-analise-tabela-wrap">
+                  <table className="sim-analise-tabela">
+                    <thead><tr><th>Fatura</th><th>Diferenca calculada</th><th>Desconto a aprovar</th><th>Valor devido</th></tr></thead>
+                    <tbody>
+                      {escolhidas.map((fatura) => {
+                        const diferenca = Number(diferencaAtual(fatura) || 0);
+                        const informado = Number(decisao.descontos?.[fatura.id]);
+                        const devido = Number.isFinite(informado) ? Math.max(diferenca - informado, 0) : diferenca;
+                        const invalido = !Number.isFinite(informado) || informado <= 0 || informado > diferenca + 0.01;
+                        return (
+                          <tr key={fatura.id}>
+                            <td><strong>{fatura.numero_fatura}</strong><small style={{ display: 'block' }}>{fatura.transportadora}</small></td>
+                            <td>{dinheiro(diferenca)}</td>
+                            <td>
+                              <input
+                                type="number"
+                                min="0.01"
+                                max={diferenca.toFixed(2)}
+                                step="0.01"
+                                value={decisao.descontos?.[fatura.id] ?? ''}
+                                onChange={(e) => setDecisao((p) => ({ ...p, descontos: { ...(p.descontos || {}), [fatura.id]: e.target.value } }))}
+                                style={{ width: 140, borderColor: invalido ? '#dc2626' : undefined }}
+                              />
+                            </td>
+                            <td style={{ color: devido > 0.005 ? '#b45309' : '#14733b', fontWeight: 700 }}>{dinheiro(devido)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div></div>
+              </>
+            )}
             {decisao.tipo === 'SEM_DESCONTO' && <p>O adicional de cada CT-e cobrado a mais vira <strong>saldo autorizado</strong> (gestao/auditoria) e a fatura e liberada para pagamento sem desconto.</p>}
             {decisao.tipo === 'SUPRIMENTOS' && <p>O adicional ja fica <strong>autorizado</strong> na auditoria, a fatura e liberada e um chamado AMD e aberto para Suprimentos assumir e ajustar a tabela.</p>}
             {decisao.tipo === 'RECUSAR' && <p>As faturas voltam para a auditoria tratar a divergencia.</p>}
