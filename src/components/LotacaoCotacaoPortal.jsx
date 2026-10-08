@@ -102,6 +102,9 @@ export default function LotacaoCotacaoPortal({ transportadoras, resumoRealizado,
   const [nome, setNome] = useState('');
   const [prazo, setPrazo] = useState('');
   const [sel, setSel] = useState({}); // nome da tabela -> { ativo, cnpj, soAtendidas }
+  const [novos, setNovos] = useState([]); // transportadores sem tabela: { nome, cnpj }
+  const [novoNome, setNovoNome] = useState('');
+  const [novoCnpj, setNovoCnpj] = useState('');
   const [lista, setLista] = useState([]);
   const [detalhe, setDetalhe] = useState(null);
   const [msg, setMsg] = useState('');
@@ -129,7 +132,7 @@ export default function LotacaoCotacaoPortal({ transportadoras, resumoRealizado,
 
   const gerar = async () => {
     const escolhidas = (transportadoras || []).filter((t) => sel[t.nome]?.ativo);
-    if (!nome.trim() || !escolhidas.length) { setMsg('Informe o nome da cotação e marque ao menos uma transportadora.'); return; }
+    if (!nome.trim() || (!escolhidas.length && !novos.length)) { setMsg('Informe o nome da cotação e marque ao menos uma transportadora.'); return; }
     const semCnpj = escolhidas.filter((t) => !String(sel[t.nome]?.cnpj || '').replace(/\D/g, '').length);
     if (semCnpj.length) { setMsg(`Informe o CNPJ de: ${semCnpj.map((t) => t.nome).join(', ')} (é a identificação no portal).`); return; }
     setSalvando(true);
@@ -142,9 +145,11 @@ export default function LotacaoCotacaoPortal({ transportadoras, resumoRealizado,
           ? null
           : Array.from(new Set((t.linhas || []).map((l) => chaveRota(l.origem, l.destino, l.tipo || l.tipo_veiculo)))),
       }));
+      novos.forEach((n) => convites.push({ transportadora: n.nome, cnpjs: [n.cnpj], chaves: null }));
       await criarCotacao({ nome: nome.trim(), periodoLabel, prazoResposta: prazo || null, rotas, convites });
       setNome('');
       setPrazo('');
+      setNovos([]);
       setMsg('Cotação criada. Abra "Links e propostas" para copiar o link de cada transportadora.');
       await recarregar();
     } catch (e) {
@@ -180,6 +185,9 @@ export default function LotacaoCotacaoPortal({ transportadoras, resumoRealizado,
         <div style={{ marginTop: 14 }}>
           {msg && <div className="hint-box" style={{ marginBottom: 10 }}>{msg}</div>}
 
+          <div className="hint-box" style={{ marginBottom: 8 }}>
+            <b>Passo a passo:</b> 1) dê um nome à cotação · 2) marque as transportadoras (ou adicione uma nova) e confira o CNPJ · 3) clique em <b>Gerar links</b> · 4) em <b>Cotações criadas → Links e propostas</b> copie o link de cada uma e envie.
+          </div>
           <b>Nova cotação</b> <small>({rotas.length} rotas/tipos de veículo, volumetria: {periodoLabel})</small>
           <div style={{ display: 'flex', gap: 10, margin: '8px 0', flexWrap: 'wrap' }}>
             <input placeholder="Nome (ex.: Cotação lotação out/2026)" value={nome} onChange={(e) => setNome(e.target.value)} style={{ flex: 1, minWidth: 240 }} />
@@ -187,7 +195,7 @@ export default function LotacaoCotacaoPortal({ transportadoras, resumoRealizado,
           </div>
           <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 8 }}>
             <table style={{ width: '100%', fontSize: 12 }}>
-              <thead><tr><th></th><th>Transportadora</th><th>CNPJ (identificação no portal)</th><th>Rotas</th></tr></thead>
+              <thead><tr><th></th><th>Transportadora</th><th>CNPJ (ela digita no portal; basta a raiz de 8 dígitos aqui)</th><th>Rotas</th></tr></thead>
               <tbody>
                 {(transportadoras || []).map((t) => {
                   const s = sel[t.nome] || {};
@@ -202,6 +210,21 @@ export default function LotacaoCotacaoPortal({ transportadoras, resumoRealizado,
                 })}
               </tbody>
             </table>
+          </div>
+          <div style={{ marginTop: 10, padding: 10, border: '1px dashed #cbd5e1', borderRadius: 8 }}>
+            <b>Transportador novo (ainda sem tabela)</b>
+            <div style={{ display: 'flex', gap: 8, margin: '6px 0', flexWrap: 'wrap' }}>
+              <input placeholder="Nome da transportadora" value={novoNome} onChange={(e) => setNovoNome(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
+              <input placeholder="CNPJ" value={novoCnpj} onChange={(e) => setNovoCnpj(e.target.value)} style={{ width: 200 }} />
+              <button onClick={() => {
+                if (!novoNome.trim() || String(novoCnpj).replace(/D/g, '').length < 8) { setMsg('Informe o nome e o CNPJ do transportador novo.'); return; }
+                setNovos([...novos, { nome: novoNome.trim(), cnpj: novoCnpj }]); setNovoNome(''); setNovoCnpj(''); setMsg('');
+              }}>Adicionar</button>
+            </div>
+            <small>Ele recebe <b>todas</b> as rotas da cotação. Cada um adicionado entra na cotação ao clicar em Gerar links.</small>
+            {novos.map((n, i) => (
+              <div key={n.nome + i} style={{ fontSize: 12, marginTop: 4 }}>• {n.nome} — {n.cnpj} <button onClick={() => setNovos(novos.filter((_, k) => k !== i))}>remover</button></div>
+            ))}
           </div>
           <p><button className="btn-primary" disabled={salvando} onClick={gerar}>{salvando ? 'Gerando…' : 'Gerar links'}</button></p>
 
