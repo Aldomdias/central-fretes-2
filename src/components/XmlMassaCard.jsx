@@ -5,7 +5,7 @@ import { getSupabaseClient } from '../lib/supabaseClient';
 import { importarRealizadoMensalEnxuto } from '../services/realizadoMensalService';
 import { formatarCnpj, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
 
-const normNome = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/(LTDA|ME|EIRELI|S\/?A|EPP)/g, '').replace(/[^A-Z0-9]/g, '');
+const normNome = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\b(LTDA|ME|EIRELI|S\/?A|EPP)\b/g, '').replace(/[^A-Z0-9]/g, '');
 const fmt = (n) => Number(n || 0).toLocaleString('pt-BR');
 
 // Sobe XMLs de CT-e em massa, sem escolher transportadora: o CNPJ do emitente
