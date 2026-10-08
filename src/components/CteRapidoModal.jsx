@@ -27,6 +27,12 @@ const pick = (obj, keys) => {
 };
 const moeda = (v) => (Number.isFinite(Number(v)) && v !== '' ? Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '—');
 const num = (v, d = 2) => (Number.isFinite(Number(v)) && v !== '' ? Number(v).toLocaleString('pt-BR', { maximumFractionDigits: d }) : '—');
+const cnpj = (v) => {
+  const d = dig(v);
+  if (d.length === 14) return d.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5');
+  if (d.length === 11) return d.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4');
+  return d;
+};
 const data = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '—');
 
 function Campo({ rotulo, valor }) {
@@ -169,6 +175,10 @@ export default function CteRapidoModal({ onRecalcular }) {
                     <Campo rotulo="Peso" valor={num(pick(cte, ['peso', 'peso_declarado']))} />
                     <Campo rotulo="Cubagem" valor={num(pick(cte, ['cubagem', 'cubagem_total']), 4)} />
                     <Campo rotulo="Volumes" valor={num(pick(cte, ['qtd_volumes']), 0)} />
+                    <Campo rotulo="Expedidor (remetente)" valor={pick(cte, ['nome_remetente', 'remetente', 'expedidor', 'nome_expedidor'])} />
+                    <Campo rotulo="CNPJ expedidor (remetente)" valor={cnpj(pick(cte, ['documento_expedidor', 'cnpj_expedidor', 'documento_remetente', 'cnpj_emissor_nf']))} />
+                    <Campo rotulo="Recebedor (destinatário)" valor={pick(cte, ['nome_destinatario', 'destinatario', 'recebedor', 'nome_recebedor'])} />
+                    <Campo rotulo="CNPJ recebedor (destinatário)" valor={cnpj(pick(cte, ['documento_recebedor', 'cnpj_recebedor', 'documento_destinatario', 'cnpj_destinatario']))} />
                     <Campo rotulo="Chave NF-e" valor={pick(cte, ['chave_nfe'])} />
                   </div>
                 </>
