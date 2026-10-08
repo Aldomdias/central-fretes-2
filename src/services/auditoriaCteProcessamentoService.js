@@ -1212,6 +1212,23 @@ function calcularValorParaTabelaEspecifica(cte, tabelaEntry, canaisTentativa, ci
   return null;
 }
 
+// ─── Transferência entre unidades (ex.: CPX → CPX) ────────────────────────
+// CT-e em que remetente e destinatário são a MESMA empresa (mesma raiz de CNPJ)
+// é transferência e tem negociação própria (ex.: % sobre a NF). A transportadora
+// cadastra uma tabela alternativa cujo rótulo contém "TRANSFERENCIA"; o CT-e de
+// transferência é calculado SÓ por ela (não procura rota na tabela principal) e
+// os demais CT-es nunca a usam como candidata.
+function ctePareceTransferencia(cte = {}) {
+  const remetente = obterRaizCnpj(pickDigits(cte, ['documento_remetente', 'documentoRemetente', 'cnpj_remetente'], 14));
+  const destinatario = obterRaizCnpj(pickDigits(cte, ['documento_destinatario', 'documentoDestinatario', 'cnpj_destinatario'], 14));
+  return Boolean(remetente) && remetente.length === 8 && remetente === destinatario;
+}
+
+function ehTabelaTransferencia(entrada = {}) {
+  if (!entrada?.tabelaAlternativaDe) return false;
+  return normalizeCompare(entrada.varianteTabela || '').includes('TRANSFERENCIA');
+}
+
 // Calcula o comparativo entre a tabela vencedora (que já gerou `detalheVencedor`)
 // e suas tabelas alternativas (se houver), pra Auditoria sugerir a mais próxima
 // do valor pago no CT-e sem perder a possibilidade de escolha manual na UI.
@@ -1234,7 +1251,9 @@ function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, de
 
   // Reajuste com vigência: pela data de emissão decide quais tabelas concorrem
   // (a tabela em vigor substitui a principal).
-  const { entradas: entradasGrupo, porVigencia } = aplicarVigenciaNoGrupo(grupoAlvo, dataEmissaoIsoCte(cte));
+  const grupoSemTransferencia = grupoAlvo.filter((entrada) => !ehTabelaTransferencia(entrada));
+  if (grupoSemTransferencia.length <= 1 && grupoSemTransferencia.length !== grupoAlvo.length) return null;
+  const { entradas: entradasGrupo, porVigencia } = aplicarVigenciaNoGrupo(grupoSemTransferencia, dataEmissaoIsoCte(cte));
   const valorCtePago = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
   const candidatos = entradasGrupo.map((entrada) => {
     const detalhe = calcularValorParaTabelaEspecifica(cte, entrada, canaisTentativa, cidadePorIbge, opcoes, usarRotaInvertida);
@@ -1306,6 +1325,26 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
 
   let detalhe = null;
   let calculoInvertido = false;
+  let transferenciaAplicada = false;
+
+  if (ctePareceTransferencia(cte)) {
+    const tabelasTransferencia = (transportadoras || []).filter((t) => (
+      ehTabelaTransferencia(t) && (t.nome === transportadoraTabela || nomeCompativel(t.nome, transportadoraTabela))
+    ));
+    if (tabelasTransferencia.length) {
+      for (const entrada of tabelasTransferencia) {
+        detalhe = calcularValorParaTabelaEspecifica(cte, entrada, canaisTentativa, cidadePorIbge, opcoes, false);
+        if (detalhe) break;
+      }
+      if (!detalhe) {
+        return montarResultadoBase(cte, 'SEM_ROTA', 'CT-e de transferência (remetente e destinatário do mesmo grupo): rota não encontrada na tabela alternativa de transferência.', {
+          transportadora_tabela: transportadoraTabela,
+        });
+      }
+      transferenciaAplicada = true;
+    }
+  }
+
   const tentativasCte = [cte, inverterOrigemDestinoCte(cte)];
   for (let tentativaIndex = 0; tentativaIndex < tentativasCte.length && !detalhe; tentativaIndex += 1) {
     const cteTentativa = tentativasCte[tentativaIndex];
@@ -1378,6 +1417,16 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
   // com todas e sugere (sem forçar) a mais próxima do valor pago no CT-e. Só
   // roda quando existe de fato mais de uma tabela pra transportadora — CT-e sem
   // alternativas cadastradas sai byte-a-byte igual a antes desta mudança.
+  if (transferenciaAplicada) {
+    return {
+      ...resultado,
+      detalhes_calculo: {
+        ...resultado.detalhes_calculo,
+        transferencia_entre_unidades: true,
+        observacao_transferencia: 'CT-e de transferência (remetente e destinatário do mesmo grupo) calculado pela tabela alternativa de transferência.',
+      },
+    };
+  }
   const comparativoTabelas = montarComparativoTabelas(cte, transportadoras, transportadoraTabela, detalhe, canaisTentativa, cidadePorIbge, opcoes, calculoInvertido);
   if (!comparativoTabelas) return resultado;
 
