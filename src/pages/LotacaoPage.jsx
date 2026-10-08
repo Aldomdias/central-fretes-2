@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import LotacaoCotacaoPortal from '../components/LotacaoCotacaoPortal';
 import {
   analisarAnttTodasTransportadoras,
   analisarTabelaVersusAntt,
@@ -2439,6 +2440,8 @@ export default function LotacaoPage() {
         periodo={periodoAnalise}
         setPeriodo={setPeriodoAnalise}
       />
+
+      <LotacaoCotacaoPortal transportadoras={transportadoras} resumoRealizado={resumoRealizado} periodoLabel={periodoAnalise} />
 
       <PesquisaRotas tabelas={tabelas} />
 
