@@ -76,6 +76,7 @@ import {
   listarFaturasExcluidas,
   detectarCanaisFaturas,
   reauditarFatura,
+  vincularChavesDetalhesPorNumero,
   excluirFaturasAuditoria,
   registrarDoccob,
   restaurarDemonstracaoAuditoria,
@@ -2486,9 +2487,17 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       // recalcula so a lista da aba aberta (ex.: os 44 "Sem calculo"), não a
       // fatura inteira — senão reprocessa CT-es que já estão OK à toa.
       const idsRecalculo = Array.isArray(idsAlvo) ? idsAlvo : selecionados;
-      const listaAbaAtiva = tab === 'sem-calculo' ? semCalculo : tab === 'divergencias' ? divergencias : detalhes;
+      // Linhas sem chave (fatura importada so com o numero): acha a chave na base pelo numero + CNPJ.
+      const vinculo = await vincularChavesDetalhesPorNumero(fatura, detalhesOriginais);
+      if (vinculo.vinculados) {
+        onState((atual) => ({ ...atual, detalhes: { ...atual.detalhes, [fatura.id]: vinculo.detalhes } }));
+      }
+      const chaveVinculada = new Map(vinculo.detalhes.map((d) => [d.id, d.chave_cte]));
+      const comChave = (lista) => lista.map((d) => (d.chave_cte ? d : { ...d, chave_cte: chaveVinculada.get(d.id) || d.chave_cte }));
+      const detalhesAtuais = comChave(detalhes);
+      const listaAbaAtiva = tab === 'sem-calculo' ? comChave(semCalculo) : tab === 'divergencias' ? comChave(divergencias) : detalhesAtuais;
       const alvo = idsRecalculo.length
-        ? detalhes.filter((item) => idsRecalculo.includes(item.id))
+        ? detalhesAtuais.filter((item) => idsRecalculo.includes(item.id))
         : listaAbaAtiva;
       const chaves = alvo.map((item) => item.chave_cte).filter(Boolean);
       if (!chaves.length) throw new Error('Esta fatura não possui CT-es com chave para recalcular.');
@@ -2580,11 +2589,11 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       }
 
       setProgressoRecalculo({ etapa: 'atualizando_faturas', carregados: 0, total: 1 });
-      const next = await reauditarFatura(state, fatura, detalhes, sessao?.nome || sessao?.email || 'Usuario local');
+      const next = await reauditarFatura(state, fatura, detalhesAtuais, sessao?.nome || sessao?.email || 'Usuario local');
       onState(next);
       // Refaz a referência com TODOS os CT-es da fatura (não só os recalculados
       // agora), senão perde a referência de quem ficou fora da seleção.
-      const referencia = await buscarReferenciaCtes(detalhes.map((item) => item.chave_cte));
+      const referencia = await buscarReferenciaCtes(detalhesAtuais.map((item) => item.chave_cte));
       setReferenciaCtes(referencia);
       setProgressoRecalculo({ etapa: 'concluido', carregados: 1, total: 1 });
       const escopo = idsRecalculo.length ? `${idsRecalculo.length} CT-e(s)` : 'todos os CT-es da fatura';

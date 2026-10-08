@@ -774,6 +774,50 @@ export async function buscarResumoOrigensFaturas(faturaIds = []) {
 // Reauditoria da fatura: cruza cada CT-e (chave) com a base recalculada pelo
 // motor (auditoria_cte_resultados), grava calculado/diferenca/status nos
 // detalhes e atualiza os agregados e o status da fatura.
+// Linhas de fatura importadas so com o numero do CT-e (sem chave): procura a
+// chave na base de CT-es pelo numero + raiz do CNPJ da transportadora da fatura
+// (numero sozinho repete entre transportadoras) e grava a chave na linha.
+export async function vincularChavesDetalhesPorNumero(fatura, detalhes = []) {
+  const semChave = (detalhes || []).filter((d) => !normalizarChaveCte(d.chave_cte) && String(d.numero_cte || '').replace(/\D/g, ''));
+  if (!semChave.length || !isSupabaseConfigured()) return { detalhes, vinculados: 0, pendentes: semChave.length };
+  const client = getSupabaseClient();
+  const raizFatura = obterRaizCnpj(fatura?.cnpj_transportadora);
+  const numeros = [...new Set(semChave.flatMap((d) => {
+    const n = String(d.numero_cte).replace(/\D/g, '');
+    return [n, String(Number(n))];
+  }))];
+  const porNumero = new Map();
+  for (let i = 0; i < numeros.length; i += 200) {
+    const { data, error } = await client
+      .from('realizado_local_ctes')
+      .select('chave_cte,numero_cte,cnpj_transportadora,chave_nfe')
+      .in('numero_cte', numeros.slice(i, i + 200));
+    if (error) throw new Error(`Erro ao buscar CT-es por numero: ${error.message}`);
+    for (const row of data || []) {
+      const chave = normalizarChaveCte(row.chave_cte);
+      if (chave.length !== 44) continue;
+      if (raizCnpjValida(raizFatura) && obterRaizCnpj(row.cnpj_transportadora) !== raizFatura) continue;
+      const k = String(Number(String(row.numero_cte).replace(/\D/g, '')));
+      porNumero.set(k, [...(porNumero.get(k) || []), row]);
+    }
+  }
+  let vinculados = 0;
+  const alterados = [];
+  const novos = (detalhes || []).map((d) => {
+    if (normalizarChaveCte(d.chave_cte)) return d;
+    const k = String(Number(String(d.numero_cte || '').replace(/\D/g, '')));
+    const candidatos = porNumero.get(k) || [];
+    const unicos = [...new Set(candidatos.map((c) => normalizarChaveCte(c.chave_cte)))];
+    if (unicos.length !== 1) return d; // sem candidato ou ambiguo: nao chuta
+    vinculados += 1;
+    const novo = { ...d, chave_cte: unicos[0], ...(d.chave_nfe ? {} : { chave_nfe: candidatos[0].chave_nfe || d.chave_nfe }) };
+    alterados.push(novo);
+    return novo;
+  });
+  for (let i = 0; i < alterados.length; i += 200) await safeUpsert('fatura_detalhes', alterados.slice(i, i + 200));
+  return { detalhes: novos, vinculados, pendentes: semChave.length - vinculados };
+}
+
 export async function reauditarFatura(state, fatura, detalhes, usuarioNome = 'Usuario local') {
   if (!isSupabaseConfigured()) {
     throw new Error('Reauditoria disponivel apenas com o Supabase configurado.');
