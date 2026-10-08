@@ -707,7 +707,15 @@ function OrigemModal({ open, initialValue, onSave, onClose }) {
 
 function LinhaModal({ open, title, fields, initialValue, onSave, onClose }) {
   const [form, setForm] = useState(initialValue || {});
-  React.useEffect(() => setForm(initialValue || {}), [initialValue, open]);
+  // Reinicia o formulario so ao abrir / trocar a linha editada. Antes dependia de
+  // initialValue (objeto novo a cada render do pai), entao qualquer re-render
+  // (sincronizacao, store) apagava o que o usuario estava digitando.
+  const initialRef = React.useRef(initialValue);
+  initialRef.current = initialValue;
+  const idInicial = initialValue?.id ?? null;
+  React.useEffect(() => {
+    if (open) setForm(initialRef.current || {});
+  }, [open, idInicial]);
   return (
     <Modal open={open} title={title} onClose={onClose}>
       <div className="form-grid three">
@@ -1282,7 +1290,11 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
       // principal). Editar uma linha existente preserva o grupo dela.
       grupoTabelaAlternativa: editing ? (editing.grupoTabelaAlternativa || null) : (grupoTabelaAlternativa || null),
     };
-    store.salvarLinha(transportadora.id, origem.id, secao, row);
+    const salvo = store.salvarLinha(transportadora.id, origem.id, secao, row);
+    if (salvo === false) {
+      setFeedback({ type: 'error', text: 'Não foi salvo: você não tem permissão para editar transportadoras (ou sua sessão expirou). Recarregue a página e tente de novo.' });
+      return;
+    }
     setModalOpen(false);
     setEditing(null);
   };

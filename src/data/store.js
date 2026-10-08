@@ -1024,7 +1024,7 @@ export function useFreteStore(sessao = null) {
         }
       },
       salvarLinha(transportadoraId, origemId, secao, linha) {
-        if (!podeEditarTransportadoras()) return;
+        if (!podeEditarTransportadoras()) return false;
         aplicarAlteracao(
           (prev) =>
             prev.map((t) =>
@@ -1049,6 +1049,7 @@ export function useFreteStore(sessao = null) {
           secao,
           secao
         );
+        return true;
       },
       // `grupoTabelaAlternativa` (opcional): quando informado (incluindo null
       // explícito para "tabela principal"), só as linhas daquele grupo são
