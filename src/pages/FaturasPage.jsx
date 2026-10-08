@@ -99,7 +99,7 @@ function parseFaturaDetalhe(row, faturaId, numeroFatura, serieFatura) {
     // Em alguns exports do sistema de origem, "Valor Frete" vem vazio e o
     // valor real cobrado está em "Custo Frete" (mesmo conceito, coluna
     // diferente) — usamos como fallback.
-    valor_frete: Number(row['Valor Frete'] || row['Custo Frete'] || 0),
+    valor_frete: Number(row['Custo Frete'] || row['Valor Frete'] || 0),
     custo_frete: Number(row['Custo Frete'] || 0),
     preco_frete: Number(row['Preço Frete'] || row['Preco Frete'] || 0),
     calculado_frete: Number(row['Calculado Frete'] || 0),

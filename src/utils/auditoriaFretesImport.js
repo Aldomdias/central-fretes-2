@@ -1,4 +1,5 @@
 import { obterRaizCnpj } from './cnpj.js';
+import { parseNumeroPlanilha } from './parseNumeroPlanilha.js';
 
 function valor(row, nomes) {
   for (const nome of nomes) {
@@ -12,11 +13,7 @@ function texto(row, nomes) {
 }
 
 function numero(row, nomes) {
-  const original = valor(row, nomes);
-  if (typeof original === 'number') return original;
-  const normalizado = String(original || '').trim().replace(/\./g, '').replace(',', '.');
-  const convertido = Number(normalizado);
-  return Number.isFinite(convertido) ? convertido : 0;
+  return parseNumeroPlanilha(valor(row, nomes), 0);
 }
 
 function somenteDigitos(row, nomes) {
@@ -111,7 +108,9 @@ export function parseDetalheFaturaVerum(row, faturaId, fatura) {
     cnpj_emissor: somenteDigitos(row, ['CNPJ Emissor']),
     cnpj_tomador: somenteDigitos(row, ['CNPJ Tomador da Fatura', 'CNPJ Tomador']),
     nome_tomador: texto(row, ['Nome Tomador da Fatura', 'Nome Tomador']),
-    valor_frete: numero(row, ['Valor Frete']),
+    // No export do Verum "Valor Frete" pode vir com outra grandeza (ex.: 88,14 p/ um
+    // CT-e de 881,40); "Custo Frete" e o valor cobrado e bate com o CT-e da base.
+    valor_frete: numero(row, ['Custo Frete']) || numero(row, ['Valor Frete']),
     custo_frete: numero(row, ['Custo Frete']),
     preco_frete: numero(row, ['Preco Frete', 'Preço Frete']),
     // calculado_frete/diferenca começam iguais ao Verum (valor que já vem no
