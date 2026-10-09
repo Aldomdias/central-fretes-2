@@ -704,7 +704,17 @@ export default function LotacaoCotacaoPage() {
       </div>
 
       {msg.texto && (
-        <div className="hint-box" style={{ marginBottom: 14, background: msg.tipo === 'erro' ? '#fee2e2' : '#dcfce7', color: msg.tipo === 'erro' ? '#991b1b' : '#166534' }}>{msg.texto}</div>
+        <div
+          role="status"
+          style={{
+            position: 'fixed', right: 20, bottom: 20, zIndex: 1200, maxWidth: 480, padding: '12px 16px', borderRadius: 10, fontSize: 14, lineHeight: 1.4,
+            boxShadow: '0 8px 24px rgba(0,0,0,.25)', background: msg.tipo === 'erro' ? '#fee2e2' : '#dcfce7', color: msg.tipo === 'erro' ? '#991b1b' : '#166534',
+            border: `1px solid ${msg.tipo === 'erro' ? '#fca5a5' : '#86efac'}`,
+          }}
+        >
+          {msg.texto}
+          <button type="button" onClick={() => setMsg({ tipo: '', texto: '' })} style={{ marginLeft: 12, border: 0, background: 'transparent', cursor: 'pointer', fontWeight: 800, color: 'inherit' }}>✕</button>
+        </div>
       )}
 
       <div style={card}>
@@ -777,24 +787,6 @@ export default function LotacaoCotacaoPage() {
         <input ref={arqProposta} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) importarProposta(f); }} />
         <p style={{ marginBottom: 0 }}><button style={btnSec} onClick={() => recarregarDados()}>Atualizar respostas</button></p>
 
-        {oficial && (
-          <div className="hint-box" style={{ marginTop: 12, border: '2px solid #1D9E75' }}>
-            <b>Enviar a proposta de {oficial.cv.transportadora} para a Tabela de Lotação</b>
-            <div style={{ fontSize: 13, margin: '6px 0' }}>
-              A Tabela de Lotação é o lugar oficial: a tabela de <b>{oficial.cv.transportadora}</b> passa a ser esta ({propMap.get(oficial.cv.id)?.size || 0} rotas) e <b>substitui a atual desse transportador</b>, se houver.
-            </div>
-            <label style={{ fontSize: 13, fontWeight: 700 }}>Gravar os valores como:{' '}
-              <select style={{ ...inp, padding: '4px 6px' }} value={oficial.base} onChange={(e) => setOficial({ ...oficial, base: e.target.value })}>
-                <option value="BRUTO">Bruto (com ICMS) — padrão para comparar todos na mesma base</option>
-                <option value="LIQUIDO">Líquido (sem ICMS)</option>
-              </select>
-            </label>
-            <div style={{ marginTop: 8 }}>
-              <button style={btn} disabled={ocupado} onClick={confirmarOficial}>Confirmar envio</button>{' '}
-              <button style={btnSec} onClick={() => setOficial(null)}>Cancelar</button>
-            </div>
-          </div>
-        )}
       </div>
 
       <div style={card}>
@@ -938,6 +930,28 @@ export default function LotacaoCotacaoPage() {
         </div>
         <small>As rotas vêm do realizado ({rotasRealizado.length} rotas/tipos de veículo hoje); as tabelas de lotação existentes não entram na comparação.</small>
       </details>
+
+      {oficial && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 14, padding: 24, maxWidth: 560, width: '100%', boxShadow: '0 20px 50px rgba(0,0,0,.35)' }}>
+            <h2 style={{ ...h2, fontSize: 20 }}>Enviar para a Tabela de Lotação</h2>
+            <p style={{ fontSize: 14, lineHeight: 1.5 }}>
+              A tabela de <b>{oficial.cv.transportadora}</b> ({propMap.get(oficial.cv.id)?.size || 0} rotas) passa a ser a tabela <b>oficial</b> desse transportador na Tabela de Lotação
+              e <b>substitui a atual</b>, se houver.
+            </p>
+            <label style={{ fontSize: 13, fontWeight: 700, display: 'block' }}>Gravar os valores como:
+              <select style={{ ...inp, display: 'block', marginTop: 4, width: '100%' }} value={oficial.base} onChange={(e) => setOficial({ ...oficial, base: e.target.value })}>
+                <option value="BRUTO">Bruto (com ICMS) — padrão para comparar todos na mesma base</option>
+                <option value="LIQUIDO">Líquido (sem ICMS)</option>
+              </select>
+            </label>
+            <div style={{ marginTop: 18, display: 'flex', gap: 10 }}>
+              <button style={btn} disabled={ocupado} onClick={confirmarOficial}>{ocupado ? 'Enviando…' : 'Confirmar envio'}</button>
+              <button style={{ ...btnSec, padding: '9px 16px', fontSize: 14 }} disabled={ocupado} onClick={() => setOficial(null)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
