@@ -32,28 +32,41 @@ export async function buscarCnpjRaizesPorNome(nome) {
   }
 }
 
-export async function criarCotacao({ nome, periodoLabel, prazoResposta, criadoPor, rotas, convites }) {
+export async function criarCotacao({ nome, periodoLabel, prazoResposta, criadoPor, rotas }) {
   const sb = client();
   const { data: cot, error } = await sb.from('lotacao_cotacoes').insert({
     nome, periodo_label: periodoLabel || null, prazo_resposta: prazoResposta || null, criado_por: criadoPor || null,
   }).select().single();
   if (error) throw error;
-
   const linhasRotas = rotas.map((r) => ({ cotacao_id: cot.id, ...r }));
   for (let i = 0; i < linhasRotas.length; i += LOTE) {
     const { error: e2 } = await sb.from('lotacao_cotacao_rotas').insert(linhasRotas.slice(i, i + LOTE));
     if (e2) throw e2;
   }
-  const { data: criados, error: e3 } = await sb.from('lotacao_cotacao_convites').insert(
-    convites.map((c) => ({
-      cotacao_id: cot.id,
-      transportadora: c.transportadora,
-      cnpj_raizes: Array.from(new Set((c.cnpjs || []).map(soDigitos).filter((x) => x.length >= 8).map((x) => x.slice(0, 8)))),
-      chaves: c.chaves || null,
-    })),
-  ).select();
-  if (e3) throw e3;
-  return { cotacao: cot, convites: criados };
+  return cot;
+}
+
+// Cada chamada gera um token novo (link novo) com validade em dias.
+export async function gerarConvite({ cotacaoId, transportadora, dias = 5, chaves = null }) {
+  const expira = new Date(Date.now() + Number(dias || 5) * 86400000).toISOString();
+  const { data, error } = await client().from('lotacao_cotacao_convites')
+    .insert({ cotacao_id: cotacaoId, transportadora, chaves, expira_em: expira }).select().single();
+  if (error) {
+    if (/expira_em/i.test(error.message || '')) throw new Error('Aplique a migration 20261009_001_lotacao_cotacao_expiracao.sql no Supabase.');
+    throw error;
+  }
+  return data;
+}
+
+export async function renovarConvite(id, dias = 5) {
+  const { error } = await client().from('lotacao_cotacao_convites')
+    .update({ expira_em: new Date(Date.now() + Number(dias) * 86400000).toISOString() }).eq('id', id);
+  if (error) throw error;
+}
+
+export async function excluirConvite(id) {
+  const { error } = await client().from('lotacao_cotacao_convites').delete().eq('id', id);
+  if (error) throw error;
 }
 
 export async function listarCotacoes() {

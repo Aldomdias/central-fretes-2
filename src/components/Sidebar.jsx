@@ -33,6 +33,7 @@ const MENU_GRUPOS = [
       { chave: 'torre-controle', label: 'Torre de controle' },
       { chave: 'painel-operacao', label: 'Painel operacao' },
       { chave: 'lotacao', label: 'Lotacao tabelas' },
+      { chave: 'lotacao-cotacao', label: 'Cotacao lotacao (portal)' },
       { chave: 'lotacao-operacao', label: 'Lotacao operacao' },
       { chave: 'autorizacoes-transporte-b2c', label: 'Autorizacoes transporte B2C' },
       { chave: 'autorizacoes-transporte-atacado', label: 'Autorizacoes transporte Atacado' },

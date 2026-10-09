@@ -8,6 +8,7 @@ import FormatacaoPage from './pages/FormatacaoPage';
 import ImportarTemplatePage from './pages/ImportarTemplatePage';
 import ImportacaoIaTabelasPage from './pages/ImportacaoIaTabelasPage';
 import LotacaoPage from './pages/LotacaoPage';
+import LotacaoCotacaoPage from './pages/LotacaoCotacaoPage';
 import LotacaoOperacaoPage from './pages/LotacaoOperacaoPage';
 import LotacaoAuditoriaPage from './pages/LotacaoAuditoriaPage';
 import ConsultaIbgePage from './pages/ConsultaIbgePage';
@@ -64,7 +65,7 @@ const PAGINAS_PERMITIDAS = [
   'dashboard', 'conceito-app', 'simulador', 'simulador-reversa', 'tabelas-negociacao', 'cte', 'cte-origem-destino', 'auditoria-cte', 'tracking', 'tracking-prazos',
   'torre-controle', 'reajustes', 'avaliacao-prazos', 'importacao', 'formatacao', 'importar-template',
   'importacao-ia-tabelas',
-  'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
+  'lotacao', 'lotacao-cotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
   'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'prazo-pagamento',
   'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
   'icms-uf', 'auditoria-ecommerce', 'usuarios-ativos',
@@ -227,6 +228,7 @@ export default function App() {
     'avaliacao-prazos': <AvaliacaoPrazosPage />,
     'prazo-pagamento': <PrazoPagamentoPage />,
     lotacao: <LotacaoPage />,
+    'lotacao-cotacao': <LotacaoCotacaoPage />,
     'lotacao-operacao': <LotacaoOperacaoPage onRespostaConcluida={() => mudarPagina('lotacao-auditoria')} />,
     'lotacao-auditoria': <LotacaoAuditoriaPage />,
     'painel-auditoria': <PainelAuditoriaPage />,

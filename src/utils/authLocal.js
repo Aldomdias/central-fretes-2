@@ -32,6 +32,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'importar-template', label: 'Importar Template', grupo: 'Suprimentos' },
   { chave: 'importacao-ia-tabelas', label: 'Importação IA de Tabelas', grupo: 'Suprimentos' },
   { chave: 'lotacao', label: 'Lotação Tabelas', grupo: 'Lotação' },
+  { chave: 'lotacao-cotacao', label: 'Cotação Lotação (portal)', grupo: 'Lotação' },
   { chave: 'lotacao-operacao', label: 'Lotação Operação', grupo: 'Lotação' },
   { chave: 'lotacao-auditoria', label: 'Auditoria Lotação', grupo: 'Auditoria' },
   { chave: 'painel-auditoria', label: 'Painel Auditoria', grupo: 'Auditoria' },
@@ -103,7 +104,7 @@ export const PERFIS_USUARIO = {
   OPERACAO_LOTACAO: {
     nome: 'Operação Lotação',
     descricao: 'Consulta lotação, histórico de cargas, custos adicionais e aprovações.',
-    paginas: ['dashboard', 'conceito-app', 'lotacao', 'lotacao-operacao', 'painel-operacao', 'tratativas', 'avaliacao-prazos'],
+    paginas: ['dashboard', 'conceito-app', 'lotacao', 'lotacao-cotacao', 'lotacao-operacao', 'painel-operacao', 'tratativas', 'avaliacao-prazos'],
   },
   AUDITORIA_LOTACAO: {
     nome: 'Auditoria Lotação',

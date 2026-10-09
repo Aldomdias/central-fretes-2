@@ -19,7 +19,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-const MAX_TENTATIVAS_CNPJ = 8;
 const VALIDADE_ACESSO_MS = 8 * 60 * 60 * 1000;
 const UF_SUL_SUDESTE = new Set(['SP', 'RJ', 'MG', 'PR', 'SC', 'RS']);
 
@@ -32,6 +31,17 @@ function getClient() {
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const soDigitos = (v) => String(v ?? '').replace(/\D/g, '');
+function cnpjValido(c) {
+  if (c.length !== 14 || /^(\d)\1+$/.test(c)) return false;
+  const dv = (base) => {
+    let soma = 0;
+    let peso = base.length - 7;
+    for (const d of base) { soma += Number(d) * peso; peso -= 1; if (peso < 2) peso = 9; }
+    const r = soma % 11;
+    return r < 2 ? 0 : 11 - r;
+  };
+  return dv(c.slice(0, 12)) === Number(c[12]) && dv(c.slice(0, 13)) === Number(c[13]);
+}
 const arred = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
 function numero(v) {
@@ -128,7 +138,7 @@ ${cotacao.prazo_resposta ? `<p>Responder até ${esc(String(cotacao.prazo_respost
 <div class="corpo" id="app">
 ${encerrada ? '<div class="msg erro">Esta cotação foi encerrada e não aceita mais respostas.</div>' : `
 <div id="telaId" class="id">
-  <div class="msg info">Para liberar suas rotas, confirme quem está respondendo. O CNPJ precisa ser o da transportadora <b>${esc(convite.transportadora)}</b>.</div>
+  <div class="msg info">Para liberar suas rotas, confirme quem está respondendo. O CNPJ é obrigatório e fica registrado junto com a cotação de <b>${esc(convite.transportadora)}</b>.</div>
   <label for="cnpj">CNPJ da transportadora</label><input id="cnpj" inputmode="numeric" placeholder="00.000.000/0000-00" autocomplete="off">
   <label for="nome">Seu nome</label><input id="nome" autocomplete="name">
   <label for="email">Seu e-mail</label><input id="email" type="email" autocomplete="email">
@@ -216,6 +226,12 @@ export default async function handler(req, res) {
     const { data: cotacao } = await supabase.from('lotacao_cotacoes').select('*').eq('id', convite.cotacao_id).maybeSingle();
     if (!cotacao) return enviarHtml(res, 404, paginaErro('Cotação não encontrada', 'Esta cotação não existe mais.'));
 
+    const expirado = convite.expira_em && new Date(convite.expira_em).getTime() < Date.now();
+    if (expirado) {
+      if (req.method === 'GET') return enviarHtml(res, 410, paginaErro('Link expirado', 'O prazo deste link terminou. Solicite um novo link ao time de suprimentos.'));
+      return enviarJson(res, 410, { erro: 'Link expirado. Solicite um novo link ao time de suprimentos.' });
+    }
+
     if (req.method === 'GET') return enviarHtml(res, 200, paginaPortal({ convite, cotacao }));
     if (req.method !== 'POST') return enviarJson(res, 405, { erro: 'Método não permitido.' });
 
@@ -223,18 +239,13 @@ export default async function handler(req, res) {
     if (cotacao.status !== 'ABERTA') return enviarJson(res, 409, { erro: 'Esta cotação foi encerrada.' });
 
     if (body.acao === 'identificar') {
-      if ((convite.tentativas_cnpj || 0) >= MAX_TENTATIVAS_CNPJ) return enviarJson(res, 429, { erro: 'Muitas tentativas. Peça um novo link ao time de suprimentos.' });
       const cnpj = soDigitos(body.cnpj);
       const nome = String(body.nome || '').trim().slice(0, 120);
       const email = String(body.email || '').trim().slice(0, 160);
-      const autorizados = convite.cnpj_raizes || [];
-      if (cnpj.length !== 14 || !nome || !email.includes('@')) return enviarJson(res, 400, { erro: 'Informe CNPJ válido, nome e e-mail.' });
-      if (!autorizados.includes(cnpj.slice(0, 8))) {
-        await supabase.from('lotacao_cotacao_convites').update({ tentativas_cnpj: (convite.tentativas_cnpj || 0) + 1 }).eq('id', convite.id);
-        return enviarJson(res, 403, { erro: 'CNPJ não confere com o cadastro desta transportadora.' });
-      }
+      if (!cnpjValido(cnpj)) return enviarJson(res, 400, { erro: 'Informe um CNPJ válido (14 dígitos).' });
+      if (!nome || !email.includes('@')) return enviarJson(res, 400, { erro: 'Informe seu nome e um e-mail válido.' });
       await supabase.from('lotacao_cotacao_convites').update({
-        respondente_nome: nome, respondente_email: email, respondente_cnpj: cnpj, tentativas_cnpj: 0,
+        respondente_nome: nome, respondente_email: email, respondente_cnpj: cnpj,
         primeiro_acesso_em: convite.primeiro_acesso_em || new Date().toISOString(),
         status: convite.status === 'ENVIADO' ? 'ENVIADO' : 'EM_PREENCHIMENTO',
       }).eq('id', convite.id);
