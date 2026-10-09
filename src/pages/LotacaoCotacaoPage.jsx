@@ -10,10 +10,11 @@ import {
   gerarConvite, linkConviteCotacao, listarCotacoes, renovarConvite,
 } from '../services/lotacaoCotacaoService';
 import {
-  REGRA_ANTT_PADRAO, carregarKmRotas, carregarMapaUfMunicipios, carregarPeriodoRealizado, carregarRegraAntt, importarPropostasConvite, importarReferencia, oficializarProposta, salvarRegraAntt,
+  REGRA_ANTT_PADRAO, atualizarRotaCotacao, salvarKmRotas, carregarKmRotas, carregarMapaUfMunicipios, carregarPeriodoRealizado, carregarRegraAntt, importarPropostasConvite, importarReferencia, oficializarProposta, salvarRegraAntt,
 } from '../services/lotacaoCotacaoReferenciasService';
 import { carregarMatrizIcmsUfCentralizada } from '../utils/icmsUfMatrix';
 import { aliquotaDaRota, calcularBruto } from '../utils/lotacaoCotacaoCalculo';
+import { buscarKmInternet } from '../services/lotacaoKmService';
 import { VEICULO_PADRAO, chavePar, chaveRota, mesmaCidade, norm, splitCidade, veiculoExcluido } from '../utils/lotacaoCotacaoChave';
 
 const brl = (v) => (v == null || v === '' ? '-' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
@@ -26,6 +27,7 @@ const numBr = (v) => {
   if (!t) return NaN;
   return Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t);
 };
+const pctSinal = (v) => (v == null || !Number.isFinite(v) ? '-' : `${v >= 0 ? '+' : ''}${(v * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`);
 const dec1 = (v) => (Number(v) > 0 ? Number(v).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) : '-');
 
 const STATUS_COR = { PENDENTE: '#6B7280', EM_PREENCHIMENTO: '#D97706', ENVIADO: '#1D9E75' };
@@ -39,6 +41,8 @@ const btnSec = { ...btn, background: '#fff', color: '#185FA5', border: '1px soli
 const inp = { padding: '9px 10px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 14 };
 const th = { padding: '8px 6px', background: '#1E3A5F', color: '#fff', fontSize: 12, textAlign: 'center', position: 'sticky', top: 0, whiteSpace: 'nowrap' };
 const td = { padding: '6px', borderTop: '1px solid #e5e7eb', fontSize: 12 };
+const h3 = { margin: '14px 0 4px', fontSize: 15, color: '#06183d' };
+const gridKpi = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10, margin: '8px 0 14px' };
 
 // ---------------------------------------------------------------------------
 // Rotas da cotacao: partem do REALIZADO (volumetria). As tabelas de lotacao
@@ -58,14 +62,22 @@ function montarRotas(resumoRealizado, tabelas, mapaUfIbge, kmRotas, meses = 1) {
     return String(explicita || uf || ufAprendida.get(norm(cidade)) || mapaUfIbge?.get(norm(cidade)) || '').toUpperCase().slice(0, 2);
   };
 
+  // nome padrao da cidade: oficial do IBGE em maiusculas (ITAJAI, Itajai e Itajaí viram ITAJAÍ)
+  const nomePadrao = (bruta, uf) => {
+    const c = splitCidade(bruta).cidade;
+    return mapaUfIbge?.nomes?.get(`${norm(c)}|${uf}`) || c.toUpperCase();
+  };
+
   const mapa = new Map();
   (resumoRealizado || []).forEach((r) => {
     const tipo = String(r.tipo_veiculo || r.tipo || '').trim();
     if (!String(r.origem || '').trim() || !String(r.destino || '').trim() || mesmaCidade(r.origem, r.destino) || veiculoExcluido(tipo)) return;
     const chave = chaveRota(r.origem, r.destino);
+    const ufo = ufDe(r.origem, r.uf_origem);
+    const ufd = ufDe(r.destino, r.uf_destino);
     const atual = mapa.get(chave) || {
-      chave, origem: splitCidade(r.origem).cidade, uf_origem: ufDe(r.origem, r.uf_origem), destino: splitCidade(r.destino).cidade,
-      uf_destino: ufDe(r.destino, r.uf_destino), tipo_veiculo: VEICULO_PADRAO, km: null, viagens: 0, _soma: 0, frete_medio: null, target: null,
+      chave, origem: nomePadrao(r.origem, ufo), uf_origem: ufo, destino: nomePadrao(r.destino, ufd),
+      uf_destino: ufd, tipo_veiculo: VEICULO_PADRAO, km: null, viagens: 0, _soma: 0, frete_medio: null, target: null,
     };
     const cargas = Number(r.total_cargas || r.qtd_viagens || 0) || 0;
     atual.viagens += cargas;
@@ -172,6 +184,69 @@ function CartaoReferencia({ tipo, titulo, descricao, convite, qtd, ocupado, onIm
         {convite && <button style={btnSec} onClick={onRemover}>Remover</button>}
         <input ref={ref} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onImportar(f, base); }} />
       </div>
+    </div>
+  );
+}
+
+function Kpi({ titulo, valor, sub, cor }) {
+  return (
+    <div style={{ border: '1px solid #dbe3ef', borderRadius: 12, padding: '10px 14px', background: '#f8fafc' }}>
+      <div style={{ fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>{titulo}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: cor || '#06183d' }}>{valor}</div>
+      {sub ? <div style={{ fontSize: 11, color: '#64748b' }}>{sub}</div> : null}
+    </div>
+  );
+}
+
+function Medidor({ titulo, valor, sub, cor = '#185FA5' }) {
+  const v = Math.max(0, Math.min(1, Number(valor) || 0));
+  return (
+    <div style={{ border: '1px solid #dbe3ef', borderRadius: 12, padding: '10px 14px', background: '#fff' }}>
+      <div style={{ fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>{titulo}</div>
+      <div style={{ fontSize: 24, fontWeight: 800, color: cor }}>{(v * 100).toFixed(0)}%</div>
+      <div style={{ background: '#e2e8f0', borderRadius: 6, height: 8, margin: '4px 0' }}><div style={{ width: `${v * 100}%`, background: cor, height: 8, borderRadius: 6 }} /></div>
+      {sub ? <div style={{ fontSize: 11, color: '#64748b' }}>{sub}</div> : null}
+    </div>
+  );
+}
+
+// Rotas sem KM ou sem UF: completa pela internet ou informa na mao
+function CartaoKm({ rotas, ocupado, progresso, onCompletar, onSalvarRota }) {
+  const [edit, setEdit] = useState({});
+  const lista = rotas.filter((r) => !(Number(r.km) > 0) || !r.uf_origem || !r.uf_destino);
+  if (!lista.length) return null;
+  const semKm = lista.filter((r) => !(Number(r.km) > 0)).length;
+  const set = (chave, campo, v) => setEdit({ ...edit, [chave]: { ...(edit[chave] || {}), [campo]: v } });
+  return (
+    <div style={{ ...card, border: '2px solid #fcd34d', background: '#fffbeb' }}>
+      <h2 style={h2}>Rotas sem KM ou sem UF ({lista.length})</h2>
+      <small>O KM alimenta a ANTT (KM × CCD + CC) e a UF define o ICMS. Complete pela internet ou informe na mão.</small>
+      <div style={{ margin: '10px 0', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button style={btn} disabled={ocupado || !semKm} onClick={onCompletar}>Completar KM pela internet ({semKm})</button>
+        {progresso ? <span style={{ fontSize: 12, color: '#475569' }}>{progresso}</span> : null}
+      </div>
+      <div style={{ overflow: 'auto', maxHeight: 260 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr>{['Origem', 'UF', 'Destino', 'UF', 'KM', 'Viagens/mês', ''].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {lista.slice(0, 40).map((r) => {
+              const e = edit[r.chave] || {};
+              return (
+                <tr key={r.chave}>
+                  <td style={td}>{r.origem}</td>
+                  <td style={td}>{r.uf_origem || <input style={{ ...inp, width: 48, padding: '3px 5px' }} maxLength={2} value={e.uf_origem || ''} onChange={(ev) => set(r.chave, 'uf_origem', ev.target.value.toUpperCase())} />}</td>
+                  <td style={td}>{r.destino}</td>
+                  <td style={td}>{r.uf_destino || <input style={{ ...inp, width: 48, padding: '3px 5px' }} maxLength={2} value={e.uf_destino || ''} onChange={(ev) => set(r.chave, 'uf_destino', ev.target.value.toUpperCase())} />}</td>
+                  <td style={td}>{Number(r.km) > 0 ? int(r.km) : <input style={{ ...inp, width: 80, padding: '3px 5px' }} inputMode="numeric" placeholder="km" value={e.km || ''} onChange={(ev) => set(r.chave, 'km', ev.target.value)} />}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{dec1(r.viagens)}</td>
+                  <td style={td}><button style={btnSec} disabled={ocupado} onClick={() => onSalvarRota(r, e)}>Salvar</button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {lista.length > 40 ? <small>Mostrando 40 de {lista.length}.</small> : null}
     </div>
   );
 }
@@ -410,7 +485,7 @@ export default function LotacaoCotacaoPage() {
     const chaveRes = (r) => (r === 'GANHA' ? 'g' : r === 'PERDE' ? 'p' : 'e');
     const S = {
       escopo: escopo.length, volTot: 0, volCot: 0, cotadas: 0, casa: { g: 0, p: 0, e: 0 }, antt: { g: 0, p: 0, e: 0 },
-      menor: { g: 0, comp: 0 }, real: { g: 0, p: 0, e: 0, comp: 0 }, econGanhas: 0, impacto: 0,
+      menor: { g: 0, comp: 0 }, real: { g: 0, p: 0, e: 0, comp: 0 }, econGanhas: 0, impacto: 0, custoReal: 0, custoProp: 0,
     };
     const linhas = [];
     escopo.forEach((r) => {
@@ -422,7 +497,7 @@ export default function LotacaoCotacaoPage() {
       S.cotadas += 1;
       S.volCot += vi;
       const vc = casa?.get(r.chave)?.valor_bruto != null ? Number(casa.get(r.chave).valor_bruto) : null;
-      const va = anttBrutoRota(r, cv.eixos);
+      const va = anttBrutoRota(r, p.eixos ?? cv.eixos);
       let menorOutro = null;
       outros.forEach((o) => {
         const q = propMap.get(o.id).get(r.chave);
@@ -436,10 +511,13 @@ export default function LotacaoCotacaoPage() {
       if (rr) {
         S.real.comp += 1;
         S.real[chaveRes(rr)] += 1;
-        if (vi > 0) { S.impacto += (real - b) * vi; if (rr === 'GANHA') S.econGanhas += (real - b) * vi; }
+        if (vi > 0) {
+          S.impacto += (real - b) * vi; S.custoReal += real * vi; S.custoProp += b * vi;
+          if (rr === 'GANHA') S.econGanhas += (real - b) * vi;
+        }
       }
       linhas.push({
-        r, p, b, vc, va, menorOutro, real, rc, ra, rr, dCasa: vc > 0 ? b / vc - 1 : null, dAntt: va > 0 ? b / va - 1 : null, dReal: real > 0 ? b / real - 1 : null,
+        r, p, b, vc, va, eixo: Number(p.eixos ?? cv.eixos) === 6 ? 6 : 5, menorOutro, real, rc, ra, rr, dCasa: vc > 0 ? b / vc - 1 : null, dAntt: va > 0 ? b / va - 1 : null, dReal: real > 0 ? b / real - 1 : null,
       });
     });
     linhas.sort((x, y) => (Number(y.r.viagens) || 0) - (Number(x.r.viagens) || 0));
@@ -462,6 +540,75 @@ export default function LotacaoCotacaoPage() {
       return true;
     });
   }, [selecionado, filtro]);
+
+  // ---------- realizado (visao geral, independe das propostas) ----------
+  const R = useMemo(() => {
+    const rs = dados.rotas.length ? dados.rotas : rotasRealizado;
+    const casa = conviteCasa ? propMap.get(conviteCasa.id) : null;
+    const t = { rotas: rs.length, comKm: 0, viagens: 0, gasto: 0, vReal: 0, kmv: 0, vkm: 0, gA: 0, rA: 0, nA: 0, gT: 0, rT: 0, nT: 0 };
+    rs.forEach((r) => {
+      const v = Number(r.viagens) || 0;
+      const real = Number(r.frete_medio) || 0;
+      t.viagens += v;
+      if (real > 0) { t.gasto += real * v; t.vReal += v; }
+      if (Number(r.km) > 0) { t.comKm += 1; if (real > 0) { t.kmv += Number(r.km) * v; t.vkm += real * v; } }
+      const a = anttBrutoRota(r, 5);
+      if (a > 0 && real > 0 && v > 0) { t.rA += real * v; t.gA += a * v; t.nA += 1; }
+      const tg = Number(casa?.get(r.chave)?.valor_bruto);
+      if (tg > 0 && real > 0 && v > 0) { t.rT += real * v; t.gT += tg * v; t.nT += 1; }
+    });
+    const top = [...rs].sort((x, y) => (Number(y.viagens) || 0) - (Number(x.viagens) || 0)).slice(0, 15).map((r) => {
+      const a = anttBrutoRota(r, 5);
+      const tg = casa?.get(r.chave)?.valor_bruto != null ? Number(casa.get(r.chave).valor_bruto) : null;
+      const real = Number(r.frete_medio) > 0 ? Number(r.frete_medio) : null;
+      return { r, a, tg, real, dA: a > 0 && real ? real / a - 1 : null, dT: tg > 0 && real ? real / tg - 1 : null, rkm: real && Number(r.km) > 0 ? real / Number(r.km) : null };
+    });
+    return {
+      ...t, medio: t.vReal ? t.gasto / t.vReal : 0, rkm: t.kmv ? t.vkm / t.kmv : null,
+      vsAntt: t.gA > 0 ? t.rA / t.gA - 1 : null, vsTrans: t.gT > 0 ? t.rT / t.gT - 1 : null, top,
+    };
+  }, [dados.rotas, rotasRealizado, propMap, conviteCasa, anttBrutoRota]);
+
+  // ---------- KM: completar pela internet / informar na mao ----------
+  const [progressoKm, setProgressoKm] = useState('');
+  const completarKm = async () => {
+    const alvo = dados.rotas.filter((r) => !(Number(r.km) > 0) && r.uf_origem && r.uf_destino);
+    if (!alvo.length || !cotacaoId) { aviso('Nenhuma rota com UF conhecida e sem KM para buscar.', 'erro'); return; }
+    setOcupado(true);
+    try {
+      const { achados, falhas } = await buscarKmInternet(alvo, setProgressoKm);
+      const novoMapa = { ...kmRotas };
+      for (const [chave, km] of Object.entries(achados)) {
+        const r = rotasPorChave.get(chave);
+        if (!r) continue;
+        novoMapa[chavePar(r.origem, r.destino)] = km;
+        await atualizarRotaCotacao(cotacaoId, chave, { km });
+      }
+      await salvarKmRotas(novoMapa);
+      setKmRotas(novoMapa);
+      await recarregarDados();
+      aviso(`KM preenchido em ${Object.keys(achados).length} rota(s) pela internet${falhas.length ? `; ${falhas.length} não encontrada(s) (informe na mão abaixo)` : ''}.`);
+    } catch (e) { aviso(`Erro ao buscar o KM: ${e.message}`, 'erro'); } finally { setOcupado(false); setProgressoKm(''); }
+  };
+  const salvarRotaManual = async (r, e) => {
+    const campos = {};
+    const km = numBr(e.km);
+    if (km > 0) campos.km = Math.round(km);
+    if (e.uf_origem && e.uf_origem.length === 2) campos.uf_origem = e.uf_origem;
+    if (e.uf_destino && e.uf_destino.length === 2) campos.uf_destino = e.uf_destino;
+    if (!Object.keys(campos).length) { aviso('Preencha o KM e/ou a UF antes de salvar.', 'erro'); return; }
+    setOcupado(true);
+    try {
+      await atualizarRotaCotacao(cotacaoId, r.chave, campos);
+      if (campos.km) {
+        const novoMapa = { ...kmRotas, [chavePar(r.origem, r.destino)]: campos.km };
+        await salvarKmRotas(novoMapa);
+        setKmRotas(novoMapa);
+      }
+      await recarregarDados();
+      aviso(`Rota ${r.origem} → ${r.destino} atualizada.`);
+    } catch (err) { aviso(`Erro ao salvar a rota: ${err.message}`, 'erro'); } finally { setOcupado(false); }
+  };
 
   // ---------- exportar ----------
   const exportarProposta = async () => {
@@ -573,6 +720,8 @@ export default function LotacaoCotacaoPage() {
         </div>
       </div>
 
+      {dados.rotas.length > 0 && <CartaoKm rotas={dados.rotas} ocupado={ocupado} progresso={progressoKm} onCompletar={completarKm} onSalvarRota={salvarRotaManual} />}
+
       <div style={card}>
         <h2 style={h2}>2. Gerar link para o transportador</h2>
         <small>Digite o nome de quem vai responder (pode ser um transportador novo). Cada clique cria um código novo e exclusivo; o CNPJ é pedido a ele no primeiro acesso.</small>
@@ -649,13 +798,43 @@ export default function LotacaoCotacaoPage() {
       </div>
 
       <div style={card}>
-        <h2 style={h2}>4. Análise das propostas</h2>
-        {!comparativo.length ? <div className="hint-box" style={{ marginTop: 8 }}>Assim que um transportador enviar a cotação (ou você importar a planilha dele), a análise aparece aqui.</div> : (
+        <h2 style={h2}>4. Painel de aderência e realizado</h2>
+        <div className="hint-box" style={{ margin: '8px 0 6px' }}>
+          <b>Como ler:</b> tudo em valor <b>bruto</b> (com ICMS), por viagem. <b>ANTT</b> = KM × CCD + CC da regra cadastrada acima (5 ou 6 eixos, conforme cada linha da proposta) + ICMS da rota.
+          {' '}<b>TransGP</b> = tabela importada (nosso target). <b>Realizado</b> = frete médio histórico da rota{periodo ? ` (${dataBr(periodo.inicio)} a ${dataBr(periodo.fim)})` : ''}.
+          {' '}“Ganha” = proposta mais barata que a referência.
+        </div>
+
+        <h3 style={h3}>Realizado — visão geral</h3>
+        <div style={gridKpi}>
+          <Kpi titulo="Rotas (carreta)" valor={int(R.rotas)} sub={`${R.comKm} com KM`} />
+          <Kpi titulo="Viagens por mês" valor={dec1(R.viagens)} sub="média do período" />
+          <Kpi titulo="Gasto mensal realizado" valor={brl(R.gasto)} sub="frete médio × viagens/mês" />
+          <Kpi titulo="Frete médio por viagem" valor={brl(R.medio)} sub={R.rkm ? `${brl(R.rkm)} por km` : ''} />
+          <Kpi titulo="Realizado vs ANTT (5 eixos)" valor={pctSinal(R.vsAntt)} cor={R.vsAntt > 0 ? '#b91c1c' : '#166534'} sub={R.nA ? `em ${R.nA} rotas com KM` : 'sem KM suficiente'} />
+          <Kpi titulo="Realizado vs TransGP" valor={conviteCasa ? pctSinal(R.vsTrans) : 'importe a TransGP'} cor={R.vsTrans > 0 ? '#b91c1c' : '#166534'} sub={conviteCasa && R.nT ? `em ${R.nT} rotas` : ''} />
+        </div>
+        <div style={{ overflow: 'auto', maxHeight: 420, border: '1px solid #e2e8f0', borderRadius: 8 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
+            <thead><tr>{['Maiores rotas', 'Viagens/mês', 'KM', 'Realizado médio', 'R$/km', 'ANTT 5 eixos', 'Realizado vs ANTT', 'TransGP', 'Realizado vs TransGP'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {R.top.map((x) => (
+                <tr key={x.r.chave}>
+                  <td style={td}>{x.r.origem} → {x.r.destino}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{dec1(x.r.viagens)}</td><td style={{ ...td, textAlign: 'right' }}>{x.r.km ? int(x.r.km) : '-'}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{brl(x.real)}</td><td style={{ ...td, textAlign: 'right' }}>{x.rkm ? brl(x.rkm) : '-'}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{brl(x.a)}</td><td style={{ ...td, textAlign: 'right', color: x.dA > 0 ? '#b91c1c' : '#166534', fontWeight: 700 }}>{pctSinal(x.dA)}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{brl(x.tg)}</td><td style={{ ...td, textAlign: 'right', color: x.dT > 0 ? '#b91c1c' : '#166534', fontWeight: 700 }}>{pctSinal(x.dT)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <h3 style={{ ...h3, marginTop: 22 }}>Propostas — aderência por transportador</h3>
+        {!comparativo.length ? <div className="hint-box" style={{ marginTop: 8 }}>Assim que um transportador enviar a cotação (ou você importar a planilha dele), a aderência e a comparação com o realizado aparecem aqui.</div> : (
           <>
-            <small>
-              Tudo em valor <b>bruto</b>. “Ganha” = proposta mais barata que a referência. Realizado = frete médio histórico das viagens da rota (considerado com ICMS).
-              {!conviteCasa && <b style={{ color: '#b45309' }}> Importe a TransGP para comparar com o target.</b>}
-            </small>
+            {!conviteCasa && <small style={{ color: '#b45309', fontWeight: 700 }}>Importe a TransGP para comparar com o target. </small>}
             <div style={{ overflowX: 'auto', margin: '10px 0' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead><tr>{['Transportador', 'Eixos', 'Rotas cotadas', 'Aderência rotas', 'Aderência volume', 'Ganha da TransGP', 'Ganha da ANTT', 'Menor entre transp.', 'Ganha do realizado', 'Economia/mês (rotas que ganha)', 'Impacto líquido/mês', ''].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
@@ -686,9 +865,22 @@ export default function LotacaoCotacaoPage() {
 
             {selecionado && (
               <div style={{ borderTop: '2px solid #e2e8f0', paddingTop: 12 }}>
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
-                  <b style={{ fontSize: 16 }}>{selecionado.cv.transportadora}</b>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+                  <b style={{ fontSize: 18 }}>{selecionado.cv.transportadora}</b>
                   <span style={{ fontSize: 12, color: '#475569' }}>CNPJ {fmtCnpj(selecionado.cv.respondente_cnpj)}</span>
+                </div>
+                <div style={gridKpi}>
+                  <Medidor titulo="Aderência (rotas)" valor={selecionado.S.escopo ? selecionado.S.cotadas / selecionado.S.escopo : 0} sub={`${selecionado.S.cotadas} de ${selecionado.S.escopo} rotas`} />
+                  <Medidor titulo="Aderência (volume)" valor={selecionado.S.volTot ? selecionado.S.volCot / selecionado.S.volTot : 0} sub={`${dec1(selecionado.S.volCot)} de ${dec1(selecionado.S.volTot)} viagens/mês`} />
+                  <Medidor titulo="Ganha do realizado" valor={selecionado.S.real.comp ? selecionado.S.real.g / selecionado.S.real.comp : 0} cor="#166534" sub={`${selecionado.S.real.g} de ${selecionado.S.real.comp} rotas`} />
+                  <Medidor titulo="Ganha da TransGP" valor={(selecionado.S.casa.g + selecionado.S.casa.p + selecionado.S.casa.e) ? selecionado.S.casa.g / (selecionado.S.casa.g + selecionado.S.casa.p + selecionado.S.casa.e) : 0} cor="#0e7490" sub={conviteCasa ? `${selecionado.S.casa.g} de ${selecionado.S.casa.g + selecionado.S.casa.p + selecionado.S.casa.e} rotas` : 'importe a TransGP'} />
+                  <Medidor titulo="Ganha da ANTT" valor={(selecionado.S.antt.g + selecionado.S.antt.p + selecionado.S.antt.e) ? selecionado.S.antt.g / (selecionado.S.antt.g + selecionado.S.antt.p + selecionado.S.antt.e) : 0} cor="#7c3aed" sub={`${selecionado.S.antt.g} de ${selecionado.S.antt.g + selecionado.S.antt.p + selecionado.S.antt.e} rotas`} />
+                  <Medidor titulo="Menor entre transportadores" valor={selecionado.S.menor.comp ? selecionado.S.menor.g / selecionado.S.menor.comp : 0} cor="#b45309" sub={selecionado.S.menor.comp ? `${selecionado.S.menor.g} de ${selecionado.S.menor.comp} rotas` : 'só há uma proposta'} />
+                  <Kpi titulo="Economia/mês (rotas que ganha)" valor={brl(selecionado.S.econGanhas)} cor="#166534" />
+                  <Kpi titulo="Impacto líquido/mês" valor={brl(selecionado.S.impacto)} cor={selecionado.S.impacto >= 0 ? '#166534' : '#b91c1c'} sub="realizado − proposta, nas rotas cotadas" />
+                  <Kpi titulo="Gasto mensal: proposta × realizado" valor={brl(selecionado.S.custoProp)} sub={`realizado: ${brl(selecionado.S.custoReal)}`} />
+                </div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
                   <select style={{ ...inp, padding: '5px 8px' }} value={filtro} onChange={(e) => setFiltro(e.target.value)}>
                     <option value="todas">Todas as rotas cotadas</option>
                     <option value="ganha-real">Ganha do realizado</option>
@@ -700,12 +892,12 @@ export default function LotacaoCotacaoPage() {
                   <button style={{ ...btnSec, background: '#ecfdf3' }} onClick={() => setOficial({ cv: selecionado.cv, base: 'BRUTO' })}>Enviar p/ Tabela de Lotação</button>
                 </div>
                 <div style={{ overflow: 'auto', maxHeight: 520, border: '1px solid #e2e8f0', borderRadius: 8 }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1250 }}>
-                    <thead><tr>{['Rota', 'Veículo', 'KM', 'Viagens/mês', 'ICMS', 'Líquido', 'Bruto', 'TransGP', 'Δ TransGP', 'ANTT', 'Δ ANTT', 'Menor outro', 'Realizado', 'Δ realizado', 'Resultado'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1300 }}>
+                    <thead><tr>{['Rota', 'Veículo', 'Eixos', 'KM', 'Viagens/mês', 'ICMS', 'Líquido', 'Bruto', 'TransGP', 'Δ TransGP', 'ANTT', 'Δ ANTT', 'Menor outro', 'Realizado', 'Δ realizado', 'Resultado'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
                     <tbody>
                       {linhasFiltradas.slice(0, 500).map((l) => (
                         <tr key={l.r.chave}>
-                          <td style={td}>{l.r.origem} → {l.r.destino}</td><td style={td}>{l.r.tipo_veiculo}</td>
+                          <td style={td}>{l.r.origem} → {l.r.destino}</td><td style={td}>{l.r.tipo_veiculo}</td><td style={{ ...td, textAlign: 'center' }}>{l.eixo}</td>
                           <td style={{ ...td, textAlign: 'right' }}>{l.r.km ? int(l.r.km) : '-'}</td><td style={{ ...td, textAlign: 'right' }}>{dec1(l.r.viagens)}</td>
                           <td style={{ ...td, textAlign: 'right' }}>{l.p.aliquota_icms != null ? `${Number(l.p.aliquota_icms).toLocaleString('pt-BR')}%` : '-'}</td>
                           <td style={{ ...td, textAlign: 'right' }}>{brl(l.p.valor_liquido)}</td><td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{brl(l.b)}</td>

@@ -28,6 +28,7 @@ let cacheUf = null;
 export async function carregarMapaUfMunicipios() {
   if (cacheUf) return cacheUf;
   const mapa = new Map();
+  const nomes = new Map();
   try {
     const sb = client();
     for (let from = 0; ; from += 1000) {
@@ -36,12 +37,14 @@ export async function carregarMapaUfMunicipios() {
       (data || []).forEach((m) => {
         const k = norm(m.nome_municipio_sem_acento || m.nome_municipio);
         if (!k) return;
+        nomes.set(`${k}|${m.sigla_uf}`, String(m.nome_municipio || '').toUpperCase());
         if (!mapa.has(k)) mapa.set(k, m.sigla_uf);
         else if (mapa.get(k) !== m.sigla_uf) mapa.set(k, null);
       });
       if (!data || data.length < 1000) break;
     }
   } catch { /* sem IBGE: segue so com as UFs conhecidas */ }
+  mapa.nomes = nomes; // nome oficial (IBGE) em maiusculas por cidade|UF
   cacheUf = mapa;
   return mapa;
 }
@@ -249,5 +252,19 @@ export async function salvarRegraAntt(regra) {
   const { error } = await client().from('simulador_configuracoes').upsert(
     { chave: 'lotacao_antt_regra', valor: regra, updated_at: new Date().toISOString() }, { onConflict: 'chave' },
   );
+  if (error) throw error;
+}
+
+// Mapa de KM por par de cidades (gravado em simulador_configuracoes).
+export async function salvarKmRotas(mapa) {
+  const { error } = await client().from('simulador_configuracoes').upsert(
+    { chave: 'lotacao_km_rotas', valor: mapa, updated_at: new Date().toISOString() }, { onConflict: 'chave' },
+  );
+  if (error) throw error;
+}
+
+// Ajusta KM/UF de uma rota ja criada na cotacao.
+export async function atualizarRotaCotacao(cotacaoId, chave, campos) {
+  const { error } = await client().from('lotacao_cotacao_rotas').update(campos).eq('cotacao_id', cotacaoId).eq('chave', chave);
   if (error) throw error;
 }

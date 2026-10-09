@@ -100,6 +100,38 @@ function aliquotaDaRota(matriz, ufOrigem, ufDestino) {
   return { aliquota: para7 ? 7 : 12, fonte: 'legislacao_interestadual' };
 }
 
+// Regra de calculo da ANTT (Tabela B): valor = KM x CCD + CC. Cadastrada no sistema (simulador_configuracoes).
+const REGRA_ANTT_PADRAO = { base: 'LIQUIDO', 5: { ccd: 6.09, cc: 594.62 }, 6: { ccd: 6.7863, cc: 608.99 } };
+function numBr(v) {
+  if (v === null || v === undefined) return NaN;
+  if (typeof v === 'number') return v;
+  const t = String(v).trim();
+  if (!t) return NaN;
+  return Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t);
+}
+async function carregarRegraAntt(supabase) {
+  try {
+    const { data } = await supabase.from('simulador_configuracoes').select('valor').eq('chave', 'lotacao_antt_regra').maybeSingle();
+    const v = data?.valor;
+    if (!v || typeof v !== 'object') return REGRA_ANTT_PADRAO;
+    const pega = (e) => {
+      const ccd = numBr(v[e]?.ccd);
+      const cc = numBr(v[e]?.cc);
+      return { ccd: ccd > 0 ? ccd : REGRA_ANTT_PADRAO[e].ccd, cc: Number.isFinite(cc) ? cc : REGRA_ANTT_PADRAO[e].cc };
+    };
+    return { base: v.base === 'BRUTO' ? 'BRUTO' : 'LIQUIDO', 5: pega(5), 6: pega(6) };
+  } catch { return REGRA_ANTT_PADRAO; }
+}
+// piso ANTT da rota em valor LIQUIDO (sem ICMS), para o numero de eixos
+function anttLiquido(regra, km, eixos, aliquota) {
+  const k = Number(km);
+  const reg = regra[eixos];
+  if (!(k > 0) || !(reg?.ccd > 0)) return null;
+  const valor = k * reg.ccd + (reg.cc || 0);
+  if (regra.base === 'BRUTO' && aliquota > 0 && aliquota < 100) return arred(valor * (1 - aliquota / 100));
+  return arred(valor);
+}
+
 function calcular(liquido, pedagio, aliquota) {
   const liq = Number(liquido) || 0;
   const ped = Number(pedagio) || 0;
@@ -167,8 +199,8 @@ ${encerrada ? '<div class="msg erro">Esta cotação foi encerrada e não aceita 
 </div></div>
 <script>
 var TOKEN=${JSON.stringify(convite.token)},NOMETRANSP=${JSON.stringify(convite.transportadora)},ACESSO='',EIXOS=5,ROTAS=[],PROP={},fmt=function(n){return Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})};
-function num(v){if(v===''||v==null)return null;var t=String(v).replace(/R\\$/gi,'').replace(/\\s/g,'');if(t.indexOf(',')>=0)t=t.replace(/\\./g,'').replace(',','.');var n=Number(t);return isFinite(n)?n:null}
 function fmt1(n){return Number(n).toLocaleString('pt-BR',{maximumFractionDigits:1})}
+function num(v){if(v===''||v==null)return null;var t=String(v).replace(/R\\$/gi,'').replace(/\\s/g,'');if(t.indexOf(',')>=0)t=t.replace(/\\./g,'').replace(',','.');var n=Number(t);return isFinite(n)?n:null}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function sa(s){return String(s==null?'':s).normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toUpperCase().trim()}
 function kc(s){return sa(s).replace(/\\s*\\/\\s*[A-Z][A-Z]$/,'').trim()}
@@ -179,21 +211,26 @@ function identificar(){var b=document.getElementById('btnId');document.getElemen
   b.disabled=true;api({acao:'identificar',cnpj:cnpj,nome:nome,email:email}).then(function(j){ACESSO=j.acesso;EIXOS=j.eixos||5;ROTAS=j.rotas;PROP={};j.propostas.forEach(function(p){PROP[p.chave]=p});
     document.getElementById('telaId').style.display='none';montar(j.status)}).catch(function(e){document.getElementById('erroId').innerHTML='<div class="msg erro">'+esc(e.message)+'</div>';b.disabled=false})}
 function montar(status){var t=document.getElementById('telaTab');t.style.display='block';
-  var h='<div class="regra"><b>Como preencher</b><br>• Informe o <b>valor líquido</b> do frete (sem ICMS) por rota e tipo de veículo. O tipo de veículo é fixo. O pedágio é pago pela Cantu e <b>não entra</b> na cotação.<br>• O <b>ICMS</b> é calculado automaticamente pela origem/destino e o <b>valor bruto total</b> = líquido ÷ (1 − alíquota ICMS).<br>• Prefere trabalhar no Excel? <b>Baixe o modelo</b>, preencha e <b>importe</b> de volta. Confira os valores e clique em <b>Enviar cotação</b>.<br>• Deixe em branco as rotas que você não atende. O volume é a média mensal do histórico, apenas referência de potencial — não é garantia de contratação.</div>'
+  var h='<div class="regra"><b>Como preencher</b><br>• Informe o <b>valor líquido</b> do frete (sem ICMS) por rota. O veículo é <b>carreta</b> (tipo único). O pedágio é pago pela Cantu e <b>não entra</b> na cotação.<br>• O <b>ICMS</b> é calculado automaticamente pela origem/destino e o <b>valor bruto total</b> = líquido ÷ (1 − alíquota ICMS).<br>• A coluna <b>ANTT ref. líquido</b> mostra o piso da ANTT daquela rota para o número de eixos escolhido, e <b>Δ vs ANTT</b> mostra quanto o seu valor está acima ou abaixo dele.<br>• <b>Eixos:</b> escolha 5 ou 6 no quadro amarelo para a tabela inteira (padrão 5) e, se precisar, ajuste a linha que for diferente.<br>• Prefere trabalhar no Excel? <b>Baixe o modelo</b>, preencha e <b>importe</b> de volta. Confira os valores e clique em <b>Enviar cotação</b>.<br>• Deixe em branco as rotas que você não atende. O volume é a média mensal do histórico, apenas referência de potencial — não é garantia de contratação.</div>'
   +(status==='ENVIADO'?'<div class="msg ok">Você já enviou esta cotação. Se alterar valores, clique em enviar novamente para atualizar.</div>':'')
   +'<div class="ferr"><button class="sec" onclick="baixarModelo()">⬇ Baixar modelo (Excel)</button><button class="sec" onclick="document.getElementById(\\'arq\\').click()">⬆ Importar planilha preenchida</button><input type="file" id="arq" accept=".xlsx,.xls,.csv" style="display:none" onchange="importar(this)"><label class="fl">Origem <select id="fo" onchange="filtrar(1)"></select></label><label class="fl">Destino <select id="fd" onchange="filtrar(1)"></select></label><span id="nvis" class="fl"></span></div>'
-  +'<div class="eixos"><label>Eixos do veículo <select id="eixos" onchange="mudaEixos()"><option value="5">5 eixos</option><option value="6">6 eixos</option></select></label><span id="avEixos"></span></div>'
-  +'<div id="msgTab"></div><div class="tw"><table><thead><tr><th>Origem</th><th>Destino</th><th>Veículo</th><th>KM</th><th>Média mensal (viagens)</th><th class="pre">Valor líquido (R$)</th><th class="calc">ICMS %</th><th class="calc">ICMS (R$)</th><th class="calc">Valor bruto total (R$)</th><th class="pre">Prazo (dias)</th><th class="pre">Obs.</th></tr></thead><tbody>';
-  ROTAS.forEach(function(r,i){var p=PROP[r.chave]||{};
-    h+='<tr id="l'+i+'"><td class="fixo">'+esc(r.origem)+(r.uf_origem?'/'+esc(r.uf_origem):'')+'</td><td class="fixo">'+esc(r.destino)+(r.uf_destino?'/'+esc(r.uf_destino):'')+'</td><td class="fixo">'+esc(r.tipo_veiculo)+'</td><td class="n">'+(r.km?fmt(r.km).replace(/,00$/,''):'-')+'</td><td class="n">'+(r.viagens?fmt1(r.viagens):'-')+'</td>'
+  +'<div class="eixos"><label>Eixos do veículo (tabela inteira) <select id="eixos" onchange="mudaEixos()"><option value="5">5 eixos</option><option value="6">6 eixos</option></select></label><span id="avEixos"></span></div>'
+  +'<div id="msgTab"></div><div class="tw"><table><thead><tr><th>Origem</th><th>Destino</th><th>Veículo</th><th class="pre">Eixos</th><th>KM</th><th>Média mensal (viagens)</th><th class="pre">Valor líquido (R$)</th><th class="calc">ANTT ref. líquido (R$)</th><th class="calc">Δ vs ANTT</th><th class="calc">ICMS %</th><th class="calc">ICMS (R$)</th><th class="calc">Valor bruto total (R$)</th><th class="pre">Prazo (dias)</th><th class="pre">Obs.</th></tr></thead><tbody>';
+  ROTAS.forEach(function(r,i){var p=PROP[r.chave]||{},ex=Number(p.eixos)===6?6:(p.eixos?5:EIXOS);
+    h+='<tr id="l'+i+'"><td class="fixo">'+esc(r.origem)+(r.uf_origem?'/'+esc(r.uf_origem):'')+'</td><td class="fixo">'+esc(r.destino)+(r.uf_destino?'/'+esc(r.uf_destino):'')+'</td><td class="fixo">'+esc(r.tipo_veiculo)+'</td>'
+    +'<td><select id="ex'+i+'" class="exsel" onchange="calc('+i+')"><option value="5"'+(ex===5?' selected':'')+'>5</option><option value="6"'+(ex===6?' selected':'')+'>6</option></select></td>'
+    +'<td class="n">'+(r.km?fmt(r.km).replace(/,00$/,''):'-')+'</td><td class="n">'+(r.viagens?fmt1(r.viagens):'-')+'</td>'
     +'<td><input id="liq'+i+'" value="'+(p.valor_liquido!=null?fmt(p.valor_liquido):'')+'" oninput="calc('+i+')" inputmode="decimal"></td>'
+    +'<td class="n" id="an'+i+'">-</td><td class="n" id="da'+i+'">-</td>'
     +'<td class="n" id="al'+i+'">'+(r.aliquota!=null?fmt(r.aliquota)+'%':'<span class="pill">sem alíquota</span>')+(r.aliquota_fonte&&r.aliquota_fonte.indexOf('estimada')===0?'<span class="pill">estimada</span>':'')+'</td>'
     +'<td class="n" id="ic'+i+'">-</td><td class="n bruto" id="br'+i+'">-</td>'
     +'<td><input id="pz'+i+'" value="'+(p.prazo_dias!=null?p.prazo_dias:'')+'" inputmode="numeric" style="min-width:80px"></td>'
     +'<td><input class="t" id="ob'+i+'" value="'+esc(p.observacao||'')+'" style="min-width:180px"></td></tr>'});
   h+='</tbody></table></div><div class="barra"><button class="sec" onclick="enviar(false)">Salvar rascunho</button><button onclick="enviar(true)">Enviar cotação</button><span id="cont"></span></div>';
-  t.innerHTML=h;document.getElementById('eixos').value=String(EIXOS);mudaEixos();montaFiltros();ROTAS.forEach(function(r,i){calc(i)})}
-function mudaEixos(){var e=document.getElementById('eixos');EIXOS=Number(e.value)||5;document.getElementById('avEixos').innerHTML=EIXOS===5?' <span class="ok1">99% dos nossos embarques são com 5 eixos: sua tabela será comparada com os valores de 5 eixos.</span>':' <span class="aten">Atenção: 99% dos nossos embarques são com 5 eixos. Com 6 eixos a comparação usa a tabela ANTT de 6 eixos.</span>'}
+  t.innerHTML=h;document.getElementById('eixos').value=String(EIXOS);avisoEixos();montaFiltros();ROTAS.forEach(function(r,i){calc(i)})}
+function eixoDe(i){return Number(document.getElementById('ex'+i).value)===6?6:5}
+function avisoEixos(){document.getElementById('avEixos').innerHTML=EIXOS===5?' <span class="ok1">99% dos nossos embarques são com 5 eixos: sua tabela será comparada com os valores de 5 eixos.</span>':' <span class="aten">Atenção: 99% dos nossos embarques são com 5 eixos. Com 6 eixos a comparação usa a ANTT de 6 eixos.</span>'}
+function mudaEixos(){EIXOS=Number(document.getElementById('eixos').value)===6?6:5;avisoEixos();ROTAS.forEach(function(r,i){document.getElementById('ex'+i).value=String(EIXOS);calc(i)})}
 function montaFiltros(){var fo=document.getElementById('fo'),fd=document.getElementById('fd'),vo=fo.value,vd=fd.value,O={},D={};
   ROTAS.forEach(function(r){if(!vd||sa(r.destino)===vd)O[sa(r.origem)]=r.origem;if(!vo||sa(r.origem)===vo)D[sa(r.destino)]=r.destino});
   var mk=function(M,tod){var k=Object.keys(M).sort(function(a,b){return a<b?-1:1});return '<option value="">'+tod+'</option>'+k.map(function(x){return '<option value="'+esc(x)+'">'+esc(M[x])+'</option>'}).join('')};
@@ -201,47 +238,46 @@ function montaFiltros(){var fo=document.getElementById('fo'),fd=document.getElem
 function filtrar(q){if(q)montaFiltros();var vo=document.getElementById('fo').value,vd=document.getElementById('fd').value,n=0;
   ROTAS.forEach(function(r,i){var ok=(!vo||sa(r.origem)===vo)&&(!vd||sa(r.destino)===vd);document.getElementById('l'+i).style.display=ok?'':'none';if(ok)n++});
   document.getElementById('nvis').textContent=n+' de '+ROTAS.length+' rotas'}
-function calc(i){var r=ROTAS[i],liq=num(document.getElementById('liq'+i).value),a=r.aliquota;
-  var ic=document.getElementById('ic'+i),br=document.getElementById('br'+i),tr=document.getElementById('l'+i);
-  if(liq>0){var base=liq,bruto=(a>0&&a<100)?base/(1-a/100):base;br.textContent=fmt(bruto);ic.textContent=fmt(bruto-base);tr.className='feita'}else{br.textContent='-';ic.textContent='-';tr.className=''}
+function calc(i){var r=ROTAS[i],liq=num(document.getElementById('liq'+i).value),a=r.aliquota,ant=eixoDe(i)===6?r.antt6:r.antt5;
+  var ic=document.getElementById('ic'+i),br=document.getElementById('br'+i),tr=document.getElementById('l'+i),an=document.getElementById('an'+i),da=document.getElementById('da'+i);
+  an.textContent=ant>0?fmt(ant):'-';
+  if(liq>0){var bruto=(a>0&&a<100)?liq/(1-a/100):liq;br.textContent=fmt(bruto);ic.textContent=fmt(bruto-liq);tr.className='feita';
+    if(ant>0){var d=(liq/ant-1)*100;da.textContent=(d>=0?'+':'')+fmt1(d)+'%';da.style.color=d>15?'#b91c1c':(d<0?'#b45309':'#166534')}else{da.textContent='-';da.style.color=''}}
+  else{br.textContent='-';ic.textContent='-';da.textContent='-';da.style.color='';tr.className=''}
   var n=0;ROTAS.forEach(function(x,k){if(num(document.getElementById('liq'+k).value)>0)n++});document.getElementById('cont').textContent=n+' de '+ROTAS.length+' rotas preenchidas'}
 function baixarModelo(){
   if(!window.XLSX){alert('Não foi possível carregar o recurso de Excel. Verifique sua conexão e tente de novo.');return}
-  var HR=4,NC=13,L='CBD5E1';
-  var cab=['Origem','UF origem','Destino','UF destino','Veículo','KM','Média mensal (viagens)','ICMS %','Valor líquido (R$)','Valor bruto total (R$)','Prazo (dias)','Observação','CHAVE (não alterar)'];
-  var tipo=['f','f','f','f','f','f','f','c','i','c','i','i','f'];
-  var aoa=[['COTAÇÃO DE LOTAÇÃO — '+NOMETRANSP],['Preencha somente as colunas AMARELAS: Valor líquido (sem ICMS), Prazo e Observação. O ICMS e o Valor bruto total são calculados. O tipo de veículo é fixo. Deixe em branco as rotas que você não atende.'],['Legenda:   AMARELO = você preenche   ·   CINZA = informação da rota (não alterar)   ·   AZUL = calculado automaticamente'],['EIXOS DO VEÍCULO (5 ou 6)  →','','',EIXOS],cab];
+  var HR=4,NC=17,L='CBD5E1';
+  var cab=['Origem','UF origem','Destino','UF destino','Veículo','Eixos (5 ou 6)','KM','Média mensal (viagens)','ANTT ref. líquido (R$)','ICMS %','Valor líquido (R$)','Valor bruto total (R$)','Prazo (dias)','Observação','CHAVE (não alterar)','ANTT 5 eixos (aux)','ANTT 6 eixos (aux)'];
+  var tipo=['f','f','f','f','f','i','f','f','c','c','i','c','i','i','f','f','f'];
+  var aoa=[['COTAÇÃO DE LOTAÇÃO — '+NOMETRANSP],['Preencha somente as colunas AMARELAS: Eixos (5 ou 6), Valor líquido (sem ICMS), Prazo e Observação. O ICMS, o piso ANTT de referência e o Valor bruto total são calculados. O veículo é carreta (tipo único). Deixe em branco as rotas que você não atende.'],['Legenda:   AMARELO = você preenche   ·   CINZA = informação da rota (não alterar)   ·   AZUL = calculado automaticamente'],['EIXOS PADRÃO (5 ou 6)  →','','',EIXOS],cab];
   ROTAS.forEach(function(r,i){
-    aoa.push([r.origem,r.uf_origem||'',r.destino,r.uf_destino||'',r.tipo_veiculo,r.km||'',r.viagens?Math.round(r.viagens*10)/10:'',r.aliquota!=null?r.aliquota:'',num(document.getElementById('liq'+i).value)||'','',document.getElementById('pz'+i).value||'',document.getElementById('ob'+i).value||'',r.chave])});
+    aoa.push([r.origem,r.uf_origem||'',r.destino,r.uf_destino||'',r.tipo_veiculo,eixoDe(i),r.km||'',r.viagens?Math.round(r.viagens*10)/10:'','',r.aliquota!=null?r.aliquota:'',num(document.getElementById('liq'+i).value)||'','',document.getElementById('pz'+i).value||'',document.getElementById('ob'+i).value||'',r.chave,r.antt5!=null?r.antt5:'',r.antt6!=null?r.antt6:''])});
   var ws=XLSX.utils.aoa_to_sheet(aoa);
   var borda={top:{style:'thin',color:{rgb:L}},bottom:{style:'thin',color:{rgb:L}},left:{style:'thin',color:{rgb:L}},right:{style:'thin',color:{rgb:L}}};
   function est(r,c,s,z){var a=XLSX.utils.encode_cell({r:r,c:c});if(!ws[a])ws[a]={t:'s',v:''};ws[a].s=s;if(z)ws[a].z=z}
   est(0,0,{font:{bold:true,sz:16,color:{rgb:'FFFFFF'}},fill:{patternType:'solid',fgColor:{rgb:'06183D'}},alignment:{vertical:'center',horizontal:'left'}});
-  for(var c0=1;c0<NC;c0++)est(0,c0,{fill:{patternType:'solid',fgColor:{rgb:'06183D'}}});
+  for(var c0=1;c0<14;c0++)est(0,c0,{fill:{patternType:'solid',fgColor:{rgb:'06183D'}}});
   est(1,0,{font:{sz:11,color:{rgb:'334155'}},alignment:{wrapText:true,vertical:'center'}});
   est(2,0,{font:{bold:true,sz:11,color:{rgb:'92400E'}},fill:{patternType:'solid',fgColor:{rgb:'FEF3C7'}},alignment:{vertical:'center'}});
   est(3,0,{font:{bold:true,sz:11,color:{rgb:'92400E'}},fill:{patternType:'solid',fgColor:{rgb:'FEF3C7'}},alignment:{vertical:'center'}});est(3,1,{fill:{patternType:'solid',fgColor:{rgb:'FEF3C7'}}});est(3,2,{fill:{patternType:'solid',fgColor:{rgb:'FEF3C7'}}});est(3,3,{font:{bold:true,sz:12},fill:{patternType:'solid',fgColor:{rgb:'FFF7CC'}},alignment:{horizontal:'center',vertical:'center'},border:borda});
   var corCab={f:'1E3A5F',i:'B45309',c:'475569'},corCel={f:'F1F5F9',i:'FFF7CC',c:'E0F0FF'};
   for(var c=0;c<NC;c++){est(HR,c,{font:{bold:true,sz:11,color:{rgb:'FFFFFF'}},fill:{patternType:'solid',fgColor:{rgb:corCab[tipo[c]]}},alignment:{horizontal:'center',vertical:'center',wrapText:true},border:borda})}
+  var numericas=[5,6,7,8,9,10,11,12,15,16];
   for(var k=HR+1;k<aoa.length;k++){var ex=k+1;
-    ws['J'+ex]={t:'n',f:'IF(I'+ex+'>0,I'+ex+'/(1-N(H'+ex+')/100),"")'};
+    ws['I'+ex]={t:'n',f:'IF(F'+ex+'=6,IF(Q'+ex+'="","",Q'+ex+'),IF(P'+ex+'="","",P'+ex+'))'};
+    ws['L'+ex]={t:'n',f:'IF(K'+ex+'>0,K'+ex+'/(1-N(J'+ex+')/100),"")'};
     for(var c2=0;c2<NC;c2++){
-      var z=(c2===8||c2===9)?'#,##0.00':(c2===7?'0.00"%"':((c2===5||c2===6||c2===10)?'#,##0':null));
-      var numerico=(c2>=5&&c2<=10);
-      est(k,c2,{font:{sz:11,bold:(c2===0||c2===2||c2===4||c2===9),color:{rgb:c2===12?'94A3B8':'0F172A'}},fill:{patternType:'solid',fgColor:{rgb:corCel[tipo[c2]]}},alignment:{horizontal:numerico?'right':'left',vertical:'center'},border:(tipo[c2]==='i'?{top:{style:'thin',color:{rgb:'F59E0B'}},bottom:{style:'thin',color:{rgb:'F59E0B'}},left:{style:'thin',color:{rgb:'F59E0B'}},right:{style:'thin',color:{rgb:'F59E0B'}}}:borda)},z)}}
-  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:9}},{s:{r:1,c:0},e:{r:1,c:11}},{s:{r:2,c:0},e:{r:2,c:11}},{s:{r:3,c:0},e:{r:3,c:2}}];
+      var z=null;if(c2===5||c2===6||c2===12)z='#,##0';else if(c2===7)z='#,##0.0';else if(c2===8||c2===10||c2===11||c2===15||c2===16)z='#,##0.00';else if(c2===9)z='0.00"%"';
+      est(k,c2,{font:{sz:11,bold:(c2===0||c2===2||c2===4||c2===11),color:{rgb:c2>=14?'94A3B8':'0F172A'}},fill:{patternType:'solid',fgColor:{rgb:corCel[tipo[c2]]}},alignment:{horizontal:numericas.indexOf(c2)>=0?'right':'left',vertical:'center'},border:(tipo[c2]==='i'?{top:{style:'thin',color:{rgb:'F59E0B'}},bottom:{style:'thin',color:{rgb:'F59E0B'}},left:{style:'thin',color:{rgb:'F59E0B'}},right:{style:'thin',color:{rgb:'F59E0B'}}}:borda)},z)}}
+  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:11}},{s:{r:1,c:0},e:{r:1,c:13}},{s:{r:2,c:0},e:{r:2,c:13}},{s:{r:3,c:0},e:{r:3,c:2}}];
   ws['!rows']=[{hpt:32},{hpt:36},{hpt:22},{hpt:24},{hpt:34}];
-  ws['!cols']=[{wch:28},{wch:9},{wch:28},{wch:9},{wch:18},{wch:8},{wch:12},{wch:9},{wch:19},{wch:21},{wch:12},{wch:32},{wch:40,hidden:true}];
-  ws['!autofilter']={ref:'A'+(HR+1)+':M'+aoa.length};
+  ws['!cols']=[{wch:28},{wch:9},{wch:28},{wch:9},{wch:18},{wch:11},{wch:8},{wch:12},{wch:17},{wch:9},{wch:19},{wch:21},{wch:12},{wch:32},{wch:40,hidden:true},{wch:12,hidden:true},{wch:12,hidden:true}];
+  ws['!autofilter']={ref:'A'+(HR+1)+':N'+aoa.length};
   ws['!freeze']={xSplit:0,ySplit:HR+1};
   ws['!views']=[{state:'frozen',ySplit:HR+1,xSplit:0}];
   var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Cotacao');
   XLSX.writeFile(wb,'cotacao-lotacao-'+NOMETRANSP.replace(/[^a-z0-9]+/gi,'-')+'.xlsx')}
-function dataIso(v){if(v===''||v==null)return '';
-  if(typeof v==='number'&&v>20000){return new Date(Math.round((v-25569)*86400000)).toISOString().slice(0,10)}
-  var s=String(v).trim(),m=s.match(/^(\\d{1,2})[\\/.-](\\d{1,2})[\\/.-](\\d{4})$/);
-  if(m)return m[3]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[1]).slice(-2);
-  return /^\\d{4}-\\d{2}-\\d{2}/.test(s)?s.slice(0,10):''}
 function importar(inp){var f=inp.files&&inp.files[0],m=document.getElementById('msgTab');if(!f)return;
   if(!window.XLSX){m.innerHTML='<div class="msg erro">Não foi possível carregar o recurso de Excel. Verifique sua conexão.</div>';return}
   var rd=new FileReader();rd.onload=function(ev){try{
@@ -250,17 +286,18 @@ function importar(inp){var f=inp.files&&inp.files[0],m=document.getElementById('
     if(hi<0){m.innerHTML='<div class="msg erro">Não encontrei o cabeçalho. Use o modelo baixado nesta tela.</div>';return}
     for(var q=0;q<hi;q++){var rw=rows[q];for(var z=0;z<rw.length;z++){if(sa(rw[z]).indexOf('EIXOS')===0){for(var z2=z+1;z2<rw.length;z2++){var ev=Number(rw[z2]);if(ev===5||ev===6){document.getElementById('eixos').value=String(ev);mudaEixos()}}}}}
     var cab=rows[hi].map(sa),col=function(re){for(var c=0;c<cab.length;c++)if(re.test(cab[c]))return c;return -1};
-    var cCh=col(/^CHAVE/),cO=col(/^ORIGEM/),cD=col(/^DESTINO/),cV=col(/^VEICULO|^TIPO/),cL=col(/LIQUIDO/),cZ=col(/^PRAZO/),cOb=col(/^OBS/);
+    var cCh=col(/^CHAVE/),cO=col(/^ORIGEM/),cD=col(/^DESTINO/),cL=col(/^VALOR LIQUIDO|^LIQUIDO/),cZ=col(/^PRAZO/),cOb=col(/^OBS/),cE=col(/^EIXOS/);
     if(cL<0){m.innerHTML='<div class="msg erro">Coluna "Valor líquido" não encontrada. Use o modelo baixado nesta tela.</div>';return}
     var idx={};ROTAS.forEach(function(x,i){idx[x.chave]=i});
     var ok=0,perdidas=0;
     for(var r2=hi+1;r2<rows.length;r2++){var row=rows[r2],i=-1;
       if(cCh>=0&&row[cCh]!==''&&idx[row[cCh]]!==undefined)i=idx[row[cCh]];
-      else if(cO>=0&&cD>=0&&cV>=0){var k=kc(row[cO])+'|'+kc(row[cD])+'|CARRETA';if(idx[k]!==undefined)i=idx[k]}
+      else if(cO>=0&&cD>=0){var k=kc(row[cO])+'|'+kc(row[cD])+'|CARRETA';if(idx[k]!==undefined)i=idx[k]}
       var liq=num(row[cL]);
       if(i<0){if(liq>0)perdidas++;continue}
       if(!(liq>0))continue;
       document.getElementById('liq'+i).value=fmt(liq);
+      if(cE>=0){var ev2=Number(row[cE]);if(ev2===5||ev2===6)document.getElementById('ex'+i).value=String(ev2)}
       if(cZ>=0&&row[cZ]!=='')document.getElementById('pz'+i).value=parseInt(row[cZ],10)||'';
       if(cOb>=0&&row[cOb]!=='')document.getElementById('ob'+i).value=String(row[cOb]);
       calc(i);ok++}
@@ -272,7 +309,7 @@ function enviar(final){var itens=[],m=document.getElementById('msgTab');m.innerH
     var tem=liq!=null||document.getElementById('pz'+i).value||document.getElementById('ob'+i).value;
     if(!tem)continue;
     if(!(liq>0)){m.innerHTML='<div class="msg erro">Linha '+(i+1)+' ('+esc(ROTAS[i].origem)+' → '+esc(ROTAS[i].destino)+'): informe o valor líquido.</div>';document.getElementById('l'+i).scrollIntoView({block:'center'});return}
-    itens.push({chave:ROTAS[i].chave,liquido:liq,prazo:document.getElementById('pz'+i).value,obs:document.getElementById('ob'+i).value})}
+    itens.push({chave:ROTAS[i].chave,liquido:liq,eixos:eixoDe(i),prazo:document.getElementById('pz'+i).value,obs:document.getElementById('ob'+i).value})}
   if(final){if(!itens.length){m.innerHTML='<div class="msg erro">Preencha ao menos uma rota antes de enviar.</div>';return}
     if(!confirm('Enviar '+itens.length+' rota(s) para análise? Os valores líquidos serão somados ao ICMS para formar o bruto.'))return}
   api({acao:'salvar',acesso:ACESSO,itens:itens,enviar:final,eixos:EIXOS}).then(function(j){m.innerHTML='<div class="msg ok">'+(final?'✅ Cotação enviada com '+j.salvas+' rota(s). Obrigado! O time de suprimentos já recebeu.':'Rascunho salvo ('+j.salvas+' rota(s)).')+'</div>';window.scrollTo(0,0)}).catch(function(e){m.innerHTML='<div class="msg erro">'+esc(e.message)+'</div>'})}
@@ -341,17 +378,18 @@ export default async function handler(req, res) {
         status: convite.status === 'ENVIADO' ? 'ENVIADO' : 'EM_PREENCHIMENTO',
       }).eq('id', convite.id);
 
-      const [{ data: rotasDb }, { data: propostas }, matriz] = await Promise.all([
+      const [{ data: rotasDb }, { data: propostas }, matriz, regraAntt] = await Promise.all([
         supabase.from('lotacao_cotacao_rotas').select('*').eq('cotacao_id', cotacao.id).limit(20000),
         supabase.from('lotacao_cotacao_propostas').select('*').eq('convite_id', convite.id).limit(20000),
         carregarMatrizIcms(supabase),
+        carregarRegraAntt(supabase),
       ]);
       const rotas = rotasVisiveis(rotasDb || [], convite)
         .sort((a, b) => Number(b.viagens || 0) - Number(a.viagens || 0) || String(a.origem).localeCompare(String(b.origem), 'pt-BR') || String(a.destino).localeCompare(String(b.destino), 'pt-BR'))
         .map((r) => {
           const a = aliquotaDaRota(matriz, r.uf_origem, r.uf_destino);
           // target e frete medio NUNCA vao para o portal.
-          return { chave: r.chave, origem: r.origem, uf_origem: r.uf_origem, destino: r.destino, uf_destino: r.uf_destino, tipo_veiculo: r.tipo_veiculo, km: r.km, viagens: r.viagens, aliquota: a.aliquota, aliquota_fonte: a.fonte };
+          return { chave: r.chave, origem: r.origem, uf_origem: r.uf_origem, destino: r.destino, uf_destino: r.uf_destino, tipo_veiculo: r.tipo_veiculo, km: r.km, viagens: r.viagens, aliquota: a.aliquota, aliquota_fonte: a.fonte, antt5: anttLiquido(regraAntt, r.km, 5, a.aliquota), antt6: anttLiquido(regraAntt, r.km, 6, a.aliquota) };
         });
       return enviarJson(res, 200, { acesso: gerarAcesso(token, segredo), rotas, propostas: propostas || [], status: convite.status, eixos: convite.eixos || 5 });
     }
@@ -379,7 +417,7 @@ export default async function handler(req, res) {
           valor_liquido: arred(liquido), pedagio: arred(pedagio), aliquota_icms: aliquota, icms_valor: icms, valor_bruto: bruto,
           prazo_dias: Number.isFinite(prazo) && prazo > 0 ? prazo : null,
           validade: /^\d{4}-\d{2}-\d{2}$/.test(String(it.validade || '')) ? it.validade : null,
-          observacao: String(it.obs || '').slice(0, 500) || null, updated_at: agora,
+          observacao: String(it.obs || '').slice(0, 500) || null, updated_at: agora, eixos: Number(it.eixos) === 6 ? 6 : 5,
         });
       }
       // Linha apagada no portal sai da proposta (o que esta na tela e a verdade).
@@ -388,7 +426,11 @@ export default async function handler(req, res) {
       const remover = (existentes || []).filter((e) => !mantidas.has(e.chave)).map((e) => e.id);
       for (let i = 0; i < remover.length; i += 200) await supabase.from('lotacao_cotacao_propostas').delete().in('id', remover.slice(i, i + 200));
       for (let i = 0; i < linhas.length; i += 500) {
-        const { error: e2 } = await supabase.from('lotacao_cotacao_propostas').upsert(linhas.slice(i, i + 500), { onConflict: 'convite_id,chave' });
+        let { error: e2 } = await supabase.from('lotacao_cotacao_propostas').upsert(linhas.slice(i, i + 500), { onConflict: 'convite_id,chave' });
+        if (e2 && /eixos/i.test(e2.message || '')) {
+          // banco ainda sem a coluna eixos nas propostas: grava sem ela
+          ({ error: e2 } = await supabase.from('lotacao_cotacao_propostas').upsert(linhas.slice(i, i + 500).map(({ eixos, ...resto }) => resto), { onConflict: 'convite_id,chave' }));
+        }
         if (e2) throw e2;
       }
       if ([5, 6].includes(Number(body.eixos))) {
