@@ -172,17 +172,25 @@ export default function LotacaoCotacaoPage() {
   };
 
   const gerar = async () => {
-    if (!cotacaoId) { aviso('Crie ou selecione uma cotação primeiro.', 'erro'); return; }
     if (!nomeTransp.trim()) { aviso('Digite o nome do transportador.', 'erro'); return; }
     setOcupado(true);
     try {
+      let idCot = cotacaoId;
+      if (!idCot) {
+        const rotas = montarRotas(transportadoras, resumoRealizado);
+        if (!rotas.length) throw new Error('Não há rotas na base de lotação para montar a cotação.');
+        const cot = await criarCotacao({ nome: `Cotação lotação ${new Date().toLocaleDateString('pt-BR')}`, periodoLabel: 'Realizado', rotas });
+        idCot = cot.id;
+        setCotacaoId(idCot);
+        await recarregarLista();
+      }
       const chaves = soAtendidas && tabelaDoNome
         ? Array.from(new Set((tabelaDoNome.linhas || []).map((l) => chaveRota(l.origem, l.destino, l.tipo || l.tipo_veiculo))))
         : null;
-      const cv = await gerarConvite({ cotacaoId, transportadora: nomeTransp.trim(), dias, chaves });
+      const cv = await gerarConvite({ cotacaoId: idCot, transportadora: nomeTransp.trim(), dias, chaves });
       setUltimoLink(cv);
       setNomeTransp('');
-      await recarregarDados();
+      setDados(await carregarCotacao(idCot));
       aviso(`Link gerado para ${cv.transportadora}, válido por ${dias} dias.`);
     } catch (e) { aviso(e.message, 'erro'); } finally { setOcupado(false); }
   };
@@ -212,8 +220,34 @@ export default function LotacaoCotacaoPage() {
       )}
 
       <div style={card}>
-        <h2 style={h2}>1. Cotação (campanha)</h2>
-        <small>A cotação guarda as rotas e a volumetria. Todos os links gerados dentro dela são comparados entre si.</small>
+        <h2 style={h2}>1. Gerar link para o transportador</h2>
+        <small>Digite o nome de quem vai responder e clique em <b>Gerar link</b>. Aqui entra o nome do <b>transportador</b>. Cada clique em <b>Gerar link</b> cria um código novo e exclusivo. O CNPJ é pedido ao transportador no primeiro acesso (obrigatório).</small>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0', alignItems: 'end' }}>
+          <label style={{ flex: 1, minWidth: 260, fontSize: 13, fontWeight: 700 }}>Nome do transportador
+            <input style={{ ...inp, width: '100%', fontWeight: 400 }} list="lot-cot-transp" placeholder="Digite o nome (ou escolha uma já cadastrada)" value={nomeTransp} onChange={(e) => setNomeTransp(e.target.value)} />
+            <datalist id="lot-cot-transp">{transportadoras.map((t) => <option key={t.id || t.nome} value={t.nome} />)}</datalist>
+          </label>
+          <label style={{ fontSize: 13, fontWeight: 700 }}>Validade do link (dias)
+            <input style={{ ...inp, width: 90, display: 'block', fontWeight: 400 }} type="number" min="1" max="60" value={dias} onChange={(e) => setDias(e.target.value)} />
+          </label>
+          <button style={btn} disabled={ocupado} onClick={gerar}>Gerar link</button>
+        </div>
+        {tabelaDoNome && (
+          <label style={{ fontSize: 13 }}><input type="checkbox" checked={soAtendidas} onChange={(e) => setSoAtendidas(e.target.checked)} /> Enviar só as rotas que {tabelaDoNome.nome} já atende (senão recebe todas)</label>
+        )}
+        {ultimoLink && (
+          <div className="hint-box" style={{ marginTop: 12 }}>
+            <b>Link de {ultimoLink.transportadora}</b> (vale até {dataBr(ultimoLink.expira_em)}):
+            <div style={{ wordBreak: 'break-all', margin: '6px 0', fontFamily: 'monospace', fontSize: 12 }}>{linkConviteCotacao(ultimoLink.token)}</div>
+            <button style={btn} onClick={() => copiar(ultimoLink.token)}>Copiar link</button>{' '}
+            <button style={btnSec} onClick={() => email(ultimoLink)}>Abrir e-mail</button>
+          </div>
+        )}
+      </div>
+
+      <details style={card}>
+        <summary style={{ cursor: 'pointer', fontWeight: 700, color: '#06183d' }}>Avançado: cotação atual — {cotacaoAtual ? cotacaoAtual.name || cotacaoAtual.nome : 'será criada automaticamente'} (criar outra / encerrar / excluir)</summary>
+        <small style={{ display: 'block', marginTop: 8 }}>A cotação guarda as rotas e a volumetria. Todos os links gerados dentro dela são comparados entre si.</small>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0', alignItems: 'center' }}>
           <select style={{ ...inp, minWidth: 260 }} value={cotacaoId} onChange={(e) => { setCotacaoId(e.target.value); setUltimoLink(null); }}>
             {!cotacoes.length && <option value="">Nenhuma cotação ainda</option>}
@@ -231,36 +265,10 @@ export default function LotacaoCotacaoPage() {
           <button style={btn} disabled={ocupado} onClick={criar}>Criar cotação</button>
         </div>
         <small>Ao criar, as rotas são montadas a partir das tabelas de lotação e do realizado ({montarRotas(transportadoras, resumoRealizado).length} rotas/tipos de veículo hoje).</small>
-      </div>
+      </details>
 
       <div style={card}>
-        <h2 style={h2}>2. Gerar link para o transportador</h2>
-        <small>Cada clique em <b>Gerar link</b> cria um código novo e exclusivo. O CNPJ é pedido ao transportador no primeiro acesso (obrigatório).</small>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0', alignItems: 'end' }}>
-          <label style={{ flex: 1, minWidth: 260, fontSize: 13, fontWeight: 700 }}>Nome do transportador
-            <input style={{ ...inp, width: '100%', fontWeight: 400 }} list="lot-cot-transp" placeholder="Digite o nome (ou escolha uma já cadastrada)" value={nomeTransp} onChange={(e) => setNomeTransp(e.target.value)} />
-            <datalist id="lot-cot-transp">{transportadoras.map((t) => <option key={t.id || t.nome} value={t.nome} />)}</datalist>
-          </label>
-          <label style={{ fontSize: 13, fontWeight: 700 }}>Validade do link (dias)
-            <input style={{ ...inp, width: 90, display: 'block', fontWeight: 400 }} type="number" min="1" max="60" value={dias} onChange={(e) => setDias(e.target.value)} />
-          </label>
-          <button style={btn} disabled={ocupado || !cotacaoId} onClick={gerar}>Gerar link</button>
-        </div>
-        {tabelaDoNome && (
-          <label style={{ fontSize: 13 }}><input type="checkbox" checked={soAtendidas} onChange={(e) => setSoAtendidas(e.target.checked)} /> Enviar só as rotas que {tabelaDoNome.nome} já atende (senão recebe todas)</label>
-        )}
-        {ultimoLink && (
-          <div className="hint-box" style={{ marginTop: 12 }}>
-            <b>Link de {ultimoLink.transportadora}</b> (vale até {dataBr(ultimoLink.expira_em)}):
-            <div style={{ wordBreak: 'break-all', margin: '6px 0', fontFamily: 'monospace', fontSize: 12 }}>{linkConviteCotacao(ultimoLink.token)}</div>
-            <button style={btn} onClick={() => copiar(ultimoLink.token)}>Copiar link</button>{' '}
-            <button style={btnSec} onClick={() => email(ultimoLink)}>Abrir e-mail</button>
-          </div>
-        )}
-      </div>
-
-      <div style={card}>
-        <h2 style={h2}>3. Links gerados e respostas</h2>
+        <h2 style={h2}>2. Links gerados e respostas</h2>
         {!dados?.convites?.length ? <div className="hint-box" style={{ marginTop: 8 }}>Nenhum link gerado nesta cotação.</div> : (
           <div style={{ overflowX: 'auto', marginTop: 8 }}>
             <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
@@ -291,7 +299,7 @@ export default function LotacaoCotacaoPage() {
 
       {dados && cotacaoAtual && (
         <div style={card}>
-          <h2 style={h2}>4. Propostas recebidas</h2>
+          <h2 style={h2}>3. Propostas recebidas</h2>
           <Analise dados={dados} cotacao={cotacaoAtual} />
         </div>
       )}
