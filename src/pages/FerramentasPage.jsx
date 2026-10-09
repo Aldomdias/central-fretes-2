@@ -3,6 +3,7 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { ImportarFluxoCard } from './LotacaoOperacaoPage';
 import { carregarVinculosTransportadoras, salvarVinculosTransportadoras, removerVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import XmlMassaCard from '../components/XmlMassaCard';
+import ImportarDoccobCard from '../components/ImportarDoccobCard';
 import SlaAuditoriaConfig from '../components/SlaAuditoriaConfig';
 import FilaProcessamentoConfig from '../components/FilaProcessamentoConfig';
 import { carregarSessao, PERFIS_USUARIO } from '../utils/authLocal';
@@ -1682,6 +1683,18 @@ export default function FerramentasPage({ transportadoras = [] }) {
           <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='xml-massa'?'△':'▽'}</span>
         </button>
         {abaAberta === 'xml-massa' && <XmlMassaCard />}
+      </div>
+
+      {/* Importar faturas por DocCob */}
+      <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
+        <button type="button" onClick={() => toggleAba('doccob-faturas')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='doccob-faturas'?'1px solid var(--border-soft)':'none'}}>
+          <div>
+            <div className="panel-title" style={{margin:0}}>🧾 Importar faturas por DocCob</div>
+            <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>Aceita o .zip/.txt do DocCob — mesmo arquivo do Verum, sem precisar exportar de lá</div>
+          </div>
+          <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='doccob-faturas'?'△':'▽'}</span>
+        </button>
+        {abaAberta === 'doccob-faturas' && <ImportarDoccobCard />}
       </div>
 
       {/* Excecoes de origem por transportadora */}
