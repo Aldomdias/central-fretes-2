@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { carregarTabelasLotacao, obterTabelasPorTipo } from '../utils/lotacaoTables';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  baixarModeloAntt, baixarModeloTransportadora, carregarTabelasLotacao, importarTabelaLotacao, obterTabelasPorTipo,
+} from '../utils/lotacaoTables';
 import {
   carregarTabelasLotacaoSupabase, lotacaoSupabaseConfigurado, resumoRotasLotacaoSupabase,
 } from '../services/lotacaoSupabaseService';
@@ -7,120 +9,162 @@ import {
   alterarStatusCotacao, carregarCotacao, criarCotacao, excluirConvite, excluirCotacao,
   gerarConvite, linkConviteCotacao, listarCotacoes, renovarConvite,
 } from '../services/lotacaoCotacaoService';
+import {
+  carregarKmRotas, carregarMapaUfMunicipios, carregarPeriodoRealizado, importarPropostasConvite, importarReferencia, oficializarProposta,
+} from '../services/lotacaoCotacaoReferenciasService';
+import { carregarMatrizIcmsUfCentralizada } from '../utils/icmsUfMatrix';
+import { VEICULO_PADRAO, chavePar, chaveRota, mesmaCidade, norm, splitCidade, veiculoExcluido } from '../utils/lotacaoCotacaoChave';
 
-const norm = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
-const brl = (v) => (v == null ? '-' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
-// "ITAJAÍ/SC" e "ITAJAI" sao a mesma cidade: a chave ignora o sufixo /UF.
-const splitCidade = (v) => {
-  const t = String(v || '').trim();
-  const m = t.match(/^(.*?)\s*\/\s*([A-Za-z]{2})$/);
-  return m ? { cidade: m[1].trim(), uf: m[2].toUpperCase() } : { cidade: t, uf: '' };
-};
-const chaveRota = (o, d, t) => `${norm(splitCidade(o).cidade)}|${norm(splitCidade(d).cidade)}|${norm(t)}`;
+const brl = (v) => (v == null || v === '' ? '-' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
+const pct = (v, d = 1) => (v == null || !Number.isFinite(v) ? '-' : `${(v * 100).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d })}%`);
 const dataBr = (v) => (v ? new Date(v).toLocaleDateString('pt-BR') : '-');
 const fmtCnpj = (c) => String(c || '').replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5') || '-';
+const int = (v) => Math.round(Number(v) || 0).toLocaleString('pt-BR');
+const dec1 = (v) => (Number(v) > 0 ? Number(v).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) : '-');
 
 const STATUS_COR = { PENDENTE: '#6B7280', EM_PREENCHIMENTO: '#D97706', ENVIADO: '#1D9E75' };
 const STATUS_TXT = { PENDENTE: 'Não acessou', EM_PREENCHIMENTO: 'Preenchendo', ENVIADO: 'Enviado' };
+const eRef = (cv) => ['REF_CASA', 'REF_ANTT', 'REF_ANTT_6'].includes(cv.tipo);
 
 const card = { background: '#fff', border: '1px solid #dbe3ef', borderRadius: 14, padding: 20, marginBottom: 18 };
 const h2 = { margin: '0 0 4px', fontSize: 18, color: '#06183d' };
 const btn = { background: '#185FA5', color: '#fff', border: 0, borderRadius: 8, padding: '9px 16px', fontWeight: 700, cursor: 'pointer' };
 const btnSec = { ...btn, background: '#fff', color: '#185FA5', border: '1px solid #185FA5', padding: '6px 10px', fontSize: 12 };
 const inp = { padding: '9px 10px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 14 };
+const th = { padding: '8px 6px', background: '#1E3A5F', color: '#fff', fontSize: 12, textAlign: 'center', position: 'sticky', top: 0, whiteSpace: 'nowrap' };
+const td = { padding: '6px', borderTop: '1px solid #e5e7eb', fontSize: 12 };
 
-// Rotas da cotacao = malha das tabelas + rotas do realizado (volumetria).
-// UF que falta (realizado vem so com o nome da cidade) e completada pela mesma
-// cidade em outra linha; sem UF nao ha aliquota de ICMS.
-function montarRotas(transportadoras, resumoRealizado) {
-  const ufDaCidade = new Map();
-  const aprende = (cidadeBruta, ufExplicita) => {
-    const { cidade, uf } = splitCidade(cidadeBruta);
+// ---------------------------------------------------------------------------
+// Rotas da cotacao: partem do REALIZADO (volumetria). As tabelas de lotacao
+// existentes nao entram como rota; so ajudam a descobrir a UF da cidade.
+// ---------------------------------------------------------------------------
+function montarRotas(resumoRealizado, tabelas, mapaUfIbge, kmRotas, meses = 1) {
+  const ufAprendida = new Map();
+  const aprende = (bruta, ufExplicita) => {
+    const { cidade, uf } = splitCidade(bruta);
     const u = String(ufExplicita || uf || '').toUpperCase().slice(0, 2);
-    if (cidade && u && !ufDaCidade.has(norm(cidade))) ufDaCidade.set(norm(cidade), u);
+    if (cidade && u && !ufAprendida.has(norm(cidade))) ufAprendida.set(norm(cidade), u);
   };
-  (transportadoras || []).forEach((t) => (t?.linhas || []).forEach((l) => { aprende(l.origem, l.ufOrigem); aprende(l.destino, l.ufDestino); }));
+  (tabelas || []).forEach((t) => (t?.linhas || []).forEach((l) => { aprende(l.origem, l.ufOrigem); aprende(l.destino, l.ufDestino); }));
   (resumoRealizado || []).forEach((r) => { aprende(r.origem, r.uf_origem); aprende(r.destino, r.uf_destino); });
   const ufDe = (bruta, explicita) => {
     const { cidade, uf } = splitCidade(bruta);
-    return String(explicita || uf || ufDaCidade.get(norm(cidade)) || '').toUpperCase().slice(0, 2);
+    return String(explicita || uf || ufAprendida.get(norm(cidade)) || mapaUfIbge?.get(norm(cidade)) || '').toUpperCase().slice(0, 2);
   };
 
   const mapa = new Map();
-  const novaRota = (chave, o, uo, d, ud, tipo, km) => ({
-    chave, origem: splitCidade(o).cidade, uf_origem: ufDe(o, uo), destino: splitCidade(d).cidade, uf_destino: ufDe(d, ud),
-    tipo_veiculo: tipo, km: Number(km) || null, viagens: 0, frete_medio: null, target: null,
-  });
-  (transportadoras || []).forEach((t) => (t?.linhas || []).forEach((l) => {
-    const tipo = String(l.tipo || l.tipo_veiculo || '').trim();
-    if (!String(l.origem || '').trim() || !String(l.destino || '').trim() || !tipo) return;
-    const chave = chaveRota(l.origem, l.destino, tipo);
-    const target = Number(l.target || 0) || 0;
-    const atual = mapa.get(chave) || novaRota(chave, l.origem, l.ufOrigem, l.destino, l.ufDestino, tipo, l.km);
-    if (!atual.km && Number(l.km)) atual.km = Number(l.km);
-    if (target > 0 && (!atual.target || target < atual.target)) atual.target = target;
-    mapa.set(chave, atual);
-  }));
   (resumoRealizado || []).forEach((r) => {
     const tipo = String(r.tipo_veiculo || r.tipo || '').trim();
-    if (!String(r.origem || '').trim() || !String(r.destino || '').trim() || !tipo) return;
-    const chave = chaveRota(r.origem, r.destino, tipo);
-    const atual = mapa.get(chave) || novaRota(chave, r.origem, r.uf_origem, r.destino, r.uf_destino, tipo, r.km);
-    atual.viagens += Number(r.total_cargas || r.qtd_viagens || 0) || 0;
-    atual.frete_medio = Number(r.frete_medio) || atual.frete_medio;
-    if (!atual.km && Number(r.km)) atual.km = Number(r.km);
+    if (!String(r.origem || '').trim() || !String(r.destino || '').trim() || mesmaCidade(r.origem, r.destino) || veiculoExcluido(tipo)) return;
+    const chave = chaveRota(r.origem, r.destino);
+    const atual = mapa.get(chave) || {
+      chave, origem: splitCidade(r.origem).cidade, uf_origem: ufDe(r.origem, r.uf_origem), destino: splitCidade(r.destino).cidade,
+      uf_destino: ufDe(r.destino, r.uf_destino), tipo_veiculo: VEICULO_PADRAO, km: null, viagens: 0, _soma: 0, frete_medio: null, target: null,
+    };
+    const cargas = Number(r.total_cargas || r.qtd_viagens || 0) || 0;
+    atual.viagens += cargas;
+    atual._soma += (Number(r.frete_medio) || 0) * cargas;
     mapa.set(chave, atual);
   });
-  return Array.from(mapa.values());
+  return Array.from(mapa.values()).map(({ _soma, ...r }) => {
+    const km = kmRotas?.[chavePar(r.origem, r.destino)] || kmRotas?.[chavePar(r.destino, r.origem)] || null;
+    // viagens = MEDIA MENSAL (total do periodo / meses); o frete medio e ponderado pelo total de cargas
+    return { ...r, km, viagens: Math.round((r.viagens / Math.max(meses, 1)) * 10) / 10, frete_medio: r.viagens > 0 && _soma > 0 ? _soma / r.viagens : null };
+  });
 }
 
-function Analise({ dados, cotacao }) {
-  const { convites, rotas, propostas } = dados;
-  const linhas = useMemo(() => {
-    const respondentes = convites.filter((c) => propostas.some((p) => p.convite_id === c.id));
-    return rotas.map((r) => {
-      const ofertas = respondentes
-        .map((c) => ({ c, p: propostas.find((p) => p.convite_id === c.id && p.chave === r.chave) }))
-        .filter((x) => x.p)
-        .sort((a, b) => a.p.valor_bruto - b.p.valor_bruto);
-      return { r, ofertas, melhor: ofertas[0] || null };
-    }).filter((x) => x.ofertas.length).sort((a, b) => Number(b.r.viagens || 0) - Number(a.r.viagens || 0));
-  }, [convites, rotas, propostas]);
+// ---------------------------------------------------------------------------
+// Excel formatado
+// ---------------------------------------------------------------------------
+const COR = {
+  fixo: { cab: '1E3A5F', cel: 'F1F5F9' }, in: { cab: 'B45309', cel: 'FFF7CC' },
+  calc: { cab: '475569', cel: 'E0F0FF' }, cmp: { cab: '166534', cel: 'ECFDF3' },
+};
 
-  const exportar = () => import('xlsx').then((XLSX) => {
-    const rows = [];
-    linhas.forEach(({ r, ofertas, melhor }) => ofertas.forEach(({ c, p }) => rows.push({
-      Origem: r.origem, 'UF origem': r.uf_origem, Destino: r.destino, 'UF destino': r.uf_destino, 'Tipo de veiculo': r.tipo_veiculo,
-      KM: r.km, 'Viagens historicas': r.viagens, Transportadora: c.transportadora, 'CNPJ informado': c.respondente_cnpj,
-      'Valor liquido': p.valor_liquido, 'ICMS %': p.aliquota_icms, 'ICMS R$': p.icms_valor, 'Valor bruto total': p.valor_bruto,
-      'Prazo (dias)': p.prazo_dias, Observacao: p.observacao,
-      'Menor bruto da rota?': melhor?.c.id === c.id ? 'SIM' : '',
-    })));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Propostas');
-    XLSX.writeFile(wb, `cotacao-lotacao-${String(cotacao.nome).replace(/[^a-z0-9]+/gi, '-')}.xlsx`);
+async function gerarExcel({ arquivo, titulo, subtitulo, colunas, linhas, resumo }) {
+  const { default: XS } = await import('xlsx-js-style');
+  const HR = 4;
+  const nc = colunas.length;
+  const aoa = [[titulo], [subtitulo || ''], ['Legenda:   CINZA = dados da rota   ·   AMARELO = informado pelo transportador   ·   AZUL = calculado   ·   VERDE = comparativos'], [], colunas.map((c) => c.h)];
+  linhas.forEach((l) => aoa.push(colunas.map((c) => {
+    const v = c.get(l);
+    return v == null || (typeof v === 'number' && !Number.isFinite(v)) ? '' : v;
+  })));
+  const ws = XS.utils.aoa_to_sheet(aoa);
+  const L = 'CBD5E1';
+  const borda = { top: { style: 'thin', color: { rgb: L } }, bottom: { style: 'thin', color: { rgb: L } }, left: { style: 'thin', color: { rgb: L } }, right: { style: 'thin', color: { rgb: L } } };
+  const est = (r, c, s, z) => {
+    const a = XS.utils.encode_cell({ r, c });
+    if (!ws[a]) ws[a] = { t: 's', v: '' };
+    ws[a].s = s;
+    if (z) ws[a].z = z;
+  };
+  est(0, 0, { font: { bold: true, sz: 16, color: { rgb: 'FFFFFF' } }, fill: { patternType: 'solid', fgColor: { rgb: '06183D' } }, alignment: { vertical: 'center' } });
+  for (let c = 1; c < nc; c += 1) est(0, c, { fill: { patternType: 'solid', fgColor: { rgb: '06183D' } } });
+  est(1, 0, { font: { sz: 11, color: { rgb: '334155' } }, alignment: { vertical: 'center' } });
+  est(2, 0, { font: { bold: true, sz: 10, color: { rgb: '92400E' } }, fill: { patternType: 'solid', fgColor: { rgb: 'FEF3C7' } }, alignment: { vertical: 'center' } });
+  colunas.forEach((c, i) => est(HR, i, { font: { bold: true, sz: 11, color: { rgb: 'FFFFFF' } }, fill: { patternType: 'solid', fgColor: { rgb: COR[c.cor || 'fixo'].cab } }, alignment: { horizontal: 'center', vertical: 'center', wrapText: true }, border: borda }));
+  const FMT = { money: '#,##0.00', pct: '0.0%', pctn: '0.00"%"', int: '#,##0', dec1: '#,##0.0', txt: null };
+  linhas.forEach((l, k) => {
+    colunas.forEach((c, i) => {
+      const v = aoa[HR + 1 + k][i];
+      const cor = c.cor || 'fixo';
+      const fonte = { sz: 11, bold: !!c.bold, color: { rgb: '0F172A' } };
+      if (c.resultado) fonte.color = { rgb: v === 'GANHA' ? '166534' : v === 'PERDE' ? 'B91C1C' : '475569' };
+      if (c.resultado) fonte.bold = true;
+      const numerica = ['money', 'pct', 'pctn', 'int', 'dec1'].includes(c.t);
+      est(HR + 1 + k, i, { font: fonte, fill: { patternType: 'solid', fgColor: { rgb: COR[cor].cel } }, alignment: { horizontal: numerica ? 'right' : (c.resultado ? 'center' : 'left'), vertical: 'center' }, border: borda }, FMT[c.t || 'txt']);
+    });
   });
+  const ultimaCol = Math.max(nc - 1, 1);
+  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: ultimaCol } }, { s: { r: 1, c: 0 }, e: { r: 1, c: ultimaCol } }, { s: { r: 2, c: 0 }, e: { r: 2, c: ultimaCol } }];
+  ws['!rows'] = [{ hpt: 32 }, { hpt: 22 }, { hpt: 20 }, { hpt: 8 }, { hpt: 36 }];
+  ws['!cols'] = colunas.map((c) => ({ wch: c.w || 14 }));
+  ws['!autofilter'] = { ref: `A${HR + 1}:${XS.utils.encode_col(nc - 1)}${aoa.length}` };
+  ws['!views'] = [{ state: 'frozen', ySplit: HR + 1, xSplit: 0 }];
+  const wb = XS.utils.book_new();
+  XS.utils.book_append_sheet(wb, ws, 'Análise');
+  if (resumo?.length) {
+    const ws2 = XS.utils.aoa_to_sheet([['RESUMO'], ...resumo]);
+    ws2['!cols'] = [{ wch: 46 }, { wch: 40 }];
+    ws2.A1.s = { font: { bold: true, sz: 14, color: { rgb: 'FFFFFF' } }, fill: { patternType: 'solid', fgColor: { rgb: '06183D' } } };
+    resumo.forEach((r, i) => {
+      const a = XS.utils.encode_cell({ r: i + 1, c: 0 });
+      const b = XS.utils.encode_cell({ r: i + 1, c: 1 });
+      if (ws2[a]) ws2[a].s = { font: { bold: true, sz: 11 }, fill: { patternType: 'solid', fgColor: { rgb: 'F1F5F9' } }, border: borda };
+      if (ws2[b]) ws2[b].s = { font: { sz: 11 }, alignment: { horizontal: 'right' }, border: borda };
+    });
+    XS.utils.book_append_sheet(wb, ws2, 'Resumo');
+  }
+  XS.writeFile(wb, arquivo);
+}
 
-  if (!linhas.length) return <div className="hint-box">Nenhuma proposta recebida ainda.</div>;
+// ---------------------------------------------------------------------------
+// Cartao de tabela de referencia (TransGP / ANTT)
+// ---------------------------------------------------------------------------
+function CartaoReferencia({ tipo, titulo, descricao, convite, qtd, ocupado, onImportar, onRemover, onModelo, baseInicial }) {
+  const [base, setBase] = useState(baseInicial);
+  const ref = useRef(null);
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '4px 0 10px', gap: 10, flexWrap: 'wrap' }}>
-        <small>Todas as propostas na mesma base: <b>bruto = líquido ÷ (1 − ICMS)</b>.</small>
-        <button style={btn} onClick={exportar}>Exportar propostas (Excel)</button>
-      </div>
-      <div style={{ overflowX: 'auto', maxHeight: 480 }}>
-        <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-          <thead><tr><th>Rota</th><th>Veículo</th><th>Viagens</th><th>Menor bruto</th><th>Transportadora</th><th>Todas as ofertas (bruto)</th></tr></thead>
-          <tbody>
-            {linhas.slice(0, 400).map(({ r, ofertas, melhor }) => (
-              <tr key={r.chave} style={{ borderTop: '1px solid #e5e7eb' }}>
-                <td>{r.origem} → {r.destino}</td><td>{r.tipo_veiculo}</td><td>{Math.round(r.viagens || 0) || '-'}</td>
-                <td><b>{brl(melhor?.p.valor_bruto)}</b></td><td>{melhor?.c.transportadora}</td>
-                <td>{ofertas.map((x) => `${x.c.transportadora}: ${brl(x.p.valor_bruto)}`).join(' · ')}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div style={{ flex: 1, minWidth: 320, border: '1px solid #cbd5e1', borderRadius: 12, padding: 14, background: convite ? '#f0fdf4' : '#fff' }}>
+      <b style={{ fontSize: 15 }}>{titulo}</b>
+      <div style={{ fontSize: 12, color: '#475569', margin: '2px 0 8px' }}>{descricao}</div>
+      {convite ? (
+        <div style={{ fontSize: 13, marginBottom: 8 }}>
+          ✅ <b>{qtd} rotas</b> importadas{convite.respondente_nome ? ` (${convite.respondente_nome})` : ''} em {dataBr(convite.enviado_em)}
+        </div>
+      ) : <div style={{ fontSize: 13, marginBottom: 8, color: '#92400e' }}>Ainda não importada.</div>}
+      <label style={{ fontSize: 12, fontWeight: 700 }}>Os valores do arquivo são:{' '}
+        <select value={base} onChange={(e) => setBase(e.target.value)} style={{ ...inp, padding: '4px 6px', fontSize: 12 }}>
+          <option value="LIQUIDO">Líquidos (sem ICMS)</option>
+          <option value="BRUTO">Brutos (com ICMS)</option>
+        </select>
+      </label>
+      <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+        <button style={btn} disabled={ocupado} onClick={() => ref.current?.click()}>{convite ? 'Reimportar' : 'Importar'} {tipo === 'REF_ANTT' ? 'ANTT' : 'TransGP'}</button>
+        <button style={btnSec} onClick={onModelo}>Baixar modelo</button>
+        {convite && <button style={btnSec} onClick={onRemover}>Remover</button>}
+        <input ref={ref} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onImportar(f, base); }} />
       </div>
     </div>
   );
@@ -130,17 +174,24 @@ export default function LotacaoCotacaoPage() {
   const usarSupabase = lotacaoSupabaseConfigurado();
   const [tabelas, setTabelas] = useState([]);
   const [resumoRealizado, setResumoRealizado] = useState([]);
+  const [kmRotas, setKmRotas] = useState({});
+  const [mapaUf, setMapaUf] = useState(null);
+  const [periodo, setPeriodo] = useState(null);
+  const [matriz, setMatriz] = useState([]);
   const [cotacoes, setCotacoes] = useState([]);
   const [cotacaoId, setCotacaoId] = useState('');
-  const [dados, setDados] = useState(null);
+  const [dados, setDados] = useState({ convites: [], rotas: [], propostas: [] });
   const [msg, setMsg] = useState({ tipo: '', texto: '' });
   const [ocupado, setOcupado] = useState(false);
-
   const [nomeCotacao, setNomeCotacao] = useState('');
   const [nomeTransp, setNomeTransp] = useState('');
   const [dias, setDias] = useState(5);
-  const [soAtendidas, setSoAtendidas] = useState(false);
   const [ultimoLink, setUltimoLink] = useState(null);
+  const [selId, setSelId] = useState('');
+  const [filtro, setFiltro] = useState('todas');
+  const [oficial, setOficial] = useState(null);
+  const [alvoImport, setAlvoImport] = useState(null);
+  const arqProposta = useRef(null);
 
   const aviso = (texto, tipo = 'ok') => setMsg({ tipo, texto });
 
@@ -151,11 +202,15 @@ export default function LotacaoCotacaoPage() {
         setTabelas(resp.tabelas || []);
       } catch { setTabelas(carregarTabelasLotacao()); }
       if (usarSupabase) resumoRotasLotacaoSupabase({}).then((d) => setResumoRealizado(d || [])).catch(() => {});
+      carregarKmRotas().then(setKmRotas);
+      carregarMapaUfMunicipios().then(setMapaUf);
+      carregarPeriodoRealizado().then(setPeriodo);
+      carregarMatrizIcmsUfCentralizada().then((r) => setMatriz(r?.linhas || [])).catch(() => {});
     })();
   }, [usarSupabase]);
 
-  const transportadoras = useMemo(() => obterTabelasPorTipo(tabelas, 'TRANSPORTADORA'), [tabelas]);
-  const tabelaDoNome = useMemo(() => transportadoras.find((t) => norm(t.nome) === norm(nomeTransp)), [transportadoras, nomeTransp]);
+  const nomesTransportadoras = useMemo(() => obterTabelasPorTipo(tabelas, 'TRANSPORTADORA').map((t) => t.nome), [tabelas]);
+  const rotasRealizado = useMemo(() => montarRotas(resumoRealizado, tabelas, mapaUf, kmRotas, periodo?.meses || 1), [resumoRealizado, tabelas, mapaUf, kmRotas, periodo]);
 
   const recarregarLista = useCallback(async () => {
     try {
@@ -166,52 +221,78 @@ export default function LotacaoCotacaoPage() {
   }, []);
   useEffect(() => { recarregarLista(); }, [recarregarLista]);
 
-  const recarregarDados = useCallback(async () => {
-    if (!cotacaoId) { setDados(null); return; }
-    try { setDados(await carregarCotacao(cotacaoId)); } catch (e) { aviso(e.message, 'erro'); }
+  const recarregarDados = useCallback(async (id = cotacaoId) => {
+    if (!id) { setDados({ convites: [], rotas: [], propostas: [] }); return null; }
+    try { const d = await carregarCotacao(id); setDados(d); return d; } catch (e) { aviso(e.message, 'erro'); return null; }
   }, [cotacaoId]);
   useEffect(() => { recarregarDados(); }, [recarregarDados]);
 
   const cotacaoAtual = cotacoes.find((c) => c.id === cotacaoId);
 
-  const criar = async () => {
-    if (!nomeCotacao.trim()) { aviso('Dê um nome à cotação (ex.: Cotação lotação out/2026).', 'erro'); return; }
-    const rotas = montarRotas(transportadoras, resumoRealizado);
-    if (!rotas.length) { aviso('Não há rotas na base de lotação para montar a cotação.', 'erro'); return; }
+  // garante uma cotacao (cria sozinha, com as rotas do realizado) e devolve id + rotas
+  const garantirCotacao = async () => {
+    if (cotacaoId) return { id: cotacaoId, rotas: dados.rotas };
+    if (!rotasRealizado.length) throw new Error('Ainda não há rotas do realizado carregadas para montar a cotação.');
+    const cot = await criarCotacao({ nome: `Cotação lotação ${new Date().toLocaleDateString('pt-BR')}`, periodoLabel: 'Realizado', rotas: rotasRealizado });
+    await recarregarLista();
+    setCotacaoId(cot.id);
+    const d = await carregarCotacao(cot.id);
+    setDados(d);
+    return { id: cot.id, rotas: d.rotas };
+  };
+
+  const criarNova = async () => {
+    if (!nomeCotacao.trim()) { aviso('Dê um nome à cotação.', 'erro'); return; }
+    if (!rotasRealizado.length) { aviso('Ainda não há rotas do realizado carregadas.', 'erro'); return; }
     setOcupado(true);
     try {
-      const cot = await criarCotacao({ nome: nomeCotacao.trim(), periodoLabel: 'Realizado', rotas });
+      const cot = await criarCotacao({ nome: nomeCotacao.trim(), periodoLabel: 'Realizado', rotas: rotasRealizado });
       setNomeCotacao('');
       await recarregarLista();
       setCotacaoId(cot.id);
-      aviso(`Cotação criada com ${rotas.length} rotas/tipos de veículo.`);
+      aviso(`Cotação criada com ${rotasRealizado.length} rotas/tipos de veículo do realizado.`);
     } catch (e) { aviso(`Erro ao criar: ${e.message}`, 'erro'); } finally { setOcupado(false); }
   };
 
+  // ---------- indices ----------
+  const rotasPorChave = useMemo(() => new Map(dados.rotas.map((r) => [r.chave, r])), [dados.rotas]);
+  const propMap = useMemo(() => {
+    const m = new Map();
+    dados.propostas.forEach((p) => { if (!m.has(p.convite_id)) m.set(p.convite_id, new Map()); m.get(p.convite_id).set(p.chave, p); });
+    return m;
+  }, [dados.propostas]);
+  const conviteCasa = dados.convites.find((c) => c.tipo === 'REF_CASA');
+  const conviteAntt = dados.convites.find((c) => c.tipo === 'REF_ANTT');
+  const conviteAntt6 = dados.convites.find((c) => c.tipo === 'REF_ANTT_6');
+  const anttDo = (cv) => (Number(cv.eixos) === 6 ? conviteAntt6 : conviteAntt);
+  const transportadores = useMemo(() => dados.convites.filter((c) => !eRef(c)), [dados.convites]);
+
+  // ---------- referencias ----------
+  const importarRef = async (tipo, file, base) => {
+    setOcupado(true);
+    try {
+      const { id, rotas } = await garantirCotacao();
+      const nomeRef = tipo === 'REF_ANTT_6' ? 'ANTT 6 eixos' : tipo === 'REF_ANTT' ? 'ANTT 5 eixos' : 'TransGP';
+      const tabela = await importarTabelaLotacao(file, { tipo: tipo.startsWith('REF_ANTT') ? 'ANTT' : 'TRANSPORTADORA', nomePadrao: nomeRef });
+      const res = await importarReferencia({ cotacaoId: id, tipo, nome: nomeRef, arquivo: file.name, linhas: tabela.linhas, base, matriz, rotasPorChave: new Map(rotas.map((r) => [r.chave, r])) });
+      await recarregarDados(id);
+      aviso(`${nomeRef}: ${res.rotas} rotas importadas${res.novasRotas ? ` (${res.novasRotas} rotas novas entraram na cotação)` : ''}.`);
+    } catch (e) { aviso(`Erro ao importar: ${e.message}`, 'erro'); } finally { setOcupado(false); }
+  };
+
+  // ---------- links ----------
   const gerar = async () => {
     if (!nomeTransp.trim()) { aviso('Digite o nome do transportador.', 'erro'); return; }
     setOcupado(true);
     try {
-      let idCot = cotacaoId;
-      if (!idCot) {
-        const rotas = montarRotas(transportadoras, resumoRealizado);
-        if (!rotas.length) throw new Error('Não há rotas na base de lotação para montar a cotação.');
-        const cot = await criarCotacao({ nome: `Cotação lotação ${new Date().toLocaleDateString('pt-BR')}`, periodoLabel: 'Realizado', rotas });
-        idCot = cot.id;
-        setCotacaoId(idCot);
-        await recarregarLista();
-      }
-      const chaves = soAtendidas && tabelaDoNome
-        ? Array.from(new Set((tabelaDoNome.linhas || []).map((l) => chaveRota(l.origem, l.destino, l.tipo || l.tipo_veiculo))))
-        : null;
-      const cv = await gerarConvite({ cotacaoId: idCot, transportadora: nomeTransp.trim(), dias, chaves });
+      const { id } = await garantirCotacao();
+      const cv = await gerarConvite({ cotacaoId: id, transportadora: nomeTransp.trim(), dias });
       setUltimoLink(cv);
       setNomeTransp('');
-      setDados(await carregarCotacao(idCot));
+      await recarregarDados(id);
       aviso(`Link gerado para ${cv.transportadora}, válido por ${dias} dias.`);
     } catch (e) { aviso(e.message, 'erro'); } finally { setOcupado(false); }
   };
-
   const copiar = (token) => navigator.clipboard?.writeText(linkConviteCotacao(token)).then(() => aviso('Link copiado.'));
   const email = (cv) => {
     const assunto = encodeURIComponent(`Cotação de frete lotação — ${cotacaoAtual?.nome || ''}`);
@@ -219,40 +300,256 @@ export default function LotacaoCotacaoPage() {
     const corpo = encodeURIComponent(`Olá, ${cv.transportadora}!\n\nSegue o link para preenchimento da nossa tabela de lotação:\n${linkConviteCotacao(cv.token)}\n\nInforme o valor LÍQUIDO (sem ICMS) de cada rota; o ICMS e o valor bruto são calculados automaticamente. No primeiro acesso você informa o CNPJ da transportadora (obrigatório).${ate}\n\nObrigado!`);
     window.location.href = `mailto:?subject=${assunto}&body=${corpo}`;
   };
-
   const expirado = (cv) => cv.expira_em && new Date(cv.expira_em).getTime() < Date.now();
+
+  // ---------- importar proposta preenchida (admin) ----------
+  const importarProposta = async (file) => {
+    const cv = alvoImport;
+    if (!cv) return;
+    setOcupado(true);
+    try {
+      const XLSX = await import('xlsx');
+      const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+      let hi = -1;
+      for (let r = 0; r < Math.min(rows.length, 15); r += 1) {
+        const j = rows[r].map(norm).join('|');
+        if (j.includes('CHAVE') || (j.includes('ORIGEM') && j.includes('DESTINO'))) { hi = r; break; }
+      }
+      if (hi < 0) throw new Error('Não encontrei o cabeçalho. Use o modelo baixado no portal.');
+      const cab = rows[hi].map(norm);
+      const col = (re) => cab.findIndex((c) => re.test(c));
+      const cCh = col(/^CHAVE/); const cO = col(/^ORIGEM/); const cD = col(/^DESTINO/); const cV = col(/^VEICULO|^TIPO/);
+      const cL = col(/LIQUIDO/); const cZ = col(/^PRAZO/); const cOb = col(/^OBS/);
+      if (cL < 0) throw new Error('Coluna "Valor líquido" não encontrada.');
+      const num = (v) => {
+        if (v === '' || v == null) return null;
+        if (typeof v === 'number') return v;
+        let t = String(v).replace(/R\$/gi, '').replace(/\s/g, '');
+        if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.');
+        const n = Number(t);
+        return Number.isFinite(n) ? n : null;
+      };
+      let eixos = null;
+      for (let q = 0; q < hi; q += 1) {
+        rows[q].forEach((c, z) => {
+          if (norm(c).startsWith('EIXOS')) { const ev = Number(rows[q].slice(z + 1).find((x) => Number(x) === 5 || Number(x) === 6)); if (ev === 5 || ev === 6) eixos = ev; }
+        });
+      }
+      const itens = [];
+      rows.slice(hi + 1).forEach((row) => {
+        let chave = cCh >= 0 && rotasPorChave.has(row[cCh]) ? row[cCh] : null;
+        if (!chave && cO >= 0 && cD >= 0) { const k = chaveRota(row[cO], row[cD]); if (rotasPorChave.has(k)) chave = k; }
+        const liquido = num(row[cL]);
+        if (chave && liquido > 0) itens.push({ chave, liquido, prazo: cZ >= 0 ? parseInt(row[cZ], 10) || null : null, obs: cOb >= 0 ? String(row[cOb] || '') : '' });
+      });
+      const n = await importarPropostasConvite({ convite: cv, cotacaoId, itens, rotasPorChave, matriz, eixos });
+      await recarregarDados();
+      setSelId(cv.id);
+      aviso(`${n} rotas importadas para ${cv.transportadora}. A análise já está atualizada abaixo.`);
+    } catch (e) { aviso(`Erro ao importar proposta: ${e.message}`, 'erro'); } finally { setOcupado(false); setAlvoImport(null); }
+  };
+
+  // ---------- analise ----------
+  const analisar = useCallback((cv) => {
+    const escopoSet = Array.isArray(cv.chaves) ? new Set(cv.chaves) : null;
+    const escopo = dados.rotas.filter((r) => !escopoSet || escopoSet.has(r.chave));
+    const meus = propMap.get(cv.id) || new Map();
+    const casa = conviteCasa ? propMap.get(conviteCasa.id) : null;
+    const convAntt = Number(cv.eixos) === 6 ? conviteAntt6 : conviteAntt;
+    const antt = convAntt ? propMap.get(convAntt.id) : null;
+    const outros = transportadores.filter((o) => o.id !== cv.id && propMap.get(o.id)?.size);
+    const cmp = (b, ref) => (!(ref > 0) ? null : (b < ref * 0.9995 ? 'GANHA' : b > ref * 1.0005 ? 'PERDE' : 'EMPATA'));
+    const chaveRes = (r) => (r === 'GANHA' ? 'g' : r === 'PERDE' ? 'p' : 'e');
+    const S = {
+      escopo: escopo.length, volTot: 0, volCot: 0, cotadas: 0, casa: { g: 0, p: 0, e: 0 }, antt: { g: 0, p: 0, e: 0 },
+      menor: { g: 0, comp: 0 }, real: { g: 0, p: 0, e: 0, comp: 0 }, econGanhas: 0, impacto: 0,
+    };
+    const linhas = [];
+    escopo.forEach((r) => {
+      S.volTot += Number(r.viagens) || 0;
+      const p = meus.get(r.chave);
+      if (!p) return;
+      const b = Number(p.valor_bruto);
+      const vi = Number(r.viagens) || 0;
+      S.cotadas += 1;
+      S.volCot += vi;
+      const vc = casa?.get(r.chave)?.valor_bruto != null ? Number(casa.get(r.chave).valor_bruto) : null;
+      const va = antt?.get(r.chave)?.valor_bruto != null ? Number(antt.get(r.chave).valor_bruto) : null;
+      let menorOutro = null;
+      outros.forEach((o) => {
+        const q = propMap.get(o.id).get(r.chave);
+        if (q && (!menorOutro || Number(q.valor_bruto) < menorOutro.v)) menorOutro = { nome: o.transportadora, v: Number(q.valor_bruto) };
+      });
+      const real = Number(r.frete_medio) > 0 ? Number(r.frete_medio) : null;
+      const rc = cmp(b, vc); const ra = cmp(b, va); const rr = cmp(b, real);
+      if (rc) S.casa[chaveRes(rc)] += 1;
+      if (ra) S.antt[chaveRes(ra)] += 1;
+      if (menorOutro) { S.menor.comp += 1; if (b < menorOutro.v) S.menor.g += 1; }
+      if (rr) {
+        S.real.comp += 1;
+        S.real[chaveRes(rr)] += 1;
+        if (vi > 0) { S.impacto += (real - b) * vi; if (rr === 'GANHA') S.econGanhas += (real - b) * vi; }
+      }
+      linhas.push({
+        r, p, b, vc, va, menorOutro, real, rc, ra, rr, dCasa: vc > 0 ? b / vc - 1 : null, dAntt: va > 0 ? b / va - 1 : null, dReal: real > 0 ? b / real - 1 : null,
+      });
+    });
+    linhas.sort((x, y) => (Number(y.r.viagens) || 0) - (Number(x.r.viagens) || 0));
+    return { S, linhas };
+  }, [dados.rotas, propMap, conviteCasa, conviteAntt, conviteAntt6, transportadores]);
+
+  const comparativo = useMemo(
+    () => transportadores.filter((c) => propMap.get(c.id)?.size).map((c) => ({ cv: c, ...analisar(c) })),
+    [transportadores, propMap, analisar],
+  );
+  const selecionado = comparativo.find((x) => x.cv.id === selId) || comparativo[0] || null;
+
+  const linhasFiltradas = useMemo(() => {
+    if (!selecionado) return [];
+    return selecionado.linhas.filter((l) => {
+      if (filtro === 'ganha-real') return l.rr === 'GANHA';
+      if (filtro === 'perde-real') return l.rr === 'PERDE';
+      if (filtro === 'ganha-casa') return l.rc === 'GANHA';
+      if (filtro === 'perde-casa') return l.rc === 'PERDE';
+      return true;
+    });
+  }, [selecionado, filtro]);
+
+  // ---------- exportar ----------
+  const exportarProposta = async () => {
+    if (!selecionado) return;
+    const { cv, S, linhas } = selecionado;
+    const colunas = [
+      { h: 'Origem', w: 26, bold: true, get: (l) => l.r.origem }, { h: 'UF origem', w: 9, get: (l) => l.r.uf_origem },
+      { h: 'Destino', w: 28, bold: true, get: (l) => l.r.destino }, { h: 'UF destino', w: 9, get: (l) => l.r.uf_destino },
+      { h: 'Veículo', w: 18, get: (l) => l.r.tipo_veiculo }, { h: 'KM', w: 8, t: 'int', get: (l) => l.r.km },
+      { h: 'Média mensal (viagens)', w: 13, t: 'dec1', get: (l) => l.r.viagens },
+      { h: 'ICMS %', w: 9, t: 'pctn', cor: 'calc', get: (l) => l.p.aliquota_icms },
+      { h: 'Valor líquido (R$)', w: 18, t: 'money', cor: 'in', get: (l) => Number(l.p.valor_liquido) },
+      { h: 'ICMS (R$)', w: 13, t: 'money', cor: 'calc', get: (l) => Number(l.p.icms_valor) },
+      { h: 'Valor bruto total (R$)', w: 20, t: 'money', cor: 'calc', bold: true, get: (l) => l.b },
+      { h: 'Prazo (dias)', w: 11, t: 'int', cor: 'in', get: (l) => l.p.prazo_dias }, { h: 'Observação', w: 28, cor: 'in', get: (l) => l.p.observacao },
+      { h: 'TransGP bruto (R$)', w: 17, t: 'money', cor: 'cmp', get: (l) => l.vc }, { h: 'Δ % vs TransGP', w: 13, t: 'pct', cor: 'cmp', get: (l) => l.dCasa }, { h: 'vs TransGP', w: 11, cor: 'cmp', resultado: true, get: (l) => l.rc },
+      { h: `ANTT ${Number(cv.eixos) === 6 ? 6 : 5} eixos bruto (R$)`, w: 20, t: 'money', cor: 'cmp', get: (l) => l.va }, { h: 'Δ % vs ANTT', w: 12, t: 'pct', cor: 'cmp', get: (l) => l.dAntt }, { h: 'vs ANTT', w: 10, cor: 'cmp', resultado: true, get: (l) => l.ra },
+      { h: 'Menor outro transportador (R$)', w: 22, t: 'money', cor: 'cmp', get: (l) => l.menorOutro?.v }, { h: 'Quem', w: 22, cor: 'cmp', get: (l) => l.menorOutro?.nome },
+      { h: 'Realizado médio (R$)', w: 18, t: 'money', cor: 'cmp', get: (l) => l.real }, { h: 'Δ % vs realizado', w: 14, t: 'pct', cor: 'cmp', get: (l) => l.dReal }, { h: 'vs realizado', w: 12, cor: 'cmp', resultado: true, get: (l) => l.rr },
+    ];
+    const resumo = [
+      ['Transportador', cv.transportadora], ['Eixos do veículo', Number(cv.eixos) === 6 ? 6 : 5], ['CNPJ informado', fmtCnpj(cv.respondente_cnpj)], ['Respondente', cv.respondente_nome ? `${cv.respondente_nome} (${cv.respondente_email})` : '-'],
+      ['Rotas cotadas / rotas da cotação', `${S.cotadas} / ${S.escopo}`], ['Aderência (rotas)', pct(S.escopo ? S.cotadas / S.escopo : null)], ['Aderência (volume)', pct(S.volTot ? S.volCot / S.volTot : null)],
+      ['Ganha da TransGP', `${S.casa.g} de ${S.casa.g + S.casa.p + S.casa.e}`], ['Ganha da ANTT', `${S.antt.g} de ${S.antt.g + S.antt.p + S.antt.e}`],
+      ['Menor preço entre os transportadores', `${S.menor.g} de ${S.menor.comp}`], ['Ganha do realizado', `${S.real.g} de ${S.real.comp}`],
+      ['Economia nas rotas que ganha (R$)', Math.round(S.econGanhas)], ['Impacto líquido vs realizado (R$)', Math.round(S.impacto)],
+    ];
+    await gerarExcel({
+      arquivo: `proposta-${String(cv.transportadora).replace(/[^a-z0-9]+/gi, '-')}.xlsx`,
+      titulo: `PROPOSTA DE LOTAÇÃO — ${cv.transportadora}`,
+      subtitulo: `${cotacaoAtual?.nome || ''} · bruto = líquido ÷ (1 − ICMS) · comparativos em valor bruto`,
+      colunas, linhas, resumo,
+    });
+  };
+
+  const exportarComparativo = async () => {
+    if (!comparativo.length) return;
+    const todas = new Map();
+    comparativo.forEach(({ linhas }) => linhas.forEach((l) => { if (!todas.has(l.r.chave)) todas.set(l.r.chave, l.r); }));
+    const rotas = Array.from(todas.values()).sort((a, b) => (Number(b.viagens) || 0) - (Number(a.viagens) || 0));
+    const colunas = [
+      { h: 'Origem', w: 26, bold: true, get: (r) => r.origem }, { h: 'UF origem', w: 9, get: (r) => r.uf_origem }, { h: 'Destino', w: 28, bold: true, get: (r) => r.destino },
+      { h: 'UF destino', w: 9, get: (r) => r.uf_destino }, { h: 'Veículo', w: 18, get: (r) => r.tipo_veiculo }, { h: 'KM', w: 8, t: 'int', get: (r) => r.km }, { h: 'Média mensal (viagens)', w: 13, t: 'dec1', get: (r) => r.viagens },
+      { h: 'Realizado médio (R$)', w: 18, t: 'money', cor: 'cmp', get: (r) => (Number(r.frete_medio) > 0 ? Number(r.frete_medio) : null) },
+      { h: 'TransGP bruto (R$)', w: 17, t: 'money', cor: 'cmp', get: (r) => propMap.get(conviteCasa?.id)?.get(r.chave)?.valor_bruto },
+      { h: 'ANTT 5 eixos bruto (R$)', w: 20, t: 'money', cor: 'cmp', get: (r) => propMap.get(conviteAntt?.id)?.get(r.chave)?.valor_bruto },
+      { h: 'ANTT 6 eixos bruto (R$)', w: 20, t: 'money', cor: 'cmp', get: (r) => propMap.get(conviteAntt6?.id)?.get(r.chave)?.valor_bruto },
+      ...comparativo.map(({ cv }) => ({ h: `${cv.transportadora} (${Number(cv.eixos) === 6 ? 6 : 5} eixos) bruto (R$)`, w: 20, t: 'money', cor: 'calc', get: (r) => propMap.get(cv.id)?.get(r.chave)?.valor_bruto })),
+      {
+        h: 'Menor transportador', w: 22, cor: 'in', bold: true,
+        get: (r) => {
+          let m = null;
+          comparativo.forEach(({ cv }) => { const q = propMap.get(cv.id)?.get(r.chave); if (q && (!m || Number(q.valor_bruto) < m.v)) m = { n: cv.transportadora, v: Number(q.valor_bruto) }; });
+          return m?.n;
+        },
+      },
+    ];
+    await gerarExcel({
+      arquivo: 'comparativo-cotacao-lotacao.xlsx', titulo: 'COMPARATIVO DA COTAÇÃO DE LOTAÇÃO',
+      subtitulo: `${cotacaoAtual?.nome || ''} · valores brutos (com ICMS) · ${comparativo.length} transportador(es)`,
+      colunas, linhas: rotas,
+      resumo: comparativo.map(({ cv, S }) => [cv.transportadora, `${S.cotadas}/${S.escopo} rotas · ganha do realizado ${S.real.g}/${S.real.comp}`]),
+    });
+  };
+
+  // ---------- enviar para a Tabela de Lotacao ----------
+  const confirmarOficial = async () => {
+    const { cv, base } = oficial;
+    setOcupado(true);
+    try {
+      const props = Array.from((propMap.get(cv.id) || new Map()).values());
+      const r = await oficializarProposta({ nome: cv.transportadora, propostas: props, rotasPorChave, basePublicada: base });
+      aviso(`Tabela de ${cv.transportadora} enviada para a Tabela de Lotação (${r.linhas} rotas, valores ${base === 'BRUTO' ? 'brutos' : 'líquidos'}). Ela agora é a tabela oficial desse transportador.`);
+      setOficial(null);
+    } catch (e) { aviso(`Erro ao enviar para a Tabela de Lotação: ${e.message}`, 'erro'); } finally { setOcupado(false); }
+  };
+
+  const corRes = (r) => (r === 'GANHA' ? '#166534' : r === 'PERDE' ? '#b91c1c' : '#64748b');
+  const totalViagens = dados.rotas.length ? dados.rotas.reduce((s, r) => s + (Number(r.viagens) || 0), 0) : rotasRealizado.reduce((s, r) => s + r.viagens, 0);
 
   return (
     <div style={{ padding: 4 }}>
       <div style={card}>
         <h1 style={{ margin: '0 0 6px', fontSize: 22, color: '#06183d' }}>Cotação de lotação — portal do transportador</h1>
         <small>
-          Você gera um link por transportador. Ele preenche <b>valor líquido</b> por rota e tipo de veículo; o ICMS sai da origem/destino e o
-          <b> valor bruto</b> é calculado — assim todas as tabelas chegam na mesma base de comparação.
+          Começamos do zero por aqui: importe a <b>TransGP</b> (casa) e a <b>ANTT</b> como referências, gere o link de cada transportador e a análise aparece sozinha.
+          O transportador informa só o <b>valor líquido</b>; o ICMS sai da origem/destino e o <b>bruto</b> é calculado, então tudo é comparado na mesma base.
         </small>
+        <div style={{ marginTop: 6, fontSize: 12, color: '#475569' }}>
+          Cotação: <b>{cotacaoAtual?.nome || 'será criada automaticamente'}</b> · {dados.rotas.length || rotasRealizado.length} rotas (veículo padronizado: <b>CARRETA</b>; rodotrem/bitrem e container fora)
+          {' '}· média de <b>{int(totalViagens)}</b> viagens/mês{periodo ? ` (realizado de ${dataBr(periodo.inicio)} a ${dataBr(periodo.fim)} = ${periodo.meses.toLocaleString('pt-BR')} meses)` : ''}
+        </div>
+      </div>
+
+      {msg.texto && (
+        <div className="hint-box" style={{ marginBottom: 14, background: msg.tipo === 'erro' ? '#fee2e2' : '#dcfce7', color: msg.tipo === 'erro' ? '#991b1b' : '#166534' }}>{msg.texto}</div>
+      )}
+
+      <div style={card}>
+        <h2 style={h2}>1. Tabelas de referência</h2>
+        <small>Servem de comparação para toda proposta que chegar: a TransGP é o nosso target e a ANTT é o piso. Use o mesmo modelo da Tabela de Lotação.</small>
+        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 12 }}>
+          <CartaoReferencia
+            tipo="REF_CASA" titulo="TransGP (transportadora da casa)" descricao="Modelo Transportadora: Origem, UF, Destino, UF, KM, TIPO e TARGET." convite={conviteCasa}
+            qtd={propMap.get(conviteCasa?.id)?.size || 0} ocupado={ocupado} baseInicial="LIQUIDO" onModelo={baixarModeloTransportadora}
+            onImportar={(f, b) => importarRef('REF_CASA', f, b)} onRemover={async () => { await excluirConvite(conviteCasa.id); recarregarDados(); }}
+          />
+          <CartaoReferencia
+            tipo="REF_ANTT" titulo="ANTT — 5 eixos (piso)" descricao="Modelo ANTT: Origem, UF, Destino, UF, KM, TIPO e Frete ANTT Oficial. 99% dos nossos embarques." convite={conviteAntt}
+            qtd={propMap.get(conviteAntt?.id)?.size || 0} ocupado={ocupado} baseInicial="LIQUIDO" onModelo={baixarModeloAntt}
+            onImportar={(f, b) => importarRef('REF_ANTT', f, b)} onRemover={async () => { await excluirConvite(conviteAntt.id); recarregarDados(); }}
+          />
+          <CartaoReferencia
+            tipo="REF_ANTT_6" titulo="ANTT — 6 eixos (piso)" descricao="Usada quando o transportador informar veículo de 6 eixos." convite={conviteAntt6}
+            qtd={propMap.get(conviteAntt6?.id)?.size || 0} ocupado={ocupado} baseInicial="LIQUIDO" onModelo={baixarModeloAntt}
+            onImportar={(f, b) => importarRef('REF_ANTT_6', f, b)} onRemover={async () => { await excluirConvite(conviteAntt6.id); recarregarDados(); }}
+          />
+        </div>
       </div>
 
       <div style={card}>
-        <h2 style={h2}>1. Gerar link para o transportador</h2>
-        <small>Digite o nome de quem vai responder e clique em <b>Gerar link</b>. Aqui entra o nome do <b>transportador</b>. Cada clique em <b>Gerar link</b> cria um código novo e exclusivo. O CNPJ é pedido ao transportador no primeiro acesso (obrigatório). <b>Não precisa estar cadastrado</b> — serve para transportador novo.</small>
+        <h2 style={h2}>2. Gerar link para o transportador</h2>
+        <small>Digite o nome de quem vai responder (pode ser um transportador novo). Cada clique cria um código novo e exclusivo; o CNPJ é pedido a ele no primeiro acesso.</small>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0', alignItems: 'end' }}>
           <label style={{ flex: 1, minWidth: 260, fontSize: 13, fontWeight: 700 }}>Nome do transportador
             <input style={{ ...inp, width: '100%', fontWeight: 400 }} list="lot-cot-transp" placeholder="Qualquer nome — transportador novo ou já cadastrado" value={nomeTransp} onChange={(e) => setNomeTransp(e.target.value)} />
-            <datalist id="lot-cot-transp">{transportadoras.map((t) => <option key={t.id || t.nome} value={t.nome} />)}</datalist>
+            <datalist id="lot-cot-transp">{nomesTransportadoras.map((n) => <option key={n} value={n} />)}</datalist>
           </label>
           <label style={{ fontSize: 13, fontWeight: 700 }}>Validade do link (dias)
             <input style={{ ...inp, width: 90, display: 'block', fontWeight: 400 }} type="number" min="1" max="60" value={dias} onChange={(e) => setDias(e.target.value)} />
           </label>
           <button style={btn} disabled={ocupado} onClick={gerar}>Gerar link</button>
         </div>
-        {msg.texto && (
-          <div className="hint-box" style={{ marginBottom: 8, background: msg.tipo === 'erro' ? '#fee2e2' : '#dcfce7', color: msg.tipo === 'erro' ? '#991b1b' : '#166534' }}>{msg.texto}</div>
-        )}
-        {tabelaDoNome && (
-          <label style={{ fontSize: 13 }}><input type="checkbox" checked={soAtendidas} onChange={(e) => setSoAtendidas(e.target.checked)} /> Enviar só as rotas que {tabelaDoNome.nome} já atende (senão recebe todas)</label>
-        )}
         {ultimoLink && (
-          <div className="hint-box" style={{ marginTop: 12 }}>
+          <div className="hint-box" style={{ marginTop: 4 }}>
             <b>Link de {ultimoLink.transportadora}</b> (vale até {dataBr(ultimoLink.expira_em)}):
             <div style={{ wordBreak: 'break-all', margin: '6px 0', fontFamily: 'monospace', fontSize: 12 }}>{linkConviteCotacao(ultimoLink.token)}</div>
             <button style={btn} onClick={() => copiar(ultimoLink.token)}>Copiar link</button>{' '}
@@ -261,47 +558,27 @@ export default function LotacaoCotacaoPage() {
         )}
       </div>
 
-      <details style={card}>
-        <summary style={{ cursor: 'pointer', fontWeight: 700, color: '#06183d' }}>Avançado: cotação atual — {cotacaoAtual ? cotacaoAtual.name || cotacaoAtual.nome : 'será criada automaticamente'} (criar outra / encerrar / excluir)</summary>
-        <small style={{ display: 'block', marginTop: 8 }}>A cotação guarda as rotas e a volumetria. Todos os links gerados dentro dela são comparados entre si.</small>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0', alignItems: 'center' }}>
-          <select style={{ ...inp, minWidth: 260 }} value={cotacaoId} onChange={(e) => { setCotacaoId(e.target.value); setUltimoLink(null); }}>
-            {!cotacoes.length && <option value="">Nenhuma cotação ainda</option>}
-            {cotacoes.map((c) => <option key={c.id} value={c.id}>{c.nome} · {c.status === 'ABERTA' ? 'aberta' : 'encerrada'} · {dataBr(c.created_at)}</option>)}
-          </select>
-          {cotacaoAtual && (
-            <>
-              <button style={btnSec} onClick={async () => { await alterarStatusCotacao(cotacaoAtual.id, cotacaoAtual.status === 'ABERTA' ? 'ENCERRADA' : 'ABERTA'); recarregarLista(); }}>{cotacaoAtual.status === 'ABERTA' ? 'Encerrar cotação' : 'Reabrir'}</button>
-              <button style={btnSec} onClick={async () => { if (window.confirm('Excluir a cotação, os links e todas as propostas?')) { await excluirCotacao(cotacaoAtual.id); setCotacaoId(''); setDados(null); recarregarLista(); } }}>Excluir</button>
-            </>
-          )}
-        </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input style={{ ...inp, flex: 1, minWidth: 240 }} placeholder="Nova cotação: nome (ex.: Cotação lotação out/2026)" value={nomeCotacao} onChange={(e) => setNomeCotacao(e.target.value)} />
-          <button style={btn} disabled={ocupado} onClick={criar}>Criar cotação</button>
-        </div>
-        <small>Ao criar, as rotas são montadas a partir das tabelas de lotação e do realizado ({montarRotas(transportadoras, resumoRealizado).length} rotas/tipos de veículo hoje).</small>
-      </details>
-
       <div style={card}>
-        <h2 style={h2}>2. Links gerados e respostas</h2>
-        {!dados?.convites?.length ? <div className="hint-box" style={{ marginTop: 8 }}>Nenhum link gerado nesta cotação.</div> : (
+        <h2 style={h2}>3. Links gerados e propostas</h2>
+        {!transportadores.length ? <div className="hint-box" style={{ marginTop: 8 }}>Nenhum link gerado nesta cotação.</div> : (
           <div style={{ overflowX: 'auto', marginTop: 8 }}>
-            <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-              <thead><tr><th>Transportador</th><th>Expira em</th><th>Status</th><th>CNPJ informado</th><th>Respondente</th><th>Rotas cotadas</th><th>Ações</th></tr></thead>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>{['Transportador', 'Expira em', 'Status', 'CNPJ informado', 'Respondente', 'Rotas cotadas', 'Ações'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
               <tbody>
-                {dados.convites.map((cv) => (
-                  <tr key={cv.id} style={{ borderTop: '1px solid #e5e7eb' }}>
-                    <td><b>{cv.transportadora}</b></td>
-                    <td style={{ color: expirado(cv) ? '#b91c1c' : undefined, fontWeight: expirado(cv) ? 700 : 400 }}>{cv.expira_em ? `${dataBr(cv.expira_em)}${expirado(cv) ? ' (expirado)' : ''}` : 'sem prazo'}</td>
-                    <td style={{ color: STATUS_COR[cv.status], fontWeight: 700 }}>{STATUS_TXT[cv.status] || cv.status}</td>
-                    <td>{fmtCnpj(cv.respondente_cnpj)}</td>
-                    <td>{cv.respondente_nome ? `${cv.respondente_nome} (${cv.respondente_email})` : '-'}</td>
-                    <td>{dados.propostas.filter((p) => p.convite_id === cv.id).length}</td>
-                    <td style={{ whiteSpace: 'nowrap' }}>
+                {transportadores.map((cv) => (
+                  <tr key={cv.id}>
+                    <td style={td}><b>{cv.transportadora}</b></td>
+                    <td style={{ ...td, color: expirado(cv) ? '#b91c1c' : undefined, fontWeight: expirado(cv) ? 700 : 400 }}>{cv.expira_em ? `${dataBr(cv.expira_em)}${expirado(cv) ? ' (expirado)' : ''}` : 'sem prazo'}</td>
+                    <td style={{ ...td, color: STATUS_COR[cv.status], fontWeight: 700 }}>{STATUS_TXT[cv.status] || cv.status}</td>
+                    <td style={td}>{fmtCnpj(cv.respondente_cnpj)}</td>
+                    <td style={td}>{cv.respondente_nome ? `${cv.respondente_nome} (${cv.respondente_email || ''})` : '-'}</td>
+                    <td style={td}>{propMap.get(cv.id)?.size || 0}</td>
+                    <td style={{ ...td, whiteSpace: 'nowrap' }}>
                       <button style={btnSec} onClick={() => copiar(cv.token)}>Copiar link</button>{' '}
                       <button style={btnSec} onClick={() => email(cv)}>E-mail</button>{' '}
+                      <button style={btnSec} onClick={() => { setAlvoImport(cv); setTimeout(() => arqProposta.current?.click(), 0); }}>Importar proposta (Excel)</button>{' '}
                       <button style={btnSec} onClick={async () => { await renovarConvite(cv.id, dias); recarregarDados(); aviso(`Prazo renovado por ${dias} dias.`); }}>Renovar prazo</button>{' '}
+                      {(propMap.get(cv.id)?.size || 0) > 0 && <button style={{ ...btnSec, background: '#ecfdf3' }} onClick={() => setOficial({ cv, base: 'BRUTO' })}>Enviar p/ Tabela de Lotação</button>}{' '}
                       <button style={btnSec} onClick={async () => { if (window.confirm(`Excluir o link de ${cv.transportadora} e as propostas dele?`)) { await excluirConvite(cv.id); recarregarDados(); } }}>Excluir</button>
                     </td>
                   </tr>
@@ -310,15 +587,127 @@ export default function LotacaoCotacaoPage() {
             </table>
           </div>
         )}
-        <p><button style={btnSec} onClick={recarregarDados}>Atualizar respostas</button></p>
+        <input ref={arqProposta} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) importarProposta(f); }} />
+        <p style={{ marginBottom: 0 }}><button style={btnSec} onClick={() => recarregarDados()}>Atualizar respostas</button></p>
+
+        {oficial && (
+          <div className="hint-box" style={{ marginTop: 12, border: '2px solid #1D9E75' }}>
+            <b>Enviar a proposta de {oficial.cv.transportadora} para a Tabela de Lotação</b>
+            <div style={{ fontSize: 13, margin: '6px 0' }}>
+              A Tabela de Lotação é o lugar oficial: a tabela de <b>{oficial.cv.transportadora}</b> passa a ser esta ({propMap.get(oficial.cv.id)?.size || 0} rotas) e <b>substitui a atual desse transportador</b>, se houver.
+            </div>
+            <label style={{ fontSize: 13, fontWeight: 700 }}>Gravar os valores como:{' '}
+              <select style={{ ...inp, padding: '4px 6px' }} value={oficial.base} onChange={(e) => setOficial({ ...oficial, base: e.target.value })}>
+                <option value="BRUTO">Bruto (com ICMS) — padrão para comparar todos na mesma base</option>
+                <option value="LIQUIDO">Líquido (sem ICMS)</option>
+              </select>
+            </label>
+            <div style={{ marginTop: 8 }}>
+              <button style={btn} disabled={ocupado} onClick={confirmarOficial}>Confirmar envio</button>{' '}
+              <button style={btnSec} onClick={() => setOficial(null)}>Cancelar</button>
+            </div>
+          </div>
+        )}
       </div>
 
-      {dados && cotacaoAtual && (
-        <div style={card}>
-          <h2 style={h2}>3. Propostas recebidas</h2>
-          <Analise dados={dados} cotacao={cotacaoAtual} />
+      <div style={card}>
+        <h2 style={h2}>4. Análise das propostas</h2>
+        {!comparativo.length ? <div className="hint-box" style={{ marginTop: 8 }}>Assim que um transportador enviar a cotação (ou você importar a planilha dele), a análise aparece aqui.</div> : (
+          <>
+            <small>
+              Tudo em valor <b>bruto</b>. “Ganha” = proposta mais barata que a referência. Realizado = frete médio histórico das viagens da rota (considerado com ICMS).
+              {!conviteCasa && <b style={{ color: '#b45309' }}> Importe a TransGP para comparar com o target.</b>}{!conviteAntt && <b style={{ color: '#b45309' }}> Importe a ANTT de 5 eixos para comparar com o piso.</b>}{comparativo.some((x) => Number(x.cv.eixos) === 6) && !conviteAntt6 && <b style={{ color: '#b45309' }}> Há proposta de 6 eixos: importe a ANTT de 6 eixos.</b>}
+            </small>
+            <div style={{ overflowX: 'auto', margin: '10px 0' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr>{['Transportador', 'Eixos', 'Rotas cotadas', 'Aderência rotas', 'Aderência volume', 'Ganha da TransGP', 'Ganha da ANTT', 'Menor entre transp.', 'Ganha do realizado', 'Economia/mês (rotas que ganha)', 'Impacto líquido/mês', ''].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {comparativo.map(({ cv, S }) => (
+                    <tr key={cv.id} style={{ background: selecionado?.cv.id === cv.id ? '#eff6ff' : undefined }}>
+                      <td style={td}><b>{cv.transportadora}</b></td>
+                      <td style={{ ...td, textAlign: 'center' }}>{Number(cv.eixos) === 6 ? 6 : 5}</td>
+                      <td style={{ ...td, textAlign: 'center' }}>{S.cotadas}/{S.escopo}</td>
+                      <td style={{ ...td, textAlign: 'center' }}>{pct(S.escopo ? S.cotadas / S.escopo : null, 0)}</td>
+                      <td style={{ ...td, textAlign: 'center' }}>{pct(S.volTot ? S.volCot / S.volTot : null, 0)}</td>
+                      <td style={{ ...td, textAlign: 'center' }}>{conviteCasa ? `${S.casa.g}/${S.casa.g + S.casa.p + S.casa.e}` : '-'}</td>
+                      <td style={{ ...td, textAlign: 'center' }}>{anttDo(cv) ? `${S.antt.g}/${S.antt.g + S.antt.p + S.antt.e}` : '-'}</td>
+                      <td style={{ ...td, textAlign: 'center' }}>{S.menor.comp ? `${S.menor.g}/${S.menor.comp}` : '-'}</td>
+                      <td style={{ ...td, textAlign: 'center' }}>{S.real.comp ? `${S.real.g}/${S.real.comp} (${pct(S.real.g / S.real.comp, 0)})` : '-'}</td>
+                      <td style={{ ...td, textAlign: 'right', color: '#166534', fontWeight: 700 }}>{brl(S.econGanhas)}</td>
+                      <td style={{ ...td, textAlign: 'right', color: S.impacto >= 0 ? '#166534' : '#b91c1c', fontWeight: 700 }}>{brl(S.impacto)}</td>
+                      <td style={td}><button style={btnSec} onClick={() => setSelId(cv.id)}>Detalhar</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+              <button style={btn} onClick={exportarComparativo}>Exportar comparativo geral (Excel)</button>
+              <small style={{ alignSelf: 'center' }}>Economia/impacto = (realizado médio − proposta) × média mensal de viagens, só nas rotas com realizado.</small>
+            </div>
+
+            {selecionado && (
+              <div style={{ borderTop: '2px solid #e2e8f0', paddingTop: 12 }}>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+                  <b style={{ fontSize: 16 }}>{selecionado.cv.transportadora}</b>
+                  <span style={{ fontSize: 12, color: '#475569' }}>CNPJ {fmtCnpj(selecionado.cv.respondente_cnpj)}</span>
+                  <select style={{ ...inp, padding: '5px 8px' }} value={filtro} onChange={(e) => setFiltro(e.target.value)}>
+                    <option value="todas">Todas as rotas cotadas</option>
+                    <option value="ganha-real">Ganha do realizado</option>
+                    <option value="perde-real">Perde do realizado</option>
+                    <option value="ganha-casa">Ganha da TransGP</option>
+                    <option value="perde-casa">Perde da TransGP</option>
+                  </select>
+                  <button style={btn} onClick={exportarProposta}>Exportar proposta (Excel formatado)</button>
+                  <button style={{ ...btnSec, background: '#ecfdf3' }} onClick={() => setOficial({ cv: selecionado.cv, base: 'BRUTO' })}>Enviar p/ Tabela de Lotação</button>
+                </div>
+                <div style={{ overflow: 'auto', maxHeight: 520, border: '1px solid #e2e8f0', borderRadius: 8 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1250 }}>
+                    <thead><tr>{['Rota', 'Veículo', 'KM', 'Viagens/mês', 'ICMS', 'Líquido', 'Bruto', 'TransGP', 'Δ TransGP', 'ANTT', 'Δ ANTT', 'Menor outro', 'Realizado', 'Δ realizado', 'Resultado'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {linhasFiltradas.slice(0, 500).map((l) => (
+                        <tr key={l.r.chave}>
+                          <td style={td}>{l.r.origem} → {l.r.destino}</td><td style={td}>{l.r.tipo_veiculo}</td>
+                          <td style={{ ...td, textAlign: 'right' }}>{l.r.km ? int(l.r.km) : '-'}</td><td style={{ ...td, textAlign: 'right' }}>{dec1(l.r.viagens)}</td>
+                          <td style={{ ...td, textAlign: 'right' }}>{l.p.aliquota_icms != null ? `${Number(l.p.aliquota_icms).toLocaleString('pt-BR')}%` : '-'}</td>
+                          <td style={{ ...td, textAlign: 'right' }}>{brl(l.p.valor_liquido)}</td><td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{brl(l.b)}</td>
+                          <td style={{ ...td, textAlign: 'right' }}>{brl(l.vc)}</td><td style={{ ...td, textAlign: 'right', color: corRes(l.rc) }}>{pct(l.dCasa)}</td>
+                          <td style={{ ...td, textAlign: 'right' }}>{brl(l.va)}</td><td style={{ ...td, textAlign: 'right', color: corRes(l.ra) }}>{pct(l.dAntt)}</td>
+                          <td style={{ ...td, textAlign: 'right' }} title={l.menorOutro?.nome}>{l.menorOutro ? brl(l.menorOutro.v) : '-'}</td>
+                          <td style={{ ...td, textAlign: 'right' }}>{brl(l.real)}</td><td style={{ ...td, textAlign: 'right', color: corRes(l.rr) }}>{pct(l.dReal)}</td>
+                          <td style={{ ...td, textAlign: 'center', fontWeight: 700, color: corRes(l.rr) }}>{l.rr ? (l.rr === 'GANHA' ? 'Ganha' : l.rr === 'PERDE' ? 'Perde' : 'Empata') : 'sem realizado'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {linhasFiltradas.length > 500 && <small>Mostrando 500 de {linhasFiltradas.length} rotas — o Excel tem todas.</small>}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      <details style={card}>
+        <summary style={{ cursor: 'pointer', fontWeight: 700, color: '#06183d' }}>Avançado: cotações (criar outra / trocar / encerrar / excluir)</summary>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0', alignItems: 'center' }}>
+          <select style={{ ...inp, minWidth: 260 }} value={cotacaoId} onChange={(e) => { setCotacaoId(e.target.value); setUltimoLink(null); setSelId(''); }}>
+            {!cotacoes.length && <option value="">Nenhuma cotação ainda</option>}
+            {cotacoes.map((c) => <option key={c.id} value={c.id}>{c.nome} · {c.status === 'ABERTA' ? 'aberta' : 'encerrada'} · {dataBr(c.created_at)}</option>)}
+          </select>
+          {cotacaoAtual && (
+            <>
+              <button style={btnSec} onClick={async () => { await alterarStatusCotacao(cotacaoAtual.id, cotacaoAtual.status === 'ABERTA' ? 'ENCERRADA' : 'ABERTA'); recarregarLista(); }}>{cotacaoAtual.status === 'ABERTA' ? 'Encerrar cotação' : 'Reabrir'}</button>
+              <button style={btnSec} onClick={async () => { if (window.confirm('Excluir a cotação, os links e todas as propostas?')) { await excluirCotacao(cotacaoAtual.id); setCotacaoId(''); recarregarLista(); } }}>Excluir</button>
+            </>
+          )}
         </div>
-      )}
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input style={{ ...inp, flex: 1, minWidth: 240 }} placeholder="Nova cotação: nome (ex.: Cotação lotação nov/2026)" value={nomeCotacao} onChange={(e) => setNomeCotacao(e.target.value)} />
+          <button style={btn} disabled={ocupado} onClick={criarNova}>Criar cotação</button>
+        </div>
+        <small>As rotas vêm do realizado ({rotasRealizado.length} rotas/tipos de veículo hoje); as tabelas de lotação existentes não entram na comparação.</small>
+      </details>
     </div>
   );
 }

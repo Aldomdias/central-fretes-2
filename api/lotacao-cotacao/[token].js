@@ -145,7 +145,9 @@ td input{padding:8px 9px;font-size:15px;min-width:120px;text-align:right;border:
 .fixo{font-weight:bold}.bruto{font-weight:bold;color:#06183d;background:#e0f0ff!important;font-size:15px}
 .barra{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:14px 0 0;position:sticky;bottom:0;background:#fff;padding:12px 0;border-top:2px solid #e2e8f0}
 .pill{font-size:11px;padding:2px 7px;border-radius:99px;background:#fef3c7;color:#92400e;margin-left:4px}
-tr.feita td{background:#ecfdf3!important}tr.feita td.bruto{background:#c9f0d9!important}
+tr.feita td{background:#ecfdf3!important}
+.fl{font-size:14px;font-weight:bold;color:#334155;display:flex;align-items:center;gap:6px;margin:0}.fl select{padding:9px;border:1px solid #94a3b8;border-radius:8px;font-size:14px;min-width:200px;max-width:280px}
+.eixos{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px;padding:10px 14px;background:#fffbeb;border:2px solid #fcd34d;border-radius:10px;font-size:14px}.eixos label{display:flex;align-items:center;gap:8px;font-weight:bold;margin:0}.eixos select{padding:8px;border:1px solid #94a3b8;border-radius:8px;font-size:15px}.ok1{color:#166534}.aten{color:#b45309;font-weight:bold}tr.feita td.bruto{background:#c9f0d9!important}
 @media(max-width:700px){.corpo,header{padding:14px}}
 </style></head><body><div class="page">
 <header><h1>Cotação de lotação</h1><p><b>${esc(convite.transportadora)}</b> · ${esc(cotacao.nome)}</p>
@@ -164,8 +166,9 @@ ${encerrada ? '<div class="msg erro">Esta cotação foi encerrada e não aceita 
 <div id="telaTab" style="display:none"></div>`}
 </div></div>
 <script>
-var TOKEN=${JSON.stringify(convite.token)},NOMETRANSP=${JSON.stringify(convite.transportadora)},ACESSO='',ROTAS=[],PROP={},fmt=function(n){return Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})};
+var TOKEN=${JSON.stringify(convite.token)},NOMETRANSP=${JSON.stringify(convite.transportadora)},ACESSO='',EIXOS=5,ROTAS=[],PROP={},fmt=function(n){return Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})};
 function num(v){if(v===''||v==null)return null;var t=String(v).replace(/R\\$/gi,'').replace(/\\s/g,'');if(t.indexOf(',')>=0)t=t.replace(/\\./g,'').replace(',','.');var n=Number(t);return isFinite(n)?n:null}
+function fmt1(n){return Number(n).toLocaleString('pt-BR',{maximumFractionDigits:1})}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function sa(s){return String(s==null?'':s).normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toUpperCase().trim()}
 function kc(s){return sa(s).replace(/\\s*\\/\\s*[A-Z][A-Z]$/,'').trim()}
@@ -173,23 +176,31 @@ function api(corpo){return fetch(location.pathname,{method:'POST',headers:{'Cont
 function identificar(){var b=document.getElementById('btnId');document.getElementById('erroId').innerHTML='';
   var cnpj=document.getElementById('cnpj').value,nome=document.getElementById('nome').value.trim(),email=document.getElementById('email').value.trim();
   if(!nome||!email||cnpj.replace(/\\D/g,'').length!==14){document.getElementById('erroId').innerHTML='<div class="msg erro">Informe CNPJ (14 dígitos), nome e e-mail.</div>';return}
-  b.disabled=true;api({acao:'identificar',cnpj:cnpj,nome:nome,email:email}).then(function(j){ACESSO=j.acesso;ROTAS=j.rotas;PROP={};j.propostas.forEach(function(p){PROP[p.chave]=p});
+  b.disabled=true;api({acao:'identificar',cnpj:cnpj,nome:nome,email:email}).then(function(j){ACESSO=j.acesso;EIXOS=j.eixos||5;ROTAS=j.rotas;PROP={};j.propostas.forEach(function(p){PROP[p.chave]=p});
     document.getElementById('telaId').style.display='none';montar(j.status)}).catch(function(e){document.getElementById('erroId').innerHTML='<div class="msg erro">'+esc(e.message)+'</div>';b.disabled=false})}
 function montar(status){var t=document.getElementById('telaTab');t.style.display='block';
-  var h='<div class="regra"><b>Como preencher</b><br>• Informe o <b>valor líquido</b> do frete (sem ICMS) por rota e tipo de veículo. O tipo de veículo é fixo. O pedágio é pago pela Cantu e <b>não entra</b> na cotação.<br>• O <b>ICMS</b> é calculado automaticamente pela origem/destino e o <b>valor bruto total</b> = líquido ÷ (1 − alíquota ICMS).<br>• Prefere trabalhar no Excel? <b>Baixe o modelo</b>, preencha e <b>importe</b> de volta. Confira os valores e clique em <b>Enviar cotação</b>.<br>• Deixe em branco as rotas que você não atende. O volume é histórico, apenas referência de potencial — não é garantia de contratação.</div>'
+  var h='<div class="regra"><b>Como preencher</b><br>• Informe o <b>valor líquido</b> do frete (sem ICMS) por rota e tipo de veículo. O tipo de veículo é fixo. O pedágio é pago pela Cantu e <b>não entra</b> na cotação.<br>• O <b>ICMS</b> é calculado automaticamente pela origem/destino e o <b>valor bruto total</b> = líquido ÷ (1 − alíquota ICMS).<br>• Prefere trabalhar no Excel? <b>Baixe o modelo</b>, preencha e <b>importe</b> de volta. Confira os valores e clique em <b>Enviar cotação</b>.<br>• Deixe em branco as rotas que você não atende. O volume é a média mensal do histórico, apenas referência de potencial — não é garantia de contratação.</div>'
   +(status==='ENVIADO'?'<div class="msg ok">Você já enviou esta cotação. Se alterar valores, clique em enviar novamente para atualizar.</div>':'')
-  +'<div class="ferr"><button class="sec" onclick="baixarModelo()">⬇ Baixar modelo (Excel)</button><button class="sec" onclick="document.getElementById(\\'arq\\').click()">⬆ Importar planilha preenchida</button><input type="file" id="arq" accept=".xlsx,.xls,.csv" style="display:none" onchange="importar(this)"><input type="text" id="busca" placeholder="🔍 Buscar origem, destino ou veículo" oninput="filtrar()"></div>'
-  +'<div id="msgTab"></div><div class="tw"><table><thead><tr><th>Origem</th><th>Destino</th><th>Veículo</th><th>KM</th><th>Viagens (hist.)</th><th class="pre">Valor líquido (R$)</th><th class="calc">ICMS %</th><th class="calc">ICMS (R$)</th><th class="calc">Valor bruto total (R$)</th><th class="pre">Prazo (dias)</th><th class="pre">Obs.</th></tr></thead><tbody>';
+  +'<div class="ferr"><button class="sec" onclick="baixarModelo()">⬇ Baixar modelo (Excel)</button><button class="sec" onclick="document.getElementById(\\'arq\\').click()">⬆ Importar planilha preenchida</button><input type="file" id="arq" accept=".xlsx,.xls,.csv" style="display:none" onchange="importar(this)"><label class="fl">Origem <select id="fo" onchange="filtrar(1)"></select></label><label class="fl">Destino <select id="fd" onchange="filtrar(1)"></select></label><span id="nvis" class="fl"></span></div>'
+  +'<div class="eixos"><label>Eixos do veículo <select id="eixos" onchange="mudaEixos()"><option value="5">5 eixos</option><option value="6">6 eixos</option></select></label><span id="avEixos"></span></div>'
+  +'<div id="msgTab"></div><div class="tw"><table><thead><tr><th>Origem</th><th>Destino</th><th>Veículo</th><th>KM</th><th>Média mensal (viagens)</th><th class="pre">Valor líquido (R$)</th><th class="calc">ICMS %</th><th class="calc">ICMS (R$)</th><th class="calc">Valor bruto total (R$)</th><th class="pre">Prazo (dias)</th><th class="pre">Obs.</th></tr></thead><tbody>';
   ROTAS.forEach(function(r,i){var p=PROP[r.chave]||{};
-    h+='<tr id="l'+i+'"><td class="fixo">'+esc(r.origem)+(r.uf_origem?'/'+esc(r.uf_origem):'')+'</td><td class="fixo">'+esc(r.destino)+(r.uf_destino?'/'+esc(r.uf_destino):'')+'</td><td class="fixo">'+esc(r.tipo_veiculo)+'</td><td class="n">'+(r.km?fmt(r.km).replace(/,00$/,''):'-')+'</td><td class="n">'+(r.viagens?Math.round(r.viagens):'-')+'</td>'
+    h+='<tr id="l'+i+'"><td class="fixo">'+esc(r.origem)+(r.uf_origem?'/'+esc(r.uf_origem):'')+'</td><td class="fixo">'+esc(r.destino)+(r.uf_destino?'/'+esc(r.uf_destino):'')+'</td><td class="fixo">'+esc(r.tipo_veiculo)+'</td><td class="n">'+(r.km?fmt(r.km).replace(/,00$/,''):'-')+'</td><td class="n">'+(r.viagens?fmt1(r.viagens):'-')+'</td>'
     +'<td><input id="liq'+i+'" value="'+(p.valor_liquido!=null?fmt(p.valor_liquido):'')+'" oninput="calc('+i+')" inputmode="decimal"></td>'
     +'<td class="n" id="al'+i+'">'+(r.aliquota!=null?fmt(r.aliquota)+'%':'<span class="pill">sem alíquota</span>')+(r.aliquota_fonte&&r.aliquota_fonte.indexOf('estimada')===0?'<span class="pill">estimada</span>':'')+'</td>'
     +'<td class="n" id="ic'+i+'">-</td><td class="n bruto" id="br'+i+'">-</td>'
     +'<td><input id="pz'+i+'" value="'+(p.prazo_dias!=null?p.prazo_dias:'')+'" inputmode="numeric" style="min-width:80px"></td>'
     +'<td><input class="t" id="ob'+i+'" value="'+esc(p.observacao||'')+'" style="min-width:180px"></td></tr>'});
   h+='</tbody></table></div><div class="barra"><button class="sec" onclick="enviar(false)">Salvar rascunho</button><button onclick="enviar(true)">Enviar cotação</button><span id="cont"></span></div>';
-  t.innerHTML=h;ROTAS.forEach(function(r,i){calc(i)})}
-function filtrar(){var q=sa(document.getElementById('busca').value);ROTAS.forEach(function(r,i){var txt=sa(r.origem+' '+r.destino+' '+r.tipo_veiculo+' '+(r.uf_origem||'')+' '+(r.uf_destino||''));document.getElementById('l'+i).style.display=(!q||txt.indexOf(q)>=0)?'':'none'})}
+  t.innerHTML=h;document.getElementById('eixos').value=String(EIXOS);mudaEixos();montaFiltros();ROTAS.forEach(function(r,i){calc(i)})}
+function mudaEixos(){var e=document.getElementById('eixos');EIXOS=Number(e.value)||5;document.getElementById('avEixos').innerHTML=EIXOS===5?' <span class="ok1">99% dos nossos embarques são com 5 eixos: sua tabela será comparada com os valores de 5 eixos.</span>':' <span class="aten">Atenção: 99% dos nossos embarques são com 5 eixos. Com 6 eixos a comparação usa a tabela ANTT de 6 eixos.</span>'}
+function montaFiltros(){var fo=document.getElementById('fo'),fd=document.getElementById('fd'),vo=fo.value,vd=fd.value,O={},D={};
+  ROTAS.forEach(function(r){if(!vd||sa(r.destino)===vd)O[sa(r.origem)]=r.origem;if(!vo||sa(r.origem)===vo)D[sa(r.destino)]=r.destino});
+  var mk=function(M,tod){var k=Object.keys(M).sort(function(a,b){return a<b?-1:1});return '<option value="">'+tod+'</option>'+k.map(function(x){return '<option value="'+esc(x)+'">'+esc(M[x])+'</option>'}).join('')};
+  fo.innerHTML=mk(O,'Todas as origens');fd.innerHTML=mk(D,'Todos os destinos');fo.value=O[vo]?vo:'';fd.value=D[vd]?vd:''}
+function filtrar(q){if(q)montaFiltros();var vo=document.getElementById('fo').value,vd=document.getElementById('fd').value,n=0;
+  ROTAS.forEach(function(r,i){var ok=(!vo||sa(r.origem)===vo)&&(!vd||sa(r.destino)===vd);document.getElementById('l'+i).style.display=ok?'':'none';if(ok)n++});
+  document.getElementById('nvis').textContent=n+' de '+ROTAS.length+' rotas'}
 function calc(i){var r=ROTAS[i],liq=num(document.getElementById('liq'+i).value),a=r.aliquota;
   var ic=document.getElementById('ic'+i),br=document.getElementById('br'+i),tr=document.getElementById('l'+i);
   if(liq>0){var base=liq,bruto=(a>0&&a<100)?base/(1-a/100):base;br.textContent=fmt(bruto);ic.textContent=fmt(bruto-base);tr.className='feita'}else{br.textContent='-';ic.textContent='-';tr.className=''}
@@ -197,11 +208,11 @@ function calc(i){var r=ROTAS[i],liq=num(document.getElementById('liq'+i).value),
 function baixarModelo(){
   if(!window.XLSX){alert('Não foi possível carregar o recurso de Excel. Verifique sua conexão e tente de novo.');return}
   var HR=4,NC=13,L='CBD5E1';
-  var cab=['Origem','UF origem','Destino','UF destino','Veículo','KM','Viagens (hist.)','ICMS %','Valor líquido (R$)','Valor bruto total (R$)','Prazo (dias)','Observação','CHAVE (não alterar)'];
+  var cab=['Origem','UF origem','Destino','UF destino','Veículo','KM','Média mensal (viagens)','ICMS %','Valor líquido (R$)','Valor bruto total (R$)','Prazo (dias)','Observação','CHAVE (não alterar)'];
   var tipo=['f','f','f','f','f','f','f','c','i','c','i','i','f'];
-  var aoa=[['COTAÇÃO DE LOTAÇÃO — '+NOMETRANSP],['Preencha somente as colunas AMARELAS: Valor líquido (sem ICMS), Prazo e Observação. O ICMS e o Valor bruto total são calculados. O tipo de veículo é fixo. Deixe em branco as rotas que você não atende.'],['Legenda:   AMARELO = você preenche   ·   CINZA = informação da rota (não alterar)   ·   AZUL = calculado automaticamente'],[],cab];
+  var aoa=[['COTAÇÃO DE LOTAÇÃO — '+NOMETRANSP],['Preencha somente as colunas AMARELAS: Valor líquido (sem ICMS), Prazo e Observação. O ICMS e o Valor bruto total são calculados. O tipo de veículo é fixo. Deixe em branco as rotas que você não atende.'],['Legenda:   AMARELO = você preenche   ·   CINZA = informação da rota (não alterar)   ·   AZUL = calculado automaticamente'],['EIXOS DO VEÍCULO (5 ou 6)  →','','',EIXOS],cab];
   ROTAS.forEach(function(r,i){
-    aoa.push([r.origem,r.uf_origem||'',r.destino,r.uf_destino||'',r.tipo_veiculo,r.km||'',r.viagens?Math.round(r.viagens):'',r.aliquota!=null?r.aliquota:'',num(document.getElementById('liq'+i).value)||'','',document.getElementById('pz'+i).value||'',document.getElementById('ob'+i).value||'',r.chave])});
+    aoa.push([r.origem,r.uf_origem||'',r.destino,r.uf_destino||'',r.tipo_veiculo,r.km||'',r.viagens?Math.round(r.viagens*10)/10:'',r.aliquota!=null?r.aliquota:'',num(document.getElementById('liq'+i).value)||'','',document.getElementById('pz'+i).value||'',document.getElementById('ob'+i).value||'',r.chave])});
   var ws=XLSX.utils.aoa_to_sheet(aoa);
   var borda={top:{style:'thin',color:{rgb:L}},bottom:{style:'thin',color:{rgb:L}},left:{style:'thin',color:{rgb:L}},right:{style:'thin',color:{rgb:L}}};
   function est(r,c,s,z){var a=XLSX.utils.encode_cell({r:r,c:c});if(!ws[a])ws[a]={t:'s',v:''};ws[a].s=s;if(z)ws[a].z=z}
@@ -209,6 +220,7 @@ function baixarModelo(){
   for(var c0=1;c0<NC;c0++)est(0,c0,{fill:{patternType:'solid',fgColor:{rgb:'06183D'}}});
   est(1,0,{font:{sz:11,color:{rgb:'334155'}},alignment:{wrapText:true,vertical:'center'}});
   est(2,0,{font:{bold:true,sz:11,color:{rgb:'92400E'}},fill:{patternType:'solid',fgColor:{rgb:'FEF3C7'}},alignment:{vertical:'center'}});
+  est(3,0,{font:{bold:true,sz:11,color:{rgb:'92400E'}},fill:{patternType:'solid',fgColor:{rgb:'FEF3C7'}},alignment:{vertical:'center'}});est(3,1,{fill:{patternType:'solid',fgColor:{rgb:'FEF3C7'}}});est(3,2,{fill:{patternType:'solid',fgColor:{rgb:'FEF3C7'}}});est(3,3,{font:{bold:true,sz:12},fill:{patternType:'solid',fgColor:{rgb:'FFF7CC'}},alignment:{horizontal:'center',vertical:'center'},border:borda});
   var corCab={f:'1E3A5F',i:'B45309',c:'475569'},corCel={f:'F1F5F9',i:'FFF7CC',c:'E0F0FF'};
   for(var c=0;c<NC;c++){est(HR,c,{font:{bold:true,sz:11,color:{rgb:'FFFFFF'}},fill:{patternType:'solid',fgColor:{rgb:corCab[tipo[c]]}},alignment:{horizontal:'center',vertical:'center',wrapText:true},border:borda})}
   for(var k=HR+1;k<aoa.length;k++){var ex=k+1;
@@ -217,8 +229,8 @@ function baixarModelo(){
       var z=(c2===8||c2===9)?'#,##0.00':(c2===7?'0.00"%"':((c2===5||c2===6||c2===10)?'#,##0':null));
       var numerico=(c2>=5&&c2<=10);
       est(k,c2,{font:{sz:11,bold:(c2===0||c2===2||c2===4||c2===9),color:{rgb:c2===12?'94A3B8':'0F172A'}},fill:{patternType:'solid',fgColor:{rgb:corCel[tipo[c2]]}},alignment:{horizontal:numerico?'right':'left',vertical:'center'},border:(tipo[c2]==='i'?{top:{style:'thin',color:{rgb:'F59E0B'}},bottom:{style:'thin',color:{rgb:'F59E0B'}},left:{style:'thin',color:{rgb:'F59E0B'}},right:{style:'thin',color:{rgb:'F59E0B'}}}:borda)},z)}}
-  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:9}},{s:{r:1,c:0},e:{r:1,c:11}},{s:{r:2,c:0},e:{r:2,c:11}}];
-  ws['!rows']=[{hpt:32},{hpt:36},{hpt:22},{hpt:8},{hpt:34}];
+  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:9}},{s:{r:1,c:0},e:{r:1,c:11}},{s:{r:2,c:0},e:{r:2,c:11}},{s:{r:3,c:0},e:{r:3,c:2}}];
+  ws['!rows']=[{hpt:32},{hpt:36},{hpt:22},{hpt:24},{hpt:34}];
   ws['!cols']=[{wch:28},{wch:9},{wch:28},{wch:9},{wch:18},{wch:8},{wch:12},{wch:9},{wch:19},{wch:21},{wch:12},{wch:32},{wch:40,hidden:true}];
   ws['!autofilter']={ref:'A'+(HR+1)+':M'+aoa.length};
   ws['!freeze']={xSplit:0,ySplit:HR+1};
@@ -236,6 +248,7 @@ function importar(inp){var f=inp.files&&inp.files[0],m=document.getElementById('
     var wb=XLSX.read(new Uint8Array(ev.target.result),{type:'array'}),ws=wb.Sheets[wb.SheetNames[0]],rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''}),hi=-1;
     for(var r=0;r<Math.min(rows.length,15);r++){var j=rows[r].map(sa).join('|');if(j.indexOf('CHAVE')>=0||(j.indexOf('ORIGEM')>=0&&j.indexOf('DESTINO')>=0)){hi=r;break}}
     if(hi<0){m.innerHTML='<div class="msg erro">Não encontrei o cabeçalho. Use o modelo baixado nesta tela.</div>';return}
+    for(var q=0;q<hi;q++){var rw=rows[q];for(var z=0;z<rw.length;z++){if(sa(rw[z]).indexOf('EIXOS')===0){for(var z2=z+1;z2<rw.length;z2++){var ev=Number(rw[z2]);if(ev===5||ev===6){document.getElementById('eixos').value=String(ev);mudaEixos()}}}}}
     var cab=rows[hi].map(sa),col=function(re){for(var c=0;c<cab.length;c++)if(re.test(cab[c]))return c;return -1};
     var cCh=col(/^CHAVE/),cO=col(/^ORIGEM/),cD=col(/^DESTINO/),cV=col(/^VEICULO|^TIPO/),cL=col(/LIQUIDO/),cZ=col(/^PRAZO/),cOb=col(/^OBS/);
     if(cL<0){m.innerHTML='<div class="msg erro">Coluna "Valor líquido" não encontrada. Use o modelo baixado nesta tela.</div>';return}
@@ -243,7 +256,7 @@ function importar(inp){var f=inp.files&&inp.files[0],m=document.getElementById('
     var ok=0,perdidas=0;
     for(var r2=hi+1;r2<rows.length;r2++){var row=rows[r2],i=-1;
       if(cCh>=0&&row[cCh]!==''&&idx[row[cCh]]!==undefined)i=idx[row[cCh]];
-      else if(cO>=0&&cD>=0&&cV>=0){var k=kc(row[cO])+'|'+kc(row[cD])+'|'+sa(row[cV]);if(idx[k]!==undefined)i=idx[k]}
+      else if(cO>=0&&cD>=0&&cV>=0){var k=kc(row[cO])+'|'+kc(row[cD])+'|CARRETA';if(idx[k]!==undefined)i=idx[k]}
       var liq=num(row[cL]);
       if(i<0){if(liq>0)perdidas++;continue}
       if(!(liq>0))continue;
@@ -262,7 +275,7 @@ function enviar(final){var itens=[],m=document.getElementById('msgTab');m.innerH
     itens.push({chave:ROTAS[i].chave,liquido:liq,prazo:document.getElementById('pz'+i).value,obs:document.getElementById('ob'+i).value})}
   if(final){if(!itens.length){m.innerHTML='<div class="msg erro">Preencha ao menos uma rota antes de enviar.</div>';return}
     if(!confirm('Enviar '+itens.length+' rota(s) para análise? Os valores líquidos serão somados ao ICMS para formar o bruto.'))return}
-  api({acao:'salvar',acesso:ACESSO,itens:itens,enviar:final}).then(function(j){m.innerHTML='<div class="msg ok">'+(final?'✅ Cotação enviada com '+j.salvas+' rota(s). Obrigado! O time de suprimentos já recebeu.':'Rascunho salvo ('+j.salvas+' rota(s)).')+'</div>';window.scrollTo(0,0)}).catch(function(e){m.innerHTML='<div class="msg erro">'+esc(e.message)+'</div>'})}
+  api({acao:'salvar',acesso:ACESSO,itens:itens,enviar:final,eixos:EIXOS}).then(function(j){m.innerHTML='<div class="msg ok">'+(final?'✅ Cotação enviada com '+j.salvas+' rota(s). Obrigado! O time de suprimentos já recebeu.':'Rascunho salvo ('+j.salvas+' rota(s)).')+'</div>';window.scrollTo(0,0)}).catch(function(e){m.innerHTML='<div class="msg erro">'+esc(e.message)+'</div>'})}
 </script></body></html>`;
 }
 
@@ -300,7 +313,7 @@ export default async function handler(req, res) {
   try {
     const { data: convite, error } = await supabase.from('lotacao_cotacao_convites').select('*').eq('token', token).maybeSingle();
     if (error) throw error;
-    if (!convite) return enviarHtml(res, 404, paginaErro('Link inválido', 'Este link de cotação não foi encontrado. Solicite um novo link ao time de suprimentos.'));
+    if (!convite || (convite.tipo && convite.tipo !== 'TRANSPORTADOR')) return enviarHtml(res, 404, paginaErro('Link inválido', 'Este link de cotação não foi encontrado. Solicite um novo link ao time de suprimentos.'));
     const { data: cotacao } = await supabase.from('lotacao_cotacoes').select('*').eq('id', convite.cotacao_id).maybeSingle();
     if (!cotacao) return enviarHtml(res, 404, paginaErro('Cotação não encontrada', 'Esta cotação não existe mais.'));
 
@@ -340,7 +353,7 @@ export default async function handler(req, res) {
           // target e frete medio NUNCA vao para o portal.
           return { chave: r.chave, origem: r.origem, uf_origem: r.uf_origem, destino: r.destino, uf_destino: r.uf_destino, tipo_veiculo: r.tipo_veiculo, km: r.km, viagens: r.viagens, aliquota: a.aliquota, aliquota_fonte: a.fonte };
         });
-      return enviarJson(res, 200, { acesso: gerarAcesso(token, segredo), rotas, propostas: propostas || [], status: convite.status });
+      return enviarJson(res, 200, { acesso: gerarAcesso(token, segredo), rotas, propostas: propostas || [], status: convite.status, eixos: convite.eixos || 5 });
     }
 
     if (body.acao === 'salvar') {
@@ -377,6 +390,10 @@ export default async function handler(req, res) {
       for (let i = 0; i < linhas.length; i += 500) {
         const { error: e2 } = await supabase.from('lotacao_cotacao_propostas').upsert(linhas.slice(i, i + 500), { onConflict: 'convite_id,chave' });
         if (e2) throw e2;
+      }
+      if ([5, 6].includes(Number(body.eixos))) {
+        // coluna eixos so existe apos a migration; sem ela o update e ignorado
+        await supabase.from('lotacao_cotacao_convites').update({ eixos: Number(body.eixos) }).eq('id', convite.id);
       }
       if (body.enviar && linhas.length) {
         await supabase.from('lotacao_cotacao_convites').update({ status: 'ENVIADO', enviado_em: agora }).eq('id', convite.id);
