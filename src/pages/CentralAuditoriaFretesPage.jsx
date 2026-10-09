@@ -4935,7 +4935,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   // Recalcula o status AMD de varias faturas selecionadas de uma vez (uso
   // tipico: selecionar todas as faturas de uma mesma transportadora que
   // acabaram de ser importadas, em vez de abrir uma por uma).
-  const recalcularLote = async () => {
+  const recalcularLote = async (opcoes = {}) => {
+    const corrigirTracking = opcoes?.corrigirTracking === true;
     const faturasSelecionadas = state.faturas.filter((item) => selecionadasIds.includes(item.id));
     if (!faturasSelecionadas.length) return;
     setRecalculandoLote(true);
@@ -4946,7 +4947,11 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       for (let i = 0; i < faturasSelecionadas.length; i += 1) {
         const fatura = faturasSelecionadas[i];
         setProgressoLote({ etapa: 'buscando_ctes', carregados: i + 1, total: faturasSelecionadas.length });
-        const detalhes = await carregarDetalhesFaturaSupabase(fatura.id);
+        let detalhes = await carregarDetalhesFaturaSupabase(fatura.id);
+        // Fatura importada por DocCob nao traz a chave: acha pela base (numero + CNPJ).
+        if (detalhes.some((item) => !item.chave_cte)) {
+          detalhes = (await vincularChavesDetalhesPorNumero(fatura, detalhes)).detalhes;
+        }
         if (detalhes.length) detalhesPorFatura.set(fatura.id, detalhes);
       }
 
@@ -4954,6 +4959,15 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       if (!todasChaves.length) {
         setMensagemImportacao('Nenhum CT-e encontrado nas faturas selecionadas.');
         return;
+      }
+
+      let resumoTracking = '';
+      if (corrigirTracking) {
+        setMensagemImportacao(`Corrigindo a base pelo tracking (${todasChaves.length} CT-e(s))...`);
+        const r = await corrigirBaseCtesPeloTracking(todasChaves, (p) => {
+          setProgressoLote({ etapa: 'corrigindo_tracking', carregados: p.processados, total: p.total });
+        });
+        resumoTracking = ` Base corrigida pelo tracking: ${r.corrigidos.length} corrigido(s), ${r.iguais} ja iguais, ${r.semTracking} sem tracking.`;
       }
 
       const { registros } = await processarCtesPorChave(todasChaves, setProgressoLote, { ignorarCubagem: true });
@@ -4983,7 +4997,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       const sufixoErro = faturasComErro.length
         ? ` ${faturasComErro.length} fatura(s) falharam ao atualizar e precisam ser recalculadas novamente: ${faturasComErro.join(', ')}.`
         : '';
-      setMensagemImportacao(`Recalculo concluido: ${amdCalculados} CT-e(s) com status AMD calculado em ${sucesso} fatura(s).${sufixoErro}`);
+      setMensagemImportacao(`Recalculo concluido: ${amdCalculados} CT-e(s) com status AMD calculado em ${sucesso} fatura(s).${resumoTracking}${sufixoErro}`);
       setSelecionadasIds([]);
     } catch (error) {
       setMensagemImportacao(`Erro ao recalcular em lote: ${error.message}`);
@@ -7219,8 +7233,11 @@ ${portaisLaudo.length ? `
         <OpcoesLaudoTransportador opcoes={opcoesLaudoTransportadorLote} onMudar={setOpcoesLaudoTransportadorLote} />
         <div className="audit-action-bar">
           <span>{selecionadasIds.length} fatura(s) selecionada(s)</span>
-          <button className="btn-primary" disabled={recalculandoLote} onClick={recalcularLote}>
+          <button className="btn-primary" disabled={recalculandoLote} onClick={() => recalcularLote()}>
             {recalculandoLote ? 'Recalculando...' : `Recalcular CT-es (${selecionadasIds.length} fatura(s))`}
+          </button>
+          <button className="btn-secondary" disabled={recalculandoLote} onClick={() => recalcularLote({ corrigirTracking: true })} title="Acha as chaves dos CT-es, corrige origem/destino da base pelo tracking e recalcula, para todas as faturas selecionadas.">
+            Corrigir base (tracking) ({selecionadasIds.length})
           </button>
           <select value={statusLote} onChange={(e) => setStatusLote(e.target.value)} disabled={recalculandoLote}>
             <option value="">Status em massa</option>

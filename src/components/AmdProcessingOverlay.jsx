@@ -11,6 +11,7 @@ export const ETAPA_LABEL_AUDITORIA = {
   localizando_existentes: 'Localizando CT-es já salvos',
   resimulando: 'Resimulando recorte',
   buscando_ctes: 'Buscando CT-es',
+  corrigindo_tracking: 'Corrigindo base pelo tracking',
   carregando_ctes_analise: 'Carregando CT-es para análise',
   salvando_faturas: 'Gravando faturas e CT-es',
   verificando_existentes: 'Verificando faturas já existentes',
