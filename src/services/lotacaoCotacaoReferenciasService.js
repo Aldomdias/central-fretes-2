@@ -227,3 +227,27 @@ export async function carregarPeriodoRealizado() {
     return { inicio: ini, fim, meses: Math.max(1, Math.round((dias / 30.4375) * 10) / 10) };
   } catch { return null; }
 }
+
+// Regra de calculo da ANTT (Tabela B - so o veiculo automotor): valor = KM x CCD + CC.
+// Cadastrada aqui, nada de importar tabela: o valor e recalculado a partir do KM de cada rota.
+export const REGRA_ANTT_PADRAO = {
+  base: 'LIQUIDO', // o valor da formula e sem ICMS
+  5: { ccd: '6,0900', cc: '594,62' },
+  6: { ccd: '6,7863', cc: '608,99' },
+};
+
+export async function carregarRegraAntt() {
+  try {
+    const { data } = await client().from('simulador_configuracoes').select('valor').eq('chave', 'lotacao_antt_regra').maybeSingle();
+    const v = data?.valor;
+    if (!v || typeof v !== 'object') return REGRA_ANTT_PADRAO;
+    return { base: v.base || 'LIQUIDO', 5: { ...REGRA_ANTT_PADRAO[5], ...(v[5] || {}) }, 6: { ...REGRA_ANTT_PADRAO[6], ...(v[6] || {}) } };
+  } catch { return REGRA_ANTT_PADRAO; }
+}
+
+export async function salvarRegraAntt(regra) {
+  const { error } = await client().from('simulador_configuracoes').upsert(
+    { chave: 'lotacao_antt_regra', valor: regra, updated_at: new Date().toISOString() }, { onConflict: 'chave' },
+  );
+  if (error) throw error;
+}

@@ -10,9 +10,10 @@ import {
   gerarConvite, linkConviteCotacao, listarCotacoes, renovarConvite,
 } from '../services/lotacaoCotacaoService';
 import {
-  carregarKmRotas, carregarMapaUfMunicipios, carregarPeriodoRealizado, importarPropostasConvite, importarReferencia, oficializarProposta,
+  REGRA_ANTT_PADRAO, carregarKmRotas, carregarMapaUfMunicipios, carregarPeriodoRealizado, carregarRegraAntt, importarPropostasConvite, importarReferencia, oficializarProposta, salvarRegraAntt,
 } from '../services/lotacaoCotacaoReferenciasService';
 import { carregarMatrizIcmsUfCentralizada } from '../utils/icmsUfMatrix';
+import { aliquotaDaRota, calcularBruto } from '../utils/lotacaoCotacaoCalculo';
 import { VEICULO_PADRAO, chavePar, chaveRota, mesmaCidade, norm, splitCidade, veiculoExcluido } from '../utils/lotacaoCotacaoChave';
 
 const brl = (v) => (v == null || v === '' ? '-' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
@@ -20,6 +21,11 @@ const pct = (v, d = 1) => (v == null || !Number.isFinite(v) ? '-' : `${(v * 100)
 const dataBr = (v) => (v ? new Date(v).toLocaleDateString('pt-BR') : '-');
 const fmtCnpj = (c) => String(c || '').replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5') || '-';
 const int = (v) => Math.round(Number(v) || 0).toLocaleString('pt-BR');
+const numBr = (v) => {
+  const t = String(v ?? '').trim();
+  if (!t) return NaN;
+  return Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t);
+};
 const dec1 = (v) => (Number(v) > 0 ? Number(v).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) : '-');
 
 const STATUS_COR = { PENDENTE: '#6B7280', EM_PREENCHIMENTO: '#D97706', ENVIADO: '#1D9E75' };
@@ -170,6 +176,35 @@ function CartaoReferencia({ tipo, titulo, descricao, convite, qtd, ocupado, onIm
   );
 }
 
+function CartaoRegraAntt({ regra, onSalvar, ocupado }) {
+  const [r, setR] = useState(regra);
+  useEffect(() => { setR(regra); }, [regra]);
+  const set = (eixos, campo, v) => setR({ ...r, [eixos]: { ...r[eixos], [campo]: v } });
+  return (
+    <div style={{ flex: 1, minWidth: 340, border: '1px solid #cbd5e1', borderRadius: 12, padding: 14, background: '#f0fdf4' }}>
+      <b style={{ fontSize: 15 }}>ANTT — regra de cálculo (Tabela B)</b>
+      <div style={{ fontSize: 12, color: '#475569', margin: '2px 0 8px' }}>
+        Valor = KM × CCD + CC (só o veículo automotor, retorno vazio fora). Calculado na hora com o KM de cada rota: não existe tabela para importar nem manter.
+      </div>
+      {[5, 6].map((e) => (
+        <div key={e} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: '6px 0' }}>
+          <b style={{ width: 62 }}>{e} eixos</b>
+          <label style={{ fontSize: 12 }}>CCD <input style={{ ...inp, width: 90, padding: '4px 6px' }} value={r[e]?.ccd ?? ''} onChange={(ev) => set(e, 'ccd', ev.target.value)} /></label>
+          <label style={{ fontSize: 12 }}>CC <input style={{ ...inp, width: 90, padding: '4px 6px' }} value={r[e]?.cc ?? ''} onChange={(ev) => set(e, 'cc', ev.target.value)} /></label>
+          <span style={{ fontSize: 12, color: '#475569' }}>ex.: 1.500 km = {brl(1500 * numBr(r[e]?.ccd) + (numBr(r[e]?.cc) || 0))}</span>
+        </div>
+      ))}
+      <label style={{ fontSize: 12, fontWeight: 700 }}>O valor da fórmula é:{' '}
+        <select value={r.base} onChange={(e) => setR({ ...r, base: e.target.value })} style={{ ...inp, padding: '4px 6px', fontSize: 12 }}>
+          <option value="LIQUIDO">Líquido (sem ICMS) — o ICMS da rota é somado na comparação</option>
+          <option value="BRUTO">Bruto (já com ICMS)</option>
+        </select>
+      </label>
+      <div style={{ marginTop: 10 }}><button style={btn} disabled={ocupado} onClick={() => onSalvar(r)}>Salvar regra</button></div>
+    </div>
+  );
+}
+
 export default function LotacaoCotacaoPage() {
   const usarSupabase = lotacaoSupabaseConfigurado();
   const [tabelas, setTabelas] = useState([]);
@@ -177,6 +212,7 @@ export default function LotacaoCotacaoPage() {
   const [kmRotas, setKmRotas] = useState({});
   const [mapaUf, setMapaUf] = useState(null);
   const [periodo, setPeriodo] = useState(null);
+  const [regraAntt, setRegraAntt] = useState(REGRA_ANTT_PADRAO);
   const [matriz, setMatriz] = useState([]);
   const [cotacoes, setCotacoes] = useState([]);
   const [cotacaoId, setCotacaoId] = useState('');
@@ -205,6 +241,7 @@ export default function LotacaoCotacaoPage() {
       carregarKmRotas().then(setKmRotas);
       carregarMapaUfMunicipios().then(setMapaUf);
       carregarPeriodoRealizado().then(setPeriodo);
+      carregarRegraAntt().then(setRegraAntt);
       carregarMatrizIcmsUfCentralizada().then((r) => setMatriz(r?.linhas || [])).catch(() => {});
     })();
   }, [usarSupabase]);
@@ -262,9 +299,21 @@ export default function LotacaoCotacaoPage() {
     return m;
   }, [dados.propostas]);
   const conviteCasa = dados.convites.find((c) => c.tipo === 'REF_CASA');
-  const conviteAntt = dados.convites.find((c) => c.tipo === 'REF_ANTT');
-  const conviteAntt6 = dados.convites.find((c) => c.tipo === 'REF_ANTT_6');
-  const anttDo = (cv) => (Number(cv.eixos) === 6 ? conviteAntt6 : conviteAntt);
+  // ANTT calculada pela regra cadastrada (KM x CCD + CC), em valor bruto para comparar com as propostas
+  const anttBrutoRota = useCallback((r, eixos) => {
+    const reg = regraAntt[Number(eixos) === 6 ? 6 : 5];
+    const ccd = numBr(reg?.ccd);
+    const cc = numBr(reg?.cc) || 0;
+    const km = Number(r.km);
+    if (!(km > 0) || !(ccd > 0)) return null;
+    const valor = km * ccd + cc;
+    if (regraAntt.base === 'BRUTO') return Math.round(valor * 100) / 100;
+    return calcularBruto(valor, aliquotaDaRota(matriz, r.uf_origem, r.uf_destino).aliquota).bruto;
+  }, [regraAntt, matriz]);
+  const salvarRegra = async (nova) => {
+    setOcupado(true);
+    try { await salvarRegraAntt(nova); setRegraAntt(nova); aviso('Regra da ANTT salva. A análise já foi recalculada.'); } catch (e) { aviso(`Erro ao salvar a regra: ${e.message}`, 'erro'); } finally { setOcupado(false); }
+  };
   const transportadores = useMemo(() => dados.convites.filter((c) => !eRef(c)), [dados.convites]);
 
   // ---------- referencias ----------
@@ -356,8 +405,6 @@ export default function LotacaoCotacaoPage() {
     const escopo = dados.rotas.filter((r) => !escopoSet || escopoSet.has(r.chave));
     const meus = propMap.get(cv.id) || new Map();
     const casa = conviteCasa ? propMap.get(conviteCasa.id) : null;
-    const convAntt = Number(cv.eixos) === 6 ? conviteAntt6 : conviteAntt;
-    const antt = convAntt ? propMap.get(convAntt.id) : null;
     const outros = transportadores.filter((o) => o.id !== cv.id && propMap.get(o.id)?.size);
     const cmp = (b, ref) => (!(ref > 0) ? null : (b < ref * 0.9995 ? 'GANHA' : b > ref * 1.0005 ? 'PERDE' : 'EMPATA'));
     const chaveRes = (r) => (r === 'GANHA' ? 'g' : r === 'PERDE' ? 'p' : 'e');
@@ -375,7 +422,7 @@ export default function LotacaoCotacaoPage() {
       S.cotadas += 1;
       S.volCot += vi;
       const vc = casa?.get(r.chave)?.valor_bruto != null ? Number(casa.get(r.chave).valor_bruto) : null;
-      const va = antt?.get(r.chave)?.valor_bruto != null ? Number(antt.get(r.chave).valor_bruto) : null;
+      const va = anttBrutoRota(r, cv.eixos);
       let menorOutro = null;
       outros.forEach((o) => {
         const q = propMap.get(o.id).get(r.chave);
@@ -397,7 +444,7 @@ export default function LotacaoCotacaoPage() {
     });
     linhas.sort((x, y) => (Number(y.r.viagens) || 0) - (Number(x.r.viagens) || 0));
     return { S, linhas };
-  }, [dados.rotas, propMap, conviteCasa, conviteAntt, conviteAntt6, transportadores]);
+  }, [dados.rotas, propMap, conviteCasa, anttBrutoRota, transportadores]);
 
   const comparativo = useMemo(
     () => transportadores.filter((c) => propMap.get(c.id)?.size).map((c) => ({ cv: c, ...analisar(c) })),
@@ -460,8 +507,8 @@ export default function LotacaoCotacaoPage() {
       { h: 'UF destino', w: 9, get: (r) => r.uf_destino }, { h: 'Veículo', w: 18, get: (r) => r.tipo_veiculo }, { h: 'KM', w: 8, t: 'int', get: (r) => r.km }, { h: 'Média mensal (viagens)', w: 13, t: 'dec1', get: (r) => r.viagens },
       { h: 'Realizado médio (R$)', w: 18, t: 'money', cor: 'cmp', get: (r) => (Number(r.frete_medio) > 0 ? Number(r.frete_medio) : null) },
       { h: 'TransGP bruto (R$)', w: 17, t: 'money', cor: 'cmp', get: (r) => propMap.get(conviteCasa?.id)?.get(r.chave)?.valor_bruto },
-      { h: 'ANTT 5 eixos bruto (R$)', w: 20, t: 'money', cor: 'cmp', get: (r) => propMap.get(conviteAntt?.id)?.get(r.chave)?.valor_bruto },
-      { h: 'ANTT 6 eixos bruto (R$)', w: 20, t: 'money', cor: 'cmp', get: (r) => propMap.get(conviteAntt6?.id)?.get(r.chave)?.valor_bruto },
+      { h: 'ANTT 5 eixos bruto (R$)', w: 20, t: 'money', cor: 'cmp', get: (r) => anttBrutoRota(r, 5) },
+      { h: 'ANTT 6 eixos bruto (R$)', w: 20, t: 'money', cor: 'cmp', get: (r) => anttBrutoRota(r, 6) },
       ...comparativo.map(({ cv }) => ({ h: `${cv.transportadora} (${Number(cv.eixos) === 6 ? 6 : 5} eixos) bruto (R$)`, w: 20, t: 'money', cor: 'calc', get: (r) => propMap.get(cv.id)?.get(r.chave)?.valor_bruto })),
       {
         h: 'Menor transportador', w: 22, cor: 'in', bold: true,
@@ -514,24 +561,15 @@ export default function LotacaoCotacaoPage() {
       )}
 
       <div style={card}>
-        <h2 style={h2}>1. Tabelas de referência</h2>
-        <small>Servem de comparação para toda proposta que chegar: a TransGP é o nosso target e a ANTT é o piso. Use o mesmo modelo da Tabela de Lotação.</small>
+        <h2 style={h2}>1. Referências de comparação</h2>
+        <small>Servem de comparação para toda proposta que chegar: a TransGP é o nosso target (importada no modelo da Tabela de Lotação) e a ANTT é o piso, calculada pela regra cadastrada.</small>
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 12 }}>
           <CartaoReferencia
             tipo="REF_CASA" titulo="TransGP (transportadora da casa)" descricao="Modelo Transportadora: Origem, UF, Destino, UF, KM, TIPO e TARGET." convite={conviteCasa}
             qtd={propMap.get(conviteCasa?.id)?.size || 0} ocupado={ocupado} baseInicial="LIQUIDO" onModelo={baixarModeloTransportadora}
             onImportar={(f, b) => importarRef('REF_CASA', f, b)} onRemover={async () => { await excluirConvite(conviteCasa.id); recarregarDados(); }}
           />
-          <CartaoReferencia
-            tipo="REF_ANTT" titulo="ANTT — 5 eixos (piso)" descricao="Modelo ANTT: Origem, UF, Destino, UF, KM, TIPO e Frete ANTT Oficial. 99% dos nossos embarques." convite={conviteAntt}
-            qtd={propMap.get(conviteAntt?.id)?.size || 0} ocupado={ocupado} baseInicial="LIQUIDO" onModelo={baixarModeloAntt}
-            onImportar={(f, b) => importarRef('REF_ANTT', f, b)} onRemover={async () => { await excluirConvite(conviteAntt.id); recarregarDados(); }}
-          />
-          <CartaoReferencia
-            tipo="REF_ANTT_6" titulo="ANTT — 6 eixos (piso)" descricao="Usada quando o transportador informar veículo de 6 eixos." convite={conviteAntt6}
-            qtd={propMap.get(conviteAntt6?.id)?.size || 0} ocupado={ocupado} baseInicial="LIQUIDO" onModelo={baixarModeloAntt}
-            onImportar={(f, b) => importarRef('REF_ANTT_6', f, b)} onRemover={async () => { await excluirConvite(conviteAntt6.id); recarregarDados(); }}
-          />
+          <CartaoRegraAntt regra={regraAntt} onSalvar={salvarRegra} ocupado={ocupado} />
         </div>
       </div>
 
@@ -616,7 +654,7 @@ export default function LotacaoCotacaoPage() {
           <>
             <small>
               Tudo em valor <b>bruto</b>. “Ganha” = proposta mais barata que a referência. Realizado = frete médio histórico das viagens da rota (considerado com ICMS).
-              {!conviteCasa && <b style={{ color: '#b45309' }}> Importe a TransGP para comparar com o target.</b>}{!conviteAntt && <b style={{ color: '#b45309' }}> Importe a ANTT de 5 eixos para comparar com o piso.</b>}{comparativo.some((x) => Number(x.cv.eixos) === 6) && !conviteAntt6 && <b style={{ color: '#b45309' }}> Há proposta de 6 eixos: importe a ANTT de 6 eixos.</b>}
+              {!conviteCasa && <b style={{ color: '#b45309' }}> Importe a TransGP para comparar com o target.</b>}
             </small>
             <div style={{ overflowX: 'auto', margin: '10px 0' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -630,7 +668,7 @@ export default function LotacaoCotacaoPage() {
                       <td style={{ ...td, textAlign: 'center' }}>{pct(S.escopo ? S.cotadas / S.escopo : null, 0)}</td>
                       <td style={{ ...td, textAlign: 'center' }}>{pct(S.volTot ? S.volCot / S.volTot : null, 0)}</td>
                       <td style={{ ...td, textAlign: 'center' }}>{conviteCasa ? `${S.casa.g}/${S.casa.g + S.casa.p + S.casa.e}` : '-'}</td>
-                      <td style={{ ...td, textAlign: 'center' }}>{anttDo(cv) ? `${S.antt.g}/${S.antt.g + S.antt.p + S.antt.e}` : '-'}</td>
+                      <td style={{ ...td, textAlign: 'center' }}>{(S.antt.g + S.antt.p + S.antt.e) > 0 ? `${S.antt.g}/${S.antt.g + S.antt.p + S.antt.e}` : '-'}</td>
                       <td style={{ ...td, textAlign: 'center' }}>{S.menor.comp ? `${S.menor.g}/${S.menor.comp}` : '-'}</td>
                       <td style={{ ...td, textAlign: 'center' }}>{S.real.comp ? `${S.real.g}/${S.real.comp} (${pct(S.real.g / S.real.comp, 0)})` : '-'}</td>
                       <td style={{ ...td, textAlign: 'right', color: '#166534', fontWeight: 700 }}>{brl(S.econGanhas)}</td>
