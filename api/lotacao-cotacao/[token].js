@@ -121,7 +121,7 @@ function paginaPortal({ convite, cotacao }) {
   const encerrada = cotacao.status !== 'ABERTA';
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>Cotação de lotação — ${esc(convite.transportadora)}</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#eef3f9;color:#0f172a;font-family:Arial,Helvetica,sans-serif;font-size:15px}
 .page{width:98%;max-width:1800px;margin:16px auto;background:#fff;border:1px solid #dbe3ef;border-radius:14px;overflow:hidden}
@@ -198,14 +198,33 @@ function calc(i){var r=ROTAS[i],liq=num(document.getElementById('liq'+i).value),
   var n=0;ROTAS.forEach(function(x,k){if(num(document.getElementById('liq'+k).value)>0)n++});document.getElementById('cont').textContent=n+' de '+ROTAS.length+' rotas preenchidas'}
 function baixarModelo(){
   if(!window.XLSX){alert('Não foi possível carregar o recurso de Excel. Verifique sua conexão e tente de novo.');return}
-  var cab=['Origem','UF origem','Destino','UF destino','Veículo','KM','Viagens (hist.)','ICMS %','Valor líquido (R$)','Pedágio (R$)','Valor bruto total (calculado)','Prazo (dias)','Validade (dd/mm/aaaa)','Observação','CHAVE (não alterar)'];
-  var aoa=[cab];
+  var HR=4,NC=15,L='CBD5E1';
+  var cab=['Origem','UF origem','Destino','UF destino','Veículo','KM','Viagens (hist.)','ICMS %','Valor líquido (R$)','Pedágio (R$)','Valor bruto total (R$)','Prazo (dias)','Validade (dd/mm/aaaa)','Observação','CHAVE (não alterar)'];
+  var tipo=['f','f','f','f','f','f','f','c','i','i','c','i','i','i','f'];
+  var aoa=[['COTAÇÃO DE LOTAÇÃO — '+NOMETRANSP],['Preencha somente as colunas AMARELAS: Valor líquido (sem ICMS) e Pedágio. O ICMS e o Valor bruto total são calculados. O tipo de veículo é fixo. Deixe em branco as rotas que você não atende.'],['Legenda:   AMARELO = você preenche   ·   CINZA = informação da rota (não alterar)   ·   AZUL = calculado automaticamente'],[],cab];
   ROTAS.forEach(function(r,i){var v=document.getElementById('vl'+i).value;var vd=v?v.split('-').reverse().join('/'):'';
     aoa.push([r.origem,r.uf_origem||'',r.destino,r.uf_destino||'',r.tipo_veiculo,r.km||'',r.viagens?Math.round(r.viagens):'',r.aliquota!=null?r.aliquota:'',num(document.getElementById('liq'+i).value)||'',num(document.getElementById('ped'+i).value)||'','',document.getElementById('pz'+i).value||'',vd,document.getElementById('ob'+i).value||'',r.chave])});
   var ws=XLSX.utils.aoa_to_sheet(aoa);
-  for(var k=2;k<=aoa.length;k++){ws['K'+k]={t:'n',f:'IF(I'+k+'>0,(I'+k+'+N(J'+k+'))/(1-N(H'+k+')/100),"")'}}
-  ws['!cols']=[{wch:26},{wch:8},{wch:26},{wch:8},{wch:18},{wch:8},{wch:12},{wch:9},{wch:18},{wch:14},{wch:24},{wch:12},{wch:20},{wch:30},{wch:40}];
-  ws['!autofilter']={ref:'A1:O'+aoa.length};
+  var borda={top:{style:'thin',color:{rgb:L}},bottom:{style:'thin',color:{rgb:L}},left:{style:'thin',color:{rgb:L}},right:{style:'thin',color:{rgb:L}}};
+  function est(r,c,s,z){var a=XLSX.utils.encode_cell({r:r,c:c});if(!ws[a])ws[a]={t:'s',v:''};ws[a].s=s;if(z)ws[a].z=z}
+  est(0,0,{font:{bold:true,sz:16,color:{rgb:'FFFFFF'}},fill:{patternType:'solid',fgColor:{rgb:'06183D'}},alignment:{vertical:'center',horizontal:'left'}});
+  for(var c0=1;c0<NC;c0++)est(0,c0,{fill:{patternType:'solid',fgColor:{rgb:'06183D'}}});
+  est(1,0,{font:{sz:11,color:{rgb:'334155'}},alignment:{wrapText:true,vertical:'center'}});
+  est(2,0,{font:{bold:true,sz:11,color:{rgb:'92400E'}},fill:{patternType:'solid',fgColor:{rgb:'FEF3C7'}},alignment:{vertical:'center'}});
+  var corCab={f:'1E3A5F',i:'B45309',c:'475569'},corCel={f:'F1F5F9',i:'FFF7CC',c:'E0F0FF'};
+  for(var c=0;c<NC;c++){est(HR,c,{font:{bold:true,sz:11,color:{rgb:'FFFFFF'}},fill:{patternType:'solid',fgColor:{rgb:corCab[tipo[c]]}},alignment:{horizontal:'center',vertical:'center',wrapText:true},border:borda})}
+  for(var k=HR+1;k<aoa.length;k++){var ex=k+1;
+    ws['K'+ex]={t:'n',f:'IF(I'+ex+'>0,(I'+ex+'+N(J'+ex+'))/(1-N(H'+ex+')/100),"")'};
+    for(var c2=0;c2<NC;c2++){
+      var z=(c2===8||c2===9||c2===10)?'#,##0.00':(c2===7?'0.00"%"':((c2===5||c2===6||c2===11)?'#,##0':null));
+      var numerico=(c2>=5&&c2<=11);
+      est(k,c2,{font:{sz:11,bold:(c2===0||c2===2||c2===4||c2===10),color:{rgb:c2===14?'94A3B8':'0F172A'}},fill:{patternType:'solid',fgColor:{rgb:corCel[tipo[c2]]}},alignment:{horizontal:numerico?'right':'left',vertical:'center'},border:(tipo[c2]==='i'?{top:{style:'thin',color:{rgb:'F59E0B'}},bottom:{style:'thin',color:{rgb:'F59E0B'}},left:{style:'thin',color:{rgb:'F59E0B'}},right:{style:'thin',color:{rgb:'F59E0B'}}}:borda)},z)}}
+  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:10}},{s:{r:1,c:0},e:{r:1,c:13}},{s:{r:2,c:0},e:{r:2,c:13}}];
+  ws['!rows']=[{hpt:32},{hpt:36},{hpt:22},{hpt:8},{hpt:34}];
+  ws['!cols']=[{wch:28},{wch:9},{wch:28},{wch:9},{wch:18},{wch:8},{wch:12},{wch:9},{wch:19},{wch:15},{wch:21},{wch:12},{wch:21},{wch:32},{wch:40,hidden:true}];
+  ws['!autofilter']={ref:'A'+(HR+1)+':O'+aoa.length};
+  ws['!freeze']={xSplit:0,ySplit:HR+1};
+  ws['!views']=[{state:'frozen',ySplit:HR+1,xSplit:0}];
   var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Cotacao');
   XLSX.writeFile(wb,'cotacao-lotacao-'+NOMETRANSP.replace(/[^a-z0-9]+/gi,'-')+'.xlsx')}
 function dataIso(v){if(v===''||v==null)return '';
