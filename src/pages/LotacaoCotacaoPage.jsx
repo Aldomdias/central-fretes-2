@@ -10,7 +10,13 @@ import {
 
 const norm = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
 const brl = (v) => (v == null ? '-' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
-const chaveRota = (o, d, t) => `${norm(o)}|${norm(d)}|${norm(t)}`;
+// "ITAJAÍ/SC" e "ITAJAI" sao a mesma cidade: a chave ignora o sufixo /UF.
+const splitCidade = (v) => {
+  const t = String(v || '').trim();
+  const m = t.match(/^(.*?)\s*\/\s*([A-Za-z]{2})$/);
+  return m ? { cidade: m[1].trim(), uf: m[2].toUpperCase() } : { cidade: t, uf: '' };
+};
+const chaveRota = (o, d, t) => `${norm(splitCidade(o).cidade)}|${norm(splitCidade(d).cidade)}|${norm(t)}`;
 const dataBr = (v) => (v ? new Date(v).toLocaleDateString('pt-BR') : '-');
 const fmtCnpj = (c) => String(c || '').replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5') || '-';
 
@@ -24,34 +30,45 @@ const btnSec = { ...btn, background: '#fff', color: '#185FA5', border: '1px soli
 const inp = { padding: '9px 10px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 14 };
 
 // Rotas da cotacao = malha das tabelas + rotas do realizado (volumetria).
+// UF que falta (realizado vem so com o nome da cidade) e completada pela mesma
+// cidade em outra linha; sem UF nao ha aliquota de ICMS.
 function montarRotas(transportadoras, resumoRealizado) {
+  const ufDaCidade = new Map();
+  const aprende = (cidadeBruta, ufExplicita) => {
+    const { cidade, uf } = splitCidade(cidadeBruta);
+    const u = String(ufExplicita || uf || '').toUpperCase().slice(0, 2);
+    if (cidade && u && !ufDaCidade.has(norm(cidade))) ufDaCidade.set(norm(cidade), u);
+  };
+  (transportadoras || []).forEach((t) => (t?.linhas || []).forEach((l) => { aprende(l.origem, l.ufOrigem); aprende(l.destino, l.ufDestino); }));
+  (resumoRealizado || []).forEach((r) => { aprende(r.origem, r.uf_origem); aprende(r.destino, r.uf_destino); });
+  const ufDe = (bruta, explicita) => {
+    const { cidade, uf } = splitCidade(bruta);
+    return String(explicita || uf || ufDaCidade.get(norm(cidade)) || '').toUpperCase().slice(0, 2);
+  };
+
   const mapa = new Map();
+  const novaRota = (chave, o, uo, d, ud, tipo, km) => ({
+    chave, origem: splitCidade(o).cidade, uf_origem: ufDe(o, uo), destino: splitCidade(d).cidade, uf_destino: ufDe(d, ud),
+    tipo_veiculo: tipo, km: Number(km) || null, viagens: 0, frete_medio: null, target: null,
+  });
   (transportadoras || []).forEach((t) => (t?.linhas || []).forEach((l) => {
-    const origem = String(l.origem || '').trim();
-    const destino = String(l.destino || '').trim();
     const tipo = String(l.tipo || l.tipo_veiculo || '').trim();
-    if (!origem || !destino || !tipo) return;
-    const chave = chaveRota(origem, destino, tipo);
+    if (!String(l.origem || '').trim() || !String(l.destino || '').trim() || !tipo) return;
+    const chave = chaveRota(l.origem, l.destino, tipo);
     const target = Number(l.target || 0) || 0;
-    const atual = mapa.get(chave);
-    if (!atual) {
-      mapa.set(chave, { chave, origem, uf_origem: l.ufOrigem || '', destino, uf_destino: l.ufDestino || '', tipo_veiculo: tipo, km: Number(l.km) || null, viagens: 0, frete_medio: null, target: target || null });
-    } else {
-      if (!atual.uf_origem && l.ufOrigem) atual.uf_origem = l.ufOrigem;
-      if (!atual.uf_destino && l.ufDestino) atual.uf_destino = l.ufDestino;
-      if (target > 0 && (!atual.target || target < atual.target)) atual.target = target;
-    }
+    const atual = mapa.get(chave) || novaRota(chave, l.origem, l.ufOrigem, l.destino, l.ufDestino, tipo, l.km);
+    if (!atual.km && Number(l.km)) atual.km = Number(l.km);
+    if (target > 0 && (!atual.target || target < atual.target)) atual.target = target;
+    mapa.set(chave, atual);
   }));
   (resumoRealizado || []).forEach((r) => {
-    const origem = String(r.origem || '').trim();
-    const destino = String(r.destino || '').trim();
     const tipo = String(r.tipo_veiculo || r.tipo || '').trim();
-    if (!origem || !destino || !tipo) return;
-    const chave = chaveRota(origem, destino, tipo);
-    const viagens = Number(r.total_cargas || r.qtd_viagens || 0) || 0;
-    const atual = mapa.get(chave) || { chave, origem, uf_origem: r.uf_origem || '', destino, uf_destino: r.uf_destino || '', tipo_veiculo: tipo, km: Number(r.km) || null, viagens: 0, frete_medio: null, target: null };
-    atual.viagens = Math.max(atual.viagens, viagens);
+    if (!String(r.origem || '').trim() || !String(r.destino || '').trim() || !tipo) return;
+    const chave = chaveRota(r.origem, r.destino, tipo);
+    const atual = mapa.get(chave) || novaRota(chave, r.origem, r.uf_origem, r.destino, r.uf_destino, tipo, r.km);
+    atual.viagens += Number(r.total_cargas || r.qtd_viagens || 0) || 0;
     atual.frete_medio = Number(r.frete_medio) || atual.frete_medio;
+    if (!atual.km && Number(r.km)) atual.km = Number(r.km);
     mapa.set(chave, atual);
   });
   return Array.from(mapa.values());

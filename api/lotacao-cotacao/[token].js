@@ -21,6 +21,11 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 const VALIDADE_ACESSO_MS = 8 * 60 * 60 * 1000;
 const UF_SUL_SUDESTE = new Set(['SP', 'RJ', 'MG', 'PR', 'SC', 'RS']);
+// Aliquotas internas de referencia (conferir na tela ICMS UF; a tabela do sistema tem prioridade).
+const ALIQUOTA_INTERNA_UF = {
+  AC: 19, AL: 20, AM: 20, AP: 18, BA: 20.5, CE: 20, DF: 20, ES: 17, GO: 19, MA: 23, MG: 18, MS: 17, MT: 17,
+  PA: 19, PB: 20, PE: 20.5, PI: 22.5, PR: 19.5, RJ: 22, RN: 20, RO: 19.5, RR: 20, RS: 17, SC: 17, SE: 19, SP: 18, TO: 20,
+};
 
 function getClient() {
   const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -85,10 +90,14 @@ function aliquotaDaRota(matriz, ufOrigem, ufDestino) {
   const achada = generica || candidatas[0];
   if (achada) return { aliquota: Number(achada.aliquota), fonte: 'matriz' };
   if (!uo || !ud) return { aliquota: null, fonte: 'sem_uf' };
-  // Sem matriz cadastrada: regra geral do ICMS de transporte.
-  if (uo === ud) return { aliquota: 18, fonte: 'estimada_interna' };
+  // Par fora da tabela do sistema: aplica a legislacao (Resolucao do Senado 22/89
+  // para o interestadual; aliquota interna da UF de origem para o intramunicipal/UF).
+  if (uo === ud) {
+    const interna = ALIQUOTA_INTERNA_UF[uo];
+    return interna ? { aliquota: interna, fonte: 'estimada_interna' } : { aliquota: null, fonte: 'sem_uf' };
+  }
   const para7 = UF_SUL_SUDESTE.has(uo) && !UF_SUL_SUDESTE.has(ud);
-  return { aliquota: para7 ? 7 : 12, fonte: 'estimada_interestadual' };
+  return { aliquota: para7 ? 7 : 12, fonte: 'legislacao_interestadual' };
 }
 
 function calcular(liquido, pedagio, aliquota) {
@@ -112,33 +121,40 @@ function paginaPortal({ convite, cotacao }) {
   const encerrada = cotacao.status !== 'ABERTA';
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>Cotação de lotação — ${esc(convite.transportadora)}</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
-*{box-sizing:border-box}body{margin:0;background:#eef3f9;color:#0f172a;font-family:Arial,Helvetica,sans-serif}
-.page{max-width:1180px;margin:20px auto;background:#fff;border:1px solid #dbe3ef;border-radius:14px;overflow:hidden}
-header{padding:24px 30px;background:#06183d;color:#fff}header h1{margin:0 0 6px;font-size:21px}header p{margin:3px 0;color:#cbd5e1;font-size:14px}
-.corpo{padding:22px 30px}label{display:block;font-size:13px;font-weight:bold;margin:12px 0 4px;color:#334155}
-input,textarea{width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px}
+*{box-sizing:border-box}body{margin:0;background:#eef3f9;color:#0f172a;font-family:Arial,Helvetica,sans-serif;font-size:15px}
+.page{width:98%;max-width:1800px;margin:16px auto;background:#fff;border:1px solid #dbe3ef;border-radius:14px;overflow:hidden}
+header{padding:22px 30px;background:#06183d;color:#fff}header h1{margin:0 0 6px;font-size:24px}header p{margin:3px 0;color:#cbd5e1;font-size:15px}
+.corpo{padding:20px 26px}label{display:block;font-size:14px;font-weight:bold;margin:12px 0 4px;color:#334155}
+input,textarea{width:100%;padding:10px 11px;border:1px solid #94a3b8;border-radius:8px;font-size:15px;background:#fff}
 button{background:#185FA5;color:#fff;border:0;border-radius:8px;padding:11px 20px;font-size:15px;font-weight:bold;cursor:pointer}
-button.sec{background:#fff;color:#185FA5;border:1px solid #185FA5}button:disabled{opacity:.5;cursor:default}
-.id{max-width:460px}.msg{padding:11px 14px;border-radius:8px;margin:12px 0;font-size:14px;line-height:1.45}
+button.sec{background:#fff;color:#185FA5;border:2px solid #185FA5}button:disabled{opacity:.5;cursor:default}
+.id{max-width:480px}.msg{padding:12px 15px;border-radius:8px;margin:12px 0;font-size:15px;line-height:1.45}
 .erro{background:#fee2e2;color:#991b1b}.ok{background:#dcfce7;color:#166534}.info{background:#e0f2fe;color:#075985}
-.regra{background:#f8fafc;border:1px solid #dbe3ef;border-radius:10px;padding:12px 16px;font-size:13px;line-height:1.55;margin-bottom:14px}
-.tw{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px}
-th{background:#1E3A5F;color:#fff;padding:8px 6px;text-align:center;position:sticky;top:0;white-space:nowrap}
-td{padding:5px 6px;border-bottom:1px solid #e2e8f0;vertical-align:middle}td.n{text-align:right;white-space:nowrap}
-td input{padding:6px 7px;font-size:13px;min-width:92px;text-align:right}td input.t{text-align:left}
-.fixo{background:#f1f5f9;font-weight:bold}.bruto{font-weight:bold;color:#06183d;background:#f0f7ff}
-.barra{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0;position:sticky;bottom:0;background:#fff;padding:10px 0;border-top:1px solid #e2e8f0}
+.regra{background:#f8fafc;border:1px solid #dbe3ef;border-radius:10px;padding:14px 18px;font-size:14px;line-height:1.6;margin-bottom:14px}
+.ferr{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 12px;padding:12px;background:#f0f7ff;border:1px solid #bcd7f2;border-radius:10px}
+.ferr input[type=text]{width:260px;margin-left:auto}
+.tw{overflow:auto;max-height:68vh;border:1px solid #cbd5e1;border-radius:8px}
+table{border-collapse:separate;border-spacing:0;width:100%;font-size:14px;min-width:1500px}
+th{background:#1E3A5F;color:#fff;padding:10px 8px;text-align:center;position:sticky;top:0;z-index:2;white-space:nowrap;font-size:13px}
+th.pre{background:#b45309}th.calc{background:#475569}
+td{padding:6px 8px;border-bottom:1px solid #e2e8f0;vertical-align:middle;background:#fff}td.n{text-align:right;white-space:nowrap}
+tbody tr:nth-child(even) td{background:#f8fafc}
+td input{padding:8px 9px;font-size:15px;min-width:120px;text-align:right;border:2px solid #fcd34d;background:#fffbeb}td input.t{text-align:left}
+.fixo{font-weight:bold}.bruto{font-weight:bold;color:#06183d;background:#e0f0ff!important;font-size:15px}
+.barra{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:14px 0 0;position:sticky;bottom:0;background:#fff;padding:12px 0;border-top:2px solid #e2e8f0}
 .pill{font-size:11px;padding:2px 7px;border-radius:99px;background:#fef3c7;color:#92400e;margin-left:4px}
-tr.feita td{background:#f0fdf4}
-@media(max-width:700px){.corpo,header{padding:16px}}
+tr.feita td{background:#ecfdf3!important}tr.feita td.bruto{background:#c9f0d9!important}
+@media(max-width:700px){.corpo,header{padding:14px}}
 </style></head><body><div class="page">
 <header><h1>Cotação de lotação</h1><p><b>${esc(convite.transportadora)}</b> · ${esc(cotacao.nome)}</p>
-${cotacao.prazo_resposta ? `<p>Responder até ${esc(String(cotacao.prazo_resposta).slice(0, 10).split('-').reverse().join('/'))}</p>` : ''}</header>
+${cotacao.prazo_resposta ? `<p>Responder até ${esc(String(cotacao.prazo_resposta).slice(0, 10).split('-').reverse().join('/'))}</p>` : ''}
+${convite.expira_em ? `<p>Este link vale até ${esc(new Date(convite.expira_em).toLocaleDateString('pt-BR'))}</p>` : ''}</header>
 <div class="corpo" id="app">
 ${encerrada ? '<div class="msg erro">Esta cotação foi encerrada e não aceita mais respostas.</div>' : `
 <div id="telaId" class="id">
-  <div class="msg info">Para liberar suas rotas, confirme quem está respondendo. O CNPJ é obrigatório e fica registrado junto com a cotação de <b>${esc(convite.transportadora)}</b>.</div>
+  <div class="msg info">Para liberar suas rotas, informe os dados abaixo. O <b>CNPJ é obrigatório</b> e fica registrado junto com a cotação de <b>${esc(convite.transportadora)}</b>.</div>
   <label for="cnpj">CNPJ da transportadora</label><input id="cnpj" inputmode="numeric" placeholder="00.000.000/0000-00" autocomplete="off">
   <label for="nome">Seu nome</label><input id="nome" autocomplete="name">
   <label for="email">Seu e-mail</label><input id="email" type="email" autocomplete="email">
@@ -148,9 +164,11 @@ ${encerrada ? '<div class="msg erro">Esta cotação foi encerrada e não aceita 
 <div id="telaTab" style="display:none"></div>`}
 </div></div>
 <script>
-var TOKEN=${JSON.stringify(convite.token)},ACESSO='',ROTAS=[],PROP={},fmt=function(n){return Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})};
+var TOKEN=${JSON.stringify(convite.token)},NOMETRANSP=${JSON.stringify(convite.transportadora)},ACESSO='',ROTAS=[],PROP={},fmt=function(n){return Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})};
 function num(v){if(v===''||v==null)return null;var t=String(v).replace(/R\\$/gi,'').replace(/\\s/g,'');if(t.indexOf(',')>=0)t=t.replace(/\\./g,'').replace(',','.');var n=Number(t);return isFinite(n)?n:null}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function sa(s){return String(s==null?'':s).normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toUpperCase().trim()}
+function kc(s){return sa(s).replace(/\\s*\\/\\s*[A-Z][A-Z]$/,'').trim()}
 function api(corpo){return fetch(location.pathname,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(corpo)}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.erro||'Erro');return j})})}
 function identificar(){var b=document.getElementById('btnId');document.getElementById('erroId').innerHTML='';
   var cnpj=document.getElementById('cnpj').value,nome=document.getElementById('nome').value.trim(),email=document.getElementById('email').value.trim();
@@ -158,24 +176,69 @@ function identificar(){var b=document.getElementById('btnId');document.getElemen
   b.disabled=true;api({acao:'identificar',cnpj:cnpj,nome:nome,email:email}).then(function(j){ACESSO=j.acesso;ROTAS=j.rotas;PROP={};j.propostas.forEach(function(p){PROP[p.chave]=p});
     document.getElementById('telaId').style.display='none';montar(j.status)}).catch(function(e){document.getElementById('erroId').innerHTML='<div class="msg erro">'+esc(e.message)+'</div>';b.disabled=false})}
 function montar(status){var t=document.getElementById('telaTab');t.style.display='block';
-  var h='<div class="regra"><b>Como preencher</b><br>• Informe o <b>valor líquido</b> do frete (sem ICMS) e o <b>pedágio</b> da viagem, por rota e tipo de veículo. O tipo de veículo é fixo.<br>• O <b>ICMS</b> é calculado automaticamente pela origem/destino e o <b>valor bruto total</b> = (líquido + pedágio) ÷ (1 − alíquota ICMS).<br>• Deixe em branco as rotas que você não atende. O volume é histórico, apenas referência de potencial — não é garantia de contratação.</div>'
+  var h='<div class="regra"><b>Como preencher</b><br>• Informe o <b>valor líquido</b> do frete (sem ICMS) e o <b>pedágio</b> da viagem, por rota e tipo de veículo. O tipo de veículo é fixo.<br>• O <b>ICMS</b> é calculado automaticamente pela origem/destino e o <b>valor bruto total</b> = (líquido + pedágio) ÷ (1 − alíquota ICMS).<br>• Prefere trabalhar no Excel? <b>Baixe o modelo</b>, preencha e <b>importe</b> de volta. Confira os valores e clique em <b>Enviar cotação</b>.<br>• Deixe em branco as rotas que você não atende. O volume é histórico, apenas referência de potencial — não é garantia de contratação.</div>'
   +(status==='ENVIADO'?'<div class="msg ok">Você já enviou esta cotação. Se alterar valores, clique em enviar novamente para atualizar.</div>':'')
-  +'<div id="msgTab"></div><div class="tw"><table><thead><tr><th>Origem</th><th>Destino</th><th>Veículo</th><th>KM</th><th>Viagens (hist.)</th><th>Valor líquido (R$)</th><th>Pedágio (R$)</th><th>ICMS %</th><th>ICMS (R$)</th><th>Valor bruto total (R$)</th><th>Prazo (dias)</th><th>Validade</th><th>Obs.</th></tr></thead><tbody>';
+  +'<div class="ferr"><button class="sec" onclick="baixarModelo()">⬇ Baixar modelo (Excel)</button><button class="sec" onclick="document.getElementById(\\'arq\\').click()">⬆ Importar planilha preenchida</button><input type="file" id="arq" accept=".xlsx,.xls,.csv" style="display:none" onchange="importar(this)"><input type="text" id="busca" placeholder="🔍 Buscar origem, destino ou veículo" oninput="filtrar()"></div>'
+  +'<div id="msgTab"></div><div class="tw"><table><thead><tr><th>Origem</th><th>Destino</th><th>Veículo</th><th>KM</th><th>Viagens (hist.)</th><th class="pre">Valor líquido (R$)</th><th class="pre">Pedágio (R$)</th><th class="calc">ICMS %</th><th class="calc">ICMS (R$)</th><th class="calc">Valor bruto total (R$)</th><th class="pre">Prazo (dias)</th><th class="pre">Validade</th><th class="pre">Obs.</th></tr></thead><tbody>';
   ROTAS.forEach(function(r,i){var p=PROP[r.chave]||{};
     h+='<tr id="l'+i+'"><td class="fixo">'+esc(r.origem)+(r.uf_origem?'/'+esc(r.uf_origem):'')+'</td><td class="fixo">'+esc(r.destino)+(r.uf_destino?'/'+esc(r.uf_destino):'')+'</td><td class="fixo">'+esc(r.tipo_veiculo)+'</td><td class="n">'+(r.km?fmt(r.km).replace(/,00$/,''):'-')+'</td><td class="n">'+(r.viagens?Math.round(r.viagens):'-')+'</td>'
     +'<td><input id="liq'+i+'" value="'+(p.valor_liquido!=null?fmt(p.valor_liquido):'')+'" oninput="calc('+i+')" inputmode="decimal"></td>'
     +'<td><input id="ped'+i+'" value="'+(p.pedagio!=null?fmt(p.pedagio):'')+'" oninput="calc('+i+')" inputmode="decimal"></td>'
     +'<td class="n" id="al'+i+'">'+(r.aliquota!=null?fmt(r.aliquota)+'%':'<span class="pill">sem alíquota</span>')+(r.aliquota_fonte&&r.aliquota_fonte.indexOf('estimada')===0?'<span class="pill">estimada</span>':'')+'</td>'
     +'<td class="n" id="ic'+i+'">-</td><td class="n bruto" id="br'+i+'">-</td>'
-    +'<td><input id="pz'+i+'" value="'+(p.prazo_dias!=null?p.prazo_dias:'')+'" inputmode="numeric" style="min-width:60px"></td>'
-    +'<td><input id="vl'+i+'" type="date" value="'+(p.validade?String(p.validade).slice(0,10):'')+'" style="min-width:130px"></td>'
-    +'<td><input class="t" id="ob'+i+'" value="'+esc(p.observacao||'')+'" style="min-width:140px"></td></tr>'});
+    +'<td><input id="pz'+i+'" value="'+(p.prazo_dias!=null?p.prazo_dias:'')+'" inputmode="numeric" style="min-width:80px"></td>'
+    +'<td><input id="vl'+i+'" type="date" value="'+(p.validade?String(p.validade).slice(0,10):'')+'" style="min-width:150px"></td>'
+    +'<td><input class="t" id="ob'+i+'" value="'+esc(p.observacao||'')+'" style="min-width:180px"></td></tr>'});
   h+='</tbody></table></div><div class="barra"><button class="sec" onclick="enviar(false)">Salvar rascunho</button><button onclick="enviar(true)">Enviar cotação</button><span id="cont"></span></div>';
   t.innerHTML=h;ROTAS.forEach(function(r,i){calc(i)})}
+function filtrar(){var q=sa(document.getElementById('busca').value);ROTAS.forEach(function(r,i){var txt=sa(r.origem+' '+r.destino+' '+r.tipo_veiculo+' '+(r.uf_origem||'')+' '+(r.uf_destino||''));document.getElementById('l'+i).style.display=(!q||txt.indexOf(q)>=0)?'':'none'})}
 function calc(i){var r=ROTAS[i],liq=num(document.getElementById('liq'+i).value),ped=num(document.getElementById('ped'+i).value)||0,a=r.aliquota;
   var ic=document.getElementById('ic'+i),br=document.getElementById('br'+i),tr=document.getElementById('l'+i);
   if(liq>0){var base=liq+ped,bruto=(a>0&&a<100)?base/(1-a/100):base;br.textContent=fmt(bruto);ic.textContent=fmt(bruto-base);tr.className='feita'}else{br.textContent='-';ic.textContent='-';tr.className=''}
   var n=0;ROTAS.forEach(function(x,k){if(num(document.getElementById('liq'+k).value)>0)n++});document.getElementById('cont').textContent=n+' de '+ROTAS.length+' rotas preenchidas'}
+function baixarModelo(){
+  if(!window.XLSX){alert('Não foi possível carregar o recurso de Excel. Verifique sua conexão e tente de novo.');return}
+  var cab=['Origem','UF origem','Destino','UF destino','Veículo','KM','Viagens (hist.)','ICMS %','Valor líquido (R$)','Pedágio (R$)','Valor bruto total (calculado)','Prazo (dias)','Validade (dd/mm/aaaa)','Observação','CHAVE (não alterar)'];
+  var aoa=[cab];
+  ROTAS.forEach(function(r,i){var v=document.getElementById('vl'+i).value;var vd=v?v.split('-').reverse().join('/'):'';
+    aoa.push([r.origem,r.uf_origem||'',r.destino,r.uf_destino||'',r.tipo_veiculo,r.km||'',r.viagens?Math.round(r.viagens):'',r.aliquota!=null?r.aliquota:'',num(document.getElementById('liq'+i).value)||'',num(document.getElementById('ped'+i).value)||'','',document.getElementById('pz'+i).value||'',vd,document.getElementById('ob'+i).value||'',r.chave])});
+  var ws=XLSX.utils.aoa_to_sheet(aoa);
+  for(var k=2;k<=aoa.length;k++){ws['K'+k]={t:'n',f:'IF(I'+k+'>0,(I'+k+'+N(J'+k+'))/(1-N(H'+k+')/100),"")'}}
+  ws['!cols']=[{wch:26},{wch:8},{wch:26},{wch:8},{wch:18},{wch:8},{wch:12},{wch:9},{wch:18},{wch:14},{wch:24},{wch:12},{wch:20},{wch:30},{wch:40}];
+  ws['!autofilter']={ref:'A1:O'+aoa.length};
+  var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Cotacao');
+  XLSX.writeFile(wb,'cotacao-lotacao-'+NOMETRANSP.replace(/[^a-z0-9]+/gi,'-')+'.xlsx')}
+function dataIso(v){if(v===''||v==null)return '';
+  if(typeof v==='number'&&v>20000){return new Date(Math.round((v-25569)*86400000)).toISOString().slice(0,10)}
+  var s=String(v).trim(),m=s.match(/^(\\d{1,2})[\\/.-](\\d{1,2})[\\/.-](\\d{4})$/);
+  if(m)return m[3]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[1]).slice(-2);
+  return /^\\d{4}-\\d{2}-\\d{2}/.test(s)?s.slice(0,10):''}
+function importar(inp){var f=inp.files&&inp.files[0],m=document.getElementById('msgTab');if(!f)return;
+  if(!window.XLSX){m.innerHTML='<div class="msg erro">Não foi possível carregar o recurso de Excel. Verifique sua conexão.</div>';return}
+  var rd=new FileReader();rd.onload=function(ev){try{
+    var wb=XLSX.read(new Uint8Array(ev.target.result),{type:'array'}),ws=wb.Sheets[wb.SheetNames[0]],rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''}),hi=-1;
+    for(var r=0;r<Math.min(rows.length,15);r++){var j=rows[r].map(sa).join('|');if(j.indexOf('CHAVE')>=0||(j.indexOf('ORIGEM')>=0&&j.indexOf('DESTINO')>=0)){hi=r;break}}
+    if(hi<0){m.innerHTML='<div class="msg erro">Não encontrei o cabeçalho. Use o modelo baixado nesta tela.</div>';return}
+    var cab=rows[hi].map(sa),col=function(re){for(var c=0;c<cab.length;c++)if(re.test(cab[c]))return c;return -1};
+    var cCh=col(/^CHAVE/),cO=col(/^ORIGEM/),cD=col(/^DESTINO/),cV=col(/^VEICULO|^TIPO/),cL=col(/LIQUIDO/),cP=col(/PEDAGIO/),cZ=col(/^PRAZO/),cVal=col(/^VALIDADE/),cOb=col(/^OBS/);
+    if(cL<0){m.innerHTML='<div class="msg erro">Coluna "Valor líquido" não encontrada. Use o modelo baixado nesta tela.</div>';return}
+    var idx={};ROTAS.forEach(function(x,i){idx[x.chave]=i});
+    var ok=0,perdidas=0;
+    for(var r2=hi+1;r2<rows.length;r2++){var row=rows[r2],i=-1;
+      if(cCh>=0&&row[cCh]!==''&&idx[row[cCh]]!==undefined)i=idx[row[cCh]];
+      else if(cO>=0&&cD>=0&&cV>=0){var k=kc(row[cO])+'|'+kc(row[cD])+'|'+sa(row[cV]);if(idx[k]!==undefined)i=idx[k]}
+      var liq=num(row[cL]);
+      if(i<0){if(liq>0)perdidas++;continue}
+      if(!(liq>0))continue;
+      document.getElementById('liq'+i).value=fmt(liq);
+      var ped=cP>=0?num(row[cP]):null;document.getElementById('ped'+i).value=ped>0?fmt(ped):'';
+      if(cZ>=0&&row[cZ]!=='')document.getElementById('pz'+i).value=parseInt(row[cZ],10)||'';
+      if(cVal>=0)document.getElementById('vl'+i).value=dataIso(row[cVal]);
+      if(cOb>=0&&row[cOb]!=='')document.getElementById('ob'+i).value=String(row[cOb]);
+      calc(i);ok++}
+    m.innerHTML='<div class="msg '+(ok?'ok':'erro')+'">'+ok+' rota(s) importada(s) da planilha.'+(perdidas?' '+perdidas+' linha(s) não bateram com nenhuma rota e foram ignoradas.':'')+(ok?' Confira os valores e clique em <b>Enviar cotação</b>.':'')+'</div>';
+  }catch(e){m.innerHTML='<div class="msg erro">Não consegui ler a planilha: '+esc(e.message)+'</div>'}inp.value=''};
+  rd.readAsArrayBuffer(f)}
 function enviar(final){var itens=[],m=document.getElementById('msgTab');m.innerHTML='';
   for(var i=0;i<ROTAS.length;i++){var liq=num(document.getElementById('liq'+i).value),ped=num(document.getElementById('ped'+i).value);
     var tem=liq!=null||ped!=null||document.getElementById('pz'+i).value||document.getElementById('ob'+i).value;
