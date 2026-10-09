@@ -92,8 +92,8 @@ function Analise({ dados, cotacao }) {
     linhas.forEach(({ r, ofertas, melhor }) => ofertas.forEach(({ c, p }) => rows.push({
       Origem: r.origem, 'UF origem': r.uf_origem, Destino: r.destino, 'UF destino': r.uf_destino, 'Tipo de veiculo': r.tipo_veiculo,
       KM: r.km, 'Viagens historicas': r.viagens, Transportadora: c.transportadora, 'CNPJ informado': c.respondente_cnpj,
-      'Valor liquido': p.valor_liquido, Pedagio: p.pedagio, 'ICMS %': p.aliquota_icms, 'ICMS R$': p.icms_valor, 'Valor bruto total': p.valor_bruto,
-      'Prazo (dias)': p.prazo_dias, Validade: p.validade, Observacao: p.observacao,
+      'Valor liquido': p.valor_liquido, 'ICMS %': p.aliquota_icms, 'ICMS R$': p.icms_valor, 'Valor bruto total': p.valor_bruto,
+      'Prazo (dias)': p.prazo_dias, Observacao: p.observacao,
       'Menor bruto da rota?': melhor?.c.id === c.id ? 'SIM' : '',
     })));
     const wb = XLSX.utils.book_new();
@@ -105,7 +105,7 @@ function Analise({ dados, cotacao }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '4px 0 10px', gap: 10, flexWrap: 'wrap' }}>
-        <small>Todas as propostas na mesma base: <b>bruto = (líquido + pedágio) ÷ (1 − ICMS)</b>.</small>
+        <small>Todas as propostas na mesma base: <b>bruto = líquido ÷ (1 − ICMS)</b>.</small>
         <button style={btn} onClick={exportar}>Exportar propostas (Excel)</button>
       </div>
       <div style={{ overflowX: 'auto', maxHeight: 480 }}>
@@ -216,7 +216,7 @@ export default function LotacaoCotacaoPage() {
   const email = (cv) => {
     const assunto = encodeURIComponent(`Cotação de frete lotação — ${cotacaoAtual?.nome || ''}`);
     const ate = cv.expira_em ? `\nO link vale até ${dataBr(cv.expira_em)}.` : '';
-    const corpo = encodeURIComponent(`Olá, ${cv.transportadora}!\n\nSegue o link para preenchimento da nossa tabela de lotação:\n${linkConviteCotacao(cv.token)}\n\nInforme o valor LÍQUIDO e o pedágio de cada rota; o ICMS e o valor bruto são calculados automaticamente. No primeiro acesso você informa o CNPJ da transportadora (obrigatório).${ate}\n\nObrigado!`);
+    const corpo = encodeURIComponent(`Olá, ${cv.transportadora}!\n\nSegue o link para preenchimento da nossa tabela de lotação:\n${linkConviteCotacao(cv.token)}\n\nInforme o valor LÍQUIDO (sem ICMS) de cada rota; o ICMS e o valor bruto são calculados automaticamente. No primeiro acesso você informa o CNPJ da transportadora (obrigatório).${ate}\n\nObrigado!`);
     window.location.href = `mailto:?subject=${assunto}&body=${corpo}`;
   };
 
@@ -227,7 +227,7 @@ export default function LotacaoCotacaoPage() {
       <div style={card}>
         <h1 style={{ margin: '0 0 6px', fontSize: 22, color: '#06183d' }}>Cotação de lotação — portal do transportador</h1>
         <small>
-          Você gera um link por transportador. Ele preenche <b>valor líquido + pedágio</b> por rota e tipo de veículo; o ICMS sai da origem/destino e o
+          Você gera um link por transportador. Ele preenche <b>valor líquido</b> por rota e tipo de veículo; o ICMS sai da origem/destino e o
           <b> valor bruto</b> é calculado — assim todas as tabelas chegam na mesma base de comparação.
         </small>
       </div>

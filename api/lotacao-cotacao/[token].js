@@ -14,7 +14,7 @@
  * O transportador informa VALOR LIQUIDO + PEDAGIO. O ICMS vem da matriz
  * origem/destino e o bruto e calculado aqui (fonte de verdade), para todas as
  * propostas chegarem na mesma base de comparacao:
- *   bruto = (liquido + pedagio) / (1 - aliquota)      icms = bruto - liquido - pedagio
+ *   bruto = liquido / (1 - aliquota)      icms = bruto - liquido   (pedagio e pago pela Cantu, fora da cotacao)
  */
 import { createClient } from '@supabase/supabase-js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -176,34 +176,32 @@ function identificar(){var b=document.getElementById('btnId');document.getElemen
   b.disabled=true;api({acao:'identificar',cnpj:cnpj,nome:nome,email:email}).then(function(j){ACESSO=j.acesso;ROTAS=j.rotas;PROP={};j.propostas.forEach(function(p){PROP[p.chave]=p});
     document.getElementById('telaId').style.display='none';montar(j.status)}).catch(function(e){document.getElementById('erroId').innerHTML='<div class="msg erro">'+esc(e.message)+'</div>';b.disabled=false})}
 function montar(status){var t=document.getElementById('telaTab');t.style.display='block';
-  var h='<div class="regra"><b>Como preencher</b><br>• Informe o <b>valor líquido</b> do frete (sem ICMS) e o <b>pedágio</b> da viagem, por rota e tipo de veículo. O tipo de veículo é fixo.<br>• O <b>ICMS</b> é calculado automaticamente pela origem/destino e o <b>valor bruto total</b> = (líquido + pedágio) ÷ (1 − alíquota ICMS).<br>• Prefere trabalhar no Excel? <b>Baixe o modelo</b>, preencha e <b>importe</b> de volta. Confira os valores e clique em <b>Enviar cotação</b>.<br>• Deixe em branco as rotas que você não atende. O volume é histórico, apenas referência de potencial — não é garantia de contratação.</div>'
+  var h='<div class="regra"><b>Como preencher</b><br>• Informe o <b>valor líquido</b> do frete (sem ICMS) por rota e tipo de veículo. O tipo de veículo é fixo. O pedágio é pago pela Cantu e <b>não entra</b> na cotação.<br>• O <b>ICMS</b> é calculado automaticamente pela origem/destino e o <b>valor bruto total</b> = líquido ÷ (1 − alíquota ICMS).<br>• Prefere trabalhar no Excel? <b>Baixe o modelo</b>, preencha e <b>importe</b> de volta. Confira os valores e clique em <b>Enviar cotação</b>.<br>• Deixe em branco as rotas que você não atende. O volume é histórico, apenas referência de potencial — não é garantia de contratação.</div>'
   +(status==='ENVIADO'?'<div class="msg ok">Você já enviou esta cotação. Se alterar valores, clique em enviar novamente para atualizar.</div>':'')
   +'<div class="ferr"><button class="sec" onclick="baixarModelo()">⬇ Baixar modelo (Excel)</button><button class="sec" onclick="document.getElementById(\\'arq\\').click()">⬆ Importar planilha preenchida</button><input type="file" id="arq" accept=".xlsx,.xls,.csv" style="display:none" onchange="importar(this)"><input type="text" id="busca" placeholder="🔍 Buscar origem, destino ou veículo" oninput="filtrar()"></div>'
-  +'<div id="msgTab"></div><div class="tw"><table><thead><tr><th>Origem</th><th>Destino</th><th>Veículo</th><th>KM</th><th>Viagens (hist.)</th><th class="pre">Valor líquido (R$)</th><th class="pre">Pedágio (R$)</th><th class="calc">ICMS %</th><th class="calc">ICMS (R$)</th><th class="calc">Valor bruto total (R$)</th><th class="pre">Prazo (dias)</th><th class="pre">Validade</th><th class="pre">Obs.</th></tr></thead><tbody>';
+  +'<div id="msgTab"></div><div class="tw"><table><thead><tr><th>Origem</th><th>Destino</th><th>Veículo</th><th>KM</th><th>Viagens (hist.)</th><th class="pre">Valor líquido (R$)</th><th class="calc">ICMS %</th><th class="calc">ICMS (R$)</th><th class="calc">Valor bruto total (R$)</th><th class="pre">Prazo (dias)</th><th class="pre">Obs.</th></tr></thead><tbody>';
   ROTAS.forEach(function(r,i){var p=PROP[r.chave]||{};
     h+='<tr id="l'+i+'"><td class="fixo">'+esc(r.origem)+(r.uf_origem?'/'+esc(r.uf_origem):'')+'</td><td class="fixo">'+esc(r.destino)+(r.uf_destino?'/'+esc(r.uf_destino):'')+'</td><td class="fixo">'+esc(r.tipo_veiculo)+'</td><td class="n">'+(r.km?fmt(r.km).replace(/,00$/,''):'-')+'</td><td class="n">'+(r.viagens?Math.round(r.viagens):'-')+'</td>'
     +'<td><input id="liq'+i+'" value="'+(p.valor_liquido!=null?fmt(p.valor_liquido):'')+'" oninput="calc('+i+')" inputmode="decimal"></td>'
-    +'<td><input id="ped'+i+'" value="'+(p.pedagio!=null?fmt(p.pedagio):'')+'" oninput="calc('+i+')" inputmode="decimal"></td>'
     +'<td class="n" id="al'+i+'">'+(r.aliquota!=null?fmt(r.aliquota)+'%':'<span class="pill">sem alíquota</span>')+(r.aliquota_fonte&&r.aliquota_fonte.indexOf('estimada')===0?'<span class="pill">estimada</span>':'')+'</td>'
     +'<td class="n" id="ic'+i+'">-</td><td class="n bruto" id="br'+i+'">-</td>'
     +'<td><input id="pz'+i+'" value="'+(p.prazo_dias!=null?p.prazo_dias:'')+'" inputmode="numeric" style="min-width:80px"></td>'
-    +'<td><input id="vl'+i+'" type="date" value="'+(p.validade?String(p.validade).slice(0,10):'')+'" style="min-width:150px"></td>'
     +'<td><input class="t" id="ob'+i+'" value="'+esc(p.observacao||'')+'" style="min-width:180px"></td></tr>'});
   h+='</tbody></table></div><div class="barra"><button class="sec" onclick="enviar(false)">Salvar rascunho</button><button onclick="enviar(true)">Enviar cotação</button><span id="cont"></span></div>';
   t.innerHTML=h;ROTAS.forEach(function(r,i){calc(i)})}
 function filtrar(){var q=sa(document.getElementById('busca').value);ROTAS.forEach(function(r,i){var txt=sa(r.origem+' '+r.destino+' '+r.tipo_veiculo+' '+(r.uf_origem||'')+' '+(r.uf_destino||''));document.getElementById('l'+i).style.display=(!q||txt.indexOf(q)>=0)?'':'none'})}
-function calc(i){var r=ROTAS[i],liq=num(document.getElementById('liq'+i).value),ped=num(document.getElementById('ped'+i).value)||0,a=r.aliquota;
+function calc(i){var r=ROTAS[i],liq=num(document.getElementById('liq'+i).value),a=r.aliquota;
   var ic=document.getElementById('ic'+i),br=document.getElementById('br'+i),tr=document.getElementById('l'+i);
-  if(liq>0){var base=liq+ped,bruto=(a>0&&a<100)?base/(1-a/100):base;br.textContent=fmt(bruto);ic.textContent=fmt(bruto-base);tr.className='feita'}else{br.textContent='-';ic.textContent='-';tr.className=''}
+  if(liq>0){var base=liq,bruto=(a>0&&a<100)?base/(1-a/100):base;br.textContent=fmt(bruto);ic.textContent=fmt(bruto-base);tr.className='feita'}else{br.textContent='-';ic.textContent='-';tr.className=''}
   var n=0;ROTAS.forEach(function(x,k){if(num(document.getElementById('liq'+k).value)>0)n++});document.getElementById('cont').textContent=n+' de '+ROTAS.length+' rotas preenchidas'}
 function baixarModelo(){
   if(!window.XLSX){alert('Não foi possível carregar o recurso de Excel. Verifique sua conexão e tente de novo.');return}
-  var HR=4,NC=15,L='CBD5E1';
-  var cab=['Origem','UF origem','Destino','UF destino','Veículo','KM','Viagens (hist.)','ICMS %','Valor líquido (R$)','Pedágio (R$)','Valor bruto total (R$)','Prazo (dias)','Validade (dd/mm/aaaa)','Observação','CHAVE (não alterar)'];
-  var tipo=['f','f','f','f','f','f','f','c','i','i','c','i','i','i','f'];
-  var aoa=[['COTAÇÃO DE LOTAÇÃO — '+NOMETRANSP],['Preencha somente as colunas AMARELAS: Valor líquido (sem ICMS) e Pedágio. O ICMS e o Valor bruto total são calculados. O tipo de veículo é fixo. Deixe em branco as rotas que você não atende.'],['Legenda:   AMARELO = você preenche   ·   CINZA = informação da rota (não alterar)   ·   AZUL = calculado automaticamente'],[],cab];
-  ROTAS.forEach(function(r,i){var v=document.getElementById('vl'+i).value;var vd=v?v.split('-').reverse().join('/'):'';
-    aoa.push([r.origem,r.uf_origem||'',r.destino,r.uf_destino||'',r.tipo_veiculo,r.km||'',r.viagens?Math.round(r.viagens):'',r.aliquota!=null?r.aliquota:'',num(document.getElementById('liq'+i).value)||'',num(document.getElementById('ped'+i).value)||'','',document.getElementById('pz'+i).value||'',vd,document.getElementById('ob'+i).value||'',r.chave])});
+  var HR=4,NC=13,L='CBD5E1';
+  var cab=['Origem','UF origem','Destino','UF destino','Veículo','KM','Viagens (hist.)','ICMS %','Valor líquido (R$)','Valor bruto total (R$)','Prazo (dias)','Observação','CHAVE (não alterar)'];
+  var tipo=['f','f','f','f','f','f','f','c','i','c','i','i','f'];
+  var aoa=[['COTAÇÃO DE LOTAÇÃO — '+NOMETRANSP],['Preencha somente as colunas AMARELAS: Valor líquido (sem ICMS), Prazo e Observação. O ICMS e o Valor bruto total são calculados. O tipo de veículo é fixo. Deixe em branco as rotas que você não atende.'],['Legenda:   AMARELO = você preenche   ·   CINZA = informação da rota (não alterar)   ·   AZUL = calculado automaticamente'],[],cab];
+  ROTAS.forEach(function(r,i){
+    aoa.push([r.origem,r.uf_origem||'',r.destino,r.uf_destino||'',r.tipo_veiculo,r.km||'',r.viagens?Math.round(r.viagens):'',r.aliquota!=null?r.aliquota:'',num(document.getElementById('liq'+i).value)||'','',document.getElementById('pz'+i).value||'',document.getElementById('ob'+i).value||'',r.chave])});
   var ws=XLSX.utils.aoa_to_sheet(aoa);
   var borda={top:{style:'thin',color:{rgb:L}},bottom:{style:'thin',color:{rgb:L}},left:{style:'thin',color:{rgb:L}},right:{style:'thin',color:{rgb:L}}};
   function est(r,c,s,z){var a=XLSX.utils.encode_cell({r:r,c:c});if(!ws[a])ws[a]={t:'s',v:''};ws[a].s=s;if(z)ws[a].z=z}
@@ -214,15 +212,15 @@ function baixarModelo(){
   var corCab={f:'1E3A5F',i:'B45309',c:'475569'},corCel={f:'F1F5F9',i:'FFF7CC',c:'E0F0FF'};
   for(var c=0;c<NC;c++){est(HR,c,{font:{bold:true,sz:11,color:{rgb:'FFFFFF'}},fill:{patternType:'solid',fgColor:{rgb:corCab[tipo[c]]}},alignment:{horizontal:'center',vertical:'center',wrapText:true},border:borda})}
   for(var k=HR+1;k<aoa.length;k++){var ex=k+1;
-    ws['K'+ex]={t:'n',f:'IF(I'+ex+'>0,(I'+ex+'+N(J'+ex+'))/(1-N(H'+ex+')/100),"")'};
+    ws['J'+ex]={t:'n',f:'IF(I'+ex+'>0,I'+ex+'/(1-N(H'+ex+')/100),"")'};
     for(var c2=0;c2<NC;c2++){
-      var z=(c2===8||c2===9||c2===10)?'#,##0.00':(c2===7?'0.00"%"':((c2===5||c2===6||c2===11)?'#,##0':null));
-      var numerico=(c2>=5&&c2<=11);
-      est(k,c2,{font:{sz:11,bold:(c2===0||c2===2||c2===4||c2===10),color:{rgb:c2===14?'94A3B8':'0F172A'}},fill:{patternType:'solid',fgColor:{rgb:corCel[tipo[c2]]}},alignment:{horizontal:numerico?'right':'left',vertical:'center'},border:(tipo[c2]==='i'?{top:{style:'thin',color:{rgb:'F59E0B'}},bottom:{style:'thin',color:{rgb:'F59E0B'}},left:{style:'thin',color:{rgb:'F59E0B'}},right:{style:'thin',color:{rgb:'F59E0B'}}}:borda)},z)}}
-  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:10}},{s:{r:1,c:0},e:{r:1,c:13}},{s:{r:2,c:0},e:{r:2,c:13}}];
+      var z=(c2===8||c2===9)?'#,##0.00':(c2===7?'0.00"%"':((c2===5||c2===6||c2===10)?'#,##0':null));
+      var numerico=(c2>=5&&c2<=10);
+      est(k,c2,{font:{sz:11,bold:(c2===0||c2===2||c2===4||c2===9),color:{rgb:c2===12?'94A3B8':'0F172A'}},fill:{patternType:'solid',fgColor:{rgb:corCel[tipo[c2]]}},alignment:{horizontal:numerico?'right':'left',vertical:'center'},border:(tipo[c2]==='i'?{top:{style:'thin',color:{rgb:'F59E0B'}},bottom:{style:'thin',color:{rgb:'F59E0B'}},left:{style:'thin',color:{rgb:'F59E0B'}},right:{style:'thin',color:{rgb:'F59E0B'}}}:borda)},z)}}
+  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:9}},{s:{r:1,c:0},e:{r:1,c:11}},{s:{r:2,c:0},e:{r:2,c:11}}];
   ws['!rows']=[{hpt:32},{hpt:36},{hpt:22},{hpt:8},{hpt:34}];
-  ws['!cols']=[{wch:28},{wch:9},{wch:28},{wch:9},{wch:18},{wch:8},{wch:12},{wch:9},{wch:19},{wch:15},{wch:21},{wch:12},{wch:21},{wch:32},{wch:40,hidden:true}];
-  ws['!autofilter']={ref:'A'+(HR+1)+':O'+aoa.length};
+  ws['!cols']=[{wch:28},{wch:9},{wch:28},{wch:9},{wch:18},{wch:8},{wch:12},{wch:9},{wch:19},{wch:21},{wch:12},{wch:32},{wch:40,hidden:true}];
+  ws['!autofilter']={ref:'A'+(HR+1)+':M'+aoa.length};
   ws['!freeze']={xSplit:0,ySplit:HR+1};
   ws['!views']=[{state:'frozen',ySplit:HR+1,xSplit:0}];
   var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Cotacao');
@@ -239,7 +237,7 @@ function importar(inp){var f=inp.files&&inp.files[0],m=document.getElementById('
     for(var r=0;r<Math.min(rows.length,15);r++){var j=rows[r].map(sa).join('|');if(j.indexOf('CHAVE')>=0||(j.indexOf('ORIGEM')>=0&&j.indexOf('DESTINO')>=0)){hi=r;break}}
     if(hi<0){m.innerHTML='<div class="msg erro">Não encontrei o cabeçalho. Use o modelo baixado nesta tela.</div>';return}
     var cab=rows[hi].map(sa),col=function(re){for(var c=0;c<cab.length;c++)if(re.test(cab[c]))return c;return -1};
-    var cCh=col(/^CHAVE/),cO=col(/^ORIGEM/),cD=col(/^DESTINO/),cV=col(/^VEICULO|^TIPO/),cL=col(/LIQUIDO/),cP=col(/PEDAGIO/),cZ=col(/^PRAZO/),cVal=col(/^VALIDADE/),cOb=col(/^OBS/);
+    var cCh=col(/^CHAVE/),cO=col(/^ORIGEM/),cD=col(/^DESTINO/),cV=col(/^VEICULO|^TIPO/),cL=col(/LIQUIDO/),cZ=col(/^PRAZO/),cOb=col(/^OBS/);
     if(cL<0){m.innerHTML='<div class="msg erro">Coluna "Valor líquido" não encontrada. Use o modelo baixado nesta tela.</div>';return}
     var idx={};ROTAS.forEach(function(x,i){idx[x.chave]=i});
     var ok=0,perdidas=0;
@@ -250,22 +248,20 @@ function importar(inp){var f=inp.files&&inp.files[0],m=document.getElementById('
       if(i<0){if(liq>0)perdidas++;continue}
       if(!(liq>0))continue;
       document.getElementById('liq'+i).value=fmt(liq);
-      var ped=cP>=0?num(row[cP]):null;document.getElementById('ped'+i).value=ped>0?fmt(ped):'';
       if(cZ>=0&&row[cZ]!=='')document.getElementById('pz'+i).value=parseInt(row[cZ],10)||'';
-      if(cVal>=0)document.getElementById('vl'+i).value=dataIso(row[cVal]);
       if(cOb>=0&&row[cOb]!=='')document.getElementById('ob'+i).value=String(row[cOb]);
       calc(i);ok++}
     m.innerHTML='<div class="msg '+(ok?'ok':'erro')+'">'+ok+' rota(s) importada(s) da planilha.'+(perdidas?' '+perdidas+' linha(s) não bateram com nenhuma rota e foram ignoradas.':'')+(ok?' Confira os valores e clique em <b>Enviar cotação</b>.':'')+'</div>';
   }catch(e){m.innerHTML='<div class="msg erro">Não consegui ler a planilha: '+esc(e.message)+'</div>'}inp.value=''};
   rd.readAsArrayBuffer(f)}
 function enviar(final){var itens=[],m=document.getElementById('msgTab');m.innerHTML='';
-  for(var i=0;i<ROTAS.length;i++){var liq=num(document.getElementById('liq'+i).value),ped=num(document.getElementById('ped'+i).value);
-    var tem=liq!=null||ped!=null||document.getElementById('pz'+i).value||document.getElementById('ob'+i).value;
+  for(var i=0;i<ROTAS.length;i++){var liq=num(document.getElementById('liq'+i).value);
+    var tem=liq!=null||document.getElementById('pz'+i).value||document.getElementById('ob'+i).value;
     if(!tem)continue;
     if(!(liq>0)){m.innerHTML='<div class="msg erro">Linha '+(i+1)+' ('+esc(ROTAS[i].origem)+' → '+esc(ROTAS[i].destino)+'): informe o valor líquido.</div>';document.getElementById('l'+i).scrollIntoView({block:'center'});return}
-    itens.push({chave:ROTAS[i].chave,liquido:liq,pedagio:ped||0,prazo:document.getElementById('pz'+i).value,validade:document.getElementById('vl'+i).value,obs:document.getElementById('ob'+i).value})}
+    itens.push({chave:ROTAS[i].chave,liquido:liq,prazo:document.getElementById('pz'+i).value,obs:document.getElementById('ob'+i).value})}
   if(final){if(!itens.length){m.innerHTML='<div class="msg erro">Preencha ao menos uma rota antes de enviar.</div>';return}
-    if(!confirm('Enviar '+itens.length+' rota(s) para análise? Os valores líquidos serão somados ao ICMS e ao pedágio para formar o bruto.'))return}
+    if(!confirm('Enviar '+itens.length+' rota(s) para análise? Os valores líquidos serão somados ao ICMS para formar o bruto.'))return}
   api({acao:'salvar',acesso:ACESSO,itens:itens,enviar:final}).then(function(j){m.innerHTML='<div class="msg ok">'+(final?'✅ Cotação enviada com '+j.salvas+' rota(s). Obrigado! O time de suprimentos já recebeu.':'Rascunho salvo ('+j.salvas+' rota(s)).')+'</div>';window.scrollTo(0,0)}).catch(function(e){m.innerHTML='<div class="msg erro">'+esc(e.message)+'</div>'})}
 </script></body></html>`;
 }
@@ -361,7 +357,7 @@ export default async function handler(req, res) {
         const rota = rotaPorChave.get(String(it.chave));
         const liquido = numero(it.liquido);
         if (!rota || !(liquido > 0)) continue;
-        const pedagio = Math.max(numero(it.pedagio) || 0, 0);
+        const pedagio = 0; // pedagio e pago pela Cantu: fora da cotacao
         const { aliquota } = aliquotaDaRota(matriz, rota.uf_origem, rota.uf_destino);
         const { bruto, icms } = calcular(liquido, pedagio, aliquota);
         const prazo = parseInt(it.prazo, 10);
