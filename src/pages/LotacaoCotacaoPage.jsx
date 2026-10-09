@@ -215,16 +215,12 @@ export default function LotacaoCotacaoPage() {
         </small>
       </div>
 
-      {msg.texto && (
-        <div className="hint-box" style={{ marginBottom: 14, background: msg.tipo === 'erro' ? '#fee2e2' : '#dcfce7', color: msg.tipo === 'erro' ? '#991b1b' : '#166534' }}>{msg.texto}</div>
-      )}
-
       <div style={card}>
         <h2 style={h2}>1. Gerar link para o transportador</h2>
-        <small>Digite o nome de quem vai responder e clique em <b>Gerar link</b>. Aqui entra o nome do <b>transportador</b>. Cada clique em <b>Gerar link</b> cria um código novo e exclusivo. O CNPJ é pedido ao transportador no primeiro acesso (obrigatório).</small>
+        <small>Digite o nome de quem vai responder e clique em <b>Gerar link</b>. Aqui entra o nome do <b>transportador</b>. Cada clique em <b>Gerar link</b> cria um código novo e exclusivo. O CNPJ é pedido ao transportador no primeiro acesso (obrigatório). <b>Não precisa estar cadastrado</b> — serve para transportador novo.</small>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0', alignItems: 'end' }}>
           <label style={{ flex: 1, minWidth: 260, fontSize: 13, fontWeight: 700 }}>Nome do transportador
-            <input style={{ ...inp, width: '100%', fontWeight: 400 }} list="lot-cot-transp" placeholder="Digite o nome (ou escolha uma já cadastrada)" value={nomeTransp} onChange={(e) => setNomeTransp(e.target.value)} />
+            <input style={{ ...inp, width: '100%', fontWeight: 400 }} list="lot-cot-transp" placeholder="Qualquer nome — transportador novo ou já cadastrado" value={nomeTransp} onChange={(e) => setNomeTransp(e.target.value)} />
             <datalist id="lot-cot-transp">{transportadoras.map((t) => <option key={t.id || t.nome} value={t.nome} />)}</datalist>
           </label>
           <label style={{ fontSize: 13, fontWeight: 700 }}>Validade do link (dias)
@@ -232,6 +228,9 @@ export default function LotacaoCotacaoPage() {
           </label>
           <button style={btn} disabled={ocupado} onClick={gerar}>Gerar link</button>
         </div>
+        {msg.texto && (
+          <div className="hint-box" style={{ marginBottom: 8, background: msg.tipo === 'erro' ? '#fee2e2' : '#dcfce7', color: msg.tipo === 'erro' ? '#991b1b' : '#166534' }}>{msg.texto}</div>
+        )}
         {tabelaDoNome && (
           <label style={{ fontSize: 13 }}><input type="checkbox" checked={soAtendidas} onChange={(e) => setSoAtendidas(e.target.checked)} /> Enviar só as rotas que {tabelaDoNome.nome} já atende (senão recebe todas)</label>
         )}
