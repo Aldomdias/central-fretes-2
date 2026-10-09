@@ -1,7 +1,7 @@
 import { usuarioTemAcesso } from '../utils/authLocal';
 import amdLogo from '../assets/amd-log.png';
 
-const MENU_GRUPOS = [
+export const MENU_GRUPOS = [
   {
     titulo: 'Inicio',
     itens: [
