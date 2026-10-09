@@ -268,3 +268,22 @@ export async function atualizarRotaCotacao(cotacaoId, chave, campos) {
   const { error } = await client().from('lotacao_cotacao_rotas').update(campos).eq('cotacao_id', cotacaoId).eq('chave', chave);
   if (error) throw error;
 }
+
+// Recomeca a cotacao com as rotas atuais do realizado: apaga rotas e propostas antigas
+// (inclusive as referencias importadas), mantem os links dos transportadores (voltam a "nao respondeu").
+export async function substituirRotasCotacao(cotacaoId, rotas) {
+  const sb = client();
+  let r = await sb.from('lotacao_cotacao_propostas').delete().eq('cotacao_id', cotacaoId);
+  if (r.error) throw r.error;
+  r = await sb.from('lotacao_cotacao_convites').delete().eq('cotacao_id', cotacaoId).in('tipo', ['REF_CASA', 'REF_ANTT', 'REF_ANTT_6']);
+  if (r.error && !/tipo/i.test(r.error.message || '')) throw r.error;
+  r = await sb.from('lotacao_cotacao_convites').update({ status: 'PENDENTE', enviado_em: null }).eq('cotacao_id', cotacaoId);
+  if (r.error) throw r.error;
+  r = await sb.from('lotacao_cotacao_rotas').delete().eq('cotacao_id', cotacaoId);
+  if (r.error) throw r.error;
+  const linhas = rotas.map((x) => ({ cotacao_id: cotacaoId, ...x }));
+  for (let i = 0; i < linhas.length; i += LOTE) {
+    const { error } = await sb.from('lotacao_cotacao_rotas').insert(linhas.slice(i, i + LOTE));
+    if (error) throw error;
+  }
+}

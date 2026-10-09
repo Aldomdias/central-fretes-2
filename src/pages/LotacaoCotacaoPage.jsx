@@ -10,7 +10,7 @@ import {
   gerarConvite, linkConviteCotacao, listarCotacoes, renovarConvite,
 } from '../services/lotacaoCotacaoService';
 import {
-  REGRA_ANTT_PADRAO, atualizarRotaCotacao, salvarKmRotas, carregarKmRotas, carregarMapaUfMunicipios, carregarPeriodoRealizado, carregarRegraAntt, importarPropostasConvite, importarReferencia, oficializarProposta, salvarRegraAntt,
+  REGRA_ANTT_PADRAO, atualizarRotaCotacao, salvarKmRotas, carregarKmRotas, carregarMapaUfMunicipios, carregarPeriodoRealizado, carregarRegraAntt, importarPropostasConvite, importarReferencia, oficializarProposta, salvarRegraAntt, substituirRotasCotacao,
 } from '../services/lotacaoCotacaoReferenciasService';
 import { carregarMatrizIcmsUfCentralizada } from '../utils/icmsUfMatrix';
 import { aliquotaDaRota, calcularBruto } from '../utils/lotacaoCotacaoCalculo';
@@ -391,6 +391,22 @@ export default function LotacaoCotacaoPage() {
   };
   const transportadores = useMemo(() => dados.convites.filter((c) => !eRef(c)), [dados.convites]);
 
+  // cotacao criada no formato antigo (veiculos misturados, Azurra separado, volume total): detecta e atualiza
+  const cotacaoDesatualizada = dados.rotas.length > 0 && dados.rotas.some((r) => r.tipo_veiculo !== VEICULO_PADRAO || /AZURRA/i.test(`${r.origem} ${r.destino}`));
+  const atualizarCotacao = async () => {
+    if (!cotacaoId) return;
+    if (!rotasRealizado.length) { aviso('As rotas do realizado ainda estão carregando. Aguarde alguns segundos e tente de novo.', 'erro'); return; }
+    if (!window.confirm(`Atualizar a cotação com as ${rotasRealizado.length} rotas atuais do realizado?
+
+As propostas já recebidas e as tabelas de referência (TransGP) desta cotação serão apagadas e precisarão ser enviadas/importadas de novo. Os links dos transportadores continuam valendo.`)) return;
+    setOcupado(true);
+    try {
+      await substituirRotasCotacao(cotacaoId, rotasRealizado);
+      await recarregarDados();
+      aviso(`Cotação atualizada: ${rotasRealizado.length} rotas (carreta, Azurra somada em Itajaí, média mensal). Importe a TransGP de novo e peça aos transportadores para reenviar.`);
+    } catch (e) { aviso(`Erro ao atualizar a cotação: ${e.message}`, 'erro'); } finally { setOcupado(false); }
+  };
+
   // ---------- referencias ----------
   const importarRef = async (tipo, file, base) => {
     setOcupado(true);
@@ -717,6 +733,17 @@ export default function LotacaoCotacaoPage() {
         </div>
       )}
 
+      {cotacaoDesatualizada && (
+        <div style={{ ...card, border: '2px solid #f59e0b', background: '#fffbeb' }}>
+          <b style={{ fontSize: 16 }}>⚠ Esta cotação está no formato antigo</b>
+          <div style={{ fontSize: 13, margin: '6px 0 10px', lineHeight: 1.5 }}>
+            Ela foi criada antes da padronização: veículos misturados (baú, sider, truck, bitrem), Azurra separada de Itajaí e volume total em vez da média mensal.
+            Atualize para recalcular as rotas com as regras novas (tudo carreta, Azurra = Itajaí, nomes padronizados, média mensal, KM e UF).
+          </div>
+          <button style={btn} disabled={ocupado} onClick={atualizarCotacao}>{ocupado ? 'Atualizando…' : 'Atualizar cotação agora'}</button>
+        </div>
+      )}
+
       <div style={card}>
         <h2 style={h2}>1. Referências de comparação</h2>
         <small>Servem de comparação para toda proposta que chegar: a TransGP é o nosso target (importada no modelo da Tabela de Lotação) e a ANTT é o piso, calculada pela regra cadastrada.</small>
@@ -920,6 +947,7 @@ export default function LotacaoCotacaoPage() {
           {cotacaoAtual && (
             <>
               <button style={btnSec} onClick={async () => { await alterarStatusCotacao(cotacaoAtual.id, cotacaoAtual.status === 'ABERTA' ? 'ENCERRADA' : 'ABERTA'); recarregarLista(); }}>{cotacaoAtual.status === 'ABERTA' ? 'Encerrar cotação' : 'Reabrir'}</button>
+              <button style={btnSec} disabled={ocupado} onClick={atualizarCotacao}>Atualizar rotas pelo realizado</button>
               <button style={btnSec} onClick={async () => { if (window.confirm('Excluir a cotação, os links e todas as propostas?')) { await excluirCotacao(cotacaoAtual.id); setCotacaoId(''); recarregarLista(); } }}>Excluir</button>
             </>
           )}
