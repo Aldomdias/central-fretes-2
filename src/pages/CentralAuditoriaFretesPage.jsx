@@ -5740,9 +5740,13 @@ ${portaisLaudo.length ? `
     const data = (v) => (v ? new Date(`${String(v).slice(0, 10)}T12:00:00`) : '');
     const ROTULO_PAGAMENTO = { PAGO: 'Pago', PAGO_DIVERGENTE: 'Pago com divergência', LANCADA_FINANCEIRO: 'Lançada financeiro', NAO_PAGO: 'Não pago' };
     const ROTULO_FORNECEDOR = { APROVADO: 'Aprovada', CONTESTADO: 'Contestada', ENVIADO: 'Aguardando' };
-    const cabecalho = ['Fatura', 'Transportadora', 'Origem', 'Emissão', 'Vencimento', 'Dias p/ vencer', 'Valor fatura', 'CT-es auditados', 'CT-es totais', '100% auditada', 'Cobrança a maior', 'Cobrança a menor', 'A descontar', 'Entrega', 'CT-es a entregar', 'Auditor', 'Status', 'Pagamento', 'Data pagamento', 'Partida', 'Fornecedor', 'Repetida'];
-    const colunasMoeda = [6, 10, 11, 12];
-    const colunasData = [3, 4, 18];
+    const cabecalho = ['Fatura', 'Transportadora', 'CNPJ', 'Origem', 'Emissão', 'Vencimento', 'Dias p/ vencer', 'Valor fatura', 'CT-es auditados', 'CT-es totais', '100% auditada', 'Cobrança a maior', 'Cobrança a menor', 'A descontar', 'Entrega', 'CT-es a entregar', 'Auditor', 'Status', 'Pagamento', 'Data pagamento', 'Partida', 'Fornecedor', 'Repetida'];
+    const colunasMoeda = [7, 11, 12, 13];
+    const colunasData = [4, 5, 19];
+    const cnpjFormatado = (v) => {
+      const d = String(v || '').replace(/\D/g, '');
+      return d.length === 14 ? d.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5') : String(v || '');
+    };
     const linhas = lista.map((fatura) => {
       const ent = entregaDe(fatura);
       const considera = faturaConsideraMenor(fatura);
@@ -5751,6 +5755,7 @@ ${portaisLaudo.length ? `
       return [
         String(fatura.numero_fatura || ''),
         fatura.transportadora || '',
+        cnpjFormatado(fatura.cnpj_transportadora),
         resumoOrigensFaturas.get(fatura.id)?.principal || '',
         data(fatura.data_emissao),
         data(fatura.data_vencimento),
@@ -5789,13 +5794,13 @@ ${portaisLaudo.length ? `
       for (let col = 0; col < totalColunas; col += 1) {
         const ref = XS.utils.encode_cell({ r: i + 1, c: col });
         if (!ws[ref]) ws[ref] = { t: 's', v: '' };
-        const centraliza = col >= 7 && !colunasMoeda.includes(col);
+        const centraliza = col >= 8 && !colunasMoeda.includes(col);
         ws[ref].s = { font: fonte(), fill: fundo, border: bordas, alignment: { vertical: 'center', horizontal: centraliza ? 'center' : colunasMoeda.includes(col) ? 'right' : 'left' } };
         if (colunasMoeda.includes(col) && ws[ref].t === 'n') ws[ref].z = CONTAB;
         if (colunasData.includes(col) && ws[ref].t === 'd') ws[ref].z = 'dd/mm/yyyy';
       }
     });
-    ws['!cols'] = [12, 34, 22, 12, 12, 10, 16, 11, 10, 11, 17, 17, 16, 16, 11, 26, 22, 20, 13, 14, 18, 12].map((wch) => ({ wch }));
+    ws['!cols'] = [12, 34, 20, 22, 12, 12, 10, 16, 11, 10, 11, 17, 17, 16, 16, 11, 26, 22, 20, 13, 14, 18, 12].map((wch) => ({ wch }));
     ws['!rows'] = [{ hpt: 32 }];
     const ultimaLinha = linhas.length + 1;
     ws['!autofilter'] = { ref: `A1:${XS.utils.encode_col(totalColunas - 1)}${ultimaLinha}` };
