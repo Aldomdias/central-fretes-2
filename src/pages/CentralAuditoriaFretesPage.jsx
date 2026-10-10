@@ -5731,6 +5731,81 @@ ${portaisLaudo.length ? `
     setSelecionadasIds([...new Set(lista.map((item) => item.id))]);
   };
 
+  // Exporta, em Excel formatado (tabela com filtro, cabecalho colorido, valores em R$),
+  // todas as faturas que passam pelos filtros atuais (nao so a pagina visivel).
+  const exportarFaturasFiltradas = async () => {
+    if (!lista.length) return;
+    const { default: XS } = await import('xlsx-js-style');
+    const numero = (v) => Number(v || 0);
+    const data = (v) => (v ? new Date(`${String(v).slice(0, 10)}T12:00:00`) : '');
+    const ROTULO_PAGAMENTO = { PAGO: 'Pago', PAGO_DIVERGENTE: 'Pago com divergência', LANCADA_FINANCEIRO: 'Lançada financeiro', NAO_PAGO: 'Não pago' };
+    const ROTULO_FORNECEDOR = { APROVADO: 'Aprovada', CONTESTADO: 'Contestada', ENVIADO: 'Aguardando' };
+    const cabecalho = ['Fatura', 'Transportadora', 'Origem', 'Emissão', 'Vencimento', 'Dias p/ vencer', 'Valor fatura', 'CT-es auditados', 'CT-es totais', '100% auditada', 'Cobrança a maior', 'Cobrança a menor', 'A descontar', 'Entrega', 'CT-es a entregar', 'Auditor', 'Status', 'Pagamento', 'Data pagamento', 'Partida', 'Fornecedor', 'Repetida'];
+    const colunasMoeda = [6, 10, 11, 12];
+    const colunasData = [3, 4, 18];
+    const linhas = lista.map((fatura) => {
+      const ent = entregaDe(fatura);
+      const considera = faturaConsideraMenor(fatura);
+      const entrega = !ent ? 'Não verificada' : !ent.total ? 'Sem CT-es' : ent.pendentes == null ? 'Sem tracking' : !ent.pendentes ? '100% entregue' : 'A entregar';
+      const repetida = repetidasPorId.get(fatura.id);
+      return [
+        String(fatura.numero_fatura || ''),
+        fatura.transportadora || '',
+        resumoOrigensFaturas.get(fatura.id)?.principal || '',
+        data(fatura.data_emissao),
+        data(fatura.data_vencimento),
+        fatura.data_vencimento ? (diasAte(fatura.data_vencimento) ?? '') : '',
+        numero(fatura.valor_fatura),
+        numero(fatura.ctes_auditados || fatura.ctes_vinculados),
+        numero(fatura.ctes_totais),
+        faturaTotalmenteAuditada(fatura) ? 'Sim' : 'Não',
+        ent ? numero(ent.maior) : '',
+        ent ? numero(ent.menor) : '',
+        ent ? numero(descontoConformeEscolha(ent.maior, ent.menor, considera)) : '',
+        entrega,
+        ent && ent.pendentes != null ? numero(ent.pendentes) : '',
+        fatura.auditor_nome || 'Sem auditor',
+        nomeStatus(fatura.status),
+        ROTULO_PAGAMENTO[situacaoPagamentoFatura(fatura)] || '',
+        data(fatura.data_pagamento),
+        fatura.partida || '',
+        ROTULO_FORNECEDOR[fatura.confirmacao_transportador_status] || 'Laudo não enviado',
+        repetida ? `Sim (${repetida.total}x)` : '',
+      ];
+    });
+    const ws = XS.utils.aoa_to_sheet([cabecalho, ...linhas], { cellDates: true });
+    const CONTAB = '_-"R$"\\ * #,##0.00_-;\\-"R$"\\ * #,##0.00_-;_-"R$"\\ * "-"??_-;_-@_-';
+    const fonte = (extra = {}) => ({ name: 'Calibri', sz: 11, color: { rgb: 'FF1F2937' }, ...extra });
+    const preenche = (rgb) => ({ patternType: 'solid', fgColor: { rgb }, bgColor: { rgb } });
+    const borda = { style: 'thin', color: { rgb: 'FFD1D5DB' } };
+    const bordas = { top: borda, bottom: borda, left: borda, right: borda };
+    const totalColunas = cabecalho.length;
+    for (let col = 0; col < totalColunas; col += 1) {
+      const ref = XS.utils.encode_cell({ r: 0, c: col });
+      ws[ref].s = { font: fonte({ bold: true, color: { rgb: 'FFFFFFFF' } }), fill: preenche('FF1E3A8A'), alignment: { horizontal: 'center', vertical: 'center', wrapText: true }, border: bordas };
+    }
+    linhas.forEach((_, i) => {
+      const fundo = preenche(i % 2 === 0 ? 'FFFFFFFF' : 'FFF1F5F9');
+      for (let col = 0; col < totalColunas; col += 1) {
+        const ref = XS.utils.encode_cell({ r: i + 1, c: col });
+        if (!ws[ref]) ws[ref] = { t: 's', v: '' };
+        const centraliza = col >= 7 && !colunasMoeda.includes(col);
+        ws[ref].s = { font: fonte(), fill: fundo, border: bordas, alignment: { vertical: 'center', horizontal: centraliza ? 'center' : colunasMoeda.includes(col) ? 'right' : 'left' } };
+        if (colunasMoeda.includes(col) && ws[ref].t === 'n') ws[ref].z = CONTAB;
+        if (colunasData.includes(col) && ws[ref].t === 'd') ws[ref].z = 'dd/mm/yyyy';
+      }
+    });
+    ws['!cols'] = [12, 34, 22, 12, 12, 10, 16, 11, 10, 11, 17, 17, 16, 16, 11, 26, 22, 20, 13, 14, 18, 12].map((wch) => ({ wch }));
+    ws['!rows'] = [{ hpt: 32 }];
+    const ultimaLinha = linhas.length + 1;
+    ws['!autofilter'] = { ref: `A1:${XS.utils.encode_col(totalColunas - 1)}${ultimaLinha}` };
+    ws['!views'] = [{ state: 'frozen', ySplit: 1 }];
+    ws['!ref'] = `A1:${XS.utils.encode_col(totalColunas - 1)}${ultimaLinha}`;
+    const wb = XS.utils.book_new();
+    XS.utils.book_append_sheet(wb, ws, 'Faturas');
+    XS.writeFile(wb, `faturas-auditoria-${new Date().toISOString().slice(0, 10)}.xlsx`, { cellDates: true });
+  };
+
   const todasFiltradasSelecionadas = lista.length > 0 && lista.every((item) => selecionadasIds.includes(item.id));
   const alternarSelecaoFiltradas = () => {
     if (todasFiltradasSelecionadas) {
@@ -7306,6 +7381,12 @@ ${portaisLaudo.length ? `
         <span className="compact">
           {lista.length ? `Pagina ${paginaFaturasAtual} de ${totalPaginasFaturas} - mostrando ${listaPaginada.length} de ${lista.length} fatura(s)` : 'Nenhuma fatura encontrada com os filtros atuais.'}
         </span>
+        <div className="actions-right">
+          <button className="btn-secondary audit-small-button" disabled={!lista.length} onClick={exportarFaturasFiltradas}
+            title="Exporta para Excel formatado todas as faturas do filtro atual (todas as páginas)">
+            Exportar filtradas ({lista.length})
+          </button>
+        </div>
         {totalPaginasFaturas > 1 && (
           <div className="actions-right">
             <button className="btn-secondary audit-small-button" disabled={paginaFaturasAtual <= 1} onClick={() => setPaginaFaturas((p) => Math.max(1, p - 1))}>Anterior</button>
