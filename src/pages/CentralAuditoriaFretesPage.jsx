@@ -4955,50 +4955,101 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         if (detalhes.length) detalhesPorFatura.set(fatura.id, detalhes);
       }
 
-      const todasChaves = [...detalhesPorFatura.values()].flat().map((item) => item.chave_cte).filter(Boolean);
-      if (!todasChaves.length) {
+      const totalCtesLote = [...detalhesPorFatura.values()].flat().filter((item) => item.chave_cte).length;
+      if (!totalCtesLote) {
         setMensagemImportacao('Nenhum CT-e encontrado nas faturas selecionadas.');
         return;
       }
 
-      let resumoTracking = '';
-      if (corrigirTracking) {
-        setMensagemImportacao(`Corrigindo a base pelo tracking (${todasChaves.length} CT-e(s))...`);
-        const r = await corrigirBaseCtesPeloTracking(todasChaves, (p) => {
-          setProgressoLote({ etapa: 'corrigindo_tracking', carregados: p.processados, total: p.total });
-        });
-        resumoTracking = ` Base corrigida pelo tracking: ${r.corrigidos.length} corrigido(s), ${r.iguais} ja iguais, ${r.semTracking} sem tracking.`;
+      // Processa em blocos pequenos (calcula -> grava -> atualiza as faturas do bloco),
+      // para que um travamento/erro no meio nao perca as faturas ja recalculadas.
+      const MAX_FATURAS_BLOCO = 4;
+      const MAX_CTES_BLOCO = 300;
+      const blocos = [];
+      let blocoAtual = [];
+      let ctesBlocoAtual = 0;
+      for (const [faturaId, detalhesFat] of detalhesPorFatura.entries()) {
+        const qtd = detalhesFat.filter((item) => item.chave_cte).length;
+        if (blocoAtual.length && (blocoAtual.length >= MAX_FATURAS_BLOCO || ctesBlocoAtual + qtd > MAX_CTES_BLOCO)) {
+          blocos.push(blocoAtual);
+          blocoAtual = [];
+          ctesBlocoAtual = 0;
+        }
+        blocoAtual.push([faturaId, detalhesFat]);
+        ctesBlocoAtual += qtd;
       }
-
-      const { registros } = await processarCtesPorChave(todasChaves, setProgressoLote, { ignorarCubagem: true });
-      let amdCalculados = 0;
-      if (registros.length) {
-        const competenciaRef = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
-        await salvarRecorteCarregadoAuditoria({ competencia: competenciaRef, registros });
-        amdCalculados = registros.length;
-      }
+      if (blocoAtual.length) blocos.push(blocoAtual);
 
       let atualizado = state;
-      let faturasAtualizadas = 0;
+      let amdCalculados = 0;
+      let corrigidosTracking = 0;
+      let iguaisTracking = 0;
+      let semTrackingTotal = 0;
+      const idsAtualizados = [];
       const faturasComErro = [];
-      for (const [faturaId, detalhesFat] of detalhesPorFatura.entries()) {
-        faturasAtualizadas += 1;
-        setProgressoLote({ etapa: 'atualizando_faturas', carregados: faturasAtualizadas, total: detalhesPorFatura.size });
-        const faturaObj = atualizado.faturas.find((item) => item.id === faturaId);
-        if (!faturaObj) continue;
+      let falhasSeguidas = 0;
+      const nomeFatura = (id) => {
+        const f = state.faturas.find((item) => item.id === id);
+        return f?.numero_fatura || f?.numero || id;
+      };
+
+      for (let indiceBloco = 0; indiceBloco < blocos.length; indiceBloco += 1) {
+        const bloco = blocos[indiceBloco];
+        const rotuloBloco = `Bloco ${indiceBloco + 1} de ${blocos.length}`;
+        const progressoDoBloco = (p) => setProgressoLote({ ...p, bloco: indiceBloco + 1, totalBlocos: blocos.length });
+        setMensagemImportacao(`${rotuloBloco}: calculando ${bloco.length} fatura(s)... ${idsAtualizados.length} ja atualizada(s).`);
         try {
-          atualizado = await reauditarFatura(atualizado, faturaObj, detalhesFat, sessao?.nome || sessao?.email || 'Usuario local');
-        } catch (erroFatura) {
-          faturasComErro.push(faturaObj.numero || faturaObj.id);
+          const chavesBloco = bloco.flatMap(([, detalhesFat]) => detalhesFat).map((item) => item.chave_cte).filter(Boolean);
+          if (corrigirTracking && chavesBloco.length) {
+            const r = await corrigirBaseCtesPeloTracking(chavesBloco, (p) => progressoDoBloco({ etapa: 'corrigindo_tracking', carregados: p.processados, total: p.total }));
+            corrigidosTracking += r.corrigidos.length;
+            iguaisTracking += r.iguais;
+            semTrackingTotal += r.semTracking;
+          }
+          if (chavesBloco.length) {
+            const { registros } = await processarCtesPorChave(chavesBloco, progressoDoBloco, { ignorarCubagem: true });
+            if (registros.length) {
+              const competenciaRef = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
+              await salvarRecorteCarregadoAuditoria({ competencia: competenciaRef, registros });
+              amdCalculados += registros.length;
+            }
+          }
+          for (const [faturaId, detalhesFat] of bloco) {
+            const faturaObj = atualizado.faturas.find((item) => item.id === faturaId);
+            if (!faturaObj) continue;
+            try {
+              atualizado = await reauditarFatura(atualizado, faturaObj, detalhesFat, sessao?.nome || sessao?.email || 'Usuario local');
+              idsAtualizados.push(faturaId);
+            } catch (erroFatura) {
+              faturasComErro.push(nomeFatura(faturaId));
+            }
+          }
+          falhasSeguidas = 0;
+          // Mostra na tela o que ja foi concluido, sem esperar o lote inteiro.
+          onState(atualizado);
+        } catch (erroBloco) {
+          bloco.forEach(([faturaId]) => faturasComErro.push(nomeFatura(faturaId)));
+          falhasSeguidas += 1;
+          if (falhasSeguidas >= 3) {
+            // Provavel problema geral (rede/servidor): para e preserva o que ja foi salvo.
+            blocos.slice(indiceBloco + 1).flat().forEach(([faturaId]) => faturasComErro.push(nomeFatura(faturaId)));
+            setMensagemImportacao(`Parei apos 3 blocos seguidos com erro (${erroBloco.message}). As ${idsAtualizados.length} fatura(s) ja recalculadas foram salvas; as demais continuam selecionadas.`);
+            break;
+          }
         }
       }
       onState(atualizado);
-      const sucesso = faturasAtualizadas - faturasComErro.length;
-      const sufixoErro = faturasComErro.length
-        ? ` ${faturasComErro.length} fatura(s) falharam ao atualizar e precisam ser recalculadas novamente: ${faturasComErro.join(', ')}.`
+      const resumoTracking = corrigirTracking
+        ? ` Base corrigida pelo tracking: ${corrigidosTracking} corrigido(s), ${iguaisTracking} ja iguais, ${semTrackingTotal} sem tracking.`
         : '';
-      setMensagemImportacao(`Recalculo concluido: ${amdCalculados} CT-e(s) com status AMD calculado em ${sucesso} fatura(s).${resumoTracking}${sufixoErro}`);
-      setSelecionadasIds([]);
+      const sufixoErro = faturasComErro.length
+        ? ` ${faturasComErro.length} fatura(s) falharam e continuam selecionadas para tentar de novo: ${faturasComErro.join(', ')}.`
+        : '';
+      if (falhasSeguidas < 3) {
+        setMensagemImportacao(`Recalculo concluido: ${amdCalculados} CT-e(s) com status AMD calculado em ${idsAtualizados.length} fatura(s).${resumoTracking}${sufixoErro}`);
+      }
+      // Quem foi atualizado sai da selecao; as que falharam ficam para nova tentativa.
+      setSelecionadasIds((atual) => atual.filter((id) => !idsAtualizados.includes(id)));
     } catch (error) {
       setMensagemImportacao(`Erro ao recalcular em lote: ${error.message}`);
     } finally {
