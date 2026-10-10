@@ -4246,6 +4246,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const dentroFiltroRapido = (fatura) => {
     if (!filtroRapido) return true;
     if (filtroRapido === 'repetidas') return repetidasPorId.has(fatura.id);
+    if (filtroRapido === 'repetidas_sem_acao') return repetidasSemAcaoIds.has(fatura.id);
     if (filtroRapido === 'vencidas') return faixaVencimento(fatura) === 'VENCIDA';
     if (filtroRapido === 'a_vencer') {
       const dias = diasAte(fatura.data_vencimento);
@@ -4279,7 +4280,40 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     grupos.forEach((ids, chave) => { if (ids.length > 1) ids.forEach((id) => mapa.set(id, { chave, total: ids.length })); });
     return mapa;
   }, [state.faturas]);
+  // Copias repetidas em que ninguem fez nada (ainda RECEBIDA, sem CT-e auditado, sem
+  // lancamento/partida/pagamento, sem laudo ou ocorrencia). Em cada grupo sempre sobra
+  // uma copia: a que tem acao ou, se nenhuma tem, a mais antiga. Assim excluir todas as
+  // listadas nunca apaga a fatura inteira.
+  const repetidasSemAcaoIds = useMemo(() => {
+    const semAcao = (f) => (
+      f.status === 'RECEBIDA'
+      && !Number(f.ctes_auditados || 0)
+      && !f.partida && !f.lancamento_financeiro && !f.data_pagamento && !Number(f.valor_pago || 0)
+      && !f.confirmacao_transportador_status
+      && !f.ocorrencia_texto
+      && !f.auditoria_considerar_menor
+    );
+    const grupos = new Map();
+    state.faturas.forEach((f) => {
+      const info = repetidasPorId.get(f.id);
+      if (!info) return;
+      grupos.set(info.chave, [...(grupos.get(info.chave) || []), f]);
+    });
+    const ids = new Set();
+    grupos.forEach((copias) => {
+      const sem = copias.filter(semAcao);
+      if (!sem.length) return;
+      if (sem.length === copias.length) {
+        const maisAntiga = [...copias].sort((a, b) => String(a.created_at || a.id).localeCompare(String(b.created_at || b.id)))[0];
+        sem.filter((f) => f.id !== maisAntiga.id).forEach((f) => ids.add(f.id));
+      } else {
+        sem.forEach((f) => ids.add(f.id));
+      }
+    });
+    return ids;
+  }, [state.faturas, repetidasPorId]);
   const resumoCards = useMemo(() => ({
+    repetidasSemAcao: faturasEscopo.filter((fatura) => repetidasSemAcaoIds.has(fatura.id)).length,
     repetidas: faturasEscopo.filter((fatura) => repetidasPorId.has(fatura.id)).length,
     vencidas: faturasEscopo.filter((fatura) => faixaVencimento(fatura) === 'VENCIDA').length,
     aVencer: faturasEscopo.filter((fatura) => {
@@ -4291,7 +4325,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     lancadas: faturasEscopo.filter((fatura) => ['PARTIDA_LANCADA', 'LANCADA_FINANCEIRO'].includes(situacaoPagamentoFatura(fatura))).length,
     pagas: faturasEscopo.filter((fatura) => ['PAGO', 'PAGO_DIVERGENTE'].includes(situacaoPagamentoFatura(fatura))).length,
     pagasDivergentes: faturasEscopo.filter((fatura) => situacaoPagamentoFatura(fatura) === 'PAGO_DIVERGENTE').length,
-  }), [faturasEscopo, repetidasPorId]);
+  }), [faturasEscopo, repetidasPorId, repetidasSemAcaoIds]);
   // Alerta fixo com as faturas DO PROPRIO auditor (independe da visao escolhida).
   const alertaPrazo = useMemo(() => {
     const meuEmail = String(sessao?.email || '').trim().toLowerCase();
@@ -4366,7 +4400,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     // Vencimento do menor pro maior - fatura sem vencimento vai pro final.
     .sort((a, b) => {
       // No filtro "Repetidas", as copias da mesma fatura ficam juntas.
-      if (filtroRapido === 'repetidas') {
+      if (filtroRapido === 'repetidas' || filtroRapido === 'repetidas_sem_acao') {
         const porGrupo = String(repetidasPorId.get(a.id)?.chave || '').localeCompare(String(repetidasPorId.get(b.id)?.chave || ''));
         if (porGrupo) return porGrupo;
         return String(a.created_at || '').localeCompare(String(b.created_at || ''));
@@ -7158,6 +7192,7 @@ ${portaisLaudo.length ? `
         <div className="summary-strip audit-quick-cards">
           {[
             ['repetidas', 'Repetidas (mesma transportadora)', resumoCards.repetidas, resumoCards.repetidas ? '#b45309' : '#047857'],
+            ['repetidas_sem_acao', 'Repetidas sem ação (podem excluir)', resumoCards.repetidasSemAcao, resumoCards.repetidasSemAcao ? '#dc2626' : '#047857'],
             ['vencidas', 'Vencidas', resumoCards.vencidas, resumoCards.vencidas ? '#9b1111' : '#047857'],
             ['a_vencer', 'A vencer (7 dias)', resumoCards.aVencer, resumoCards.aVencer ? '#d97706' : '#047857'],
             ['novas', 'Novas (recebidas)', resumoCards.novas, '#0369a1'],
