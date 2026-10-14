@@ -2149,8 +2149,18 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     if (!descontar) { setModalLiberacao((prev) => ({ ...prev, erro: 'Responda se o valor sera descontado (Sim ou Nao).' })); return; }
     if (descontar === 'NAO' && String(motivo).trim().length < 10) { setModalLiberacao((prev) => ({ ...prev, erro: 'Informe o motivo de nao descontar (minimo 10 caracteres).' })); return; }
     const descontoProposto = descontar === 'SIM' ? Number(modalLiberacao.descontoProposto) : 0;
-    if (descontar === 'SIM' && (!Number.isFinite(descontoProposto) || descontoProposto <= 0 || descontoProposto > saldo + 0.01)) {
-      setModalLiberacao((prev) => ({ ...prev, erro: 'Informe um desconto maior que zero e menor ou igual a diferenca calculada.' }));
+    if (descontar === 'SIM' && (!Number.isFinite(descontoProposto) || descontoProposto <= 0)) {
+      setModalLiberacao((prev) => ({ ...prev, erro: 'Informe um desconto maior que zero.' }));
+      return;
+    }
+    // A transportadora pode conceder desconto maior que a diferenca calculada: permitido, com justificativa.
+    const valorFaturaLimite = Number(fatura?.valor_fatura || 0);
+    if (descontar === 'SIM' && valorFaturaLimite > 0 && descontoProposto > valorFaturaLimite + 0.01) {
+      setModalLiberacao((prev) => ({ ...prev, erro: 'O desconto nao pode superar o valor da fatura.' }));
+      return;
+    }
+    if (descontar === 'SIM' && descontoProposto > saldo + 0.01 && String(observacao).trim().length < 10) {
+      setModalLiberacao((prev) => ({ ...prev, erro: 'Desconto maior que a diferenca calculada: informe a observacao (minimo 10 caracteres) explicando o desconto concedido pela transportadora.' }));
       return;
     }
     const valorDevido = Number(Math.max(saldo - descontoProposto, 0).toFixed(2));
@@ -3924,9 +3934,12 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                 return (
                   <div className="hint-box compact" style={{ marginTop: 10 }}>
                     <label className="field">Valor do desconto proposto *
-                      <input type="number" min="0.01" max={Number(modalLiberacao.saldo).toFixed(2)} step="0.01" value={modalLiberacao.descontoProposto ?? ''} onChange={(e) => setModalLiberacao((p) => ({ ...p, descontoProposto: e.target.value }))} />
+                      <input type="number" min="0.01" step="0.01" value={modalLiberacao.descontoProposto ?? ''} onChange={(e) => setModalLiberacao((p) => ({ ...p, descontoProposto: e.target.value }))} />
                     </label>
                     <div>Diferenca calculada: <strong>{dinheiro(modalLiberacao.saldo)}</strong></div>
+                    {Number.isFinite(proposto) && proposto > modalLiberacao.saldo + 0.01 && (
+                      <div style={{ color: '#b45309' }}>Desconto maior que a diferenca calculada: preencha a observacao explicando o desconto concedido.</div>
+                    )}
                     <div>Valor reconhecido como devido: <strong style={{ color: devido > 0.005 ? '#b45309' : '#14733b' }}>{dinheiro(devido)}</strong></div>
                   </div>
                 );
@@ -8866,10 +8879,24 @@ function AprovacaoGestao({ state, onState }) {
       const invalida = escolhidas.find((fatura) => {
         const desconto = Number(decisao.descontos?.[fatura.id]);
         const diferenca = Number(diferencaAtual(fatura) || 0);
-        return !Number.isFinite(desconto) || desconto <= 0 || desconto > diferenca + 0.01;
+        return !Number.isFinite(desconto) || desconto <= 0;
       });
       if (invalida) {
-        setDecisao((p) => ({ ...p, erro: `Confira o desconto da fatura ${invalida.numero_fatura}: informe um valor maior que zero e menor ou igual a diferenca calculada.` }));
+        setDecisao((p) => ({ ...p, erro: `Confira o desconto da fatura ${invalida.numero_fatura}: informe um valor maior que zero.` }));
+        return;
+      }
+      // Desconto maior que a diferenca calculada (transportadora concedeu mais): permitido, com justificativa.
+      const acimaFatura = escolhidas.find((fatura) => {
+        const limite = Number(fatura.valor_fatura || 0);
+        return limite > 0 && Number(decisao.descontos?.[fatura.id]) > limite + 0.01;
+      });
+      if (acimaFatura) {
+        setDecisao((p) => ({ ...p, erro: `O desconto da fatura ${acimaFatura.numero_fatura} nao pode superar o valor da fatura.` }));
+        return;
+      }
+      const maiorQueDiferenca = escolhidas.some((fatura) => Number(decisao.descontos?.[fatura.id]) > Number(diferencaAtual(fatura) || 0) + 0.01);
+      if (maiorQueDiferenca && texto.length < 10) {
+        setDecisao((p) => ({ ...p, erro: 'Desconto maior que a diferenca calculada: informe a justificativa (minimo 10 caracteres).' }));
         return;
       }
     }
@@ -8898,9 +8925,6 @@ function AprovacaoGestao({ state, onState }) {
         const descontoInformado = Number(decisao.descontos?.[fatura.id]);
         if (tipo === 'COM_DESCONTO' && (!Number.isFinite(descontoInformado) || descontoInformado <= 0)) {
           throw new Error('informe um desconto maior que zero.');
-        }
-        if (tipo === 'COM_DESCONTO' && descontoInformado > diferencaCalculada + 0.01) {
-          throw new Error(`o desconto informado (${dinheiro(descontoInformado)}) nao pode superar a diferenca recalculada (${dinheiro(diferencaCalculada)}).`);
         }
         const valor = tipo === 'COM_DESCONTO'
           ? Number(descontoInformado.toFixed(2))
@@ -9195,7 +9219,8 @@ function AprovacaoGestao({ state, onState }) {
                         const diferenca = Number(diferencaAtual(fatura) || 0);
                         const informado = Number(decisao.descontos?.[fatura.id]);
                         const devido = Number.isFinite(informado) ? Math.max(diferenca - informado, 0) : diferenca;
-                        const invalido = !Number.isFinite(informado) || informado <= 0 || informado > diferenca + 0.01;
+                        const invalido = !Number.isFinite(informado) || informado <= 0;
+                        const acimaDiferenca = Number.isFinite(informado) && informado > diferenca + 0.01;
                         return (
                           <tr key={fatura.id}>
                             <td><strong>{fatura.numero_fatura}</strong><small style={{ display: 'block' }}>{fatura.transportadora}</small></td>
@@ -9204,12 +9229,12 @@ function AprovacaoGestao({ state, onState }) {
                               <input
                                 type="number"
                                 min="0.01"
-                                max={diferenca.toFixed(2)}
                                 step="0.01"
                                 value={decisao.descontos?.[fatura.id] ?? ''}
                                 onChange={(e) => setDecisao((p) => ({ ...p, descontos: { ...(p.descontos || {}), [fatura.id]: e.target.value } }))}
                                 style={{ width: 140, borderColor: invalido ? '#dc2626' : undefined }}
                               />
+                              {acimaDiferenca && <small style={{ display: 'block', color: '#b45309' }}>Maior que a diferenca: justificativa obrigatoria</small>}
                             </td>
                             <td style={{ color: devido > 0.005 ? '#b45309' : '#14733b', fontWeight: 700 }}>{dinheiro(devido)}</td>
                           </tr>
