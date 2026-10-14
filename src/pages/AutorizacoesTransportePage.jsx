@@ -317,13 +317,13 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
           )}
           <div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th><input type="checkbox" checked={todosMarcados} onChange={alternarTodos} title="Marcar todos" /></th><th>Pedido</th><th>Canal</th>{canal === 'SUPRIMENTOS' && <th>Chamado AMD</th>}<th>Chave CT-e</th><th>Chave NF</th><th>NF / Série</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor NF</th><th>Valor CT-e</th><th>Frete atual (AMD)</th><th>% NF atual</th><th>Adicional</th><th>Frete c/ adicional</th><th>% NF c/ adicional</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Justificativa *</th><th /></tr></thead>
+            <thead><tr><th><input type="checkbox" checked={todosMarcados} onChange={alternarTodos} title="Marcar todos" /></th><th>Pedido</th><th>Canal</th><th>Solicitante (auditor)</th>{canal === 'SUPRIMENTOS' && <th>Chamado AMD</th>}<th>Chave CT-e</th><th>Chave NF</th><th>NF / Série</th><th>Origem → Destino</th><th>Transportadora</th><th>Valor NF</th><th>Valor CT-e</th><th>Frete atual (AMD)</th><th>% NF atual</th><th>Adicional</th><th>Frete c/ adicional</th><th>% NF c/ adicional</th><th>Obs. auditoria</th><th>Valor autorizado</th><th>Justificativa *</th><th /></tr></thead>
             <tbody>
               {pendentesFiltrados.map((item) => (
                 <tr key={item.id}>
                   <td><input type="checkbox" checked={marcados.includes(item.id)} onChange={() => alternarMarcado(item.id)} /></td>
                   <td>{item.numero_pedido || '-'}</td>
-                  <td><strong>{canaisReais.get(String(item.chave_cte || '').replace(/\D/g, '')) || (item.canal === 'SUPRIMENTOS' ? '-' : rotulo(item.canal))}</strong></td>
+                  <td><strong>{canaisReais.get(String(item.chave_cte || '').replace(/\D/g, '')) || (item.canal === 'SUPRIMENTOS' ? '-' : rotulo(item.canal))}</strong></td><td>{item.enviado_por || '-'}{item.enviado_em ? <small style={{ display: 'block' }}>{new Date(item.enviado_em).toLocaleDateString('pt-BR')}</small> : null}</td>
                   {canal === 'SUPRIMENTOS' && <td>{item.protocolo_amd || '-'}<br /><small>{item.tipo_ajuste || ''}</small>{(item.anexos || []).map((a) => <div key={a.path}><a href={a.url} target="_blank" rel="noreferrer" style={{ fontSize: 11 }}>📎 {a.nome}</a></div>)}</td>}
                   <td style={{ fontSize: 11 }}>{item.chave_cte || '-'}</td>
                   <td style={{ fontSize: 11 }}>{item.chave_nfe || (
@@ -364,7 +364,7 @@ export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
                   </td>
                 </tr>
               ))}
-              {!pendentesFiltrados.length && <tr><td colSpan={19}>{carregando ? 'Carregando...' : pendentes.length ? 'Nenhum CT-e com esses filtros.' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
+              {!pendentesFiltrados.length && <tr><td colSpan={20}>{carregando ? 'Carregando...' : pendentes.length ? 'Nenhum CT-e com esses filtros.' : 'Nenhum CT-e aguardando decisao.'}</td></tr>}
             </tbody>
           </table>
         </div></div>
