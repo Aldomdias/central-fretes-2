@@ -27623,15 +27623,21 @@ async function detalhesExatos(fatura) {
   return unicos.map((i) => aplicarSaldo(mesclar(i, referencia), saldos, referencia));
 }
 async function apurarFaturaRobo(fatura, aoProgredir = () => {
-}) {
+}, { prazoFinal = 0, calcular = true } = {}) {
+  const BLOCO = prazoFinal ? 30 : 300;
   aoProgredir({ fase: "lendo" });
   let lista = await detalhesExatos(fatura);
   let calculou = false;
-  if (lista.length && lista.some((i) => !(Number(i.calculado_frete || 0) > 0))) {
+  if (calcular && lista.length && lista.some((i) => !(Number(i.calculado_frete || 0) > 0))) {
     const chaves = [...new Set(lista.filter((i) => !(Number(i.calculado_frete || 0) > 0)).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
-    for (let i = 0; i < chaves.length; i += 300) {
-      aoProgredir({ fase: "calculando", atual: Math.min(i + 300, chaves.length), total: chaves.length });
-      const { registros } = await processarCtesPorChave(chaves.slice(i, i + 300), () => {
+    for (let i = 0; i < chaves.length; i += BLOCO) {
+      if (prazoFinal && Date.now() > prazoFinal) {
+        if (calculou) {
+        }
+        throw new Error("__parcial__");
+      }
+      aoProgredir({ fase: "calculando", atual: Math.min(i + BLOCO, chaves.length), total: chaves.length });
+      const { registros } = await processarCtesPorChave(chaves.slice(i, i + BLOCO), () => {
       }, { ignorarCubagem: true });
       if (registros.length) {
         const competencia = registros.find((r2) => r2.competencia)?.competencia || (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
@@ -27719,11 +27725,14 @@ function emailDoAuditor(fatura, mapa) {
   return String(fatura?.auditor_email || "").trim() || mapa?.get(normalizarNomeAuditor(fatura?.auditor_nome)) || "";
 }
 async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = /* @__PURE__ */ new Map(), usuario = "Robo (automatico)", origem = "automatico", anterior = null, aoProgredir = () => {
-} } = {}) {
-  const resumo = await apurarFaturaRobo(f, aoProgredir);
+}, prazoFinal = 0, calcular = true } = {}) {
+  const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular });
   const c = classificarFatura(resumo, Boolean(f.auditoria_considerar_menor));
   let enviada = false;
   let motivo = c.motivo;
+  if (!calcular && c.decisao === DECISAO.REVISAO_AUDITOR && resumo.semCalculo > 0) {
+    motivo += ' Calculo pendente: o robo online nao calcula CT-es; rode "Executar agora" na tela do robo ou abra a fatura.';
+  }
   if (c.decisao === DECISAO.ENVIAR_APROVACAO) {
     const r = await enviarFaturaParaGestaoRobo(db, f, resumo, { origem });
     enviada = r.enviada;

@@ -92,15 +92,25 @@ async function detalhesExatos(fatura) {
 }
 
 // Calcula (se faltar) e resume a fatura. Retorna o resumo no formato esperado por classificarFatura.
-export async function apurarFaturaRobo(fatura, aoProgredir = () => {}) {
+// prazoFinal (timestamp ms, opcional): na nuvem a funcao tem limite de tempo. Calcula os CT-es em
+// blocos pequenos, gravando cada bloco; se o prazo acabar, lanca '__parcial__' e a proxima
+// execucao continua do que ainda falta (o que ja foi calculado fica salvo).
+// calcular=false (nuvem): nao dispara o calculo dos CT-es, que carrega a base de rotas inteira e estoura o
+// limite da funcao; so apura o que ja esta calculado (navegador, auditor abrindo a fatura, importacao).
+export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFinal = 0, calcular = true } = {}) {
+  const BLOCO = prazoFinal ? 30 : 300;
   aoProgredir({ fase: 'lendo' });
   let lista = await detalhesExatos(fatura);
   let calculou = false;
-  if (lista.length && lista.some((i) => !(Number(i.calculado_frete || 0) > 0))) {
+  if (calcular && lista.length && lista.some((i) => !(Number(i.calculado_frete || 0) > 0))) {
     const chaves = [...new Set(lista.filter((i) => !(Number(i.calculado_frete || 0) > 0)).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
-    for (let i = 0; i < chaves.length; i += 300) {
-      aoProgredir({ fase: 'calculando', atual: Math.min(i + 300, chaves.length), total: chaves.length });
-      const { registros } = await processarCtesPorChave(chaves.slice(i, i + 300), () => {}, { ignorarCubagem: true });
+    for (let i = 0; i < chaves.length; i += BLOCO) {
+      if (prazoFinal && Date.now() > prazoFinal) {
+        if (calculou) { /* o que foi calculado ja esta salvo */ }
+        throw new Error('__parcial__');
+      }
+      aoProgredir({ fase: 'calculando', atual: Math.min(i + BLOCO, chaves.length), total: chaves.length });
+      const { registros } = await processarCtesPorChave(chaves.slice(i, i + BLOCO), () => {}, { ignorarCubagem: true });
       if (registros.length) {
         const competencia = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
         await salvarRecorteCarregadoAuditoria({ competencia, registros });
@@ -197,11 +207,14 @@ export function emailDoAuditor(fatura, mapa) {
 // Analisa UMA fatura do inicio ao fim: apura, decide, envia para a gestao se correta e devolve o
 // registro pronto para gravar em auditor_robo_execucoes. Usado pelo robo na nuvem e pelo botao.
 // anterior = registro anterior da fatura (reavaliacao), para manter/zerar a aprovacao do auditor.
-export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = new Map(), usuario = 'Robo (automatico)', origem = 'automatico', anterior = null, aoProgredir = () => {} } = {}) {
-  const resumo = await apurarFaturaRobo(f, aoProgredir);
+export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = new Map(), usuario = 'Robo (automatico)', origem = 'automatico', anterior = null, aoProgredir = () => {}, prazoFinal = 0, calcular = true } = {}) {
+  const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular });
   const c = classificarFatura(resumo, Boolean(f.auditoria_considerar_menor));
   let enviada = false;
   let motivo = c.motivo;
+  if (!calcular && c.decisao === DECISAO.REVISAO_AUDITOR && resumo.semCalculo > 0) {
+    motivo += ' Calculo pendente: o robo online nao calcula CT-es; rode "Executar agora" na tela do robo ou abra a fatura.';
+  }
   if (c.decisao === DECISAO.ENVIAR_APROVACAO) {
     const r = await enviarFaturaParaGestaoRobo(db, f, resumo, { origem });
     enviada = r.enviada;

@@ -13,7 +13,9 @@
  */
 import { createClient } from '@supabase/supabase-js';
 
-const ORCAMENTO_MS = 45000; // para antes do limite da funcao; o proximo ciclo continua
+const ORCAMENTO_MS = 40000; // nao comeca fatura nova depois disso
+const LIMITE_MS = 52000; // abandona a fatura em andamento (o trabalho ja gravado fica)
+const MAX_ENCADEAMENTO = 40; // chamadas seguidas (cada uma continua de onde a outra parou)
 const MAX_FATURAS = 30;
 const MAX_REAVALIAR = 15;
 const norm = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -64,6 +66,8 @@ export default async function handler(req, res) {
     let analisadas = 0;
     let reavaliadas = 0;
     let enviadasGestao = 0;
+    let estourouTempo = false;
+    let progressou = false;
     const erros = [];
     const fila = [
       ...novas.slice(0, MAX_FATURAS).map((f) => ({ f, anterior: null })),
@@ -72,19 +76,42 @@ export default async function handler(req, res) {
     for (const { f, anterior } of fila) {
       if (Date.now() - inicio > ORCAMENTO_MS) break;
       try {
-        const registro = await core.analisarFaturaRobo(db, f, {
-          cfg: ativas.get(norm(f.transportadora)), emailsAuditores, usuario: 'Robo (automatico)', origem: 'automatico', anterior,
-        });
+        const restante = LIMITE_MS - (Date.now() - inicio);
+        const limite = new Promise((_, rej) => { setTimeout(() => rej(new Error('__tempo__')), restante); });
+        const registro = await Promise.race([
+          core.analisarFaturaRobo(db, f, {
+            cfg: ativas.get(norm(f.transportadora)), emailsAuditores, usuario: 'Robo (automatico)', origem: 'automatico', anterior,
+            prazoFinal: inicio + LIMITE_MS - 6000, calcular: false,
+          }),
+          limite,
+        ]);
         const { error } = await db.from('auditor_robo_execucoes').upsert(registro, { onConflict: 'fatura_id' });
         if (error) throw new Error(error.message);
         if (anterior) reavaliadas += 1; else analisadas += 1;
         if (registro.acao_executada) enviadasGestao += 1;
       } catch (e) {
+        if (e.message === '__tempo__') { estourouTempo = true; break; }
+        if (e.message === '__parcial__') { estourouTempo = true; progressou = true; break; }
         erros.push(`${f.numero_fatura}: ${e.message || e}`);
       }
     }
+    const restantes = Math.max(novas.length - analisadas, 0) + Math.max(reavaliar.length - reavaliadas, 0);
+    // Plano sem cron frequente: quando sobra trabalho, esta chamada aciona a seguinte (limitada),
+    // para o robo terminar tudo sem depender de abrir a tela.
+    let encadeou = false;
+    const profundidade = Number(req.headers['x-robo-encadeamento'] || 0);
+    if ((restantes > 0 || estourouTempo) && (analisadas + reavaliadas > 0 || progressou || profundidade === 0) && profundidade < MAX_ENCADEAMENTO) {
+      try {
+        const host = req.headers['x-forwarded-host'] || req.headers.host;
+        const proto = req.headers['x-forwarded-proto'] || 'https';
+        const cab = { 'x-robo-encadeamento': String(profundidade + 1) };
+        if (segredo) cab.authorization = `Bearer ${segredo}`;
+        await fetch(`${proto}://${host}/api/robo-auditor`, { headers: cab, signal: AbortSignal.timeout(4000) }).catch(() => {});
+        encadeou = true;
+      } catch { /* o proximo disparo diario continua */ }
+    }
     return res.status(200).json({
-      ok: true, analisadas, reavaliadas, enviadasGestao, restantes: Math.max(novas.length - analisadas, 0), erros, ms: Date.now() - inicio,
+      ok: true, analisadas, reavaliadas, enviadasGestao, restantes, encadeou, estourouTempo, erros, ms: Date.now() - inicio,
     });
   } catch (e) {
     return res.status(500).json({ error: e.message || String(e) });
