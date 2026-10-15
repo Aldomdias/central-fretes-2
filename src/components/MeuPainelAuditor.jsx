@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import CtesSemFaturaPainel from './CtesSemFaturaPainel';
+import BoletosPendentesPainel from './BoletosPendentesPainel';
+import FaturasViaRoboPainel from './FaturasViaRoboPainel';
+import FilaRoboAuditor from './FilaRoboAuditor';
 import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
 import { listarAguardandoNovaFaturaAbertos } from '../services/baixaEntregaService';
 import { buscarStatusEntregaCtes, chaveEntregaRegistro, STATUS_ENTREGA } from '../services/auditoriaEntregaCteService';
@@ -166,9 +169,32 @@ export default function MeuPainelAuditor({ state, onAbrirFatura }) {
     });
     return { total, qtd, porAuditor };
   }, [protocolos, state.faturas, mesDesconto, auditorSel, meuEmail, meuNome]);
-  const descontoEmAprovacao = doAuditor
-    .filter((f) => f.status === 'AGUARDANDO_APROVACAO_GESTAO')
-    .reduce((acc, f) => acc + Number(f.desconto_pendente_valor || f.auditoria_total_descontar || 0), 0);
+  // Desconto aguardando a gestao: mesmo calculo da fila de Aprovacao da Gestao (CT-es + tolerancia).
+  // Os campos gravados na fatura nao existem no banco, entao so o calculo exato serve.
+  const [descontoExato, setDescontoExato] = useState(null);
+  const idsEmAprovacao = doAuditor.filter((f) => f.status === 'AGUARDANDO_APROVACAO_GESTAO');
+  const chaveAprovacao = idsEmAprovacao.map((f) => `${f.id}:${f.auditoria_considerar_menor ? 1 : 0}`).join('|');
+  useEffect(() => {
+    if (!idsEmAprovacao.length) { setDescontoExato(0); return undefined; }
+    let ativo = true;
+    setDescontoExato(null);
+    import('../pages/CentralAuditoriaFretesPage')
+      .then(async ({ resumirFaturasExato, descontoConformeEscolha }) => {
+        let total = 0;
+        for (let i = 0; i < idsEmAprovacao.length; i += 10) {
+          const parte = idsEmAprovacao.slice(i, i + 10);
+          const r = await resumirFaturasExato(parte.map((f) => f.id));
+          parte.forEach((f) => {
+            const x = r.get(f.id);
+            if (x) total += descontoConformeEscolha(x.maior, x.menor, Boolean(f.auditoria_considerar_menor));
+          });
+        }
+        if (ativo) setDescontoExato(total);
+      })
+      .catch(() => { if (ativo) setDescontoExato(0); });
+    return () => { ativo = false; };
+  }, [chaveAprovacao]);
+  const descontoEmAprovacao = descontoExato ?? 0;
 
   // CT-es retirados de fatura por falta de entrega e ainda sem fatura nova, do recorte do auditor.
   const aguardandoCtes = useMemo(() => {
@@ -441,6 +467,10 @@ export default function MeuPainelAuditor({ state, onAbrirFatura }) {
           </div>
         </div>
       )}
+      <FilaRoboAuditor faturas={(state.faturas || []).filter((f) => (auditorSel === 'MINHAS' ? eMinha(f) : auditorSel ? (f.auditor_nome || 'SEM AUDITOR') === auditorSel : true))} onAbrirFatura={onAbrirFatura} />
+      <FaturasViaRoboPainel faturas={(state.faturas || []).filter((f) => (auditorSel === 'MINHAS' ? eMinha(f) : auditorSel ? (f.auditor_nome || 'SEM AUDITOR') === auditorSel : true))} onAbrirFatura={onAbrirFatura} />
+      <BoletosPendentesPainel faturas={doAuditor} desde={desde} mostrarAuditor={mostrarAuditorCol} onAbrirFatura={onAbrirFatura} />
+
       <div style={{ fontWeight: 700, fontSize: 13, margin: '4px 0 6px' }}>Por vencimento</div>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
         {FAIXAS.map((fx) => (

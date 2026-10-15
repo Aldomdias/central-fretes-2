@@ -117,10 +117,12 @@ import { autorizarPelaGestao, normalizarCanalAutorizacao, carregarDecisoesPorCha
 import AnaliseFreteTabela from '../components/AnaliseFreteTabela';
 import ProdutividadeDiaFaturas from '../components/ProdutividadeDiaFaturas';
 import MeuPainelAuditor from '../components/MeuPainelAuditor';
+import RoboAuditoriaPainel from '../components/RoboAuditoriaPainel';
 import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
 
 const TABS = [
   ['meu-painel', 'Meu Painel'],
+  ['robo', 'Robo'],
   ['dashboard', 'Dashboard'],
   ['painel', 'Painel'],
   ['faturas', 'Faturas'],
@@ -728,7 +730,7 @@ async function carregarDetalhesExatosFaturas(faturaIds = []) {
 
 // Resumo exato por fatura para a lista: valor a descontar (mesmo calculo do
 // detalhe) + entrega dos CT-es (tracking/comprovantes).
-async function resumirFaturasExato(faturaIds = []) {
+export async function resumirFaturasExato(faturaIds = []) {
   const resultado = new Map();
   const detalhesPorFatura = await carregarDetalhesExatosFaturas(faturaIds);
   const tolerancia = carregarToleranciaAuditoria();
@@ -762,14 +764,43 @@ async function resumirFaturasExato(faturaIds = []) {
   return resultado;
 }
 
+// Robo auditor: garante que os CT-es das faturas tenham o calculo AMD gravado (mesmo passo do
+// "Recalcular CT-es" da lista), sem mexer no status da fatura. Depois disso o resumo exato
+// (resumirFaturasExato) enxerga o resultado fresco.
+export async function calcularCtesFaturasParaRobo(faturas = [], aoProgredir = () => {}) {
+  const MAX_CTES_BLOCO = 300;
+  const chaves = [];
+  for (let i = 0; i < faturas.length; i += 1) {
+    const fatura = faturas[i];
+    aoProgredir({ etapa: 'buscando_ctes', atual: i + 1, total: faturas.length });
+    let detalhes = await carregarDetalhesFaturaSupabase(fatura.id);
+    if (detalhes.some((item) => !item.chave_cte)) {
+      detalhes = (await vincularChavesDetalhesPorNumero(fatura, detalhes)).detalhes;
+    }
+    detalhes.forEach((item) => { if (item.chave_cte) chaves.push(item.chave_cte); });
+  }
+  const unicas = [...new Set(chaves)];
+  let calculados = 0;
+  for (let i = 0; i < unicas.length; i += MAX_CTES_BLOCO) {
+    aoProgredir({ etapa: 'calculando', atual: Math.min(i + MAX_CTES_BLOCO, unicas.length), total: unicas.length });
+    const { registros } = await processarCtesPorChave(unicas.slice(i, i + MAX_CTES_BLOCO), () => {}, { ignorarCubagem: true });
+    if (registros.length) {
+      const competenciaRef = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
+      await salvarRecorteCarregadoAuditoria({ competencia: competenciaRef, registros });
+      calculados += registros.length;
+    }
+  }
+  return { ctes: unicas.length, calculados };
+}
+
 // Valor a descontar da fatura conforme a escolha do auditor (salva na fatura):
 // considerar cobranca a menor = maior - menor (minimo zero); senao so a maior.
-function descontoConformeEscolha(cobrancaAcima, cobrancaAbaixo, considerarMenor) {
+export function descontoConformeEscolha(cobrancaAcima, cobrancaAbaixo, considerarMenor) {
   const maior = Number(cobrancaAcima || 0);
   const menor = Number(cobrancaAbaixo || 0);
   return Number((considerarMenor ? Math.max(0, maior - menor) : maior).toFixed(2));
 }
-const faturaConsideraMenor = (fatura) => Boolean(fatura?.auditoria_considerar_menor);
+export const faturaConsideraMenor = (fatura) => Boolean(fatura?.auditoria_considerar_menor);
 
 const AUDITORIA_TOLERANCIA_KEY = 'amd_auditoria_cte_tolerancia_v1';
 const TOLERANCIA_PADRAO = { acima: 1, abaixo: 5 };
@@ -4129,7 +4160,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   // bloquear o 2o download automatico, entao o botao abaixo garante o arquivo.
   const [emlLaudoPendente, setEmlLaudoPendente] = useState(null);
   const [ultimaCargaFaturas, setUltimaCargaFaturas] = useState(carregarUltimaCargaFaturas);
-  const [selecionadasIds, setSelecionadasIds] = useState([]);
+  const [selecionadasIds, setSelecionadasIds] = useState(() => (Array.isArray(filtrosIniciais?.selecionarIds) ? filtrosIniciais.selecionarIds : []));
   const [statusLote, setStatusLote] = useState('');
   const [auditorLote, setAuditorLote] = useState('');
   const [emailAuditorLote, setEmailAuditorLote] = useState('');
@@ -8617,6 +8648,7 @@ function RespostasDivergenciaFatura({ faturaId, usuarioNome, aoMudarConfirmacao 
 const DECISOES_GESTAO = {
   APROVACAO_GESTAO_CONFIRMOU_DESCONTO: 'Aprovada COM desconto',
   APROVACAO_GESTAO_SEM_DESCONTO: 'Aprovada SEM desconto',
+  APROVACAO_GESTAO_LIBEROU_SEM_DIFERENCA: 'Liberada — sem diferenca',
   APROVACAO_GESTAO_LIBEROU_AUDITORIA_FUTURA: 'Liberada — auditoria futura',
   APROVACAO_GESTAO_AUTORIZOU_E_ENVIOU_SUPRIMENTOS: 'Enviada p/ Suprimentos',
   APROVACAO_GESTAO_RECUSOU: 'Recusada',
@@ -8865,6 +8897,7 @@ function AprovacaoGestao({ state, onState }) {
   };
 
   const TITULOS_DECISAO = {
+    LIBERAR: 'Aprovar e liberar para pagamento (sem diferenca)',
     COM_DESCONTO: 'Aprovar COM desconto',
     SEM_DESCONTO: 'Aprovar SEM desconto (autorizar o adicional)',
     AUDITORIA_FUTURA: 'Liberar pagamento e auditar depois',
@@ -8976,6 +9009,19 @@ function AprovacaoGestao({ state, onState }) {
             valor_recuperado: 0,
             auditoria_total_descontar: 0,
           };
+        } else if (tipo === 'LIBERAR') {
+          // Fatura sem cobranca a maior (ex.: enviada pelo robo auditor): so confirma a liberacao.
+          // Reconfere agora, com os CT-es atuais, para nao liberar algo que mudou.
+          if (auditoriaEstaIncompleta(resumoAtual)) {
+            throw new Error(`auditoria incompleta (${resumoAtual.semCalculo} de ${resumoAtual.total} CT-e(s) sem calculo): use outra decisao.`);
+          }
+          if (diferencaCalculada > 0.01) {
+            throw new Error(`ha cobranca a maior de ${dinheiro(diferencaCalculada)}: aprove com ou sem desconto.`);
+          }
+          statusNovo = 'PRONTA_PARA_PAGAMENTO';
+          acao = 'APROVACAO_GESTAO_LIBEROU_SEM_DIFERENCA';
+          descricao = `Gestao aprovou e liberou para pagamento: ${resumoAtual.calculados} de ${resumoAtual.total} CT-e(s) calculados, sem cobranca a maior.${texto ? ` Obs.: ${texto}` : ''}`;
+          campos = { ...campos, desconto_aplicado_confirmado: false, desconto_pendente_valor: 0, valor_recuperado: 0, auditoria_total_descontar: 0 };
         } else if (tipo === 'SEM_DESCONTO' || tipo === 'SUPRIMENTOS') {
           const itens = itensComAdicional(fatura, ctes);
           if (!itens.length) throw new Error('nenhum CT-e com adicional calculado pela AMD nesta fatura (sem simulacao ou sem diferenca positiva).');
@@ -9063,7 +9109,8 @@ function AprovacaoGestao({ state, onState }) {
     const texto = fatura.observacao_aprovacao || doHistorico;
     const sim = texto.includes('[DESCONTO: SIM]');
     const nao = texto.includes('[DESCONTO: NAO]');
-    return { sim, nao, texto: texto.replace(/\[DESCONTO: (SIM|NAO)\]\s*/, ''), quem: envio?.usuario_nome || '' };
+    const robo = /\[VIA ROBO\]/.test(String(envio?.descricao || '')) || /\[VIA ROBO\]/.test(texto);
+    return { sim, nao, robo, texto: texto.replace(/\[DESCONTO: (SIM|NAO)\]\s*/, ''), quem: envio?.usuario_nome || '' };
   };
 
   const totalEscolhido = escolhidas.reduce((acc, item) => acc + valorPendente(item), 0);
@@ -9111,7 +9158,8 @@ function AprovacaoGestao({ state, onState }) {
       </div>
       {ehGestor && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0' }}>
-          {botao('COM_DESCONTO', 'Aprovar com desconto', 'btn-primary')}
+          {botao('LIBERAR', 'Aprovar e liberar (sem diferenca)', 'btn-primary')}
+          {botao('COM_DESCONTO', 'Aprovar com desconto')}
           {botao('SEM_DESCONTO', 'Aprovar sem desconto')}
           {botao('AUDITORIA_FUTURA', 'Liberar agora / auditar depois')}
           {botao('SUPRIMENTOS', 'Autorizar e enviar p/ Suprimentos')}
@@ -9156,7 +9204,8 @@ function AprovacaoGestao({ state, onState }) {
                   <td>
                     {resposta.sim && <strong style={{ color: '#14733b' }}>Vai descontar. </strong>}
                     {resposta.nao && <strong style={{ color: '#9b1111' }}>Nao vai descontar. </strong>}
-                    {!resposta.sim && !resposta.nao && <strong style={{ color: '#b45309' }}>Auditor nao informou se vai descontar. </strong>}
+                    {resposta.robo && <strong style={{ color: '#14733b' }}>Enviada pelo Robo: auditoria completa, sem cobranca a maior, tudo entregue. </strong>}
+                    {!resposta.robo && !resposta.sim && !resposta.nao && <strong style={{ color: '#b45309' }}>Auditor nao informou se vai descontar. </strong>}
                     {resposta.texto}
                     {resposta.quem && <div style={{ fontSize: 11, color: '#64748b' }}>Enviado por {resposta.quem}</div>}
                   </td>
@@ -9245,6 +9294,7 @@ function AprovacaoGestao({ state, onState }) {
                 </div></div>
               </>
             )}
+            {decisao.tipo === 'LIBERAR' && <p>Confirma a liberacao para pagamento de faturas <strong>sem cobranca a maior</strong> (ex.: as enviadas pelo robo auditor). Os CT-es sao reconferidos agora; se houver diferenca ou CT-e sem calculo, a fatura nao e liberada por aqui.</p>}
             {decisao.tipo === 'SEM_DESCONTO' && <p>O adicional de cada CT-e cobrado a mais vira <strong>saldo autorizado</strong> (gestao/auditoria) e a fatura e liberada para pagamento sem desconto.</p>}
             {decisao.tipo === 'AUDITORIA_FUTURA' && (
               <div className="hint-box compact" style={{ borderLeft: '4px solid #7c3aed' }}>
@@ -10220,6 +10270,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
         {TABS.map(([id, label]) => <button key={id} className={`toggle-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>{label}</button>)}
       </div>
       {tab === 'meu-painel' && <MeuPainelAuditor state={state} onAbrirFatura={(f) => irParaFaturasComFiltro({ abrirNumeroFatura: f.numero_fatura, abrirTransportadora: f.transportadora })} />}
+      {tab === 'robo' && <RoboAuditoriaPainel state={state} onAbrirFatura={(f) => irParaFaturasComFiltro({ abrirNumeroFatura: f.numero_fatura, abrirTransportadora: f.transportadora })} onAbrirConsolidado={(transportadora, fats) => irParaFaturasComFiltro({ filtro: transportadora, selecionarIds: fats.map((f) => f.id) })} />}
       {tab === 'dashboard' && <Dashboard state={state} />}
       {tab === 'painel' && (
         <PainelAcompanhamento

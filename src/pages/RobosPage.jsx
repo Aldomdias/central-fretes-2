@@ -4,7 +4,10 @@ import LancamentoNfseRobo from './robos/LancamentoNfseRobo';
 import LancamentoCteRobo from './robos/LancamentoCteRobo';
 import HistoricoLancamentos from './robos/HistoricoLancamentos';
 
+import AuditorRobo from './robos/AuditorRobo';
+
 const ROBOS = [
+  { chave: 'auditor-faturas', titulo: 'Robô Auditor', descricao: 'Audita as faturas novas das transportadoras da lista: laudo ao transportador se houver desconto, aprovação se estiver correta, sempre com o auditor responsável em cópia. Faturas corretas já vão para a aprovação da gestão; o envio de e-mail ainda não está ativo.', componente: AuditorRobo },
   { chave: 'reprocessar-cte', titulo: 'Reprocessar CT-e', descricao: 'Exporta os CT-e com erro de saldo do SAP e reprocessa em lotes. Substitui a planilha “Reprocessar Cte”.', componente: ReprocessarCteRobo },
   { chave: 'lancamento-nfse', titulo: 'Lançamento NFS-e', descricao: 'Cria o pedido (ME21N) e a MIRO das notas de serviço das transportadoras. Substitui a planilha “Lançamento NFS-e”.', componente: LancamentoNfseRobo },
   { chave: 'lancamento-cte', titulo: 'Lançamento CT-e', descricao: 'Lê os XMLs dos CT-e, acha o centro de custo no SAP e cria o pedido (ME21N) e a MIRO. Substitui a planilha “Lançamento CT-e”.', componente: LancamentoCteRobo },

@@ -1,0 +1,8 @@
+{
+  "crons": [
+    { "path": "/api/robo-auditor", "schedule": "20 12 * * *" }
+  ],
+  "functions": {
+    "api/robo-auditor.js": { "maxDuration": 60, "includeFiles": "api/_robo-core.mjs" }
+  }
+}

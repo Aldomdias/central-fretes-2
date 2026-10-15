@@ -1,0 +1,239 @@
+import { useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
+import { carregarSessao } from '../utils/authLocal';
+import {
+  confirmarBoletos, desfazerConfirmacaoBoleto, listarControleBoletos, STATUS_BOLETO,
+} from '../services/boletoControleService';
+
+const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
+const norm = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+
+// Faturas liberadas para pagamento e ainda nao pagas: o boleto precisa estar na pasta do financeiro.
+export const STATUS_EXIGE_BOLETO = new Set(['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO', 'ENVIADA_AO_FINANCEIRO']);
+
+function diasDesde(iso) {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  return Number.isNaN(t) ? null : Math.max(0, Math.floor((Date.now() - t) / 86400000));
+}
+
+// faturas: faturas do recorte atual (ja filtradas por auditor); desde: { faturaId: dataLiberacaoIso }.
+export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAuditor = false, onAbrirFatura }) {
+  const sessao = carregarSessao();
+  const [controle, setControle] = useState([]);
+  const [local, setLocal] = useState(false);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState('');
+  const [aberto, setAberto] = useState(false);
+  const [verConfirmados, setVerConfirmados] = useState(false);
+  const [busca, setBusca] = useState('');
+  const [selecionadas, setSelecionadas] = useState(() => new Set());
+  const [salvando, setSalvando] = useState(false);
+
+  const recarregar = () => listarControleBoletos()
+    .then(({ lista, local: l }) => { setControle(lista); setLocal(l); setErro(''); })
+    .catch((e) => setErro(e.message))
+    .finally(() => setCarregando(false));
+  useEffect(() => { recarregar(); }, []);
+
+  const porFatura = useMemo(() => new Map(controle.map((c) => [String(c.fatura_id), c])), [controle]);
+  const exigem = useMemo(() => (faturas || []).filter((f) => STATUS_EXIGE_BOLETO.has(f.status)), [faturas]);
+  const termo = norm(busca);
+  const filtra = (f) => !termo || [f.numero_fatura, f.transportadora, f.auditor_nome].some((v) => norm(v).includes(termo));
+
+  const pendentes = useMemo(() => exigem
+    .filter((f) => !porFatura.has(String(f.id)))
+    .filter(filtra)
+    .map((f) => ({ f, dias: diasDesde(desde[f.id] || f.updated_at) }))
+    .sort((a, b) => (b.dias ?? -1) - (a.dias ?? -1)), [exigem, porFatura, desde, termo]);
+  const confirmados = useMemo(() => exigem
+    .filter((f) => porFatura.has(String(f.id)))
+    .filter(filtra)
+    .map((f) => ({ f, c: porFatura.get(String(f.id)) }))
+    .sort((a, b) => String(b.c.confirmado_em).localeCompare(String(a.c.confirmado_em))), [exigem, porFatura, termo]);
+
+  const valorPendente = pendentes.reduce((acc, { f }) => acc + Number(f.valor_fatura || 0), 0);
+  const maisAntigo = pendentes.reduce((m, { dias }) => Math.max(m, dias ?? 0), 0);
+  const nSel = pendentes.filter(({ f }) => selecionadas.has(String(f.id))).length;
+
+  const alternar = (id) => setSelecionadas((prev) => {
+    const novo = new Set(prev);
+    if (novo.has(id)) novo.delete(id); else novo.add(id);
+    return novo;
+  });
+  const todasMarcadas = pendentes.length > 0 && nSel === pendentes.length;
+  const alternarTodas = () => setSelecionadas(todasMarcadas ? new Set() : new Set(pendentes.map(({ f }) => String(f.id))));
+
+  const aplicar = async (lista, status) => {
+    if (!lista.length || salvando) return;
+    let observacao = '';
+    if (status === STATUS_BOLETO.DISPENSADO) {
+      observacao = (window.prompt('Por que esta fatura nao precisa de boleto? (ex.: pago por transferencia, debito automatico)') || '').trim();
+      if (!observacao) return;
+    } else if (lista.length > 1 && !window.confirm(`Confirmar que o boleto de ${lista.length} fatura(s) esta na pasta do financeiro?`)) {
+      return;
+    }
+    setSalvando(true);
+    setErro('');
+    try {
+      await confirmarBoletos(lista, { status, observacao, usuario: { nome: sessao?.nome, email: sessao?.email } });
+      setSelecionadas(new Set());
+      await recarregar();
+    } catch (e) {
+      setErro(e.message);
+    } finally {
+      setSalvando(false);
+    }
+  };
+
+  const desfazer = async (f) => {
+    if (!window.confirm(`Voltar a fatura ${f.numero_fatura} para "aguardando boleto"?`)) return;
+    try { await desfazerConfirmacaoBoleto(f.id); await recarregar(); } catch (e) { setErro(e.message); }
+  };
+
+  const exportar = () => {
+    const linhas = pendentes.map(({ f, dias }) => ({
+      Fatura: f.numero_fatura || '',
+      Transportadora: f.transportadora || '',
+      Auditor: f.auditor_nome || '',
+      Valor: Number(f.valor_fatura || 0),
+      Vencimento: dataBr(f.data_vencimento),
+      'Dias aguardando boleto': dias ?? '',
+      Status: f.status,
+    }));
+    const ws = XLSX.utils.json_to_sheet(linhas);
+    ws['!cols'] = [{ wch: 14 }, { wch: 30 }, { wch: 22 }, { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 24 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Boletos pendentes');
+    XLSX.writeFile(wb, `BOLETOS_PENDENTES_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const corDias = (d) => (d == null ? '#64748b' : d >= 5 ? '#b91c1c' : d >= 2 ? '#c2410c' : '#475569');
+
+  return (
+    <div className="table-card" style={{ marginBottom: 14, borderLeft: '4px solid #0369a1' }}>
+      <div
+        className="panel-title audit-table-title"
+        style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', cursor: 'pointer' }}
+        onClick={() => setAberto((v) => !v)}
+      >
+        <span>{aberto ? '▾' : '▸'} Boletos na pasta do financeiro</span>
+        <span style={{ fontWeight: 800, color: pendentes.length ? '#b45309' : '#14733b' }}>
+          {carregando ? '...' : `${pendentes.length} pendente(s)`}
+        </span>
+        {!carregando && pendentes.length > 0 && (
+          <span style={{ fontSize: 12, fontWeight: 400, color: '#475569' }}>
+            {dinheiro(valorPendente)} · mais antigo: {maisAntigo} dia(s)
+          </span>
+        )}
+      </div>
+      {aberto && (
+        <div style={{ padding: '0 12px 12px' }}>
+          {local && (
+            <div className="hint-box compact" style={{ borderLeft: '4px solid #b45309', marginBottom: 8 }}>
+              Tabela <code>fatura_boleto_controle</code> ainda nao existe no banco: as confirmacoes ficam so neste navegador.
+              Aplique a migration <code>supabase/migrations/20261014_001_fatura_boleto_controle.sql</code> para compartilhar com a equipe.
+            </div>
+          )}
+          {erro && <div className="hint-box compact" style={{ borderLeft: '4px solid #b91c1c', marginBottom: 8 }}>{erro}</div>}
+          <div className="hint-box compact" style={{ marginBottom: 8 }}>
+            Fatura liberada para pagamento precisa ter o boleto na pasta do financeiro. Quando colocar o boleto na pasta,
+            clique em <strong>Boleto na pasta</strong> para dar a baixa nesta lista.
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+            <input
+              type="search" placeholder="Buscar fatura, transportadora ou auditor" value={busca}
+              onChange={(e) => setBusca(e.target.value)} style={{ minWidth: 260 }}
+            />
+            <button type="button" className="btn-primary audit-small-button" disabled={!nSel || salvando}
+              onClick={() => aplicar(pendentes.filter(({ f }) => selecionadas.has(String(f.id))).map(({ f }) => f), STATUS_BOLETO.NA_PASTA)}>
+              Boleto na pasta ({nSel})
+            </button>
+            <button type="button" className="btn-secondary audit-small-button" disabled={!nSel || salvando}
+              onClick={() => aplicar(pendentes.filter(({ f }) => selecionadas.has(String(f.id))).map(({ f }) => f), STATUS_BOLETO.DISPENSADO)}>
+              Nao precisa de boleto ({nSel})
+            </button>
+            <button type="button" className="btn-secondary audit-small-button" disabled={!pendentes.length} onClick={exportar}>
+              Exportar pendentes
+            </button>
+            <label style={{ fontSize: 12, display: 'flex', gap: 4, alignItems: 'center' }}>
+              <input type="checkbox" checked={verConfirmados} onChange={(e) => setVerConfirmados(e.target.checked)} />
+              Ver ja confirmados ({confirmados.length})
+            </label>
+          </div>
+
+          {!carregando && !pendentes.length && (
+            <div style={{ padding: 10, color: '#14733b', fontWeight: 700 }}>✓ Nenhum boleto pendente neste recorte.</div>
+          )}
+          {pendentes.length > 0 && (
+            <div className="sim-analise-tabela-wrap" style={{ maxHeight: 360, overflowY: 'auto' }}>
+              <table className="sim-analise-tabela">
+                <thead>
+                  <tr>
+                    <th><input type="checkbox" checked={todasMarcadas} onChange={alternarTodas} /></th>
+                    <th>Fatura</th>
+                    <th>Transportadora</th>
+                    {mostrarAuditor && <th>Auditor</th>}
+                    <th>Valor</th>
+                    <th>Vencimento</th>
+                    <th>Aguardando</th>
+                    <th>Acao</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendentes.map(({ f, dias }) => (
+                    <tr key={f.id}>
+                      <td><input type="checkbox" checked={selecionadas.has(String(f.id))} onChange={() => alternar(String(f.id))} /></td>
+                      <td>
+                        {onAbrirFatura
+                          ? <button type="button" className="link-button" onClick={() => onAbrirFatura(f)}>{f.numero_fatura}</button>
+                          : f.numero_fatura}
+                      </td>
+                      <td>{f.transportadora}</td>
+                      {mostrarAuditor && <td>{f.auditor_nome || 'SEM AUDITOR'}</td>}
+                      <td>{dinheiro(f.valor_fatura)}</td>
+                      <td>{dataBr(f.data_vencimento)}</td>
+                      <td style={{ color: corDias(dias), fontWeight: 700 }}>{dias == null ? '-' : `${dias} dia(s)`}</td>
+                      <td>
+                        <button type="button" className="btn-primary audit-small-button" disabled={salvando}
+                          onClick={() => aplicar([f], STATUS_BOLETO.NA_PASTA)}>
+                          Boleto na pasta
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {verConfirmados && (
+            <div className="sim-analise-tabela-wrap" style={{ marginTop: 12, maxHeight: 300, overflowY: 'auto' }}>
+              <table className="sim-analise-tabela">
+                <thead>
+                  <tr><th>Fatura</th><th>Transportadora</th><th>Valor</th><th>Situacao</th><th>Por</th><th>Quando</th><th /></tr>
+                </thead>
+                <tbody>
+                  {confirmados.slice(0, 200).map(({ f, c }) => (
+                    <tr key={f.id}>
+                      <td>{f.numero_fatura}</td>
+                      <td>{f.transportadora}</td>
+                      <td>{dinheiro(f.valor_fatura)}</td>
+                      <td title={c.observacao || ''}>
+                        {c.status === STATUS_BOLETO.DISPENSADO ? 'Nao precisa de boleto' : c.metodo === 'PASTA' ? 'Na pasta (conferido)' : 'Na pasta (confirmado)'}
+                      </td>
+                      <td>{c.confirmado_por || '-'}</td>
+                      <td>{dataBr(c.confirmado_em)}</td>
+                      <td><button type="button" className="btn-secondary audit-small-button" onClick={() => desfazer(f)}>Desfazer</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
