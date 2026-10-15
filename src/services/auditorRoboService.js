@@ -146,3 +146,21 @@ export async function marcarLaudoEnviadoRobo(faturaIds, usuario) {
     .in('fatura_id', ids).eq('decisao', DECISAO.ENVIAR_LAUDO);
   if (error) throw new Error(`Erro ao marcar laudo como enviado: ${error.message}`);
 }
+
+// Todas as transportadoras do cadastro (para escolher na lista do robo), sem depender de ter
+// fatura em auditoria agora. Pagina para nao parar no limite de 1000 linhas.
+export async function listarNomesTransportadoras() {
+  const client = getSupabaseClient();
+  const nomes = new Set();
+  for (let inicio = 0; inicio < 20000; inicio += 1000) {
+    const { data, error } = await client.from('transportadoras').select('nome').order('nome').range(inicio, inicio + 999);
+    if (error || !data?.length) break;
+    data.forEach((r) => { if (r.nome) nomes.add(String(r.nome).trim()); });
+    if (data.length < 1000) break;
+  }
+  try {
+    const { data } = await client.from('auditoria_carteiras').select('transportadora').limit(5000);
+    (data || []).forEach((r) => { if (r.transportadora) nomes.add(String(r.transportadora).trim()); });
+  } catch { /* sem carteiras */ }
+  return [...nomes];
+}

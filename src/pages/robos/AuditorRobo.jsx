@@ -3,7 +3,7 @@ import { carregarSessao } from '../../utils/authLocal';
 import { getSupabaseClient } from '../../lib/supabaseClient';
 import {
   classificarFatura, DECISAO, gravarExecucoesRobo, limparSimulacoesRobo, listarExecucoesRobo, listarFaturasEmAuditoria, ROBO_DATA_INICIO,
-  listarRoboTransportadoras, normNome, removerRoboTransportadora, salvarRoboTransportadora,
+  listarNomesTransportadoras, listarRoboTransportadoras, normNome, removerRoboTransportadora, salvarRoboTransportadora,
 } from '../../services/auditorRoboService';
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -24,6 +24,7 @@ export default function AuditorRobo() {
   const [lista, setLista] = useState([]);
   const [semTabela, setSemTabela] = useState(false);
   const [faturas, setFaturas] = useState([]);
+  const [nomesCadastro, setNomesCadastro] = useState([]);
   const [execucoes, setExecucoes] = useState([]);
   const [form, setForm] = useState(vazio);
   const [erro, setErro] = useState('');
@@ -36,9 +37,13 @@ export default function AuditorRobo() {
       setLista(l); setSemTabela(s); setFaturas(f); setExecucoes(e); setErro('');
     } catch (ex) { setErro(ex.message); }
   };
-  useEffect(() => { carregar(); }, []);
+  useEffect(() => { carregar(); listarNomesTransportadoras().then(setNomesCadastro).catch(() => {}); }, []);
 
-  const nomesTransportadora = useMemo(() => [...new Set(faturas.map((f) => f.transportadora).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR')), [faturas]);
+  const nomesTransportadora = useMemo(() => {
+    const mapa = new Map();
+    [...nomesCadastro, ...faturas.map((f) => f.transportadora)].filter(Boolean).forEach((n) => { const k = normNome(n); if (!mapa.has(k)) mapa.set(k, String(n).trim()); });
+    return [...mapa.values()].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [nomesCadastro, faturas]);
 
   const adicionar = async () => {
     if (!form.transportadora.trim()) { setErro('Informe a transportadora.'); return; }
