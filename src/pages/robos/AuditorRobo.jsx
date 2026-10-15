@@ -17,6 +17,7 @@ const ROTULO = {
 
 const LIMITE_POR_EXECUCAO = 20;
 const LIMITE_REAVALIAR = 10;
+const soma0 = (arr) => arr.reduce((a, e) => a + Number(e.valor_descontar || 0), 0);
 const vazio = { transportadora: '', emails_transportadora: '', email_aprovacao: '' };
 
 export default function AuditorRobo() {
@@ -154,6 +155,69 @@ export default function AuditorRobo() {
 
   const ultimaAuto = useMemo(() => execucoes.find((e) => String(e.executado_por || '').startsWith('Robo')), [execucoes]);
 
+  const [periodo, setPeriodo] = useState('7');
+  const painel = useMemo(() => {
+    const corte = periodo === 'todos' ? 0 : Date.now() - Number(periodo) * 86400000;
+    const lista = execucoes.filter((e) => !corte || new Date(e.reavaliado_em || e.executado_em).getTime() >= corte);
+    const soma = (arr, f) => arr.reduce((a, e) => a + Number(f(e) || 0), 0);
+    const gestao = lista.filter((e) => e.decisao === DECISAO.ENVIAR_APROVACAO && e.acao_executada);
+    const laudos = lista.filter((e) => e.decisao === DECISAO.ENVIAR_LAUDO);
+    const laudosEnviados = laudos.filter((e) => e.acao_executada);
+    const laudosAprovados = laudos.filter((e) => !e.acao_executada && e.aprovado_auditor_em);
+    const laudosOk = laudos.filter((e) => !e.acao_executada && !e.aprovado_auditor_em);
+    const revisar = lista.filter((e) => e.decisao === DECISAO.REVISAO_AUDITOR && !e.acao_executada);
+    const causa = { semCalculo: 0, semEntrega: 0, outros: 0 };
+    revisar.forEach((e) => {
+      const m = String(e.motivo || '').toLowerCase();
+      if (m.includes('sem calculo')) causa.semCalculo += 1;
+      else if (m.includes('sem entrega')) causa.semEntrega += 1;
+      else causa.outros += 1;
+    });
+    const automaticas = lista.filter((e) => String(e.executado_por || '').startsWith('Robo'));
+    const ordenar = (a, b) => String(b.reavaliado_em || b.executado_em).localeCompare(String(a.reavaliado_em || a.executado_em));
+    const ultima = [...execucoes].sort(ordenar)[0];
+    const ultimaAuto = [...execucoes].filter((e) => String(e.executado_por || '').startsWith('Robo')).sort(ordenar)[0];
+    const porTransp = new Map();
+    lista.forEach((e) => {
+      const r = porTransp.get(e.transportadora) || { nome: e.transportadora, analisadas: 0, gestao: 0, laudos: 0, revisar: 0, descontar: 0 };
+      r.analisadas += 1;
+      if (e.decisao === DECISAO.ENVIAR_APROVACAO && e.acao_executada) r.gestao += 1;
+      if (e.decisao === DECISAO.ENVIAR_LAUDO) { r.laudos += 1; r.descontar += Number(e.valor_descontar || 0); }
+      if (e.decisao === DECISAO.REVISAO_AUDITOR && !e.acao_executada) r.revisar += 1;
+      porTransp.set(e.transportadora, r);
+    });
+    return {
+      lista, gestao, laudos, laudosEnviados, laudosAprovados, laudosOk, revisar, causa, automaticas, ultima, ultimaAuto,
+      valorGestao: soma(gestao, (e) => e.valor_fatura),
+      descontarTotal: soma(laudos, (e) => e.valor_descontar),
+      reavaliacoes: soma(lista, (e) => Math.max(Number(e.tentativas || 1) - 1, 0)),
+      taxa: lista.length ? Math.round((gestao.length / lista.length) * 100) : 0,
+      porTransp: [...porTransp.values()].sort((a, b) => b.analisadas - a.analisadas),
+    };
+  }, [execucoes, periodo]);
+
+  const [cardSel, setCardSel] = useState('');
+  const [transpSel, setTranspSel] = useState('');
+  const registrosCard = useMemo(() => {
+    const por = {
+      analisadas: painel.lista,
+      gestao: painel.gestao,
+      laudos: painel.laudos,
+      laudosOk: painel.laudosOk,
+      laudosAprovados: painel.laudosAprovados,
+      laudosEnviados: painel.laudosEnviados,
+      revisar: painel.revisar,
+      reavaliacoes: painel.lista.filter((e) => Number(e.tentativas || 1) > 1),
+    };
+    const base = cardSel && por[cardSel] ? por[cardSel] : painel.lista;
+    return base.filter((e) => !transpSel || e.transportadora === transpSel);
+  }, [painel, cardSel, transpSel]);
+  const ROTULO_CARD = {
+    analisadas: 'Faturas analisadas', novas: 'Novas aguardando', gestao: 'Enviadas para a gestao', laudos: 'Laudos com desconto',
+    laudosOk: 'Laudos aguardando seu OK', laudosAprovados: 'Laudos aprovados, a enviar', laudosEnviados: 'Laudos enviados',
+    revisar: 'Para revisar', reavaliacoes: 'Reavaliacoes feitas',
+  };
+
   const resumo = useMemo(() => execucoes.reduce((acc, e) => { acc[e.decisao] = (acc[e.decisao] || 0) + 1; return acc; }, {}), [execucoes]);
 
   return (
@@ -165,6 +229,67 @@ export default function AuditorRobo() {
       )}
       {erro && <div className="hint-box compact" style={{ borderLeft: '4px solid #b91c1c' }}>{erro}</div>}
       {msg && <div className="hint-box compact" style={{ borderLeft: '4px solid #14733b' }}>{msg}</div>}
+
+      <div className="table-card">
+        <div className="panel-title audit-table-title" style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span>Painel do robo</span>
+          <select value={periodo} onChange={(e) => setPeriodo(e.target.value)}>
+            <option value="1">Ultimas 24h</option>
+            <option value="7">Ultimos 7 dias</option>
+            <option value="30">Ultimos 30 dias</option>
+            <option value="todos">Desde o inicio</option>
+          </select>
+          <span style={{ fontWeight: 400, fontSize: 12, color: '#475569' }}>
+            Ultima execucao automatica: {painel.ultimaAuto ? dataBr(painel.ultimaAuto.executado_em) : 'ainda nao rodou'}
+            {painel.ultima ? ` · ultima atividade: ${dataBr(painel.ultima.reavaliado_em || painel.ultima.executado_em)} (${painel.ultima.executado_por || '-'})` : ''}
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', padding: '0 12px 12px' }}>
+          {[
+            ['analisadas', 'Faturas analisadas', painel.lista.length, `${painel.automaticas.length} pelo robo automatico`, '#071d49'],
+            ['novas', 'Novas aguardando', novas.length, 'ainda nao analisadas', '#475569'],
+            ['gestao', 'Enviadas para a gestao', painel.gestao.length, `${dinheiro(painel.valorGestao)} em faturas · ${painel.taxa}% sem intervencao`, '#7c3aed'],
+            ['laudos', 'Laudos com desconto', painel.laudos.length, `${dinheiro(painel.descontarTotal)} a descontar no total`, '#b45309'],
+            ['laudosOk', 'Laudos aguardando seu OK', painel.laudosOk.length, `${dinheiro(soma0(painel.laudosOk))} a descontar`, '#c2410c'],
+            ['laudosAprovados', 'Laudos aprovados, a enviar', painel.laudosAprovados.length, `${dinheiro(soma0(painel.laudosAprovados))} a descontar`, '#0e7490'],
+            ['laudosEnviados', 'Laudos enviados', painel.laudosEnviados.length, `${dinheiro(soma0(painel.laudosEnviados))} a descontar`, '#14733b'],
+            ['revisar', 'Para revisar', painel.revisar.length, `${painel.causa.semCalculo} sem calculo · ${painel.causa.semEntrega} sem entrega · ${painel.causa.outros} outros`, '#b91c1c'],
+            ['reavaliacoes', 'Reavaliacoes feitas', painel.reavaliacoes, 'casos em que o robo voltou a olhar', '#475569'],
+          ].map(([id, rotulo, valor, sub, cor]) => {
+            const ativo = cardSel === id;
+            return (
+              <button
+                key={id} type="button" onClick={() => setCardSel(ativo ? '' : id)}
+                title="Clique para ver as faturas deste card na tabela abaixo"
+                style={{
+                  flex: '1 1 190px', textAlign: 'left', cursor: 'pointer', borderRadius: 12, padding: '8px 12px',
+                  border: `2px solid ${cor}`, background: ativo ? cor : '#fff', color: ativo ? '#fff' : '#0f172a',
+                }}
+              >
+                <div style={{ fontSize: 12, opacity: 0.9 }}>{rotulo}</div>
+                <div style={{ fontSize: 28, fontWeight: 800, color: ativo ? '#fff' : cor }}>{valor}</div>
+                <div style={{ fontSize: 11, opacity: 0.85 }}>{sub}</div>
+              </button>
+            );
+          })}
+        </div>
+        {painel.porTransp.length > 0 && (
+          <div className="sim-analise-tabela-wrap" style={{ maxHeight: 260, overflowY: 'auto' }}>
+            <table className="sim-analise-tabela">
+              <thead><tr><th>Transportadora</th><th>Analisadas</th><th>Enviadas a gestao</th><th>Laudos</th><th>A descontar</th><th>Para revisar</th></tr></thead>
+              <tbody>
+                {painel.porTransp.map((r) => (
+                  <tr key={r.nome} onClick={() => setTranspSel(transpSel === r.nome ? '' : r.nome)} style={{ cursor: 'pointer', background: transpSel === r.nome ? '#eef2ff' : undefined }}>
+                    <td>{r.nome}</td><td>{r.analisadas}</td><td>{r.gestao}</td><td>{r.laudos}</td>
+                    <td>{r.descontar > 0 ? dinheiro(r.descontar) : '-'}</td>
+                    <td style={{ color: r.revisar ? '#b91c1c' : undefined, fontWeight: r.revisar ? 700 : 400 }}>{r.revisar}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       <div className="hint-box compact">
         <strong>O que o robo faz hoje:</strong> faturas corretas (calculadas, sem desconto e todas entregues) vao direto para a
@@ -226,12 +351,36 @@ export default function AuditorRobo() {
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', padding: '0 12px 8px', fontSize: 13 }}>
           {Object.values(DECISAO).map((d) => <span key={d} style={{ color: ROTULO[d].cor, fontWeight: 700 }}>{ROTULO[d].texto}: {resumo[d] || 0}</span>)}
         </div>
-        {execucoes.length > 0 && (
-          <div className="sim-analise-tabela-wrap">
+        {(cardSel || transpSel) && (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '0 12px 8px', fontSize: 13 }}>
+            <strong>Filtro:</strong>
+            {cardSel && <span>{ROTULO_CARD[cardSel]}</span>}
+            {transpSel && <span>· {transpSel}</span>}
+            <span style={{ color: '#475569' }}>({cardSel === 'novas' ? novas.filter((f) => !transpSel || f.transportadora === transpSel).length : registrosCard.length} registro(s))</span>
+            <button type="button" className="btn-secondary audit-small-button" onClick={() => { setCardSel(''); setTranspSel(''); }}>Limpar filtro</button>
+          </div>
+        )}
+        {cardSel === 'novas' && (
+          <div className="sim-analise-tabela-wrap" style={{ maxHeight: 360, overflowY: 'auto' }}>
+            <table className="sim-analise-tabela">
+              <thead><tr><th>Fatura</th><th>Transportadora</th><th>Valor</th><th>Auditor</th><th>Entrou em</th></tr></thead>
+              <tbody>
+                {novas.filter((f) => !transpSel || f.transportadora === transpSel).slice(0, 500).map((f) => (
+                  <tr key={f.id}>
+                    <td>{f.numero_fatura}</td><td>{f.transportadora}</td><td>{dinheiro(f.valor_fatura)}</td>
+                    <td>{f.auditor_nome || '-'}</td><td>{dataBr(f.importado_em || f.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {execucoes.length > 0 && cardSel !== 'novas' && (
+          <div className="sim-analise-tabela-wrap" style={{ maxHeight: 520, overflowY: 'auto' }}>
             <table className="sim-analise-tabela">
               <thead><tr><th>Quando</th><th>Fatura</th><th>Transportadora</th><th>Valor</th><th>Decisao</th><th>A descontar</th><th>Para</th><th>Copia</th><th>Motivo</th></tr></thead>
               <tbody>
-                {execucoes.slice(0, 300).map((e) => (
+                {(cardSel === 'novas' ? [] : registrosCard).slice(0, 500).map((e) => (
                   <tr key={e.id}>
                     <td>{dataBr(e.executado_em)}</td>
                     <td>{e.numero_fatura}</td>

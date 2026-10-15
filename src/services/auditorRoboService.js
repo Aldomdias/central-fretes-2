@@ -63,7 +63,7 @@ export async function removerRoboTransportadora(id) {
   if (error) throw new Error(`Erro ao remover: ${error.message}`);
 }
 
-export async function listarExecucoesRobo(limite = 500) {
+export async function listarExecucoesRobo(limite = 5000) {
   const { data, error } = await getSupabaseClient().from('auditor_robo_execucoes').select('*').order('executado_em', { ascending: false }).limit(limite);
   if (error) {
     if (tabelaAusente(error)) return [];
