@@ -3,8 +3,8 @@ import { carregarSessao } from '../../utils/authLocal';
 import { getSupabaseClient } from '../../lib/supabaseClient';
 import RoboProgressoAmd from '../../components/RoboProgressoAmd';
 import {
-  classificarFatura, DECISAO, STATUS_ROBO_AUDITA, gravarExecucoesRobo, limparSimulacoesRobo, listarExecucoesRobo, listarFaturasEmAuditoria, ROBO_DATA_INICIO,
-  listarNomesTransportadoras, listarRoboTransportadoras, normNome, removerRoboTransportadora, salvarRoboTransportadora,
+  classificarFatura, DECISAO, STATUS_ROBO_AUDITA, gravarExecucoesRobo, limparSimulacoesRobo, listarExecucoesRobo, listarFaturasEmAuditoria, dataInicioRobo, dataEntradaFatura,
+  carregarConfigRobo, salvarConfigRobo, listarNomesTransportadoras, listarRoboTransportadoras, normNome, removerRoboTransportadora, salvarRoboTransportadora,
 } from '../../services/auditorRoboService';
 
 const FaturaDetalheModal = lazy(() => import('../CentralAuditoriaFretesPage').then((m) => ({ default: m.FaturaDetalheModal })));
@@ -76,7 +76,9 @@ export default function AuditorRobo() {
 
   const jaProcessadas = useMemo(() => new Set(execucoes.map((e) => String(e.fatura_id))), [execucoes]);
   const ativas = useMemo(() => new Map(lista.filter((r) => r.ativo).map((r) => [normNome(r.transportadora), r])), [lista]);
-  const novas = useMemo(() => faturas.filter((f) => ativas.has(normNome(f.transportadora)) && !jaProcessadas.has(String(f.id))), [faturas, ativas, jaProcessadas]);
+  const novas = useMemo(() => faturas.filter((f) => ativas.has(normNome(f.transportadora))
+    && dataEntradaFatura(f) >= dataInicioRobo(ativas.get(normNome(f.transportadora)))
+    && !jaProcessadas.has(String(f.id))), [faturas, ativas, jaProcessadas]);
 
   const qtdReavaliar = useMemo(() => execucoes.filter((e) => !e.acao_executada && [DECISAO.REVISAO_AUDITOR, DECISAO.ENVIAR_LAUDO].includes(e.decisao)
     && faturas.some((f) => String(f.id) === String(e.fatura_id) && ativas.has(normNome(f.transportadora)))).length, [execucoes, faturas, ativas]);
@@ -110,7 +112,7 @@ export default function AuditorRobo() {
         setMsg(`${prefixo}...`);
         try {
           const registro = await analisarFaturaRobo(db, f, {
-            cfg: ativas.get(normNome(f.transportadora)), emailsAuditores, usuario, origem: `manual - ${usuario}`, anterior,
+            cfg: ativas.get(normNome(f.transportadora)), emailsAuditores, usuario, origem: `manual - ${usuario}`, anterior, recalcularTudo: Boolean(anterior),
             aoProgredir: (p) => {
               setProgAmd({ atual: i + 1, total: fila.length, numero: f.numero_fatura, faseId: p.fase, ctAtual: p.atual || 0, ctTotal: p.total || 0, enviadas });
               const fase = p.fase === 'calculando' ? `calculando ${p.atual}/${p.total} CT-es` : p.fase === 'apurando' ? 'apurando desconto e entrega' : 'lendo CT-es';
@@ -200,6 +202,35 @@ export default function AuditorRobo() {
   };
 
   const [faturaAbertaId, setFaturaAbertaId] = useState(null);
+  const [cfgRobo, setCfgRobo] = useState(null);
+  const [cfgSemTabela, setCfgSemTabela] = useState(false);
+  const [cfgAberta, setCfgAberta] = useState(false);
+  const [cfgSalvando, setCfgSalvando] = useState(false);
+  useEffect(() => { carregarConfigRobo().then(({ config, semTabela }) => { setCfgRobo(config); setCfgSemTabela(semTabela); }).catch((e) => setErro(e.message)); }, []);
+  const salvarCfg = async () => {
+    setCfgSalvando(true); setErro(''); setMsg('');
+    try {
+      const salvo = await salvarConfigRobo(cfgRobo, sessao?.nome || sessao?.email || '');
+      setCfgRobo((a) => ({ ...a, ...salvo }));
+      setMsg('Configuracao do robo salva. Vale a partir da proxima hora cheia.');
+    } catch (ex) { setErro(ex.message); } finally { setCfgSalvando(false); }
+  };
+  // Clicar numa hora/dia/opcao ja grava no banco (vale na proxima hora cheia), sem botao de salvar.
+  const aplicarCfg = async (novo, texto = 'Configuracao salva.') => {
+    const anterior = cfgRobo;
+    setCfgRobo(novo);
+    setErro('');
+    try {
+      const salvo = await salvarConfigRobo(novo, sessao?.nome || sessao?.email || '');
+      setCfgRobo((a) => ({ ...a, ...salvo }));
+      setMsg(`${texto} Vale a partir da proxima hora cheia.`);
+    } catch (ex) { setCfgRobo(anterior); setErro(ex.message); }
+  };
+  const alternarNaLista = (campo, valor) => {
+    const atual = new Set(cfgRobo[campo] || []);
+    if (atual.has(valor)) atual.delete(valor); else atual.add(valor);
+    aplicarCfg({ ...cfgRobo, [campo]: [...atual].sort((x, y) => x - y) }, campo === 'horas' ? 'Horarios atualizados.' : 'Dias atualizados.');
+  };
   const [progAmd, setProgAmd] = useState(null);
   const pararAmd = useRef(false);
   const [periodo, setPeriodo] = useState('7');
@@ -365,9 +396,99 @@ export default function AuditorRobo() {
         <strong>O que o robo faz hoje:</strong> faturas corretas (calculadas, sem desconto e todas entregues) vao direto para a
         <strong> aprovacao da gestao, marcadas "via robo"</strong>; o auditor acompanha no Meu Painel. Faturas com desconto ficam
         registradas como "enviaria laudo" e as duvidosas vao para a fila do auditor. <strong>Nenhum e-mail e enviado ainda</strong>.
-        <br /><strong>Como funciona:</strong> considera as faturas que entraram a partir de {ROBO_DATA_INICIO.split('-').reverse().join('/')}.
+        <br /><strong>Como funciona:</strong> considera, para cada transportadora, as faturas que entraram a partir de <strong>um dia antes de ela ser incluida</strong> na lista (coluna "Considera desde").
         Para cada uma, o robo calcula os CT-es (se ainda nao calculados), apura o valor a descontar e a entrega, e decide:
         com desconto → laudo; correta e toda entregue → aprovacao; qualquer duvida → fila do auditor.
+      </div>
+
+      <div className="table-card">
+        <div className="panel-title audit-table-title" style={{ cursor: 'pointer', display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }} onClick={() => setCfgAberta((v) => !v)}>
+          <span>{cfgAberta ? '▾' : '▸'} Configuracao do robo (horarios e limites)</span>
+          {cfgRobo && (
+            <span style={{ fontWeight: 400, fontSize: 12, color: cfgRobo.ativo ? '#14733b' : '#b91c1c' }}>
+              {cfgRobo.ativo ? `Ligado · ${(cfgRobo.horas || []).map((h) => `${String(h).padStart(2, '0')}h`).join(', ') || 'sem horarios'}` : 'DESLIGADO'}
+            </span>
+          )}
+          {cfgRobo && (
+            <span style={{ display: 'inline-flex', gap: 8, marginLeft: 'auto' }} onClick={(ev) => ev.stopPropagation()}>
+              <button
+                type="button" onClick={() => aplicarCfg({ ...cfgRobo, ativo: !cfgRobo.ativo }, cfgRobo.ativo ? 'Robo desligado.' : 'Robo ligado.')}
+                title="Liga ou desliga o robo automatico na nuvem (o botao Executar agora continua funcionando)"
+                style={{ padding: '3px 10px', borderRadius: 999, cursor: 'pointer', fontWeight: 700, fontSize: 12, border: `1px solid ${cfgRobo.ativo ? '#14733b' : '#b91c1c'}`, background: cfgRobo.ativo ? '#ecfdf3' : '#fef2f2', color: cfgRobo.ativo ? '#14733b' : '#b91c1c' }}
+              >
+                {cfgRobo.ativo ? 'Robo: LIGADO' : 'Robo: DESLIGADO'}
+              </button>
+              <button
+                type="button" onClick={() => aplicarCfg({ ...cfgRobo, calcular_nuvem: cfgRobo.calcular_nuvem === false }, cfgRobo.calcular_nuvem === false ? 'Calculo na nuvem ligado.' : 'Calculo na nuvem desligado (economiza).')}
+                title="COM calculo: o robo calcula os CT-es na nuvem (usa mais tempo de funcao). SEM calculo: so decide sobre o que ja esta calculado (custo minimo)."
+                style={{ padding: '3px 10px', borderRadius: 999, cursor: 'pointer', fontWeight: 700, fontSize: 12, border: `1px solid ${cfgRobo.calcular_nuvem === false ? '#b45309' : '#0369a1'}`, background: cfgRobo.calcular_nuvem === false ? '#fffbeb' : '#eff6ff', color: cfgRobo.calcular_nuvem === false ? '#b45309' : '#0369a1' }}
+              >
+                {cfgRobo.calcular_nuvem === false ? 'SEM calculo de CT-es (economia)' : 'COM calculo de CT-es'}
+              </button>
+            </span>
+          )}
+        </div>
+        {cfgAberta && cfgRobo && (
+          <div style={{ padding: '0 12px 12px', display: 'grid', gap: 12 }}>
+            {cfgSemTabela && (
+              <div className="hint-box compact" style={{ borderLeft: '4px solid #b91c1c' }}>
+                Aplique a migration <code>supabase/migrations/20261016_002_auditor_robo_config.sql</code> no Supabase para poder salvar esta configuracao (enquanto isso vale o padrao: 06h, 12h e 19h).
+              </div>
+            )}
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 700 }}>
+              <input type="checkbox" checked={Boolean(cfgRobo.ativo)} onChange={(e) => aplicarCfg({ ...cfgRobo, ativo: e.target.checked }, e.target.checked ? 'Robo ligado.' : 'Robo desligado.')} />
+              Robo automatico ligado
+            </label>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Horarios de execucao (horario de Brasilia)</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {Array.from({ length: 24 }, (_, h) => h).map((h) => {
+                  const on = (cfgRobo.horas || []).includes(h);
+                  return (
+                    <button key={h} type="button" onClick={() => alternarNaLista('horas', h)}
+                      style={{ minWidth: 44, padding: '4px 6px', borderRadius: 8, cursor: 'pointer', border: `1px solid ${on ? '#071d49' : '#cbd5e1'}`, background: on ? '#071d49' : '#fff', color: on ? '#fff' : '#334155', fontWeight: 700 }}>
+                      {String(h).padStart(2, '0')}h
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Dias da semana</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'].map((nome, d) => {
+                  const on = (cfgRobo.dias_semana || []).includes(d);
+                  return (
+                    <button key={nome} type="button" onClick={() => alternarNaLista('dias_semana', d)}
+                      style={{ minWidth: 52, padding: '4px 6px', borderRadius: 8, cursor: 'pointer', border: `1px solid ${on ? '#071d49' : '#cbd5e1'}`, background: on ? '#071d49' : '#fff', color: on ? '#fff' : '#334155', fontWeight: 700 }}>
+                      {nome}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input type="checkbox" checked={cfgRobo.calcular_nuvem !== false} onChange={(e) => aplicarCfg({ ...cfgRobo, calcular_nuvem: e.target.checked }, 'Calculo na nuvem atualizado.')} />
+              Calcular os CT-es na nuvem (se desligado, o robo so decide sobre o que ja esta calculado)
+            </label>
+            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+              <label className="field" style={{ maxWidth: 200 }}>Faturas novas por rodada
+                <input type="number" min="1" max="300" value={cfgRobo.max_faturas} onChange={(e) => setCfgRobo((a) => ({ ...a, max_faturas: e.target.value }))} />
+              </label>
+              <label className="field" style={{ maxWidth: 200 }}>CT-es por bloco de calculo
+                <input type="number" min="1" max="50" value={cfgRobo.bloco_ctes} onChange={(e) => setCfgRobo((a) => ({ ...a, bloco_ctes: e.target.value }))} />
+              </label>
+              <label className="field" style={{ maxWidth: 220 }}>Limite por bloco (segundos)
+                <input type="number" min="20" max="240" value={cfgRobo.limite_bloco_seg} onChange={(e) => setCfgRobo((a) => ({ ...a, limite_bloco_seg: e.target.value }))} />
+              </label>
+            </div>
+            <div style={{ fontSize: 12, color: '#64748b' }}>
+              A Vercel acorda o robo toda hora cheia e ele so trabalha nas horas e dias marcados. As mudancas valem na proxima hora cheia.
+              {cfgRobo.atualizado_por ? ` Ultima alteracao: ${cfgRobo.atualizado_por}${cfgRobo.atualizado_em ? ` em ${dataBr(cfgRobo.atualizado_em)}` : ''}.` : ''}
+            </div>
+            <div><button type="button" className="btn-secondary" disabled={cfgSalvando} onClick={salvarCfg}>{cfgSalvando ? 'Salvando...' : 'Salvar limites (numeros)'}</button> <span style={{ fontSize: 12, color: '#64748b' }}>Horarios, dias e liga/desliga salvam ao clicar; os numeros salvam por este botao.</span></div>
+          </div>
+        )}
       </div>
 
       <div className="table-card">
@@ -388,7 +509,7 @@ export default function AuditorRobo() {
         {lista.length > 0 && (
           <div className="sim-analise-tabela-wrap">
             <table className="sim-analise-tabela">
-              <thead><tr><th>Transportadora</th><th>Auditor</th><th>E-mails laudo</th><th>Aprovacao</th><th>Envio do laudo</th><th>Modo</th><th>Ativo</th><th /></tr></thead>
+              <thead><tr><th>Transportadora</th><th>Auditor</th><th>E-mails laudo</th><th>Aprovacao</th><th>Envio do laudo</th><th>Considera desde</th><th>Modo</th><th>Ativo</th><th /></tr></thead>
               <tbody>
                 {lista.map((r) => (
                   <tr
@@ -407,6 +528,7 @@ export default function AuditorRobo() {
                         <option value="auto">E-mail automatico</option>
                       </select>
                     </td>
+                    <td style={{ fontSize: 12 }}>{dataBr(dataInicioRobo(r)).slice(0, 10)}</td>
                     <td>{r.modo}</td>
                     <td onClick={(ev) => ev.stopPropagation()}><input type="checkbox" checked={r.ativo} onChange={() => alternarAtivo(r)} /></td>
                     <td onClick={(ev) => ev.stopPropagation()}><button type="button" className="btn-secondary audit-small-button" onClick={() => remover(r)}>Remover</button></td>
@@ -423,7 +545,7 @@ export default function AuditorRobo() {
           <span>Execucao</span>
           <span style={{ fontWeight: 400, fontSize: 12, color: '#475569' }}>{novas.length} nova(s) para analisar · {qtdReavaliar} em revisao/laudo sendo reavaliada(s)</span>
           <span style={{ fontWeight: 400, fontSize: 12, color: '#475569' }}>
-            Automatico (1x por dia): {ultimaAuto ? `ultima analise em ${dataBr(ultimaAuto.executado_em)}` : 'aguardando a primeira execucao'}
+            Automatico (conforme a configuracao): {ultimaAuto ? `ultima analise em ${dataBr(ultimaAuto.executado_em)}` : 'aguardando a primeira execucao'}
           </span>
           <button type="button" className="btn-primary audit-small-button" disabled={rodando || (!novas.length && !qtdReavaliar)} onClick={executarSombra}>
             {rodando ? 'Trabalhando...' : 'Executar agora'}

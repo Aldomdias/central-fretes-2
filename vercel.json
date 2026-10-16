@@ -1,8 +1,9 @@
 {
   "crons": [
-    { "path": "/api/robo-auditor", "schedule": "0 13 * * *" }
+    { "path": "/api/robo-auditor", "schedule": "0 * * * *" }
   ],
   "functions": {
-    "api/robo-auditor.js": { "maxDuration": 60, "includeFiles": "api/_robo-core.mjs" }
+    "api/robo-auditor.js": { "maxDuration": 300, "includeFiles": "api/_robo-core.mjs" },
+    "api/enviar-laudo-robo.js": { "maxDuration": 60 }
   }
 }

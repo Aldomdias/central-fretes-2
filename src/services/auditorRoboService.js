@@ -7,7 +7,19 @@ export const DECISAO = {
 };
 
 // O robo so olha faturas que entraram no sistema a partir desta data (as anteriores ficam com o auditor).
-export const ROBO_DATA_INICIO = '2026-10-13';
+export const ROBO_DATA_INICIO = '2026-10-13'; // so quando a transportadora nao tem data de inclusao
+
+// O robo considera as faturas que entraram no sistema a partir de UM DIA ANTES da data em que a
+// transportadora foi incluida na lista (evita varrer o historico inteiro). Data no fuso de Brasilia.
+export function dataInicioRobo(cfg) {
+  const criado = cfg?.created_at ? new Date(cfg.created_at) : null;
+  if (!criado || Number.isNaN(criado.getTime())) return ROBO_DATA_INICIO;
+  const brasilia = new Date(criado.getTime() - 3 * 3600000); // UTC-3
+  brasilia.setUTCDate(brasilia.getUTCDate() - 1);
+  return brasilia.toISOString().slice(0, 10);
+}
+
+export const dataEntradaFatura = (f) => String(f?.importado_em || f?.created_at || '').slice(0, 10);
 
 // Faturas que ainda estao na etapa de auditoria (o robo so olha para elas).
 export const STATUS_ROBO_AUDITA = ['RECEBIDA', 'PRE_AUDITADA_VERUM', 'REAUDITADA_CENTRAL', 'COM_DIVERGENCIA'];
@@ -23,7 +35,7 @@ export function classificarFatura(resumo, considerarMenor = false) {
   const menor = Number(resumo.menor || 0);
   const descontar = Number((considerarMenor ? Math.max(0, maior - menor) : maior).toFixed(2));
   if (resumo.calculados < resumo.total || Number(resumo.semCalculo || 0) > 0) {
-    return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Auditoria incompleta: ${resumo.semCalculo || resumo.total - resumo.calculados} de ${resumo.total} CT-e(s) sem calculo${resumo.motivoSemCalculo ? ` (${resumo.motivoSemCalculo})` : ''}.`, descontar };
+    return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Auditoria incompleta: ${resumo.semCalculo || resumo.total - resumo.calculados} de ${resumo.total} CT-e(s) sem calculo${resumo.erroCalculo ? ` (erro no calculo: ${resumo.erroCalculo})` : (resumo.motivoSemCalculo ? ` (${resumo.motivoSemCalculo})` : '')}.`, descontar };
   }
   if (descontar > 0) {
     const brl = (v) => `R$ ${Number(v || 0).toFixed(2).replace('.', ',')}`;
@@ -91,7 +103,7 @@ export async function listarFaturasEmAuditoria() {
   const { data, error } = await getSupabaseClient().from('faturas').select('*')
     .in('status', STATUS_ROBO_AUDITA).order('created_at', { ascending: false }).limit(3000);
   if (error) throw new Error(`Erro ao carregar faturas: ${error.message}`);
-  return (data || []).filter((f) => String(f.importado_em || f.created_at || '').slice(0, 10) >= ROBO_DATA_INICIO);
+  return data || []; // o corte de data e por transportadora (dataInicioRobo), aplicado por quem usa a lista
 }
 
 // Apaga so as simulacoes (nada enviado) para o robo reanalisar as faturas.
@@ -137,7 +149,7 @@ export async function reavaliarFaturaRobo(fatura, anterior, { usuario = 'auditor
   const cfg = (cfgs || []).find((r) => normNome(r.transportadora) === normNome(fatura.transportadora)) || {};
   const emailsAuditores = await core.carregarEmailsAuditores(db);
   const registro = await core.analisarFaturaRobo(db, fatura, {
-    cfg, emailsAuditores, usuario, origem: `reavaliacao manual - ${usuario}`, anterior, aoProgredir,
+    cfg, emailsAuditores, usuario, origem: `reavaliacao manual - ${usuario}`, anterior, aoProgredir, recalcularTudo: true,
   });
   const { error } = await db.from('auditor_robo_execucoes').upsert(registro, { onConflict: 'fatura_id' });
   if (error) throw new Error(`Erro ao gravar a reavaliacao: ${error.message}`);
@@ -170,4 +182,37 @@ export async function listarNomesTransportadoras() {
     (data || []).forEach((r) => { if (r.transportadora) nomes.add(String(r.transportadora).trim()); });
   } catch { /* sem carteiras */ }
   return [...nomes];
+}
+
+// ---- Configuracao do robo (editavel na tela; lida pela API do cron) ----
+export const CONFIG_ROBO_PADRAO = {
+  ativo: true, horas: [6, 12, 19], dias_semana: [0, 1, 2, 3, 4, 5, 6], calcular_nuvem: true,
+  max_faturas: 60, bloco_ctes: 10, limite_bloco_seg: 75,
+};
+
+export async function carregarConfigRobo() {
+  const { data, error } = await getSupabaseClient().from('auditor_robo_config').select('*').eq('id', 1).maybeSingle();
+  if (error) {
+    if (tabelaAusente(error)) return { config: { ...CONFIG_ROBO_PADRAO }, semTabela: true };
+    throw new Error(`Erro ao carregar a configuracao do robo: ${error.message}`);
+  }
+  return { config: { ...CONFIG_ROBO_PADRAO, ...(data || {}) }, semTabela: false };
+}
+
+export async function salvarConfigRobo(config, usuario = '') {
+  const payload = {
+    id: 1,
+    ativo: Boolean(config.ativo),
+    horas: [...new Set((config.horas || []).map(Number).filter((h) => h >= 0 && h <= 23))].sort((a, b) => a - b),
+    dias_semana: [...new Set((config.dias_semana || []).map(Number).filter((d) => d >= 0 && d <= 6))].sort((a, b) => a - b),
+    calcular_nuvem: Boolean(config.calcular_nuvem),
+    max_faturas: Math.min(Math.max(Number(config.max_faturas) || 60, 1), 300),
+    bloco_ctes: Math.min(Math.max(Number(config.bloco_ctes) || 10, 1), 50),
+    limite_bloco_seg: Math.min(Math.max(Number(config.limite_bloco_seg) || 75, 20), 240),
+    atualizado_por: usuario || null,
+    atualizado_em: new Date().toISOString(),
+  };
+  const { error } = await getSupabaseClient().from('auditor_robo_config').upsert(payload, { onConflict: 'id' });
+  if (error) throw new Error(tabelaAusente(error) ? 'Aplique a migration 20261016_002_auditor_robo_config.sql no Supabase para salvar a configuracao.' : `Erro ao salvar a configuracao: ${error.message}`);
+  return payload;
 }

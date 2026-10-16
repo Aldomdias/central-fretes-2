@@ -22019,6 +22019,14 @@ var init_lotacaoSupabaseService = __esm({
   }
 });
 
+// src/utils/urlBaseApp.js
+var init_urlBaseApp = __esm({
+  "src/utils/urlBaseApp.js"() {
+    "use strict";
+    init_define_import_meta_env();
+  }
+});
+
 // src/utils/vinculoCnpjTransportadora.js
 var init_vinculoCnpjTransportadora = __esm({
   "src/utils/vinculoCnpjTransportadora.js"() {
@@ -22136,6 +22144,7 @@ var init_auditoriaCteJornadaService = __esm({
     "use strict";
     init_define_import_meta_env();
     init_supabaseClient();
+    init_urlBaseApp();
     init_authLocal();
   }
 });
@@ -22822,6 +22831,7 @@ var init_auditoriaFretesService = __esm({
     "use strict";
     init_define_import_meta_env();
     init_supabaseClient();
+    init_urlBaseApp();
     init_auditoriaFretesDomain();
     init_auditoriaFretesImport();
     init_cnpj();
@@ -27514,13 +27524,20 @@ var init_auditoriaService = __esm({
 });
 
 // src/services/auditorRoboService.js
+function dataInicioRobo(cfg) {
+  const criado = cfg?.created_at ? new Date(cfg.created_at) : null;
+  if (!criado || Number.isNaN(criado.getTime())) return ROBO_DATA_INICIO;
+  const brasilia = new Date(criado.getTime() - 3 * 36e5);
+  brasilia.setUTCDate(brasilia.getUTCDate() - 1);
+  return brasilia.toISOString().slice(0, 10);
+}
 function classificarFatura(resumo, considerarMenor = false) {
   if (!resumo || !resumo.total) return { decisao: DECISAO.REVISAO_AUDITOR, motivo: "Fatura sem CT-es vinculados.", descontar: 0 };
   const maior = Number(resumo.maior || 0);
   const menor = Number(resumo.menor || 0);
   const descontar = Number((considerarMenor ? Math.max(0, maior - menor) : maior).toFixed(2));
   if (resumo.calculados < resumo.total || Number(resumo.semCalculo || 0) > 0) {
-    return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Auditoria incompleta: ${resumo.semCalculo || resumo.total - resumo.calculados} de ${resumo.total} CT-e(s) sem calculo${resumo.motivoSemCalculo ? ` (${resumo.motivoSemCalculo})` : ""}.`, descontar };
+    return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Auditoria incompleta: ${resumo.semCalculo || resumo.total - resumo.calculados} de ${resumo.total} CT-e(s) sem calculo${resumo.erroCalculo ? ` (erro no calculo: ${resumo.erroCalculo})` : resumo.motivoSemCalculo ? ` (${resumo.motivoSemCalculo})` : ""}.`, descontar };
   }
   if (descontar > 0) {
     const brl = (v) => `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
@@ -27537,7 +27554,7 @@ function classificarFatura(resumo, considerarMenor = false) {
   if (resumo.pendentes > 0) return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `${resumo.pendentes} de ${resumo.total} CT-e(s) sem entrega comprovada.`, descontar: 0 };
   return { decisao: DECISAO.ENVIAR_APROVACAO, motivo: "Auditoria completa, sem desconto e todos entregues.", descontar: 0 };
 }
-var DECISAO, ROBO_DATA_INICIO, STATUS_ROBO_AUDITA;
+var DECISAO, ROBO_DATA_INICIO, dataEntradaFatura, STATUS_ROBO_AUDITA;
 var init_auditorRoboService = __esm({
   "src/services/auditorRoboService.js"() {
     "use strict";
@@ -27549,6 +27566,7 @@ var init_auditorRoboService = __esm({
       REVISAO_AUDITOR: "REVISAO_AUDITOR"
     };
     ROBO_DATA_INICIO = "2026-10-13";
+    dataEntradaFatura = (f) => String(f?.importado_em || f?.created_at || "").slice(0, 10);
     STATUS_ROBO_AUDITA = ["RECEBIDA", "PRE_AUDITADA_VERUM", "REAUDITADA_CENTRAL", "COM_DIVERGENCIA"];
   }
 });
@@ -27623,26 +27641,33 @@ async function detalhesExatos(fatura) {
   return unicos.map((i) => aplicarSaldo(mesclar(i, referencia), saldos, referencia));
 }
 async function apurarFaturaRobo(fatura, aoProgredir = () => {
-}, { prazoFinal = 0, calcular = true } = {}) {
-  const BLOCO = prazoFinal ? 30 : 300;
+}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 25, limiteBlocoMs = 0 } = {}) {
+  const BLOCO = bloco;
   aoProgredir({ fase: "lendo" });
   let lista = await detalhesExatos(fatura);
   let calculou = false;
-  if (calcular && lista.length && lista.some((i) => !(Number(i.calculado_frete || 0) > 0))) {
-    const chaves = [...new Set(lista.filter((i) => !(Number(i.calculado_frete || 0) > 0)).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
+  let erroCalculo = "";
+  let falhasCalculo = 0;
+  const precisaCalcular = (i) => recalcularTudo || !(Number(i.calculado_frete || 0) > 0);
+  if (calcular && lista.length && lista.some(precisaCalcular)) {
+    const chaves = [...new Set(lista.filter(precisaCalcular).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
     for (let i = 0; i < chaves.length; i += BLOCO) {
-      if (prazoFinal && Date.now() > prazoFinal) {
-        if (calculou) {
-        }
-        throw new Error("__parcial__");
-      }
+      if (prazoFinal && Date.now() > prazoFinal) throw new Error("__parcial__");
       aoProgredir({ fase: "calculando", atual: Math.min(i + BLOCO, chaves.length), total: chaves.length });
-      const { registros } = await processarCtesPorChave(chaves.slice(i, i + BLOCO), () => {
-      }, { ignorarCubagem: true });
-      if (registros.length) {
-        const competencia = registros.find((r2) => r2.competencia)?.competencia || (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
-        await salvarRecorteCarregadoAuditoria({ competencia, registros });
-        calculou = true;
+      try {
+        const calculo = processarCtesPorChave(chaves.slice(i, i + BLOCO), () => {
+        }, { ignorarCubagem: true });
+        const { registros } = limiteBlocoMs ? await Promise.race([calculo, new Promise((_, rej) => {
+          setTimeout(() => rej(new Error(`demorou demais (>${Math.round(limiteBlocoMs / 1e3)}s)`)), limiteBlocoMs);
+        })]) : await calculo;
+        if (registros.length) {
+          const competencia = registros.find((r2) => r2.competencia)?.competencia || (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
+          await salvarRecorteCarregadoAuditoria({ competencia, registros });
+          calculou = true;
+        }
+      } catch (e) {
+        falhasCalculo += Math.min(BLOCO, chaves.length - i);
+        erroCalculo = erroCalculo || String(e?.message || e).slice(0, 140);
       }
     }
     if (calculou) lista = await detalhesExatos(fatura);
@@ -27659,7 +27684,7 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
     pendentes2 = lista.length - entregues;
   } catch {
   }
-  return { ...r, entregues, pendentes: pendentes2 };
+  return { ...r, entregues, pendentes: pendentes2, erroCalculo, falhasCalculo };
 }
 async function enviarFaturaParaGestaoRobo(db, fatura, resumo, { usuario = "Robo Auditor", origem = "automatico" } = {}) {
   const { data: atual, error: erroLeitura } = await db.from("faturas").select("id,status").eq("id", fatura.id).maybeSingle();
@@ -27725,8 +27750,8 @@ function emailDoAuditor(fatura, mapa) {
   return String(fatura?.auditor_email || "").trim() || mapa?.get(normalizarNomeAuditor(fatura?.auditor_nome)) || "";
 }
 async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = /* @__PURE__ */ new Map(), usuario = "Robo (automatico)", origem = "automatico", anterior = null, aoProgredir = () => {
-}, prazoFinal = 0, calcular = true } = {}) {
-  const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular });
+}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 25, limiteBlocoMs = 0 } = {}) {
+  const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs });
   const c = classificarFatura(resumo, Boolean(f.auditoria_considerar_menor));
   let enviada = false;
   let motivo = c.motivo;
@@ -27795,6 +27820,8 @@ export {
   apurarFaturaRobo,
   carregarEmailsAuditores,
   classificarFatura,
+  dataEntradaFatura,
+  dataInicioRobo,
   emailDoAuditor,
   enviarFaturaParaGestaoRobo,
   normalizarNomeAuditor

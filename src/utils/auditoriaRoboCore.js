@@ -11,9 +11,9 @@ import { buscarStatusEntregaCtes, chaveEntregaRegistro, STATUS_ENTREGA } from '.
 import { processarCtesPorChave } from '../services/auditoriaCteProcessamentoService';
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { normalizarChaveCte } from './auditoriaFretesDomain';
-import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO } from '../services/auditorRoboService';
+import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura } from '../services/auditorRoboService';
 
-export { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO };
+export { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura };
 
 // Mesma tolerancia padrao da tela (a tela deixa ajustar por navegador; na nuvem vale o padrao).
 const TOLERANCIA = { acima: 1, abaixo: 5 };
@@ -97,24 +97,38 @@ async function detalhesExatos(fatura) {
 // execucao continua do que ainda falta (o que ja foi calculado fica salvo).
 // calcular=false (nuvem): nao dispara o calculo dos CT-es, que carrega a base de rotas inteira e estoura o
 // limite da funcao; so apura o que ja esta calculado (navegador, auditor abrindo a fatura, importacao).
-export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFinal = 0, calcular = true } = {}) {
-  const BLOCO = prazoFinal ? 30 : 300;
+// recalcularTudo (reavaliacao manual): refaz o calculo de TODOS os CT-es da fatura, e nao so dos que estavam sem
+// resultado; so fica "sem calculo" o que realmente der erro no calculo.
+export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 25, limiteBlocoMs = 0 } = {}) {
+  // Blocos pequenos: cada bloco e calculado E GRAVADO, o andamento aparece na tela e, se a pagina
+  // for fechada no meio, o que ja foi calculado fica salvo. Na nuvem (limiteBlocoMs) um bloco que demora
+  // demais e abandonado: os CT-es dele ficam "sem calculo (demorou demais)" e o robo segue.
+  const BLOCO = bloco;
   aoProgredir({ fase: 'lendo' });
   let lista = await detalhesExatos(fatura);
   let calculou = false;
-  if (calcular && lista.length && lista.some((i) => !(Number(i.calculado_frete || 0) > 0))) {
-    const chaves = [...new Set(lista.filter((i) => !(Number(i.calculado_frete || 0) > 0)).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
+  let erroCalculo = '';
+  let falhasCalculo = 0;
+  const precisaCalcular = (i) => recalcularTudo || !(Number(i.calculado_frete || 0) > 0);
+  if (calcular && lista.length && lista.some(precisaCalcular)) {
+    const chaves = [...new Set(lista.filter(precisaCalcular).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
     for (let i = 0; i < chaves.length; i += BLOCO) {
-      if (prazoFinal && Date.now() > prazoFinal) {
-        if (calculou) { /* o que foi calculado ja esta salvo */ }
-        throw new Error('__parcial__');
-      }
+      if (prazoFinal && Date.now() > prazoFinal) throw new Error('__parcial__');
       aoProgredir({ fase: 'calculando', atual: Math.min(i + BLOCO, chaves.length), total: chaves.length });
-      const { registros } = await processarCtesPorChave(chaves.slice(i, i + BLOCO), () => {}, { ignorarCubagem: true });
-      if (registros.length) {
-        const competencia = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
-        await salvarRecorteCarregadoAuditoria({ competencia, registros });
-        calculou = true;
+      try {
+        const calculo = processarCtesPorChave(chaves.slice(i, i + BLOCO), () => {}, { ignorarCubagem: true });
+        const { registros } = limiteBlocoMs
+          ? await Promise.race([calculo, new Promise((_, rej) => { setTimeout(() => rej(new Error(`demorou demais (>${Math.round(limiteBlocoMs / 1000)}s)`)), limiteBlocoMs); })])
+          : await calculo;
+        if (registros.length) {
+          const competencia = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
+          await salvarRecorteCarregadoAuditoria({ competencia, registros });
+          calculou = true;
+        }
+      } catch (e) {
+        // Um bloco com erro nao derruba a fatura: os CT-es dele ficam "sem calculo" e os demais seguem.
+        falhasCalculo += Math.min(BLOCO, chaves.length - i);
+        erroCalculo = erroCalculo || String(e?.message || e).slice(0, 140);
       }
     }
     if (calculou) lista = await detalhesExatos(fatura);
@@ -128,7 +142,7 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
     lista.forEach((i) => { if (entrega.get(chaveEntregaRegistro(i))?.status === STATUS_ENTREGA.ENTREGUE) entregues += 1; });
     pendentes = lista.length - entregues;
   } catch { /* entrega nao verificada: classificarFatura manda para o auditor */ }
-  return { ...r, entregues, pendentes };
+  return { ...r, entregues, pendentes, erroCalculo, falhasCalculo };
 }
 
 // Envia a fatura (auditoria completa, sem desconto, tudo entregue) para a APROVACAO DA GESTAO,
@@ -207,8 +221,8 @@ export function emailDoAuditor(fatura, mapa) {
 // Analisa UMA fatura do inicio ao fim: apura, decide, envia para a gestao se correta e devolve o
 // registro pronto para gravar em auditor_robo_execucoes. Usado pelo robo na nuvem e pelo botao.
 // anterior = registro anterior da fatura (reavaliacao), para manter/zerar a aprovacao do auditor.
-export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = new Map(), usuario = 'Robo (automatico)', origem = 'automatico', anterior = null, aoProgredir = () => {}, prazoFinal = 0, calcular = true } = {}) {
-  const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular });
+export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = new Map(), usuario = 'Robo (automatico)', origem = 'automatico', anterior = null, aoProgredir = () => {}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 25, limiteBlocoMs = 0 } = {}) {
+  const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs });
   const c = classificarFatura(resumo, Boolean(f.auditoria_considerar_menor));
   let enviada = false;
   let motivo = c.motivo;
