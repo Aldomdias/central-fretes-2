@@ -262,12 +262,18 @@ export function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
       || numero(tracking.peso)
       || numero(row.pesoDeclarado)
       || numero(tracking.peso_declarado);
-    const cubagemResolvida = resolverCubagemTracking({
-      cubagemUnitaria: cubagemUnitariaTracking,
-      cubagemTotal: cubagemTotalTracking,
-      volumes: qtdVolumesTracking,
-      pesoFisico,
-    });
+    // O mapa do Tracking ja passou por criarTrackingAgregado, que resolveu a
+    // cubagem total (cubagem_final/unitaria x volumes/itens). Resolver de novo
+    // trata total == unitaria como "nao multiplicado" e multiplica pelos volumes
+    // outra vez (0,224 com 4 volumes virava 0,896 -> peso cubado inflado).
+    const cubagemResolvida = cubagemTotalTracking > 0
+      ? { cubagemAplicada: cubagemTotalTracking, totalFoiMultiplicadoPorVolumes: false }
+      : resolverCubagemTracking({
+        cubagemUnitaria: cubagemUnitariaTracking,
+        cubagemTotal: cubagemTotalTracking,
+        volumes: qtdVolumesTracking,
+        pesoFisico,
+      });
     const cubagemFoiMultiplicadaPorVolumes = cubagemResolvida.totalFoiMultiplicadoPorVolumes;
     const cubagemCandidata = cubagemResolvida.cubagemAplicada;
     const cubagemValidada = validarCubagemTracking({
