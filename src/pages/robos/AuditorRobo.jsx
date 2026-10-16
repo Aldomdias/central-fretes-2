@@ -221,6 +221,9 @@ export default function AuditorRobo() {
     const laudosAprovados = laudos.filter((e) => !e.acao_executada && e.aprovado_auditor_em && emAuditoria(e));
     const laudosOk = laudos.filter((e) => !e.acao_executada && !e.aprovado_auditor_em && emAuditoria(e));
     const revisar = lista.filter((e) => e.decisao === DECISAO.REVISAO_AUDITOR && !e.acao_executada && emAuditoria(e));
+    // Laudos que o robo enviou por e-mail (cada envio grava o mesmo horario em todas as faturas do e-mail).
+    const laudosEmail = lista.filter((e) => e.modo === 'EMAIL_ENVIADO');
+    const emailsEnviados = new Set(laudosEmail.map((e) => `${e.transportadora}|${e.executado_em}`)).size;
     const tratadas = lista.filter((e) => !e.acao_executada && [DECISAO.ENVIAR_LAUDO, DECISAO.REVISAO_AUDITOR].includes(e.decisao) && !emAuditoria(e) && !laudosEnviados.includes(e));
     const causa = { semCalculo: 0, semEntrega: 0, outros: 0 };
     revisar.forEach((e) => {
@@ -243,7 +246,7 @@ export default function AuditorRobo() {
       porTransp.set(e.transportadora, r);
     });
     return {
-      lista, gestao, liberadas, noErp, tratadas, laudos, laudosEnviados, laudosAprovados, laudosOk, revisar, causa, automaticas, ultima, ultimaAuto,
+      lista, gestao, liberadas, noErp, tratadas, laudosEmail, emailsEnviados, laudos, laudosEnviados, laudosAprovados, laudosOk, revisar, causa, automaticas, ultima, ultimaAuto,
       valorGestao: soma(gestao, (e) => e.valor_fatura),
       descontarTotal: soma(laudos, (e) => e.valor_descontar),
       reavaliacoes: soma(lista, (e) => Math.max(Number(e.tentativas || 1) - 1, 0)),
@@ -260,6 +263,7 @@ export default function AuditorRobo() {
       gestao: painel.gestao,
       liberadas: painel.liberadas,
       tratadas: painel.tratadas,
+      laudosEmail: painel.laudosEmail,
       laudos: painel.laudos,
       laudosOk: painel.laudosOk,
       laudosAprovados: painel.laudosAprovados,
@@ -271,7 +275,7 @@ export default function AuditorRobo() {
     return base;
   }, [painel, cardSel]);
   const ROTULO_CARD = {
-    analisadas: 'Faturas analisadas', liberadas: 'Aprovadas pela gestao', tratadas: 'Tratadas fora do robo', novas: 'Novas aguardando', gestao: 'Enviadas para a gestao', laudos: 'Laudos com desconto',
+    analisadas: 'Faturas analisadas', liberadas: 'Aprovadas pela gestao', tratadas: 'Tratadas fora do robo', laudosEmail: 'Laudos enviados por e-mail', novas: 'Novas aguardando', gestao: 'Enviadas para a gestao', laudos: 'Laudos com desconto',
     laudosOk: 'Laudos aguardando seu OK', laudosAprovados: 'Laudos aprovados, a enviar', laudosEnviados: 'Laudos enviados',
     revisar: 'Para revisar', reavaliacoes: 'Reavaliacoes feitas',
   };
@@ -316,6 +320,7 @@ export default function AuditorRobo() {
             ['laudos', 'Laudos com desconto', painel.laudos.length, `${dinheiro(painel.descontarTotal)} a descontar no total`, '#b45309'],
             ['laudosOk', 'Laudos aguardando seu OK', painel.laudosOk.length, `${dinheiro(soma0(painel.laudosOk))} a descontar`, '#c2410c'],
             ['laudosAprovados', 'Laudos aprovados, a enviar', painel.laudosAprovados.length, `${dinheiro(soma0(painel.laudosAprovados))} a descontar`, '#0e7490'],
+            ['laudosEmail', 'Laudos enviados por e-mail', painel.laudosEmail.length, `${painel.emailsEnviados} e-mail(s) · ${dinheiro(soma0(painel.laudosEmail))} a descontar`, '#0369a1'],
             ['laudosEnviados', 'Laudos enviados', painel.laudosEnviados.length, `${dinheiro(soma0(painel.laudosEnviados))} a descontar`, '#14733b'],
             ['revisar', 'Para revisar', painel.revisar.length, `${painel.causa.semCalculo} sem calculo · ${painel.causa.semEntrega} sem entrega · ${painel.causa.outros} outros`, '#b91c1c'],
             ['tratadas', 'Tratadas fora do robo', painel.tratadas.length, 'laudo/revisao ja resolvidos pelo auditor ou gestao', '#64748b'],

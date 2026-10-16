@@ -20,6 +20,13 @@ export const config = { maxDuration: 60 };
 const norm = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase().replace(/\s+/g, ' ');
 const emailsDe = (texto) => [...new Set(String(texto || '').split(/[;,\s]+/).map((e) => e.trim().toLowerCase()).filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)))];
 
+// "Nome <endereco>" -> troca o nome exibido mantendo o endereco verificado.
+function remetenteResend(fromConfigurado, nome) {
+  const endereco = (String(fromConfigurado).match(/<([^>]+)>/)?.[1] || String(fromConfigurado)).trim();
+  const limpo = String(nome || '').replace(/[<>"\r\n]/g, '').trim().slice(0, 80);
+  return limpo ? `${limpo} <${endereco}>` : fromConfigurado;
+}
+
 function cors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -78,6 +85,9 @@ export default async function handler(req, res) {
     const para = emailsDe(cfg.emails_transportadora);
     if (!para.length) return res.status(400).json({ ok: false, erro: `Sem e-mail cadastrado para ${nomeTransp}: preencha em Automacao > Robo Auditor.` });
     const copia = emailsDe([...porId.values()].map((e) => e.auditor_email).join(';')).filter((e) => !para.includes(e));
+    // Remetente: nome do auditor responsavel (endereco fixo verificado) + respostas para o proprio auditor.
+    const nomeAuditor = String([...porId.values()].map((e) => e.auditor_nome).find(Boolean) || '').trim();
+    const nomeRemetente = nomeAuditor ? `${nomeAuditor} - Auditoria de Fretes` : 'Auditoria de Fretes';
 
     // 4) anexo (laudo HTML vem compactado do navegador para caber no limite de requisicao)
     let anexo = null;
@@ -94,18 +104,29 @@ export default async function handler(req, res) {
         method: 'POST',
         headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from: process.env.ALERTA_EMAIL_FROM || 'Central de Fretes <onboarding@resend.dev>',
-          to: para, ...(copia.length ? { cc: copia, reply_to: copia[0] } : {}), ...dados,
+          from: remetenteResend(process.env.ALERTA_EMAIL_FROM || 'Central de Fretes <onboarding@resend.dev>', nomeRemetente),
+          to: para, ...(copia.length ? { cc: copia, reply_to: copia } : {}), ...dados,
         }),
       });
     } else if (process.env.ALERTA_EMAIL_TOKEN) {
       const centralUrl = process.env.CENTRAL_SOLICITACOES_SUPABASE_URL || process.env.VITE_CENTRAL_SOLICITACOES_SUPABASE_URL || 'https://zejguyckbnmyxkuagsyj.supabase.co';
       const centralKey = process.env.CENTRAL_SOLICITACOES_SUPABASE_KEY || process.env.VITE_CENTRAL_SOLICITACOES_SUPABASE_KEY || 'sb_publishable_J0i_Olz3JBp_86-Xcd4MPQ_uH5vnHUS';
-      // A funcao da Central ainda nao tem campo de copia: o auditor vai junto no "para".
-      resposta = await fetch(`${centralUrl}/functions/v1/alerta-cte-email`, {
+      const cab = { Authorization: `Bearer ${centralKey}`, apikey: centralKey, 'x-alerta-token': process.env.ALERTA_EMAIL_TOKEN, 'Content-Type': 'application/json' };
+      const endpoint = `${centralUrl}/functions/v1/alerta-cte-email`;
+      // Versao 2 da funcao aceita nome do remetente, Reply-To e Cc. A antiga nao: nesse caso o auditor
+      // vai junto no "para" (comportamento anterior) ate a funcao ser publicada de novo na Central.
+      let versaoFuncao = 1;
+      try {
+        const ping = await fetch(endpoint, { method: 'POST', headers: cab, body: JSON.stringify({ ping: true }), signal: AbortSignal.timeout(8000) });
+        const pj = ping.ok ? await ping.json().catch(() => null) : null;
+        versaoFuncao = Number(pj?.versao || 1);
+      } catch { versaoFuncao = 1; }
+      resposta = await fetch(endpoint, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${centralKey}`, apikey: centralKey, 'x-alerta-token': process.env.ALERTA_EMAIL_TOKEN, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: [...para, ...copia], ...dados }),
+        headers: cab,
+        body: JSON.stringify(versaoFuncao >= 2
+          ? { to: para, ...(copia.length ? { cc: copia, reply_to: copia } : {}), from_name: nomeRemetente, ...dados }
+          : { to: [...para, ...copia], ...dados }),
       });
     } else {
       return res.status(500).json({ ok: false, erro: 'Nenhum provedor de e-mail configurado (RESEND_API_KEY ou ALERTA_EMAIL_TOKEN).' });
