@@ -1,4 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { urlBaseApp } from '../utils/urlBaseApp';
 import { aplicarReauditoriaDetalhes, ENCERRADOS, gerarProtocolo, isoDate, montarPagamentoVinculado, normalizarChaveCte } from '../utils/auditoriaFretesDomain';
 import { chaveFatura } from '../utils/auditoriaFretesImport';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
@@ -1990,7 +1991,7 @@ export function restaurarDemonstracaoAuditoria() {
 
 export function urlPortalFatura(token) {
   if (!token) return '';
-  const base = typeof window !== 'undefined' ? window.location.origin : '';
+  const base = urlBaseApp();
   return `${base}/api/portal-fatura/${token}`;
 }
 

@@ -76,7 +76,7 @@ function diasDesde(iso) {
   return Number.isNaN(t) ? null : Math.max(0, Math.floor((Date.now() - t) / 86400000));
 }
 
-export default function MeuPainelAuditor({ state, onAbrirFatura }) {
+export default function MeuPainelAuditor({ state, onAbrirFatura, onEnviarEmailLaudo }) {
   const sessao = carregarSessao();
   const gestor = usuarioEhGestorAuditoria(sessao);
   const meuEmail = norm(sessao?.email);
@@ -467,7 +467,7 @@ export default function MeuPainelAuditor({ state, onAbrirFatura }) {
           </div>
         </div>
       )}
-      <FilaRoboAuditor faturas={(state.faturas || []).filter((f) => (auditorSel === 'MINHAS' ? eMinha(f) : auditorSel ? (f.auditor_nome || 'SEM AUDITOR') === auditorSel : true))} onAbrirFatura={onAbrirFatura} />
+      <FilaRoboAuditor onEnviarEmail={onEnviarEmailLaudo} faturas={(state.faturas || []).filter((f) => (auditorSel === 'MINHAS' ? eMinha(f) : auditorSel ? (f.auditor_nome || 'SEM AUDITOR') === auditorSel : true))} onAbrirFatura={onAbrirFatura} />
       <FaturasViaRoboPainel faturas={(state.faturas || []).filter((f) => (auditorSel === 'MINHAS' ? eMinha(f) : auditorSel ? (f.auditor_nome || 'SEM AUDITOR') === auditorSel : true))} onAbrirFatura={onAbrirFatura} />
       <BoletosPendentesPainel faturas={doAuditor} desde={desde} mostrarAuditor={mostrarAuditorCol} onAbrirFatura={onAbrirFatura} />
 

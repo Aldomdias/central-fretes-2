@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarSessao } from '../utils/authLocal';
+import RoboProgressoAmd from './RoboProgressoAmd';
 import {
-  aprovarLaudosRobo, DECISAO, desfazerAprovacaoLaudoRobo, listarFilaAuditorRobo, reavaliarFaturaRobo,
+  aprovarLaudosRobo, DECISAO, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, listarFilaAuditorRobo, reavaliarFaturaRobo,
 } from '../services/auditorRoboService';
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -13,9 +14,11 @@ const diasDesde = (iso) => {
 
 // O que o robo deixou para o auditor: laudos para dar o OK e casos para revisar.
 // faturas = faturas do recorte atual (por auditor) ja carregadas na Auditoria.
-export default function FilaRoboAuditor({ faturas, onAbrirFatura }) {
+export default function FilaRoboAuditor({ faturas, onAbrirFatura, onEnviarEmail }) {
   const sessao = carregarSessao();
   const [fila, setFila] = useState(null);
+  const [cfgs, setCfgs] = useState([]);
+  useEffect(() => { listarRoboTransportadoras().then(({ lista }) => setCfgs(lista)).catch(() => {}); }, []);
   const [aba, setAba] = useState('laudos');
   const [aberto, setAberto] = useState(true);
   const [sel, setSel] = useState(() => new Set());
@@ -27,7 +30,7 @@ export default function FilaRoboAuditor({ faturas, onAbrirFatura }) {
 
   const porId = useMemo(() => new Map((faturas || []).map((f) => [String(f.id), f])), [faturas]);
   // So casos cuja fatura ainda esta em auditoria e dentro do recorte do auditor.
-  const itens = useMemo(() => (fila || []).map((e) => ({ e, f: porId.get(String(e.fatura_id)) })).filter((x) => x.f), [fila, porId]);
+  const itens = useMemo(() => (fila || []).map((e) => ({ e, f: porId.get(String(e.fatura_id)) })).filter((x) => x.f && STATUS_ROBO_AUDITA.includes(x.f.status)), [fila, porId]);
   const laudos = itens.filter((x) => x.e.decisao === DECISAO.ENVIAR_LAUDO);
   const aguardandoOk = laudos.filter((x) => !x.e.aprovado_auditor_em);
   const aprovados = laudos.filter((x) => x.e.aprovado_auditor_em);
@@ -42,18 +45,35 @@ export default function FilaRoboAuditor({ faturas, onAbrirFatura }) {
       await aprovarLaudosRobo(ids, sessao?.nome || sessao?.email || 'auditor');
       setSel(new Set());
       await carregar();
+      // Transportadoras com "e-mail automatico": o laudo aprovado segue por e-mail (um por transportadora).
+      const grupos = new Map();
+      ids.forEach((id) => {
+        const item = itens.find((x) => String(x.e.fatura_id) === String(id));
+        if (!item) return;
+        const cfg = cfgs.find((c) => String(c.transportadora || '').trim().toLowerCase() === String(item.f.transportadora || '').trim().toLowerCase());
+        if (!cfg?.email_automatico) return;
+        const g = grupos.get(item.f.transportadora) || { transportadora: item.f.transportadora, ids: [] };
+        g.ids.push(String(item.f.id));
+        grupos.set(item.f.transportadora, g);
+      });
+      if (grupos.size && onEnviarEmail) onEnviarEmail([...grupos.values()], 'auto');
     } catch (e) { setErro(e.message); } finally { setBusy(false); }
   };
   const [reavaliando, setReavaliando] = useState('');
+  const [progUm, setProgUm] = useState(null);
   const [aviso, setAviso] = useState('');
   const reavaliar = async (e, f) => {
     if (reavaliando) return;
     setReavaliando(String(f.id)); setErro(''); setAviso('');
     try {
-      const reg = await reavaliarFaturaRobo(f, e, { usuario: sessao?.nome || sessao?.email || 'auditor' });
+      setProgUm({ numero: f.numero_fatura, faseId: 'lendo', ctAtual: 0, ctTotal: 0 });
+      const reg = await reavaliarFaturaRobo(f, e, {
+        usuario: sessao?.nome || sessao?.email || 'auditor',
+        aoProgredir: (p) => setProgUm({ numero: f.numero_fatura, faseId: p.fase, ctAtual: p.atual || 0, ctTotal: p.total || 0 }),
+      });
       setAviso(reg.acao_executada ? `Fatura ${f.numero_fatura}: correta, enviada para a aprovacao da gestao.` : `Fatura ${f.numero_fatura} reavaliada: ${reg.motivo}`);
       await carregar();
-    } catch (ex) { setErro(ex.message); } finally { setReavaliando(''); }
+    } catch (ex) { setErro(ex.message); } finally { setReavaliando(''); setProgUm(null); }
   };
   const desfazer = async (id) => {
     try { await desfazerAprovacaoLaudoRobo(id); await carregar(); } catch (e) { setErro(e.message); }
@@ -176,6 +196,7 @@ export default function FilaRoboAuditor({ faturas, onAbrirFatura }) {
           )}
         </div>
       )}
+      <RoboProgressoAmd ativo={Boolean(progUm)} atual={1} total={1} {...(progUm || {})} />
     </div>
   );
 }

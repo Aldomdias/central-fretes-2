@@ -1,9 +1,10 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { urlBaseApp } from '../utils/urlBaseApp';
 
 const LOTE = 500;
 
 export function linkConviteCotacao(token) {
-  const base = typeof window !== 'undefined' ? window.location.origin : '';
+  const base = urlBaseApp();
   return `${base}/api/lotacao-cotacao/${token}`;
 }
 

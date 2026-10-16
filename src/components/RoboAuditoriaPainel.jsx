@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { carregarSessao } from '../utils/authLocal';
+import RoboProgressoAmd from './RoboProgressoAmd';
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { listarControleBoletos } from '../services/boletoControleService';
-import { aprovarLaudosRobo, DECISAO, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo } from '../services/auditorRoboService';
+import { aprovarLaudosRobo, DECISAO, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo } from '../services/auditorRoboService';
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
@@ -21,6 +22,7 @@ const ETAPAS = [
   { id: 'gestao', rotulo: 'Aguardando a gestao', cor: '#7c3aed', acao: false, dica: 'Enviadas pelo robo, na fila de aprovacao da gestao.' },
   { id: 'erp', rotulo: 'Liberadas, aguardando ERP', cor: '#c2410c', acao: true, dica: 'Liberadas para pagamento; falta enviar ao ERP.' },
   { id: 'boleto', rotulo: 'Aguardando boleto', cor: '#0369a1', acao: true, dica: 'No ERP; falta o boleto na pasta do financeiro.' },
+  { id: 'tratada', rotulo: 'Tratadas fora do robo', cor: '#64748b', acao: false, dica: 'Laudo ou revisao que o auditor/gestao ja resolveu pela tela da fatura.' },
   { id: 'concluida', rotulo: '100% concluidas', cor: '#14733b', acao: false, dica: 'Gestao, ERP e boleto concluidos.' },
 ];
 const ETAPA = Object.fromEntries(ETAPAS.map((e) => [e.id, e]));
@@ -33,6 +35,8 @@ function etapaDe(e, f, boletoIds) {
     if (!boletoIds.has(String(f.id))) return 'boleto';
     return 'concluida';
   }
+  if (e.decisao === DECISAO.ENVIAR_LAUDO && f.status === 'AGUARDANDO_TRANSPORTADORA') return 'transportadora';
+  if (!STATUS_ROBO_AUDITA.includes(f.status)) return 'tratada';
   if (e.decisao === DECISAO.ENVIAR_LAUDO) return e.aprovado_auditor_em ? 'laudo_aprovado' : 'laudo_ok';
   if (e.decisao === DECISAO.REVISAO_AUDITOR) return 'revisar';
   return null;
@@ -45,7 +49,7 @@ async function carregarExecucoes() {
   return data || [];
 }
 
-export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConsolidado }) {
+export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConsolidado, onEnviarEmail, resultadosEmail = [], onLimparResultadosEmail }) {
   const sessao = carregarSessao();
   const [execucoes, setExecucoes] = useState(null);
   const [boletoIds, setBoletoIds] = useState(new Set());
@@ -56,7 +60,11 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
   const [busy, setBusy] = useState(false);
   const [reavaliando, setReavaliando] = useState('');
   const [aviso, setAviso] = useState('');
-  const [lote, setLote] = useState(null); // { atual, total, enviadas }
+  const [lote, setLote] = useState(null); // { atual, total, enviadas, numero, faseId, ctAtual, ctTotal }
+  const [progUm, setProgUm] = useState(null); // reavaliacao de uma fatura so
+  const [cfgs, setCfgs] = useState([]);
+  useEffect(() => { listarRoboTransportadoras().then(({ lista }) => setCfgs(lista)).catch(() => {}); }, []);
+  const cfgDe = (nome) => cfgs.find((c) => String(c.transportadora || '').trim().toLowerCase() === String(nome || '').trim().toLowerCase());
   const parar = useRef(false);
 
   const recarregar = async () => {
@@ -67,7 +75,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
       setErro('');
     } catch (e) { setErro(e.message); setExecucoes([]); }
   };
-  useEffect(() => { recarregar(); }, []);
+  useEffect(() => { recarregar(); }, [resultadosEmail.length]);
 
   const linhas = useMemo(() => {
     const porId = new Map((state?.faturas || []).map((f) => [String(f.id), f]));
@@ -109,21 +117,40 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
     if (!ids.length || busy) return;
     if (ids.length > 1 && !window.confirm(`Aprovar o laudo de ${ids.length} fatura(s)?`)) return;
     setBusy(true); setErro('');
-    try { await aprovarLaudosRobo(ids, sessao?.nome || sessao?.email || 'auditor'); await recarregar(); } catch (e) { setErro(e.message); } finally { setBusy(false); }
+    try {
+      await aprovarLaudosRobo(ids, sessao?.nome || sessao?.email || 'auditor');
+      await recarregar();
+      // Transportadoras com "e-mail automatico": o laudo aprovado segue sozinho por e-mail (um por transportadora).
+      const grupos = new Map();
+      ids.forEach((id) => {
+        const l = linhas.find((x) => String(x.e.fatura_id) === String(id));
+        if (!l) return;
+        const cfg = cfgDe(l.f.transportadora);
+        if (!cfg?.email_automatico) return;
+        const g = grupos.get(l.f.transportadora) || { transportadora: l.f.transportadora, ids: [] };
+        g.ids.push(String(l.f.id));
+        grupos.set(l.f.transportadora, g);
+      });
+      if (grupos.size && onEnviarEmail) {
+        setAviso(`Laudo aprovado. Enviando por e-mail: ${[...grupos.values()].map((g) => `${g.transportadora} (${g.ids.length})`).join(', ')}...`);
+        onEnviarEmail([...grupos.values()], 'auto');
+      }
+    } catch (e) { setErro(e.message); } finally { setBusy(false); }
   };
   const reavaliar = async (e, f) => {
     if (reavaliando) return;
     setReavaliando(String(f.id)); setErro(''); setAviso('');
+    setProgUm({ numero: f.numero_fatura, faseId: 'lendo', ctAtual: 0, ctTotal: 0 });
     try {
       const reg = await reavaliarFaturaRobo(f, e, {
         usuario: sessao?.nome || sessao?.email || 'auditor',
-        aoProgredir: (p) => setAviso(`Fatura ${f.numero_fatura}: ${p.fase === 'calculando' ? `calculando ${p.atual}/${p.total} CT-es` : p.fase === 'apurando' ? 'apurando desconto e entrega' : 'lendo CT-es'}...`),
+        aoProgredir: (p) => setProgUm({ numero: f.numero_fatura, faseId: p.fase, ctAtual: p.atual || 0, ctTotal: p.total || 0 }),
       });
       setAviso(reg.acao_executada
         ? `Fatura ${f.numero_fatura}: estava correta e foi enviada para a aprovacao da gestao.`
         : `Fatura ${f.numero_fatura} reavaliada: ${reg.motivo}`);
       await recarregar();
-    } catch (ex) { setErro(ex.message); setAviso(''); } finally { setReavaliando(''); }
+    } catch (ex) { setErro(ex.message); setAviso(''); } finally { setReavaliando(''); setProgUm(null); }
   };
 
   // Reavalia, uma por vez, todas as faturas listadas que ainda nao foram para a gestao.
@@ -138,11 +165,11 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
     for (let i = 0; i < alvo.length; i += 1) {
       if (parar.current) break;
       const { e, f } = alvo[i];
-      setLote({ atual: i + 1, total: alvo.length, enviadas, numero: f.numero_fatura, fase: 'lendo CT-es' });
+      setLote({ atual: i + 1, total: alvo.length, enviadas, numero: f.numero_fatura, faseId: 'lendo', ctAtual: 0, ctTotal: 0 });
       try {
         const reg = await reavaliarFaturaRobo(f, e, {
           usuario,
-          aoProgredir: (p) => setLote({ atual: i + 1, total: alvo.length, enviadas, numero: f.numero_fatura, fase: p.fase === 'calculando' ? `calculando ${p.atual}/${p.total} CT-es` : p.fase === 'apurando' ? 'apurando desconto e entrega' : 'lendo CT-es' }),
+          aoProgredir: (p) => setLote({ atual: i + 1, total: alvo.length, enviadas, numero: f.numero_fatura, faseId: p.fase, ctAtual: p.atual || 0, ctTotal: p.total || 0 }),
         });
         ok += 1;
         if (reg.acao_executada) enviadas += 1;
@@ -193,6 +220,19 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
     <div className="page-stack">
       {erro && <div className="hint-box compact" style={{ borderLeft: '4px solid #b91c1c' }}>{erro}</div>}
       {aviso && <div className="hint-box compact" style={{ borderLeft: '4px solid #14733b' }}>{aviso}</div>}
+      {resultadosEmail.length > 0 && (
+        <div className="hint-box compact" style={{ borderLeft: `4px solid ${resultadosEmail.every((r) => r.ok) ? '#14733b' : '#b91c1c'}` }}>
+          <strong>Envio de laudo por e-mail:</strong>
+          {resultadosEmail.map((r, i) => (
+            <div key={i}>
+              {r.ok
+                ? `✓ ${r.transportadora}: ${r.faturas} fatura(s) enviada(s) para ${(r.para || []).join(', ')}${(r.copia || []).length ? ` (auditor em copia: ${r.copia.join(', ')})` : ''}.`
+                : `✗ ${r.transportadora}: nao enviado — ${r.erro}`}
+            </div>
+          ))}
+          <button type="button" className="btn-secondary audit-small-button" style={{ marginTop: 6 }} onClick={() => { onLimparResultadosEmail?.(); recarregar(); }}>Fechar aviso</button>
+        </div>
+      )}
       <div className="hint-box compact">
         Tudo o que o <strong>Robo Auditor</strong> fez, por etapa e por auditor. Clique num card para filtrar; clique de novo para limpar.
         As etapas em destaque pedem acao do auditor.
@@ -239,12 +279,12 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
           <div className="panel-title audit-table-title">Laudo consolidado por transportadora — um e-mail so por transportadora</div>
           <div style={{ padding: '0 12px 12px' }}>
             <div className="hint-box compact" style={{ marginBottom: 8 }}>
-              Laudos aprovados agrupados: em vez de um e-mail por fatura, abra o consolidado, gere o laudo da transportadora (todas as faturas num so) e envie uma vez.
-              Depois marque as faturas como enviadas.
+              Laudos aprovados agrupados: um clique em "Gerar laudo consolidado" cria o laudo unico da transportadora (todas as faturas) e baixa o e-mail (.eml) pronto.
+              Envie uma vez e depois marque as faturas como enviadas.
             </div>
             <div className="sim-analise-tabela-wrap">
               <table className="sim-analise-tabela">
-                <thead><tr><th>Transportadora</th><th>Faturas</th><th>Valor das faturas</th><th>A descontar</th><th /></tr></thead>
+                <thead><tr><th>Transportadora</th><th>Faturas</th><th>Valor das faturas</th><th>A descontar</th><th>Envio</th><th /></tr></thead>
                 <tbody>
                   {consolidados.map((c) => (
                     <tr key={c.transportadora}>
@@ -252,10 +292,16 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
                       <td>{c.faturas.length}: {c.faturas.slice(0, 6).map((f) => f.numero_fatura).join(', ')}{c.faturas.length > 6 ? ` +${c.faturas.length - 6}` : ''}</td>
                       <td>{dinheiro(c.total)}</td>
                       <td style={{ fontWeight: 700, color: '#b45309' }}>{dinheiro(c.descontar)}</td>
+                      <td style={{ fontSize: 12 }}>{cfgDe(c.transportadora)?.email_automatico ? 'E-mail automatico' : 'Manual'}</td>
                       <td style={{ whiteSpace: 'nowrap' }}>
+                        <button type="button" className="btn-primary audit-small-button" disabled={!onEnviarEmail}
+                          onClick={() => { if (window.confirm(`Enviar por e-mail o laudo consolidado de ${c.transportadora} (${c.faturas.length} fatura(s))? Vai para os e-mails cadastrados no robo, com o auditor em copia.`)) onEnviarEmail([{ transportadora: c.transportadora, ids: c.faturas.map((f) => String(f.id)) }], 'manual'); }}
+                          title="Gera o laudo consolidado e envia por e-mail para a transportadora (auditor em copia).">
+                          Enviar por e-mail
+                        </button>{' '}
                         <button type="button" className="btn-primary audit-small-button" onClick={() => onAbrirConsolidado?.(c.transportadora, c.faturas)}
-                          title="Abre as faturas com todas selecionadas; use 'Laudo transportador lote' para gerar um laudo e e-mail unicos.">
-                          Abrir laudo consolidado
+                          title="Gera sozinho o laudo consolidado desta transportadora (todas as faturas num so) e o e-mail (.eml) para enviar uma vez.">
+                          Gerar laudo consolidado
                         </button>{' '}
                         <button type="button" className="btn-secondary audit-small-button" onClick={() => marcarConsolidadoEnviado(c)}>Marcar {c.faturas.length} como enviadas</button>
                       </td>
@@ -283,12 +329,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
               Reavaliar todas as listadas ({visiveis.filter((l) => !l.e.acao_executada && l.etapa !== 'laudo_aprovado').length})
             </button>
           )}
-          {lote && (
-            <>
-              <span style={{ fontWeight: 400, fontSize: 12 }}>Reavaliando {lote.atual} de {lote.total} · fatura {lote.numero}: {lote.fase} · {lote.enviadas} enviada(s) para a gestao</span>
-              <button type="button" className="btn-secondary audit-small-button" onClick={() => { parar.current = true; }}>Parar apos esta fatura</button>
-            </>
-          )}
+
           <button type="button" className="btn-secondary audit-small-button" disabled={Boolean(lote)} onClick={recarregar}>Atualizar</button>
         </div>
         <div className="sim-analise-tabela-wrap" style={{ maxHeight: 520, overflowY: 'auto' }}>
@@ -331,6 +372,8 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
           </table>
         </div>
       </div>
+      <RoboProgressoAmd ativo={Boolean(lote)} {...(lote || {})} onParar={() => { parar.current = true; }} />
+      <RoboProgressoAmd ativo={Boolean(progUm) && !lote} atual={1} total={1} {...(progUm || {})} />
     </div>
   );
 }

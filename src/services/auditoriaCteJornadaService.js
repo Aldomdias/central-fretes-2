@@ -1,4 +1,5 @@
 import { getSupabaseClient } from '../lib/supabaseClient';
+import { urlBaseApp } from '../utils/urlBaseApp';
 import { usuarioEhGestorAuditoria } from '../utils/authLocal';
 
 function ensureClient() {
@@ -319,7 +320,7 @@ export function gerarTokenAleatorio() {
 
 export function urlPortalTransportadora(token) {
   if (!token) return '';
-  const base = typeof window !== 'undefined' ? window.location.origin : '';
+  const base = urlBaseApp();
   return `${base}/api/portal/${token}`;
 }
 

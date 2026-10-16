@@ -118,7 +118,35 @@ import AnaliseFreteTabela from '../components/AnaliseFreteTabela';
 import ProdutividadeDiaFaturas from '../components/ProdutividadeDiaFaturas';
 import MeuPainelAuditor from '../components/MeuPainelAuditor';
 import RoboAuditoriaPainel from '../components/RoboAuditoriaPainel';
+import CampoCidadeIbge from '../components/CampoCidadeIbge';
+import { urlBaseApp } from '../utils/urlBaseApp';
+import { enviarLaudoPorEmail } from '../services/laudoEmailService';
 import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
+
+// Abre o detalhe completo de uma fatura por cima da tela atual (sem navegar): carrega a plataforma
+// sob demanda e usa o mesmo FaturaDetalhe da aba Faturas. Fechar volta para a tela de origem.
+export function FaturaDetalheModal({ faturaId, onClose }) {
+  const [estado, setEstado] = useState(null);
+  const [erro, setErro] = useState('');
+  useEffect(() => {
+    let ativo = true;
+    carregarPlataformaAuditoria().then((r) => { if (ativo) setEstado(r); }).catch((e) => { if (ativo) setErro(e.message || String(e)); });
+    return () => { ativo = false; };
+  }, []);
+  const fatura = estado?.faturas?.find((f) => String(f.id) === String(faturaId));
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 3000, overflow: 'auto', background: '#eef3f9', padding: 16 }}>
+      {!estado && !erro && <div className="panel-card">Carregando a fatura...</div>}
+      {erro && <div className="panel-card"><p className="error-text">Erro ao carregar: {erro}</p><button className="btn-secondary" onClick={onClose}>Fechar</button></div>}
+      {estado && !fatura && <div className="panel-card"><p>Fatura nao encontrada.</p><button className="btn-secondary" onClick={onClose}>Fechar</button></div>}
+      {estado && fatura && <FaturaDetalhe state={estado} fatura={fatura} onClose={onClose} onState={setEstado} />}
+    </div>
+  );
+}
+
+// Justificativa gravada quando a gestao libera uma fatura sem diferenca e nao escreve nada;
+// e o texto que seguira para a Verum na integracao.
+const JUSTIFICATIVA_PADRAO_SEM_DIVERGENCIA = 'Sem divergencia';
 
 const TABS = [
   ['meu-painel', 'Meu Painel'],
@@ -2773,7 +2801,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       await salvarPendenciasEntrega(fatura, semEntrega.map((item) => ({ ...item, entrega_status: entregaCtes.get(chaveEntregaRegistro(item))?.status })));
     }
     const blocoEntregaLaudo = semEntrega.length
-      ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><strong>⚠ ${semEntrega.length} CT-e(s) sem entrega comprovada — favor verificar</strong><p style="margin:6px 0 0;font-size:13px">O pagamento da fatura só é liberado quando todos os CT-es estiverem entregues. Envie o comprovante de entrega (canhoto/POD) dos CT-es: <b>${semEntrega.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtes.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p>${botaoPortalEntrega(linkEntrega)}</div>`
+      ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><details><summary style="cursor:pointer;font-weight:700">⚠ ${semEntrega.length} CT-e(s) sem entrega comprovada — clique para ver os detalhes</summary><p style="margin:6px 0 0;font-size:13px">O pagamento da fatura só é liberado quando todos os CT-es estiverem entregues. Envie o comprovante de entrega (canhoto/POD) dos CT-es: <b>${semEntrega.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtes.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p></details>${botaoPortalEntrega(linkEntrega)}</div>`
       : '';
     const jaConfirmada = fatura.confirmacao_transportador_status === 'APROVADO';
     const blocoConfirmacaoLaudo = linkConfirmacao
@@ -3570,11 +3598,11 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                               <option value="origem">Origem</option>
                             </select>
                           </label>
-                          <label className="field">CEP ou IBGE correto (rodape)
-                            <input
+                          <label className="field">Cidade, CEP ou IBGE correto (rodape)
+                            <CampoCidadeIbge
                               value={correcaoEndereco[item.id]?.valor || ''}
-                              placeholder="Ex: 88300000 ou 4208203"
-                              onChange={(event) => atualizarRascunhoCorrecaoEndereco(item.id, { valor: event.target.value })}
+                              placeholder="Digite a cidade (ex: Recife), o CEP ou o IBGE"
+                              onChange={(valor) => atualizarRascunhoCorrecaoEndereco(item.id, { valor })}
                             />
                           </label>
                           <label className="field">Justificativa (obrigatoria)
@@ -6143,9 +6171,10 @@ ${portaisLaudo.length ? `
     }
   };
 
-  const baixarLaudoFaturasSelecionadas = async (tipoLaudo = 'transportador') => {
+  const baixarLaudoFaturasSelecionadas = async (tipoLaudo = 'transportador', opcoesEnvio = {}) => {
     if (!faturasSelecionadas.length) {
       setMensagemImportacao('Selecione uma ou mais faturas para gerar o laudo consolidado.');
+      opcoesEnvio.aoConcluir?.({ ok: false, erro: 'Nenhuma fatura selecionada.' });
       return;
     }
     // Laudo pro transportador tem que ser de um fornecedor por vez — misturar
@@ -6296,7 +6325,7 @@ ${portaisLaudo.length ? `
         }
       }
       const blocoEntregaLote = semEntregaGeral.length
-        ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><strong>⚠ ${semEntregaGeral.length} CT-e(s) sem entrega comprovada no lote — favor verificar</strong><p style="margin:6px 0 0;font-size:13px">O pagamento so deve ser liberado com todos os CT-es entregues. CT-es: <b>${semEntregaGeral.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtesLote?.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p>${portaisEntregaLote.map((portal) => botaoPortalEntrega(portal.url, `Responder entregas — fatura ${portal.numero} (${portal.total} CT-e)`)).join('')}</div>`
+        ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><details><summary style="cursor:pointer;font-weight:700">⚠ ${semEntregaGeral.length} CT-e(s) sem entrega comprovada no lote — clique para ver os detalhes</summary><p style="margin:6px 0 0;font-size:13px">O pagamento so deve ser liberado com todos os CT-es entregues. CT-es: <b>${semEntregaGeral.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtesLote?.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p></details>${portaisEntregaLote.map((portal) => botaoPortalEntrega(portal.url, `Responder entregas — fatura ${portal.numero} (${portal.total} CT-e)`)).join('')}</div>`
         : (entregaCtesLote ? '' : `<div style="margin:0 0 14px;padding:14px 18px;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;color:#7c2d12"><strong>⚠ Nao foi possivel consultar o status de entrega dos CT-es deste lote.</strong></div>`);
       // Laudo hierarquico: uma linha por fatura, expande CT-es; cada CT-e
       // expande o detalhe do calculo. Tudo fechado por padrao.
@@ -6459,7 +6488,7 @@ ${portaisLaudo.length ? `
             botao.disabled=true;
             resultado.style.color='#334155';
             resultado.textContent='Confirmando '+tokens.length+' fatura(s)...';
-            fetch('${escapeHtmlAuditoria(`${typeof window !== 'undefined' ? window.location.origin : ''}/api/portal-fatura-lote`)}', {
+            fetch('${escapeHtmlAuditoria(`${urlBaseApp()}/api/portal-fatura-lote`)}', {
               method:'POST',
               headers:{'Content-Type':'application/json'},
               body:JSON.stringify({tokens:tokens,respondido_por:nome}),
@@ -6481,7 +6510,9 @@ ${portaisLaudo.length ? `
         </script>
         </body></html>`;
       const nomeLaudoConsolidado = `laudo-consolidado-faturas-${new Date().toISOString().slice(0, 10)}.html`;
-      baixarArquivoAuditoria(html, nomeLaudoConsolidado, 'text/html;charset=utf-8');
+      // Envio por e-mail (Robo Auditor): nao baixa nada, manda o laudo pelo servidor.
+      const enviarEmail = Boolean(opcoesEnvio.enviarEmail) && laudoTransportador;
+      if (!enviarEmail) baixarArquivoAuditoria(html, nomeLaudoConsolidado, 'text/html;charset=utf-8');
       // Laudo do transportador: baixa tambem o rascunho de e-mail (.eml, abre
       // no Outlook) ja com resumo, passo a passo e o laudo anexado.
       if (laudoTransportador) {
@@ -6497,16 +6528,33 @@ ${portaisLaudo.length ? `
         }, dinheiro);
         const numerosFaturas = blocos.map((bloco) => bloco.fatura.numero_fatura).filter(Boolean);
         const assuntoEmail = `Laudo de auditoria de fretes${transportadoras ? ` - ${transportadoras}` : ''} - fatura(s) ${numerosFaturas.slice(0, 5).join(', ')}${numerosFaturas.length > 5 ? '...' : ''}`;
-        const eml = montarEml({ assunto: assuntoEmail, corpoHtml: corpoEmail, anexoHtml: html, anexoNome: nomeLaudoConsolidado });
-        const nomeEmlConsolidado = `email-laudo-${slugArquivoEmail(transportadoras) || 'transportadora'}-${new Date().toISOString().slice(0, 10)}.eml`;
-        setEmlLaudoPendente({ conteudo: eml, nome: nomeEmlConsolidado });
-        setTimeout(() => {
-          baixarArquivoAuditoria(eml, nomeEmlConsolidado, 'message/rfc822');
-        }, 600);
+        if (enviarEmail) {
+          setProgressoLote({ etapa: 'enviando_email', carregados: faturasSelecionadas.length, total: faturasSelecionadas.length });
+          const r = await enviarLaudoPorEmail({
+            faturaIds: faturasSelecionadas.map((item) => item.id),
+            assunto: assuntoEmail,
+            corpoHtml: corpoEmail,
+            anexoHtml: html,
+            anexoNome: nomeLaudoConsolidado,
+            origem: opcoesEnvio.origem || 'manual',
+          });
+          setMensagemImportacao(`Laudo de ${transportadoras || 'transportadora'} enviado por e-mail (${faturasSelecionadas.length} fatura(s)) para ${(r.para || []).join(', ')}${(r.copia || []).length ? ` — auditor em copia: ${r.copia.join(', ')}` : ''}.`);
+          opcoesEnvio.aoConcluir?.({ ok: true, faturas: faturasSelecionadas.length, para: r.para, copia: r.copia });
+        } else {
+          const eml = montarEml({ assunto: assuntoEmail, corpoHtml: corpoEmail, anexoHtml: html, anexoNome: nomeLaudoConsolidado });
+          const nomeEmlConsolidado = `email-laudo-${slugArquivoEmail(transportadoras) || 'transportadora'}-${new Date().toISOString().slice(0, 10)}.eml`;
+          setEmlLaudoPendente({ conteudo: eml, nome: nomeEmlConsolidado });
+          setTimeout(() => {
+            baixarArquivoAuditoria(eml, nomeEmlConsolidado, 'message/rfc822');
+          }, 600);
+        }
       }
-      setMensagemImportacao(`Laudo consolidado gerado com ${faturasSelecionadas.length} fatura(s).${laudoTransportador ? ' O e-mail pronto (.eml) também foi baixado: abra no Outlook, preencha o destinatário e envie.' : ''}`);
+      if (!enviarEmail) {
+        setMensagemImportacao(`Laudo consolidado gerado com ${faturasSelecionadas.length} fatura(s).${laudoTransportador ? ' O e-mail pronto (.eml) também foi baixado: abra no Outlook, preencha o destinatário e envie.' : ''}`);
+      }
     } catch (error) {
       setMensagemImportacao(`Erro ao gerar laudo consolidado: ${error.message}`);
+      opcoesEnvio.aoConcluir?.({ ok: false, erro: error.message });
     } finally {
       setRecalculandoLote(false);
       setProgressoLote(null);
@@ -6520,6 +6568,26 @@ ${portaisLaudo.length ? `
       devolutivaJornadaPainelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   }, [devolutivaJornadaAberta]);
+
+  // Vindo do Robo ("Abrir laudo consolidado"): as faturas ja chegam selecionadas e o laudo
+  // consolidado do transportador e gerado sozinho, uma unica vez (mesma acao do botao
+  // "Laudo transportador lote"). O auditor so envia o e-mail baixado.
+  const acaoAutoLoteRef = useRef(filtrosIniciais?.acaoAuto || '');
+  useEffect(() => {
+    const acao = acaoAutoLoteRef.current;
+    if (acao !== 'laudo-transportador-lote' && acao !== 'laudo-transportador-lote-email') return;
+    const alvo = Array.isArray(filtrosIniciais?.selecionarIds) ? filtrosIniciais.selecionarIds : [];
+    if (!alvo.length || !state.faturas?.length) return;
+    if (!alvo.every((id) => selecionadasIds.includes(id))) return;
+    acaoAutoLoteRef.current = '';
+    if (acao === 'laudo-transportador-lote-email') {
+      baixarLaudoFaturasSelecionadas('transportador', {
+        enviarEmail: true, origem: filtrosIniciais?.origemEmail || 'manual', aoConcluir: filtrosIniciais?.aoConcluirEmail,
+      });
+    } else {
+      baixarLaudoFaturasSelecionadas('transportador');
+    }
+  }, [state.faturas, selecionadasIds]);
 
   const faturaAtual = aberta ? state.faturas.find((item) => item.id === aberta.id) : null;
 
@@ -9020,7 +9088,7 @@ function AprovacaoGestao({ state, onState }) {
           }
           statusNovo = 'PRONTA_PARA_PAGAMENTO';
           acao = 'APROVACAO_GESTAO_LIBEROU_SEM_DIFERENCA';
-          descricao = `Gestao aprovou e liberou para pagamento: ${resumoAtual.calculados} de ${resumoAtual.total} CT-e(s) calculados, sem cobranca a maior.${texto ? ` Obs.: ${texto}` : ''}`;
+          descricao = `Gestao aprovou e liberou para pagamento: ${resumoAtual.calculados} de ${resumoAtual.total} CT-e(s) calculados, sem cobranca a maior. Justificativa: ${texto || JUSTIFICATIVA_PADRAO_SEM_DIVERGENCIA}.`;
           campos = { ...campos, desconto_aplicado_confirmado: false, desconto_pendente_valor: 0, valor_recuperado: 0, auditoria_total_descontar: 0 };
         } else if (tipo === 'SEM_DESCONTO' || tipo === 'SUPRIMENTOS') {
           const itens = itensComAdicional(fatura, ctes);
@@ -9315,8 +9383,8 @@ function AprovacaoGestao({ state, onState }) {
               </label>
             )}
             <label className="field">
-              {decisao.tipo === 'RECUSAR' ? 'Motivo da recusa *' : decisao.tipo === 'SEM_DESCONTO' ? 'Justificativa * (minimo 10 caracteres)' : decisao.tipo === 'AUDITORIA_FUTURA' ? 'Motivo da liberacao antes da auditoria * (minimo 10 caracteres)' : decisao.tipo === 'SUPRIMENTOS' ? 'Justificativa / o que Suprimentos deve ajustar * (minimo 30 caracteres)' : 'Observacao (opcional)'}
-              <textarea rows={4} value={decisao.justificativa} onChange={(e) => setDecisao((p) => ({ ...p, justificativa: e.target.value }))} />
+              {decisao.tipo === 'RECUSAR' ? 'Motivo da recusa *' : decisao.tipo === 'SEM_DESCONTO' ? 'Justificativa * (minimo 10 caracteres)' : decisao.tipo === 'AUDITORIA_FUTURA' ? 'Motivo da liberacao antes da auditoria * (minimo 10 caracteres)' : decisao.tipo === 'SUPRIMENTOS' ? 'Justificativa / o que Suprimentos deve ajustar * (minimo 30 caracteres)' : decisao.tipo === 'LIBERAR' ? `Justificativa (opcional — se vazio, grava "${JUSTIFICATIVA_PADRAO_SEM_DIVERGENCIA}")` : 'Observacao (opcional)'}
+              <textarea rows={4} value={decisao.justificativa} placeholder={decisao.tipo === 'LIBERAR' ? `Em branco = "${JUSTIFICATIVA_PADRAO_SEM_DIVERGENCIA}"` : undefined} onChange={(e) => setDecisao((p) => ({ ...p, justificativa: e.target.value }))} />
             </label>
             {decisao.erro && <div className="hint-box compact error-text">{decisao.erro}</div>}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
@@ -10180,6 +10248,38 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   // e quer ver a lista real de faturas ja filtrada, sem reaplicar filtros.
   const [filtrosIniciaisFaturas, setFiltrosIniciaisFaturas] = useState(filtroExterno);
   useEffect(() => { if (filtroExterno) { setFiltrosIniciaisFaturas(filtroExterno); setTab('faturas'); } }, [filtroExterno]);
+  // Envio de laudo por e-mail pelo Robo (apos o OK do auditor): a fila gera e envia o laudo consolidado de
+  // uma transportadora por vez (o laudo e montado na tela de Faturas) e volta para a aba Robo no fim.
+  const [filaEmailRobo, setFilaEmailRobo] = useState([]);
+  const [emailRoboEmCurso, setEmailRoboEmCurso] = useState(false);
+  const [resultadosEmailRobo, setResultadosEmailRobo] = useState([]);
+  const enviarLaudosPorEmailRobo = (grupos, origem = 'auto') => {
+    if (!grupos?.length) return;
+    setResultadosEmailRobo([]);
+    setFilaEmailRobo((prev) => [...prev, ...grupos.map((g) => ({ ...g, origem }))]);
+  };
+  useEffect(() => {
+    if (emailRoboEmCurso || !filaEmailRobo.length) return;
+    const [proximo, ...resto] = filaEmailRobo;
+    setFilaEmailRobo(resto);
+    setEmailRoboEmCurso(true);
+    setFiltrosIniciaisFaturas({
+      chave: Date.now(), filtro: proximo.transportadora, selecionarIds: proximo.ids, acaoAuto: 'laudo-transportador-lote-email', origemEmail: proximo.origem,
+      aoConcluirEmail: (r) => {
+        setResultadosEmailRobo((atual) => [...atual, { transportadora: proximo.transportadora, ...r }]);
+        setEmailRoboEmCurso(false);
+      },
+    });
+    setTab('faturas');
+  }, [filaEmailRobo, emailRoboEmCurso]);
+  useEffect(() => {
+    if (!emailRoboEmCurso && !filaEmailRobo.length && resultadosEmailRobo.length) setTab('robo');
+  }, [emailRoboEmCurso, filaEmailRobo, resultadosEmailRobo]);
+
+  // Fatura aberta por cima da aba atual (Robo / Meu Painel), sem trocar de aba.
+  const [faturaOverlayId, setFaturaOverlayId] = useState(null);
+  const faturaOverlay = faturaOverlayId && state ? state.faturas.find((f) => String(f.id) === String(faturaOverlayId)) : null;
+
   const irParaFaturasComFiltro = (filtros) => {
     setFiltrosIniciaisFaturas({ chave: Date.now(), ...filtros });
     setTab('faturas');
@@ -10269,8 +10369,8 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
       <div className="tabs-row audit-main-tabs">
         {TABS.map(([id, label]) => <button key={id} className={`toggle-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>{label}</button>)}
       </div>
-      {tab === 'meu-painel' && <MeuPainelAuditor state={state} onAbrirFatura={(f) => irParaFaturasComFiltro({ abrirNumeroFatura: f.numero_fatura, abrirTransportadora: f.transportadora })} />}
-      {tab === 'robo' && <RoboAuditoriaPainel state={state} onAbrirFatura={(f) => irParaFaturasComFiltro({ abrirNumeroFatura: f.numero_fatura, abrirTransportadora: f.transportadora })} onAbrirConsolidado={(transportadora, fats) => irParaFaturasComFiltro({ filtro: transportadora, selecionarIds: fats.map((f) => f.id) })} />}
+      {tab === 'meu-painel' && <MeuPainelAuditor state={state} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onEnviarEmailLaudo={enviarLaudosPorEmailRobo} />}
+      {tab === 'robo' && <RoboAuditoriaPainel state={state} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onAbrirConsolidado={(transportadora, fats) => irParaFaturasComFiltro({ filtro: transportadora, selecionarIds: fats.map((f) => f.id), acaoAuto: 'laudo-transportador-lote' })} onEnviarEmail={enviarLaudosPorEmailRobo} resultadosEmail={resultadosEmailRobo} onLimparResultadosEmail={() => setResultadosEmailRobo([])} />}
       {tab === 'dashboard' && <Dashboard state={state} />}
       {tab === 'painel' && (
         <PainelAcompanhamento
@@ -10292,6 +10392,11 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
       {tab === 'aprovacao' && <AprovacaoGestao state={state} onState={setState} />}
       {tab === 'gestao' && <Gestao state={state} onState={setState} />}
       {tab === 'financeiro' && <Financeiro state={state} onState={setState} />}
+      {faturaOverlay && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 3000, overflow: 'auto', background: '#eef3f9', padding: 16 }}>
+          <FaturaDetalhe state={state} fatura={faturaOverlay} onClose={() => setFaturaOverlayId(null)} onState={setState} />
+        </div>
+      )}
     </div>
   );
 }

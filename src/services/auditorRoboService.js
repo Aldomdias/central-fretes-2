@@ -54,7 +54,14 @@ export async function listarRoboTransportadoras() {
 
 export async function salvarRoboTransportadora(registro) {
   const payload = { ...registro, updated_at: new Date().toISOString() };
-  const { error } = await getSupabaseClient().from('auditor_robo_transportadoras').upsert(payload, { onConflict: 'id' });
+  const client = getSupabaseClient();
+  let { error } = await client.from('auditor_robo_transportadoras').upsert(payload, { onConflict: 'id' });
+  // Sem a migration 20261016_001 a coluna email_automatico nao existe: salva o resto e avisa.
+  if (error && /email_automatico/i.test(error.message || '') && 'email_automatico' in payload) {
+    const { email_automatico: _ignorado, ...semColuna } = payload;
+    ({ error } = await client.from('auditor_robo_transportadoras').upsert(semColuna, { onConflict: 'id' }));
+    if (!error) throw new Error('Salvo, mas o e-mail automatico so funciona depois de aplicar a migration 20261016_001_robo_email_automatico.sql no Supabase.');
+  }
   if (error) throw new Error(`Erro ao salvar transportadora do robo: ${error.message}`);
 }
 

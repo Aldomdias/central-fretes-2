@@ -23,6 +23,9 @@ export const ETAPA_LABEL_AUDITORIA = {
   limpando_resultado_anterior: 'Limpando resultado anterior',
   carregando_resultado_salvo: 'Carregando resultado salvo',
   concluido: 'Concluído',
+  robo_lendo: 'Lendo os CT-es da fatura',
+  robo_calculando: 'Calculando status AMD',
+  robo_apurando: 'Apurando desconto e entrega',
   salvando_pedidos_ecommerce: 'Salvando pedidos do marketplace',
   mapeando_destinos_pedidos: 'Mapeando destinos dos pedidos',
   coletando_pedidos_do_recorte: 'Coletando pedidos do recorte',
@@ -47,6 +50,7 @@ export default function AmdProcessingOverlay({
   mensagemRodape = 'Pode levar mais tempo em bases grandes.',
   onCancelar = null,
   cancelando = false,
+  detalhe = '',
 }) {
   if (!ativo) return null;
 
@@ -81,7 +85,7 @@ export default function AmdProcessingOverlay({
           <img src={amdLogo} alt="AMD LOG" />
         </div>
         <strong>{etapa}…</strong>
-        <span>{mensagem}</span>
+        <span>{detalhe || mensagem}</span>
         <div className="brand-processing-bar" aria-hidden="true">
           <div style={{ width: `${Math.max(6, Math.min(percentual, 100))}%` }} />
         </div>
@@ -95,7 +99,7 @@ export default function AmdProcessingOverlay({
             disabled={cancelando}
             style={{ marginTop: 14, padding: '9px 16px', borderRadius: 8, border: '1px solid #dc2626', background: '#fff', color: '#dc2626', fontWeight: 700, cursor: cancelando ? 'default' : 'pointer', opacity: cancelando ? 0.7 : 1 }}
           >
-            {cancelando ? 'Cancelando...' : 'Cancelar processamento'}
+            {cancelando ? 'Cancelando...' : (detalhe ? 'Parar apos esta fatura' : 'Cancelar processamento')}
           </button>
         )}
       </div>

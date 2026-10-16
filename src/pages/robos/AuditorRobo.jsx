@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { carregarSessao } from '../../utils/authLocal';
 import { getSupabaseClient } from '../../lib/supabaseClient';
+import RoboProgressoAmd from '../../components/RoboProgressoAmd';
 import {
-  classificarFatura, DECISAO, gravarExecucoesRobo, limparSimulacoesRobo, listarExecucoesRobo, listarFaturasEmAuditoria, ROBO_DATA_INICIO,
+  classificarFatura, DECISAO, STATUS_ROBO_AUDITA, gravarExecucoesRobo, limparSimulacoesRobo, listarExecucoesRobo, listarFaturasEmAuditoria, ROBO_DATA_INICIO,
   listarNomesTransportadoras, listarRoboTransportadoras, normNome, removerRoboTransportadora, salvarRoboTransportadora,
 } from '../../services/auditorRoboService';
 
+const FaturaDetalheModal = lazy(() => import('../CentralAuditoriaFretesPage').then((m) => ({ default: m.FaturaDetalheModal })));
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const dataBr = (v) => (v ? String(v).slice(0, 16).replace('T', ' ').split(' ').map((p, i) => (i === 0 ? p.split('-').reverse().join('/') : p)).join(' ') : '-');
 
@@ -18,7 +20,7 @@ const ROTULO = {
 const LIMITE_POR_EXECUCAO = 20;
 const LIMITE_REAVALIAR = 10;
 const soma0 = (arr) => arr.reduce((a, e) => a + Number(e.valor_descontar || 0), 0);
-const vazio = { transportadora: '', emails_transportadora: '', email_aprovacao: '' };
+const vazio = { transportadora: '', emails_transportadora: '', email_aprovacao: '', email_automatico: false };
 
 export default function AuditorRobo() {
   const sessao = carregarSessao();
@@ -56,6 +58,14 @@ export default function AuditorRobo() {
     } catch (ex) { setErro(ex.message); }
   };
 
+  const alternarEmail = async (r, automatico) => {
+    if (automatico && !String(r.emails_transportadora || '').trim()) {
+      setErro('Preencha os e-mails da transportadora que recebem o laudo antes de ligar o e-mail automatico (exclua e inclua de novo com os e-mails).');
+      return;
+    }
+    try { await salvarRoboTransportadora({ ...r, email_automatico: automatico }); await carregar(); } catch (ex) { setErro(ex.message); await carregar(); }
+  };
+
   const alternarAtivo = async (r) => {
     try { await salvarRoboTransportadora({ ...r, ativo: !r.ativo }); await carregar(); } catch (ex) { setErro(ex.message); }
   };
@@ -81,6 +91,7 @@ export default function AuditorRobo() {
     const lote = novas.slice(0, LIMITE_POR_EXECUCAO);
     if (!lote.length && !reavaliar.length) { setMsg('Nada para analisar agora.'); return; }
     setRodando(true); setErro(''); setMsg('');
+    pararAmd.current = false;
     try {
       // Fatura por fatura: calcula, decide, envia (se correta) e GRAVA na hora. Se a tela
       // recarregar no meio, o que ja foi analisado fica salvo e a proxima execucao continua.
@@ -92,13 +103,16 @@ export default function AuditorRobo() {
       let analisadas = 0; let reavaliadas = 0; let enviadas = 0;
       const falhas = [];
       for (let i = 0; i < fila.length; i += 1) {
+        if (pararAmd.current) break;
         const { f, anterior } = fila[i];
+        setProgAmd({ atual: i + 1, total: fila.length, numero: f.numero_fatura, faseId: 'lendo', ctAtual: 0, ctTotal: 0, enviadas });
         const prefixo = `${anterior ? 'Reavaliando' : 'Fatura'} ${f.numero_fatura} (${i + 1} de ${fila.length})`;
         setMsg(`${prefixo}...`);
         try {
           const registro = await analisarFaturaRobo(db, f, {
             cfg: ativas.get(normNome(f.transportadora)), emailsAuditores, usuario, origem: `manual - ${usuario}`, anterior,
             aoProgredir: (p) => {
+              setProgAmd({ atual: i + 1, total: fila.length, numero: f.numero_fatura, faseId: p.fase, ctAtual: p.atual || 0, ctTotal: p.total || 0, enviadas });
               const fase = p.fase === 'calculando' ? `calculando ${p.atual}/${p.total} CT-es` : p.fase === 'apurando' ? 'apurando desconto e entrega' : 'lendo CT-es';
               setMsg(`${prefixo}: ${fase} — ${analisadas + reavaliadas} concluida(s), ${enviadas} enviada(s) para a gestao.`);
             },
@@ -114,7 +128,7 @@ export default function AuditorRobo() {
       setMsg(`${analisadas} nova(s) e ${reavaliadas} reavaliada(s); ${enviadas} enviada(s) para a gestao${novas.length > lote.length ? ` (restam ${novas.length - lote.length} novas, execute de novo)` : ''}${falhas.length ? `; ${falhas.length} falharam e serao tentadas de novo` : ''}. Nenhum e-mail foi enviado.`);
       if (falhas.length) setErro(falhas.slice(0, 5).join(' | '));
       await carregar();
-    } catch (ex) { setErro(ex.message); } finally { setRodando(false); }
+    } catch (ex) { setErro(ex.message); } finally { setRodando(false); setProgAmd(null); }
   };
 
   const prontasParaGestao = useMemo(() => {
@@ -155,17 +169,59 @@ export default function AuditorRobo() {
 
   const ultimaAuto = useMemo(() => execucoes.find((e) => String(e.executado_por || '').startsWith('Robo')), [execucoes]);
 
+  // Status ATUAL de cada fatura que o robo registrou (a decisao do robo nao muda quando a gestao aprova).
+  const [statusFat, setStatusFat] = useState(() => new Map());
+  const idsExec = useMemo(() => [...new Set(execucoes.map((e) => String(e.fatura_id)))], [execucoes]);
+  useEffect(() => {
+    if (!idsExec.length) return undefined;
+    let ativo = true;
+    (async () => {
+      const mapa = new Map();
+      const client = getSupabaseClient();
+      for (let i = 0; i < idsExec.length; i += 150) {
+        const { data } = await client.from('faturas').select('id,status,data_envio_erp').in('id', idsExec.slice(i, i + 150));
+        (data || []).forEach((f) => mapa.set(String(f.id), f));
+      }
+      if (ativo) setStatusFat(mapa);
+    })().catch(() => {});
+    return () => { ativo = false; };
+  }, [idsExec.join('|')]);
+  const emAuditoria = (e) => { const f = statusFat.get(String(e.fatura_id)); return !f || STATUS_ROBO_AUDITA.includes(f.status); };
+  const LIBERADAS = ['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO', 'ENVIADA_AO_FINANCEIRO', 'PAGA', 'PAGA_COM_DESCONTO', 'PAGA_COM_DIVERGENCIA'];
+  const situacao = (e) => {
+    const f = statusFat.get(String(e.fatura_id));
+    if (!f) return '-';
+    return ({
+      RECEBIDA: 'Em auditoria', PRE_AUDITADA_VERUM: 'Em auditoria', REAUDITADA_CENTRAL: 'Em auditoria', COM_DIVERGENCIA: 'Com divergencia',
+      AGUARDANDO_APROVACAO_GESTAO: 'Aguardando a gestao', PRONTA_PARA_PAGAMENTO: 'Aprovada / liberada', LIBERADA_COM_DESCONTO: 'Liberada com desconto',
+      ENVIADA_AO_FINANCEIRO: 'No financeiro', PAGA: 'Paga', PAGA_COM_DESCONTO: 'Paga', PAGA_COM_DIVERGENCIA: 'Paga',
+      AGUARDANDO_TRANSPORTADORA: 'Aguardando transportadora', AGUARDANDO_NOVA_FATURA: 'Aguardando nova fatura', CANCELADA: 'Cancelada', SUBSTITUIDA: 'Substituida',
+    })[f.status] || f.status;
+  };
+
+  const [faturaAbertaId, setFaturaAbertaId] = useState(null);
+  const [progAmd, setProgAmd] = useState(null);
+  const pararAmd = useRef(false);
   const [periodo, setPeriodo] = useState('7');
+  const [transpSel, setTranspSel] = useState('');
+  const mesmaTransp = (nome) => !transpSel || normNome(nome) === normNome(transpSel);
   const painel = useMemo(() => {
     const corte = periodo === 'todos' ? 0 : Date.now() - Number(periodo) * 86400000;
-    const lista = execucoes.filter((e) => !corte || new Date(e.reavaliado_em || e.executado_em).getTime() >= corte);
+    const listaPeriodo = execucoes.filter((e) => !corte || new Date(e.reavaliado_em || e.executado_em).getTime() >= corte);
+    const lista = listaPeriodo.filter((e) => mesmaTransp(e.transportadora));
     const soma = (arr, f) => arr.reduce((a, e) => a + Number(f(e) || 0), 0);
     const gestao = lista.filter((e) => e.decisao === DECISAO.ENVIAR_APROVACAO && e.acao_executada);
+    const liberadas = gestao.filter((e) => LIBERADAS.includes(statusFat.get(String(e.fatura_id))?.status));
+    const noErp = liberadas.filter((e) => statusFat.get(String(e.fatura_id))?.data_envio_erp);
+    // Laudo/revisao so contam como pendentes se a fatura ainda esta em auditoria; as que a gestao
+    // ou o auditor ja trataram por fora saem daqui (aparecem em "Tratadas fora do robo").
     const laudos = lista.filter((e) => e.decisao === DECISAO.ENVIAR_LAUDO);
-    const laudosEnviados = laudos.filter((e) => e.acao_executada);
-    const laudosAprovados = laudos.filter((e) => !e.acao_executada && e.aprovado_auditor_em);
-    const laudosOk = laudos.filter((e) => !e.acao_executada && !e.aprovado_auditor_em);
-    const revisar = lista.filter((e) => e.decisao === DECISAO.REVISAO_AUDITOR && !e.acao_executada);
+    // Laudo ja gerado/enviado: marcado pelo auditor OU a fatura ja esta "Aguardando transportadora" (o laudo muda o status).
+    const laudosEnviados = laudos.filter((e) => e.acao_executada || statusFat.get(String(e.fatura_id))?.status === 'AGUARDANDO_TRANSPORTADORA');
+    const laudosAprovados = laudos.filter((e) => !e.acao_executada && e.aprovado_auditor_em && emAuditoria(e));
+    const laudosOk = laudos.filter((e) => !e.acao_executada && !e.aprovado_auditor_em && emAuditoria(e));
+    const revisar = lista.filter((e) => e.decisao === DECISAO.REVISAO_AUDITOR && !e.acao_executada && emAuditoria(e));
+    const tratadas = lista.filter((e) => !e.acao_executada && [DECISAO.ENVIAR_LAUDO, DECISAO.REVISAO_AUDITOR].includes(e.decisao) && !emAuditoria(e) && !laudosEnviados.includes(e));
     const causa = { semCalculo: 0, semEntrega: 0, outros: 0 };
     revisar.forEach((e) => {
       const m = String(e.motivo || '').toLowerCase();
@@ -178,7 +234,7 @@ export default function AuditorRobo() {
     const ultima = [...execucoes].sort(ordenar)[0];
     const ultimaAuto = [...execucoes].filter((e) => String(e.executado_por || '').startsWith('Robo')).sort(ordenar)[0];
     const porTransp = new Map();
-    lista.forEach((e) => {
+    listaPeriodo.forEach((e) => {
       const r = porTransp.get(e.transportadora) || { nome: e.transportadora, analisadas: 0, gestao: 0, laudos: 0, revisar: 0, descontar: 0 };
       r.analisadas += 1;
       if (e.decisao === DECISAO.ENVIAR_APROVACAO && e.acao_executada) r.gestao += 1;
@@ -187,21 +243,23 @@ export default function AuditorRobo() {
       porTransp.set(e.transportadora, r);
     });
     return {
-      lista, gestao, laudos, laudosEnviados, laudosAprovados, laudosOk, revisar, causa, automaticas, ultima, ultimaAuto,
+      lista, gestao, liberadas, noErp, tratadas, laudos, laudosEnviados, laudosAprovados, laudosOk, revisar, causa, automaticas, ultima, ultimaAuto,
       valorGestao: soma(gestao, (e) => e.valor_fatura),
       descontarTotal: soma(laudos, (e) => e.valor_descontar),
       reavaliacoes: soma(lista, (e) => Math.max(Number(e.tentativas || 1) - 1, 0)),
       taxa: lista.length ? Math.round((gestao.length / lista.length) * 100) : 0,
       porTransp: [...porTransp.values()].sort((a, b) => b.analisadas - a.analisadas),
     };
-  }, [execucoes, periodo]);
+  }, [execucoes, periodo, statusFat, transpSel]);
 
   const [cardSel, setCardSel] = useState('');
-  const [transpSel, setTranspSel] = useState('');
+  const novasFiltradas = useMemo(() => novas.filter((f) => mesmaTransp(f.transportadora)), [novas, transpSel]);
   const registrosCard = useMemo(() => {
     const por = {
       analisadas: painel.lista,
       gestao: painel.gestao,
+      liberadas: painel.liberadas,
+      tratadas: painel.tratadas,
       laudos: painel.laudos,
       laudosOk: painel.laudosOk,
       laudosAprovados: painel.laudosAprovados,
@@ -210,10 +268,10 @@ export default function AuditorRobo() {
       reavaliacoes: painel.lista.filter((e) => Number(e.tentativas || 1) > 1),
     };
     const base = cardSel && por[cardSel] ? por[cardSel] : painel.lista;
-    return base.filter((e) => !transpSel || e.transportadora === transpSel);
-  }, [painel, cardSel, transpSel]);
+    return base;
+  }, [painel, cardSel]);
   const ROTULO_CARD = {
-    analisadas: 'Faturas analisadas', novas: 'Novas aguardando', gestao: 'Enviadas para a gestao', laudos: 'Laudos com desconto',
+    analisadas: 'Faturas analisadas', liberadas: 'Aprovadas pela gestao', tratadas: 'Tratadas fora do robo', novas: 'Novas aguardando', gestao: 'Enviadas para a gestao', laudos: 'Laudos com desconto',
     laudosOk: 'Laudos aguardando seu OK', laudosAprovados: 'Laudos aprovados, a enviar', laudosEnviados: 'Laudos enviados',
     revisar: 'Para revisar', reavaliacoes: 'Reavaliacoes feitas',
   };
@@ -233,6 +291,11 @@ export default function AuditorRobo() {
       <div className="table-card">
         <div className="panel-title audit-table-title" style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <span>Painel do robo</span>
+          <select value={transpSel} onChange={(e) => { setTranspSel(e.target.value); }} title="Filtrar o painel por transportadora">
+            <option value="">Todas as transportadoras</option>
+            {[...new Set([...lista.map((r) => r.transportadora), ...execucoes.map((e) => e.transportadora)].filter(Boolean))]
+              .sort((a, b) => a.localeCompare(b, 'pt-BR')).map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
           <select value={periodo} onChange={(e) => setPeriodo(e.target.value)}>
             <option value="1">Ultimas 24h</option>
             <option value="7">Ultimos 7 dias</option>
@@ -247,13 +310,15 @@ export default function AuditorRobo() {
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', padding: '0 12px 12px' }}>
           {[
             ['analisadas', 'Faturas analisadas', painel.lista.length, `${painel.automaticas.length} pelo robo automatico`, '#071d49'],
-            ['novas', 'Novas aguardando', novas.length, 'ainda nao analisadas', '#475569'],
-            ['gestao', 'Enviadas para a gestao', painel.gestao.length, `${dinheiro(painel.valorGestao)} em faturas · ${painel.taxa}% sem intervencao`, '#7c3aed'],
+            ['novas', 'Novas aguardando', novasFiltradas.length, 'ainda nao analisadas', '#475569'],
+            ['gestao', 'Enviadas para a gestao', painel.gestao.length, `${painel.gestao.length - painel.liberadas.length} aguardando · ${painel.liberadas.length} aprovadas · ${painel.taxa}% sem intervencao`, '#7c3aed'],
+            ['liberadas', 'Aprovadas pela gestao', painel.liberadas.length, `${dinheiro(painel.liberadas.reduce((a, e) => a + Number(e.valor_fatura || 0), 0))} liberados · ${painel.noErp.length} ja no ERP`, '#0f766e'],
             ['laudos', 'Laudos com desconto', painel.laudos.length, `${dinheiro(painel.descontarTotal)} a descontar no total`, '#b45309'],
             ['laudosOk', 'Laudos aguardando seu OK', painel.laudosOk.length, `${dinheiro(soma0(painel.laudosOk))} a descontar`, '#c2410c'],
             ['laudosAprovados', 'Laudos aprovados, a enviar', painel.laudosAprovados.length, `${dinheiro(soma0(painel.laudosAprovados))} a descontar`, '#0e7490'],
             ['laudosEnviados', 'Laudos enviados', painel.laudosEnviados.length, `${dinheiro(soma0(painel.laudosEnviados))} a descontar`, '#14733b'],
             ['revisar', 'Para revisar', painel.revisar.length, `${painel.causa.semCalculo} sem calculo · ${painel.causa.semEntrega} sem entrega · ${painel.causa.outros} outros`, '#b91c1c'],
+            ['tratadas', 'Tratadas fora do robo', painel.tratadas.length, 'laudo/revisao ja resolvidos pelo auditor ou gestao', '#64748b'],
             ['reavaliacoes', 'Reavaliacoes feitas', painel.reavaliacoes, 'casos em que o robo voltou a olhar', '#475569'],
           ].map(([id, rotulo, valor, sub, cor]) => {
             const ativo = cardSel === id;
@@ -279,7 +344,7 @@ export default function AuditorRobo() {
               <thead><tr><th>Transportadora</th><th>Analisadas</th><th>Enviadas a gestao</th><th>Laudos</th><th>A descontar</th><th>Para revisar</th></tr></thead>
               <tbody>
                 {painel.porTransp.map((r) => (
-                  <tr key={r.nome} onClick={() => setTranspSel(transpSel === r.nome ? '' : r.nome)} style={{ cursor: 'pointer', background: transpSel === r.nome ? '#eef2ff' : undefined }}>
+                  <tr key={r.nome} onClick={() => setTranspSel(normNome(transpSel) === normNome(r.nome) ? '' : r.nome)} style={{ cursor: 'pointer', background: normNome(transpSel) === normNome(r.nome) ? '#eef2ff' : undefined }}>
                     <td>{r.nome}</td><td>{r.analisadas}</td><td>{r.gestao}</td><td>{r.laudos}</td>
                     <td>{r.descontar > 0 ? dinheiro(r.descontar) : '-'}</td>
                     <td style={{ color: r.revisar ? '#b91c1c' : undefined, fontWeight: r.revisar ? 700 : 400 }}>{r.revisar}</td>
@@ -308,22 +373,38 @@ export default function AuditorRobo() {
           <datalist id="robo-transportadoras">{nomesTransportadora.map((n) => <option key={n} value={n} />)}</datalist>
           <input placeholder="E-mails da transportadora que recebem o laudo" value={form.emails_transportadora} onChange={(e) => setForm((p) => ({ ...p, emails_transportadora: e.target.value }))} style={{ minWidth: 240 }} />
           <input placeholder="E-mail de aprovacao (financeiro)" value={form.email_aprovacao} onChange={(e) => setForm((p) => ({ ...p, email_aprovacao: e.target.value }))} />
+          <select value={form.email_automatico ? 'auto' : 'manual'} onChange={(e) => setForm((p) => ({ ...p, email_automatico: e.target.value === 'auto' }))}
+            title="Automatico: depois que o auditor aprova o laudo, o e-mail sai sozinho para a transportadora. Manual: o auditor envia.">
+            <option value="manual">Laudo: o auditor envia (manual)</option>
+            <option value="auto">Laudo: e-mail automatico apos o OK do auditor</option>
+          </select>
           <button type="button" className="btn-primary" onClick={adicionar}>Incluir</button>
         </div>
         {lista.length > 0 && (
           <div className="sim-analise-tabela-wrap">
             <table className="sim-analise-tabela">
-              <thead><tr><th>Transportadora</th><th>Auditor</th><th>E-mails laudo</th><th>Aprovacao</th><th>Modo</th><th>Ativo</th><th /></tr></thead>
+              <thead><tr><th>Transportadora</th><th>Auditor</th><th>E-mails laudo</th><th>Aprovacao</th><th>Envio do laudo</th><th>Modo</th><th>Ativo</th><th /></tr></thead>
               <tbody>
                 {lista.map((r) => (
-                  <tr key={r.id} style={{ opacity: r.ativo ? 1 : 0.55 }}>
+                  <tr
+                    key={r.id}
+                    onClick={() => { setTranspSel(normNome(transpSel) === normNome(r.transportadora) ? '' : r.transportadora); }}
+                    title="Clique para filtrar o painel e a lista por esta transportadora"
+                    style={{ opacity: r.ativo ? 1 : 0.55, cursor: 'pointer', background: normNome(transpSel) === normNome(r.transportadora) ? '#eef2ff' : undefined }}
+                  >
                     <td>{r.transportadora}</td>
                     <td style={{ color: '#64748b', fontSize: 12 }}>Da carteira da fatura</td>
                     <td>{r.emails_transportadora || '-'}</td>
                     <td>{r.email_aprovacao || '-'}</td>
+                    <td onClick={(ev) => ev.stopPropagation()}>
+                      <select value={r.email_automatico ? 'auto' : 'manual'} onChange={(e) => alternarEmail(r, e.target.value === 'auto')} style={{ fontSize: 12 }}>
+                        <option value="manual">Manual</option>
+                        <option value="auto">E-mail automatico</option>
+                      </select>
+                    </td>
                     <td>{r.modo}</td>
-                    <td><input type="checkbox" checked={r.ativo} onChange={() => alternarAtivo(r)} /></td>
-                    <td><button type="button" className="btn-secondary audit-small-button" onClick={() => remover(r)}>Remover</button></td>
+                    <td onClick={(ev) => ev.stopPropagation()}><input type="checkbox" checked={r.ativo} onChange={() => alternarAtivo(r)} /></td>
+                    <td onClick={(ev) => ev.stopPropagation()}><button type="button" className="btn-secondary audit-small-button" onClick={() => remover(r)}>Remover</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -356,7 +437,7 @@ export default function AuditorRobo() {
             <strong>Filtro:</strong>
             {cardSel && <span>{ROTULO_CARD[cardSel]}</span>}
             {transpSel && <span>· {transpSel}</span>}
-            <span style={{ color: '#475569' }}>({cardSel === 'novas' ? novas.filter((f) => !transpSel || f.transportadora === transpSel).length : registrosCard.length} registro(s))</span>
+            <span style={{ color: '#475569' }}>({cardSel === 'novas' ? novasFiltradas.length : registrosCard.length} registro(s))</span>
             <button type="button" className="btn-secondary audit-small-button" onClick={() => { setCardSel(''); setTranspSel(''); }}>Limpar filtro</button>
           </div>
         )}
@@ -365,9 +446,9 @@ export default function AuditorRobo() {
             <table className="sim-analise-tabela">
               <thead><tr><th>Fatura</th><th>Transportadora</th><th>Valor</th><th>Auditor</th><th>Entrou em</th></tr></thead>
               <tbody>
-                {novas.filter((f) => !transpSel || f.transportadora === transpSel).slice(0, 500).map((f) => (
+                {novasFiltradas.slice(0, 500).map((f) => (
                   <tr key={f.id}>
-                    <td>{f.numero_fatura}</td><td>{f.transportadora}</td><td>{dinheiro(f.valor_fatura)}</td>
+                    <td><button type="button" className="link-button" onClick={() => setFaturaAbertaId(f.id)}>{f.numero_fatura}</button></td><td>{f.transportadora}</td><td>{dinheiro(f.valor_fatura)}</td>
                     <td>{f.auditor_nome || '-'}</td><td>{dataBr(f.importado_em || f.created_at)}</td>
                   </tr>
                 ))}
@@ -378,15 +459,16 @@ export default function AuditorRobo() {
         {execucoes.length > 0 && cardSel !== 'novas' && (
           <div className="sim-analise-tabela-wrap" style={{ maxHeight: 520, overflowY: 'auto' }}>
             <table className="sim-analise-tabela">
-              <thead><tr><th>Quando</th><th>Fatura</th><th>Transportadora</th><th>Valor</th><th>Decisao</th><th>A descontar</th><th>Para</th><th>Copia</th><th>Motivo</th></tr></thead>
+              <thead><tr><th>Quando</th><th>Fatura</th><th>Transportadora</th><th>Valor</th><th>Decisao</th><th>Situacao atual</th><th>A descontar</th><th>Para</th><th>Copia</th><th>Motivo</th></tr></thead>
               <tbody>
                 {(cardSel === 'novas' ? [] : registrosCard).slice(0, 500).map((e) => (
                   <tr key={e.id}>
                     <td>{dataBr(e.executado_em)}</td>
-                    <td>{e.numero_fatura}</td>
+                    <td><button type="button" className="link-button" onClick={() => setFaturaAbertaId(e.fatura_id)}>{e.numero_fatura}</button></td>
                     <td>{e.transportadora}</td>
                     <td>{dinheiro(e.valor_fatura)}</td>
                     <td style={{ color: ROTULO[e.decisao]?.cor, fontWeight: 700 }}>{ROTULO[e.decisao]?.texto || e.decisao}{e.acao_executada ? '' : ' (simulado)'}</td>
+                    <td style={{ fontWeight: 600 }}>{situacao(e)}</td>
                     <td>{e.valor_descontar > 0 ? dinheiro(e.valor_descontar) : '-'}</td>
                     <td>{e.destinatarios || '-'}</td>
                     <td>{e.copia || '-'}</td>
@@ -398,6 +480,12 @@ export default function AuditorRobo() {
           </div>
         )}
       </div>
+      {faturaAbertaId && (
+        <Suspense fallback={<div className="panel-card">Abrindo a fatura...</div>}>
+          <FaturaDetalheModal faturaId={faturaAbertaId} onClose={() => { setFaturaAbertaId(null); carregar(); }} />
+        </Suspense>
+      )}
+      <RoboProgressoAmd ativo={Boolean(progAmd)} {...(progAmd || {})} onParar={() => { pararAmd.current = true; }} />
     </div>
   );
 }
