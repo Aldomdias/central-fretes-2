@@ -22608,7 +22608,7 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
     const cubagemTotalDiretaTracking = numero3(tracking.cubagem_total);
     const cubagemTotalTracking = cubagemTotalDiretaTracking > 0 ? cubagemTotalDiretaTracking : cubagemUnitariaTracking > 0 && qtdVolumesTracking > 0 ? cubagemUnitariaTracking * qtdVolumesTracking : 0;
     const pesoFisico = numero3(row.peso) || numero3(tracking.peso) || numero3(row.pesoDeclarado) || numero3(tracking.peso_declarado);
-    const cubagemResolvida = resolverCubagemTracking({
+    const cubagemResolvida = cubagemTotalTracking > 0 ? { cubagemAplicada: cubagemTotalTracking, totalFoiMultiplicadoPorVolumes: false } : resolverCubagemTracking({
       cubagemUnitaria: cubagemUnitariaTracking,
       cubagemTotal: cubagemTotalTracking,
       volumes: qtdVolumesTracking,
@@ -23393,7 +23393,46 @@ async function paginarEmParaleloDb(montarQuery, { pageSize = PAGE_SIZE, concorre
   }
   return linhas;
 }
+function entrarCacheCalculo(ttlMs = 18e4) {
+  cacheCalculoProfundidade += 1;
+  cacheCalculoTtlMs = Math.max(cacheCalculoTtlMs, Number(ttlMs) || 0);
+}
+function sairCacheCalculo() {
+  cacheCalculoProfundidade = Math.max(0, cacheCalculoProfundidade - 1);
+  if (!cacheCalculoProfundidade) {
+    cacheCalculoTtlMs = 0;
+    cacheLinhasPorOrigem.clear();
+  }
+}
 async function fetchRowsByOrigemIds(supabase2, table, origemIds = []) {
+  if (!cacheCalculoTtlMs) return fetchRowsByOrigemIdsDireto(supabase2, table, origemIds);
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  if (!ids.length) return [];
+  const agora = Date.now();
+  const chaveDe = (id) => `${table}|${id}`;
+  const faltando = ids.filter((id) => {
+    const entrada = cacheLinhasPorOrigem.get(chaveDe(id));
+    return !entrada || agora - entrada.ts > cacheCalculoTtlMs;
+  });
+  if (faltando.length) {
+    const novas = await fetchRowsByOrigemIdsDireto(supabase2, table, faltando);
+    const porOrigem = /* @__PURE__ */ new Map();
+    novas.forEach((linha) => {
+      const k = String(linha.origem_id);
+      if (!porOrigem.has(k)) porOrigem.set(k, []);
+      porOrigem.get(k).push(linha);
+    });
+    faltando.forEach((id) => cacheLinhasPorOrigem.set(chaveDe(id), { ts: agora, rows: porOrigem.get(String(id)) || [] }));
+  }
+  const todosNumericos = ids.every((id) => /^\d+$/.test(String(id)));
+  const ordenados = [...ids].sort((a, b) => todosNumericos ? Number(a) - Number(b) : String(a).localeCompare(String(b)));
+  const saida = [];
+  ordenados.forEach((id) => {
+    cacheLinhasPorOrigem.get(chaveDe(id))?.rows.forEach((linha) => saida.push(linha));
+  });
+  return saida;
+}
+async function fetchRowsByOrigemIdsDireto(supabase2, table, origemIds = []) {
   const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
   if (!ids.length) return [];
   const rows = [];
@@ -23413,6 +23452,7 @@ async function fetchCotacoesByOrigemIdsAndRotas(supabase2, origemIds = [], rotaN
   const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
   const rotas = Array.from(new Set((rotaNomes || []).map((item) => String(item || "").trim()).filter(Boolean)));
   if (!ids.length) return [];
+  if (cacheCalculoTtlMs) return fetchRowsByOrigemIds(supabase2, "cotacoes", ids);
   if (!rotas.length || rotas.length > 400) return fetchRowsByOrigemIds(supabase2, "cotacoes", ids);
   const rows = [];
   const origemChunkSize = 50;
@@ -23821,7 +23861,7 @@ async function resolverCepEmFaixasDb(cepLimpo) {
   }
   return null;
 }
-var FALLBACK_KEY, PAGE_SIZE, PAGE_CONCURRENCY, _cacheBaseCompleta, PAGINAS_EM_PARALELO, MARCADOR_SOMENTE_VIGENCIA, CAMPOS_ROTA_CALCULO_ECOMMERCE, TABELAS_SEM_ID_DB, CANAIS_B2C_DB, CANAIS_ATACADO_DB, REALIZADO_SELECT_COLUMNS, REALIZADO_LOCAL_SELECT_COLUMNS;
+var FALLBACK_KEY, PAGE_SIZE, PAGE_CONCURRENCY, _cacheBaseCompleta, PAGINAS_EM_PARALELO, MARCADOR_SOMENTE_VIGENCIA, CAMPOS_ROTA_CALCULO_ECOMMERCE, TABELAS_SEM_ID_DB, cacheCalculoProfundidade, cacheCalculoTtlMs, cacheLinhasPorOrigem, CANAIS_B2C_DB, CANAIS_ATACADO_DB, REALIZADO_SELECT_COLUMNS, REALIZADO_LOCAL_SELECT_COLUMNS;
 var init_freteDatabaseService = __esm({
   "src/services/freteDatabaseService.js"() {
     "use strict";
@@ -23851,6 +23891,9 @@ var init_freteDatabaseService = __esm({
       "fim_vigencia"
     ].join(",");
     TABELAS_SEM_ID_DB = /* @__PURE__ */ new Set(["generalidades"]);
+    cacheCalculoProfundidade = 0;
+    cacheCalculoTtlMs = 0;
+    cacheLinhasPorOrigem = /* @__PURE__ */ new Map();
     CANAIS_B2C_DB = [
       "B2C",
       "VIA VAREJO",
@@ -24707,12 +24750,30 @@ function getCotacaoPorRota(origem, rotaNome, peso, destinoCep = "") {
     }
     return candidatas.find((item) => !item.cepInicial || !item.cepFinal) || candidatas[0];
   };
-  const exatas = cotacoes.filter((item) => normalizeText(item.rota) === rotaNorm && dentroDoPeso(item));
+  const indice = indiceCotacoesPorRota(cotacoes);
+  const exatas = (indice.porTexto.get(rotaNorm) || []).map((pos) => cotacoes[pos]).filter(dentroDoPeso);
   if (exatas.length) return escolherEntreCandidatas(exatas);
   const capitalNorm = normalizeCompare(rotaCapitalPorCodigoCurto(rotaNome));
   if (!capitalNorm) return void 0;
-  const candidatasCapital = cotacoes.filter((item) => normalizeCompare(item.rota) === capitalNorm && dentroDoPeso(item));
+  const candidatasCapital = (indice.porCompare.get(capitalNorm) || []).map((pos) => cotacoes[pos]).filter(dentroDoPeso);
   return escolherEntreCandidatas(candidatasCapital);
+}
+function indiceCotacoesPorRota(cotacoes) {
+  const pronto = indicesCotacoesPorLista.get(cotacoes);
+  if (pronto && pronto.tamanho === cotacoes.length) return pronto;
+  const porTexto = /* @__PURE__ */ new Map();
+  const porCompare = /* @__PURE__ */ new Map();
+  cotacoes.forEach((item, pos) => {
+    const texto = normalizeText(item.rota);
+    if (!porTexto.has(texto)) porTexto.set(texto, []);
+    porTexto.get(texto).push(pos);
+    const compare = normalizeCompare(item.rota);
+    if (!porCompare.has(compare)) porCompare.set(compare, []);
+    porCompare.get(compare).push(pos);
+  });
+  const indice = { tamanho: cotacoes.length, porTexto, porCompare };
+  indicesCotacoesPorLista.set(cotacoes, indice);
+  return indice;
 }
 function normalizarLinhaGrade(item = {}) {
   const peso = toNumber3(item?.peso ?? item?.pesoMax ?? item?.pesoLimite);
@@ -25330,7 +25391,7 @@ function simularRealizadoPorTransportadora({
     foraMalha
   };
 }
-var UF_POR_CODIGO, CIDADES_CONHECIDAS, CANAIS_B2C_REALIZADO, CANAIS_ATACADO_REALIZADO;
+var UF_POR_CODIGO, CIDADES_CONHECIDAS, indicesCotacoesPorLista, CANAIS_B2C_REALIZADO, CANAIS_ATACADO_REALIZADO;
 var init_calculoFrete = __esm({
   "src/utils/calculoFrete.js"() {
     "use strict";
@@ -25386,6 +25447,7 @@ var init_calculoFrete = __esm({
       "5208707": "Goi\xE1s",
       "5300108": "Bras\xEDlia"
     };
+    indicesCotacoesPorLista = /* @__PURE__ */ new WeakMap();
     CANAIS_B2C_REALIZADO = [
       "B2C",
       "VIA VAREJO",
@@ -25604,7 +25666,13 @@ function toBooleanFlag3(value) {
   return Boolean(value);
 }
 function normalizeText2(value) {
-  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+  const chave = String(value || "");
+  const pronto = memoNormalizeText.get(chave);
+  if (pronto !== void 0) return pronto;
+  const normalizado = chave.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+  if (memoNormalizeText.size > 2e5) memoNormalizeText.clear();
+  memoNormalizeText.set(chave, normalizado);
+  return normalizado;
 }
 function normalizeCompare2(value) {
   return normalizeText2(value).toLowerCase();
@@ -25726,16 +25794,31 @@ function getCotacaoPorRota2(origem, rota, peso, cte = {}) {
     return pesoFinal >= pesoMin && pesoFinal <= (pesoMax || Number.POSITIVE_INFINITY);
   };
   const ordenarPorFaixa = (cotacoes) => [...cotacoes].sort((a, b) => toNumber4(a.pesoMax ?? a.pesoLimite ?? a.peso_max ?? a.peso_limite) - toNumber4(b.pesoMax ?? b.pesoLimite ?? b.peso_max ?? b.peso_limite))[0] || null;
-  const cotacoesNoPeso = (origem?.cotacoes || []).filter(dentroDoPeso);
-  const exatas = cotacoesNoPeso.filter((item) => normalizeCompare2(item.rota) === rotaNorm);
+  const lista = origem?.cotacoes || [];
+  const indice = indiceCotacoesPorRota2(lista);
+  const naOrdem = (chaves) => {
+    const posicoes = [...new Set(chaves.flatMap((k) => indice.get(k) || []))].sort((a, b) => a - b);
+    return posicoes.map((i) => lista[i]).filter(dentroDoPeso);
+  };
+  const exatas = naOrdem([rotaNorm]);
   if (exatas.length) return ordenarPorFaixa(exatas);
-  const porCodigoDestino = cotacoesNoPeso.filter((item) => {
-    const rotaCotacao = normalizeCompare2(item.rota);
-    return ufDestinoNorm && rotaCotacao === ufDestinoNorm || ibgePrefixo && rotaCotacao === ibgePrefixo;
-  });
+  const porCodigoDestino = naOrdem([ufDestinoNorm, ibgePrefixo].filter(Boolean));
   if (porCodigoDestino.length) return ordenarPorFaixa(porCodigoDestino);
-  const genericas = cotacoesNoPeso.filter((item) => !normalizeCompare2(item.rota));
+  const genericas = naOrdem([""]);
   return ordenarPorFaixa(genericas);
+}
+function indiceCotacoesPorRota2(lista) {
+  let indice = indicesCotacoesPorLista2.get(lista);
+  if (indice && indice.tamanho === lista.length) return indice.mapa;
+  const mapa = /* @__PURE__ */ new Map();
+  lista.forEach((item, posicao) => {
+    const chave = normalizeCompare2(item.rota);
+    if (!mapa.has(chave)) mapa.set(chave, []);
+    mapa.get(chave).push(posicao);
+  });
+  indice = { mapa, tamanho: lista.length };
+  indicesCotacoesPorLista2.set(lista, indice);
+  return mapa;
 }
 function getTipoCalculo(origem = {}, cotacao = {}) {
   const tipoOrigem = normalizeText2(origem.generalidades?.tipoCalculo || origem.generalidades?.tipo_calculo || "");
@@ -27159,7 +27242,7 @@ async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
   }
   return { registros, encontrados: ctesUnicos.length, naoEncontrados: Math.max(0, normalizadas.length - ctesUnicos.length) };
 }
-var PAGE_SIZE2, TABELA_CTES, UF_POR_CODIGO_IBGE, _cacheBaseFrete, _cacheBaseFretePorTransportadora, _cacheMapaVinculosTransportadoras, _cacheMapaEquivalenciasOrigem, _cacheRaizesAdicionaisPorId, _cacheLookupPorTransportadoras;
+var PAGE_SIZE2, TABELA_CTES, UF_POR_CODIGO_IBGE, _cacheBaseFrete, _cacheBaseFretePorTransportadora, _cacheMapaVinculosTransportadoras, _cacheMapaEquivalenciasOrigem, memoNormalizeText, indicesCotacoesPorLista2, _cacheRaizesAdicionaisPorId, _cacheLookupPorTransportadoras;
 var init_auditoriaCteProcessamentoService = __esm({
   "src/services/auditoriaCteProcessamentoService.js"() {
     "use strict";
@@ -27213,6 +27296,8 @@ var init_auditoriaCteProcessamentoService = __esm({
     _cacheBaseFretePorTransportadora = /* @__PURE__ */ new Map();
     _cacheMapaVinculosTransportadoras = null;
     _cacheMapaEquivalenciasOrigem = /* @__PURE__ */ new Map();
+    memoNormalizeText = /* @__PURE__ */ new Map();
+    indicesCotacoesPorLista2 = /* @__PURE__ */ new WeakMap();
     _cacheRaizesAdicionaisPorId = /* @__PURE__ */ new Map();
     _cacheLookupPorTransportadoras = /* @__PURE__ */ new WeakMap();
   }
@@ -27650,25 +27735,30 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
   let falhasCalculo = 0;
   const precisaCalcular = (i) => recalcularTudo || !(Number(i.calculado_frete || 0) > 0);
   if (calcular && lista.length && lista.some(precisaCalcular)) {
-    const chaves = [...new Set(lista.filter(precisaCalcular).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
-    for (let i = 0; i < chaves.length; i += BLOCO) {
-      if (prazoFinal && Date.now() > prazoFinal) throw new Error("__parcial__");
-      aoProgredir({ fase: "calculando", atual: Math.min(i + BLOCO, chaves.length), total: chaves.length });
-      try {
-        const calculo = processarCtesPorChave(chaves.slice(i, i + BLOCO), () => {
-        }, { ignorarCubagem: true });
-        const { registros } = limiteBlocoMs ? await Promise.race([calculo, new Promise((_, rej) => {
-          setTimeout(() => rej(new Error(`demorou demais (>${Math.round(limiteBlocoMs / 1e3)}s)`)), limiteBlocoMs);
-        })]) : await calculo;
-        if (registros.length) {
-          const competencia = registros.find((r2) => r2.competencia)?.competencia || (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
-          await salvarRecorteCarregadoAuditoria({ competencia, registros });
-          calculou = true;
+    entrarCacheCalculo(prazoFinal ? 54e4 : 18e4);
+    try {
+      const chaves = [...new Set(lista.filter(precisaCalcular).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
+      for (let i = 0; i < chaves.length; i += BLOCO) {
+        if (prazoFinal && Date.now() > prazoFinal) throw new Error("__parcial__");
+        aoProgredir({ fase: "calculando", atual: Math.min(i + BLOCO, chaves.length), total: chaves.length });
+        try {
+          const calculo = processarCtesPorChave(chaves.slice(i, i + BLOCO), () => {
+          }, { ignorarCubagem: true });
+          const { registros } = limiteBlocoMs ? await Promise.race([calculo, new Promise((_, rej) => {
+            setTimeout(() => rej(new Error(`demorou demais (>${Math.round(limiteBlocoMs / 1e3)}s)`)), limiteBlocoMs);
+          })]) : await calculo;
+          if (registros.length) {
+            const competencia = registros.find((r2) => r2.competencia)?.competencia || (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
+            await salvarRecorteCarregadoAuditoria({ competencia, registros });
+            calculou = true;
+          }
+        } catch (e) {
+          falhasCalculo += Math.min(BLOCO, chaves.length - i);
+          erroCalculo = erroCalculo || String(e?.message || e).slice(0, 140);
         }
-      } catch (e) {
-        falhasCalculo += Math.min(BLOCO, chaves.length - i);
-        erroCalculo = erroCalculo || String(e?.message || e).slice(0, 140);
       }
+    } finally {
+      sairCacheCalculo();
     }
     if (calculou) lista = await detalhesExatos(fatura);
   }
@@ -27803,6 +27893,7 @@ var init_auditoriaRoboCore = __esm({
     init_transporteAutorizacoesService();
     init_auditoriaEntregaCteService();
     init_auditoriaCteProcessamentoService();
+    init_freteDatabaseService();
     init_auditoriaService();
     init_auditoriaFretesDomain();
     init_auditorRoboService();
@@ -27823,6 +27914,8 @@ export {
   dataEntradaFatura,
   dataInicioRobo,
   emailDoAuditor,
+  sairCacheCalculo as encerrarCacheCalculoRobo,
   enviarFaturaParaGestaoRobo,
+  entrarCacheCalculo as iniciarCacheCalculoRobo,
   normalizarNomeAuditor
 };

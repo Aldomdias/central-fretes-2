@@ -34,6 +34,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'Nao autorizado.' });
   }
   const inicio = Date.now();
+  let nucleoComCache = null;
   try {
     const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
     const chave = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -63,6 +64,8 @@ export default async function handler(req, res) {
     process.env.SUPABASE_URL = url;
     process.env.SUPABASE_ANON_KEY = chave;
     const core = await import('./_robo-core.mjs');
+    core.iniciarCacheCalculoRobo(540000); // tabelas de frete das transportadoras ficam em memoria durante esta execucao
+    nucleoComCache = core;
 
     const { data: lista, error: erroLista } = await db.from('auditor_robo_transportadoras').select('*').eq('ativo', true);
     if (erroLista) throw new Error(`Lista do robo: ${erroLista.message}`);
@@ -143,5 +146,7 @@ export default async function handler(req, res) {
     });
   } catch (e) {
     return res.status(500).json({ error: e.message || String(e) });
+  } finally {
+    try { nucleoComCache?.encerrarCacheCalculoRobo?.(); } catch { /* sem cache aberto */ }
   }
 }

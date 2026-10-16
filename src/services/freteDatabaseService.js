@@ -2036,7 +2036,57 @@ async function paginarEmParaleloDb(montarQuery, { pageSize = PAGE_SIZE, concorre
 // chave única (uma linha por origem), então ordenar só por ele é determinístico.
 const TABELAS_SEM_ID_DB = new Set(['generalidades']);
 
+// ---- Cache OPCIONAL das linhas por origem (usado so pelo Robo Auditor) --------------------------------
+// Cada bloco de CT-es recarregava cotacoes/taxas/generalidades das mesmas origens (a transportadora e a
+// mesma). Enquanto houver um "escopo" aberto (entrarCacheCalculo), as linhas por origem ficam em memoria
+// por ttl; sem escopo o comportamento e exatamente o de antes (nada em cache). Sempre fechar com
+// sairCacheCalculo (try/finally) para nao deixar dado velho valendo em outras telas.
+let cacheCalculoProfundidade = 0;
+let cacheCalculoTtlMs = 0;
+const cacheLinhasPorOrigem = new Map();
+
+export function entrarCacheCalculo(ttlMs = 180000) {
+  cacheCalculoProfundidade += 1;
+  cacheCalculoTtlMs = Math.max(cacheCalculoTtlMs, Number(ttlMs) || 0);
+}
+
+export function sairCacheCalculo() {
+  cacheCalculoProfundidade = Math.max(0, cacheCalculoProfundidade - 1);
+  if (!cacheCalculoProfundidade) {
+    cacheCalculoTtlMs = 0;
+    cacheLinhasPorOrigem.clear();
+  }
+}
+
 async function fetchRowsByOrigemIds(supabase, table, origemIds = []) {
+  if (!cacheCalculoTtlMs) return fetchRowsByOrigemIdsDireto(supabase, table, origemIds);
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  if (!ids.length) return [];
+  const agora = Date.now();
+  const chaveDe = (id) => `${table}|${id}`;
+  const faltando = ids.filter((id) => {
+    const entrada = cacheLinhasPorOrigem.get(chaveDe(id));
+    return !entrada || agora - entrada.ts > cacheCalculoTtlMs;
+  });
+  if (faltando.length) {
+    const novas = await fetchRowsByOrigemIdsDireto(supabase, table, faltando);
+    const porOrigem = new Map();
+    novas.forEach((linha) => {
+      const k = String(linha.origem_id);
+      if (!porOrigem.has(k)) porOrigem.set(k, []);
+      porOrigem.get(k).push(linha);
+    });
+    faltando.forEach((id) => cacheLinhasPorOrigem.set(chaveDe(id), { ts: agora, rows: porOrigem.get(String(id)) || [] }));
+  }
+  // Mesma ordem da consulta original: por origem_id crescente (e, dentro dela, a ordem ja vinda do banco).
+  const todosNumericos = ids.every((id) => /^\d+$/.test(String(id)));
+  const ordenados = [...ids].sort((a, b) => (todosNumericos ? Number(a) - Number(b) : String(a).localeCompare(String(b))));
+  const saida = [];
+  ordenados.forEach((id) => { cacheLinhasPorOrigem.get(chaveDe(id))?.rows.forEach((linha) => saida.push(linha)); });
+  return saida;
+}
+
+async function fetchRowsByOrigemIdsDireto(supabase, table, origemIds = []) {
   const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
   if (!ids.length) return [];
 
@@ -2064,6 +2114,9 @@ async function fetchCotacoesByOrigemIdsAndRotas(supabase, origemIds = [], rotaNo
   const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
   const rotas = Array.from(new Set((rotaNomes || []).map((item) => String(item || '').trim()).filter(Boolean)));
   if (!ids.length) return [];
+  // Com o cache do robo ligado: todas as cotacoes das origens (o mesmo conjunto que a conferencia "robusta" abaixo
+  // devolveria), lidas uma vez e reaproveitadas pelos blocos seguintes.
+  if (cacheCalculoTtlMs) return fetchRowsByOrigemIds(supabase, 'cotacoes', ids);
   if (!rotas.length || rotas.length > 400) return fetchRowsByOrigemIds(supabase, 'cotacoes', ids);
 
   const rows = [];

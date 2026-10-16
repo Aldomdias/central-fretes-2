@@ -9,10 +9,13 @@ import { buscarReferenciaCtes, vincularChavesDetalhesPorNumero } from '../servic
 import { carregarSaldosAutorizadosPorChave } from '../services/transporteAutorizacoesService';
 import { buscarStatusEntregaCtes, chaveEntregaRegistro, STATUS_ENTREGA } from '../services/auditoriaEntregaCteService';
 import { processarCtesPorChave } from '../services/auditoriaCteProcessamentoService';
+import { entrarCacheCalculo, sairCacheCalculo } from '../services/freteDatabaseService';
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { normalizarChaveCte } from './auditoriaFretesDomain';
 import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura } from '../services/auditorRoboService';
 
+// Escopo do cache das tabelas de frete (ver freteDatabaseService): abrir antes de um lote e fechar no finally.
+export { entrarCacheCalculo as iniciarCacheCalculoRobo, sairCacheCalculo as encerrarCacheCalculoRobo };
 export { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura };
 
 // Mesma tolerancia padrao da tela (a tela deixa ajustar por navegador; na nuvem vale o padrao).
@@ -112,6 +115,8 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
   let falhasCalculo = 0;
   const precisaCalcular = (i) => recalcularTudo || !(Number(i.calculado_frete || 0) > 0);
   if (calcular && lista.length && lista.some(precisaCalcular)) {
+    entrarCacheCalculo(prazoFinal ? 540000 : 180000);
+    try {
     const chaves = [...new Set(lista.filter(precisaCalcular).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
     for (let i = 0; i < chaves.length; i += BLOCO) {
       if (prazoFinal && Date.now() > prazoFinal) throw new Error('__parcial__');
@@ -131,6 +136,9 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
         falhasCalculo += Math.min(BLOCO, chaves.length - i);
         erroCalculo = erroCalculo || String(e?.message || e).slice(0, 140);
       }
+    }
+    } finally {
+      sairCacheCalculo();
     }
     if (calculou) lista = await detalhesExatos(fatura);
   }

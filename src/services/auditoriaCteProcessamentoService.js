@@ -115,13 +115,21 @@ function toBooleanFlag(value) {
   return Boolean(value);
 }
 
+// Memo: e chamada milhares de vezes por CT-e com os mesmos textos (nomes de rota, cidades). Resultado identico.
+const memoNormalizeText = new Map();
 function normalizeText(value) {
-  return String(value || '')
+  const chave = String(value || '');
+  const pronto = memoNormalizeText.get(chave);
+  if (pronto !== undefined) return pronto;
+  const normalizado = chave
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, ' ')
     .trim();
+  if (memoNormalizeText.size > 200000) memoNormalizeText.clear();
+  memoNormalizeText.set(chave, normalizado);
+  return normalizado;
 }
 
 function normalizeCompare(value) {
@@ -385,22 +393,40 @@ function getCotacaoPorRota(origem, rota, peso, cte = {}) {
     toNumber(a.pesoMax ?? a.pesoLimite ?? a.peso_max ?? a.peso_limite)
     - toNumber(b.pesoMax ?? b.pesoLimite ?? b.peso_max ?? b.peso_limite)
   ))[0] || null;
-  const cotacoesNoPeso = (origem?.cotacoes || []).filter(dentroDoPeso);
+  const lista = origem?.cotacoes || [];
+  const indice = indiceCotacoesPorRota(lista);
+  const naOrdem = (chaves) => {
+    const posicoes = [...new Set(chaves.flatMap((k) => indice.get(k) || []))].sort((a, b) => a - b);
+    return posicoes.map((i) => lista[i]).filter(dentroDoPeso);
+  };
 
   // A rota nominal exata sempre vence. Isso impede SUL II de fornecer o
   // percentual para SUL III e impede uma cotacao generica de passar na frente.
-  const exatas = cotacoesNoPeso.filter((item) => normalizeCompare(item.rota) === rotaNorm);
+  const exatas = naOrdem([rotaNorm]);
   if (exatas.length) return ordenarPorFaixa(exatas);
 
-  const porCodigoDestino = cotacoesNoPeso.filter((item) => {
-    const rotaCotacao = normalizeCompare(item.rota);
-    return (ufDestinoNorm && rotaCotacao === ufDestinoNorm)
-      || (ibgePrefixo && rotaCotacao === ibgePrefixo);
-  });
+  const porCodigoDestino = naOrdem([ufDestinoNorm, ibgePrefixo].filter(Boolean));
   if (porCodigoDestino.length) return ordenarPorFaixa(porCodigoDestino);
 
-  const genericas = cotacoesNoPeso.filter((item) => !normalizeCompare(item.rota));
+  const genericas = naOrdem(['']);
   return ordenarPorFaixa(genericas);
+}
+
+// Indice (por lista de cotacoes) rota normalizada -> posicoes na lista. Montado uma vez por lista e reaproveitado
+// em todas as buscas; as posicoes preservam a ordem original (o desempate de ordenarPorFaixa depende dela).
+const indicesCotacoesPorLista = new WeakMap();
+function indiceCotacoesPorRota(lista) {
+  let indice = indicesCotacoesPorLista.get(lista);
+  if (indice && indice.tamanho === lista.length) return indice.mapa;
+  const mapa = new Map();
+  lista.forEach((item, posicao) => {
+    const chave = normalizeCompare(item.rota);
+    if (!mapa.has(chave)) mapa.set(chave, []);
+    mapa.get(chave).push(posicao);
+  });
+  indice = { mapa, tamanho: lista.length };
+  indicesCotacoesPorLista.set(lista, indice);
+  return mapa;
 }
 
 function getTipoCalculo(origem = {}, cotacao = {}) {

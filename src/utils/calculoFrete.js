@@ -319,7 +319,10 @@ function getCotacaoPorRota(origem, rotaNome, peso, destinoCep = '') {
     return candidatas.find((item) => !item.cepInicial || !item.cepFinal) || candidatas[0];
   };
 
-  const exatas = cotacoes.filter((item) => normalizeText(item.rota) === rotaNorm && dentroDoPeso(item));
+  // Indice por nome de rota (montado uma vez por lista de cotacoes): evita varrer todas as cotacoes da origem
+  // a cada rota candidata de cada CT-e. As posicoes preservam a ordem original -> mesmo resultado.
+  const indice = indiceCotacoesPorRota(cotacoes);
+  const exatas = (indice.porTexto.get(rotaNorm) || []).map((pos) => cotacoes[pos]).filter(dentroDoPeso);
   if (exatas.length) return escolherEntreCandidatas(exatas);
 
   // Algumas tabelas legadas usam codigo curto na aba Rotas (ex.: CEC) e nome
@@ -328,8 +331,27 @@ function getCotacaoPorRota(origem, rotaNome, peso, destinoCep = '') {
   // consistente para nao escolher INT1/INT2/etc. errado.
   const capitalNorm = normalizeCompare(rotaCapitalPorCodigoCurto(rotaNome));
   if (!capitalNorm) return undefined;
-  const candidatasCapital = cotacoes.filter((item) => normalizeCompare(item.rota) === capitalNorm && dentroDoPeso(item));
+  const candidatasCapital = (indice.porCompare.get(capitalNorm) || []).map((pos) => cotacoes[pos]).filter(dentroDoPeso);
   return escolherEntreCandidatas(candidatasCapital);
+}
+
+const indicesCotacoesPorLista = new WeakMap();
+function indiceCotacoesPorRota(cotacoes) {
+  const pronto = indicesCotacoesPorLista.get(cotacoes);
+  if (pronto && pronto.tamanho === cotacoes.length) return pronto;
+  const porTexto = new Map();
+  const porCompare = new Map();
+  cotacoes.forEach((item, pos) => {
+    const texto = normalizeText(item.rota);
+    if (!porTexto.has(texto)) porTexto.set(texto, []);
+    porTexto.get(texto).push(pos);
+    const compare = normalizeCompare(item.rota);
+    if (!porCompare.has(compare)) porCompare.set(compare, []);
+    porCompare.get(compare).push(pos);
+  });
+  const indice = { tamanho: cotacoes.length, porTexto, porCompare };
+  indicesCotacoesPorLista.set(cotacoes, indice);
+  return indice;
 }
 
 
