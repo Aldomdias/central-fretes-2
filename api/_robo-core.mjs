@@ -27641,7 +27641,7 @@ async function detalhesExatos(fatura) {
   return unicos.map((i) => aplicarSaldo(mesclar(i, referencia), saldos, referencia));
 }
 async function apurarFaturaRobo(fatura, aoProgredir = () => {
-}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 25, limiteBlocoMs = 0 } = {}) {
+}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0 } = {}) {
   const BLOCO = bloco;
   aoProgredir({ fase: "lendo" });
   let lista = await detalhesExatos(fatura);
@@ -27750,7 +27750,7 @@ function emailDoAuditor(fatura, mapa) {
   return String(fatura?.auditor_email || "").trim() || mapa?.get(normalizarNomeAuditor(fatura?.auditor_nome)) || "";
 }
 async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = /* @__PURE__ */ new Map(), usuario = "Robo (automatico)", origem = "automatico", anterior = null, aoProgredir = () => {
-}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 25, limiteBlocoMs = 0 } = {}) {
+}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0 } = {}) {
   const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs });
   const c = classificarFatura(resumo, Boolean(f.auditoria_considerar_menor));
   let enviada = false;

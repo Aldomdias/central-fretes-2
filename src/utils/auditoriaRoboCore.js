@@ -99,8 +99,9 @@ async function detalhesExatos(fatura) {
 // limite da funcao; so apura o que ja esta calculado (navegador, auditor abrindo a fatura, importacao).
 // recalcularTudo (reavaliacao manual): refaz o calculo de TODOS os CT-es da fatura, e nao so dos que estavam sem
 // resultado; so fica "sem calculo" o que realmente der erro no calculo.
-export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 25, limiteBlocoMs = 0 } = {}) {
-  // Blocos pequenos: cada bloco e calculado E GRAVADO, o andamento aparece na tela e, se a pagina
+export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0 } = {}) {
+  // Blocos de 100 no navegador (cada bloco recarrega as tabelas das rotas dele: blocos maiores repetem menos esse
+  // carregamento, que e o grosso do tempo) e pequenos na nuvem (parametro `bloco`). Blocos pequenos: cada bloco e calculado E GRAVADO, o andamento aparece na tela e, se a pagina
   // for fechada no meio, o que ja foi calculado fica salvo. Na nuvem (limiteBlocoMs) um bloco que demora
   // demais e abandonado: os CT-es dele ficam "sem calculo (demorou demais)" e o robo segue.
   const BLOCO = bloco;
@@ -221,7 +222,7 @@ export function emailDoAuditor(fatura, mapa) {
 // Analisa UMA fatura do inicio ao fim: apura, decide, envia para a gestao se correta e devolve o
 // registro pronto para gravar em auditor_robo_execucoes. Usado pelo robo na nuvem e pelo botao.
 // anterior = registro anterior da fatura (reavaliacao), para manter/zerar a aprovacao do auditor.
-export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = new Map(), usuario = 'Robo (automatico)', origem = 'automatico', anterior = null, aoProgredir = () => {}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 25, limiteBlocoMs = 0 } = {}) {
+export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = new Map(), usuario = 'Robo (automatico)', origem = 'automatico', anterior = null, aoProgredir = () => {}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0 } = {}) {
   const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs });
   const c = classificarFatura(resumo, Boolean(f.auditoria_considerar_menor));
   let enviada = false;

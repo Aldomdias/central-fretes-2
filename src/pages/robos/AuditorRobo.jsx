@@ -9,7 +9,15 @@ import {
 
 const FaturaDetalheModal = lazy(() => import('../CentralAuditoriaFretesPage').then((m) => ({ default: m.FaturaDetalheModal })));
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-const dataBr = (v) => (v ? String(v).slice(0, 16).replace('T', ' ').split(' ').map((p, i) => (i === 0 ? p.split('-').reverse().join('/') : p)).join(' ') : '-');
+// Timestamp (UTC no banco) -> data e hora de Brasilia; so data (YYYY-MM-DD) -> dd/mm/aaaa.
+const dataBr = (v) => {
+  if (!v) return '-';
+  const texto = String(v);
+  if (!texto.includes('T')) return texto.slice(0, 10).split('-').reverse().join('/');
+  const d = new Date(texto);
+  if (Number.isNaN(d.getTime())) return texto.slice(0, 16).replace('T', ' ');
+  return d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).replace(',', '');
+};
 
 const ROTULO = {
   [DECISAO.ENVIAR_LAUDO]: { texto: 'Enviaria laudo ao transportador', cor: '#b45309' },
