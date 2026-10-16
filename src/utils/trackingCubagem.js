@@ -248,6 +248,10 @@ function volumesTracking(item = {}) {
 }
 
 export function criarTrackingAgregado(item = {}, origem = '') {
+  // Idempotente: item ja agregado (adicionarTrackingNoMapa -> somarTrackingAgregado
+  // chama esta funcao de novo). Resolver outra vez trataria total == unitaria
+  // (ja sobrescrita) como "nao multiplicado" e multiplicaria pelos volumes 2x.
+  if (item.cubagem_total_armazenada !== undefined && item.origem_vinculo_tracking) return item;
   const origemVinculo = origem || item.origem_vinculo_tracking || 'raw';
   const qtdVolumes = volumesTracking(item);
   const cubagemUnitaria = numero(item.cubagem_unitaria ?? 0);
