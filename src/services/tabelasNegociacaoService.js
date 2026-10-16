@@ -280,6 +280,14 @@ function resumirOrigensItens(itens = []) {
     .slice(0, 20);
 }
 
+// Colunas numeric(14,4) estouram acima de ~9,99 bilhoes. Modelos de frete usam 99999999999
+// como "sem limite" em Peso limite; limita para caber no banco mantendo o sentido de "infinito".
+const LIMITE_NUMERICO_DB = 999999999;
+function numeroDb(value) {
+  const n = numero(value);
+  return Math.max(-LIMITE_NUMERICO_DB, Math.min(LIMITE_NUMERICO_DB, n));
+}
+
 function montarLinhaItem(tabela, item = {}, rodadaNumero = null) {
   const tipoItem = normalizarTipoItem(item);
   const dadosOriginaisBase = item.dados_originais && typeof item.dados_originais === 'object'
@@ -303,29 +311,29 @@ function montarLinhaItem(tabela, item = {}, rodadaNumero = null) {
     ibge_destino:     texto(item.ibge_destino),
 
     faixa_peso:       texto(item.faixa_peso),
-    peso_inicial:     numero(item.peso_inicial),
-    peso_final:       numero(item.peso_final),
+    peso_inicial:     numeroDb(item.peso_inicial),
+    peso_final:       numeroDb(item.peso_final),
 
-    frete_minimo:     numero(item.frete_minimo),
-    taxa_aplicada:    numero(item.taxa_aplicada),
-    frete_percentual: numero(item.frete_percentual),
-    excesso_kg:       numero(item.excesso_kg),
-    valor_excedente:  numero(item.valor_excedente),
+    frete_minimo:     numeroDb(item.frete_minimo),
+    taxa_aplicada:    numeroDb(item.taxa_aplicada),
+    frete_percentual: numeroDb(item.frete_percentual),
+    excesso_kg:       numeroDb(item.excesso_kg),
+    valor_excedente:  numeroDb(item.valor_excedente),
 
     prazo:            inteiro(item.prazo),
 
     tipo_veiculo:     texto(item.tipo_veiculo),
-    valor_lotacao:    numero(item.valor_lotacao),
-    km:               numero(item.km),
-    icms:             numero(item.icms),
+    valor_lotacao:    numeroDb(item.valor_lotacao),
+    km:               numeroDb(item.km),
+    icms:             numeroDb(item.icms),
 
-    gris:             numero(item.gris),
-    advalorem:        numero(item.advalorem),
-    pedagio:          numero(item.pedagio),
-    tas:              numero(item.tas),
-    tda:              numero(item.tda),
-    tde:              numero(item.tde),
-    outras_taxas:     numero(item.outras_taxas),
+    gris:             numeroDb(item.gris),
+    advalorem:        numeroDb(item.advalorem),
+    pedagio:          numeroDb(item.pedagio),
+    tas:              numeroDb(item.tas),
+    tda:              numeroDb(item.tda),
+    tde:              numeroDb(item.tde),
+    outras_taxas:     numeroDb(item.outras_taxas),
 
     origem_importacao: texto(item.origem_importacao),
     observacao:        texto(item.observacao),
@@ -335,6 +343,26 @@ function montarLinhaItem(tabela, item = {}, rodadaNumero = null) {
       rodada: rodadaNumero || item.dados_originais?.rodada || item.rodada || null,
     },
   };
+}
+
+// "numeric field overflow" não diz qual coluna estourou: aponta a coluna e o maior valor do lote
+// para ajustar a planilha (ou ampliar a precisão da coluna).
+function descreverErroSalvarItens(error, lote = []) {
+  const msg = error?.message || 'Erro ao salvar itens da tabela.';
+  if (!/numeric field overflow|out of range/i.test(msg)) return msg;
+  const maiores = {};
+  lote.forEach((linha) => {
+    Object.entries(linha).forEach(([coluna, valor]) => {
+      if (typeof valor !== 'number') return;
+      if (!(coluna in maiores) || Math.abs(valor) > Math.abs(maiores[coluna])) maiores[coluna] = valor;
+    });
+  });
+  const top = Object.entries(maiores)
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+    .slice(0, 4)
+    .map(([coluna, valor]) => `${coluna}=${valor}`)
+    .join(', ');
+  return `${msg} Maiores valores do lote: ${top}. Confira essas colunas na planilha (valor com ponto/vírgula errado?) ou peça para ampliar a precisão das colunas numéricas.`;
 }
 
 const LIMITE_CARREGAMENTO_ITENS_UI = 500;
@@ -1212,7 +1240,7 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
       }
       const { error } = await supabase
         .from('tabelas_negociacao_itens').insert(lote);
-      if (error) throw new Error(error.message || 'Erro ao salvar itens da tabela.');
+      if (error) throw new Error(descreverErroSalvarItens(error, lote));
     }
   } else if (onProgress && limparSomente) {
     await onProgress('Itens removidos com sucesso.');
