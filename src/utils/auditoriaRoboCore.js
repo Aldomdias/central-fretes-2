@@ -128,7 +128,10 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
           : await calculo;
         if (registros.length) {
           const competencia = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
-          await salvarRecorteCarregadoAuditoria({ competencia, registros });
+          // Grava so os resultados detalhados dos CT-es. NAO reler o mes inteiro para refazer o resumo mensal
+          // (centenas de milhares de CT-es): isso estourava o tempo do banco ("Erro ao recarregar o mes completo")
+          // e era repetido a cada bloco. O resumo mensal e atualizado pelo fluxo mensal da Auditoria CT-e.
+          await salvarRecorteCarregadoAuditoria({ competencia, registros, atualizarResumoMensal: false });
           calculou = true;
         }
       } catch (e) {

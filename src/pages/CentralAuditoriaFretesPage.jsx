@@ -6252,9 +6252,13 @@ ${portaisLaudo.length ? `
               acao: 'STATUS_ALTERADO',
               status_anterior: faturaAtual.status,
               status_novo: 'AGUARDANDO_TRANSPORTADORA',
-              descricao: 'Laudo enviado ao transportador (lote) — aguardando confirmacao.',
-              usuario_nome: sessao?.nome || sessao?.email || 'Usuario local',
-              usuario_email: sessao?.email || '',
+              // Acionado pelo Robo (botao do consolidado / e-mail apos o OK): a acao conta para o Robo Auditor
+              // na produtividade, e quem clicou fica registrado na descricao.
+              descricao: opcoesEnvio.viaRobo
+                ? `[VIA ROBO] Laudo enviado ao transportador (lote) pelo Robo Auditor — aguardando confirmacao. Acionado por ${sessao?.nome || sessao?.email || 'usuario'}.`
+                : 'Laudo enviado ao transportador (lote) — aguardando confirmacao.',
+              usuario_nome: opcoesEnvio.viaRobo ? 'Robo Auditor' : (sessao?.nome || sessao?.email || 'Usuario local'),
+              usuario_email: opcoesEnvio.viaRobo ? '' : (sessao?.email || ''),
             });
             faturaAtual = estadoComLinks.faturas.find((item) => item.id === fatura.id) || faturaAtual;
           }
@@ -6582,10 +6586,11 @@ ${portaisLaudo.length ? `
     acaoAutoLoteRef.current = '';
     if (acao === 'laudo-transportador-lote-email') {
       baixarLaudoFaturasSelecionadas('transportador', {
+        viaRobo: true,
         enviarEmail: true, origem: filtrosIniciais?.origemEmail || 'manual', aoConcluir: filtrosIniciais?.aoConcluirEmail,
       });
     } else {
-      baixarLaudoFaturasSelecionadas('transportador');
+      baixarLaudoFaturasSelecionadas('transportador', { viaRobo: true });
     }
   }, [state.faturas, selecionadasIds]);
 

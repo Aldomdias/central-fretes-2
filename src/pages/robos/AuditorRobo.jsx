@@ -2,9 +2,10 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { carregarSessao } from '../../utils/authLocal';
 import { getSupabaseClient } from '../../lib/supabaseClient';
 import RoboProgressoAmd from '../../components/RoboProgressoAmd';
+import HistoricoRodadasRobo from '../../components/HistoricoRodadasRobo';
 import {
   classificarFatura, DECISAO, STATUS_ROBO_AUDITA, gravarExecucoesRobo, limparSimulacoesRobo, listarExecucoesRobo, listarFaturasEmAuditoria, dataInicioRobo, dataEntradaFatura,
-  carregarConfigRobo, salvarConfigRobo, listarNomesTransportadoras, listarRoboTransportadoras, normNome, removerRoboTransportadora, salvarRoboTransportadora,
+  carregarConfigRobo, salvarConfigRobo, listarNomesTransportadoras, listarRoboTransportadoras, registrarRodadaRobo, normNome, removerRoboTransportadora, salvarRoboTransportadora,
 } from '../../services/auditorRoboService';
 
 const FaturaDetalheModal = lazy(() => import('../CentralAuditoriaFretesPage').then((m) => ({ default: m.FaturaDetalheModal })));
@@ -110,8 +111,10 @@ export default function AuditorRobo() {
       const emailsAuditores = await carregarEmailsAuditores(db);
       const usuario = sessao?.nome || sessao?.email || 'usuario';
       const fila = [...lote.map((f) => ({ f, anterior: null })), ...reavaliar];
-      let analisadas = 0; let reavaliadas = 0; let enviadas = 0;
+      let analisadas = 0; let reavaliadas = 0; let enviadas = 0; let laudos = 0; let revisar = 0;
       const falhas = [];
+      const resumoFaturas = [];
+      const inicioRodada = Date.now();
       for (let i = 0; i < fila.length; i += 1) {
         if (pararAmd.current) break;
         const { f, anterior } = fila[i];
@@ -130,6 +133,13 @@ export default function AuditorRobo() {
           await gravarExecucoesRobo([registro]);
           if (anterior) reavaliadas += 1; else analisadas += 1;
           if (registro.acao_executada) enviadas += 1;
+          if (registro.decisao === DECISAO.ENVIAR_LAUDO) laudos += 1;
+          if (registro.decisao === DECISAO.REVISAO_AUDITOR) revisar += 1;
+          resumoFaturas.push({
+            numero: f.numero_fatura, transportadora: f.transportadora, tipo: anterior ? 'reavaliada' : 'nova',
+            decisao: registro.decisao, enviada: Boolean(registro.acao_executada), valor_descontar: registro.valor_descontar || 0,
+            motivo: String(registro.motivo || '').slice(0, 220),
+          });
           if ((analisadas + reavaliadas) % 3 === 0) await carregar();
         } catch (exFatura) {
           falhas.push(`${f.numero_fatura}: ${exFatura.message || exFatura}`);
@@ -137,6 +147,14 @@ export default function AuditorRobo() {
       }
       setMsg(`${analisadas} nova(s) e ${reavaliadas} reavaliada(s); ${enviadas} enviada(s) para a gestao${novas.length > lote.length ? ` (restam ${novas.length - lote.length} novas, execute de novo)` : ''}${falhas.length ? `; ${falhas.length} falharam e serao tentadas de novo` : ''}. Nenhum e-mail foi enviado.`);
       if (falhas.length) setErro(falhas.slice(0, 5).join(' | '));
+      await registrarRodadaRobo({
+        cadeia_id: globalThis.crypto.randomUUID(), origem: 'navegador', iniciado_em: new Date(inicioRodada).toISOString(),
+        finalizado_em: new Date().toISOString(), duracao_ms: Date.now() - inicioRodada, calcular_nuvem: null,
+        novas_encontradas: novas.length, analisadas, reavaliadas, enviadas_gestao: enviadas, laudos, revisar,
+        restantes: Math.max(fila.length - analisadas - reavaliadas, 0), estourou_tempo: false, erros: falhas.slice(0, 50),
+        faturas: resumoFaturas, executado_por: usuario,
+      });
+      setHistoricoVersao((v) => v + 1);
       await carregar();
     } catch (ex) { setErro(ex.message); } finally { setRodando(false); setProgAmd(null); }
   };
@@ -210,6 +228,7 @@ export default function AuditorRobo() {
   };
 
   const [faturaAbertaId, setFaturaAbertaId] = useState(null);
+  const [historicoVersao, setHistoricoVersao] = useState(0);
   const [cfgRobo, setCfgRobo] = useState(null);
   const [cfgSemTabela, setCfgSemTabela] = useState(false);
   const [cfgAberta, setCfgAberta] = useState(false);
@@ -399,6 +418,8 @@ export default function AuditorRobo() {
           </div>
         )}
       </div>
+
+      <HistoricoRodadasRobo key={historicoVersao} />
 
       <div className="hint-box compact">
         <strong>O que o robo faz hoje:</strong> faturas corretas (calculadas, sem desconto e todas entregues) vao direto para a

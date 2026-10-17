@@ -50,7 +50,10 @@ export default async function handler(req, res) {
       ...(cfgRow || {}),
     };
     const encadeada = Number(req.headers['x-robo-encadeamento'] || 0) > 0;
-    const forcar = encadeada || /[?&]agora=1\b/.test(String(req.url || ''));
+    const cadeiaId = String(req.headers['x-robo-cadeia'] || '') || globalThis.crypto.randomUUID();
+    const manual = /[?&]agora=1\b/.test(String(req.url || ''));
+    const forcar = encadeada || manual;
+    const origemChamada = encadeada ? 'encadeada' : (manual ? 'manual' : 'cron');
     if (!forcar) {
       const brasilia = new Date(Date.now() - 3 * 3600000); // UTC-3
       const hora = brasilia.getUTCHours();
@@ -98,6 +101,9 @@ export default async function handler(req, res) {
     let estourouTempo = false;
     let progressou = false;
     const erros = [];
+    const resumoFaturas = []; // para o historico de execucoes
+    let laudos = 0;
+    let revisar = 0;
     const fila = [
       ...novas.slice(0, Number(cfgRobo.max_faturas) || MAX_FATURAS).map((f) => ({ f, anterior: null })),
       ...reavaliar.map((e) => ({ f: porId.get(String(e.fatura_id)), anterior: e })),
@@ -120,6 +126,13 @@ export default async function handler(req, res) {
         if (error) throw new Error(error.message);
         if (anterior) reavaliadas += 1; else analisadas += 1;
         if (registro.acao_executada) enviadasGestao += 1;
+        if (registro.decisao === core.DECISAO.ENVIAR_LAUDO) laudos += 1;
+        if (registro.decisao === core.DECISAO.REVISAO_AUDITOR) revisar += 1;
+        resumoFaturas.push({
+          numero: f.numero_fatura, transportadora: f.transportadora, tipo: anterior ? 'reavaliada' : 'nova',
+          decisao: registro.decisao, enviada: Boolean(registro.acao_executada), valor_descontar: registro.valor_descontar || 0,
+          motivo: String(registro.motivo || '').slice(0, 220),
+        });
       } catch (e) {
         if (e.message === '__tempo__') { estourouTempo = true; break; }
         if (e.message === '__parcial__') { estourouTempo = true; progressou = true; break; }
@@ -135,12 +148,21 @@ export default async function handler(req, res) {
       try {
         const host = req.headers['x-forwarded-host'] || req.headers.host;
         const proto = req.headers['x-forwarded-proto'] || 'https';
-        const cab = { 'x-robo-encadeamento': String(profundidade + 1) };
+        const cab = { 'x-robo-encadeamento': String(profundidade + 1), 'x-robo-cadeia': cadeiaId };
         if (segredo) cab.authorization = `Bearer ${segredo}`;
         await fetch(`${proto}://${host}/api/robo-auditor`, { headers: cab, signal: AbortSignal.timeout(4000) }).catch(() => {});
         encadeou = true;
       } catch { /* o proximo disparo diario continua */ }
     }
+    // Historico da execucao (silencioso: sem a tabela, so nao registra)
+    try {
+      await db.from('auditor_robo_rodadas').insert({
+        cadeia_id: cadeiaId, origem: origemChamada, iniciado_em: new Date(inicio).toISOString(), finalizado_em: new Date().toISOString(),
+        duracao_ms: Date.now() - inicio, calcular_nuvem: cfgRobo.calcular_nuvem !== false,
+        novas_encontradas: novas.length, analisadas, reavaliadas, enviadas_gestao: enviadasGestao, laudos, revisar,
+        restantes, estourou_tempo: estourouTempo, erros: erros.slice(0, 50), faturas: resumoFaturas, executado_por: 'Robo (nuvem)',
+      });
+    } catch { /* sem historico */ }
     return res.status(200).json({
       ok: true, analisadas, reavaliadas, enviadasGestao, restantes, encadeou, estourouTempo, erros, ms: Date.now() - inicio,
     });

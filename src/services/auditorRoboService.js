@@ -216,3 +216,20 @@ export async function salvarConfigRobo(config, usuario = '') {
   if (error) throw new Error(tabelaAusente(error) ? 'Aplique a migration 20261016_002_auditor_robo_config.sql no Supabase para salvar a configuracao.' : `Erro ao salvar a configuracao: ${error.message}`);
   return payload;
 }
+
+// ---- Historico de execucoes (auditor_robo_rodadas) ----
+export async function listarRodadasRobo(limite = 300) {
+  const { data, error } = await getSupabaseClient().from('auditor_robo_rodadas').select('*')
+    .order('iniciado_em', { ascending: false }).limit(limite);
+  if (error) {
+    if (tabelaAusente(error)) return { lista: [], semTabela: true };
+    throw new Error(`Erro ao carregar o historico do robo: ${error.message}`);
+  }
+  return { lista: data || [], semTabela: false };
+}
+
+export async function registrarRodadaRobo(rodada) {
+  try {
+    await getSupabaseClient().from('auditor_robo_rodadas').insert(rodada);
+  } catch { /* sem historico */ }
+}

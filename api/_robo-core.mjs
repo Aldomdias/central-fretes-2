@@ -22370,6 +22370,7 @@ function volumesTracking(item = {}) {
   ]));
 }
 function criarTrackingAgregado(item = {}, origem = "") {
+  if (item.cubagem_total_armazenada !== void 0 && item.origem_vinculo_tracking) return item;
   const origemVinculo = origem || item.origem_vinculo_tracking || "raw";
   const qtdVolumes = volumesTracking(item);
   const cubagemUnitaria = numero2(item.cubagem_unitaria ?? 0);
@@ -27749,7 +27750,7 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
           })]) : await calculo;
           if (registros.length) {
             const competencia = registros.find((r2) => r2.competencia)?.competencia || (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
-            await salvarRecorteCarregadoAuditoria({ competencia, registros });
+            await salvarRecorteCarregadoAuditoria({ competencia, registros, atualizarResumoMensal: false });
             calculou = true;
           }
         } catch (e) {
