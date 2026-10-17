@@ -3,6 +3,7 @@ import { carregarSessao } from '../../utils/authLocal';
 import { getSupabaseClient } from '../../lib/supabaseClient';
 import RoboProgressoAmd from '../../components/RoboProgressoAmd';
 import HistoricoRodadasRobo from '../../components/HistoricoRodadasRobo';
+import StatusServidorRobo from '../../components/StatusServidorRobo';
 import {
   classificarFatura, DECISAO, STATUS_ROBO_AUDITA, gravarExecucoesRobo, limparSimulacoesRobo, listarExecucoesRobo, listarFaturasEmAuditoria, dataInicioRobo, dataEntradaFatura,
   carregarConfigRobo, salvarConfigRobo, listarNomesTransportadoras, listarRoboTransportadoras, registrarRodadaRobo, normNome, removerRoboTransportadora, salvarRoboTransportadora,
@@ -26,8 +27,9 @@ const ROTULO = {
   [DECISAO.REVISAO_AUDITOR]: { texto: 'Fila do auditor (revisar)', cor: '#b91c1c' },
 };
 
-const LIMITE_POR_EXECUCAO = 20;
-const LIMITE_REAVALIAR = 10;
+// Navegador: sem limite de tempo nem custo de servidor; o botao "Parar apos esta fatura" interrompe quando quiser.
+const LIMITE_POR_EXECUCAO = 1000;
+const LIMITE_REAVALIAR = 200;
 const soma0 = (arr) => arr.reduce((a, e) => a + Number(e.valor_descontar || 0), 0);
 const vazio = { transportadora: '', emails_transportadora: '', email_aprovacao: '', email_automatico: false };
 
@@ -159,7 +161,8 @@ export default function AuditorRobo() {
         cadeia_id: globalThis.crypto.randomUUID(), origem: 'navegador', iniciado_em: new Date(inicioRodada).toISOString(),
         finalizado_em: new Date().toISOString(), duracao_ms: Date.now() - inicioRodada, calcular_nuvem: null,
         novas_encontradas: novas.length, analisadas, reavaliadas, enviadas_gestao: enviadas, laudos, revisar,
-        restantes: Math.max(fila.length - analisadas - reavaliadas, 0), estourou_tempo: false, erros: falhas.slice(0, 50),
+        // O que ficou de fato pendente: todas as novas que havia menos as analisadas, mais as reavaliacoes nao feitas.
+        restantes: Math.max(novas.length - analisadas, 0) + Math.max(reavaliar.length - reavaliadas, 0), estourou_tempo: false, erros: falhas.slice(0, 50),
         faturas: resumoFaturas, executado_por: usuario,
       });
       setHistoricoVersao((v) => v + 1);
@@ -357,6 +360,8 @@ export default function AuditorRobo() {
       )}
       {erro && <div className="hint-box compact" style={{ borderLeft: '4px solid #b91c1c' }}>{erro}</div>}
       {msg && <div className="hint-box compact" style={{ borderLeft: '4px solid #14733b' }}>{msg}</div>}
+
+      <StatusServidorRobo config={cfgRobo} />
 
       <div className="table-card">
         <div className="panel-title audit-table-title" style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>

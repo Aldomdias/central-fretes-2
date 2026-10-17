@@ -35,6 +35,8 @@ export default async function handler(req, res) {
   }
   const inicio = Date.now();
   let nucleoComCache = null;
+  let rodadaId = null; // linha do historico desta chamada (gravada ao comecar = "em andamento")
+  let dbHistorico = null;
   try {
     const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
     const chave = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -93,6 +95,17 @@ export default async function handler(req, res) {
       .filter((e) => porId.has(String(e.fatura_id)) && ativas.has(norm(porId.get(String(e.fatura_id)).transportadora)))
       .sort((a, b) => String(a.reavaliado_em || a.executado_em).localeCompare(String(b.reavaliado_em || b.executado_em)))
       .slice(0, MAX_REAVALIAR);
+
+    // Historico: registra a chamada JA NO INICIO (finalizado_em vazio = em andamento) para a tela mostrar
+    // que o servidor esta trabalhando; no fim a mesma linha e atualizada com o resultado.
+    dbHistorico = db;
+    try {
+      const { data: linhaRodada } = await db.from('auditor_robo_rodadas').insert({
+        cadeia_id: cadeiaId, origem: origemChamada, iniciado_em: new Date(inicio).toISOString(), calcular_nuvem: cfgRobo.calcular_nuvem !== false,
+        novas_encontradas: novas.length, restantes: novas.length + reavaliar.length, executado_por: 'Robo (nuvem)',
+      }).select('id').single();
+      rodadaId = linhaRodada?.id || null;
+    } catch { rodadaId = null; }
 
     const emailsAuditores = await core.carregarEmailsAuditores(db);
     let analisadas = 0;
@@ -156,17 +169,26 @@ export default async function handler(req, res) {
     }
     // Historico da execucao (silencioso: sem a tabela, so nao registra)
     try {
-      await db.from('auditor_robo_rodadas').insert({
+      const final = {
         cadeia_id: cadeiaId, origem: origemChamada, iniciado_em: new Date(inicio).toISOString(), finalizado_em: new Date().toISOString(),
         duracao_ms: Date.now() - inicio, calcular_nuvem: cfgRobo.calcular_nuvem !== false,
         novas_encontradas: novas.length, analisadas, reavaliadas, enviadas_gestao: enviadasGestao, laudos, revisar,
         restantes, estourou_tempo: estourouTempo, erros: erros.slice(0, 50), faturas: resumoFaturas, executado_por: 'Robo (nuvem)',
-      });
+      };
+      if (rodadaId) await db.from('auditor_robo_rodadas').update(final).eq('id', rodadaId);
+      else await db.from('auditor_robo_rodadas').insert(final);
+      rodadaId = null;
     } catch { /* sem historico */ }
     return res.status(200).json({
       ok: true, analisadas, reavaliadas, enviadasGestao, restantes, encadeou, estourouTempo, erros, ms: Date.now() - inicio,
     });
   } catch (e) {
+    // Fecha a linha "em andamento" com o erro, para a tela nao ficar mostrando trabalho que parou.
+    if (rodadaId && dbHistorico) {
+      try {
+        await dbHistorico.from('auditor_robo_rodadas').update({ finalizado_em: new Date().toISOString(), duracao_ms: Date.now() - inicio, erros: [String(e.message || e).slice(0, 300)] }).eq('id', rodadaId);
+      } catch { /* sem historico */ }
+    }
     return res.status(500).json({ error: e.message || String(e) });
   } finally {
     try { nucleoComCache?.encerrarCacheCalculoRobo?.(); } catch { /* sem cache aberto */ }
