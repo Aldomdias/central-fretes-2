@@ -67,6 +67,14 @@ export default function AuditorRobo() {
     } catch (ex) { setErro(ex.message); }
   };
 
+  const alterarDataInicio = async (r, data) => {
+    try {
+      await salvarRoboTransportadora({ ...r, data_inicio: data || null });
+      setMsg(data ? `${r.transportadora}: o robo considera faturas importadas desde ${data.split('-').reverse().join('/')}.` : `${r.transportadora}: data de inicio voltou ao padrao (um dia antes da inclusao).`);
+      await carregar();
+    } catch (ex) { setErro(ex.message); await carregar(); }
+  };
+
   const alternarEmail = async (r, automatico) => {
     if (automatico && !String(r.emails_transportadora || '').trim()) {
       setErro('Preencha os e-mails da transportadora que recebem o laudo antes de ligar o e-mail automatico (exclua e inclua de novo com os e-mails).');
@@ -557,7 +565,16 @@ export default function AuditorRobo() {
                         <option value="auto">E-mail automatico</option>
                       </select>
                     </td>
-                    <td style={{ fontSize: 12 }}>{dataBr(dataInicioRobo(r)).slice(0, 10)}</td>
+                    <td onClick={(ev) => ev.stopPropagation()} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                      <input
+                        type="date" value={dataInicioRobo(r)} style={{ fontSize: 12, padding: '2px 4px' }}
+                        title="Faturas importadas a partir desta data entram no robo. Padrao: um dia antes da inclusao."
+                        onChange={(e) => alterarDataInicio(r, e.target.value)}
+                      />
+                      {r.data_inicio
+                        ? <button type="button" className="link-button" style={{ fontSize: 11, marginLeft: 4 }} title="Voltar para o padrao (um dia antes da inclusao)" onClick={() => alterarDataInicio(r, null)}>padrao</button>
+                        : <span style={{ fontSize: 11, color: '#64748b', marginLeft: 4 }}>(padrao)</span>}
+                    </td>
                     <td>{r.modo}</td>
                     <td onClick={(ev) => ev.stopPropagation()}><input type="checkbox" checked={r.ativo} onChange={() => alternarAtivo(r)} /></td>
                     <td onClick={(ev) => ev.stopPropagation()}><button type="button" className="btn-secondary audit-small-button" onClick={() => remover(r)}>Remover</button></td>

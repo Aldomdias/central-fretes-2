@@ -27611,6 +27611,7 @@ var init_auditoriaService = __esm({
 
 // src/services/auditorRoboService.js
 function dataInicioRobo(cfg) {
+  if (/^\d{4}-\d{2}-\d{2}/.test(String(cfg?.data_inicio || ""))) return String(cfg.data_inicio).slice(0, 10);
   const criado = cfg?.created_at ? new Date(cfg.created_at) : null;
   if (!criado || Number.isNaN(criado.getTime())) return ROBO_DATA_INICIO;
   const brasilia = new Date(criado.getTime() - 3 * 36e5);
