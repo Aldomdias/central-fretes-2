@@ -27653,7 +27653,11 @@ var init_auditorRoboService = __esm({
       REVISAO_AUDITOR: "REVISAO_AUDITOR"
     };
     ROBO_DATA_INICIO = "2026-10-13";
-    dataEntradaFatura = (f) => String(f?.importado_em || f?.created_at || "").slice(0, 10);
+    dataEntradaFatura = (f) => {
+      const v = f?.created_at || f?.importado_em;
+      if (!v) return "";
+      return new Date(new Date(v).getTime() - 3 * 36e5).toISOString().slice(0, 10);
+    };
     STATUS_ROBO_AUDITA = ["RECEBIDA", "PRE_AUDITADA_VERUM", "REAUDITADA_CENTRAL", "COM_DIVERGENCIA"];
   }
 });

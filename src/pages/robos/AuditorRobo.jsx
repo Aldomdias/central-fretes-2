@@ -70,7 +70,7 @@ export default function AuditorRobo() {
   const alterarDataInicio = async (r, data) => {
     try {
       await salvarRoboTransportadora({ ...r, data_inicio: data || null });
-      setMsg(data ? `${r.transportadora}: o robo considera faturas importadas desde ${data.split('-').reverse().join('/')}.` : `${r.transportadora}: data de inicio voltou ao padrao (um dia antes da inclusao).`);
+      setMsg(data ? `${r.transportadora}: o robo considera faturas que entraram no sistema desde ${data.split('-').reverse().join('/')}.` : `${r.transportadora}: data de inicio voltou ao padrao (um dia antes da inclusao).`);
       await carregar();
     } catch (ex) { setErro(ex.message); await carregar(); }
   };
@@ -568,7 +568,7 @@ export default function AuditorRobo() {
                     <td onClick={(ev) => ev.stopPropagation()} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
                       <input
                         type="date" value={dataInicioRobo(r)} style={{ fontSize: 12, padding: '2px 4px' }}
-                        title="Faturas importadas a partir desta data entram no robo. Padrao: um dia antes da inclusao."
+                        title="Faturas que entraram no sistema a partir desta data entram no robo. Padrao: um dia antes da inclusao."
                         onChange={(e) => alterarDataInicio(r, e.target.value)}
                       />
                       {r.data_inicio

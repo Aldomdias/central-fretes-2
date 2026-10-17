@@ -21,7 +21,13 @@ export function dataInicioRobo(cfg) {
   return brasilia.toISOString().slice(0, 10);
 }
 
-export const dataEntradaFatura = (f) => String(f?.importado_em || f?.created_at || '').slice(0, 10);
+// Data em que a fatura ENTROU no sistema (criacao do registro). Nao usar importado_em: reimportar uma fatura
+// existente sobrescreve essa data (em 14/10/2026 ~1.000 faturas antigas ficaram com importado_em = 14/10).
+export const dataEntradaFatura = (f) => {
+  const v = f?.created_at || f?.importado_em;
+  if (!v) return '';
+  return new Date(new Date(v).getTime() - 3 * 3600000).toISOString().slice(0, 10); // dia em Brasilia
+};
 
 // Faturas que ainda estao na etapa de auditoria (o robo so olha para elas).
 export const STATUS_ROBO_AUDITA = ['RECEBIDA', 'PRE_AUDITADA_VERUM', 'REAUDITADA_CENTRAL', 'COM_DIVERGENCIA'];
