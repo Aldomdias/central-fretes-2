@@ -3,7 +3,7 @@ import { carregarSessao } from '../utils/authLocal';
 import RoboProgressoAmd from './RoboProgressoAmd';
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { listarControleBoletos } from '../services/boletoControleService';
-import { aprovarLaudosRobo, DECISAO, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo } from '../services/auditorRoboService';
+import { aprovarLaudosRobo, DECISAO, gravarPreferenciaPesoMaisProximo, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo } from '../services/auditorRoboService';
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
@@ -62,6 +62,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
   const [aviso, setAviso] = useState('');
   const [lote, setLote] = useState(null); // { atual, total, enviadas, numero, faseId, ctAtual, ctTotal }
   const [progUm, setProgUm] = useState(null); // reavaliacao de uma fatura so
+  const [pesoMaisProximo, setPesoMaisProximo] = useState(() => lerPreferenciaPesoMaisProximo());
   const [cfgs, setCfgs] = useState([]);
   useEffect(() => { listarRoboTransportadoras().then(({ lista }) => setCfgs(lista)).catch(() => {}); }, []);
   const cfgDe = (nome) => cfgs.find((c) => String(c.transportadora || '').trim().toLowerCase() === String(nome || '').trim().toLowerCase());
@@ -144,6 +145,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
     try {
       const reg = await reavaliarFaturaRobo(f, e, {
         usuario: sessao?.nome || sessao?.email || 'auditor',
+        pesoMaisProximo,
         aoProgredir: (p) => setProgUm({ numero: f.numero_fatura, faseId: p.fase, ctAtual: p.atual || 0, ctTotal: p.total || 0 }),
       });
       setAviso(reg.acao_executada
@@ -169,6 +171,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
       try {
         const reg = await reavaliarFaturaRobo(f, e, {
           usuario,
+          pesoMaisProximo,
           aoProgredir: (p) => setLote({ atual: i + 1, total: alvo.length, enviadas, numero: f.numero_fatura, faseId: p.fase, ctAtual: p.atual || 0, ctTotal: p.total || 0 }),
         });
         ok += 1;
@@ -330,6 +333,11 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
             </button>
           )}
 
+          <label style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 }}
+            title="Ao reavaliar: calcula cada CT-e com o peso do CT-e e com o peso do Tracking (cubagem x fator da tabela) e fica com o mais proximo do valor cobrado.">
+            <input type="checkbox" checked={pesoMaisProximo} onChange={(ev) => { setPesoMaisProximo(ev.target.checked); gravarPreferenciaPesoMaisProximo(ev.target.checked); }} />
+            Reavaliar com peso Tracking quando mais proximo
+          </label>
           <button type="button" className="btn-secondary audit-small-button" disabled={Boolean(lote)} onClick={recarregar}>Atualizar</button>
         </div>
         <div className="sim-analise-tabela-wrap" style={{ maxHeight: 520, overflowY: 'auto' }}>

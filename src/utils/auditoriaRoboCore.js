@@ -102,7 +102,7 @@ async function detalhesExatos(fatura) {
 // limite da funcao; so apura o que ja esta calculado (navegador, auditor abrindo a fatura, importacao).
 // recalcularTudo (reavaliacao manual): refaz o calculo de TODOS os CT-es da fatura, e nao so dos que estavam sem
 // resultado; so fica "sem calculo" o que realmente der erro no calculo.
-export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0 } = {}) {
+export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = false } = {}) {
   // Blocos de 100 no navegador (cada bloco recarrega as tabelas das rotas dele: blocos maiores repetem menos esse
   // carregamento, que e o grosso do tempo) e pequenos na nuvem (parametro `bloco`). Blocos pequenos: cada bloco e calculado E GRAVADO, o andamento aparece na tela e, se a pagina
   // for fechada no meio, o que ja foi calculado fica salvo. Na nuvem (limiteBlocoMs) um bloco que demora
@@ -122,7 +122,15 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
       if (prazoFinal && Date.now() > prazoFinal) throw new Error('__parcial__');
       aoProgredir({ fase: 'calculando', atual: Math.min(i + BLOCO, chaves.length), total: chaves.length });
       try {
-        const calculo = processarCtesPorChave(chaves.slice(i, i + BLOCO), () => {}, { ignorarCubagem: true });
+        const lote = chaves.slice(i, i + BLOCO);
+        // pesoMaisProximo (Reavaliar manual com a opcao marcada): calcula com o peso do CT-e e com o peso do Tracking
+        // (com cubagem x fator da tabela) e fica, CT-e a CT-e, com o resultado mais proximo do valor cobrado.
+        const calculo = pesoMaisProximo
+          ? Promise.all([
+            processarCtesPorChave(lote, () => {}, { ignorarCubagem: true }),
+            processarCtesPorChave(lote, () => {}, { ignorarCubagem: true, modoPesoPorChave: Object.fromEntries(lote.map((c) => [c, 'tracking'])) }),
+          ]).then(([cte, tracking]) => ({ registros: escolherPesoMaisProximo(cte.registros || [], tracking.registros || []) }))
+          : processarCtesPorChave(lote, () => {}, { ignorarCubagem: true });
         const { registros } = limiteBlocoMs
           ? await Promise.race([calculo, new Promise((_, rej) => { setTimeout(() => rej(new Error(`demorou demais (>${Math.round(limiteBlocoMs / 1000)}s)`)), limiteBlocoMs); })])
           : await calculo;
@@ -233,8 +241,8 @@ export function emailDoAuditor(fatura, mapa) {
 // Analisa UMA fatura do inicio ao fim: apura, decide, envia para a gestao se correta e devolve o
 // registro pronto para gravar em auditor_robo_execucoes. Usado pelo robo na nuvem e pelo botao.
 // anterior = registro anterior da fatura (reavaliacao), para manter/zerar a aprovacao do auditor.
-export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = new Map(), usuario = 'Robo (automatico)', origem = 'automatico', anterior = null, aoProgredir = () => {}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0 } = {}) {
-  const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs });
+export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = new Map(), usuario = 'Robo (automatico)', origem = 'automatico', anterior = null, aoProgredir = () => {}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = false } = {}) {
+  const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs, pesoMaisProximo });
   const c = classificarFatura(resumo, Boolean(f.auditoria_considerar_menor));
   let enviada = false;
   let motivo = c.motivo;
@@ -266,4 +274,28 @@ export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = ne
     if (!mesmoValor) { registro.aprovado_auditor_em = null; registro.aprovado_auditor_por = null; }
   }
   return registro;
+}
+
+// Para cada CT-e, entre o calculo com peso do CT-e e o com peso do Tracking, fica o mais proximo do valor cobrado
+// (empate = peso do CT-e). Registra os dois valores no detalhe do calculo para conferencia.
+function escolherPesoMaisProximo(registrosCte = [], registrosTracking = []) {
+  const porChave = new Map(registrosTracking.map((r) => [normalizarChaveCte(r.chave_cte), r]));
+  return registrosCte.map((r) => {
+    const alt = porChave.get(normalizarChaveCte(r.chave_cte));
+    const cobrado = Number(r.valor_cte || alt?.valor_cte || 0);
+    const vCte = Number(r.valor_calculado || 0);
+    const vTrk = Number(alt?.valor_calculado || 0);
+    const usarTracking = alt && vTrk > 0 && (!(vCte > 0) || Math.abs(vTrk - cobrado) < Math.abs(vCte - cobrado) - 0.005);
+    const escolhido = usarTracking ? alt : r;
+    return {
+      ...escolhido,
+      detalhes_calculo: {
+        ...(escolhido.detalhes_calculo || {}),
+        modo_peso_fatura: usarTracking ? 'tracking' : 'cte',
+        peso_mais_proximo_auto: true,
+        valor_com_peso_cte: Number(vCte.toFixed(2)),
+        valor_com_peso_tracking: alt ? Number(vTrk.toFixed(2)) : null,
+      },
+    };
+  });
 }

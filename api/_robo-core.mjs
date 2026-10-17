@@ -27185,8 +27185,19 @@ async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
     let cteFinal = cteParaMotor;
     let ignorarCubagemFinal = pesoOverride > 0 ? true : opcoesCalculo.ignorarCubagem;
     if (aplicaModoTracking) {
-      const pesoCubadoTracking = toNumber4(cteParaMotor.peso_cubado_tracking_300);
-      const pesoModo = modoPeso === "tracking" ? Math.max(pesoTracking, pesoCubadoTracking) : pesoTracking;
+      const cubagemTracking = toNumber4(cteParaMotor.peso_cubado_tracking_300) / 300 || toNumber4(cteParaMotor.cubagemTotal || cteParaMotor.cubagem_total || cteParaMotor.cubagem);
+      let pesoModo = pesoTracking;
+      if (modoPeso === "tracking" && cubagemTracking > 0) {
+        const sonda = processarCteComMotorSimulador(
+          { ...cteParaMotor, peso: pesoTracking, peso_declarado: pesoTracking, pesoDeclarado: pesoTracking, peso_cubado: 0, pesoCubado: 0 },
+          transportadoras,
+          mapaVinculos,
+          "",
+          { ...opcoesCalculo, ignorarCubagem: true, percentualContingenciaPeso: 0 }
+        );
+        const fatorTabela = toNumber4(sonda?.detalhes_calculo?.componentes_base?.fatorCubagem) || 300;
+        pesoModo = Math.max(pesoTracking, Number((cubagemTracking * fatorTabela).toFixed(3)));
+      }
       cteFinal = {
         ...cteParaMotor,
         peso: pesoModo,
@@ -27732,7 +27743,7 @@ async function detalhesExatos(fatura) {
   return unicos.map((i) => aplicarSaldo(mesclar(i, referencia), saldos, referencia));
 }
 async function apurarFaturaRobo(fatura, aoProgredir = () => {
-}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0 } = {}) {
+}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = false } = {}) {
   const BLOCO = bloco;
   aoProgredir({ fase: "lendo" });
   let lista = await detalhesExatos(fatura);
@@ -27748,7 +27759,13 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
         if (prazoFinal && Date.now() > prazoFinal) throw new Error("__parcial__");
         aoProgredir({ fase: "calculando", atual: Math.min(i + BLOCO, chaves.length), total: chaves.length });
         try {
-          const calculo = processarCtesPorChave(chaves.slice(i, i + BLOCO), () => {
+          const lote = chaves.slice(i, i + BLOCO);
+          const calculo = pesoMaisProximo ? Promise.all([
+            processarCtesPorChave(lote, () => {
+            }, { ignorarCubagem: true }),
+            processarCtesPorChave(lote, () => {
+            }, { ignorarCubagem: true, modoPesoPorChave: Object.fromEntries(lote.map((c) => [c, "tracking"])) })
+          ]).then(([cte, tracking]) => ({ registros: escolherPesoMaisProximo(cte.registros || [], tracking.registros || []) })) : processarCtesPorChave(lote, () => {
           }, { ignorarCubagem: true });
           const { registros } = limiteBlocoMs ? await Promise.race([calculo, new Promise((_, rej) => {
             setTimeout(() => rej(new Error(`demorou demais (>${Math.round(limiteBlocoMs / 1e3)}s)`)), limiteBlocoMs);
@@ -27846,8 +27863,8 @@ function emailDoAuditor(fatura, mapa) {
   return String(fatura?.auditor_email || "").trim() || mapa?.get(normalizarNomeAuditor(fatura?.auditor_nome)) || "";
 }
 async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = /* @__PURE__ */ new Map(), usuario = "Robo (automatico)", origem = "automatico", anterior = null, aoProgredir = () => {
-}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0 } = {}) {
-  const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs });
+}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = false } = {}) {
+  const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs, pesoMaisProximo });
   const c = classificarFatura(resumo, Boolean(f.auditoria_considerar_menor));
   let enviada = false;
   let motivo = c.motivo;
@@ -27889,6 +27906,27 @@ async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = /* @__PUR
     }
   }
   return registro;
+}
+function escolherPesoMaisProximo(registrosCte = [], registrosTracking = []) {
+  const porChave = new Map(registrosTracking.map((r) => [normalizarChaveCte(r.chave_cte), r]));
+  return registrosCte.map((r) => {
+    const alt = porChave.get(normalizarChaveCte(r.chave_cte));
+    const cobrado = Number(r.valor_cte || alt?.valor_cte || 0);
+    const vCte = Number(r.valor_calculado || 0);
+    const vTrk = Number(alt?.valor_calculado || 0);
+    const usarTracking = alt && vTrk > 0 && (!(vCte > 0) || Math.abs(vTrk - cobrado) < Math.abs(vCte - cobrado) - 5e-3);
+    const escolhido = usarTracking ? alt : r;
+    return {
+      ...escolhido,
+      detalhes_calculo: {
+        ...escolhido.detalhes_calculo || {},
+        modo_peso_fatura: usarTracking ? "tracking" : "cte",
+        peso_mais_proximo_auto: true,
+        valor_com_peso_cte: Number(vCte.toFixed(2)),
+        valor_com_peso_tracking: alt ? Number(vTrk.toFixed(2)) : null
+      }
+    };
+  });
 }
 var TOLERANCIA, dentroDaTolerancia, normalizarNomeAuditor;
 var init_auditoriaRoboCore = __esm({

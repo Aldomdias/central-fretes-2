@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { carregarSessao } from '../utils/authLocal';
 import RoboProgressoAmd from './RoboProgressoAmd';
 import {
-  aprovarLaudosRobo, DECISAO, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, listarFilaAuditorRobo, reavaliarFaturaRobo,
+  aprovarLaudosRobo, DECISAO, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, listarFilaAuditorRobo, reavaliarFaturaRobo,
 } from '../services/auditorRoboService';
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -69,6 +69,7 @@ export default function FilaRoboAuditor({ faturas, onAbrirFatura, onEnviarEmail 
       setProgUm({ numero: f.numero_fatura, faseId: 'lendo', ctAtual: 0, ctTotal: 0 });
       const reg = await reavaliarFaturaRobo(f, e, {
         usuario: sessao?.nome || sessao?.email || 'auditor',
+        pesoMaisProximo: lerPreferenciaPesoMaisProximo(),
         aoProgredir: (p) => setProgUm({ numero: f.numero_fatura, faseId: p.fase, ctAtual: p.atual || 0, ctTotal: p.total || 0 }),
       });
       setAviso(reg.acao_executada ? `Fatura ${f.numero_fatura}: correta, enviada para a aprovacao da gestao.` : `Fatura ${f.numero_fatura} reavaliada: ${reg.motivo}`);

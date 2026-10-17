@@ -2720,8 +2720,21 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
       // Cubagem total do Tracking x 300 (ex.: 1,008 -> 302,4). Nao usa a cubagem
       // enriquecida (pode vir multiplicada de novo pelos volumes) nem o
       // peso_cubado agregado (pode vir como a cubagem unitaria, 0,252).
-      const pesoCubadoTracking = toNumber(cteParaMotor.peso_cubado_tracking_300);
-      const pesoModo = modoPeso === 'tracking' ? Math.max(pesoTracking, pesoCubadoTracking) : pesoTracking;
+      // Modo "Tracking com cubagem": maior entre o peso fisico do Tracking e a cubagem total do Tracking x FATOR DE
+      // CUBAGEM DA TABELA da transportadora (ex.: TRANSLOVATO Serra = 200: 0,188 m3 -> 37,6 kg). Antes usava 300 fixo
+      // (0,188 -> 56,4 kg), que nao bate com a tabela. O fator vem do proprio calculo da tabela (sonda com o peso fisico);
+      // sem fator cadastrado, mantem 300. "Tracking, peso original" continua sem cubagem.
+      const cubagemTracking = (toNumber(cteParaMotor.peso_cubado_tracking_300) / 300)
+        || toNumber(cteParaMotor.cubagemTotal || cteParaMotor.cubagem_total || cteParaMotor.cubagem);
+      let pesoModo = pesoTracking;
+      if (modoPeso === 'tracking' && cubagemTracking > 0) {
+        const sonda = processarCteComMotorSimulador(
+          { ...cteParaMotor, peso: pesoTracking, peso_declarado: pesoTracking, pesoDeclarado: pesoTracking, peso_cubado: 0, pesoCubado: 0 },
+          transportadoras, mapaVinculos, '', { ...opcoesCalculo, ignorarCubagem: true, percentualContingenciaPeso: 0 },
+        );
+        const fatorTabela = toNumber(sonda?.detalhes_calculo?.componentes_base?.fatorCubagem) || 300;
+        pesoModo = Math.max(pesoTracking, Number((cubagemTracking * fatorTabela).toFixed(3)));
+      }
       cteFinal = {
         ...cteParaMotor,
         peso: pesoModo,

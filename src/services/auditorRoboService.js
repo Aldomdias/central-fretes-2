@@ -152,14 +152,14 @@ export async function desfazerAprovacaoLaudoRobo(faturaId) {
 
 // Reavalia UMA fatura agora (botao "Reavaliar agora"): calcula o que faltar, decide e, se ficou
 // correta, envia para a gestao. Grava o resultado e devolve o registro.
-export async function reavaliarFaturaRobo(fatura, anterior, { usuario = 'auditor', aoProgredir = () => {} } = {}) {
+export async function reavaliarFaturaRobo(fatura, anterior, { usuario = 'auditor', aoProgredir = () => {}, pesoMaisProximo = false } = {}) {
   const core = await import('../utils/auditoriaRoboCore');
   const db = getSupabaseClient();
   const { data: cfgs } = await db.from('auditor_robo_transportadoras').select('*');
   const cfg = (cfgs || []).find((r) => normNome(r.transportadora) === normNome(fatura.transportadora)) || {};
   const emailsAuditores = await core.carregarEmailsAuditores(db);
   const registro = await core.analisarFaturaRobo(db, fatura, {
-    cfg, emailsAuditores, usuario, origem: `reavaliacao manual - ${usuario}`, anterior, aoProgredir, recalcularTudo: true,
+    cfg, emailsAuditores, usuario, origem: `reavaliacao manual - ${usuario}`, anterior, aoProgredir, recalcularTudo: true, pesoMaisProximo,
   });
   const { error } = await db.from('auditor_robo_execucoes').upsert(registro, { onConflict: 'fatura_id' });
   if (error) throw new Error(`Erro ao gravar a reavaliacao: ${error.message}`);
@@ -242,4 +242,13 @@ export async function registrarRodadaRobo(rodada) {
   try {
     await getSupabaseClient().from('auditor_robo_rodadas').insert(rodada);
   } catch { /* sem historico */ }
+}
+
+// Preferencia do auditor (por navegador): reavaliar usando o peso do Tracking quando mais proximo do cobrado.
+const CHAVE_PESO_PROXIMO = 'cf_robo_reavaliar_peso_mais_proximo';
+export function lerPreferenciaPesoMaisProximo() {
+  try { return localStorage.getItem(CHAVE_PESO_PROXIMO) === '1'; } catch { return false; }
+}
+export function gravarPreferenciaPesoMaisProximo(valor) {
+  try { localStorage.setItem(CHAVE_PESO_PROXIMO, valor ? '1' : '0'); } catch { /* sem armazenamento */ }
 }

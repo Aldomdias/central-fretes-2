@@ -539,6 +539,16 @@ function mesclarDetalheComReferenciaAuditoria(item = {}, referenciaCtes = new Ma
     motivo_divergencia: amd > 0 ? (base.motivo_sem_calculo || '') : (base.motivo_sem_calculo || item.motivo_divergencia || ''),
   };
 }
+// Peso do Tracking com o fator de cubagem da TABELA da transportadora (o mesmo do calculo), e nao 300 fixo.
+// `pt` vem de buscarPesosTrackingPorChaves (pesoCubado = cubagem x 300). Sem fator conhecido, mantem o x300.
+function pesoTrackingComFatorTabela(pt, ...detalhes) {
+  if (!pt) return pt;
+  const fator = detalhes.map((d) => Number(parseDetalhesCalculoAuditoria(d).fatorCubagem || 0)).find((v) => v > 0) || 0;
+  if (!fator) return pt;
+  const pesoCubado = Number(((Number(pt.pesoCubado || 0) / 300) * fator).toFixed(3));
+  return { ...pt, pesoCubado, pesoCalculado: Math.max(Number(pt.pesoFisico || 0), pesoCubado), fatorCubagem: fator };
+}
+
 function parseDetalhesCalculoAuditoria(valor) {
   if (!valor) return {};
   if (typeof valor === 'object') return valor;
@@ -2575,6 +2585,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       const trackingOverridePorChave = {};
       const reentregaPorChave = {};
       const modoPesoPorChave = {};
+      // Chaves que entram na escolha automatica de peso (flag da fatura), exceto as com forma escolhida agora na linha.
+      const chavesAutoPeso = new Set();
       alvo.forEach((item) => {
         const chave = normalizarChaveCte(item.chave_cte) || normalizarChaveCte(item.numero_cte);
         if (!chave) return;
@@ -2583,6 +2595,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         const modoGravado = parseDetalhesCalculoAuditoria(item.detalhes_calculo).modo_peso_fatura;
         const modoEscolhido = modoPorId?.[item.id] ?? (['tracking', 'tracking_original'].includes(modoGravado) ? modoGravado : 'cte');
         if (modoEscolhido !== 'cte') modoPesoPorChave[chave] = modoEscolhido;
+        if (fatura.peso_tracking_mais_proximo && modoPorId?.[item.id] === undefined) chavesAutoPeso.add(chave);
         const valorNfPreservado = numeroValorNfAuditoria(item);
         // O `peso` salvo na linha pode ser o peso da melhor alternativa que o
         // motor escolheu sozinho (ex.: cubado errado de 75,6 kg), nao o do CT-e.
@@ -2638,14 +2651,50 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         }
         if (item.reentrega_manual) reentregaPorChave[chave] = true;
       });
-      const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(chaves, setProgressoRecalculo, {
+      const opcoesCalculoFatura = {
         ignorarCubagem: true,
-        modoPesoPorChave,
         valorNfOverridePorChave,
         trackingOverridePorChave,
         reentregaPorChave,
         deveCancelar: () => cancelarRecalculoRef.current,
+      };
+      let { registros, encontrados, naoEncontrados } = await processarCtesPorChave(chaves, setProgressoRecalculo, {
+        ...opcoesCalculoFatura,
+        modoPesoPorChave: fatura.peso_tracking_mais_proximo ? Object.fromEntries(Object.entries(modoPesoPorChave).filter(([chave]) => !chavesAutoPeso.has(chave))) : modoPesoPorChave,
       });
+      // Flag da fatura "Usar peso do tracking quando mais proximo": calcula de novo com o peso do Tracking e, CT-e a CT-e,
+      // fica com o resultado (peso do CT-e x peso do Tracking) mais proximo do valor cobrado. CT-e com forma de peso
+      // escolhida manualmente agora (botao da linha) fica de fora e usa a escolha.
+      if (fatura.peso_tracking_mais_proximo && chavesAutoPeso.size && !cancelarRecalculoRef.current) {
+        const modoTracking = { ...modoPesoPorChave };
+        chavesAutoPeso.forEach((chave) => { modoTracking[chave] = 'tracking'; });
+        const comTracking = await processarCtesPorChave([...chavesAutoPeso], setProgressoRecalculo, { ...opcoesCalculoFatura, modoPesoPorChave: modoTracking });
+        const porChaveTracking = new Map((comTracking.registros || []).map((r) => [normalizarChaveCte(r.chave_cte), r]));
+        let trocados = 0;
+        registros = registros.map((r) => {
+          const chave = normalizarChaveCte(r.chave_cte);
+          if (!chavesAutoPeso.has(chave)) return r;
+          const alt = porChaveTracking.get(chave);
+          const cobrado = Number(r.valor_cte || alt?.valor_cte || 0);
+          const vCte = Number(r.valor_calculado || 0);
+          const vTrk = Number(alt?.valor_calculado || 0);
+          const usarTracking = alt && vTrk > 0 && (!(vCte > 0) || Math.abs(vTrk - cobrado) < Math.abs(vCte - cobrado) - 0.005);
+          const escolhido = usarTracking ? alt : r;
+          if (usarTracking) trocados += 1;
+          const det = parseDetalhesCalculoAuditoria(escolhido.detalhes_calculo);
+          return {
+            ...escolhido,
+            detalhes_calculo: {
+              ...det,
+              modo_peso_fatura: usarTracking ? (det.modo_peso_fatura || 'tracking') : 'cte',
+              peso_mais_proximo_auto: true,
+              valor_com_peso_cte: Number(vCte.toFixed(2)),
+              valor_com_peso_tracking: alt ? Number(vTrk.toFixed(2)) : null,
+            },
+          };
+        });
+        setInfoRecalculo(`Peso mais proximo: ${trocados} CT-e(s) ficaram com o peso do Tracking (resultado mais proximo do cobrado).`);
+      }
       if (cancelarRecalculoRef.current) throw new Error('Processamento cancelado pelo usuário. Nenhum resultado parcial foi salvo.');
       if (registros.length) {
         const competenciaRef = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
@@ -2666,7 +2715,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       setReferenciaCtes(referencia);
       setProgressoRecalculo({ etapa: 'concluido', carregados: 1, total: 1 });
       const escopo = idsRecalculo.length ? `${idsRecalculo.length} CT-e(s)` : 'todos os CT-es da fatura';
-      setInfoRecalculo(`Recalculado ${escopo}: ${encontrados} encontrado(s) e salvo(s)${naoEncontrados ? `, ${naoEncontrados} não encontrado(s) na base de CT-es.` : '.'}`);
+      setInfoRecalculo((anterior) => `Recalculado ${escopo}: ${encontrados} encontrado(s) e salvo(s)${naoEncontrados ? `, ${naoEncontrados} não encontrado(s) na base de CT-es.` : '.'}${anterior && anterior.startsWith('Peso mais proximo') ? ` ${anterior}` : ''}`);
     } catch (error) {
       setErroDetalhes(error.message || String(error));
     } finally {
@@ -3436,7 +3485,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                   )}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base?.canal || '-'}</td>
                   {(() => {
-                    const pt = pesosTracking.get(normalizarChaveCte(item.chave_cte));
+                    const pt = pesoTrackingComFatorTabela(pesosTracking.get(normalizarChaveCte(item.chave_cte)), base?.detalhes_calculo, item.detalhes_calculo);
                     const pesoUsado = Number(base?.peso || item.peso || 0);
                     const pesoCte = pesosCteBase.get(normalizarChaveCte(item.chave_cte)) || pesoUsado;
                     const diverge = Boolean(pt) && Math.abs(pt.pesoCalculado - pesoCte) > 0.5;
@@ -3522,7 +3571,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                           </p>
                         ) : null}
                         {(() => {
-                          const pt = pesosTracking.get(normalizarChaveCte(item.chave_cte));
+                          const pt = pesoTrackingComFatorTabela(pesosTracking.get(normalizarChaveCte(item.chave_cte)), base?.detalhes_calculo, item.detalhes_calculo);
                           if (!pt) return null;
                           const modoGravado = parseDetalhesCalculoAuditoria(item.detalhes_calculo).modo_peso_fatura;
                           const modoAtual = modoPesoCte[item.id] ?? (['tracking', 'tracking_original'].includes(modoGravado) ? modoGravado : 'cte');
@@ -3530,7 +3579,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                           return (
                             <div className="hint-box compact" style={{ marginTop: 8, borderColor: diverge ? '#fca5a5' : '#dbe3ef', background: diverge ? '#fef2f2' : '#f8fafc' }}>
                               <strong style={{ color: diverge ? '#b91c1c' : undefined }}>
-                                Peso: CT-e {Number(pesosCteBase.get(normalizarChaveCte(item.chave_cte)) || base?.peso || item.peso || 0).toLocaleString('pt-BR')} kg | usado no calculo {Number(base?.peso || item.peso || 0).toLocaleString('pt-BR')} kg | Tracking {pt.pesoCalculado.toLocaleString('pt-BR')} kg (fisico {pt.pesoFisico.toLocaleString('pt-BR')}, cubado {pt.pesoCubado.toLocaleString('pt-BR')})
+                                Peso: CT-e {Number(pesosCteBase.get(normalizarChaveCte(item.chave_cte)) || base?.peso || item.peso || 0).toLocaleString('pt-BR')} kg | usado no calculo {Number(base?.peso || item.peso || 0).toLocaleString('pt-BR')} kg | Tracking {pt.pesoCalculado.toLocaleString('pt-BR')} kg (fisico {pt.pesoFisico.toLocaleString('pt-BR')}, cubado {pt.pesoCubado.toLocaleString('pt-BR')}{pt.fatorCubagem ? ` com fator ${pt.fatorCubagem} da tabela` : ' (fator 300)'})
                               </strong>
                               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
                                 <label className="compact">Forma de calculo deste CT-e:
@@ -3837,6 +3886,28 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       <p className="compact" style={{ marginTop: 4 }}>"Cobranca a menor" marcada = o valor a descontar abate a cobranca a menor (fica salvo nesta fatura). Desmarcada = so a cobranca a maior.</p>
       <div className="audit-action-bar">
         <span>{selecionados.length} CT-e(s) selecionado(s)</span>
+        <label className="compact" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13 }}
+          title="Ao recalcular, cada CT-e e calculado com o peso do CT-e e com o peso do Tracking; fica o resultado mais proximo do valor cobrado.">
+          <input
+            type="checkbox"
+            checked={Boolean(fatura.peso_tracking_mais_proximo)}
+            disabled={recalculando}
+            onChange={async (e) => {
+              const ligado = e.target.checked;
+              try {
+                const next = await atualizarFaturaAuditoria(state, { ...fatura, peso_tracking_mais_proximo: ligado }, {
+                  acao: 'CONFIGURACAO_PESO',
+                  descricao: ligado ? 'Ligado: usar peso do Tracking quando o resultado ficar mais proximo do cobrado.' : 'Desligado: calculo volta a usar o peso do CT-e.',
+                  usuario_nome: sessao?.nome || sessao?.email || 'Usuario local',
+                  usuario_email: sessao?.email || '',
+                });
+                onState(next);
+                setInfoRecalculo(ligado ? 'Peso mais proximo LIGADO para esta fatura: clique em Recalcular para aplicar.' : 'Peso mais proximo desligado: recalcule para voltar ao peso do CT-e.');
+              } catch (erroFlag) { setErroDetalhes(erroFlag.message || String(erroFlag)); }
+            }}
+          />
+          Usar peso Tracking quando mais proximo
+        </label>
         <button className="btn-primary" disabled={recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={recalcular} title={selecionados.length ? 'Recalcula só os CT-es selecionados' : tab === 'sem-calculo' ? `Recalcula só os ${semCalculo.length} CT-es sem cálculo` : tab === 'divergencias' ? `Recalcula só os ${divergencias.length} CT-es divergentes` : 'Recalcula todos os CT-es da fatura'}>
           {recalculando ? 'Recalculando...' : selecionados.length ? `Recalcular selecionados (${selecionados.length})` : tab === 'sem-calculo' ? `Recalcular sem cálculo (${semCalculo.length})` : tab === 'divergencias' ? `Recalcular divergentes (${divergencias.length})` : 'Recalcular CT-es'}
         </button>
