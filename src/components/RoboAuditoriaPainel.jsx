@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { carregarSessao } from '../utils/authLocal';
 import RoboProgressoAmd from './RoboProgressoAmd';
+import { exportarExcelFormatado } from '../utils/exportarExcelFormatado';
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { listarControleBoletos } from '../services/boletoControleService';
 import { aprovarLaudosRobo, DECISAO, gravarPreferenciaPesoMaisProximo, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo } from '../services/auditorRoboService';
@@ -113,6 +114,74 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
     })
     .sort((a, b) => ETAPAS.findIndex((x) => x.id === a.etapa) - ETAPAS.findIndex((x) => x.id === b.etapa)
       || String(a.e.executado_em).localeCompare(String(b.e.executado_em)));
+
+  // Excel formatado com exatamente o que a tela mostra (filtros de etapa, auditor e busca).
+  const [exportando, setExportando] = useState(false);
+  const exportarExcel = async () => {
+    if (!visiveis.length || exportando) return;
+    setExportando(true);
+    try {
+      const STATUS_FATURA = {
+        RECEBIDA: 'Recebida', PRE_AUDITADA_VERUM: 'Pre-auditada Verum', REAUDITADA_CENTRAL: 'Reauditada', COM_DIVERGENCIA: 'Com divergencia',
+        AGUARDANDO_APROVACAO_GESTAO: 'Aguardando a gestao', PRONTA_PARA_PAGAMENTO: 'Liberada p/ pagamento', LIBERADA_COM_DESCONTO: 'Liberada com desconto',
+        ENVIADA_AO_FINANCEIRO: 'No financeiro', PAGA: 'Paga', PAGA_COM_DESCONTO: 'Paga', PAGA_COM_DIVERGENCIA: 'Paga',
+        AGUARDANDO_TRANSPORTADORA: 'Aguardando transportadora', AGUARDANDO_NOVA_FATURA: 'Aguardando nova fatura', CANCELADA: 'Cancelada', SUBSTITUIDA: 'Substituida',
+      };
+      const DEC = { ENVIAR_APROVACAO: 'Enviar para a gestao', ENVIAR_LAUDO: 'Laudo com desconto', REVISAO_AUDITOR: 'Revisar' };
+      await exportarExcelFormatado({
+        nomeArquivo: `robo-auditor-${etapaSel || 'todas-etapas'}${auditorSel ? `-${auditorSel.split(' ')[0].toLowerCase()}` : ''}-${new Date().toISOString().slice(0, 10)}.xlsx`,
+        aba: 'Robo Auditor',
+        colunas: [
+          { titulo: 'Fatura', largura: 12 },
+          { titulo: 'Transportadora', largura: 32 },
+          { titulo: 'Auditor', largura: 26 },
+          { titulo: 'Etapa (robo)', largura: 28 },
+          { titulo: 'Decisao do robo', largura: 20 },
+          { titulo: 'Status da fatura', largura: 24 },
+          { titulo: 'Valor fatura', largura: 16, tipo: 'moeda' },
+          { titulo: 'A descontar', largura: 15, tipo: 'moeda' },
+          { titulo: 'Emissao', largura: 12, tipo: 'data' },
+          { titulo: 'Vencimento', largura: 12, tipo: 'data' },
+          { titulo: 'Entrou no sistema', largura: 16, tipo: 'datahora' },
+          { titulo: 'Analisada pelo robo', largura: 18, tipo: 'datahora' },
+          { titulo: 'Dias desde a analise', largura: 10, tipo: 'inteiro' },
+          { titulo: 'Reavaliacoes', largura: 10, tipo: 'inteiro' },
+          { titulo: 'Laudo aprovado por', largura: 22 },
+          { titulo: 'Laudo aprovado em', largura: 16, tipo: 'datahora' },
+          { titulo: 'Enviado para', largura: 30 },
+          { titulo: 'Detalhe / motivo', largura: 80 },
+        ],
+        linhas: visiveis.map(({ e, f, etapa, auditor }) => [
+          String(f.numero_fatura || ''),
+          f.transportadora || '',
+          auditor,
+          ETAPA[etapa]?.rotulo || etapa,
+          DEC[e.decisao] || e.decisao,
+          STATUS_FATURA[f.status] || f.status,
+          Number(f.valor_fatura || 0),
+          Number(e.valor_descontar || 0) > 0 ? Number(e.valor_descontar) : '',
+          f.data_emissao || '',
+          f.data_vencimento || '',
+          f.created_at || '',
+          e.executado_em || '',
+          diasDesde(e.executado_em) ?? '',
+          Math.max(Number(e.tentativas || 1) - 1, 0),
+          e.aprovado_auditor_por || '',
+          e.aprovado_auditor_em || '',
+          e.destinatarios || '',
+          e.motivo || '',
+        ]),
+        resumo: [
+          ['Gerado em', new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })],
+          ['Gerado por', sessao?.nome || sessao?.email || ''],
+          ['Etapa', etapaSel ? ETAPA[etapaSel]?.rotulo : 'Todas'],
+          ['Auditor', auditorSel || 'Todos'],
+          ['Busca', busca || '(nenhuma)'],
+          ['Faturas exportadas', String(visiveis.length)],
+        ],
+      });
+    } catch (ex) { setErro(`Erro ao exportar: ${ex.message || ex}`); } finally { setExportando(false); }
+  };
 
   const aprovar = async (ids) => {
     if (!ids.length || busy) return;
@@ -338,6 +407,10 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
             <input type="checkbox" checked={pesoMaisProximo} onChange={(ev) => { setPesoMaisProximo(ev.target.checked); gravarPreferenciaPesoMaisProximo(ev.target.checked); }} />
             Reavaliar com peso Tracking quando mais proximo
           </label>
+          <button type="button" className="btn-secondary audit-small-button" disabled={!visiveis.length || exportando} onClick={exportarExcel}
+            title="Baixa um Excel formatado com as faturas que estao na lista (respeita os filtros de etapa, auditor e busca).">
+            {exportando ? 'Gerando Excel...' : `Exportar Excel (${visiveis.length})`}
+          </button>
           <button type="button" className="btn-secondary audit-small-button" disabled={Boolean(lote)} onClick={recarregar}>Atualizar</button>
         </div>
         <div className="sim-analise-tabela-wrap" style={{ maxHeight: 520, overflowY: 'auto' }}>
