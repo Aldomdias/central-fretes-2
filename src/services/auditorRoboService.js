@@ -152,14 +152,16 @@ export async function desfazerAprovacaoLaudoRobo(faturaId) {
 
 // Reavalia UMA fatura agora (botao "Reavaliar agora"): calcula o que faltar, decide e, se ficou
 // correta, envia para a gestao. Grava o resultado e devolve o registro.
-export async function reavaliarFaturaRobo(fatura, anterior, { usuario = 'auditor', aoProgredir = () => {}, pesoMaisProximo = false } = {}) {
+// soEntrega: nao recalcula os CT-es; so confere de novo a entrega (tracking, comprovante, baixa aprovada) com o calculo ja gravado.
+export async function reavaliarFaturaRobo(fatura, anterior, { usuario = 'auditor', aoProgredir = () => {}, pesoMaisProximo = false, soEntrega = false } = {}) {
   const core = await import('../utils/auditoriaRoboCore');
   const db = getSupabaseClient();
   const { data: cfgs } = await db.from('auditor_robo_transportadoras').select('*');
   const cfg = (cfgs || []).find((r) => normNome(r.transportadora) === normNome(fatura.transportadora)) || {};
   const emailsAuditores = await core.carregarEmailsAuditores(db);
   const registro = await core.analisarFaturaRobo(db, fatura, {
-    cfg, emailsAuditores, usuario, origem: `reavaliacao manual - ${usuario}`, anterior, aoProgredir, recalcularTudo: true, pesoMaisProximo,
+    cfg, emailsAuditores, usuario, origem: `reavaliacao ${soEntrega ? 'so entrega' : 'manual'} - ${usuario}`, anterior, aoProgredir,
+    calcular: !soEntrega, recalcularTudo: !soEntrega, pesoMaisProximo,
   });
   const { error } = await db.from('auditor_robo_execucoes').upsert(registro, { onConflict: 'fatura_id' });
   if (error) throw new Error(`Erro ao gravar a reavaliacao: ${error.message}`);

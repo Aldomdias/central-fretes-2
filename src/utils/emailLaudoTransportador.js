@@ -41,7 +41,7 @@ function passo(numero, titulo, texto) {
 }
 
 // resumo: { transportadora, faturas: [{numero, url}], totalCtes, divergentes,
-// semCalculo, semEntrega, cobrancaAcima, totalDescontar, geradoEm, assinatura }
+// semCalculo, semEntrega, cobrancaAcima, totalDescontar, geradoEm, assinatura, responderTodos }
 export function montarCorpoEmailLaudo(resumo = {}, formatarDinheiro = (v) => String(v)) {
   const faturas = Array.isArray(resumo.faturas) ? resumo.faturas : [];
   const nomeTransp = resumo.transportadora || 'Transportadora';
@@ -56,7 +56,13 @@ export function montarCorpoEmailLaudo(resumo = {}, formatarDinheiro = (v) => Str
   const linhasResumo = itensResumo.map(([k, v]) => `<tr><td style="padding:6px 10px;border-bottom:1px solid #e5ebf5;color:#64748b;font-size:13px">${k}</td><td style="padding:6px 10px;border-bottom:1px solid #e5ebf5;font-weight:700;font-size:13px;text-align:right">${v}</td></tr>`).join('');
   const botoesPortal = faturas.filter((f) => f.url).map((f) => `<a href="${esc(f.url)}" style="display:inline-block;margin:4px 6px 4px 0;background:#0f6b3e;color:#fff;font-weight:700;padding:9px 14px;border-radius:7px;text-decoration:none;font-size:13px">${f.numero ? `Responder fatura ${esc(f.numero)}` : 'Responder o laudo'}</a>`).join('');
 
+  // E-mail do Robo Auditor: auditor e grupo da auditoria vao junto; a resposta precisa chegar a todos.
+  const avisoResponderTodos = resumo.responderTodos
+    ? `<div style="margin:0 0 16px;padding:12px 14px;background:#fef3c7;border:2px solid #d97706;border-radius:8px;color:#78350f;font-size:15px;line-height:1.5"><strong>⚠ ATENÇÃO: ao responder este e-mail, use “RESPONDER A TODOS”.</strong><br><span style="font-size:13px">O auditor responsável e o grupo de auditoria estão neste e-mail — respostas enviadas só ao remetente podem não ser recebidas.</span></div>`
+    : '';
+
   return `<div style="font-family:Arial,sans-serif;color:#061a44;max-width:720px">
+  ${avisoResponderTodos}
   <p style="font-size:14px">Prezados, ${esc(nomeTransp)},</p>
   <p style="font-size:14px;line-height:1.5">Segue em anexo o <strong>laudo de auditoria</strong> das faturas abaixo, com a conferência do frete cobrado versus a tabela contratada e a situação de entrega dos CT-es. Pedimos a análise e o retorno, <strong>por fatura</strong>, para que possamos liberar o pagamento.</p>
 
@@ -80,7 +86,7 @@ export function montarCorpoEmailLaudo(resumo = {}, formatarDinheiro = (v) => Str
     <strong>Importante:</strong> o pagamento da fatura só é liberado com <b>todos os CT-es entregues</b> e as divergências de valor resolvidas. Toda resposta (confirmação, contestação ou comprovante) é conferida pelo nosso time de auditoria.
   </div>
 
-  <p style="font-size:14px">Em caso de dúvida, é só responder este e-mail.</p>
+  <p style="font-size:14px">${resumo.responderTodos ? 'Em caso de dúvida, responda este e-mail usando <strong>“Responder a todos”</strong>.' : 'Em caso de dúvida, é só responder este e-mail.'}</p>
   <p style="font-size:14px;margin-top:18px">Atenciosamente,<br>${esc(resumo.assinatura || 'Equipe de Auditoria de Fretes')}</p>
   <p style="font-size:11px;color:#94a3b8;margin-top:18px">Laudo gerado em ${esc(resumo.geradoEm || new Date().toLocaleString('pt-BR'))}.</p>
 </div>`;

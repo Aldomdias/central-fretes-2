@@ -50,6 +50,21 @@ async function carregarExecucoes() {
   return data || [];
 }
 
+// Tipo de problema de uma fatura "Para revisar", lido do motivo gravado pelo robo (auditorRoboService.classificarFatura).
+const TIPOS_REVISAO = [
+  { id: 'entrega', rotulo: 'So entrega', cor: '#b45309', dica: 'Calculo ok; falta comprovar a entrega de CT-e(s).' },
+  { id: 'nao_localizado', rotulo: 'Sem calculo — CT-e nao localizado', cor: '#7c3aed', dica: 'CT-e sem chave, nao encontrado na base por numero/CNPJ.' },
+  { id: 'sem_calculo', rotulo: 'Sem calculo — outros motivos', cor: '#b91c1c', dica: 'CT-e na base mas sem resultado de calculo (tabela, rota, erro no calculo).' },
+  { id: 'outros', rotulo: 'Outros', cor: '#475569', dica: 'Fatura sem CT-es vinculados ou outro motivo.' },
+];
+function tipoRevisao(motivo) {
+  const m = String(motivo || '').toLowerCase();
+  if (m.includes('nao localizado')) return 'nao_localizado';
+  if (m.includes('sem calculo') || m.includes('auditoria incompleta')) return 'sem_calculo';
+  if (m.includes('entrega')) return 'entrega';
+  return 'outros';
+}
+
 export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConsolidado, onEnviarEmail, resultadosEmail = [], onLimparResultadosEmail }) {
   const sessao = carregarSessao();
   const [execucoes, setExecucoes] = useState(null);
@@ -58,6 +73,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
   const [etapaSel, setEtapaSel] = useState('');
   const [auditorSel, setAuditorSel] = useState('');
   const [busca, setBusca] = useState('');
+  const [motivoSel, setMotivoSel] = useState('');
   const [busy, setBusy] = useState(false);
   const [reavaliando, setReavaliando] = useState('');
   const [aviso, setAviso] = useState('');
@@ -105,7 +121,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
 
   // Cards de etapa contam dentro do auditor escolhido; cards de auditor, dentro da etapa escolhida.
   const baseEtapa = linhas.filter((l) => !auditorSel || l.auditor === auditorSel);
-  const visiveis = linhas
+  const visiveisBase = linhas
     .filter((l) => !auditorSel || l.auditor === auditorSel)
     .filter((l) => !etapaSel || l.etapa === etapaSel)
     .filter((l) => {
@@ -114,6 +130,11 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
     })
     .sort((a, b) => ETAPAS.findIndex((x) => x.id === a.etapa) - ETAPAS.findIndex((x) => x.id === b.etapa)
       || String(a.e.executado_em).localeCompare(String(b.e.executado_em)));
+  // Subcards de "Para revisar": separa por tipo de problema para tratar um de cada vez.
+  const mostrarMotivos = etapaSel === 'revisar' && visiveisBase.length > 0;
+  const motivoAtivo = mostrarMotivos ? motivoSel : '';
+  const contMotivo = (id) => visiveisBase.filter((l) => tipoRevisao(l.e.motivo) === id).length;
+  const visiveis = motivoAtivo ? visiveisBase.filter((l) => tipoRevisao(l.e.motivo) === motivoAtivo) : visiveisBase;
 
   // Excel formatado com exatamente o que a tela mostra (filtros de etapa, auditor e busca).
   const [exportando, setExportando] = useState(false);
@@ -225,10 +246,13 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
   };
 
   // Reavalia, uma por vez, todas as faturas listadas que ainda nao foram para a gestao.
-  const reavaliarTodas = async () => {
+  // soEntrega: so confere de novo a entrega (sem recalcular os CT-es) — rapido, para depois de baixar entregas.
+  const reavaliarTodas = async (soEntrega = false) => {
     const alvo = visiveis.filter((l) => !l.e.acao_executada && l.etapa !== 'laudo_aprovado');
     if (!alvo.length || reavaliando || lote) return;
-    if (!window.confirm(`Reavaliar ${alvo.length} fatura(s) agora? Cada uma e refeita (calculo e entrega); as corretas vao para a gestao.`)) return;
+    if (!window.confirm(soEntrega
+      ? `Reavaliar SO A ENTREGA de ${alvo.length} fatura(s)? Nao recalcula os CT-es (usa o calculo ja gravado); as corretas vao para a gestao.`
+      : `Reavaliar ${alvo.length} fatura(s) agora? Cada uma e refeita (calculo e entrega); as corretas vao para a gestao.`)) return;
     parar.current = false;
     setErro(''); setAviso('');
     const usuario = sessao?.nome || sessao?.email || 'auditor';
@@ -241,6 +265,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
         const reg = await reavaliarFaturaRobo(f, e, {
           usuario,
           pesoMaisProximo,
+          soEntrega,
           aoProgredir: (p) => setLote({ atual: i + 1, total: alvo.length, enviadas, numero: f.numero_fatura, faseId: p.fase, ctAtual: p.atual || 0, ctTotal: p.total || 0 }),
         });
         ok += 1;
@@ -446,6 +471,25 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
         </div>
       )}
 
+      {mostrarMotivos && (
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 13, margin: '4px 0 6px' }}>Para revisar — por tipo de problema (dentro dos filtros)</div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {TIPOS_REVISAO.map((t) => {
+              const qtd = contMotivo(t.id);
+              if (!qtd && t.id === 'outros') return null;
+              const ativo = motivoAtivo === t.id;
+              return (
+                <button key={t.id} type="button" title={t.dica} style={{ ...cartao(ativo, t.cor), opacity: qtd ? 1 : 0.55 }} onClick={() => setMotivoSel(ativo ? '' : t.id)}>
+                  <div style={{ fontSize: 12, opacity: 0.9 }}>{t.rotulo}</div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: ativo ? '#fff' : t.cor }}>{qtd}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="table-card">
         <div className="panel-title audit-table-title" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           <span>{visiveis.length} fatura(s)</span>
@@ -456,9 +500,15 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
             </button>
           )}
           {!lote && (
-            <button type="button" className="btn-primary audit-small-button" disabled={busy || Boolean(reavaliando) || !visiveis.some((l) => !l.e.acao_executada && l.etapa !== 'laudo_aprovado')} onClick={reavaliarTodas}
+            <button type="button" className="btn-primary audit-small-button" disabled={busy || Boolean(reavaliando) || !visiveis.some((l) => !l.e.acao_executada && l.etapa !== 'laudo_aprovado')} onClick={() => reavaliarTodas(false)}
               title="Refaz a analise de todas as faturas listadas (que ainda nao foram para a gestao).">
               Reavaliar todas as listadas ({visiveis.filter((l) => !l.e.acao_executada && l.etapa !== 'laudo_aprovado').length})
+            </button>
+          )}
+          {visiveis.some((l) => !l.e.acao_executada && l.etapa !== 'laudo_aprovado') && (
+            <button type="button" className="btn-secondary audit-small-button" disabled={busy || Boolean(reavaliando) || Boolean(lote)} onClick={() => reavaliarTodas(true)}
+              title="Nao recalcula os CT-es: so confere de novo a entrega (tracking, comprovante, baixa aprovada). Rapido, para depois de baixar entregas.">
+              Reavaliar so entregas ({visiveis.filter((l) => !l.e.acao_executada && l.etapa !== 'laudo_aprovado').length})
             </button>
           )}
 

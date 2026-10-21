@@ -27620,6 +27620,161 @@ var init_auditoriaService = __esm({
   }
 });
 
+// src/utils/correcoesCalculoFatura.js
+function parseDetalhesCalculoAuditoria(valor) {
+  if (!valor) return {};
+  if (typeof valor === "object") return valor;
+  try {
+    return JSON.parse(valor);
+  } catch {
+    return {};
+  }
+}
+function numeroFlexAuditoria(valor) {
+  if (typeof valor === "number") return Number.isFinite(valor) ? valor : 0;
+  const texto = String(valor ?? "").trim();
+  if (!texto) return 0;
+  const limpo = texto.replace(/R\$|kg|%/gi, "").replace(/\s/g, "");
+  const normalizado = limpo.includes(",") ? limpo.replace(/\./g, "").replace(",", ".") : limpo;
+  const n = Number(normalizado);
+  return Number.isFinite(n) ? n : 0;
+}
+function numeroValorNfAuditoria(item = {}, base = null) {
+  const detalhes = parseDetalhesCalculoAuditoria(item.detalhes_calculo || base?.detalhes_calculo);
+  const candidatos = [
+    item.valor_nf,
+    item.valorNF,
+    item.nf_venda,
+    item.valor_nota,
+    item.valor_mercadoria,
+    item.valorMercadoria,
+    item.valor_produtos,
+    item.valorProdutos,
+    base?.valor_nf,
+    base?.valorNF,
+    base?.nf_venda,
+    base?.valor_nota,
+    base?.valor_mercadoria,
+    base?.valorMercadoria,
+    detalhes.valor_nf,
+    detalhes.valorNF,
+    detalhes.valorNf,
+    detalhes.valor_nota,
+    detalhes.valorNfInformado,
+    detalhes.valorNFInformado,
+    detalhes.resumo?.valor_nf,
+    detalhes.resumo?.valorNF,
+    detalhes.resumo?.valorNf,
+    detalhes.frete?.valorNFInformado,
+    detalhes.frete?.valorNf,
+    detalhes.frete?.valor_nf
+  ];
+  for (const candidato of candidatos) {
+    const n = numeroFlexAuditoria(candidato);
+    if (n > 0) return n;
+  }
+  return 0;
+}
+function numeroPesoAuditoria(item = {}, base = null) {
+  const detalhes = parseDetalhesCalculoAuditoria(item.detalhes_calculo || base?.detalhes_calculo);
+  const candidatos = [
+    item.peso,
+    item.peso_declarado,
+    item.pesoDeclarado,
+    item.peso_final,
+    item.pesoFinal,
+    item.peso_total,
+    item.pesoTotal,
+    item.peso_kg,
+    base?.peso,
+    base?.peso_declarado,
+    base?.pesoDeclarado,
+    base?.peso_final,
+    base?.pesoFinal,
+    detalhes.peso_considerado,
+    detalhes.peso_declarado_cte,
+    detalhes.componentes_base?.pesoConsiderado,
+    detalhes.frete?.pesoConsiderado
+  ];
+  for (const candidato of candidatos) {
+    const n = numeroFlexAuditoria(candidato);
+    if (n > 0) return n;
+  }
+  return 0;
+}
+function montarCorrecoesCalculoFatura(alvo = [], { modoPorId = null, pesoTrackingMaisProximo = false } = {}) {
+  const valorNfOverridePorChave = {};
+  const trackingOverridePorChave = {};
+  const reentregaPorChave = {};
+  const modoPesoPorChave = {};
+  const chavesAutoPeso = /* @__PURE__ */ new Set();
+  alvo.forEach((item) => {
+    const chave = normalizarChaveCte(item.chave_cte) || normalizarChaveCte(item.numero_cte);
+    if (!chave) return;
+    const modoGravado = parseDetalhesCalculoAuditoria(item.detalhes_calculo).modo_peso_fatura;
+    const modoEscolhido = modoPorId?.[item.id] ?? (["tracking", "tracking_original"].includes(modoGravado) ? modoGravado : "cte");
+    if (modoEscolhido !== "cte") modoPesoPorChave[chave] = modoEscolhido;
+    if (pesoTrackingMaisProximo && modoPorId?.[item.id] === void 0) chavesAutoPeso.add(chave);
+    const valorNfPreservado = numeroValorNfAuditoria(item);
+    const detalhesPeso = parseDetalhesCalculoAuditoria(item.detalhes_calculo);
+    const pesoManual = Boolean(detalhesPeso.alternativa_peso_aplicada) || item.tracking_manual_nf;
+    const pesoPreservado = pesoManual ? numeroPesoAuditoria(item) : 0;
+    if (valorNfPreservado > 0) valorNfOverridePorChave[chave] = valorNfPreservado;
+    if (pesoPreservado > 0 || valorNfPreservado > 0) {
+      trackingOverridePorChave[chave] = {
+        ...trackingOverridePorChave[chave],
+        valorNF: valorNfPreservado,
+        peso: pesoPreservado,
+        pesoDeclarado: pesoPreservado
+      };
+    }
+    if (item.tracking_manual_nf) {
+      trackingOverridePorChave[chave] = {
+        ...trackingOverridePorChave[chave],
+        chaveNfe: item.chave_nf_manual || item.chave_nfe_manual || "",
+        valorNF: Number(item.valor_nf || 0),
+        peso: Number(item.peso || 0),
+        pesoDeclarado: Number(item.peso || 0),
+        cubagemFinal: Number(item.cubagem || 0),
+        qtdVolumes: Number(item.qtd_volumes || 0),
+        canal: item.canal || "",
+        cidadeOrigem: item.cidade_origem || "",
+        ufOrigem: item.uf_origem || "",
+        cidadeDestino: item.cidade_destino || "",
+        ufDestino: item.uf_destino || "",
+        ibgeOrigem: item.ibge_origem || "",
+        ibgeDestino: item.ibge_destino || ""
+      };
+    }
+    if (item.endereco_corrigido_manual) {
+      trackingOverridePorChave[chave] = {
+        ...trackingOverridePorChave[chave],
+        cidadeOrigem: item.cidade_origem || "",
+        ufOrigem: item.uf_origem || "",
+        ibgeOrigem: item.ibge_origem || "",
+        cidadeDestino: item.cidade_destino || "",
+        ufDestino: item.uf_destino || "",
+        ibgeDestino: item.ibge_destino || ""
+      };
+    }
+    if (item.canal_corrigido_manual) {
+      trackingOverridePorChave[chave] = {
+        ...trackingOverridePorChave[chave],
+        canal: item.canal || ""
+      };
+    }
+    if (item.reentrega_manual) reentregaPorChave[chave] = true;
+  });
+  return { valorNfOverridePorChave, trackingOverridePorChave, reentregaPorChave, modoPesoPorChave, chavesAutoPeso };
+}
+var init_correcoesCalculoFatura = __esm({
+  "src/utils/correcoesCalculoFatura.js"() {
+    "use strict";
+    init_define_import_meta_env();
+    init_auditoriaFretesDomain();
+  }
+});
+
 // src/services/auditorRoboService.js
 function dataInicioRobo(cfg) {
   if (/^\d{4}-\d{2}-\d{2}/.test(String(cfg?.data_inicio || ""))) return String(cfg.data_inicio).slice(0, 10);
@@ -27698,7 +27853,24 @@ function mesclar(item, referencia) {
   const valor = Number(item.valor_frete || base.valor_cte || 0);
   const amd = Number(base.valor_calculado || 0);
   const diferenca = amd > 0 ? Number((valor - amd).toFixed(2)) : Number(item.diferenca || 0);
-  return { ...item, valor_frete: valor, calculado_frete: amd, diferenca, motivo_sem_calculo: base.motivo_sem_calculo || "", status: amd > 0 ? Math.abs(diferenca) <= 0.01 ? "OK" : "DIVERGENTE" : item.status || "SEM_CALCULO" };
+  return {
+    ...item,
+    canal: item.canal || base.canal || "",
+    cidade_origem: item.cidade_origem || item.origem || base.cidade_origem || base.origem || "",
+    uf_origem: item.uf_origem || base.uf_origem || "",
+    cidade_destino: item.cidade_destino || item.destino || base.cidade_destino || base.destino || "",
+    uf_destino: item.uf_destino || base.uf_destino || "",
+    ibge_origem: item.ibge_origem || base.ibge_origem || "",
+    ibge_destino: item.ibge_destino || base.ibge_destino || "",
+    peso: numeroPesoAuditoria(item, base),
+    valor_nf: numeroValorNfAuditoria(item, base) || item.valor_nf || base.valor_nf || base.valorNF || 0,
+    detalhes_calculo: base.detalhes_calculo || item.detalhes_calculo || null,
+    valor_frete: valor,
+    calculado_frete: amd,
+    diferenca,
+    motivo_sem_calculo: base.motivo_sem_calculo || "",
+    status: amd > 0 ? Math.abs(diferenca) <= 0.01 ? "OK" : "DIVERGENTE" : item.status || "SEM_CALCULO"
+  };
 }
 function aplicarSaldo(item, saldos, referencia) {
   if (!saldos?.size) return item;
@@ -27755,6 +27927,14 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
     entrarCacheCalculo(prazoFinal ? 54e4 : 18e4);
     try {
       const chaves = [...new Set(lista.filter(precisaCalcular).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
+      const correcoes = montarCorrecoesCalculoFatura(lista.filter(precisaCalcular), { pesoTrackingMaisProximo: pesoMaisProximo });
+      const opcoesBase = {
+        ignorarCubagem: true,
+        valorNfOverridePorChave: correcoes.valorNfOverridePorChave,
+        trackingOverridePorChave: correcoes.trackingOverridePorChave,
+        reentregaPorChave: correcoes.reentregaPorChave
+      };
+      const modoDoLote = (lote, forcar) => Object.fromEntries(lote.map((c) => [c, forcar || (pesoMaisProximo ? null : correcoes.modoPesoPorChave[c])]).filter(([, modo]) => modo));
       for (let i = 0; i < chaves.length; i += BLOCO) {
         if (prazoFinal && Date.now() > prazoFinal) throw new Error("__parcial__");
         aoProgredir({ fase: "calculando", atual: Math.min(i + BLOCO, chaves.length), total: chaves.length });
@@ -27762,11 +27942,11 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
           const lote = chaves.slice(i, i + BLOCO);
           const calculo = pesoMaisProximo ? Promise.all([
             processarCtesPorChave(lote, () => {
-            }, { ignorarCubagem: true }),
+            }, opcoesBase),
             processarCtesPorChave(lote, () => {
-            }, { ignorarCubagem: true, modoPesoPorChave: Object.fromEntries(lote.map((c) => [c, "tracking"])) })
+            }, { ...opcoesBase, modoPesoPorChave: modoDoLote(lote, "tracking") })
           ]).then(([cte, tracking]) => ({ registros: escolherPesoMaisProximo(cte.registros || [], tracking.registros || []) })) : processarCtesPorChave(lote, () => {
-          }, { ignorarCubagem: true });
+          }, { ...opcoesBase, modoPesoPorChave: modoDoLote(lote) });
           const { registros } = limiteBlocoMs ? await Promise.race([calculo, new Promise((_, rej) => {
             setTimeout(() => rej(new Error(`demorou demais (>${Math.round(limiteBlocoMs / 1e3)}s)`)), limiteBlocoMs);
           })]) : await calculo;
@@ -27940,6 +28120,7 @@ var init_auditoriaRoboCore = __esm({
     init_freteDatabaseService();
     init_auditoriaService();
     init_auditoriaFretesDomain();
+    init_correcoesCalculoFatura();
     init_auditorRoboService();
     TOLERANCIA = { acima: 1, abaixo: 5 };
     dentroDaTolerancia = (dif) => Number.isFinite(Number(dif)) && Number(dif) <= TOLERANCIA.acima && Number(dif) >= -TOLERANCIA.abaixo;

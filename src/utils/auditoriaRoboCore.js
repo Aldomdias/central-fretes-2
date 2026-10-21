@@ -12,6 +12,7 @@ import { processarCtesPorChave } from '../services/auditoriaCteProcessamentoServ
 import { entrarCacheCalculo, sairCacheCalculo } from '../services/freteDatabaseService';
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { normalizarChaveCte } from './auditoriaFretesDomain';
+import { montarCorrecoesCalculoFatura, numeroValorNfAuditoria, numeroPesoAuditoria } from './correcoesCalculoFatura';
 import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura } from '../services/auditorRoboService';
 
 // Escopo do cache das tabelas de frete (ver freteDatabaseService): abrir antes de um lote e fechar no finally.
@@ -38,14 +39,25 @@ function deduplicar(lista = []) {
   return [...mapa.values()];
 }
 
-// So o que importa para valor/calculo (a tela tambem mescla peso, NF, rota etc.).
+// Valor/calculo e, como a tela, peso, NF, rota e detalhes do calculo (usados nas correcoes manuais do recalculo).
 function mesclar(item, referencia) {
   const base = referencia.get(normalizarChaveCte(item.chave_cte)) || referencia.get(normalizarChaveCte(item.numero_cte));
   if (!base) return item;
   const valor = Number(item.valor_frete || base.valor_cte || 0);
   const amd = Number(base.valor_calculado || 0);
   const diferenca = amd > 0 ? Number((valor - amd).toFixed(2)) : Number(item.diferenca || 0);
-  return { ...item, valor_frete: valor, calculado_frete: amd, diferenca, motivo_sem_calculo: base.motivo_sem_calculo || '', status: amd > 0 ? (Math.abs(diferenca) <= 0.01 ? 'OK' : 'DIVERGENTE') : (item.status || 'SEM_CALCULO') };
+  return { ...item,
+    canal: item.canal || base.canal || '',
+    cidade_origem: item.cidade_origem || item.origem || base.cidade_origem || base.origem || '',
+    uf_origem: item.uf_origem || base.uf_origem || '',
+    cidade_destino: item.cidade_destino || item.destino || base.cidade_destino || base.destino || '',
+    uf_destino: item.uf_destino || base.uf_destino || '',
+    ibge_origem: item.ibge_origem || base.ibge_origem || '',
+    ibge_destino: item.ibge_destino || base.ibge_destino || '',
+    peso: numeroPesoAuditoria(item, base),
+    valor_nf: numeroValorNfAuditoria(item, base) || item.valor_nf || base.valor_nf || base.valorNF || 0,
+    detalhes_calculo: base.detalhes_calculo || item.detalhes_calculo || null,
+    valor_frete: valor, calculado_frete: amd, diferenca, motivo_sem_calculo: base.motivo_sem_calculo || '', status: amd > 0 ? (Math.abs(diferenca) <= 0.01 ? 'OK' : 'DIVERGENTE') : (item.status || 'SEM_CALCULO') };
 }
 
 function aplicarSaldo(item, saldos, referencia) {
@@ -118,6 +130,17 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
     entrarCacheCalculo(prazoFinal ? 540000 : 180000);
     try {
     const chaves = [...new Set(lista.filter(precisaCalcular).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
+    // Mesmas correcoes manuais do Recalcular da fatura (endereco, canal, NF/peso, reentrega, forma de peso da linha).
+    const correcoes = montarCorrecoesCalculoFatura(lista.filter(precisaCalcular), { pesoTrackingMaisProximo: pesoMaisProximo });
+    const opcoesBase = {
+      ignorarCubagem: true,
+      valorNfOverridePorChave: correcoes.valorNfOverridePorChave,
+      trackingOverridePorChave: correcoes.trackingOverridePorChave,
+      reentregaPorChave: correcoes.reentregaPorChave,
+    };
+    const modoDoLote = (lote, forcar) => Object.fromEntries(lote
+      .map((c) => [c, forcar || (pesoMaisProximo ? null : correcoes.modoPesoPorChave[c])])
+      .filter(([, modo]) => modo));
     for (let i = 0; i < chaves.length; i += BLOCO) {
       if (prazoFinal && Date.now() > prazoFinal) throw new Error('__parcial__');
       aoProgredir({ fase: 'calculando', atual: Math.min(i + BLOCO, chaves.length), total: chaves.length });
@@ -127,10 +150,10 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
         // (com cubagem x fator da tabela) e fica, CT-e a CT-e, com o resultado mais proximo do valor cobrado.
         const calculo = pesoMaisProximo
           ? Promise.all([
-            processarCtesPorChave(lote, () => {}, { ignorarCubagem: true }),
-            processarCtesPorChave(lote, () => {}, { ignorarCubagem: true, modoPesoPorChave: Object.fromEntries(lote.map((c) => [c, 'tracking'])) }),
+            processarCtesPorChave(lote, () => {}, opcoesBase),
+            processarCtesPorChave(lote, () => {}, { ...opcoesBase, modoPesoPorChave: modoDoLote(lote, 'tracking') }),
           ]).then(([cte, tracking]) => ({ registros: escolherPesoMaisProximo(cte.registros || [], tracking.registros || []) }))
-          : processarCtesPorChave(lote, () => {}, { ignorarCubagem: true });
+          : processarCtesPorChave(lote, () => {}, { ...opcoesBase, modoPesoPorChave: modoDoLote(lote) });
         const { registros } = limiteBlocoMs
           ? await Promise.race([calculo, new Promise((_, rej) => { setTimeout(() => rej(new Error(`demorou demais (>${Math.round(limiteBlocoMs / 1000)}s)`)), limiteBlocoMs); })])
           : await calculo;
