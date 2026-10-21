@@ -27807,6 +27807,16 @@ function classificarFatura(resumo, considerarMenor = false) {
   if (resumo.pendentes > 0) return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `${resumo.pendentes} de ${resumo.total} CT-e(s) sem entrega comprovada.`, descontar: 0 };
   return { decisao: DECISAO.ENVIAR_APROVACAO, motivo: "Auditoria completa, sem desconto e todos entregues.", descontar: 0 };
 }
+async function buscarTodasPaginas(montar, maximo = 1e5) {
+  const linhas = [];
+  for (let de = 0; de < maximo; de += 1e3) {
+    const { data, error } = await montar(de, de + 999);
+    if (error) return { data: linhas, error };
+    linhas.push(...data || []);
+    if (!data || data.length < 1e3) break;
+  }
+  return { data: linhas, error: null };
+}
 var DECISAO, ROBO_DATA_INICIO, dataEntradaFatura, STATUS_ROBO_AUDITA;
 var init_auditorRoboService = __esm({
   "src/services/auditorRoboService.js"() {
@@ -28134,6 +28144,7 @@ export {
   STATUS_ROBO_AUDITA,
   analisarFaturaRobo,
   apurarFaturaRobo,
+  buscarTodasPaginas,
   carregarEmailsAuditores,
   classificarFatura,
   dataEntradaFatura,

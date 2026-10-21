@@ -86,17 +86,23 @@ export default async function handler(req, res) {
     const ativas = new Map((lista || []).map((r) => [norm(r.transportadora), r]));
     if (!ativas.size) return res.status(200).json({ ok: true, analisadas: 0, motivo: 'Nenhuma transportadora ativa na lista.' });
 
-    const { data: faturas, error: erroFat } = await db.from('faturas').select('*')
-      .in('status', core.STATUS_ROBO_AUDITA).order('created_at', { ascending: false }).limit(3000);
+    // Paginado: o Supabase devolve no maximo 1000 linhas por consulta (antes so via as 1000 faturas mais novas e,
+    // passando de 1000 analises, esqueceria o que ja analisou).
+    const { data: faturas, error: erroFat } = await core.buscarTodasPaginas((de, ate) => db.from('faturas').select('*')
+      .in('status', core.STATUS_ROBO_AUDITA).order('created_at', { ascending: false }).order('id').range(de, ate));
     if (erroFat) throw new Error(`Faturas: ${erroFat.message}`);
-    const { data: feitas } = await db.from('auditor_robo_execucoes').select('*').limit(20000);
+    const { data: feitas, error: erroFeitas } = await core.buscarTodasPaginas((de, ate) => db.from('auditor_robo_execucoes').select('*')
+      .order('fatura_id').range(de, ate));
+    if (erroFeitas) throw new Error(`Execucoes: ${erroFeitas.message}`);
     const jaFeitas = new Set((feitas || []).map((e) => String(e.fatura_id)));
     const porId = new Map((faturas || []).map((f) => [String(f.id), f]));
 
     const novas = (faturas || [])
       .filter((f) => ativas.has(norm(f.transportadora)))
       .filter((f) => core.dataEntradaFatura(f) >= core.dataInicioRobo(ativas.get(norm(f.transportadora))))
-      .filter((f) => !jaFeitas.has(String(f.id)));
+      .filter((f) => !jaFeitas.has(String(f.id)))
+      // Mais antigas primeiro: o que ficou para depois e o proximo da fila, nunca esquecido.
+      .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
     // Casos em revisao (ou laudo ainda sem OK): o robo reavalia a cada ciclo; se ficaram corretos
     // (calculo concluido, entrega comprovada) vao sozinhos para a gestao. Os mais antigos primeiro.
     const reavaliar = (feitas || [])

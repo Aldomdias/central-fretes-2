@@ -4,7 +4,7 @@ import RoboProgressoAmd from './RoboProgressoAmd';
 import { exportarExcelFormatado } from '../utils/exportarExcelFormatado';
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { listarControleBoletos } from '../services/boletoControleService';
-import { aprovarLaudosRobo, DECISAO, gravarPreferenciaPesoMaisProximo, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo } from '../services/auditorRoboService';
+import { aprovarLaudosRobo, DECISAO, gravarPreferenciaPesoMaisProximo, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo, buscarTodasPaginas } from '../services/auditorRoboService';
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
@@ -44,8 +44,8 @@ function etapaDe(e, f, boletoIds) {
 }
 
 async function carregarExecucoes() {
-  const { data, error } = await getSupabaseClient().from('auditor_robo_execucoes').select('*')
-    .order('executado_em', { ascending: false }).limit(5000);
+  const { data, error } = await buscarTodasPaginas((de, ate) => getSupabaseClient().from('auditor_robo_execucoes').select('*')
+    .order('executado_em', { ascending: false }).order('fatura_id').range(de, ate));
   if (error) throw new Error(error.message);
   return data || [];
 }

@@ -97,7 +97,9 @@ export default function AuditorRobo() {
   const ativas = useMemo(() => new Map(lista.filter((r) => r.ativo).map((r) => [normNome(r.transportadora), r])), [lista]);
   const novas = useMemo(() => faturas.filter((f) => ativas.has(normNome(f.transportadora))
     && dataEntradaFatura(f) >= dataInicioRobo(ativas.get(normNome(f.transportadora)))
-    && !jaProcessadas.has(String(f.id))), [faturas, ativas, jaProcessadas]);
+    && !jaProcessadas.has(String(f.id)))
+    // Mais antigas primeiro: o que ficou para depois e o proximo da fila, nunca esquecido.
+    .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))), [faturas, ativas, jaProcessadas]);
 
   const qtdReavaliar = useMemo(() => execucoes.filter((e) => !e.acao_executada && [DECISAO.REVISAO_AUDITOR, DECISAO.ENVIAR_LAUDO].includes(e.decisao)
     && faturas.some((f) => String(f.id) === String(e.fatura_id) && ativas.has(normNome(f.transportadora)))).length, [execucoes, faturas, ativas]);

@@ -92,8 +92,23 @@ export async function removerRoboTransportadora(id) {
   if (error) throw new Error(`Erro ao remover: ${error.message}`);
 }
 
-export async function listarExecucoesRobo(limite = 5000) {
-  const { data, error } = await getSupabaseClient().from('auditor_robo_execucoes').select('*').order('executado_em', { ascending: false }).limit(limite);
+// O Supabase devolve no maximo 1000 linhas por consulta (um .limit maior e ignorado): busca pagina a pagina.
+// montar(de, ate) devolve a consulta com .range(de, ate); a ordenacao precisa ser estavel (inclua o id).
+export async function buscarTodasPaginas(montar, maximo = 100000) {
+  const linhas = [];
+  for (let de = 0; de < maximo; de += 1000) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await montar(de, de + 999);
+    if (error) return { data: linhas, error };
+    linhas.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return { data: linhas, error: null };
+}
+
+export async function listarExecucoesRobo(limite = 100000) {
+  const { data, error } = await buscarTodasPaginas((de, ate) => getSupabaseClient().from('auditor_robo_execucoes').select('*')
+    .order('executado_em', { ascending: false }).order('fatura_id').range(de, ate), limite);
   if (error) {
     if (tabelaAusente(error)) return [];
     throw new Error(`Erro ao carregar execucoes do robo: ${error.message}`);
@@ -110,8 +125,8 @@ export async function gravarExecucoesRobo(registros) {
 
 // Faturas ainda em auditoria (candidatas ao robo) e nomes de transportadora existentes.
 export async function listarFaturasEmAuditoria() {
-  const { data, error } = await getSupabaseClient().from('faturas').select('*')
-    .in('status', STATUS_ROBO_AUDITA).order('created_at', { ascending: false }).limit(3000);
+  const { data, error } = await buscarTodasPaginas((de, ate) => getSupabaseClient().from('faturas').select('*')
+    .in('status', STATUS_ROBO_AUDITA).order('created_at', { ascending: false }).order('id').range(de, ate));
   if (error) throw new Error(`Erro ao carregar faturas: ${error.message}`);
   return data || []; // o corte de data e por transportadora (dataInicioRobo), aplicado por quem usa a lista
 }
@@ -124,9 +139,9 @@ export async function limparSimulacoesRobo() {
 
 // Fila do auditor: laudos esperando OK e casos para revisar (ainda nao resolvidos pelo robo).
 export async function listarFilaAuditorRobo() {
-  const { data, error } = await getSupabaseClient().from('auditor_robo_execucoes').select('*')
+  const { data, error } = await buscarTodasPaginas((de, ate) => getSupabaseClient().from('auditor_robo_execucoes').select('*')
     .eq('acao_executada', false).in('decisao', [DECISAO.ENVIAR_LAUDO, DECISAO.REVISAO_AUDITOR])
-    .order('executado_em', { ascending: true }).limit(3000);
+    .order('executado_em', { ascending: true }).order('fatura_id').range(de, ate));
   if (error) {
     if (tabelaAusente(error)) return [];
     throw new Error(`Erro ao carregar a fila do robo: ${error.message}`);
