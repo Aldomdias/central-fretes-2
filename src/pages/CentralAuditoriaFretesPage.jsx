@@ -121,7 +121,7 @@ import RoboAuditoriaPainel from '../components/RoboAuditoriaPainel';
 import CampoCidadeIbge from '../components/CampoCidadeIbge';
 import { urlBaseApp } from '../utils/urlBaseApp';
 import { enviarLaudoPorEmail } from '../services/laudoEmailService';
-import { parseDetalhesCalculoAuditoria, numeroFlexAuditoria, numeroValorNfAuditoria, numeroPesoAuditoria, montarCorrecoesCalculoFatura } from '../utils/correcoesCalculoFatura';
+import { parseDetalhesCalculoAuditoria, numeroFlexAuditoria, numeroValorNfAuditoria, numeroPesoAuditoria, montarCorrecoesCalculoFatura, escolherMaiorPeso } from '../utils/correcoesCalculoFatura';
 import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
 
 // Abre o detalhe completo de uma fatura por cima da tela atual (sem navegar): carrega a plataforma
@@ -2519,9 +2519,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         ...opcoesCalculoFatura,
         modoPesoPorChave: fatura.peso_tracking_mais_proximo ? Object.fromEntries(Object.entries(modoPesoPorChave).filter(([chave]) => !chavesAutoPeso.has(chave))) : modoPesoPorChave,
       });
-      // Flag da fatura "Usar peso do tracking quando mais proximo": calcula de novo com o peso do Tracking e, CT-e a CT-e,
-      // fica com o resultado (peso do CT-e x peso do Tracking) mais proximo do valor cobrado. CT-e com forma de peso
-      // escolhida manualmente agora (botao da linha) fica de fora e usa a escolha.
+      // Flag da fatura "Usar o maior peso (CT-e ou Tracking)": calcula de novo com o peso do Tracking e, CT-e a CT-e,
+      // fica com o de MAIOR PESO (CT-e x Tracking cubado). CT-e com forma de peso escolhida manualmente agora
+      // (botao da linha) fica de fora e usa a escolha.
       if (fatura.peso_tracking_mais_proximo && chavesAutoPeso.size && !cancelarRecalculoRef.current) {
         const modoTracking = { ...modoPesoPorChave };
         chavesAutoPeso.forEach((chave) => { modoTracking[chave] = 'tracking'; });
@@ -2531,26 +2531,11 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         registros = registros.map((r) => {
           const chave = normalizarChaveCte(r.chave_cte);
           if (!chavesAutoPeso.has(chave)) return r;
-          const alt = porChaveTracking.get(chave);
-          const cobrado = Number(r.valor_cte || alt?.valor_cte || 0);
-          const vCte = Number(r.valor_calculado || 0);
-          const vTrk = Number(alt?.valor_calculado || 0);
-          const usarTracking = alt && vTrk > 0 && (!(vCte > 0) || Math.abs(vTrk - cobrado) < Math.abs(vCte - cobrado) - 0.005);
-          const escolhido = usarTracking ? alt : r;
+          const { usarTracking, registro } = escolherMaiorPeso(r, porChaveTracking.get(chave));
           if (usarTracking) trocados += 1;
-          const det = parseDetalhesCalculoAuditoria(escolhido.detalhes_calculo);
-          return {
-            ...escolhido,
-            detalhes_calculo: {
-              ...det,
-              modo_peso_fatura: usarTracking ? (det.modo_peso_fatura || 'tracking') : 'cte',
-              peso_mais_proximo_auto: true,
-              valor_com_peso_cte: Number(vCte.toFixed(2)),
-              valor_com_peso_tracking: alt ? Number(vTrk.toFixed(2)) : null,
-            },
-          };
+          return registro;
         });
-        setInfoRecalculo(`Peso mais proximo: ${trocados} CT-e(s) ficaram com o peso do Tracking (resultado mais proximo do cobrado).`);
+        setInfoRecalculo(`Maior peso: ${trocados} CT-e(s) ficaram com o peso do Tracking (maior que o do CT-e).`);
       }
       if (cancelarRecalculoRef.current) throw new Error('Processamento cancelado pelo usuário. Nenhum resultado parcial foi salvo.');
       if (registros.length) {
@@ -2572,7 +2557,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       setReferenciaCtes(referencia);
       setProgressoRecalculo({ etapa: 'concluido', carregados: 1, total: 1 });
       const escopo = idsRecalculo.length ? `${idsRecalculo.length} CT-e(s)` : 'todos os CT-es da fatura';
-      setInfoRecalculo((anterior) => `Recalculado ${escopo}: ${encontrados} encontrado(s) e salvo(s)${naoEncontrados ? `, ${naoEncontrados} não encontrado(s) na base de CT-es.` : '.'}${anterior && anterior.startsWith('Peso mais proximo') ? ` ${anterior}` : ''}`);
+      setInfoRecalculo((anterior) => `Recalculado ${escopo}: ${encontrados} encontrado(s) e salvo(s)${naoEncontrados ? `, ${naoEncontrados} não encontrado(s) na base de CT-es.` : '.'}${anterior && anterior.startsWith('Maior peso') ? ` ${anterior}` : ''}`);
     } catch (error) {
       setErroDetalhes(error.message || String(error));
     } finally {
@@ -3744,7 +3729,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       <div className="audit-action-bar">
         <span>{selecionados.length} CT-e(s) selecionado(s)</span>
         <label className="compact" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13 }}
-          title="Ao recalcular, cada CT-e e calculado com o peso do CT-e e com o peso do Tracking; fica o resultado mais proximo do valor cobrado.">
+          title="Ao recalcular, cada CT-e e calculado com o peso do CT-e e com o peso do Tracking (maior entre fisico e cubagem x fator da tabela); fica o MAIOR peso.">
           <input
             type="checkbox"
             checked={Boolean(fatura.peso_tracking_mais_proximo)}
@@ -3754,16 +3739,16 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
               try {
                 const next = await atualizarFaturaAuditoria(state, { ...fatura, peso_tracking_mais_proximo: ligado }, {
                   acao: 'CONFIGURACAO_PESO',
-                  descricao: ligado ? 'Ligado: usar peso do Tracking quando o resultado ficar mais proximo do cobrado.' : 'Desligado: calculo volta a usar o peso do CT-e.',
+                  descricao: ligado ? 'Ligado: usar o maior peso entre o CT-e e o Tracking (cubado).' : 'Desligado: calculo volta a usar o peso do CT-e.',
                   usuario_nome: sessao?.nome || sessao?.email || 'Usuario local',
                   usuario_email: sessao?.email || '',
                 });
                 onState(next);
-                setInfoRecalculo(ligado ? 'Peso mais proximo LIGADO para esta fatura: clique em Recalcular para aplicar.' : 'Peso mais proximo desligado: recalcule para voltar ao peso do CT-e.');
+                setInfoRecalculo(ligado ? 'Maior peso LIGADO para esta fatura: clique em Recalcular para aplicar.' : 'Maior peso desligado: recalcule para voltar ao peso do CT-e.');
               } catch (erroFlag) { setErroDetalhes(erroFlag.message || String(erroFlag)); }
             }}
           />
-          Usar peso Tracking quando mais proximo
+          Usar o maior peso (CT-e ou Tracking)
         </label>
         <button className="btn-primary" disabled={recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={recalcular} title={selecionados.length ? 'Recalcula só os CT-es selecionados' : tab === 'sem-calculo' ? `Recalcula só os ${semCalculo.length} CT-es sem cálculo` : tab === 'divergencias' ? `Recalcula só os ${divergencias.length} CT-es divergentes` : 'Recalcula todos os CT-es da fatura'}>
           {recalculando ? 'Recalculando...' : selecionados.length ? `Recalcular selecionados (${selecionados.length})` : tab === 'sem-calculo' ? `Recalcular sem cálculo (${semCalculo.length})` : tab === 'divergencias' ? `Recalcular divergentes (${divergencias.length})` : 'Recalcular CT-es'}

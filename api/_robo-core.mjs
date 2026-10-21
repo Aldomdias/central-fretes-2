@@ -27767,6 +27767,34 @@ function montarCorrecoesCalculoFatura(alvo = [], { modoPorId = null, pesoTrackin
   });
   return { valorNfOverridePorChave, trackingOverridePorChave, reentregaPorChave, modoPesoPorChave, chavesAutoPeso };
 }
+function pesoUsadoNoCalculo(r = {}) {
+  const det = parseDetalhesCalculoAuditoria(r.detalhes_calculo);
+  return numeroFlexAuditoria(det.peso_considerado) || numeroFlexAuditoria(det.componentes_base?.pesoConsiderado) || numeroFlexAuditoria(r.peso);
+}
+function escolherMaiorPeso(registroCte, registroTracking) {
+  const vCte = Number(registroCte?.valor_calculado || 0);
+  const vTrk = Number(registroTracking?.valor_calculado || 0);
+  const pesoCte2 = pesoUsadoNoCalculo(registroCte);
+  const pesoTrk = pesoUsadoNoCalculo(registroTracking);
+  const usarTracking = Boolean(registroTracking) && vTrk > 0 && (!(vCte > 0) || pesoTrk > pesoCte2 + 1e-3);
+  const escolhido = usarTracking ? registroTracking : registroCte;
+  const det = parseDetalhesCalculoAuditoria(escolhido?.detalhes_calculo);
+  return {
+    usarTracking,
+    registro: {
+      ...escolhido,
+      detalhes_calculo: {
+        ...det,
+        modo_peso_fatura: usarTracking ? det.modo_peso_fatura || "tracking" : "cte",
+        peso_maior_auto: true,
+        peso_cte_comparado: Number(pesoCte2.toFixed(3)),
+        peso_tracking_comparado: registroTracking ? Number(pesoTrk.toFixed(3)) : null,
+        valor_com_peso_cte: Number(vCte.toFixed(2)),
+        valor_com_peso_tracking: registroTracking ? Number(vTrk.toFixed(2)) : null
+      }
+    }
+  };
+}
 var init_correcoesCalculoFatura = __esm({
   "src/utils/correcoesCalculoFatura.js"() {
     "use strict";
@@ -28099,24 +28127,7 @@ async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = /* @__PUR
 }
 function escolherPesoMaisProximo(registrosCte = [], registrosTracking = []) {
   const porChave = new Map(registrosTracking.map((r) => [normalizarChaveCte(r.chave_cte), r]));
-  return registrosCte.map((r) => {
-    const alt = porChave.get(normalizarChaveCte(r.chave_cte));
-    const cobrado = Number(r.valor_cte || alt?.valor_cte || 0);
-    const vCte = Number(r.valor_calculado || 0);
-    const vTrk = Number(alt?.valor_calculado || 0);
-    const usarTracking = alt && vTrk > 0 && (!(vCte > 0) || Math.abs(vTrk - cobrado) < Math.abs(vCte - cobrado) - 5e-3);
-    const escolhido = usarTracking ? alt : r;
-    return {
-      ...escolhido,
-      detalhes_calculo: {
-        ...escolhido.detalhes_calculo || {},
-        modo_peso_fatura: usarTracking ? "tracking" : "cte",
-        peso_mais_proximo_auto: true,
-        valor_com_peso_cte: Number(vCte.toFixed(2)),
-        valor_com_peso_tracking: alt ? Number(vTrk.toFixed(2)) : null
-      }
-    };
-  });
+  return registrosCte.map((r) => escolherMaiorPeso(r, porChave.get(normalizarChaveCte(r.chave_cte))).registro);
 }
 var TOLERANCIA, dentroDaTolerancia, normalizarNomeAuditor;
 var init_auditoriaRoboCore = __esm({

@@ -513,9 +513,9 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
           )}
 
           <label style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 }}
-            title="Ao reavaliar: calcula cada CT-e com o peso do CT-e e com o peso do Tracking (cubagem x fator da tabela) e fica com o mais proximo do valor cobrado.">
+            title="Ao reavaliar: calcula cada CT-e com o peso do CT-e e com o peso do Tracking (cubagem x fator da tabela) e fica com o MAIOR peso.">
             <input type="checkbox" checked={pesoMaisProximo} onChange={(ev) => { setPesoMaisProximo(ev.target.checked); gravarPreferenciaPesoMaisProximo(ev.target.checked); }} />
-            Reavaliar com peso Tracking quando mais proximo
+            Reavaliar usando o maior peso (CT-e ou Tracking)
           </label>
           <button type="button" className="btn-secondary audit-small-button" disabled={!visiveis.length || exportando} onClick={exportarExcel}
             title="Baixa um Excel formatado com as faturas que estao na lista (respeita os filtros de etapa, auditor e busca).">

@@ -162,3 +162,36 @@ export function montarCorrecoesCalculoFatura(alvo = [], { modoPorId = null, peso
   });
   return { valorNfOverridePorChave, trackingOverridePorChave, reentregaPorChave, modoPesoPorChave, chavesAutoPeso };
 }
+
+// Peso efetivamente usado num resultado do motor.
+function pesoUsadoNoCalculo(r = {}) {
+  const det = parseDetalhesCalculoAuditoria(r.detalhes_calculo);
+  return numeroFlexAuditoria(det.peso_considerado) || numeroFlexAuditoria(det.componentes_base?.pesoConsiderado) || numeroFlexAuditoria(r.peso);
+}
+
+// Flag "usar o maior peso" (fatura / Reavaliar): entre o calculo com o peso do CT-e e o calculo com o peso do Tracking
+// (maior entre fisico e cubagem x fator da tabela), fica o de MAIOR PESO. Sem resultado em um deles, fica o outro.
+export function escolherMaiorPeso(registroCte, registroTracking) {
+  const vCte = Number(registroCte?.valor_calculado || 0);
+  const vTrk = Number(registroTracking?.valor_calculado || 0);
+  const pesoCte = pesoUsadoNoCalculo(registroCte);
+  const pesoTrk = pesoUsadoNoCalculo(registroTracking);
+  const usarTracking = Boolean(registroTracking) && vTrk > 0 && (!(vCte > 0) || pesoTrk > pesoCte + 0.001);
+  const escolhido = usarTracking ? registroTracking : registroCte;
+  const det = parseDetalhesCalculoAuditoria(escolhido?.detalhes_calculo);
+  return {
+    usarTracking,
+    registro: {
+      ...escolhido,
+      detalhes_calculo: {
+        ...det,
+        modo_peso_fatura: usarTracking ? (det.modo_peso_fatura || 'tracking') : 'cte',
+        peso_maior_auto: true,
+        peso_cte_comparado: Number(pesoCte.toFixed(3)),
+        peso_tracking_comparado: registroTracking ? Number(pesoTrk.toFixed(3)) : null,
+        valor_com_peso_cte: Number(vCte.toFixed(2)),
+        valor_com_peso_tracking: registroTracking ? Number(vTrk.toFixed(2)) : null,
+      },
+    },
+  };
+}

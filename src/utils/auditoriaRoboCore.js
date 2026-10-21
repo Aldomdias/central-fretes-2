@@ -12,7 +12,7 @@ import { processarCtesPorChave } from '../services/auditoriaCteProcessamentoServ
 import { entrarCacheCalculo, sairCacheCalculo } from '../services/freteDatabaseService';
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { normalizarChaveCte } from './auditoriaFretesDomain';
-import { montarCorrecoesCalculoFatura, numeroValorNfAuditoria, numeroPesoAuditoria } from './correcoesCalculoFatura';
+import { montarCorrecoesCalculoFatura, numeroValorNfAuditoria, numeroPesoAuditoria, escolherMaiorPeso } from './correcoesCalculoFatura';
 import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas } from '../services/auditorRoboService';
 
 // Escopo do cache das tabelas de frete (ver freteDatabaseService): abrir antes de um lote e fechar no finally.
@@ -301,24 +301,8 @@ export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = ne
 
 // Para cada CT-e, entre o calculo com peso do CT-e e o com peso do Tracking, fica o mais proximo do valor cobrado
 // (empate = peso do CT-e). Registra os dois valores no detalhe do calculo para conferencia.
+// Reavaliar com "usar o maior peso": CT-e a CT-e, fica o calculo de maior peso (CT-e x Tracking cubado).
 function escolherPesoMaisProximo(registrosCte = [], registrosTracking = []) {
   const porChave = new Map(registrosTracking.map((r) => [normalizarChaveCte(r.chave_cte), r]));
-  return registrosCte.map((r) => {
-    const alt = porChave.get(normalizarChaveCte(r.chave_cte));
-    const cobrado = Number(r.valor_cte || alt?.valor_cte || 0);
-    const vCte = Number(r.valor_calculado || 0);
-    const vTrk = Number(alt?.valor_calculado || 0);
-    const usarTracking = alt && vTrk > 0 && (!(vCte > 0) || Math.abs(vTrk - cobrado) < Math.abs(vCte - cobrado) - 0.005);
-    const escolhido = usarTracking ? alt : r;
-    return {
-      ...escolhido,
-      detalhes_calculo: {
-        ...(escolhido.detalhes_calculo || {}),
-        modo_peso_fatura: usarTracking ? 'tracking' : 'cte',
-        peso_mais_proximo_auto: true,
-        valor_com_peso_cte: Number(vCte.toFixed(2)),
-        valor_com_peso_tracking: alt ? Number(vTrk.toFixed(2)) : null,
-      },
-    };
-  });
+  return registrosCte.map((r) => escolherMaiorPeso(r, porChave.get(normalizarChaveCte(r.chave_cte))).registro);
 }
