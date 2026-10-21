@@ -82,9 +82,13 @@ export default async function handler(req, res) {
     if (origem === 'auto' && !cfg.email_automatico) return res.status(409).json({ ok: false, erro: `E-mail automatico desligado para ${nomeTransp}.` });
     const para = emailsDe(cfg.emails_transportadora);
     if (!para.length) return res.status(400).json({ ok: false, erro: `Sem e-mail cadastrado para ${nomeTransp}: preencha em Automacao > Robo Auditor.` });
-    // Auditor responsavel SEMPRE junto. Fatura sem auditor: vai o e-mail de aprovacao cadastrado na transportadora.
-    let copia = emailsDe([...porId.values()].map((e) => e.auditor_email).join(';')).filter((e) => !para.includes(e));
-    if (!copia.length) copia = emailsDe(cfg.email_aprovacao).filter((e) => !para.includes(e));
+    // Junto em TODO laudo: o(s) auditor(es) responsavel(is) e o grupo padrao da auditoria (historico mesmo sem auditor).
+    // Grupo padrao: variavel LAUDO_EMAIL_COPIA_PADRAO na Vercel (aceita varios, separados por ;).
+    const copiaPadrao = emailsDe(process.env.LAUDO_EMAIL_COPIA_PADRAO || 'fatura@cantustore.com.br');
+    const copia = [...new Set([
+      ...emailsDe([...porId.values()].map((e) => e.auditor_email).join(';')),
+      ...copiaPadrao,
+    ])].filter((e) => !para.includes(e));
 
     // 4) anexo (laudo HTML vem compactado do navegador para caber no limite de requisicao)
     let anexo = null;

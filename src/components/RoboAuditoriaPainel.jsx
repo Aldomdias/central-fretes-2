@@ -282,7 +282,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
   const reenviar = (c) => {
     const emails = emailsCadastrados(c.transportadora);
     if (!emails.length) { setErro(`${c.transportadora}: nenhum e-mail cadastrado na lista do robo.`); return; }
-    if (!window.confirm(`Reenviar por e-mail o laudo consolidado de ${c.transportadora} (${c.faturas.length} fatura(s))?\n\nPara: ${emails.join(', ')}\nCom o auditor responsavel junto.`)) return;
+    if (!window.confirm(`Reenviar por e-mail o laudo consolidado de ${c.transportadora} (${c.faturas.length} fatura(s))?\n\nPara: ${emails.join(', ')}\nJunto: auditor responsavel e fatura@cantustore.com.br.`)) return;
     onEnviarEmail?.([{ transportadora: c.transportadora, ids: c.faturas.map((f) => String(f.id)) }], 'manual', { reenvio: true });
   };
 
@@ -412,7 +412,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
           <div style={{ padding: '0 12px 12px' }}>
             <div className="hint-box compact" style={{ marginBottom: 8 }}>
               Laudos que ja sairam (ou so foram baixados). O reenvio gera o laudo consolidado e manda para os e-mails cadastrados da transportadora,
-              com o auditor responsavel junto. Fatura sem auditor: vai junto o e-mail de aprovacao cadastrado.
+              com o auditor responsavel e o grupo fatura@cantustore.com.br sempre juntos.
             </div>
             <div className="sim-analise-tabela-wrap" style={{ maxHeight: 360, overflowY: 'auto' }}>
               <table className="sim-analise-tabela">
