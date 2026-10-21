@@ -7,7 +7,7 @@ const duracao = (ms) => {
   const s = Math.round(Number(ms || 0) / 1000);
   return s >= 60 ? `${Math.floor(s / 60)} min ${s % 60}s` : `${s}s`;
 };
-const ORIGEM = { cron: 'Automatica (agenda)', manual: 'Manual (link)', encadeada: 'Continuacao', navegador: 'Navegador (Executar agora)' };
+const ORIGEM = { cron: 'Automatica (agenda)', manual: 'Manual (link)', encadeada: 'Continuacao', continuacao_hora: 'Continuacao (hora seguinte)', navegador: 'Navegador (Executar agora)' };
 const DECISAO = {
   ENVIAR_APROVACAO: { texto: 'Enviada para a gestao', cor: '#7c3aed' },
   ENVIAR_LAUDO: { texto: 'Laudo com desconto', cor: '#b45309' },

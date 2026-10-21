@@ -22727,7 +22727,7 @@ async function safeUpsert(table, payload) {
   return true;
 }
 async function consultarResultadosLote(client2, lote, comDetalhes) {
-  return client2.from("auditoria_cte_resultados").select(`chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at${comDetalhes ? ", detalhes_calculo" : ""}`).in("chave_cte", lote);
+  return client2.from("auditoria_cte_resultados").select(`chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at, fator_cubagem:detalhes_calculo->componentes_base->fatorCubagem${comDetalhes ? ", detalhes_calculo" : ""}`).in("chave_cte", lote);
 }
 async function buscarReferenciaCtes(chaves = [], { comDetalhes = false, lancarErro = false } = {}) {
   const referencia = /* @__PURE__ */ new Map();

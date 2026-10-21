@@ -524,10 +524,11 @@ export async function atribuirAuditorEmLote(state, ids = [], { auditorNome, audi
 
 async function consultarResultadosLote(client, lote, comDetalhes) {
   // A listagem precisa apenas do resumo. `detalhes_calculo` pode conter a memoria completa e
-  // comparativos de tabelas; so e pedido na geracao de laudo (comDetalhes).
+  // comparativos de tabelas; so e pedido na geracao de laudo (comDetalhes). O fator de cubagem da tabela vem
+  // sempre (campo leve do JSON): a coluna "Peso Tracking" usa o fator da tabela e nao o x300.
   return client
     .from('auditoria_cte_resultados')
-    .select(`chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at${comDetalhes ? ', detalhes_calculo' : ''}`)
+    .select(`chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at, fator_cubagem:detalhes_calculo->componentes_base->fatorCubagem${comDetalhes ? ', detalhes_calculo' : ''}`)
     .in('chave_cte', lote);
 }
 

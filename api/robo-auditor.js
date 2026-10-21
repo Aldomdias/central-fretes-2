@@ -55,13 +55,22 @@ export default async function handler(req, res) {
     const cadeiaId = String(req.headers['x-robo-cadeia'] || '') || globalThis.crypto.randomUUID();
     const manual = /[?&]agora=1\b/.test(String(req.url || ''));
     const forcar = encadeada || manual;
-    const origemChamada = encadeada ? 'encadeada' : (manual ? 'manual' : 'cron');
+    let origemChamada = encadeada ? 'encadeada' : (manual ? 'manual' : 'cron');
     if (!forcar) {
       const brasilia = new Date(Date.now() - 3 * 3600000); // UTC-3
       const hora = brasilia.getUTCHours();
       const dia = brasilia.getUTCDay();
       if (!cfgRobo.ativo) return res.status(200).json({ ok: true, pulou: true, motivo: 'Robo desligado na configuracao.' });
-      if (!(cfgRobo.horas || []).includes(hora)) return res.status(200).json({ ok: true, pulou: true, motivo: `Fora do horario configurado (agora ${hora}h; horarios: ${(cfgRobo.horas || []).join(', ')}h).` });
+      if (!(cfgRobo.horas || []).includes(hora)) {
+        // Fora do horario: so roda se a ultima rodada deixou FATURA NOVA sem analisar — o cron de toda hora
+        // continua o trabalho mesmo se o encadeamento falhar. Entre 6h e 22h, nos dias configurados.
+        // (Reavaliacoes nao contam: sempre ha faturas em revisao e o robo rodaria o dia todo.)
+        let ultima = null;
+        try { ({ data: ultima } = await db.from('auditor_robo_rodadas').select('novas_encontradas,analisadas').order('iniciado_em', { ascending: false }).limit(1).maybeSingle()); } catch { ultima = null; }
+        const sobrou = Number(ultima?.novas_encontradas || 0) > Number(ultima?.analisadas || 0);
+        if (!(sobrou && hora >= 6 && hora <= 22)) return res.status(200).json({ ok: true, pulou: true, motivo: `Fora do horario configurado (agora ${hora}h; horarios: ${(cfgRobo.horas || []).join(', ')}h).` });
+        origemChamada = 'continuacao_hora';
+      }
       if (!(cfgRobo.dias_semana || []).includes(dia)) return res.status(200).json({ ok: true, pulou: true, motivo: 'Dia da semana nao configurado.' });
     }
 
@@ -157,14 +166,19 @@ export default async function handler(req, res) {
     // para o robo terminar tudo sem depender de abrir a tela.
     let encadeou = false;
     const profundidade = Number(req.headers['x-robo-encadeamento'] || 0);
-    if ((restantes > 0 || estourouTempo) && (analisadas + reavaliadas > 0 || progressou || profundidade === 0) && profundidade < MAX_ENCADEAMENTO) {
+    // So encadeia por FATURA NOVA pendente (reavaliacoes ficam para a proxima rodada agendada, senao a cadeia
+    // reavaliaria as mesmas faturas em revisao ate o limite).
+    const novasRestantes = Math.max(novas.length - analisadas, 0);
+    if (novasRestantes > 0 && (analisadas > 0 || progressou || profundidade === 0) && profundidade < MAX_ENCADEAMENTO) {
       try {
-        const host = req.headers['x-forwarded-host'] || req.headers.host;
-        const proto = req.headers['x-forwarded-proto'] || 'https';
+        // Endereco de producao fixo: o host da chamada do cron pode ser a URL do deploy (protegida), e ai a
+        // continuacao era recusada sem aparecer no historico. Recusa rapida (401/403/500) vai para os erros.
+        const base = String(process.env.ROBO_URL_BASE || process.env.VITE_APP_URL || 'https://central-fretes-2.vercel.app').replace(/\/$/, '');
         const cab = { 'x-robo-encadeamento': String(profundidade + 1), 'x-robo-cadeia': cadeiaId };
         if (segredo) cab.authorization = `Bearer ${segredo}`;
-        await fetch(`${proto}://${host}/api/robo-auditor`, { headers: cab, signal: AbortSignal.timeout(4000) }).catch(() => {});
-        encadeou = true;
+        const resp = await fetch(`${base}/api/robo-auditor`, { headers: cab, signal: AbortSignal.timeout(4000) }).catch(() => null);
+        if (resp && !resp.ok) erros.push(`Continuacao recusada (HTTP ${resp.status} em ${base}).`);
+        else encadeou = true;
       } catch { /* o proximo disparo diario continua */ }
     }
     // Historico da execucao (silencioso: sem a tabela, so nao registra)

@@ -3342,7 +3342,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                   )}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base?.canal || '-'}</td>
                   {(() => {
-                    const pt = pesoTrackingComFatorTabela(pesosTracking.get(normalizarChaveCte(item.chave_cte)), base?.detalhes_calculo, item.detalhes_calculo);
+                    const pt = pesoTrackingComFatorTabela(pesosTracking.get(normalizarChaveCte(item.chave_cte)), base?.detalhes_calculo, item.detalhes_calculo, { fatorCubagem: base?.fator_cubagem });
                     const pesoUsado = Number(base?.peso || item.peso || 0);
                     const pesoCte = pesosCteBase.get(normalizarChaveCte(item.chave_cte)) || pesoUsado;
                     const diverge = Boolean(pt) && Math.abs(pt.pesoCalculado - pesoCte) > 0.5;
@@ -3428,7 +3428,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                           </p>
                         ) : null}
                         {(() => {
-                          const pt = pesoTrackingComFatorTabela(pesosTracking.get(normalizarChaveCte(item.chave_cte)), base?.detalhes_calculo, item.detalhes_calculo);
+                          const pt = pesoTrackingComFatorTabela(pesosTracking.get(normalizarChaveCte(item.chave_cte)), base?.detalhes_calculo, item.detalhes_calculo, { fatorCubagem: base?.fator_cubagem });
                           if (!pt) return null;
                           const modoGravado = parseDetalhesCalculoAuditoria(item.detalhes_calculo).modo_peso_fatura;
                           const modoAtual = modoPesoCte[item.id] ?? (['tracking', 'tracking_original'].includes(modoGravado) ? modoGravado : 'cte');
