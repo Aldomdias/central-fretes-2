@@ -6612,6 +6612,7 @@ ${portaisLaudo.length ? `
             anexoHtml: html,
             anexoNome: nomeLaudoConsolidado,
             origem: opcoesEnvio.origem || 'manual',
+            reenvio: Boolean(opcoesEnvio.reenvio),
           });
           setMensagemImportacao(`Laudo de ${transportadoras || 'transportadora'} enviado por e-mail (${faturasSelecionadas.length} fatura(s)) para ${(r.para || []).join(', ')}${(r.copia || []).length ? ` — auditor em copia: ${r.copia.join(', ')}` : ''}.`);
           opcoesEnvio.aoConcluir?.({ ok: true, faturas: faturasSelecionadas.length, para: r.para, copia: r.copia });
@@ -6658,7 +6659,7 @@ ${portaisLaudo.length ? `
     if (acao === 'laudo-transportador-lote-email') {
       baixarLaudoFaturasSelecionadas('transportador', {
         viaRobo: true,
-        enviarEmail: true, origem: filtrosIniciais?.origemEmail || 'manual', aoConcluir: filtrosIniciais?.aoConcluirEmail,
+        enviarEmail: true, origem: filtrosIniciais?.origemEmail || 'manual', reenvio: Boolean(filtrosIniciais?.reenvioEmail), aoConcluir: filtrosIniciais?.aoConcluirEmail,
       });
     } else {
       baixarLaudoFaturasSelecionadas('transportador', { viaRobo: true });
@@ -10329,10 +10330,10 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   const [filaEmailRobo, setFilaEmailRobo] = useState([]);
   const [emailRoboEmCurso, setEmailRoboEmCurso] = useState(false);
   const [resultadosEmailRobo, setResultadosEmailRobo] = useState([]);
-  const enviarLaudosPorEmailRobo = (grupos, origem = 'auto') => {
+  const enviarLaudosPorEmailRobo = (grupos, origem = 'auto', opcoes = {}) => {
     if (!grupos?.length) return;
     setResultadosEmailRobo([]);
-    setFilaEmailRobo((prev) => [...prev, ...grupos.map((g) => ({ ...g, origem }))]);
+    setFilaEmailRobo((prev) => [...prev, ...grupos.map((g) => ({ ...g, origem, reenvio: Boolean(opcoes.reenvio) }))]);
   };
   useEffect(() => {
     if (emailRoboEmCurso || !filaEmailRobo.length) return;
@@ -10340,7 +10341,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
     setFilaEmailRobo(resto);
     setEmailRoboEmCurso(true);
     setFiltrosIniciaisFaturas({
-      chave: Date.now(), filtro: proximo.transportadora, selecionarIds: proximo.ids, acaoAuto: 'laudo-transportador-lote-email', origemEmail: proximo.origem,
+      chave: Date.now(), filtro: proximo.transportadora, selecionarIds: proximo.ids, acaoAuto: 'laudo-transportador-lote-email', origemEmail: proximo.origem, reenvioEmail: proximo.reenvio,
       aoConcluirEmail: (r) => {
         setResultadosEmailRobo((atual) => [...atual, { transportadora: proximo.transportadora, ...r }]);
         setEmailRoboEmCurso(false);

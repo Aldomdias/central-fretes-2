@@ -266,6 +266,26 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
     return [...mapa.values()].sort((a, b) => b.faturas.length - a.faturas.length);
   }, [linhas, auditorSel]);
 
+  // Laudos ja enviados (ou so baixados) agrupados por transportadora, para REENVIAR aos e-mails cadastrados.
+  const paraReenviar = useMemo(() => {
+    const mapa = new Map();
+    linhas.filter((l) => l.etapa === 'transportadora' && (!auditorSel || l.auditor === auditorSel)).forEach((l) => {
+      const k = l.f.transportadora || 'SEM TRANSPORTADORA';
+      const r = mapa.get(k) || { transportadora: k, faturas: [], descontar: 0, auditores: new Set() };
+      r.faturas.push(l.f); r.descontar += Number(l.e.valor_descontar || 0); r.auditores.add(l.auditor);
+      mapa.set(k, r);
+    });
+    return [...mapa.values()].sort((a, b) => b.descontar - a.descontar);
+  }, [linhas, auditorSel]);
+  const emailsCadastrados = (nome) => String(cfgDe(nome)?.emails_transportadora || '').split(/[;,\s]+/).map((e) => e.trim()).filter((e) => e.includes('@'));
+  const soEmailDeTeste = (lista) => lista.length > 0 && lista.every((e) => /aldomdias@gmail\.com/i.test(e));
+  const reenviar = (c) => {
+    const emails = emailsCadastrados(c.transportadora);
+    if (!emails.length) { setErro(`${c.transportadora}: nenhum e-mail cadastrado na lista do robo.`); return; }
+    if (!window.confirm(`Reenviar por e-mail o laudo consolidado de ${c.transportadora} (${c.faturas.length} fatura(s))?\n\nPara: ${emails.join(', ')}\nCom o auditor responsavel junto.`)) return;
+    onEnviarEmail?.([{ transportadora: c.transportadora, ids: c.faturas.map((f) => String(f.id)) }], 'manual', { reenvio: true });
+  };
+
   const marcarConsolidadoEnviado = async (c) => {
     if (!window.confirm(`Confirmar que o laudo consolidado de ${c.transportadora} (${c.faturas.length} fatura(s)) ja foi enviado?`)) return;
     try { await marcarLaudoEnviadoRobo(c.faturas.map((f) => f.id), sessao?.nome || sessao?.email || 'auditor'); await recarregar(); } catch (ex) { setErro(ex.message); }
@@ -379,6 +399,45 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
                       </td>
                     </tr>
                   ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {etapaSel === 'transportadora' && paraReenviar.length > 0 && (
+        <div className="table-card" style={{ borderLeft: '4px solid #475569' }}>
+          <div className="panel-title audit-table-title">Reenviar laudo por e-mail — um e-mail por transportadora, auditor junto</div>
+          <div style={{ padding: '0 12px 12px' }}>
+            <div className="hint-box compact" style={{ marginBottom: 8 }}>
+              Laudos que ja sairam (ou so foram baixados). O reenvio gera o laudo consolidado e manda para os e-mails cadastrados da transportadora,
+              com o auditor responsavel junto. Fatura sem auditor: vai junto o e-mail de aprovacao cadastrado.
+            </div>
+            <div className="sim-analise-tabela-wrap" style={{ maxHeight: 360, overflowY: 'auto' }}>
+              <table className="sim-analise-tabela">
+                <thead><tr><th>Transportadora</th><th>Faturas</th><th>A descontar</th><th>Auditor</th><th>E-mails cadastrados</th><th /></tr></thead>
+                <tbody>
+                  {paraReenviar.map((c) => {
+                    const emails = emailsCadastrados(c.transportadora);
+                    const teste = soEmailDeTeste(emails);
+                    return (
+                      <tr key={c.transportadora}>
+                        <td>{c.transportadora}</td>
+                        <td>{c.faturas.length}</td>
+                        <td style={{ fontWeight: 700, color: '#b45309' }}>{dinheiro(c.descontar)}</td>
+                        <td style={{ fontSize: 12 }}>{[...c.auditores].join(' / ')}</td>
+                        <td style={{ fontSize: 12, maxWidth: 360, color: !emails.length ? '#b91c1c' : teste ? '#b45309' : undefined }}>
+                          {!emails.length ? 'Sem e-mail cadastrado' : teste ? `${emails.join(', ')} (e-mail de teste)` : emails.join(', ')}
+                        </td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          <button type="button" className="btn-primary audit-small-button" disabled={!emails.length || !onEnviarEmail} onClick={() => reenviar(c)}>
+                            Reenviar por e-mail
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
