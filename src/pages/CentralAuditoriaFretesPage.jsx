@@ -543,7 +543,11 @@ function mesclarDetalheComReferenciaAuditoria(item = {}, referenciaCtes = new Ma
 // `pt` vem de buscarPesosTrackingPorChaves (pesoCubado = cubagem x 300). Sem fator conhecido, mantem o x300.
 function pesoTrackingComFatorTabela(pt, ...detalhes) {
   if (!pt) return pt;
-  const fator = detalhes.map((d) => Number(parseDetalhesCalculoAuditoria(d).fatorCubagem || 0)).find((v) => v > 0) || 0;
+  const fatorDe = (d) => {
+    const det = parseDetalhesCalculoAuditoria(d);
+    return Number(det.fatorCubagem || det.fator_cubagem || det.componentes_base?.fatorCubagem || det.componentes_base?.fator_cubagem || 0);
+  };
+  const fator = detalhes.map(fatorDe).find((v) => v > 0) || 0;
   if (!fator) return pt;
   const pesoCubado = Number(((Number(pt.pesoCubado || 0) / 300) * fator).toFixed(3));
   return { ...pt, pesoCubado, pesoCalculado: Math.max(Number(pt.pesoFisico || 0), pesoCubado), fatorCubagem: fator };
@@ -3579,7 +3583,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                           return (
                             <div className="hint-box compact" style={{ marginTop: 8, borderColor: diverge ? '#fca5a5' : '#dbe3ef', background: diverge ? '#fef2f2' : '#f8fafc' }}>
                               <strong style={{ color: diverge ? '#b91c1c' : undefined }}>
-                                Peso: CT-e {Number(pesosCteBase.get(normalizarChaveCte(item.chave_cte)) || base?.peso || item.peso || 0).toLocaleString('pt-BR')} kg | usado no calculo {Number(base?.peso || item.peso || 0).toLocaleString('pt-BR')} kg | Tracking {pt.pesoCalculado.toLocaleString('pt-BR')} kg (fisico {pt.pesoFisico.toLocaleString('pt-BR')}, cubado {pt.pesoCubado.toLocaleString('pt-BR')}{pt.fatorCubagem ? ` com fator ${pt.fatorCubagem} da tabela` : ' (fator 300)'})
+                                Peso: CT-e {Number(pesosCteBase.get(normalizarChaveCte(item.chave_cte)) || base?.peso || item.peso || 0).toLocaleString('pt-BR')} kg | usado no calculo {Number(base?.peso || item.peso || 0).toLocaleString('pt-BR')} kg | Tracking {pt.pesoCalculado.toLocaleString('pt-BR')} kg (fisico {pt.pesoFisico.toLocaleString('pt-BR')}, cubado {pt.pesoCubado.toLocaleString('pt-BR')}{pt.fatorCubagem ? ` com fator ${pt.fatorCubagem} da tabela` : ' (fator da tabela nao encontrado - recalcule o CT-e; valor referencia x300 do Tracking)'})
                               </strong>
                               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
                                 <label className="compact">Forma de calculo deste CT-e:
@@ -6600,6 +6604,7 @@ ${portaisLaudo.length ? `
           cobrancaAcima: resumoGeral.cobrancaAcima,
           totalDescontar: totalDescontarGeral,
           assinatura: sessao?.nome,
+          responderTodos: enviarEmail,
         }, dinheiro);
         const numerosFaturas = blocos.map((bloco) => bloco.fatura.numero_fatura).filter(Boolean);
         const assuntoEmail = `Laudo de auditoria de fretes${transportadoras ? ` - ${transportadoras}` : ''} - fatura(s) ${numerosFaturas.slice(0, 5).join(', ')}${numerosFaturas.length > 5 ? '...' : ''}`;
