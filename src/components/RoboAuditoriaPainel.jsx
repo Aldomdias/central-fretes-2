@@ -429,6 +429,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
                         <td style={{ fontSize: 12 }}>{[...c.auditores].join(' / ')}</td>
                         <td style={{ fontSize: 12, maxWidth: 360, color: !emails.length ? '#b91c1c' : teste ? '#b45309' : undefined }}>
                           {!emails.length ? 'Sem e-mail cadastrado' : teste ? `${emails.join(', ')} (e-mail de teste)` : emails.join(', ')}
+                          {emails.length > 0 && <div style={{ color: '#64748b', marginTop: 2 }}>+ auditor e fatura@cantustore.com.br</div>}
                         </td>
                         <td style={{ whiteSpace: 'nowrap' }}>
                           <button type="button" className="btn-primary audit-small-button" disabled={!emails.length || !onEnviarEmail} onClick={() => reenviar(c)}>
