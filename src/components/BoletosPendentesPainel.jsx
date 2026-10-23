@@ -1,4 +1,4 @@
-import { faturaPaga } from '../services/auditorRoboService';
+import { faturaPaga, faturaEmAntecipacao } from '../services/auditorRoboService';
 import { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { carregarSessao } from '../utils/authLocal';
@@ -40,7 +40,10 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
 
   const porFatura = useMemo(() => new Map(controle.map((c) => [String(c.fatura_id), c])), [controle]);
   // Fatura ja paga (partida/pagamento gravado) nao espera mais boleto, mesmo que o status ainda nao tenha virado PAGA.
-  const exigem = useMemo(() => (faturas || []).filter((f) => STATUS_EXIGE_BOLETO.has(f.status) && !faturaPaga(f)), [faturas]);
+  // Antecipacao (Atribuicao "Cessao" no SAP) tambem nao espera boleto: fica no bloco proprio ate ser paga.
+  const exigem = useMemo(() => (faturas || []).filter((f) => STATUS_EXIGE_BOLETO.has(f.status) && !faturaPaga(f) && !faturaEmAntecipacao(f)), [faturas]);
+  const emAntecipacao = useMemo(() => (faturas || []).filter((f) => STATUS_EXIGE_BOLETO.has(f.status) && faturaEmAntecipacao(f)), [faturas]);
+  const [verAntecipacao, setVerAntecipacao] = useState(false);
   const termo = norm(busca);
   const filtra = (f) => !termo || [f.numero_fatura, f.transportadora, f.auditor_nome].some((v) => norm(v).includes(termo));
 
@@ -129,7 +132,35 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
             {dinheiro(valorPendente)} · mais antigo: {maisAntigo} dia(s)
           </span>
         )}
+        {emAntecipacao.length > 0 && (
+          <span style={{ fontSize: 12, fontWeight: 700, color: '#6d28d9' }}>· {emAntecipacao.length} em antecipacao (cessao)</span>
+        )}
       </div>
+      {aberto && emAntecipacao.length > 0 && (
+        <div style={{ padding: '0 12px 8px' }}>
+          <button type="button" className="btn-secondary audit-small-button" onClick={() => setVerAntecipacao((v) => !v)}>
+            {verAntecipacao ? 'Ocultar' : 'Ver'} {emAntecipacao.length} em antecipacao (cessao) · {dinheiro(emAntecipacao.reduce((a, f) => a + Number(f.valor_fatura || 0), 0))}
+          </button>
+          {verAntecipacao && (
+            <div className="sim-analise-tabela-wrap" style={{ maxHeight: 280, overflowY: 'auto', marginTop: 6 }}>
+              <div className="hint-box compact" style={{ marginBottom: 6 }}>
+                Atribuicao "Cessao" no SAP: fatura antecipada, nao precisa de boleto. Sai daqui sozinha quando o pagamento entrar (partida 200).
+              </div>
+              <table className="sim-analise-tabela">
+                <thead><tr><th>Fatura</th><th>Transportadora</th><th>Valor</th><th>Vencimento</th><th>Atribuicao SAP</th></tr></thead>
+                <tbody>
+                  {emAntecipacao.map((f) => (
+                    <tr key={f.id} style={{ cursor: onAbrirFatura ? 'pointer' : undefined }} onClick={() => onAbrirFatura?.(f)}>
+                      <td>{f.numero_fatura}</td><td>{f.transportadora}</td><td>{dinheiro(f.valor_fatura)}</td>
+                      <td>{dataBr(f.data_vencimento)}</td><td>{f.atribuicao_sap}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
       {aberto && (
         <div style={{ padding: '0 12px 12px' }}>
           {local && (

@@ -1448,7 +1448,7 @@ export async function salvarPagamentosFinanceirosEmLote(pagamentosConciliados, o
   // nao existem em financeiro_pagamentos.
   const doArquivo = new Map();
   for (const item of pagamentosConciliados.filter((p) => p.fatura_id)) {
-    const { transportadora, compensado, cnpj, ...limpo } = item;
+    const { transportadora, compensado, cnpj, atribuicao, ...limpo } = item;
     const chave = chavePagamento(limpo);
     doArquivo.set(chave, mesclarPagamento(doArquivo.get(chave), limpo));
   }
@@ -1584,6 +1584,32 @@ async function preencherEnvioErpPeloLancamento(client, itens = []) {
     }
   }
   return preenchidas;
+}
+
+// Grava na fatura a "Atribuição" do relatorio SAP (ex.: "Cessão" = antecipacao). So sobrescreve com valor preenchido.
+// Sem a coluna no banco (migration 20261023_001 pendente) nao trava a importacao: so avisa.
+export async function gravarAtribuicaoSapFaturas(itens = []) {
+  const porValor = new Map();
+  itens.filter((i) => i.fatura_id && i.atribuicao).forEach((i) => {
+    porValor.set(i.atribuicao, [...new Set([...(porValor.get(i.atribuicao) || []), String(i.fatura_id)])]);
+  });
+  const gravadas = new Map();
+  if (!isSupabaseConfigured() || !porValor.size) return gravadas;
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  try {
+    for (const [valor, ids] of porValor) {
+      for (let inicio = 0; inicio < ids.length; inicio += 200) {
+        // eslint-disable-next-line no-await-in-loop
+        const { error } = await client.from('faturas').update({ atribuicao_sap: valor, atribuicao_sap_em: agora }).in('id', ids.slice(inicio, inicio + 200));
+        if (error) throw error;
+      }
+      ids.forEach((id) => gravadas.set(id, valor));
+    }
+  } catch (error) {
+    console.warn('[SAP] Atribuicao nao gravada (migration 20261023_001 aplicada?):', error?.message || error);
+  }
+  return gravadas;
 }
 
 // Marca na fatura que ela ja foi lancada/reclassificada no financeiro

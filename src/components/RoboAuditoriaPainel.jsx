@@ -4,7 +4,7 @@ import RoboProgressoAmd from './RoboProgressoAmd';
 import { exportarExcelFormatado } from '../utils/exportarExcelFormatado';
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { listarControleBoletos } from '../services/boletoControleService';
-import { aprovarLaudosRobo, DECISAO, gravarPreferenciaPesoMaisProximo, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo, buscarTodasPaginas, laudoResolvidoFora, faturaPaga } from '../services/auditorRoboService';
+import { aprovarLaudosRobo, DECISAO, gravarPreferenciaPesoMaisProximo, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo, buscarTodasPaginas, laudoResolvidoFora, faturaPaga, faturaEmAntecipacao } from '../services/auditorRoboService';
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
@@ -22,6 +22,7 @@ const ETAPAS = [
   { id: 'transportadora', rotulo: 'Laudo enviado, aguardando transportadora', cor: '#475569', acao: false, dica: 'Laudo aprovado e enviado ao transportador; aguarda a resposta dele.' },
   { id: 'gestao', rotulo: 'Aguardando a gestao', cor: '#7c3aed', acao: false, dica: 'Enviadas pelo robo, na fila de aprovacao da gestao.' },
   { id: 'erp', rotulo: 'Liberadas, aguardando ERP', cor: '#c2410c', acao: true, dica: 'Liberadas para pagamento; falta enviar ao ERP.' },
+  { id: 'antecipacao', rotulo: 'Em antecipacao (cessao)', cor: '#6d28d9', acao: false, dica: 'Atribuicao "Cessao" no SAP: antecipacao, nao espera boleto. Sai sozinha quando for paga.' },
   { id: 'boleto', rotulo: 'Aguardando boleto', cor: '#0369a1', acao: true, dica: 'No ERP; falta o boleto na pasta do financeiro.' },
   { id: 'tratada', rotulo: 'Tratadas fora do robo', cor: '#64748b', acao: false, dica: 'Laudo ou revisao ja resolvido por fora: pela tela da fatura, ja lancado no ERP (partida/lancamento) ou pago.' },
   { id: 'concluida', rotulo: '100% concluidas', cor: '#14733b', acao: false, dica: 'Gestao, ERP e boleto concluidos, ou fatura ja paga.' },
@@ -36,6 +37,7 @@ function etapaDe(e, f, boletoIds) {
     // Paga: ERP e boleto ja passaram (pagamento so sai com os dois).
     if (faturaPaga(f)) return 'concluida';
     if (!f.data_envio_erp) return 'erp';
+    if (faturaEmAntecipacao(f)) return 'antecipacao';
     if (!boletoIds.has(String(f.id))) return 'boleto';
     return 'concluida';
   }

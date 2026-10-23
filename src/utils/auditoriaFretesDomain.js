@@ -487,6 +487,8 @@ export function mapearPagamentoSap(row = {}) {
     // mostra ha quanto tempo a fatura esta parada no financeiro esperando pagamento.
     data_lancamento: excelDateToISO(row['Dt.lançamento'] ?? row['Dt.lçto.cont.']),
     compensado,
+    // "Atribuição" do SAP (ex.: "Boleto", "Cessão" = antecipacao). Gravada na fatura, nao em financeiro_pagamentos.
+    atribuicao: String(row['Atribuição'] ?? row['Atribuicao'] ?? '').trim() || null,
     origem: 'SAP_EXPORTACAO',
   };
 }
