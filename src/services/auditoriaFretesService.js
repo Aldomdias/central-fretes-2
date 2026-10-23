@@ -1586,22 +1586,37 @@ async function preencherEnvioErpPeloLancamento(client, itens = []) {
   return preenchidas;
 }
 
-// Grava na fatura a "Atribuição" do relatorio SAP (ex.: "Cessão" = antecipacao). So sobrescreve com valor preenchido.
+// Grava na fatura a "Atribuição" do relatorio SAP (ex.: "Cessão" = antecipacao). A mesma fatura se repete em varias
+// linhas: vale a linha de DATA MAIS RECENTE (lancamento/compensacao) que tem atribuicao. Entre importacoes, so troca se
+// a linha for mais nova que a ja gravada (atribuicao_sap_em = data da linha). faturasAtuais: [{ id, atribuicao_sap_em }].
 // Sem a coluna no banco (migration 20261023_001 pendente) nao trava a importacao: so avisa.
-export async function gravarAtribuicaoSapFaturas(itens = []) {
-  const porValor = new Map();
+export async function gravarAtribuicaoSapFaturas(itens = [], faturasAtuais = []) {
+  const dataLinha = (i) => String(i.data_pagamento || i.data_lancamento || '').slice(0, 10);
+  const maisRecente = new Map();
   itens.filter((i) => i.fatura_id && i.atribuicao).forEach((i) => {
-    porValor.set(i.atribuicao, [...new Set([...(porValor.get(i.atribuicao) || []), String(i.fatura_id)])]);
+    const id = String(i.fatura_id);
+    const atual = maisRecente.get(id);
+    if (!atual || dataLinha(i) >= dataLinha(atual)) maisRecente.set(id, i);
+  });
+  const gravadaEm = new Map((faturasAtuais || []).map((f) => [String(f.id), String(f.atribuicao_sap_em || '').slice(0, 10)]));
+  const porValorData = new Map();
+  maisRecente.forEach((i, id) => {
+    const data = dataLinha(i);
+    if (gravadaEm.get(id) && data && gravadaEm.get(id) > data) return; // ja tem atribuicao de linha mais nova
+    const chave = `${i.atribuicao}|${data}`;
+    porValorData.set(chave, [...(porValorData.get(chave) || []), id]);
   });
   const gravadas = new Map();
-  if (!isSupabaseConfigured() || !porValor.size) return gravadas;
+  if (!isSupabaseConfigured() || !porValorData.size) return gravadas;
   const client = getSupabaseClient();
   const agora = new Date().toISOString();
   try {
-    for (const [valor, ids] of porValor) {
+    for (const [chave, ids] of porValorData) {
+      const [valor, data] = chave.split('|');
       for (let inicio = 0; inicio < ids.length; inicio += 200) {
         // eslint-disable-next-line no-await-in-loop
-        const { error } = await client.from('faturas').update({ atribuicao_sap: valor, atribuicao_sap_em: agora }).in('id', ids.slice(inicio, inicio + 200));
+        const { error } = await client.from('faturas').update({ atribuicao_sap: valor, atribuicao_sap_em: data ? `${data}T12:00:00-03:00` : agora })
+          .in('id', ids.slice(inicio, inicio + 200));
         if (error) throw error;
       }
       ids.forEach((id) => gravadas.set(id, valor));

@@ -9776,7 +9776,7 @@ function Financeiro({ state, onState }) {
         (progresso) => setProgressoPagamentos({ etapa: `marcando_lancadas_financeiro (${file.name})`, ...progresso }),
       );
       // "Atribuição" do SAP na fatura ("Cessão" = antecipacao: sai de boletos e vai para o card de antecipacao).
-      const atribuicoes = await gravarAtribuicaoSapFaturas(matched);
+      const atribuicoes = await gravarAtribuicaoSapFaturas(matched, next.faturas);
       if (atribuicoes.size) {
         next = { ...next, faturas: next.faturas.map((f) => (atribuicoes.has(String(f.id)) ? { ...f, atribuicao_sap: atribuicoes.get(String(f.id)) } : f)) };
       }

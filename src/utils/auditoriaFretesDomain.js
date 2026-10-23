@@ -514,9 +514,14 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdici
   // Orgaos de imposto (retencao) nao sao pagamento de frete.
   const ehOrgaoImposto = (nome) => /\b(RECEITA|FAZENDA|SECRETARIA|PREFEITURA|INSS|TRIBUT)/.test(nomeBase(nome));
 
-  return linhasSap
-    .map(mapearPagamentoSap)
-    .filter((item) => item.numero_fatura)
+  const mapeadas = linhasSap.map(mapearPagamentoSap).filter((item) => item.numero_fatura);
+  // A "Atribuição" pode vir so na linha espelho (descartada abaixo): passa para as linhas do mesmo lancamento contabil.
+  const atribuicaoPorLancamento = new Map();
+  mapeadas.forEach((item) => { if (item.atribuicao && item.lancamento_contabil) atribuicaoPorLancamento.set(item.lancamento_contabil, item.atribuicao); });
+
+  return mapeadas
+    .map((item) => (item.atribuicao || !atribuicaoPorLancamento.has(item.lancamento_contabil)
+      ? item : { ...item, atribuicao: atribuicaoPorLancamento.get(item.lancamento_contabil) }))
     // A linha autorreferenciada (compensação = o proprio lancamento) e' so o
     // espelho contabil da partida dobrada - sempre existe em par com outra
     // linha da mesma fatura e nao traz informacao nova, entao e' descartada.
