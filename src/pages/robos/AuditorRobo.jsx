@@ -6,7 +6,7 @@ import HistoricoRodadasRobo from '../../components/HistoricoRodadasRobo';
 import StatusServidorRobo from '../../components/StatusServidorRobo';
 import {
   classificarFatura, DECISAO, STATUS_ROBO_AUDITA, gravarExecucoesRobo, limparSimulacoesRobo, listarExecucoesRobo, listarFaturasEmAuditoria, dataInicioRobo, dataEntradaFatura,
-  carregarConfigRobo, salvarConfigRobo, listarNomesTransportadoras, listarRoboTransportadoras, registrarRodadaRobo, normNome, removerRoboTransportadora, salvarRoboTransportadora,
+  carregarConfigRobo, salvarConfigRobo, listarNomesTransportadoras, listarRoboTransportadoras, registrarRodadaRobo, normNome, removerRoboTransportadora, salvarRoboTransportadora, laudoResolvidoFora,
 } from '../../services/auditorRoboService';
 
 const FaturaDetalheModal = lazy(() => import('../CentralAuditoriaFretesPage').then((m) => ({ default: m.FaturaDetalheModal })));
@@ -220,7 +220,7 @@ export default function AuditorRobo() {
       const mapa = new Map();
       const client = getSupabaseClient();
       for (let i = 0; i < idsExec.length; i += 150) {
-        const { data } = await client.from('faturas').select('id,status,data_envio_erp').in('id', idsExec.slice(i, i + 150));
+        const { data } = await client.from('faturas').select('id,status,data_envio_erp,partida,lancamento_financeiro,data_pagamento,valor_pago').in('id', idsExec.slice(i, i + 150));
         (data || []).forEach((f) => mapa.set(String(f.id), f));
       }
       if (ativo) setStatusFat(mapa);
@@ -287,15 +287,17 @@ export default function AuditorRobo() {
     // Laudo/revisao so contam como pendentes se a fatura ainda esta em auditoria; as que a gestao
     // ou o auditor ja trataram por fora saem daqui (aparecem em "Tratadas fora do robo").
     const laudos = lista.filter((e) => e.decisao === DECISAO.ENVIAR_LAUDO);
+    // Ja resolvido por fora (baixado, lancado no ERP ou pago): sai das listas de laudo e vai para "Tratadas fora do robo".
+    const resolvidoFora = (e) => laudoResolvidoFora(e, statusFat.get(String(e.fatura_id)));
     // Laudo ja gerado/enviado: marcado pelo auditor OU a fatura ja esta "Aguardando transportadora" (o laudo muda o status).
-    const laudosEnviados = laudos.filter((e) => e.acao_executada || statusFat.get(String(e.fatura_id))?.status === 'AGUARDANDO_TRANSPORTADORA');
-    const laudosAprovados = laudos.filter((e) => !e.acao_executada && e.aprovado_auditor_em && emAuditoria(e));
-    const laudosOk = laudos.filter((e) => !e.acao_executada && !e.aprovado_auditor_em && emAuditoria(e));
+    const laudosEnviados = laudos.filter((e) => !resolvidoFora(e) && (e.acao_executada || statusFat.get(String(e.fatura_id))?.status === 'AGUARDANDO_TRANSPORTADORA'));
+    const laudosAprovados = laudos.filter((e) => !resolvidoFora(e) && !e.acao_executada && e.aprovado_auditor_em && emAuditoria(e));
+    const laudosOk = laudos.filter((e) => !resolvidoFora(e) && !e.acao_executada && !e.aprovado_auditor_em && emAuditoria(e));
     const revisar = lista.filter((e) => e.decisao === DECISAO.REVISAO_AUDITOR && !e.acao_executada && emAuditoria(e));
     // Laudos que o robo enviou por e-mail (cada envio grava o mesmo horario em todas as faturas do e-mail).
     const laudosEmail = lista.filter((e) => e.modo === 'EMAIL_ENVIADO');
     const emailsEnviados = new Set(laudosEmail.map((e) => `${e.transportadora}|${e.executado_em}`)).size;
-    const tratadas = lista.filter((e) => !e.acao_executada && [DECISAO.ENVIAR_LAUDO, DECISAO.REVISAO_AUDITOR].includes(e.decisao) && !emAuditoria(e) && !laudosEnviados.includes(e));
+    const tratadas = lista.filter((e) => resolvidoFora(e) || (!e.acao_executada && [DECISAO.ENVIAR_LAUDO, DECISAO.REVISAO_AUDITOR].includes(e.decisao) && !emAuditoria(e) && !laudosEnviados.includes(e)));
     const causa = { semCalculo: 0, semEntrega: 0, outros: 0 };
     revisar.forEach((e) => {
       const m = String(e.motivo || '').toLowerCase();

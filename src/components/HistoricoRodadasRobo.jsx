@@ -50,7 +50,11 @@ export default function HistoricoRodadasRobo() {
     });
     return [...mapa.values()].map((r) => {
       const ordenadas = [...r.chamadas].sort((a, b) => String(a.iniciado_em).localeCompare(String(b.iniciado_em)));
-      return { ...r, novas: ordenadas[0]?.novas_encontradas || 0, restantes: ordenadas[ordenadas.length - 1]?.restantes || 0 };
+      const ultima = ordenadas[ordenadas.length - 1] || {};
+      // "Ficou para depois" separa faturas NOVAS (a proxima rodada pega primeiro) das reavaliacoes de revisao/laudo.
+      const novasRestantes = Math.max(Number(ultima.novas_encontradas || 0) - Number(ultima.analisadas || 0), 0);
+      const restantes = Number(ultima.restantes || 0);
+      return { ...r, novas: ordenadas[0]?.novas_encontradas || 0, restantes, novasRestantes, reavRestantes: Math.max(restantes - novasRestantes, 0) };
     }).sort((a, b) => String(b.inicio).localeCompare(String(a.inicio)));
   }, [linhas]);
 
@@ -94,7 +98,7 @@ export default function HistoricoRodadasRobo() {
                       <td style={{ color: '#7c3aed', fontWeight: 700 }}>{r.enviadas}</td>
                       <td style={{ color: '#b45309', fontWeight: 700 }}>{r.laudos}</td>
                       <td style={{ color: '#b91c1c', fontWeight: 700 }}>{r.revisar}</td>
-                      <td>{r.restantes}{r.erros.length ? ` · ${r.erros.length} erro(s)` : ''}</td>
+                      <td title="Novas: faturas ainda nao analisadas (a proxima rodada pega primeiro). Reav.: casos em revisao/laudo que ficaram para a proxima reavaliacao.">{r.restantes ? `${r.novasRestantes} novas · ${r.reavRestantes} reav.` : 0}{r.erros.length ? ` · ${r.erros.length} erro(s)` : ''}</td>
                       <td>{duracao(r.duracaoMs)}</td>
                       <td>{r.chamadas.length}</td>
                     </tr>

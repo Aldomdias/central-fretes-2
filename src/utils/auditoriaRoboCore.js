@@ -13,11 +13,11 @@ import { entrarCacheCalculo, sairCacheCalculo } from '../services/freteDatabaseS
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { normalizarChaveCte } from './auditoriaFretesDomain';
 import { montarCorrecoesCalculoFatura, numeroValorNfAuditoria, numeroPesoAuditoria, escolherMaiorPeso } from './correcoesCalculoFatura';
-import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas } from '../services/auditorRoboService';
+import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas, laudoResolvidoFora } from '../services/auditorRoboService';
 
 // Escopo do cache das tabelas de frete (ver freteDatabaseService): abrir antes de um lote e fechar no finally.
 export { entrarCacheCalculo as iniciarCacheCalculoRobo, sairCacheCalculo as encerrarCacheCalculoRobo };
-export { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas };
+export { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas, laudoResolvidoFora };
 
 // Mesma tolerancia padrao da tela (a tela deixa ajustar por navegador; na nuvem vale o padrao).
 const TOLERANCIA = { acima: 1, abaixo: 5 };

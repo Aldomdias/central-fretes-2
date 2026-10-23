@@ -32,6 +32,19 @@ export const dataEntradaFatura = (f) => {
 // Faturas que ainda estao na etapa de auditoria (o robo so olha para elas).
 export const STATUS_ROBO_AUDITA = ['RECEBIDA', 'PRE_AUDITADA_VERUM', 'REAUDITADA_CENTRAL', 'COM_DIVERGENCIA'];
 
+const STATUS_PAGAS = ['PAGA', 'PAGA_COM_DESCONTO', 'PAGA_COM_DIVERGENCIA'];
+export const faturaPaga = (f = {}) => STATUS_PAGAS.includes(f.status) || Boolean(f.data_pagamento) || Number(f.valor_pago || 0) > 0;
+export const faturaLancadaErp = (f = {}) => Boolean(f.partida || f.lancamento_financeiro);
+// Laudo do robo ja resolvido por fora: baixado pelo auditor (modo TRATADA_FORA); laudo ainda nao enviado e a fatura ja
+// tem partida/lancamento/pagamento; ou laudo enviado e a fatura ja foi paga. Sai das listas de laudo e das reavaliacoes.
+export function laudoResolvidoFora(e = {}, f = null) {
+  if (e.decisao !== DECISAO.ENVIAR_LAUDO) return false;
+  if (e.modo === 'TRATADA_FORA') return true;
+  if (!f) return false;
+  const enviado = Boolean(e.acao_executada) || f.status === 'AGUARDANDO_TRANSPORTADORA';
+  return enviado ? faturaPaga(f) : (faturaPaga(f) || faturaLancadaErp(f));
+}
+
 export const normNome = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase().replace(/\s+/g, ' ');
 
 // Decide o que o robo faria a partir do resumo EXATO da fatura (mesmo calculo da tela da

@@ -1549,6 +1549,11 @@ export async function atualizarStatusFaturasPagasEmLote(state, pagamentosCompens
   for (let inicio = 0; inicio < historico.length; inicio += 500) {
     await client.from('auditoria_fatura_historico').insert(historico.slice(inicio, inicio + 500));
   }
+  // Fatura com partida (paga) ja passou pelo ERP: sem data de envio, ganha a do lancamento (ou do pagamento).
+  const erpPagas = await preencherEnvioErpPeloLancamento(client, atualizacoesFatura.map((item) => ({
+    id: item.id, data: faturasPorId.get(item.id)?.lancamento_financeiro_em || item.data_pagamento,
+  })));
+  erpPagas.forEach((data, id) => { const item = atualizacoesFatura.find((a) => a.id === id); if (item) item.data_envio_erp = data; });
 
   const statusPorFatura = new Map(atualizacoesFatura.map((item) => [item.id, item]));
   return {
@@ -1556,6 +1561,29 @@ export async function atualizarStatusFaturasPagasEmLote(state, pagamentosCompens
     faturas: state.faturas.map((fatura) => statusPorFatura.has(fatura.id) ? { ...fatura, ...statusPorFatura.get(fatura.id) } : fatura),
     historico: [...historico, ...(state.historico || [])],
   };
+}
+
+// Lancamento / partida no financeiro so acontecem depois do envio ao ERP: fatura sem data de envio ao ERP ganha a data
+// do lancamento (ou do pagamento) como envio ao ERP. So preenche onde esta vazia: nunca sobrescreve a data real do Verum,
+// e o caminho contrario (ERP preenchendo lancamento) nao existe. itens: [{ id, data }]. Devolve Map(id -> data gravada).
+async function preencherEnvioErpPeloLancamento(client, itens = []) {
+  const agora = new Date().toISOString();
+  const porData = new Map();
+  itens.forEach(({ id, data }) => {
+    const chave = data ? `${String(data).slice(0, 10)}T12:00:00-03:00` : agora;
+    porData.set(chave, [...(porData.get(chave) || []), id]);
+  });
+  const preenchidas = new Map();
+  for (const [data, ids] of porData) {
+    for (let inicio = 0; inicio < ids.length; inicio += 200) {
+      // eslint-disable-next-line no-await-in-loop
+      const { data: alterados, error } = await client.from('faturas').update({ data_envio_erp: data })
+        .in('id', ids.slice(inicio, inicio + 200)).is('data_envio_erp', null).select('id');
+      if (error) throw new Error(`Erro ao marcar envio ao ERP das faturas lancadas: ${error.message}`);
+      (alterados || []).forEach((linha) => preenchidas.set(linha.id, data));
+    }
+  }
+  return preenchidas;
 }
 
 // Marca na fatura que ela ja foi lancada/reclassificada no financeiro
@@ -1591,6 +1619,8 @@ export async function marcarFaturasLancadasFinanceiroEmLote(state, pagamentosLan
     if (error) throw new Error(`Erro ao marcar faturas lancadas no financeiro: ${error.message}`);
     onProgress?.({ carregados: Math.min(inicio + 200, atualizacoesFatura.length), total: atualizacoesFatura.length });
   }
+  const erpPreenchido = await preencherEnvioErpPeloLancamento(client, atualizacoesFatura.map((item) => ({ id: item.id, data: item.lancamento_financeiro_em })));
+  erpPreenchido.forEach((data, id) => { const item = atualizacoesFatura.find((a) => a.id === id); if (item) item.data_envio_erp = data; });
 
   const porFaturaFinal = new Map(atualizacoesFatura.map((item) => [item.id, item]));
   return {

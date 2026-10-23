@@ -27812,6 +27812,13 @@ function dataInicioRobo(cfg) {
   brasilia.setUTCDate(brasilia.getUTCDate() - 1);
   return brasilia.toISOString().slice(0, 10);
 }
+function laudoResolvidoFora(e = {}, f = null) {
+  if (e.decisao !== DECISAO.ENVIAR_LAUDO) return false;
+  if (e.modo === "TRATADA_FORA") return true;
+  if (!f) return false;
+  const enviado = Boolean(e.acao_executada) || f.status === "AGUARDANDO_TRANSPORTADORA";
+  return enviado ? faturaPaga(f) : faturaPaga(f) || faturaLancadaErp(f);
+}
 function classificarFatura(resumo, considerarMenor = false) {
   if (!resumo || !resumo.total) return { decisao: DECISAO.REVISAO_AUDITOR, motivo: "Fatura sem CT-es vinculados.", descontar: 0 };
   const maior = Number(resumo.maior || 0);
@@ -27845,7 +27852,7 @@ async function buscarTodasPaginas(montar, maximo = 1e5) {
   }
   return { data: linhas, error: null };
 }
-var DECISAO, ROBO_DATA_INICIO, dataEntradaFatura, STATUS_ROBO_AUDITA;
+var DECISAO, ROBO_DATA_INICIO, dataEntradaFatura, STATUS_ROBO_AUDITA, STATUS_PAGAS, faturaPaga, faturaLancadaErp;
 var init_auditorRoboService = __esm({
   "src/services/auditorRoboService.js"() {
     "use strict";
@@ -27863,6 +27870,9 @@ var init_auditorRoboService = __esm({
       return new Date(new Date(v).getTime() - 3 * 36e5).toISOString().slice(0, 10);
     };
     STATUS_ROBO_AUDITA = ["RECEBIDA", "PRE_AUDITADA_VERUM", "REAUDITADA_CENTRAL", "COM_DIVERGENCIA"];
+    STATUS_PAGAS = ["PAGA", "PAGA_COM_DESCONTO", "PAGA_COM_DIVERGENCIA"];
+    faturaPaga = (f = {}) => STATUS_PAGAS.includes(f.status) || Boolean(f.data_pagamento) || Number(f.valor_pago || 0) > 0;
+    faturaLancadaErp = (f = {}) => Boolean(f.partida || f.lancamento_financeiro);
   }
 });
 
@@ -28164,5 +28174,6 @@ export {
   sairCacheCalculo as encerrarCacheCalculoRobo,
   enviarFaturaParaGestaoRobo,
   entrarCacheCalculo as iniciarCacheCalculoRobo,
+  laudoResolvidoFora,
   normalizarNomeAuditor
 };

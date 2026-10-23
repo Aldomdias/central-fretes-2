@@ -108,6 +108,8 @@ export default async function handler(req, res) {
     const reavaliar = (feitas || [])
       .filter((e) => !e.acao_executada && [core.DECISAO.REVISAO_AUDITOR, core.DECISAO.ENVIAR_LAUDO].includes(e.decisao))
       .filter((e) => porId.has(String(e.fatura_id)) && ativas.has(norm(porId.get(String(e.fatura_id)).transportadora)))
+      // Laudo ja lancado no ERP / pago por fora: nao reavalia (aparece em "Tratadas fora do robo").
+      .filter((e) => !core.laudoResolvidoFora(e, porId.get(String(e.fatura_id))))
       .sort((a, b) => String(a.reavaliado_em || a.executado_em).localeCompare(String(b.reavaliado_em || b.executado_em)))
       .slice(0, MAX_REAVALIAR);
 
