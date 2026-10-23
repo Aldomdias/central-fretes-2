@@ -560,7 +560,18 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdici
       // vencimento; serie e filial podem variar): nao ha ambiguidade real, o pagamento vale pras copias.
       const assinatura = (f) => [f.valor_fatura, f.data_emissao, f.data_vencimento].join('|');
       const duplicatasIdenticas = alvo.length > 1 && alvo.every((f) => assinatura(f) === assinatura(alvo[0]));
-      if (alvo.length > 1 && !duplicatasIdenticas) return [{ ...pagamento, resultado: 'AMBIGUO' }];
+      if (alvo.length > 1 && !duplicatasIdenticas) {
+        // Mesmo numero em filiais da mesma transportadora (mesma raiz): desempata pelo CNPJ completo da linha do SAP e,
+        // se ainda empatar, pelo valor. So casa sozinho se sobrar exatamente uma fatura.
+        const cnpjLinha = String(pagamento.cnpj || '').replace(/\D/g, '');
+        const mesmoCnpj = cnpjLinha.length === 14 ? alvo.filter((f) => String(f.cnpj_transportadora || '').replace(/\D/g, '') === cnpjLinha) : [];
+        const base = mesmoCnpj.length ? mesmoCnpj : alvo;
+        const valorLinha = Number(pagamento.valor_pago || 0);
+        const mesmoValor = base.filter((f) => Math.abs(Number(f.valor_fatura || 0) - valorLinha) <= 0.01);
+        if (mesmoCnpj.length === 1) alvo = mesmoCnpj;
+        else if (mesmoValor.length === 1) alvo = mesmoValor;
+        else return [{ ...pagamento, resultado: 'AMBIGUO' }];
+      }
       if (!alvo.length) return [{ ...pagamento, resultado: 'NAO_LOCALIZADO' }];
 
       return alvo.map((fatura) => {
