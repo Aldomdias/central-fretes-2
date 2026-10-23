@@ -21896,7 +21896,7 @@ async function carregarBaixasAprovadas(chaves = []) {
     const client2 = getSupabaseClient();
     const unicas = [...new Set(chaves.filter(Boolean))];
     for (let i = 0; i < unicas.length; i += LOTE) {
-      const { data, error } = await client2.from("entrega_baixas_manuais").select("chave, data_entrega, decidido_em, decidido_por").eq("status", STATUS_BAIXA.APROVADO).in("chave", unicas.slice(i, i + LOTE));
+      const { data, error } = await client2.from("entrega_baixas_manuais").select("chave, fatura_id, data_entrega, decidido_em, decidido_por").eq("status", STATUS_BAIXA.APROVADO).in("chave", unicas.slice(i, i + LOTE));
       if (error) throw error;
       (data || []).forEach((row) => aprovadas.set(row.chave, row));
     }
@@ -22948,6 +22948,22 @@ async function buscarStatusEntregaCtes(registros = []) {
     baixas.forEach((linha, id) => {
       resultado.set(id, { status: STATUS_ENTREGA.ENTREGUE, dataEntrega: linha.data_entrega || linha.decidido_em || null, origem: ORIGEM_BAIXA_MANUAL });
     });
+    const porNumero = /* @__PURE__ */ new Map();
+    registros.forEach((r) => {
+      const id = chaveEntregaRegistro(r);
+      const numero4 = String(r.numero_cte || "").trim();
+      if (id && numero4 && numero4 !== id && r.fatura_id && resultado.get(id)?.status !== STATUS_ENTREGA.ENTREGUE) {
+        porNumero.set(numero4, [...porNumero.get(numero4) || [], { id, faturaId: String(r.fatura_id) }]);
+      }
+    });
+    if (porNumero.size) {
+      const baixasNumero = await carregarBaixasAprovadas([...porNumero.keys()]);
+      baixasNumero.forEach((linha, numero4) => {
+        (porNumero.get(numero4) || []).filter((alvo) => alvo.faturaId === String(linha.fatura_id || "")).forEach(({ id }) => {
+          resultado.set(id, { status: STATUS_ENTREGA.ENTREGUE, dataEntrega: linha.data_entrega || linha.decidido_em || null, origem: ORIGEM_BAIXA_MANUAL });
+        });
+      });
+    }
   }
   return resultado;
 }
@@ -27871,7 +27887,7 @@ var init_auditorRoboService = __esm({
     };
     STATUS_ROBO_AUDITA = ["RECEBIDA", "PRE_AUDITADA_VERUM", "REAUDITADA_CENTRAL", "COM_DIVERGENCIA"];
     STATUS_PAGAS = ["PAGA", "PAGA_COM_DESCONTO", "PAGA_COM_DIVERGENCIA"];
-    faturaPaga = (f = {}) => STATUS_PAGAS.includes(f.status) || Boolean(f.data_pagamento) || Number(f.valor_pago || 0) > 0;
+    faturaPaga = (f = {}) => STATUS_PAGAS.includes(f.status) || Boolean(f.data_pagamento) || Number(f.valor_pago || 0) > 0 || String(f.partida || "").trim().startsWith("200");
     faturaLancadaErp = (f = {}) => Boolean(f.partida || f.lancamento_financeiro);
   }
 });

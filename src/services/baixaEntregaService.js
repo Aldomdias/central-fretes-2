@@ -181,7 +181,7 @@ export async function carregarBaixasAprovadas(chaves = []) {
     const unicas = [...new Set(chaves.filter(Boolean))];
     for (let i = 0; i < unicas.length; i += LOTE) {
       const { data, error } = await client.from('entrega_baixas_manuais')
-        .select('chave, data_entrega, decidido_em, decidido_por')
+        .select('chave, fatura_id, data_entrega, decidido_em, decidido_por')
         .eq('status', STATUS_BAIXA.APROVADO)
         .in('chave', unicas.slice(i, i + LOTE));
       if (error) throw error;

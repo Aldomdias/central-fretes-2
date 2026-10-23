@@ -4,7 +4,7 @@ import RoboProgressoAmd from './RoboProgressoAmd';
 import { exportarExcelFormatado } from '../utils/exportarExcelFormatado';
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { listarControleBoletos } from '../services/boletoControleService';
-import { aprovarLaudosRobo, DECISAO, gravarPreferenciaPesoMaisProximo, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo, buscarTodasPaginas, laudoResolvidoFora } from '../services/auditorRoboService';
+import { aprovarLaudosRobo, DECISAO, gravarPreferenciaPesoMaisProximo, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo, buscarTodasPaginas, laudoResolvidoFora, faturaPaga } from '../services/auditorRoboService';
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
@@ -24,7 +24,7 @@ const ETAPAS = [
   { id: 'erp', rotulo: 'Liberadas, aguardando ERP', cor: '#c2410c', acao: true, dica: 'Liberadas para pagamento; falta enviar ao ERP.' },
   { id: 'boleto', rotulo: 'Aguardando boleto', cor: '#0369a1', acao: true, dica: 'No ERP; falta o boleto na pasta do financeiro.' },
   { id: 'tratada', rotulo: 'Tratadas fora do robo', cor: '#64748b', acao: false, dica: 'Laudo ou revisao ja resolvido por fora: pela tela da fatura, ja lancado no ERP (partida/lancamento) ou pago.' },
-  { id: 'concluida', rotulo: '100% concluidas', cor: '#14733b', acao: false, dica: 'Gestao, ERP e boleto concluidos.' },
+  { id: 'concluida', rotulo: '100% concluidas', cor: '#14733b', acao: false, dica: 'Gestao, ERP e boleto concluidos, ou fatura ja paga.' },
 ];
 const ETAPA = Object.fromEntries(ETAPAS.map((e) => [e.id, e]));
 
@@ -33,6 +33,8 @@ function etapaDe(e, f, boletoIds) {
   if (e.acao_executada && e.decisao === DECISAO.ENVIAR_LAUDO) return 'transportadora';
   if (e.acao_executada) {
     if (!LIBERADAS.has(f.status)) return ['CANCELADA', 'SUBSTITUIDA'].includes(f.status) ? null : 'gestao';
+    // Paga: ERP e boleto ja passaram (pagamento so sai com os dois).
+    if (faturaPaga(f)) return 'concluida';
     if (!f.data_envio_erp) return 'erp';
     if (!boletoIds.has(String(f.id))) return 'boleto';
     return 'concluida';

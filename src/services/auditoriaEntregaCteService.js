@@ -114,6 +114,25 @@ export async function buscarStatusEntregaCtes(registros = []) {
     baixas.forEach((linha, id) => {
       resultado.set(id, { status: STATUS_ENTREGA.ENTREGUE, dataEntrega: linha.data_entrega || linha.decidido_em || null, origem: ORIGEM_BAIXA_MANUAL });
     });
+    // Baixa feita quando a linha da fatura so tinha o NUMERO do CT-e (sem chave) fica gravada pelo numero; depois a
+    // chave e vinculada pela base e o CT-e passa a ser procurado pela chave. Tenta tambem pelo numero, mas so vale
+    // baixa da MESMA fatura (numero de CT-e se repete entre transportadoras).
+    const porNumero = new Map();
+    registros.forEach((r) => {
+      const id = chaveEntregaRegistro(r);
+      const numero = String(r.numero_cte || '').trim();
+      if (id && numero && numero !== id && r.fatura_id && resultado.get(id)?.status !== STATUS_ENTREGA.ENTREGUE) {
+        porNumero.set(numero, [...(porNumero.get(numero) || []), { id, faturaId: String(r.fatura_id) }]);
+      }
+    });
+    if (porNumero.size) {
+      const baixasNumero = await carregarBaixasAprovadas([...porNumero.keys()]);
+      baixasNumero.forEach((linha, numero) => {
+        (porNumero.get(numero) || []).filter((alvo) => alvo.faturaId === String(linha.fatura_id || '')).forEach(({ id }) => {
+          resultado.set(id, { status: STATUS_ENTREGA.ENTREGUE, dataEntrega: linha.data_entrega || linha.decidido_em || null, origem: ORIGEM_BAIXA_MANUAL });
+        });
+      });
+    }
   }
   return resultado;
 }

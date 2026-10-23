@@ -33,7 +33,9 @@ export const dataEntradaFatura = (f) => {
 export const STATUS_ROBO_AUDITA = ['RECEBIDA', 'PRE_AUDITADA_VERUM', 'REAUDITADA_CENTRAL', 'COM_DIVERGENCIA'];
 
 const STATUS_PAGAS = ['PAGA', 'PAGA_COM_DESCONTO', 'PAGA_COM_DIVERGENCIA'];
-export const faturaPaga = (f = {}) => STATUS_PAGAS.includes(f.status) || Boolean(f.data_pagamento) || Number(f.valor_pago || 0) > 0;
+// Paga: status pago, data/valor de pagamento ou partida de compensacao (documento "200..."; o "190..." e so lancamento).
+export const faturaPaga = (f = {}) => STATUS_PAGAS.includes(f.status) || Boolean(f.data_pagamento) || Number(f.valor_pago || 0) > 0
+  || String(f.partida || '').trim().startsWith('200');
 export const faturaLancadaErp = (f = {}) => Boolean(f.partida || f.lancamento_financeiro);
 // Laudo do robo ja resolvido por fora: baixado pelo auditor (modo TRATADA_FORA); laudo ainda nao enviado e a fatura ja
 // tem partida/lancamento/pagamento; ou laudo enviado e a fatura ja foi paga. Sai das listas de laudo e das reavaliacoes.

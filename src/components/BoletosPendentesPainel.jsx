@@ -1,3 +1,4 @@
+import { faturaPaga } from '../services/auditorRoboService';
 import { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { carregarSessao } from '../utils/authLocal';
@@ -38,7 +39,8 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
   useEffect(() => { recarregar(); }, []);
 
   const porFatura = useMemo(() => new Map(controle.map((c) => [String(c.fatura_id), c])), [controle]);
-  const exigem = useMemo(() => (faturas || []).filter((f) => STATUS_EXIGE_BOLETO.has(f.status)), [faturas]);
+  // Fatura ja paga (partida/pagamento gravado) nao espera mais boleto, mesmo que o status ainda nao tenha virado PAGA.
+  const exigem = useMemo(() => (faturas || []).filter((f) => STATUS_EXIGE_BOLETO.has(f.status) && !faturaPaga(f)), [faturas]);
   const termo = norm(busca);
   const filtra = (f) => !termo || [f.numero_fatura, f.transportadora, f.auditor_nome].some((v) => norm(v).includes(termo));
 
