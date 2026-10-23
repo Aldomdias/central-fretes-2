@@ -28108,6 +28108,43 @@ function emailDoAuditor(fatura, mapa) {
 }
 async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = /* @__PURE__ */ new Map(), usuario = "Robo (automatico)", origem = "automatico", anterior = null, aoProgredir = () => {
 }, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = false } = {}) {
+  if (faturaPaga(f) || faturaLancadaErp(f)) {
+    const agora2 = (/* @__PURE__ */ new Date()).toISOString();
+    const doc = [f.partida ? `partida ${f.partida}` : "", f.lancamento_financeiro ? `lancamento ${f.lancamento_financeiro}` : ""].filter(Boolean).join(", ");
+    const aviso = `Ja ${faturaPaga(f) ? "paga" : "lancada no financeiro"} ao analisar${doc ? ` (${doc})` : ""}: tratada por fora do robo.`;
+    let decisao = anterior?.decisao;
+    let motivoRobo = anterior?.motivo || "";
+    let descontar = Number(anterior?.valor_descontar || 0);
+    if (!anterior) {
+      const resumo2 = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs, pesoMaisProximo });
+      const c2 = classificarFatura(resumo2, Boolean(f.auditoria_considerar_menor));
+      decisao = c2.decisao;
+      motivoRobo = c2.motivo;
+      descontar = c2.descontar;
+    }
+    const registro2 = {
+      fatura_id: String(f.id),
+      numero_fatura: f.numero_fatura,
+      transportadora: f.transportadora,
+      modo: "TRATADA_FORA",
+      decisao: decisao || DECISAO.REVISAO_AUDITOR,
+      motivo: `${aviso}${motivoRobo ? ` Robo: ${String(motivoRobo).replace(/^Ja (paga|lancada no financeiro)[^:]*: tratada por fora do robo\.\s*(Robo:\s*)?/, "")}` : ""}`,
+      valor_fatura: Number(f.valor_fatura || 0),
+      valor_descontar: descontar,
+      auditor_nome: f.auditor_nome || "",
+      auditor_email: emailDoAuditor(f, emailsAuditores),
+      destinatarios: "",
+      copia: "",
+      acao_executada: true,
+      executado_por: usuario,
+      executado_em: agora2
+    };
+    if (anterior) {
+      registro2.reavaliado_em = agora2;
+      registro2.tentativas = Number(anterior.tentativas || 1) + 1;
+    }
+    return registro2;
+  }
   const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs, pesoMaisProximo });
   const c = classificarFatura(resumo, Boolean(f.auditoria_considerar_menor));
   let enviada = false;

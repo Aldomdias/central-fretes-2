@@ -297,7 +297,7 @@ export default function AuditorRobo() {
     // Laudos que o robo enviou por e-mail (cada envio grava o mesmo horario em todas as faturas do e-mail).
     const laudosEmail = lista.filter((e) => e.modo === 'EMAIL_ENVIADO');
     const emailsEnviados = new Set(laudosEmail.map((e) => `${e.transportadora}|${e.executado_em}`)).size;
-    const tratadas = lista.filter((e) => resolvidoFora(e) || (!e.acao_executada && [DECISAO.ENVIAR_LAUDO, DECISAO.REVISAO_AUDITOR].includes(e.decisao) && !emAuditoria(e) && !laudosEnviados.includes(e)));
+    const tratadas = lista.filter((e) => e.modo === 'TRATADA_FORA' || resolvidoFora(e) || (!e.acao_executada && [DECISAO.ENVIAR_LAUDO, DECISAO.REVISAO_AUDITOR].includes(e.decisao) && !emAuditoria(e) && !laudosEnviados.includes(e)));
     const causa = { semCalculo: 0, semEntrega: 0, outros: 0 };
     revisar.forEach((e) => {
       const m = String(e.motivo || '').toLowerCase();

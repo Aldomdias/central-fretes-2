@@ -13,7 +13,7 @@ import { entrarCacheCalculo, sairCacheCalculo } from '../services/freteDatabaseS
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { normalizarChaveCte } from './auditoriaFretesDomain';
 import { montarCorrecoesCalculoFatura, numeroValorNfAuditoria, numeroPesoAuditoria, escolherMaiorPeso } from './correcoesCalculoFatura';
-import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas, laudoResolvidoFora } from '../services/auditorRoboService';
+import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas, laudoResolvidoFora, faturaPaga, faturaLancadaErp } from '../services/auditorRoboService';
 
 // Escopo do cache das tabelas de frete (ver freteDatabaseService): abrir antes de um lote e fechar no finally.
 export { entrarCacheCalculo as iniciarCacheCalculoRobo, sairCacheCalculo as encerrarCacheCalculoRobo };
@@ -265,6 +265,33 @@ export function emailDoAuditor(fatura, mapa) {
 // registro pronto para gravar em auditor_robo_execucoes. Usado pelo robo na nuvem e pelo botao.
 // anterior = registro anterior da fatura (reavaliacao), para manter/zerar a aprovacao do auditor.
 export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = new Map(), usuario = 'Robo (automatico)', origem = 'automatico', anterior = null, aoProgredir = () => {}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = false } = {}) {
+  // Ja tem partida/lancamento (ou ja foi paga): o financeiro ja tratou por fora. O robo nao envia nada (gestao/laudo):
+  // sai das listas direto ("Tratadas fora do robo", ou concluida se paga). Guarda o que o robo teria encontrado
+  // (desconto, sem calculo, entrega) para medir o que esta passando por fora: fatura nova e apurada so para
+  // registro; com analise anterior, mantem a decisao/motivo/desconto anteriores.
+  if (faturaPaga(f) || faturaLancadaErp(f)) {
+    const agora = new Date().toISOString();
+    const doc = [f.partida ? `partida ${f.partida}` : '', f.lancamento_financeiro ? `lancamento ${f.lancamento_financeiro}` : ''].filter(Boolean).join(', ');
+    const aviso = `Ja ${faturaPaga(f) ? 'paga' : 'lancada no financeiro'} ao analisar${doc ? ` (${doc})` : ''}: tratada por fora do robo.`;
+    let decisao = anterior?.decisao;
+    let motivoRobo = anterior?.motivo || '';
+    let descontar = Number(anterior?.valor_descontar || 0);
+    if (!anterior) {
+      const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs, pesoMaisProximo });
+      const c = classificarFatura(resumo, Boolean(f.auditoria_considerar_menor));
+      decisao = c.decisao; motivoRobo = c.motivo; descontar = c.descontar;
+    }
+    const registro = {
+      fatura_id: String(f.id), numero_fatura: f.numero_fatura, transportadora: f.transportadora,
+      modo: 'TRATADA_FORA', decisao: decisao || DECISAO.REVISAO_AUDITOR,
+      motivo: `${aviso}${motivoRobo ? ` Robo: ${String(motivoRobo).replace(/^Ja (paga|lancada no financeiro)[^:]*: tratada por fora do robo\.\s*(Robo:\s*)?/, '')}` : ''}`,
+      valor_fatura: Number(f.valor_fatura || 0), valor_descontar: descontar,
+      auditor_nome: f.auditor_nome || '', auditor_email: emailDoAuditor(f, emailsAuditores),
+      destinatarios: '', copia: '', acao_executada: true, executado_por: usuario, executado_em: agora,
+    };
+    if (anterior) { registro.reavaliado_em = agora; registro.tentativas = Number(anterior.tentativas || 1) + 1; }
+    return registro;
+  }
   const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs, pesoMaisProximo });
   const c = classificarFatura(resumo, Boolean(f.auditoria_considerar_menor));
   let enviada = false;

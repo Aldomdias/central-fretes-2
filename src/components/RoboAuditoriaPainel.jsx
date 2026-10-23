@@ -30,7 +30,10 @@ const ETAPAS = [
 const ETAPA = Object.fromEntries(ETAPAS.map((e) => [e.id, e]));
 
 function etapaDe(e, f, boletoIds) {
-  if (laudoResolvidoFora(e, f)) return 'tratada';
+  // Robo encontrou a fatura ja com partida/lancamento ao analisar: tratada por fora (ou concluida, se paga).
+  if (e.modo === 'TRATADA_FORA' && f) return faturaPaga(f) ? 'concluida' : 'tratada';
+  // Laudo resolvido por fora: paga vai para as concluidas (pagas); so com partida/lancamento fica em "Tratadas fora do robo".
+  if (laudoResolvidoFora(e, f)) return faturaPaga(f) ? 'concluida' : 'tratada';
   if (e.acao_executada && e.decisao === DECISAO.ENVIAR_LAUDO) return 'transportadora';
   if (e.acao_executada) {
     if (!LIBERADAS.has(f.status)) return ['CANCELADA', 'SUBSTITUIDA'].includes(f.status) ? null : 'gestao';
@@ -62,6 +65,21 @@ const TIPOS_REVISAO = [
   { id: 'sem_calculo', rotulo: 'Sem calculo — outros motivos', cor: '#b91c1c', dica: 'CT-e na base mas sem resultado de calculo (tabela, rota, erro no calculo).' },
   { id: 'outros', rotulo: 'Outros', cor: '#475569', dica: 'Fatura sem CT-es vinculados ou outro motivo.' },
 ];
+// "Tratadas fora do robo": o que o robo tinha encontrado antes de a fatura seguir por fora (para medir o que escapa).
+const TIPOS_TRATADA = [
+  { id: 'divergente', rotulo: 'Valor divergente (laudo)', cor: '#b45309', dica: 'O robo tinha desconto a cobrar e a fatura seguiu por fora.' },
+  { id: 'sem_calculo', rotulo: 'Sem calculo', cor: '#b91c1c', dica: 'CT-e sem resultado de calculo (tabela, rota, erro).' },
+  { id: 'nao_localizado', rotulo: 'CT-e nao localizado', cor: '#7c3aed', dica: 'CT-e sem chave, nao encontrado na base.' },
+  { id: 'entrega', rotulo: 'So entrega', cor: '#0e7490', dica: 'Calculo ok; faltava comprovar entrega.' },
+  { id: 'ok', rotulo: 'Sem divergencia', cor: '#14733b', dica: 'O robo nao tinha encontrado problema.' },
+  { id: 'outros', rotulo: 'Outros', cor: '#475569', dica: 'Sem analise do robo ou outro motivo.' },
+];
+function tipoTratada(e = {}) {
+  if (e.decisao === DECISAO.ENVIAR_LAUDO || Number(e.valor_descontar || 0) > 0.01) return 'divergente';
+  if (e.decisao === DECISAO.ENVIAR_APROVACAO) return 'ok';
+  const t = tipoRevisao(e.motivo);
+  return t;
+}
 function tipoRevisao(motivo) {
   const m = String(motivo || '').toLowerCase();
   if (m.includes('nao localizado')) return 'nao_localizado';
@@ -136,10 +154,13 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
     .sort((a, b) => ETAPAS.findIndex((x) => x.id === a.etapa) - ETAPAS.findIndex((x) => x.id === b.etapa)
       || String(a.e.executado_em).localeCompare(String(b.e.executado_em)));
   // Subcards de "Para revisar": separa por tipo de problema para tratar um de cada vez.
-  const mostrarMotivos = etapaSel === 'revisar' && visiveisBase.length > 0;
-  const motivoAtivo = mostrarMotivos ? motivoSel : '';
-  const contMotivo = (id) => visiveisBase.filter((l) => tipoRevisao(l.e.motivo) === id).length;
-  const visiveis = motivoAtivo ? visiveisBase.filter((l) => tipoRevisao(l.e.motivo) === motivoAtivo) : visiveisBase;
+  const mostrarMotivos = ['revisar', 'tratada'].includes(etapaSel) && visiveisBase.length > 0;
+  const tiposSub = etapaSel === 'tratada' ? TIPOS_TRATADA : TIPOS_REVISAO;
+  const tipoDe = (l) => (etapaSel === 'tratada' ? tipoTratada(l.e) : tipoRevisao(l.e.motivo));
+  const motivoAtivo = mostrarMotivos && tiposSub.some((t) => t.id === motivoSel) ? motivoSel : '';
+  const contMotivo = (id) => visiveisBase.filter((l) => tipoDe(l) === id).length;
+  const somaDescontar = (id) => visiveisBase.filter((l) => tipoDe(l) === id).reduce((a, l) => a + Number(l.e.valor_descontar || 0), 0);
+  const visiveis = motivoAtivo ? visiveisBase.filter((l) => tipoDe(l) === motivoAtivo) : visiveisBase;
 
   // Excel formatado com exatamente o que a tela mostra (filtros de etapa, auditor e busca).
   const [exportando, setExportando] = useState(false);
@@ -478,9 +499,11 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
 
       {mostrarMotivos && (
         <div>
-          <div style={{ fontWeight: 700, fontSize: 13, margin: '4px 0 6px' }}>Para revisar — por tipo de problema (dentro dos filtros)</div>
+          <div style={{ fontWeight: 700, fontSize: 13, margin: '4px 0 6px' }}>
+            {etapaSel === 'tratada' ? 'Tratadas fora do robo — o que o robo tinha encontrado (dentro dos filtros)' : 'Para revisar — por tipo de problema (dentro dos filtros)'}
+          </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            {TIPOS_REVISAO.map((t) => {
+            {tiposSub.map((t) => {
               const qtd = contMotivo(t.id);
               if (!qtd && t.id === 'outros') return null;
               const ativo = motivoAtivo === t.id;
@@ -488,6 +511,9 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
                 <button key={t.id} type="button" title={t.dica} style={{ ...cartao(ativo, t.cor), opacity: qtd ? 1 : 0.55 }} onClick={() => setMotivoSel(ativo ? '' : t.id)}>
                   <div style={{ fontSize: 12, opacity: 0.9 }}>{t.rotulo}</div>
                   <div style={{ fontSize: 26, fontWeight: 800, color: ativo ? '#fff' : t.cor }}>{qtd}</div>
+                  {t.id === 'divergente' && somaDescontar(t.id) > 0 && (
+                    <div style={{ fontSize: 11, opacity: 0.9 }}>{dinheiro(somaDescontar(t.id))} a descontar</div>
+                  )}
                 </button>
               );
             })}
