@@ -399,6 +399,13 @@ function detalhesCalculoHtmlFatura(item = {}, opts = {}) {
     </div>
   </div>`;
 }
+// Numeros de fatura colados (um por linha, virgula, ponto e virgula ou espaco): qualquer tamanho (ex.: 4592), sem
+// zeros a esquerda. Diferente do filtro de CT-e, que exige 5+ digitos para nao pegar lixo.
+function extrairNumerosFatura(texto = '') {
+  return [...new Set(String(texto || '').split(/[\s,;]+/).map((p) => p.replace(/\D/g, '').replace(/^0+(?=\d)/, '')).filter(Boolean))];
+}
+const numeroFaturaComparavel = (numero) => String(numero || '').replace(/\D/g, '').replace(/^0+(?=\d)/, '');
+
 function extrairIdentificadoresCte(texto = '') {
   return [...new Set(String(texto || '').match(/\d{5,}/g) || [])];
 }
@@ -4199,8 +4206,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     setToleranciaAuditoria(proxima);
     localStorage.setItem(AUDITORIA_TOLERANCIA_KEY, JSON.stringify(proxima));
   };
-  const numerosFaturasLote = useMemo(() => extrairIdentificadoresCte(filtroFaturasLote), [filtroFaturasLote]);
-  const numerosFaturasLoteSet = useMemo(() => new Set(numerosFaturasLote.map((item) => normalizarChaveCte(item))), [numerosFaturasLote]);
+  const numerosFaturasLote = useMemo(() => extrairNumerosFatura(filtroFaturasLote), [filtroFaturasLote]);
+  const numerosFaturasLoteSet = useMemo(() => new Set(numerosFaturasLote), [numerosFaturasLote]);
   const dentroVisaoFatura = (fatura) => {
     if (visaoFatura === 'todas') return true;
     const emailAuditor = String(fatura.auditor_email || '').trim().toLowerCase();
@@ -4340,7 +4347,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       // Varias palavras (ex.: "328 dex"): todas precisam aparecer, em qualquer ordem.
       return filtro.toLowerCase().split(/\s+/).filter(Boolean).every((parte) => texto.includes(parte));
     },
-    lote: (fatura) => !numerosFaturasLoteSet.size || numerosFaturasLoteSet.has(normalizarChaveCte(fatura.numero_fatura)),
+    lote: (fatura) => !numerosFaturasLoteSet.size || numerosFaturasLoteSet.has(numeroFaturaComparavel(fatura.numero_fatura)),
     origem: (fatura) => {
       if (!origemFiltroFatura) return true;
       const origemResumo = resumoOrigensFaturas.get(fatura.id);
