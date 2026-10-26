@@ -66,15 +66,20 @@ export function extrairDadosNfse(linhas = []) {
     const m = i >= 0 ? (L[i + 1] || '').match(/^\s*(\d+)\b/) : null;
     if (m) dados.numeroNfse = String(Number(m[1]));
   }
-  dados.nf = nfComSufixoF(dados.numeroNfse);
+  if (!dados.numeroNfse) {
+    // modelo das prefeituras (ex.: Ginfes): o numero vem sozinho numa das primeiras linhas
+    const m = L.slice(0, 8).map((l) => l.trim().match(/^(\d{1,9})$/)).find(Boolean);
+    if (m) dados.numeroNfse = String(Number(m[1]));
+  }
+  dados.nf =nfComSufixoF(dados.numeroNfse);
 
   // data da emissao da NFS-e: primeira data seguida de hora (a competencia vem sem hora)
   const d = todo.match(/(\d{2})\/(\d{2})\/(\d{4})\s+\d{2}:\d{2}(?::\d{2})?/);
   if (d) dados.dataEmissao = `${d[3]}-${d[2]}-${d[1]}`;
 
   // prestador (nome e, se faltar a chave, o CNPJ) e tomador (CNPJ)
-  const iPrest = U.findIndex((l) => l.includes('PRESTADOR / FORNECEDOR'));
-  const iTom = U.findIndex((l) => l.includes('TOMADOR / ADQUIRENTE'));
+  const iPrest = U.findIndex((l) => l.includes('PRESTADOR / FORNECEDOR') || /^PRESTADOR DE SERVICO\b/.test(l.trim()));
+  const iTom = U.findIndex((l) => l.includes('TOMADOR / ADQUIRENTE') || /^TOMADOR DE SERVICO\b/.test(l.trim()));
   const cnpjApos = (inicio) => {
     if (inicio < 0) return '';
     for (let k = inicio; k < Math.min(inicio + 4, L.length); k += 1) {
@@ -89,6 +94,11 @@ export function extrairDadosNfse(linhas = []) {
   const iNomePrest = U.findIndex((l, k) => k > iPrest && iPrest >= 0 && l.includes('NOME / NOME EMPRESARIAL'));
   if (iNomePrest >= 0 && L[iNomePrest + 1]) dados.transportadora = L[iNomePrest + 1].split(SEP)[0].trim();
 
+  if (!dados.transportadora && iPrest >= 0) {
+    const k = U.findIndex((l, n) => n > iPrest && n < iPrest + 6 && l.includes('NOME/RAZAO SOCIAL'));
+    if (k >= 0) dados.transportadora = L[k].replace(/^[^:]*:/, '').split(SEP).join(' ').replace(/\s+/g, ' ').trim();
+  }
+
   // valor da operacao/servico (= valor bruto da nota): primeiro R$ da linha abaixo do titulo
   const iVal = U.findIndex((l) => l.includes('VALOR DA OPERACAO'));
   if (iVal >= 0) {
@@ -96,6 +106,13 @@ export function extrairDadosNfse(linhas = []) {
       const m = L[k].match(RE_VALOR);
       if (m) { dados.valor = paraNumero(m[1]); break; }
     }
+  }
+
+  if (!(dados.valor > 0)) {
+    // modelo das prefeituras: "Valor do Servico ¦ 23,68"
+    const k = U.findIndex((l) => l.includes('VALOR DO SERVICO'));
+    const todos = k >= 0 ? L[k].match(/\d{1,3}(?:\.\d{3})*,\d{2}/g) : null;
+    if (todos) dados.valor = paraNumero(todos[todos.length - 1]);
   }
 
   if (!dados.numeroNfse) faltando.push('numero da NFS-e');
