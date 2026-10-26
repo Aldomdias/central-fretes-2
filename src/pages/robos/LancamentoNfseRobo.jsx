@@ -84,6 +84,7 @@ export default function LancamentoNfseRobo() {
   const refResultado = useRef(null);
   const refPdf = useRef(null);
   const [falhasPdf, setFalhasPdf] = useState([]);
+  const [ccEdit, setCcEdit] = useState({}); // texto do C.Custo sendo digitado, por linha
   const refGrade = useRef(null);
 
   const indices = useMemo(() => criarIndices(parametros), [parametros]);
@@ -113,6 +114,27 @@ export default function LancamentoNfseRobo() {
     });
     return porEmp;
   }, [parametros.escritorios]);
+
+  // C.Custo (titulo) -> [{ emp, escr }]: digitar o centro de custo preenche o escritorio de vendas
+  const ccParaEscr = useMemo(() => {
+    const mapa = new Map();
+    (parametros.escritorios || []).forEach((e) => {
+      const conc = String(e.conc);
+      const k = String(e.titulo || '').toUpperCase();
+      if (!mapa.has(k)) mapa.set(k, []);
+      mapa.get(k).push({ emp: conc.slice(0, 4), escr: conc.slice(4) });
+    });
+    return mapa;
+  }, [parametros.escritorios]);
+
+  function digitarCentroCusto(uid, texto, emp) {
+    const valor = texto.toUpperCase().trim();
+    setCcEdit((a) => ({ ...a, [uid]: texto.toUpperCase() }));
+    const achados = ccParaEscr.get(valor) || [];
+    const certos = emp ? achados.filter((a) => a.emp === emp) : achados;
+    const escrs = [...new Set(certos.map((a) => a.escr))];
+    if (escrs.length === 1) setCampo(uid, 'escrV', escrs[0]);
+  }
 
   const comErro = linhas.filter((l) => l.erros.length);
   const prontas = linhas.filter((l) => !l.erros.length);
@@ -411,7 +433,16 @@ export default function LancamentoNfseRobo() {
                         ))}
                         <td style={calc}>{l?.emp || '—'}</td>
                         <td style={calc}>{l?.centro || '—'}</td>
-                        <td style={calc}>{l?.cc || '—'}</td>
+                        <td style={calc}>
+                          <input
+                            style={{ ...inp, width: 100 }}
+                            value={ccEdit[e.uid] ?? (l?.cc || '')}
+                            placeholder="C.Custo"
+                            title="Digite o centro de custo para preencher o EscrV sozinho"
+                            onChange={(ev) => digitarCentroCusto(e.uid, ev.target.value, l?.emp)}
+                            onBlur={() => setCcEdit((a) => { const n = { ...a }; delete n[e.uid]; return n; })}
+                          />
+                        </td>
                         <td style={td}><input style={{ ...inp, width: 92 }} value={m.pedido || ''} onChange={(ev) => editarResultado(e.uid, 'pedido', ev.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="pedido" /></td>
                         <td style={td}><input style={{ ...inp, width: 92 }} value={m.miro || ''} onChange={(ev) => editarResultado(e.uid, 'miro', ev.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="MIRO" /></td>
                         <td style={td}>
