@@ -83,6 +83,7 @@ export default function LancamentoNfseRobo() {
   const refArquivo = useRef(null);
   const refResultado = useRef(null);
   const refPdf = useRef(null);
+  const [falhasPdf, setFalhasPdf] = useState([]);
   const refGrade = useRef(null);
 
   const indices = useMemo(() => criarIndices(parametros), [parametros]);
@@ -231,27 +232,37 @@ export default function LancamentoNfseRobo() {
     try {
       const { lerNfsePdf } = await import('../../utils/robos/nfsePdf');
       const lidas = [];
-      const problemas = [];
+      const falhas = [];
       for (const arq of lista) {
         try {
-          const { dados, faltando } = await lerNfsePdf(arq);
-          if (faltando.length) problemas.push(`${arq.name}: nao achei ${faltando.join(', ')}`);
-          else lidas.push(dados);
-        } catch { problemas.push(`${arq.name}: nao consegui ler o PDF`); }
+          const { dados, faltando, semTexto } = await lerNfsePdf(arq);
+          if (semTexto) falhas.push({ arquivo: arq.name, motivo: 'PDF sem texto (imagem escaneada): digite a nota na grade', faltando: '', nf: '' });
+          else if (faltando.length) falhas.push({ arquivo: arq.name, motivo: 'Layout nao reconhecido ou campos nao encontrados', faltando: faltando.join(', '), nf: dados.nf || '' });
+          else lidas.push({ dados, arquivo: arq.name });
+        } catch (e) { falhas.push({ arquivo: arq.name, motivo: `Nao consegui abrir o PDF (${String(e?.message || e).slice(0, 60)})`, faltando: '', nf: '' }); }
       }
       const existentes = new Set(entradas.map((e) => `${e.nf}/${e.cnpjTransp}`.toUpperCase()));
       const novas = [];
-      lidas.forEach((d) => {
+      lidas.forEach(({ dados: d, arquivo }) => {
         const chave = `${d.nf}/${d.cnpjTransp}`.toUpperCase();
-        if (existentes.has(chave)) { problemas.push(`${d.nf}: ja esta na grade`); return; }
+        if (existentes.has(chave)) { falhas.push({ arquivo, motivo: 'Repetida: a nota ja esta na grade (ou em outro PDF do lote)', faltando: '', nf: d.nf }); return; }
         existentes.add(chave);
         novas.push({ nf: d.nf, transportadora: d.transportadora, cnpjTransp: d.cnpjTransp, dataEmissao: d.dataEmissao, valor: d.valor, codImp: d.codImp, cfop: d.cfop, cnpjTomador: d.cnpjTomador });
       });
+      setFalhasPdf(falhas);
       if (novas.length) acrescentar(novas, `${fmt(novas.length)} PDF(s)`);
-      if (problemas.length) setErro(`${problemas.length} PDF(s) com problema: ${problemas.join(' | ')}`);
-      else if (novas.length) setFeedback(`${fmt(novas.length)} nota(s) lida(s) do PDF. Preencha o EscrV (e a Fatura). Cod (IN/IQ) e CFOP (1933AA/2933AA) vieram da nota; confira.`);
+      const naoLidas = falhas.filter((f) => !f.motivo.startsWith('Repetida')).length;
+      const repetidas = falhas.length - naoLidas;
+      if (naoLidas) setErro(`${fmt(naoLidas)} PDF(s) nao foram lidos${repetidas ? ` e ${fmt(repetidas)} eram repetidos` : ''}. Baixe o relatorio abaixo para ver quais e por que.`);
+      else if (novas.length) setFeedback(`${fmt(novas.length)} nota(s) lida(s) do PDF${repetidas ? ` (${fmt(repetidas)} repetida(s) ignorada(s))` : ''}. Preencha o EscrV (e a Fatura). Cod (IN/IQ) e CFOP (1933AA/2933AA) vieram da nota; confira.`);
     } catch (e) { setErro(e.message || 'Nao consegui ler os PDFs.'); }
     finally { if (refPdf.current) refPdf.current.value = ''; }
+  }
+
+  // Relatorio dos PDFs que nao entraram na grade (nao lidos ou repetidos), para tratar na mao.
+  async function baixarRelatorioPdf() {
+    if (!falhasPdf.length) return;
+    await baixarXlsx('nfse-pdf-nao-lidos.xlsx', falhasPdf.map((f) => ({ Arquivo: f.arquivo, Motivo: f.motivo, 'Campos nao encontrados': f.faltando, 'NF lida': f.nf })), ['Arquivo', 'Motivo', 'Campos nao encontrados', 'NF lida']);
   }
 
   async function baixarModelo() {
@@ -335,6 +346,7 @@ export default function LancamentoNfseRobo() {
                 Ler PDFs das notas
                 <input ref={refPdf} type="file" accept=".pdf,application/pdf" multiple disabled={semTabelas} style={{ display: 'none' }} onChange={(e) => importarPdfs(e.target.files)} />
               </label>
+              {falhasPdf.length ? <button type="button" className="btn-secondary" onClick={baixarRelatorioPdf} title="Lista os PDFs que nao foram lidos ou eram repetidos, com o motivo">Baixar relatório dos PDFs não lidos ({falhasPdf.length})</button> : null}
               {entradas.length ? <button type="button" className="btn-secondary" onClick={baixarPreenchido} title="Baixa a grade em Excel para completar o que falta (ex.: EscrV) e voltar com Importar arquivo">Baixar planilha preenchida (.xlsx)</button> : null}
               <button type="button" className="btn-secondary" onClick={baixarModelo}>Baixar modelo de importação (.xlsx)</button>
               {entradas.length ? <button type="button" className="btn-secondary" onClick={limparTudo}>Limpar tudo</button> : null}

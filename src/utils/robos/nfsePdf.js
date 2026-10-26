@@ -253,5 +253,5 @@ export async function linhasDoPdf(arquivo) {
 
 export async function lerNfsePdf(arquivo) {
   const linhas = await linhasDoPdf(arquivo);
-  return extrairDadosNfse(linhas);
+  return { ...extrairDadosNfse(linhas), semTexto: linhas.length === 0 };
 }
