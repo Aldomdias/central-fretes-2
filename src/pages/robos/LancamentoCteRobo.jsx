@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ParametrosLancamentoCard from './ParametrosLancamentoCard';
-import CampoPasta, { usePastaTrabalho } from './PastaTrabalho';
+import CampoPasta, { caminhoArquivo, usePastaTrabalho } from './PastaTrabalho';
 import {
   CABECALHO_ENVIAR_CTE,
   CABECALHO_LANCAMENTO_CTE,
@@ -144,7 +144,7 @@ export default function LancamentoCteRobo() {
     if (!prontas.length) { setErro('Nao ha CT-e prontos para lancar.'); return; }
     if (comErro.length) { setErro(`${comErro.length} CT-e com pendencia. Corrija ou remova antes de gerar o script.`); return; }
     baixar('lancar-cte.vbs', () => gerarScriptCte({ linhas: linhasParaScriptCte(prontas), pasta }),
-      `Script baixado com ${fmt(prontas.length)} CT-e (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). Com o SAP aberto, de dois cliques nele. Resultado em ${pasta}\\resultado_cte.csv.`);
+      `Script baixado com ${fmt(prontas.length)} CT-e (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). Com o SAP aberto, de dois cliques nele. Resultado em ${caminhoArquivo(pasta, 'resultado_cte.csv')}.`);
   }
 
   async function importarResultado(arquivo) {
@@ -310,7 +310,7 @@ export default function LancamentoCteRobo() {
               <span style={numStyle}>4</span>
               <div>
                 <div className="panel-title" style={{ margin: 0 }}>Trazer o resultado</div>
-                <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue <code>{pasta}\resultado_cte.csv</code> para preencher pedido e MIRO; os CT-e com MIRO entram sozinhos no histórico (aba “Acompanhamento de lançamentos”). O script para no primeiro erro e diz qual CT-e falhou; ao rodar de novo pula o que já tem número.</p>
+                <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue <code>{caminhoArquivo(pasta, 'resultado_cte.csv')}</code> para preencher pedido e MIRO; os CT-e com MIRO entram sozinhos no histórico (aba “Acompanhamento de lançamentos”). O script para no primeiro erro e diz qual CT-e falhou; ao rodar de novo pula o que já tem número.</p>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <input ref={refRes} type="file" accept=".csv,.txt" onChange={(e) => importarResultado(e.target.files?.[0])} />
                   <button type="button" className="btn-secondary" onClick={baixarEnviar}>Baixar resumo (Enviar) .xlsx</button>

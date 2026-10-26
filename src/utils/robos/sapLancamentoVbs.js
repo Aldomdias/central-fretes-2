@@ -14,7 +14,10 @@ export const PASTA_NFSE = 'C:\\Temp\\LancamentoNFSe';
 export const PASTA_CTE = 'C:\\Temp\\LancamentoCTe';
 
 // Caminho digitado pelo usuario -> caminho limpo (sem aspas, sem barra no fim); vazio volta ao padrao.
+export const PERGUNTAR_PASTA = '*perguntar*';
+
 export function normalizarPasta(texto, padrao) {
+  if (texto === PERGUNTAR_PASTA) return PERGUNTAR_PASTA;
   const limpo = String(texto ?? '').trim().replace(/^"+|"+$/g, '').replace(/\//g, '\\').replace(/\\+$/, '');
   return limpo && limpo.length > 2 ? limpo : padrao;
 }
@@ -73,7 +76,7 @@ function utilitarios({ pasta, arquivoResultado }) {
     'End Sub',
     '',
     'Sub GravarResultado(id, tipo, valor)',
-    `    Dim f : Set f = fso.OpenTextFile(${vbs(`${pasta}\\${arquivoResultado}`)}, 8, True)`,
+    `    Dim f : Set f = fso.OpenTextFile(pastaLog & ${vbs(`\\${arquivoResultado}`)}, 8, True)`,
     '    f.WriteLine id & ";" & tipo & ";" & valor',
     '    f.Close',
     'End Sub',
@@ -123,6 +126,14 @@ function utilitarios({ pasta, arquivoResultado }) {
     '    If pai <> "" Then CriarPasta pai',
     '    fso.CreateFolder p',
     'End Sub',
+    '',
+    "' Sem pasta definida na tela: abre a janela do Windows para a pessoa escolher onde gravar o resultado e o log.",
+    'Function EscolherPasta()',
+    '    Dim sh, f : Set sh = CreateObject("Shell.Application")',
+    '    Set f = sh.BrowseForFolder(0, "Escolha a pasta onde o robo vai gravar o resultado e o log", &H41, 0)',
+    '    If f Is Nothing Then WScript.Quit 1',
+    '    EscolherPasta = f.Self.Path',
+    'End Function',
     '',
     'Sub AguardarSap()',
     '    On Error Resume Next',
@@ -206,7 +217,7 @@ export function gerarScriptNfse({ linhas = [], pasta = PASTA_NFSE } = {}) {
     'Dim fso, logf, sapGuiAuto, appl, con, session, L(), k, kk, n, pend, r, Pedidos, Miros',
     'Dim tentativas, CNPJ, OrgCompra, Centro, Valor, C_Custo, CodImposto, NrPedido',
     'Dim Empresa, DtaEmissao, DtaVencimento, Referencia, Ctg, CFOP, nrMiro, rotulo',
-    `Dim passo, pastaLog : pastaLog = ${vbs(pasta)}`,
+    `Dim passo, pastaLog : pastaLog = ${vbs(pasta === PERGUNTAR_PASTA ? '' : pasta)}`,
     '',
     ...utilitarios({ pasta, arquivoResultado: 'resultado_nfse.csv' }),
     '',
@@ -256,8 +267,9 @@ export function gerarScriptNfse({ linhas = [], pasta = PASTA_NFSE } = {}) {
     'Next',
     '',
     'Set fso = CreateObject("Scripting.FileSystemObject")',
-    `CriarPasta ${vbs(pasta)}`,
-    `Set logf = fso.OpenTextFile(${vbs(`${pasta}\\log_lancamento_nfse.txt`)}, 8, True)`,
+    'If pastaLog = "" Then pastaLog = EscolherPasta()',
+    'CriarPasta pastaLog',
+    `Set logf = fso.OpenTextFile(pastaLog & ${vbs('\\log_lancamento_nfse.txt')}, 8, True)`,
     'Log "Inicio: " & n & " nota(s)."',
     'Conectar',
     '',
@@ -314,7 +326,7 @@ export function gerarScriptCte({ linhas = [], pasta = PASTA_CTE } = {}) {
     'Dim fso, logf, sapGuiAuto, appl, con, session, L(), k, kk, n, pend, r, Pedidos, Miros',
     'Dim tentativas, Valor, aliquota, NrPedido, nrMiro, rotulo, DtaEmissao, DtaVencimento',
     'Dim v_emp, v_cte, v_bruto, v_prot, v_cnpj, v_centro, v_cc, v_imp, v_pedido, v_tp, v_c8, v_dv, v_centro1',
-    `Dim passo, pastaLog : pastaLog = ${vbs(pasta)}`,
+    `Dim passo, pastaLog : pastaLog = ${vbs(pasta === PERGUNTAR_PASTA ? '' : pasta)}`,
     '',
     ...utilitarios({ pasta, arquivoResultado: 'resultado_cte.csv' }),
     '',
@@ -355,8 +367,9 @@ export function gerarScriptCte({ linhas = [], pasta = PASTA_CTE } = {}) {
     'Next',
     '',
     'Set fso = CreateObject("Scripting.FileSystemObject")',
-    `CriarPasta ${vbs(pasta)}`,
-    `Set logf = fso.OpenTextFile(${vbs(`${pasta}\\log_lancamento_cte.txt`)}, 8, True)`,
+    'If pastaLog = "" Then pastaLog = EscolherPasta()',
+    'CriarPasta pastaLog',
+    `Set logf = fso.OpenTextFile(pastaLog & ${vbs('\\log_lancamento_cte.txt')}, 8, True)`,
     'Log "Inicio: " & n & " CT-e."',
     'Conectar',
     '',

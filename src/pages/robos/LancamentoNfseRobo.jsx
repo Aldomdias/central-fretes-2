@@ -28,7 +28,7 @@ import { PASTA_NFSE, gerarScriptNfse } from '../../utils/robos/sapLancamentoVbs'
 import { registrarLancamentos } from '../../services/robosLancamentosService';
 import { carregarSessao } from '../../utils/authLocal';
 import ParametrosLancamentoCard from './ParametrosLancamentoCard';
-import CampoPasta, { usePastaTrabalho } from './PastaTrabalho';
+import CampoPasta, { caminhoArquivo, usePastaTrabalho } from './PastaTrabalho';
 
 const CHAVE_LOTE = 'central_fretes_robo_nfse_lote_v2';
 
@@ -228,7 +228,7 @@ export default function LancamentoNfseRobo() {
     if (comErro.length) { setErro(`${comErro.length} nota(s) com pendencia. Corrija ou remova antes de gerar o script.`); return; }
     try {
       baixarArquivo('lancar-nfse.vbs', gerarScriptNfse({ linhas: linhasParaScriptNfse(prontas), pasta }));
-      setFeedback(`Script baixado com ${fmt(prontas.length)} nota(s) (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). Com o SAP aberto e logado, de dois cliques nele. O resultado fica em ${pasta}\\resultado_nfse.csv.`);
+      setFeedback(`Script baixado com ${fmt(prontas.length)} nota(s) (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). Com o SAP aberto e logado, de dois cliques nele. O resultado fica em ${caminhoArquivo(pasta, 'resultado_nfse.csv')}.`);
     } catch (e) { setErro(e.message); }
   }
 
@@ -407,7 +407,7 @@ export default function LancamentoNfseRobo() {
           <span style={numStyle}>3</span>
           <div>
             <div className="panel-title" style={{ margin: 0 }}>Trazer o resultado e enviar</div>
-            <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue o arquivo <code>{pasta}\resultado_nfse.csv</code> para preencher os números de pedido e MIRO. As notas com MIRO entram sozinhas no histórico (aba “Acompanhamento de lançamentos”). Em seguida baixe o resumo para envio.</p>
+            <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue o arquivo <code>{caminhoArquivo(pasta, 'resultado_nfse.csv')}</code> para preencher os números de pedido e MIRO. As notas com MIRO entram sozinhas no histórico (aba “Acompanhamento de lançamentos”). Em seguida baixe o resumo para envio.</p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <input ref={refResultado} type="file" accept=".csv,.txt" onChange={(e) => importarResultado(e.target.files?.[0])} />
               <button type="button" className="btn-secondary" onClick={baixarEnviar}>Baixar resumo (Enviar) .xlsx</button>
