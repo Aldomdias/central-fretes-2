@@ -253,33 +253,41 @@ export default function LancamentoNfseRobo() {
     setErro(''); setFeedback('');
     try {
       const { lerNfsePdf } = await import('../../utils/robos/nfsePdf');
+      const { ocrDaPagina, encerrarOcr } = await import('../../utils/robos/nfseOcr');
+      let ocrUsado = 0;
+      const ocr = async (pdf, n) => {
+        ocrUsado += 1;
+        setFeedback(`Lendo por OCR a pagina ${n} (PDF sem texto)... pode levar alguns segundos por pagina.`);
+        return ocrDaPagina(pdf, n);
+      };
       const lidas = [];
       const falhas = [];
       for (const arq of lista) {
         try {
-          const { totalPaginas, notas } = await lerNfsePdf(arq);
+          const { totalPaginas, notas } = await lerNfsePdf(arq, { ocr });
           for (const n of notas) {
             const nome = totalPaginas > 1 ? `${arq.name} (pag. ${n.pagina})` : arq.name;
             if (n.semTexto) falhas.push({ arquivo: nome, motivo: 'PDF sem texto (imagem escaneada): digite a nota na grade', faltando: '', nf: '' });
             else if (n.faltando.length) falhas.push({ arquivo: nome, motivo: 'Layout nao reconhecido ou campos nao encontrados', faltando: n.faltando.join(', '), nf: n.dados.nf || '' });
-            else lidas.push({ dados: n.dados, arquivo: nome });
+            else lidas.push({ dados: n.dados, arquivo: nome, ocr: n.ocr });
           }
         } catch (e) { falhas.push({ arquivo: arq.name, motivo: `Nao consegui abrir o PDF (${String(e?.message || e).slice(0, 60)})`, faltando: '', nf: '' }); }
       }
       const existentes = new Set(entradas.map((e) => `${e.nf}/${e.cnpjTransp}`.toUpperCase()));
       const novas = [];
-      lidas.forEach(({ dados: d, arquivo }) => {
+      lidas.forEach(({ dados: d, arquivo, ocr: viaOcr }) => {
         const chave = `${d.nf}/${d.cnpjTransp}`.toUpperCase();
         if (existentes.has(chave)) { falhas.push({ arquivo, motivo: 'Repetida: a nota ja esta na grade (ou em outro PDF do lote)', faltando: '', nf: d.nf }); return; }
         existentes.add(chave);
-        novas.push({ nf: d.nf, transportadora: d.transportadora, cnpjTransp: d.cnpjTransp, dataEmissao: d.dataEmissao, valor: d.valor, codImp: d.codImp, cfop: d.cfop, cnpjTomador: d.cnpjTomador });
+        novas.push({ nf: d.nf, transportadora: d.transportadora, cnpjTransp: d.cnpjTransp, dataEmissao: d.dataEmissao, valor: d.valor, codImp: d.codImp, cfop: d.cfop, cnpjTomador: d.cnpjTomador, ocr: Boolean(viaOcr) });
       });
+      if (ocrUsado) await encerrarOcr();
       setFalhasPdf(falhas);
       if (novas.length) acrescentar(novas, `${fmt(novas.length)} PDF(s)`);
       const naoLidas = falhas.filter((f) => !f.motivo.startsWith('Repetida')).length;
       const repetidas = falhas.length - naoLidas;
       if (naoLidas) setErro(`${fmt(naoLidas)} PDF(s) nao foram lidos${repetidas ? ` e ${fmt(repetidas)} eram repetidos` : ''}. Baixe o relatorio abaixo para ver quais e por que.`);
-      else if (novas.length) setFeedback(`${fmt(novas.length)} nota(s) lida(s) do PDF${repetidas ? ` (${fmt(repetidas)} repetida(s) ignorada(s))` : ''}. Preencha o EscrV (e a Fatura). Cod (IN/IQ) e CFOP (1933AA/2933AA) vieram da nota; confira.`);
+      else if (novas.length) setFeedback(`${fmt(novas.length)} nota(s) lida(s) do PDF${repetidas ? ` (${fmt(repetidas)} repetida(s) ignorada(s))` : ''}. Preencha o EscrV (e a Fatura). Cod (IN/IQ) e CFOP (1933AA/2933AA) vieram da nota; confira.${novas.some((n) => n.ocr) ? ' As marcadas com OCR foram lidas por imagem: confira CNPJ e valor.' : ''}`);
     } catch (e) { setErro(e.message || 'Nao consegui ler os PDFs.'); }
     finally { if (refPdf.current) refPdf.current.value = ''; }
   }
@@ -446,6 +454,11 @@ export default function LancamentoNfseRobo() {
                         <td style={td}><input style={{ ...inp, width: 92 }} value={m.pedido || ''} onChange={(ev) => editarResultado(e.uid, 'pedido', ev.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="pedido" /></td>
                         <td style={td}><input style={{ ...inp, width: 92 }} value={m.miro || ''} onChange={(ev) => editarResultado(e.uid, 'miro', ev.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="MIRO" /></td>
                         <td style={td}>
+                          {e.ocr ? (
+                            <span style={{ color: '#b45309', marginRight: 8 }} title="Lida por OCR (imagem): confira CNPJ, data e valor com a nota">
+                              OCR: conferir <button type="button" className="btn-link" onClick={() => setCampo(e.uid, 'ocr', false)}>ok</button>
+                            </span>
+                          ) : null}
                           {temErro ? <span style={{ color: '#b91c1c', marginRight: 8 }} title={l.erros.join('; ')}>{l.erros[0]}</span> : null}
                           <button type="button" className="btn-link" onClick={() => duplicarLinha(e.uid)}>duplicar</button>{' '}
                           <button type="button" className="btn-link" onClick={() => removerLinha(e.uid)}>remover</button>

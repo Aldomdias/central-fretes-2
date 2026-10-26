@@ -39,6 +39,8 @@ export default defineConfig({
         navigateFallbackDenylist: [/./],
         runtimeCaching: [],
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+        // motor do OCR (/public/ocr) e baixado so quando algum PDF sem texto e lido: fora do precache
+        globIgnores: ["ocr/**"],
       },
     }),
   ],

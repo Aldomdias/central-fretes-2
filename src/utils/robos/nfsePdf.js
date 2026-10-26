@@ -57,6 +57,33 @@ function numeroDaChave(treze) {
   return comAno ? String(Number(n.slice(4))) : n;
 }
 
+// O OCR junta o nome com o e-mail na mesma linha: corta no primeiro trecho que parece e-mail.
+function semEmail(texto) {
+  const partes = String(texto).split(/\s+/);
+  const i = partes.findIndex((t) => /@/.test(t) || (t.length > 8 && /[A-Za-z0-9&]\.[A-Za-z0-9]/.test(t) && !/\.$/.test(t)));
+  return (i > 0 ? partes.slice(0, i) : partes).join(' ').trim();
+}
+
+// Sem separacao de colunas (OCR): o municipio e o fim do endereco, antes do CEP. Prestador e tomador
+// no mesmo municipio terminam com o mesmo "CIDADE - UF"; senao a parte final difere.
+function municipiosPorEndereco(L, U) {
+  const fins = [];
+  U.forEach((l, k) => {
+    if (l.includes('ENDERECO') && l.includes('MUNICIPIO') && l.includes('CEP') && L[k + 1]) {
+      const m = L[k + 1].replace(/\s+/g, ' ').trim().match(/^(.*?)\s*\d{5}-?\d{3}\s*$/);
+      fins.push((m ? m[1] : L[k + 1]).trim().split(' '));
+    }
+  });
+  if (fins.length < 2) return {};
+  const [p, t] = fins;
+  let iguais = 0;
+  while (iguais < p.length && iguais < t.length && chaveMunicipio(p[p.length - 1 - iguais]) === chaveMunicipio(t[t.length - 1 - iguais])) iguais += 1;
+  const cauda = (arr) => chaveMunicipio(arr.slice(-3).join(''));
+  return iguais >= 3
+    ? { municipioPrestador: cauda(p), municipioTomador: cauda(p) }
+    : { municipioPrestador: `P${cauda(p)}`, municipioTomador: `T${cauda(t)}` };
+}
+
 // Valor liquido -> codigo de imposto; municipios -> CFOP (regras do lancamento de NFS-e).
 function aplicarRegrasLancamento(dados) {
   if (!(dados.valorLiquido > 0)) dados.valorLiquido = dados.valor;
@@ -111,7 +138,7 @@ function extrairModeloRps(L, U) {
 }
 
 // linhas: saida de itensParaLinhas (ou o texto do PDF dividido por linha).
-export function extrairDadosNfse(linhas = []) {
+export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   const L = linhas.map((l) => String(l ?? ''));
   const U = L.map((l) => semAcento(l).toUpperCase());
   if (U.some((l) => l.includes('RECIBO PROVISORIO DE SERVICOS'))) return extrairModeloRps(L, U);
@@ -144,8 +171,8 @@ export function extrairDadosNfse(linhas = []) {
   if (d) dados.dataEmissao = `${d[3]}-${d[2]}-${d[1]}`;
 
   // prestador (nome e, se faltar a chave, o CNPJ) e tomador (CNPJ)
-  const iPrest = U.findIndex((l) => l.includes('PRESTADOR / FORNECEDOR') || /^PRESTADOR DE SERVICO/.test(l.trim()));
-  const iTom = U.findIndex((l) => l.includes('TOMADOR / ADQUIRENTE') || /^TOMADOR DE SERVICO/.test(l.trim()));
+  const iPrest = U.findIndex((l) => l.includes('PRESTADOR / FORNECEDOR') || /^PRESTADOR D[EO] SERVICO/.test(l.trim()));
+  const iTom = U.findIndex((l) => l.includes('TOMADOR / ADQUIRENTE') || /^TOMADOR D[EO] SERVICO/.test(l.trim()));
   const cnpjApos = (inicio) => {
     if (inicio < 0) return '';
     for (let k = inicio; k < Math.min(inicio + 6, L.length); k += 1) {
@@ -158,7 +185,7 @@ export function extrairDadosNfse(linhas = []) {
   dados.cnpjTomador = cnpjApos(iTom);
 
   const iNomePrest = U.findIndex((l, k) => k > iPrest && iPrest >= 0 && l.includes('NOME / NOME EMPRESARIAL'));
-  if (iNomePrest >= 0 && L[iNomePrest + 1]) dados.transportadora = L[iNomePrest + 1].split(SEP)[0].trim();
+  if (iNomePrest >= 0 && L[iNomePrest + 1]) dados.transportadora = semEmail(L[iNomePrest + 1].split(SEP)[0].trim());
 
   if (!dados.transportadora && iPrest >= 0) {
     const k = U.findIndex((l, n) => n > iPrest && n < iPrest + 6 && l.includes('RAZAO'));
@@ -205,7 +232,7 @@ export function extrairDadosNfse(linhas = []) {
     if (naLinha.length) dados.valorLiquido = naLinha[naLinha.length - 1];
     else if (L[iLiq + 1]) {
       const celulasVal = L[iLiq + 1].split(SEP);
-      const alinhado = celulasVal.length === celulasRot.length ? nums(celulasVal[idx]) : [];
+      const alinhado = celulasVal.length === celulasRot.length ? nums(celulasVal[idx]).slice(-1) : [];
       const todos = nums(L[iLiq + 1]);
       dados.valorLiquido = alinhado.length ? alinhado[0] : (todos.length ? todos[todos.length - 1] : null);
     }
@@ -233,34 +260,36 @@ export function extrairDadosNfse(linhas = []) {
   };
   dados.municipioPrestador = municipioApos(iPrest);
   dados.municipioTomador = municipioApos(iTom);
+  if (!dados.municipioPrestador || !dados.municipioTomador) Object.assign(dados, municipiosPorEndereco(L, U));
   aplicarRegrasLancamento(dados);
   return resultado(dados);
 }
 
-// Le o PDF no navegador (pdfjs) e devolve as linhas de texto de cada pagina.
-export async function paginasDoPdf(arquivo) {
+// Abre o PDF no navegador (pdfjs).
+export async function abrirPdf(arquivo) {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
   if (!pdfjs.GlobalWorkerOptions.workerSrc) {
     const worker = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url');
     pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
   }
   const dados = new Uint8Array(await arquivo.arrayBuffer());
-  const pdf = await pdfjs.getDocument({ data: dados }).promise;
-  const paginas = [];
-  for (let n = 1; n <= pdf.numPages; n += 1) {
-    const pagina = await pdf.getPage(n);
-    const conteudo = await pagina.getTextContent();
-    paginas.push(itensParaLinhas(conteudo.items));
-  }
-  return paginas;
+  return pdfjs.getDocument({ data: dados }).promise;
+}
+
+async function linhasDaPagina(pdf, n) {
+  const pagina = await pdf.getPage(n);
+  const conteudo = await pagina.getTextContent();
+  return itensParaLinhas(conteudo.items);
 }
 
 // Um PDF pode ter varias notas, uma por pagina. Devolve uma leitura por pagina; paginas de
 // continuacao (sem numero, CNPJ nem valor, depois de uma pagina lida) ficam de fora.
-export function lerPaginas(paginas = []) {
+// opcoes.ocr: leitura de texto vindo de OCR; opcoes.ocrPaginas[i]: so a pagina i veio de OCR.
+export function lerPaginas(paginas = [], opcoes = {}) {
   const notas = [];
   paginas.forEach((linhas, i) => {
-    const r = { pagina: i + 1, ...extrairDadosNfse(linhas), semTexto: linhas.length === 0 };
+    const ocr = Boolean(opcoes.ocr || (opcoes.ocrPaginas || [])[i]);
+    const r = { pagina: i + 1, ocr, ...extrairDadosNfse(linhas, { ocr }), semTexto: linhas.length === 0 };
     const vazia = !r.dados.numeroNfse && r.dados.cnpjTransp.length !== 14 && !(r.dados.valor > 0);
     const anteriorOk = notas.some((n) => !n.faltando.length);
     if (i > 0 && anteriorOk && (r.semTexto || vazia)) return;
@@ -269,7 +298,18 @@ export function lerPaginas(paginas = []) {
   return notas;
 }
 
-export async function lerNfsePdf(arquivo) {
-  const paginas = await paginasDoPdf(arquivo);
-  return { totalPaginas: paginas.length, notas: lerPaginas(paginas) };
+// opcoes.ocr(pdf, n) -> linhas: usado nas paginas sem texto (PDF escaneado ou com letras desenhadas).
+export async function lerNfsePdf(arquivo, { ocr } = {}) {
+  const pdf = await abrirPdf(arquivo);
+  const paginas = [];
+  const ocrPaginas = [];
+  for (let n = 1; n <= pdf.numPages; n += 1) {
+    let linhas = await linhasDaPagina(pdf, n);
+    if (!linhas.length && ocr) {
+      linhas = await ocr(pdf, n);
+      ocrPaginas[n - 1] = true;
+    }
+    paginas.push(linhas);
+  }
+  return { totalPaginas: pdf.numPages, notas: lerPaginas(paginas, { ocrPaginas }) };
 }
