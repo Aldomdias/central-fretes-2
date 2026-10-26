@@ -28,6 +28,7 @@ import { PASTA_NFSE, gerarScriptNfse } from '../../utils/robos/sapLancamentoVbs'
 import { registrarLancamentos } from '../../services/robosLancamentosService';
 import { carregarSessao } from '../../utils/authLocal';
 import ParametrosLancamentoCard from './ParametrosLancamentoCard';
+import CampoPasta, { usePastaTrabalho } from './PastaTrabalho';
 
 const CHAVE_LOTE = 'central_fretes_robo_nfse_lote_v2';
 
@@ -71,6 +72,7 @@ export default function LancamentoNfseRobo() {
   const [entradas, setEntradas] = useState(() => (inicial.entradas || []).map((e) => ({ ...novaEntradaNfse(e.uid || novoUid()), ...e })));
   const [manuais, setManuais] = useState(inicial.manuais || {});
   const [vencimento, setVencimento] = useState(inicial.vencimento || hojeIso());
+  const [pasta, setPasta] = usePastaTrabalho('central_fretes_robo_nfse_pasta', PASTA_NFSE);
   const [colado, setColado] = useState('');
   const [erro, setErro] = useState('');
   const [feedback, setFeedback] = useState('');
@@ -225,8 +227,8 @@ export default function LancamentoNfseRobo() {
     if (!prontas.length) { setErro('Nao ha notas prontas para lancar.'); return; }
     if (comErro.length) { setErro(`${comErro.length} nota(s) com pendencia. Corrija ou remova antes de gerar o script.`); return; }
     try {
-      baixarArquivo('lancar-nfse.vbs', gerarScriptNfse({ linhas: linhasParaScriptNfse(prontas) }));
-      setFeedback(`Script baixado com ${fmt(prontas.length)} nota(s) (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). Com o SAP aberto e logado, de dois cliques nele. O resultado fica em ${PASTA_NFSE}\\resultado_nfse.csv.`);
+      baixarArquivo('lancar-nfse.vbs', gerarScriptNfse({ linhas: linhasParaScriptNfse(prontas), pasta }));
+      setFeedback(`Script baixado com ${fmt(prontas.length)} nota(s) (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). Com o SAP aberto e logado, de dois cliques nele. O resultado fica em ${pasta}\\resultado_nfse.csv.`);
     } catch (e) { setErro(e.message); }
   }
 
@@ -251,8 +253,8 @@ export default function LancamentoNfseRobo() {
   }
 
   async function registrarHistorico(lista, automatico = false) {
-    const com = lista.filter((l) => l.miro);
-    if (!com.length) { if (!automatico) setErro('Nenhuma nota com MIRO para registrar no historico.'); return null; }
+    const com = lista.filter((l) => l.miro || l.pedido);
+    if (!com.length) { if (!automatico) setErro('Nenhuma nota com pedido ou MIRO para registrar no historico.'); return null; }
     const sessao = carregarSessao();
     const r = await registrarLancamentos('NFSE', com, sessao?.nome || sessao?.email || '');
     return r;
@@ -394,6 +396,7 @@ export default function LancamentoNfseRobo() {
           <div>
             <div className="panel-title" style={{ margin: 0 }}>Criar pedido e MIRO no SAP</div>
             <p style={{ margin: '4px 0 10px' }}>Gera o script com as notas acima. Ele cria o pedido (ME21N) das notas sem pedido e depois a MIRO das que têm pedido e ainda não têm MIRO. Para no primeiro erro e mostra qual nota falhou; ao rodar de novo, pula o que já tem número.</p>
+            <CampoPasta pasta={pasta} onChange={setPasta} padrao={PASTA_NFSE} />
             <button type="button" className="btn-primary" disabled={!prontas.length} onClick={baixarScript}>Baixar script de lançamento (.vbs)</button>
           </div>
         </div>
@@ -404,7 +407,7 @@ export default function LancamentoNfseRobo() {
           <span style={numStyle}>3</span>
           <div>
             <div className="panel-title" style={{ margin: 0 }}>Trazer o resultado e enviar</div>
-            <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue o arquivo <code>{PASTA_NFSE}\resultado_nfse.csv</code> para preencher os números de pedido e MIRO. As notas com MIRO entram sozinhas no histórico (aba “Acompanhamento de lançamentos”). Em seguida baixe o resumo para envio.</p>
+            <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue o arquivo <code>{pasta}\resultado_nfse.csv</code> para preencher os números de pedido e MIRO. As notas com MIRO entram sozinhas no histórico (aba “Acompanhamento de lançamentos”). Em seguida baixe o resumo para envio.</p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <input ref={refResultado} type="file" accept=".csv,.txt" onChange={(e) => importarResultado(e.target.files?.[0])} />
               <button type="button" className="btn-secondary" onClick={baixarEnviar}>Baixar resumo (Enviar) .xlsx</button>

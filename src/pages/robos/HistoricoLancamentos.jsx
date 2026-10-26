@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { listarLancamentos } from '../../services/robosLancamentosService';
-import { TIPOS_LANCAMENTO, agregarPorMes, anosDisponiveis } from '../../utils/robos/historicoLancamentos';
+import { TIPOS_LANCAMENTO, agregarPorMes, anosDisponiveis, registrosVisiveis } from '../../utils/robos/historicoLancamentos';
 import { baixarXlsx, isoParaBr } from '../../utils/robos/lancamentoComum';
 
 const MESES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
@@ -39,7 +39,7 @@ export default function HistoricoLancamentos() {
 
   const detalhe = useMemo(() => {
     const t = busca.trim().toLowerCase();
-    return dados.registros
+    return registrosVisiveis(dados.registros)
       .filter((r) => (!tipo || r.tipo === tipo) && String(r.lancado_em || '').startsWith(ano))
       .filter((r) => !t || [r.documento, r.transportadora, r.cnpj_transp, r.fatura, r.pedido, r.miro, r.empresa].some((c) => String(c ?? '').toLowerCase().includes(t)));
   }, [dados.registros, tipo, ano, busca]);
@@ -56,7 +56,7 @@ export default function HistoricoLancamentos() {
     <div style={{ display: 'grid', gap: 16 }}>
       <div className="panel-card">
         <div className="panel-title">Acompanhamento de lançamentos</div>
-        <p>Cada nota ou CT-e que recebe número de MIRO entra aqui automaticamente (quando você traz o resultado do SAP para a tela). Serve para acompanhar quantos documentos estão sendo lançados por mês.</p>
+        <p>Cada nota ou CT-e que recebe pedido ou MIRO entra aqui automaticamente (quando você traz o resultado do SAP para a tela). Os que só têm pedido aparecem como “sem MIRO” na lista e não entram na contagem do mês até a MIRO sair.</p>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <div className="field"><label>Tipo</label>
             <select value={tipo} onChange={(e) => setTipo(e.target.value)}>
@@ -114,7 +114,7 @@ export default function HistoricoLancamentos() {
               {detalhe.slice(0, 300).map((r) => (
                 <tr key={`${r.tipo}-${r.miro}-${r.documento}`}>
                   <td style={td}>{TIPOS_LANCAMENTO[r.tipo] || r.tipo}</td><td style={td}>{r.documento}</td><td style={td}>{r.transportadora}</td><td style={td}>{r.empresa}</td>
-                  <td style={td}>{moeda(r.valor)}</td><td style={td}>{r.fatura}</td><td style={td}>{r.pedido}</td><td style={td}>{r.miro}</td>
+                  <td style={td}>{moeda(r.valor)}</td><td style={td}>{r.fatura}</td><td style={td}>{r.pedido}</td><td style={td}>{r.miro || <span style={{ color: '#b45309' }}>sem MIRO</span>}</td>
                   <td style={td}>{isoParaBr(String(r.lancado_em || '').slice(0, 10))}</td><td style={td}>{r.lancado_por}</td>
                 </tr>
               ))}

@@ -7,9 +7,10 @@ function dataOuNulo(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? v : null;
 }
 
-// Linha calculada pelo robo -> registro do historico. So entra o que tem MIRO.
+// Linha calculada pelo robo -> registro do historico. Entra o que tem MIRO e tambem o que so tem
+// pedido (miro = '' ate a MIRO sair; ai entra outro registro e o de pedido deixa de aparecer).
 export function linhaParaRegistro(tipo, l) {
-  if (!l?.miro) return null;
+  if (!l?.miro && !l?.pedido) return null;
   return {
     tipo,
     documento: String(tipo === 'CTE' ? l.cte : l.nf || '').trim(),
@@ -23,8 +24,14 @@ export function linhaParaRegistro(tipo, l) {
     vencimento: dataOuNulo(l.vencimento),
     fatura: l.fatura || null,
     pedido: l.pedido || null,
-    miro: String(l.miro),
+    miro: String(l.miro || ''),
   };
+}
+
+// Tira do historico o registro "so pedido" de quem ja tem MIRO.
+export function registrosVisiveis(registros = []) {
+  const comMiro = new Set(registros.filter((r) => r.miro).map((r) => `${r.tipo}|${r.documento}`));
+  return registros.filter((r) => r.miro || !comMiro.has(`${r.tipo}|${r.documento}`));
 }
 
 export function chaveRegistro(r) {
@@ -44,6 +51,7 @@ export function agregarPorMes(registros = [], ano, tipo = '') {
   }));
   registros.forEach((r) => {
     if (tipo && r.tipo !== tipo) return;
+    if (r.miro === '') return; // so pedido: ainda nao e lancamento concluido
     const m = meses.find((x) => x.mes === mesDe(r.lancado_em));
     if (!m) return;
     if (r.tipo === 'NFSE') m.nfse += 1; else if (r.tipo === 'CTE') m.cte += 1;

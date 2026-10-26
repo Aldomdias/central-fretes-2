@@ -106,6 +106,9 @@ import { agregarPorMes, anosDisponiveis, linhaParaRegistro, chaveRegistro } from
 
 test('historico: so entra o que tem MIRO e agrega por mes', () => {
   assert.equal(linhaParaRegistro('NFSE', { nf: '1', miro: '' }), null);
+  const soPedido = linhaParaRegistro('NFSE', { nf: '9-F', pedido: '4500000009', miro: '' });
+  assert.equal(soPedido.miro, '');
+  assert.equal(agregarPorMes([{ ...soPedido, lancado_em: '2026-09-05T12:00:00Z' }], '2026')[8].total, 0);
   const r = linhaParaRegistro('NFSE', { nf: '1428-F', miro: '5110000002', pedido: '4500000001', valor: 57.53, emp: '1420', cnpjTransp: '1', transportadora: 'RM', dataEmissao: '2026-06-30', vencimento: '' });
   assert.deepEqual([r.tipo, r.documento, r.valor, r.vencimento, chaveRegistro(r)], ['NFSE', '1428-F', 57.53, null, 'NFSE|5110000002|1428-F']);
   const c = linhaParaRegistro('CTE', { cte: '123-1', bruto: 100, miro: '5110000003' });

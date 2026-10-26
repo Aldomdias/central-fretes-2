@@ -13,6 +13,12 @@ import {
 export const PASTA_NFSE = 'C:\\Temp\\LancamentoNFSe';
 export const PASTA_CTE = 'C:\\Temp\\LancamentoCTe';
 
+// Caminho digitado pelo usuario -> caminho limpo (sem aspas, sem barra no fim); vazio volta ao padrao.
+export function normalizarPasta(texto, padrao) {
+  const limpo = String(texto ?? '').trim().replace(/^"+|"+$/g, '').replace(/\//g, '\\').replace(/\\+$/, '');
+  return limpo && limpo.length > 2 ? limpo : padrao;
+}
+
 function ascii(valor) {
   return String(valor ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x20-\x7e]/g, '?');
 }
@@ -108,6 +114,14 @@ function utilitarios({ pasta, arquivoResultado }) {
     '    On Error Resume Next',
     '    session.findById("wnd[1]/usr/ctxtBKPF-BUKRS").Text = "1420"',
     '    session.findById("wnd[1]").sendVKey 0',
+    'End Sub',
+    '',
+    "' Cria a pasta e as pastas acima dela (a pasta Temp pode nao existir no computador).",
+    'Sub CriarPasta(p)',
+    '    If fso.FolderExists(p) Then Exit Sub',
+    '    Dim pai : pai = fso.GetParentFolderName(p)',
+    '    If pai <> "" Then CriarPasta pai',
+    '    fso.CreateFolder p',
     'End Sub',
     '',
     'Sub AguardarSap()',
@@ -242,7 +256,7 @@ export function gerarScriptNfse({ linhas = [], pasta = PASTA_NFSE } = {}) {
     'Next',
     '',
     'Set fso = CreateObject("Scripting.FileSystemObject")',
-    `If Not fso.FolderExists(${vbs(pasta)}) Then fso.CreateFolder ${vbs(pasta)}`,
+    `CriarPasta ${vbs(pasta)}`,
     `Set logf = fso.OpenTextFile(${vbs(`${pasta}\\log_lancamento_nfse.txt`)}, 8, True)`,
     'Log "Inicio: " & n & " nota(s)."',
     'Conectar',
@@ -341,7 +355,7 @@ export function gerarScriptCte({ linhas = [], pasta = PASTA_CTE } = {}) {
     'Next',
     '',
     'Set fso = CreateObject("Scripting.FileSystemObject")',
-    `If Not fso.FolderExists(${vbs(pasta)}) Then fso.CreateFolder ${vbs(pasta)}`,
+    `CriarPasta ${vbs(pasta)}`,
     `Set logf = fso.OpenTextFile(${vbs(`${pasta}\\log_lancamento_cte.txt`)}, 8, True)`,
     'Log "Inicio: " & n & " CT-e."',
     'Conectar',

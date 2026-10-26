@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ParametrosLancamentoCard from './ParametrosLancamentoCard';
+import CampoPasta, { usePastaTrabalho } from './PastaTrabalho';
 import {
   CABECALHO_ENVIAR_CTE,
   CABECALHO_LANCAMENTO_CTE,
@@ -47,6 +48,7 @@ export default function LancamentoCteRobo() {
   const [cts, setCts] = useState(inicial.cts || []);
   const [partidasArr, setPartidasArr] = useState(inicial.partidas || []);
   const [docnums, setDocnums] = useState(inicial.docnums || []);
+  const [pasta, setPasta] = usePastaTrabalho('central_fretes_robo_cte_pasta', PASTA_CTE);
   const [vencimento, setVencimento] = useState(inicial.vencimento || hojeIso());
   const [manuais, setManuais] = useState(inicial.manuais || {});
   const [removidos, setRemovidos] = useState(inicial.removidos || []);
@@ -141,8 +143,8 @@ export default function LancamentoCteRobo() {
   function baixarLancamento() {
     if (!prontas.length) { setErro('Nao ha CT-e prontos para lancar.'); return; }
     if (comErro.length) { setErro(`${comErro.length} CT-e com pendencia. Corrija ou remova antes de gerar o script.`); return; }
-    baixar('lancar-cte.vbs', () => gerarScriptCte({ linhas: linhasParaScriptCte(prontas) }),
-      `Script baixado com ${fmt(prontas.length)} CT-e (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). Com o SAP aberto, de dois cliques nele. Resultado em ${PASTA_CTE}\\resultado_cte.csv.`);
+    baixar('lancar-cte.vbs', () => gerarScriptCte({ linhas: linhasParaScriptCte(prontas), pasta }),
+      `Script baixado com ${fmt(prontas.length)} CT-e (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). Com o SAP aberto, de dois cliques nele. Resultado em ${pasta}\\resultado_cte.csv.`);
   }
 
   async function importarResultado(arquivo) {
@@ -169,7 +171,7 @@ export default function LancamentoCteRobo() {
   }
 
   async function registrarHistorico(lista) {
-    const com = lista.filter((l) => l.miro);
+    const com = lista.filter((l) => l.miro || l.pedido);
     if (!com.length) return null;
     const sessao = carregarSessao();
     return registrarLancamentos('CTE', com, sessao?.nome || sessao?.email || '');
@@ -294,6 +296,7 @@ export default function LancamentoCteRobo() {
                   </table>
                 </div>
                 <p style={{ fontSize: 12, color: '#64748b' }}>Preencher o Pedido à mão equivale ao botão “Criar Miro (exceção)”: o robô pula o pedido e lança só a MIRO. Vencimento padrão = hoje.</p>
+                <CampoPasta pasta={pasta} onChange={setPasta} padrao={PASTA_CTE} />
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
                   <button type="button" className="btn-primary" disabled={!prontas.length} onClick={baixarLancamento}>Baixar script de lançamento (.vbs)</button>
                   <button type="button" className="btn-secondary" onClick={() => baixarXlsx('cte-lancamento.xlsx', linhasLancamentoCte(linhas), CABECALHO_LANCAMENTO_CTE)}>Baixar tabela (.xlsx)</button>
@@ -307,7 +310,7 @@ export default function LancamentoCteRobo() {
               <span style={numStyle}>4</span>
               <div>
                 <div className="panel-title" style={{ margin: 0 }}>Trazer o resultado</div>
-                <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue <code>{PASTA_CTE}\resultado_cte.csv</code> para preencher pedido e MIRO; os CT-e com MIRO entram sozinhos no histórico (aba “Acompanhamento de lançamentos”). O script para no primeiro erro e diz qual CT-e falhou; ao rodar de novo pula o que já tem número.</p>
+                <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue <code>{pasta}\resultado_cte.csv</code> para preencher pedido e MIRO; os CT-e com MIRO entram sozinhos no histórico (aba “Acompanhamento de lançamentos”). O script para no primeiro erro e diz qual CT-e falhou; ao rodar de novo pula o que já tem número.</p>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <input ref={refRes} type="file" accept=".csv,.txt" onChange={(e) => importarResultado(e.target.files?.[0])} />
                   <button type="button" className="btn-secondary" onClick={baixarEnviar}>Baixar resumo (Enviar) .xlsx</button>
