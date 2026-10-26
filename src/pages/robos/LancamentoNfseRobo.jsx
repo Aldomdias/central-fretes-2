@@ -181,8 +181,8 @@ export default function LancamentoNfseRobo() {
     finally { if (refArquivo.current) refArquivo.current.value = ''; }
   }
 
-  // Le os PDFs das NFS-e (varios de uma vez) e acrescenta uma linha por nota. Cod e CFOP entram com o
-  // padrao mais usado (IQ / 1933AA) e podem ser trocados na grade; EscrV e Fatura ficam para preencher.
+  // Le os PDFs das NFS-e (varios de uma vez) e acrescenta uma linha por nota. Cod e CFOP vem da regra: IN se o liquido for
+  // menor que o bruto (impostos), senao IQ; CFOP 1933AA no mesmo municipio e 2933AA em outro. EscrV e Fatura ficam para preencher.
   async function importarPdfs(arquivos) {
     const lista = Array.from(arquivos || []);
     if (!lista.length) return;
@@ -204,11 +204,11 @@ export default function LancamentoNfseRobo() {
         const chave = `${d.nf}/${d.cnpjTransp}`.toUpperCase();
         if (existentes.has(chave)) { problemas.push(`${d.nf}: ja esta na grade`); return; }
         existentes.add(chave);
-        novas.push({ nf: d.nf, transportadora: d.transportadora, cnpjTransp: d.cnpjTransp, dataEmissao: d.dataEmissao, valor: d.valor, codImp: 'IQ', cfop: '1933AA', cnpjTomador: d.cnpjTomador });
+        novas.push({ nf: d.nf, transportadora: d.transportadora, cnpjTransp: d.cnpjTransp, dataEmissao: d.dataEmissao, valor: d.valor, codImp: d.codImp, cfop: d.cfop, cnpjTomador: d.cnpjTomador });
       });
       if (novas.length) acrescentar(novas, `${fmt(novas.length)} PDF(s)`);
       if (problemas.length) setErro(`${problemas.length} PDF(s) com problema: ${problemas.join(' | ')}`);
-      else if (novas.length) setFeedback(`${fmt(novas.length)} nota(s) lida(s) do PDF. Preencha o EscrV (e a Fatura) e confira Cod e CFOP.`);
+      else if (novas.length) setFeedback(`${fmt(novas.length)} nota(s) lida(s) do PDF. Preencha o EscrV (e a Fatura). Cod (IN/IQ) e CFOP (1933AA/2933AA) vieram da nota; confira.`);
     } catch (e) { setErro(e.message || 'Nao consegui ler os PDFs.'); }
     finally { if (refPdf.current) refPdf.current.value = ''; }
   }

@@ -111,9 +111,59 @@ export function extrairDadosNfse(linhas = []) {
   if (!(dados.valor > 0)) {
     // modelo das prefeituras: "Valor do Servico ¦ 23,68"
     const k = U.findIndex((l) => l.includes('VALOR DO SERVICO'));
-    const todos = k >= 0 ? L[k].match(/\d{1,3}(?:\.\d{3})*,\d{2}/g) : null;
+    const re = /\d{1,3}(?:\.\d{3})*,\d{2}/g;
+    const todos = k >= 0 ? L[k].match(re) : null;
     if (todos) dados.valor = paraNumero(todos[todos.length - 1]);
+    else if (k >= 0) {
+      // titulos numa linha e valores na de baixo (mesma ordem das colunas): "Valor do Servico" e a 1a coluna
+      const celulas = L[k].split(SEP);
+      const abaixo = (L[k + 1] || '').split(SEP);
+      const idx = celulas.findIndex((c) => semAcento(c).toUpperCase().includes('VALOR DO SERVICO'));
+      const alvo = abaixo.length === celulas.length ? abaixo[idx] : abaixo[0];
+      const m = String(alvo || '').match(re);
+      if (m) dados.valor = paraNumero(m[0]);
+    }
   }
+
+  // valor liquido (bruto menos retencoes): dele sai o codigo de imposto
+  const nums = (txt) => (String(txt).match(/\d{1,3}(?:\.\d{3})*,\d{2}/g) || []).map(paraNumero);
+  const iLiq = U.findIndex((l) => l.includes('VALOR LIQUIDO'));
+  if (iLiq >= 0) {
+    const celulasRot = U[iLiq].split(SEP.toUpperCase());
+    const idx = celulasRot.findIndex((c) => c.includes('VALOR LIQUIDO'));
+    const naLinha = nums(L[iLiq]);
+    if (naLinha.length) dados.valorLiquido = naLinha[naLinha.length - 1];
+    else if (L[iLiq + 1]) {
+      const celulasVal = L[iLiq + 1].split(SEP);
+      const alinhado = celulasVal.length === celulasRot.length ? nums(celulasVal[idx]) : [];
+      const todos = nums(L[iLiq + 1]);
+      dados.valorLiquido = alinhado.length ? alinhado[0] : (todos.length ? todos[todos.length - 1] : null);
+    }
+  }
+  if (!(dados.valorLiquido > 0)) dados.valorLiquido = dados.valor;
+  dados.codImp = dados.valor > 0 && dados.valorLiquido < dados.valor - 0.005 ? 'IN' : 'IQ';
+
+  // municipio do prestador e do tomador: mesmo municipio -> CFOP 1933AA, senao 2933AA
+  const chaveMun = (txt) => semAcento(txt).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const municipioApos = (inicio) => {
+    if (inicio < 0) return '';
+    for (let k = inicio; k < Math.min(inicio + 10, L.length); k += 1) {
+      if (k > inicio && /^(PRESTADOR|TOMADOR)/.test(U[k].trim())) break;
+      const g = L[k].match(/Munic[ií]pio:\s*(?:¦\s*)?(.+?)\s*(?:¦|$)/i); // modelo das prefeituras
+      if (g) return chaveMun(g[1]);
+      if (U[k].includes('NOME / NOME EMPRESARIAL') && L[k + 1]) { // modelo nacional: Nome ¦ Municipio / UF ¦ IBGE / CEP
+        const cel = L[k + 1].split(SEP);
+        const ibge = (cel[2] || '').split('/')[0].replace(/\D/g, '');
+        return ibge.length >= 6 ? `IBGE${ibge}` : chaveMun(cel[1] || '');
+      }
+    }
+    return '';
+  };
+  dados.municipioPrestador = municipioApos(iPrest);
+  dados.municipioTomador = municipioApos(iTom);
+  dados.cfop = dados.municipioPrestador && dados.municipioTomador
+    ? (dados.municipioPrestador === dados.municipioTomador ? '1933AA' : '2933AA')
+    : '';
 
   if (!dados.numeroNfse) faltando.push('numero da NFS-e');
   if (dados.cnpjTransp.length !== 14) faltando.push('CNPJ do prestador');
