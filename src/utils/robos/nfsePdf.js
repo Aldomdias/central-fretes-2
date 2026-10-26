@@ -237,8 +237,8 @@ export function extrairDadosNfse(linhas = []) {
   return resultado(dados);
 }
 
-// Le o PDF no navegador (pdfjs) e devolve as linhas de texto da primeira pagina.
-export async function linhasDoPdf(arquivo) {
+// Le o PDF no navegador (pdfjs) e devolve as linhas de texto de cada pagina.
+export async function paginasDoPdf(arquivo) {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
   if (!pdfjs.GlobalWorkerOptions.workerSrc) {
     const worker = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url');
@@ -246,12 +246,30 @@ export async function linhasDoPdf(arquivo) {
   }
   const dados = new Uint8Array(await arquivo.arrayBuffer());
   const pdf = await pdfjs.getDocument({ data: dados }).promise;
-  const pagina = await pdf.getPage(1);
-  const conteudo = await pagina.getTextContent();
-  return itensParaLinhas(conteudo.items);
+  const paginas = [];
+  for (let n = 1; n <= pdf.numPages; n += 1) {
+    const pagina = await pdf.getPage(n);
+    const conteudo = await pagina.getTextContent();
+    paginas.push(itensParaLinhas(conteudo.items));
+  }
+  return paginas;
+}
+
+// Um PDF pode ter varias notas, uma por pagina. Devolve uma leitura por pagina; paginas de
+// continuacao (sem numero, CNPJ nem valor, depois de uma pagina lida) ficam de fora.
+export function lerPaginas(paginas = []) {
+  const notas = [];
+  paginas.forEach((linhas, i) => {
+    const r = { pagina: i + 1, ...extrairDadosNfse(linhas), semTexto: linhas.length === 0 };
+    const vazia = !r.dados.numeroNfse && r.dados.cnpjTransp.length !== 14 && !(r.dados.valor > 0);
+    const anteriorOk = notas.some((n) => !n.faltando.length);
+    if (i > 0 && anteriorOk && (r.semTexto || vazia)) return;
+    notas.push(r);
+  });
+  return notas;
 }
 
 export async function lerNfsePdf(arquivo) {
-  const linhas = await linhasDoPdf(arquivo);
-  return { ...extrairDadosNfse(linhas), semTexto: linhas.length === 0 };
+  const paginas = await paginasDoPdf(arquivo);
+  return { totalPaginas: paginas.length, notas: lerPaginas(paginas) };
 }

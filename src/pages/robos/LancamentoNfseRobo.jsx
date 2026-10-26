@@ -235,10 +235,13 @@ export default function LancamentoNfseRobo() {
       const falhas = [];
       for (const arq of lista) {
         try {
-          const { dados, faltando, semTexto } = await lerNfsePdf(arq);
-          if (semTexto) falhas.push({ arquivo: arq.name, motivo: 'PDF sem texto (imagem escaneada): digite a nota na grade', faltando: '', nf: '' });
-          else if (faltando.length) falhas.push({ arquivo: arq.name, motivo: 'Layout nao reconhecido ou campos nao encontrados', faltando: faltando.join(', '), nf: dados.nf || '' });
-          else lidas.push({ dados, arquivo: arq.name });
+          const { totalPaginas, notas } = await lerNfsePdf(arq);
+          for (const n of notas) {
+            const nome = totalPaginas > 1 ? `${arq.name} (pag. ${n.pagina})` : arq.name;
+            if (n.semTexto) falhas.push({ arquivo: nome, motivo: 'PDF sem texto (imagem escaneada): digite a nota na grade', faltando: '', nf: '' });
+            else if (n.faltando.length) falhas.push({ arquivo: nome, motivo: 'Layout nao reconhecido ou campos nao encontrados', faltando: n.faltando.join(', '), nf: n.dados.nf || '' });
+            else lidas.push({ dados: n.dados, arquivo: nome });
+          }
         } catch (e) { falhas.push({ arquivo: arq.name, motivo: `Nao consegui abrir o PDF (${String(e?.message || e).slice(0, 60)})`, faltando: '', nf: '' }); }
       }
       const existentes = new Set(entradas.map((e) => `${e.nf}/${e.cnpjTransp}`.toUpperCase()));
