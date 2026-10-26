@@ -18,6 +18,7 @@ import {
   numeroPlanilha,
   valorParaSap,
 } from './lancamentoComum';
+import { nfComSufixoF } from './nfsePdf';
 
 export const ALIASES_ENTRADA_NFSE = {
   nf: ['NF', 'NF Servico', 'NF Serviço', 'Nota'],
@@ -70,11 +71,11 @@ export function novaEntradaNfse(uid, base = {}) {
 // Equivale a consulta "Lancamento (2)" do Power Query + regras das colunas. Aceita os campos
 // como vieram da grade (texto digitado) ou de importacao.
 export function montarLancamentoNfse(entradas = [], indices, { vencimento = hojeIso() } = {}) {
-  const ids = gerarIds(entradas, (e) => `${String(e.nf ?? '').trim()}/${normalizarCnpj(e.cnpjTransp)}`);
+  const ids = gerarIds(entradas, (e) => `${nfComSufixoF(e.nf)}/${normalizarCnpj(e.cnpjTransp)}`);
   return entradas.map((e0, i) => {
     const e = {
       ...e0,
-      nf: String(e0.nf ?? '').trim(),
+      nf: nfComSufixoF(e0.nf), // a NF do SAP sempre leva o sufixo -F (3773 -> 3773-F)
       cnpjTransp: normalizarCnpj(e0.cnpjTransp),
       cnpjTomador: normalizarCnpj(e0.cnpjTomador),
       dataEmissao: dataParaIso(e0.dataEmissao),

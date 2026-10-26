@@ -77,6 +77,7 @@ export default function LancamentoNfseRobo() {
   const [focar, setFocar] = useState(null);
   const refArquivo = useRef(null);
   const refResultado = useRef(null);
+  const refPdf = useRef(null);
   const refGrade = useRef(null);
 
   const indices = useMemo(() => criarIndices(parametros), [parametros]);
@@ -178,6 +179,38 @@ export default function LancamentoNfseRobo() {
     finally { if (refArquivo.current) refArquivo.current.value = ''; }
   }
 
+  // Le os PDFs das NFS-e (varios de uma vez) e acrescenta uma linha por nota. Cod e CFOP entram com o
+  // padrao mais usado (IQ / 1933AA) e podem ser trocados na grade; EscrV e Fatura ficam para preencher.
+  async function importarPdfs(arquivos) {
+    const lista = Array.from(arquivos || []);
+    if (!lista.length) return;
+    setErro(''); setFeedback('');
+    try {
+      const { lerNfsePdf } = await import('../../utils/robos/nfsePdf');
+      const lidas = [];
+      const problemas = [];
+      for (const arq of lista) {
+        try {
+          const { dados, faltando } = await lerNfsePdf(arq);
+          if (faltando.length) problemas.push(`${arq.name}: nao achei ${faltando.join(', ')}`);
+          else lidas.push(dados);
+        } catch { problemas.push(`${arq.name}: nao consegui ler o PDF`); }
+      }
+      const existentes = new Set(entradas.map((e) => `${e.nf}/${e.cnpjTransp}`.toUpperCase()));
+      const novas = [];
+      lidas.forEach((d) => {
+        const chave = `${d.nf}/${d.cnpjTransp}`.toUpperCase();
+        if (existentes.has(chave)) { problemas.push(`${d.nf}: ja esta na grade`); return; }
+        existentes.add(chave);
+        novas.push({ nf: d.nf, transportadora: d.transportadora, cnpjTransp: d.cnpjTransp, dataEmissao: d.dataEmissao, valor: d.valor, codImp: 'IQ', cfop: '1933AA', cnpjTomador: d.cnpjTomador });
+      });
+      if (novas.length) acrescentar(novas, `${fmt(novas.length)} PDF(s)`);
+      if (problemas.length) setErro(`${problemas.length} PDF(s) com problema: ${problemas.join(' | ')}`);
+      else if (novas.length) setFeedback(`${fmt(novas.length)} nota(s) lida(s) do PDF. Preencha o EscrV (e a Fatura) e confira Cod e CFOP.`);
+    } catch (e) { setErro(e.message || 'Nao consegui ler os PDFs.'); }
+    finally { if (refPdf.current) refPdf.current.value = ''; }
+  }
+
   async function baixarModelo() {
     await baixarXlsx('modelo-importacao-nfse.xlsx', [EXEMPLO_MODELO_NFSE], CABECALHO_MODELO_NFSE);
   }
@@ -254,6 +287,10 @@ export default function LancamentoNfseRobo() {
               <label className="btn-secondary" style={{ cursor: semTabelas ? 'default' : 'pointer', opacity: semTabelas ? 0.5 : 1 }}>
                 Importar arquivo
                 <input ref={refArquivo} type="file" accept=".xlsx,.xlsm,.xls,.csv" disabled={semTabelas} style={{ display: 'none' }} onChange={(e) => importarArquivo(e.target.files?.[0])} />
+              </label>
+              <label className="btn-secondary" style={{ cursor: semTabelas ? 'default' : 'pointer', opacity: semTabelas ? 0.5 : 1 }} title="Escolha um ou vários PDFs de NFS-e (padrão nacional): lê NF, prestador, CNPJs, data e valor">
+                Ler PDFs das notas
+                <input ref={refPdf} type="file" accept=".pdf,application/pdf" multiple disabled={semTabelas} style={{ display: 'none' }} onChange={(e) => importarPdfs(e.target.files)} />
               </label>
               <button type="button" className="btn-secondary" onClick={baixarModelo}>Baixar modelo de importação (.xlsx)</button>
               {entradas.length ? <button type="button" className="btn-secondary" onClick={limparTudo}>Limpar tudo</button> : null}
