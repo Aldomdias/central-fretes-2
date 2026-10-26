@@ -118,6 +118,7 @@ import { autorizarPelaGestao, normalizarCanalAutorizacao, carregarDecisoesPorCha
 import AnaliseFreteTabela from '../components/AnaliseFreteTabela';
 import ProdutividadeDiaFaturas from '../components/ProdutividadeDiaFaturas';
 import MeuPainelAuditor from '../components/MeuPainelAuditor';
+import BoletosPendentesPainel from '../components/BoletosPendentesPainel';
 import RoboAuditoriaPainel from '../components/RoboAuditoriaPainel';
 import CampoCidadeIbge from '../components/CampoCidadeIbge';
 import { urlBaseApp } from '../utils/urlBaseApp';
@@ -10082,6 +10083,9 @@ function Financeiro({ state, onState }) {
             </div>
           )}
         </>
+      )}
+      {subtab === 'boletos' && (
+        <BoletosPendentesPainel faturas={state.faturas}/>
       )}
       {subtab === 'boletos' && (
         <div className="table-card">

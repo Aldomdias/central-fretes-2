@@ -60,7 +60,7 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
     .map((f) => ({ f, c: porFatura.get(String(f.id)) }))
     .sort((a, b) => String(b.c.confirmado_em).localeCompare(String(a.c.confirmado_em))), [exigem, porFatura, termo]);
 
-  const [lendo, setLendo] = useState('');
+  const [lendo, setLendo] = useState(null); // { feito, total, nome } enquanto le os PDFs
   const lerPasta = async (ev) => {
     const arquivos = Array.from(ev.target.files || []).filter((a) => /\.pdf$/i.test(a.name));
     ev.target.value = '';
@@ -68,10 +68,10 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
     setErro('');
     const leituras = new Map();
     for (let i = 0; i < arquivos.length; i += 1) {
-      setLendo(`Lendo boleto ${i + 1} de ${arquivos.length}...`);
+      setLendo({ feito: i, total: arquivos.length, nome: arquivos[i].name });
       leituras.set(arquivos[i].name, await lerBoletoPdf(arquivos[i]));
     }
-    setLendo('');
+    setLendo(null);
     // Mesma linha digitavel em mais de um arquivo = boleto repetido.
     const porLinha = new Map();
     leituras.forEach((l, nome) => { if (l.linhaDigitavel) porLinha.set(l.linhaDigitavel, [...(porLinha.get(l.linhaDigitavel) || []), nome]); });
@@ -227,7 +227,7 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
               Nao precisa de boleto ({nSel})
             </button>
             <label className="btn-secondary audit-small-button" style={{ cursor: 'pointer' }}>
-              {lendo || 'Conferir pasta de boletos'}
+              {lendo ? `Lendo ${lendo.feito + 1}/${lendo.total}...` : 'Conferir pasta de boletos'}
               <input type="file" multiple accept=".pdf" disabled={!!lendo} style={{ display: 'none' }} onChange={lerPasta}
                 ref={(el) => { if (el) { el.setAttribute('webkitdirectory', ''); el.setAttribute('directory', ''); } }} />
             </label>
@@ -245,6 +245,15 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
             </label>
           </div>
 
+          {lendo && (
+            <div className="hint-box compact" style={{ marginBottom: 8, borderLeft: '4px solid #0369a1' }}>
+              <strong>Lendo os boletos da pasta... {lendo.feito} de {lendo.total}</strong>
+              <div style={{ height: 8, background: '#e2e8f0', borderRadius: 4, margin: '6px 0', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${Math.round((lendo.feito / lendo.total) * 100)}%`, background: '#0369a1', transition: 'width .2s' }} />
+              </div>
+              <span style={{ fontSize: 12, color: '#475569' }}>{lendo.nome}</span>
+            </div>
+          )}
           {pasta && (
             <div className="hint-box compact" style={{ marginBottom: 8, borderLeft: '4px solid #0369a1' }}>
               <strong>{pasta.total}</strong> boleto(s) na pasta · <strong>{comArquivo.length}</strong> de {pendentes.length} fatura(s) pendente(s) já têm arquivo ·{' '}
