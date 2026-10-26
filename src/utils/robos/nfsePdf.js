@@ -45,10 +45,76 @@ function paraNumero(txt) {
   return Number.isFinite(n) ? n : null;
 }
 
+const chaveMunicipio = (txt) => semAcento(txt).toUpperCase().replace(/[^A-Z0-9]/g, '');
+const RE_NUM = /\d{1,3}(?:\.\d{3})*,\d{2}/g;
+const numeros = (txt) => (String(txt).match(RE_NUM) || []).map(paraNumero);
+
+// Numero da nota dentro da chave (13 digitos). Algumas prefeituras (ex.: Palmas) colocam o ano na
+// frente (2026000000100 = nota 100 de 2026).
+function numeroDaChave(treze) {
+  const n = String(Number(treze));
+  const comAno = n.length === 13 && /^20\d{2}/.test(n);
+  return comAno ? String(Number(n.slice(4))) : n;
+}
+
+// Valor liquido -> codigo de imposto; municipios -> CFOP (regras do lancamento de NFS-e).
+function aplicarRegrasLancamento(dados) {
+  if (!(dados.valorLiquido > 0)) dados.valorLiquido = dados.valor;
+  dados.codImp = dados.valor > 0 && dados.valorLiquido < dados.valor - 0.005 ? 'IN' : 'IQ';
+  dados.cfop = dados.municipioPrestador && dados.municipioTomador
+    ? (dados.municipioPrestador === dados.municipioTomador ? '1933AA' : '2933AA')
+    : '';
+}
+
+function resultado(dados) {
+  const faltando = [];
+  if (!dados.numeroNfse) faltando.push('numero da NFS-e');
+  if (dados.cnpjTransp.length !== 14) faltando.push('CNPJ do prestador');
+  if (dados.cnpjTomador.length !== 14) faltando.push('CNPJ do tomador');
+  if (!dados.dataEmissao) faltando.push('data de emissao');
+  if (!(dados.valor > 0)) faltando.push('valor');
+  return { dados, faltando };
+}
+
+// Modelo "Recibo provisorio de servicos - RPS / NFS-e" (sistema SSW: Rocha e Miura, Carvalima...).
+function extrairModeloRps(L, U) {
+  const dados = { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null, chave: '', valorLiquido: null, municipioPrestador: '', municipioTomador: '' };
+  dados.transportadora = (L[0] || '').split(SEP)[0].trim();
+  const mun = (L[3] || '').match(/^\s*([^¦]+?)\s*-\s*([A-Z]{2})\s*-\s*CEP/i);
+  if (mun) dados.municipioPrestador = chaveMunicipio(`${mun[1]}${mun[2]}`);
+
+  const iCab = U.findIndex((l) => l.includes('NUMERO NFS-E'));
+  const linhaCab = iCab >= 0 ? L[iCab + 1] || '' : '';
+  const cnpj = linhaCab.match(RE_CNPJ);
+  if (cnpj) dados.cnpjTransp = cnpj[1].replace(/\D/g, '');
+  const num = linhaCab.match(/\b(\d{15})\b/);
+  if (num) dados.numeroNfse = String(Number(num[1]));
+  const datas = [...linhaCab.matchAll(/(\d{2})\/(\d{2})\/(\d{4})/g)];
+  if (datas.length) { const d = datas[datas.length - 1]; dados.dataEmissao = `${d[3]}-${d[2]}-${d[1]}`; }
+  dados.nf = nfComSufixoF(dados.numeroNfse);
+
+  const iTom = U.findIndex((l) => /^TOMADOR\s+(?!SERVICO)/.test(l.trim()));
+  if (iTom >= 0) {
+    for (let k = iTom; k < Math.min(iTom + 4, L.length); k += 1) {
+      if (!dados.cnpjTomador) { const m = L[k].match(RE_CNPJ); if (m) dados.cnpjTomador = m[1].replace(/\D/g, ''); }
+      const m2 = L[k].match(/^MUN\s+([^¦]+?)\s*-\s*([A-Z]{2})\b/i);
+      if (m2 && !dados.municipioTomador) dados.municipioTomador = chaveMunicipio(`${m2[1]}${m2[2]}`);
+    }
+  }
+  const todo = L.join('\n');
+  const bruto = todo.match(/FRETE TOTAL \(R\$\)\s*(?:¦\s*)?([\d.]+,\d{2})/i);
+  const liquido = todo.match(/VALOR A RECEBER \(R\$\)\s*(?:¦\s*)?([\d.]+,\d{2})/i);
+  if (bruto) dados.valor = paraNumero(bruto[1]);
+  if (liquido) dados.valorLiquido = paraNumero(liquido[1]);
+  aplicarRegrasLancamento(dados);
+  return resultado(dados);
+}
+
 // linhas: saida de itensParaLinhas (ou o texto do PDF dividido por linha).
 export function extrairDadosNfse(linhas = []) {
   const L = linhas.map((l) => String(l ?? ''));
   const U = L.map((l) => semAcento(l).toUpperCase());
+  if (U.some((l) => l.includes('RECIBO PROVISORIO DE SERVICOS'))) return extrairModeloRps(L, U);
   const todo = L.join('\n');
   const dados = { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null, chave: '' };
   const faltando = [];
@@ -59,7 +125,7 @@ export function extrairDadosNfse(linhas = []) {
   if (chave) {
     dados.chave = chave;
     dados.cnpjTransp = chave.slice(9, 23);
-    dados.numeroNfse = String(Number(chave.slice(23, 36)));
+    dados.numeroNfse = numeroDaChave(chave.slice(23, 36));
   }
   if (!dados.numeroNfse) {
     const i = U.findIndex((l) => l.includes('NUMERO DA NFS-E') && !l.includes('DPS'));
@@ -78,11 +144,11 @@ export function extrairDadosNfse(linhas = []) {
   if (d) dados.dataEmissao = `${d[3]}-${d[2]}-${d[1]}`;
 
   // prestador (nome e, se faltar a chave, o CNPJ) e tomador (CNPJ)
-  const iPrest = U.findIndex((l) => l.includes('PRESTADOR / FORNECEDOR') || /^PRESTADOR DE SERVICO\b/.test(l.trim()));
-  const iTom = U.findIndex((l) => l.includes('TOMADOR / ADQUIRENTE') || /^TOMADOR DE SERVICO\b/.test(l.trim()));
+  const iPrest = U.findIndex((l) => l.includes('PRESTADOR / FORNECEDOR') || /^PRESTADOR DE SERVICO/.test(l.trim()));
+  const iTom = U.findIndex((l) => l.includes('TOMADOR / ADQUIRENTE') || /^TOMADOR DE SERVICO/.test(l.trim()));
   const cnpjApos = (inicio) => {
     if (inicio < 0) return '';
-    for (let k = inicio; k < Math.min(inicio + 4, L.length); k += 1) {
+    for (let k = inicio; k < Math.min(inicio + 6, L.length); k += 1) {
       const m = L[k].match(RE_CNPJ);
       if (m) return m[1].replace(/\D/g, '');
     }
@@ -95,8 +161,12 @@ export function extrairDadosNfse(linhas = []) {
   if (iNomePrest >= 0 && L[iNomePrest + 1]) dados.transportadora = L[iNomePrest + 1].split(SEP)[0].trim();
 
   if (!dados.transportadora && iPrest >= 0) {
-    const k = U.findIndex((l, n) => n > iPrest && n < iPrest + 6 && l.includes('NOME/RAZAO SOCIAL'));
-    if (k >= 0) dados.transportadora = L[k].replace(/^[^:]*:/, '').split(SEP).join(' ').replace(/\s+/g, ' ').trim();
+    const k = U.findIndex((l, n) => n > iPrest && n < iPrest + 6 && l.includes('RAZAO'));
+    if (k >= 0) {
+      // "Nome/Razao Social: X", "Nome/Razao ¦ X" ou o titulo sozinho com o nome na linha de baixo
+      const mesma = L[k].replace(/^Nome\s*\/\s*Raz[ãa]o(\s+Social)?\s*:?\s*/i, '').replace(/^Raz[ãa]o Social\s*:?\s*/i, '').replace(/^¦\s*/, '').split(SEP).join(' ').replace(/\s+/g, ' ').trim();
+      dados.transportadora = mesma || String(L[k + 1] || '').trim();
+    }
   }
 
   // valor da operacao/servico (= valor bruto da nota): primeiro R$ da linha abaixo do titulo
@@ -110,7 +180,7 @@ export function extrairDadosNfse(linhas = []) {
 
   if (!(dados.valor > 0)) {
     // modelo das prefeituras: "Valor do Servico ¦ 23,68"
-    const k = U.findIndex((l) => l.includes('VALOR DO SERVICO'));
+    const k = U.findIndex((l) => /VALOR DOS? SERVICOS?\b/.test(l));
     const re = /\d{1,3}(?:\.\d{3})*,\d{2}/g;
     const todos = k >= 0 ? L[k].match(re) : null;
     if (todos) dados.valor = paraNumero(todos[todos.length - 1]);
@@ -118,7 +188,7 @@ export function extrairDadosNfse(linhas = []) {
       // titulos numa linha e valores na de baixo (mesma ordem das colunas): "Valor do Servico" e a 1a coluna
       const celulas = L[k].split(SEP);
       const abaixo = (L[k + 1] || '').split(SEP);
-      const idx = celulas.findIndex((c) => semAcento(c).toUpperCase().includes('VALOR DO SERVICO'));
+      const idx = Math.max(0, celulas.findIndex((c) => /VALOR DOS? SERVICOS?\b/.test(semAcento(c).toUpperCase())));
       const alvo = abaixo.length === celulas.length ? abaixo[idx] : abaixo[0];
       const m = String(alvo || '').match(re);
       if (m) dados.valor = paraNumero(m[0]);
@@ -140,11 +210,9 @@ export function extrairDadosNfse(linhas = []) {
       dados.valorLiquido = alinhado.length ? alinhado[0] : (todos.length ? todos[todos.length - 1] : null);
     }
   }
-  if (!(dados.valorLiquido > 0)) dados.valorLiquido = dados.valor;
-  dados.codImp = dados.valor > 0 && dados.valorLiquido < dados.valor - 0.005 ? 'IN' : 'IQ';
 
   // municipio do prestador e do tomador: mesmo municipio -> CFOP 1933AA, senao 2933AA
-  const chaveMun = (txt) => semAcento(txt).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const chaveMun = chaveMunicipio;
   const municipioApos = (inicio) => {
     if (inicio < 0) return '';
     for (let k = inicio; k < Math.min(inicio + 10, L.length); k += 1) {
@@ -156,21 +224,17 @@ export function extrairDadosNfse(linhas = []) {
         const ibge = (cel[2] || '').split('/')[0].replace(/\D/g, '');
         return ibge.length >= 6 ? `IBGE${ibge}` : chaveMun(cel[1] || '');
       }
+      if (U[k].trim() === 'ENDERECO' && L[k + 1]) { // modelo de Palmas: ... - CEP: 77023-122 - Palmas - TO
+        const a = L[k + 1].match(/-\s*([^-¦]+?)\s*-\s*([A-Za-z]{2})\s*$/);
+        if (a) return chaveMun(`${a[1]}${a[2]}`);
+      }
     }
     return '';
   };
   dados.municipioPrestador = municipioApos(iPrest);
   dados.municipioTomador = municipioApos(iTom);
-  dados.cfop = dados.municipioPrestador && dados.municipioTomador
-    ? (dados.municipioPrestador === dados.municipioTomador ? '1933AA' : '2933AA')
-    : '';
-
-  if (!dados.numeroNfse) faltando.push('numero da NFS-e');
-  if (dados.cnpjTransp.length !== 14) faltando.push('CNPJ do prestador');
-  if (dados.cnpjTomador.length !== 14) faltando.push('CNPJ do tomador');
-  if (!dados.dataEmissao) faltando.push('data de emissao');
-  if (!(dados.valor > 0)) faltando.push('valor');
-  return { dados, faltando };
+  aplicarRegrasLancamento(dados);
+  return resultado(dados);
 }
 
 // Le o PDF no navegador (pdfjs) e devolve as linhas de texto da primeira pagina.

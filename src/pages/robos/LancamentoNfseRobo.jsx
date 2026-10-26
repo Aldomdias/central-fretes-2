@@ -19,6 +19,8 @@ import {
   criarIndices,
   hojeIso,
   isoParaBr,
+  normalizarCnpj,
+  numeroPlanilha,
   lerPlanilhaArquivo,
   lerResultadoCsv,
   tsvParaMatriz,
@@ -29,6 +31,7 @@ import { registrarLancamentos } from '../../services/robosLancamentosService';
 import { carregarSessao } from '../../utils/authLocal';
 import ParametrosLancamentoCard from './ParametrosLancamentoCard';
 import CampoPasta, { caminhoArquivo, usePastaTrabalho } from './PastaTrabalho';
+import { nfComSufixoF } from '../../utils/robos/nfsePdf';
 
 const CHAVE_LOTE = 'central_fretes_robo_nfse_lote_v2';
 
@@ -147,11 +150,49 @@ export default function LancamentoNfseRobo() {
   }
 
   // Acrescenta linhas (vindas de colagem ou arquivo) depois de tirar as linhas em branco.
-  function acrescentar(lista, origem) {
-    const novas = lista.map((e) => novaEntradaNfse(novoUid(), { ...e, valor: e.valor === null || e.valor === undefined ? '' : valorParaSap(e.valor) }));
-    setEntradas((atual) => [...atual.filter((e) => !entradaVazia(e)), ...novas]);
+  // Com mesclar (arquivo preenchido de volta): a nota que ja esta na grade (mesma NF + CNPJ do
+  // prestador) so recebe os campos preenchidos no arquivo; as demais entram como novas.
+  function acrescentar(lista, origem, { mesclar = false } = {}) {
+    const paraGrade = (e) => ({ ...e, valor: e.valor === null || e.valor === undefined ? '' : valorParaSap(e.valor) });
+    const chave = (e) => `${nfComSufixoF(e.nf)}/${normalizarCnpj(e.cnpjTransp)}`.toUpperCase();
+    const novas = lista.map((e) => novaEntradaNfse(novoUid(), paraGrade(e)));
+    setEntradas((atual) => {
+      const base = atual.filter((e) => !entradaVazia(e));
+      if (!mesclar) return [...base, ...novas];
+      const indice = new Map(base.map((e, i) => [chave(e), i]));
+      const resultado = [...base];
+      const soNovas = [];
+      novas.forEach((n) => {
+        const i = indice.get(chave(n));
+        if (i === undefined) { soNovas.push(n); return; }
+        const preenchidos = Object.fromEntries(Object.entries(n).filter(([c, v]) => c !== 'uid' && String(v ?? '').trim() !== ''));
+        resultado[i] = { ...resultado[i], ...preenchidos };
+      });
+      return [...resultado, ...soNovas];
+    });
     setErro('');
-    setFeedback(`${fmt(novas.length)} nota(s) adicionada(s) de ${origem}.`);
+    setFeedback(mesclar
+      ? `${fmt(lista.length)} nota(s) lida(s) de ${origem}: as que ja estavam na grade foram completadas e as demais adicionadas.`
+      : `${fmt(novas.length)} nota(s) adicionada(s) de ${origem}.`);
+  }
+
+  // Baixa a grade como planilha (mesmas colunas do modelo): da para completar o que falta no Excel
+  // (ex.: EscrV) e voltar com "Importar arquivo", que completa as notas ja na grade.
+  async function baixarPreenchido() {
+    const dados = entradas.filter((e) => !entradaVazia(e)).map((e) => ({
+      NF: e.nf,
+      Transportadora: e.transportadora,
+      'CNPJ Transp': e.cnpjTransp,
+      'Data Emissão': isoParaBr(e.dataEmissao) || e.dataEmissao,
+      Valor: numeroPlanilha(e.valor) ?? '',
+      Cod: e.codImp,
+      CFOP: e.cfop,
+      'CNPJ Tomador': e.cnpjTomador,
+      EscrV: e.escrV,
+      Fatura: e.fatura,
+    }));
+    if (!dados.length) { setErro('A grade esta vazia.'); return; }
+    await baixarXlsx('nfse-para-completar.xlsx', dados, CABECALHO_MODELO_NFSE);
   }
 
   function colarMatriz(matriz, origem) {
@@ -176,7 +217,7 @@ export default function LancamentoNfseRobo() {
       const XLSX = await import('xlsx');
       const wb = await lerPlanilhaArquivo(arquivo);
       const nome = wb.SheetNames.includes('Preencher Dados') ? 'Preencher Dados' : wb.SheetNames[0];
-      acrescentar(lerEntradaNfse(abaParaMatriz(XLSX, wb.Sheets[nome])), arquivo.name);
+      acrescentar(lerEntradaNfse(abaParaMatriz(XLSX, wb.Sheets[nome])), arquivo.name, { mesclar: true });
     } catch (e) { setErro(e.message || 'Nao consegui ler o arquivo.'); }
     finally { if (refArquivo.current) refArquivo.current.value = ''; }
   }
@@ -294,6 +335,7 @@ export default function LancamentoNfseRobo() {
                 Ler PDFs das notas
                 <input ref={refPdf} type="file" accept=".pdf,application/pdf" multiple disabled={semTabelas} style={{ display: 'none' }} onChange={(e) => importarPdfs(e.target.files)} />
               </label>
+              {entradas.length ? <button type="button" className="btn-secondary" onClick={baixarPreenchido} title="Baixa a grade em Excel para completar o que falta (ex.: EscrV) e voltar com Importar arquivo">Baixar planilha preenchida (.xlsx)</button> : null}
               <button type="button" className="btn-secondary" onClick={baixarModelo}>Baixar modelo de importação (.xlsx)</button>
               {entradas.length ? <button type="button" className="btn-secondary" onClick={limparTudo}>Limpar tudo</button> : null}
               <div className="field" style={{ marginLeft: 'auto' }}>
