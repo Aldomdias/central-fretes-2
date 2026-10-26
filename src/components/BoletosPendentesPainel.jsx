@@ -2,6 +2,7 @@ import { faturaPaga, faturaEmAntecipacao } from '../services/auditorRoboService'
 import { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { carregarSessao } from '../utils/authLocal';
+import { casarBoletosComFaturas, divergenciasBoleto, lerBoletoPdf } from '../utils/boletosPasta';
 import {
   confirmarBoletos, desfazerConfirmacaoBoleto, listarControleBoletos, STATUS_BOLETO,
 } from '../services/boletoControleService';
@@ -31,6 +32,7 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
   const [busca, setBusca] = useState('');
   const [selecionadas, setSelecionadas] = useState(() => new Set());
   const [salvando, setSalvando] = useState(false);
+  const [pasta, setPasta] = useState(null); // { total, casamento } da ultima conferencia da pasta
 
   const recarregar = () => listarControleBoletos()
     .then(({ lista, local: l }) => { setControle(lista); setLocal(l); setErro(''); })
@@ -58,6 +60,31 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
     .map((f) => ({ f, c: porFatura.get(String(f.id)) }))
     .sort((a, b) => String(b.c.confirmado_em).localeCompare(String(a.c.confirmado_em))), [exigem, porFatura, termo]);
 
+  const [lendo, setLendo] = useState('');
+  const lerPasta = async (ev) => {
+    const arquivos = Array.from(ev.target.files || []).filter((a) => /\.pdf$/i.test(a.name));
+    ev.target.value = '';
+    if (!arquivos.length) { setErro('Nenhum PDF encontrado na pasta escolhida.'); return; }
+    setErro('');
+    const leituras = new Map();
+    for (let i = 0; i < arquivos.length; i += 1) {
+      setLendo(`Lendo boleto ${i + 1} de ${arquivos.length}...`);
+      leituras.set(arquivos[i].name, await lerBoletoPdf(arquivos[i]));
+    }
+    setLendo('');
+    // Mesma linha digitavel em mais de um arquivo = boleto repetido.
+    const porLinha = new Map();
+    leituras.forEach((l, nome) => { if (l.linhaDigitavel) porLinha.set(l.linhaDigitavel, [...(porLinha.get(l.linhaDigitavel) || []), nome]); });
+    const repetidos = [...porLinha.values()].filter((v) => v.length > 1);
+    setPasta({ total: arquivos.length, leituras, repetidos, casamento: casarBoletosComFaturas(arquivos.map((a) => a.name), faturas) });
+  };
+  const achado = (f) => pasta?.casamento.porFatura.get(String(f.id));
+  const leitura = (f) => (achado(f) ? pasta.leituras.get(achado(f).arquivo) : null);
+  const diverge = (f) => divergenciasBoleto(leitura(f), f);
+  const comArquivo = pendentes.filter(({ f }) => achado(f) && !diverge(f).length);
+  const divergentes = pendentes.filter(({ f }) => achado(f) && diverge(f).length);
+  const baixarEncontrados = () => aplicar(comArquivo.map(({ f }) => f), STATUS_BOLETO.NA_PASTA, 'PASTA');
+
   const valorPendente = pendentes.reduce((acc, { f }) => acc + Number(f.valor_fatura || 0), 0);
   const maisAntigo = pendentes.reduce((m, { dias }) => Math.max(m, dias ?? 0), 0);
   const nSel = pendentes.filter(({ f }) => selecionadas.has(String(f.id))).length;
@@ -70,7 +97,7 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
   const todasMarcadas = pendentes.length > 0 && nSel === pendentes.length;
   const alternarTodas = () => setSelecionadas(todasMarcadas ? new Set() : new Set(pendentes.map(({ f }) => String(f.id))));
 
-  const aplicar = async (lista, status) => {
+  const aplicar = async (lista, status, metodo = 'MANUAL') => {
     if (!lista.length || salvando) return;
     let observacao = '';
     if (status === STATUS_BOLETO.DISPENSADO) {
@@ -82,7 +109,7 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
     setSalvando(true);
     setErro('');
     try {
-      await confirmarBoletos(lista, { status, observacao, usuario: { nome: sessao?.nome, email: sessao?.email } });
+      await confirmarBoletos(lista, { status, metodo, observacao, usuario: { nome: sessao?.nome, email: sessao?.email } });
       setSelecionadas(new Set());
       await recarregar();
     } catch (e) {
@@ -104,6 +131,11 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
       Auditor: f.auditor_nome || '',
       Valor: Number(f.valor_fatura || 0),
       Vencimento: dataBr(f.data_vencimento),
+      'Boleto na pasta': pasta ? (achado(f)?.arquivo || 'NAO') : '',
+      'Valor do boleto': leitura(f)?.valor ?? '',
+      'Vencimento do boleto': leitura(f)?.vencimento ? dataBr(leitura(f).vencimento) : '',
+      'Divergencia': diverge(f).join(' + '),
+      'Linha digitavel': leitura(f)?.linhaDigitavel || '',
       'Dias aguardando boleto': dias ?? '',
       Status: f.status,
     }));
@@ -111,6 +143,13 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
     ws['!cols'] = [{ wch: 14 }, { wch: 30 }, { wch: 22 }, { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 24 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Boletos pendentes');
+    if (pasta) {
+      const extras = [
+        ...pasta.casamento.semFatura.map((x) => ({ Arquivo: x.arquivo, Situacao: x.motivo })),
+        ...pasta.casamento.duvidosos.map((x) => ({ Arquivo: x.arquivo, Situacao: `Mais de uma fatura possivel: ${x.faturas.map((f) => `${f.numero_fatura} ${f.transportadora}`).join(' | ')}` })),
+      ];
+      if (extras.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(extras), 'Arquivos sem fatura');
+    }
     XLSX.writeFile(wb, `BOLETOS_PENDENTES_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
@@ -187,6 +226,16 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
               onClick={() => aplicar(pendentes.filter(({ f }) => selecionadas.has(String(f.id))).map(({ f }) => f), STATUS_BOLETO.DISPENSADO)}>
               Nao precisa de boleto ({nSel})
             </button>
+            <label className="btn-secondary audit-small-button" style={{ cursor: 'pointer' }}>
+              {lendo || 'Conferir pasta de boletos'}
+              <input type="file" multiple accept=".pdf" disabled={!!lendo} style={{ display: 'none' }} onChange={lerPasta}
+                ref={(el) => { if (el) { el.setAttribute('webkitdirectory', ''); el.setAttribute('directory', ''); } }} />
+            </label>
+            {pasta && (
+              <button type="button" className="btn-primary audit-small-button" disabled={!comArquivo.length || salvando} onClick={baixarEncontrados}>
+                Dar baixa nos conferidos ({comArquivo.length})
+              </button>
+            )}
             <button type="button" className="btn-secondary audit-small-button" disabled={!pendentes.length} onClick={exportar}>
               Exportar pendentes
             </button>
@@ -196,6 +245,24 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
             </label>
           </div>
 
+          {pasta && (
+            <div className="hint-box compact" style={{ marginBottom: 8, borderLeft: '4px solid #0369a1' }}>
+              <strong>{pasta.total}</strong> boleto(s) na pasta · <strong>{comArquivo.length}</strong> de {pendentes.length} fatura(s) pendente(s) já têm arquivo ·{' '}
+              <strong>{divergentes.length}</strong> com divergência de valor/vencimento ·{' '}
+              <strong>{pendentes.length - comArquivo.length - divergentes.length}</strong> sem boleto ·{' '}
+              {pasta.repetidos.length > 0 && <><strong style={{ color: '#b91c1c' }}>{pasta.repetidos.length} boleto(s) repetido(s)</strong> ({pasta.repetidos.map((r) => r.join(' = ')).join('; ')}) · </>}
+              {pasta.casamento.semFatura.length + pasta.casamento.duvidosos.length} arquivo(s) sem fatura correspondente
+              {(pasta.casamento.semFatura.length + pasta.casamento.duvidosos.length) > 0 && (
+                <details style={{ marginTop: 4 }}>
+                  <summary style={{ cursor: 'pointer' }}>Ver arquivos sem fatura</summary>
+                  <ul style={{ margin: '4px 0 0 16px' }}>
+                    {pasta.casamento.semFatura.map((x) => <li key={x.arquivo}>{x.arquivo} — {x.motivo}</li>)}
+                    {pasta.casamento.duvidosos.map((x) => <li key={x.arquivo}>{x.arquivo} — mais de uma fatura possível</li>)}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
           {!carregando && !pendentes.length && (
             <div style={{ padding: 10, color: '#14733b', fontWeight: 700 }}>✓ Nenhum boleto pendente neste recorte.</div>
           )}
@@ -210,6 +277,8 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
                     {mostrarAuditor && <th>Auditor</th>}
                     <th>Valor</th>
                     <th>Vencimento</th>
+                    {pasta && <th>Boleto</th>}
+                    {pasta && <th>Valor / venc. do boleto</th>}
                     <th>Aguardando</th>
                     <th>Acao</th>
                   </tr>
@@ -227,6 +296,17 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
                       {mostrarAuditor && <td>{f.auditor_nome || 'SEM AUDITOR'}</td>}
                       <td>{dinheiro(f.valor_fatura)}</td>
                       <td>{dataBr(f.data_vencimento)}</td>
+                      {pasta && (
+                        <td style={{ fontWeight: 700, color: achado(f) && !diverge(f).length ? '#14733b' : '#b91c1c' }} title={achado(f)?.arquivo || ''}>
+                          {!achado(f) ? 'Sem boleto' : diverge(f).length ? `Divergente: ${diverge(f).join(' + ')}` : achado(f).certeza === 'SO_NUMERO' ? 'Tem (conferir nome)' : 'Tem'}
+                        </td>
+                      )}
+                      {pasta && (
+                        <td style={{ fontSize: 12 }}>
+                          {leitura(f)?.erro ? <span title={leitura(f).erro}>não lido</span>
+                            : leitura(f) ? `${dinheiro(leitura(f).valor)} · ${dataBr(leitura(f).vencimento)}` : '-'}
+                        </td>
+                      )}
                       <td style={{ color: corDias(dias), fontWeight: 700 }}>{dias == null ? '-' : `${dias} dia(s)`}</td>
                       <td>
                         <button type="button" className="btn-primary audit-small-button" disabled={salvando}
