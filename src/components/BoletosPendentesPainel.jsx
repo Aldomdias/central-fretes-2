@@ -1,10 +1,11 @@
 import { faturaPaga, faturaEmAntecipacao } from '../services/auditorRoboService';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { carregarSessao } from '../utils/authLocal';
+import BoletosEnvioPainel from './BoletosEnvioPainel';
 import { casarBoletosComFaturas, divergenciasBoleto, lerBoletoPdf } from '../utils/boletosPasta';
 import {
-  confirmarBoletos, desfazerConfirmacaoBoleto, listarControleBoletos, STATUS_BOLETO,
+  apagarBoletosPagos, confirmarBoletos, desfazerConfirmacaoBoleto, guardarBoletos, listarControleBoletos, STATUS_BOLETO, urlBoletoGuardado,
 } from '../services/boletoControleService';
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -35,10 +36,17 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
   const [pasta, setPasta] = useState(null); // { total, casamento } da ultima conferencia da pasta
 
   const recarregar = () => listarControleBoletos()
-    .then(({ lista, local: l }) => { setControle(lista); setLocal(l); setErro(''); })
+    .then(({ lista, local: l }) => { setControle(lista); setLocal(l); setErro(''); return lista; })
     .catch((e) => setErro(e.message))
     .finally(() => setCarregando(false));
   useEffect(() => { recarregar(); }, []);
+  // Boleto guardado de fatura ja paga: apaga o PDF e mantem a informacao (o servidor tambem faz isso todo dia).
+  const limpou = useRef(false);
+  useEffect(() => {
+    if (limpou.current || carregando || !controle.some((c) => c.boleto_arquivo_path) || !(faturas || []).length) return;
+    limpou.current = true;
+    apagarBoletosPagos(controle, faturaPaga, faturas).then((n) => { if (n) recarregar(); }).catch(() => {});
+  }, [carregando, controle, faturas]);
 
   const porFatura = useMemo(() => new Map(controle.map((c) => [String(c.fatura_id), c])), [controle]);
   // Fatura ja paga (partida/pagamento gravado) nao espera mais boleto, mesmo que o status ainda nao tenha virado PAGA.
@@ -66,24 +74,52 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
     ev.target.value = '';
     if (!arquivos.length) { setErro('Nenhum PDF encontrado na pasta escolhida.'); return; }
     setErro('');
+    // 1) Casa pelo NOME (rapido, mesmo com milhares de arquivos); 2) so le o conteudo dos que casaram
+    // com fatura que ainda aguarda/tem boleto (pagas e outras ficam de fora).
+    const arquivoPorNome = new Map(arquivos.map((a) => [a.name, a]));
+    const casamento = casarBoletosComFaturas(arquivos.map((a) => a.name), faturas);
+    const idsEmJogo = new Set([...exigem.map((f) => String(f.id)), ...controle.map((c) => String(c.fatura_id))]);
+    const aLer = [...casamento.porFatura].filter(([id]) => idsEmJogo.has(id)).map(([, v]) => v.arquivo);
     const leituras = new Map();
-    for (let i = 0; i < arquivos.length; i += 1) {
-      setLendo({ feito: i, total: arquivos.length, nome: arquivos[i].name });
-      leituras.set(arquivos[i].name, await lerBoletoPdf(arquivos[i]));
+    for (let i = 0; i < aLer.length; i += 1) {
+      setLendo({ feito: i, total: aLer.length, nome: aLer[i] });
+      leituras.set(aLer[i], await lerBoletoPdf(arquivoPorNome.get(aLer[i])));
     }
     setLendo(null);
     // Mesma linha digitavel em mais de um arquivo = boleto repetido.
     const porLinha = new Map();
     leituras.forEach((l, nome) => { if (l.linhaDigitavel) porLinha.set(l.linhaDigitavel, [...(porLinha.get(l.linhaDigitavel) || []), nome]); });
     const repetidos = [...porLinha.values()].filter((v) => v.length > 1);
-    setPasta({ total: arquivos.length, leituras, repetidos, casamento: casarBoletosComFaturas(arquivos.map((a) => a.name), faturas) });
+    setPasta({ total: arquivos.length, lidos: aLer.length, arquivoPorNome, leituras, repetidos, casamento });
   };
   const achado = (f) => pasta?.casamento.porFatura.get(String(f.id));
-  const leitura = (f) => (achado(f) ? pasta.leituras.get(achado(f).arquivo) : null);
+  const leitura = (f) => (achado(f) ? pasta.leituras.get(achado(f).arquivo) || null : null);
   const diverge = (f) => divergenciasBoleto(leitura(f), f);
   const comArquivo = pendentes.filter(({ f }) => achado(f) && !diverge(f).length);
   const divergentes = pendentes.filter(({ f }) => achado(f) && diverge(f).length);
-  const baixarEncontrados = () => aplicar(comArquivo.map(({ f }) => f), STATUS_BOLETO.NA_PASTA, 'PASTA');
+  // Fatura ja confirmada cujo arquivo da pasta e outro boleto (substituido) ou que ainda nao tem PDF guardado.
+  const paraAtualizar = pasta ? exigem.filter((f) => porFatura.has(String(f.id)) && achado(f) && !diverge(f).length && leitura(f)?.linhaDigitavel
+    && leitura(f).linhaDigitavel !== porFatura.get(String(f.id)).boleto_linha_digitavel) : [];
+  const guardar = async (lista) => {
+    if (!lista.length || salvando) return;
+    setSalvando(true);
+    setErro('');
+    try {
+      await guardarBoletos(lista.map((f) => ({
+        fatura: f, arquivo: pasta.arquivoPorNome.get(achado(f).arquivo), leitura: leitura(f), atual: porFatura.get(String(f.id)),
+      })), { usuario: { nome: sessao?.nome, email: sessao?.email } });
+      setSelecionadas(new Set());
+      await recarregar();
+    } catch (e) {
+      setErro(e.message);
+    } finally {
+      setSalvando(false);
+    }
+  };
+  const baixarEncontrados = () => guardar(comArquivo.map(({ f }) => f));
+  const abrirBoleto = async (c) => {
+    try { window.open(await urlBoletoGuardado(c.boleto_arquivo_path), '_blank', 'noopener'); } catch (e) { setErro(e.message); }
+  };
 
   const valorPendente = pendentes.reduce((acc, { f }) => acc + Number(f.valor_fatura || 0), 0);
   const maisAntigo = pendentes.reduce((m, { dias }) => Math.max(m, dias ?? 0), 0);
@@ -209,6 +245,7 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
             </div>
           )}
           {erro && <div className="hint-box compact" style={{ borderLeft: '4px solid #b91c1c', marginBottom: 8 }}>{erro}</div>}
+          <BoletosEnvioPainel exigem={exigem} controle={controle} usuario={{ nome: sessao?.nome, email: sessao?.email }} onSalvou={recarregar} onErro={setErro} />
           <div className="hint-box compact" style={{ marginBottom: 8 }}>
             Fatura liberada para pagamento precisa ter o boleto na pasta do financeiro. Quando colocar o boleto na pasta,
             clique em <strong>Boleto na pasta</strong> para dar a baixa nesta lista.
@@ -236,6 +273,11 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
                 Dar baixa nos conferidos ({comArquivo.length})
               </button>
             )}
+            {pasta && paraAtualizar.length > 0 && (
+              <button type="button" className="btn-secondary audit-small-button" disabled={salvando} onClick={() => guardar(paraAtualizar)}>
+                Atualizar boleto guardado ({paraAtualizar.length})
+              </button>
+            )}
             <button type="button" className="btn-secondary audit-small-button" disabled={!pendentes.length} onClick={exportar}>
               Exportar pendentes
             </button>
@@ -256,7 +298,7 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
           )}
           {pasta && (
             <div className="hint-box compact" style={{ marginBottom: 8, borderLeft: '4px solid #0369a1' }}>
-              <strong>{pasta.total}</strong> boleto(s) na pasta · <strong>{comArquivo.length}</strong> de {pendentes.length} fatura(s) pendente(s) já têm arquivo ·{' '}
+              <strong>{pasta.total}</strong> PDF(s) na pasta, <strong>{pasta.lidos}</strong> lido(s) (só os de faturas que aguardam/têm boleto) · <strong>{comArquivo.length}</strong> de {pendentes.length} fatura(s) pendente(s) já têm arquivo ·{' '}
               <strong>{divergentes.length}</strong> com divergência de valor/vencimento ·{' '}
               <strong>{pendentes.length - comArquivo.length - divergentes.length}</strong> sem boleto ·{' '}
               {pasta.repetidos.length > 0 && <><strong style={{ color: '#b91c1c' }}>{pasta.repetidos.length} boleto(s) repetido(s)</strong> ({pasta.repetidos.map((r) => r.join(' = ')).join('; ')}) · </>}
@@ -265,8 +307,9 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
                 <details style={{ marginTop: 4 }}>
                   <summary style={{ cursor: 'pointer' }}>Ver arquivos sem fatura</summary>
                   <ul style={{ margin: '4px 0 0 16px' }}>
-                    {pasta.casamento.semFatura.map((x) => <li key={x.arquivo}>{x.arquivo} — {x.motivo}</li>)}
-                    {pasta.casamento.duvidosos.map((x) => <li key={x.arquivo}>{x.arquivo} — mais de uma fatura possível</li>)}
+                    {pasta.casamento.semFatura.slice(0, 50).map((x) => <li key={x.arquivo}>{x.arquivo} — {x.motivo}</li>)}
+                    {pasta.casamento.duvidosos.slice(0, 50).map((x) => <li key={x.arquivo}>{x.arquivo} — mais de uma fatura possível</li>)}
+                    {(pasta.casamento.semFatura.length > 50 || pasta.casamento.duvidosos.length > 50) && <li>… lista completa no Excel (Exportar pendentes)</li>}
                   </ul>
                 </details>
               )}
@@ -344,6 +387,15 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
                       <td>{dinheiro(f.valor_fatura)}</td>
                       <td title={c.observacao || ''}>
                         {c.status === STATUS_BOLETO.DISPENSADO ? 'Nao precisa de boleto' : c.metodo === 'PASTA' ? 'Na pasta (conferido)' : 'Na pasta (confirmado)'}
+                        {c.boleto_arquivo_nome && (
+                          <div style={{ fontSize: 11, color: '#475569' }}>
+                            {dinheiro(c.boleto_valor)} · venc. {dataBr(c.boleto_vencimento)} ·{' '}
+                            {c.boleto_arquivo_path
+                              ? <button type="button" className="link-button" onClick={() => abrirBoleto(c)}>abrir PDF</button>
+                              : `PDF apagado${c.boleto_apagado_motivo === 'PAGA' ? ' (fatura paga)' : ''}`}
+                            {c.boleto_arquivo_path && (c.boleto_copiado_em ? ` · copiado p/ pasta em ${dataBr(c.boleto_copiado_em)}` : ' · ainda não copiado p/ pasta')}
+                          </div>
+                        )}
                       </td>
                       <td>{c.confirmado_por || '-'}</td>
                       <td>{dataBr(c.confirmado_em)}</td>

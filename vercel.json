@@ -1,6 +1,7 @@
 {
   "crons": [
-    { "path": "/api/robo-auditor", "schedule": "0 * * * *" }
+    { "path": "/api/robo-auditor", "schedule": "0 * * * *" },
+    { "path": "/api/limpar-boletos", "schedule": "30 8 * * *" }
   ],
   "functions": {
     "api/robo-auditor.js": { "maxDuration": 300, "includeFiles": "api/_robo-core.mjs" },
