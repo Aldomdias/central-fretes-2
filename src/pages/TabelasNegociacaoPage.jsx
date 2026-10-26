@@ -58,6 +58,7 @@ import { cnpjPreenchidoValido, formatarCnpj, normalizarCnpj, obterRaizCnpj } fro
 import { LaudoNegociacaoTemplate, LaudoRodadasNegociacaoTemplate } from '../components/laudos';
 import LaudoTransportadoraConsolidadoTemplate from '../components/laudos/LaudoTransportadoraConsolidadoTemplate';
 import LaudoEmailAcoes from '../components/laudos/LaudoEmailAcoes';
+import CampoOrigemMunicipio from '../components/CampoOrigemMunicipio';
 import { laudoConsolidadoPorAudience, LAUDO_AUDIENCE, montarExcelAjusteRotaFaixaConsolidado } from '../utils/laudoTransportadoraConsolidado';
 import { montarLaudosNegociacao } from '../utils/laudosNegociacaoHtml';
 import { montarLaudosRodadasNegociacao } from '../utils/laudosRodadasNegociacaoHtml';
@@ -3125,7 +3126,13 @@ export default function TabelasNegociacaoPage() {
         </div>
         <div className="sim-form-grid sim-grid-5" style={{ marginTop: 12 }}>
           <label>Origem
-            <input value={form.origem} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { origem: e.target.value }); }); }} placeholder="Ex: Itajaí" />
+            <CampoOrigemMunicipio
+              value={form.origem}
+              uf={form.uf_origem}
+              placeholder="Ex: Itajaí"
+              onTexto={function(texto) { setForm(function(p) { return Object.assign({}, p, { origem: texto }); }); }}
+              onSelect={function(m) { setForm(function(p) { return Object.assign({}, p, { origem: m.cidade, uf_origem: m.uf || p.uf_origem }); }); }}
+            />
           </label>
           <label>UF origem
             <select value={form.uf_origem} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { uf_origem: e.target.value }); }); }}>
@@ -4524,7 +4531,13 @@ export default function TabelasNegociacaoPage() {
             {erro ? <div className="sim-alert error" style={{ marginTop: 12 }}>{erro}</div> : null}
             <div className="sim-form-grid sim-grid-3" style={{ marginTop: 12 }}>
               <label>Origem
-                <input value={novaOrigem.origem} onChange={function(e) { setNovaOrigem(function(p) { return Object.assign({}, p, { origem: e.target.value }); }); }} placeholder="Ex: Joinville" />
+                <CampoOrigemMunicipio
+                  value={novaOrigem.origem}
+                  uf={novaOrigem.uf_origem}
+                  placeholder="Ex: Joinville"
+                  onTexto={function(texto) { setNovaOrigem(function(p) { return Object.assign({}, p, { origem: texto }); }); }}
+                  onSelect={function(m) { setNovaOrigem(function(p) { return Object.assign({}, p, { origem: m.cidade, uf_origem: m.uf || p.uf_origem }); }); }}
+                />
               </label>
               <label>UF origem
                 <select value={novaOrigem.uf_origem} onChange={function(e) { setNovaOrigem(function(p) { return Object.assign({}, p, { uf_origem: e.target.value }); }); }}>
