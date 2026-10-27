@@ -85,10 +85,17 @@ function municipiosPorEndereco(L, U) {
 }
 
 // Valor liquido -> codigo de imposto; municipios -> CFOP (regras do lancamento de NFS-e).
+// Primeiro digito do CFOP: o SAP compara a UF (1 = mesma UF, 2 = outra UF), nao o municipio.
+// Com as duas UFs conhecidas manda a UF; sem elas, cai na comparacao de municipio.
+const UF_IBGE = { 11: 'RO', 12: 'AC', 13: 'AM', 14: 'RR', 15: 'PA', 16: 'AP', 17: 'TO', 21: 'MA', 22: 'PI', 23: 'CE', 24: 'RN', 25: 'PB', 26: 'PE', 27: 'AL', 28: 'SE', 29: 'BA', 31: 'MG', 32: 'ES', 33: 'RJ', 35: 'SP', 41: 'PR', 42: 'SC', 43: 'RS', 50: 'MS', 51: 'MT', 52: 'GO', 53: 'DF' };
+const ufDeChave = (chave) => { const m = String(chave || '').match(/^IBGE(\d{2})/); return m ? UF_IBGE[m[1]] || '' : ''; };
 function aplicarRegrasLancamento(dados) {
   if (!(dados.valorLiquido > 0)) dados.valorLiquido = dados.valor;
   dados.codImp = dados.valor > 0 && dados.valorLiquido < dados.valor - 0.005 ? 'IN' : 'IQ';
-  dados.cfop = dados.municipioPrestador && dados.municipioTomador
+  const ufP = dados.ufPrestador || ufDeChave(dados.municipioPrestador);
+  const ufT = dados.ufTomador || ufDeChave(dados.municipioTomador);
+  if (ufP && ufT) dados.cfop = ufP === ufT ? '1933AA' : '2933AA';
+  else dados.cfop = dados.municipioPrestador && dados.municipioTomador
     ? (dados.municipioPrestador === dados.municipioTomador ? '1933AA' : '2933AA')
     : '';
 }
@@ -108,7 +115,7 @@ function extrairModeloRps(L, U) {
   const dados = { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null, chave: '', valorLiquido: null, municipioPrestador: '', municipioTomador: '' };
   dados.transportadora = (L[0] || '').split(SEP)[0].trim();
   const mun = (L[3] || '').match(/^\s*([^¦]+?)\s*-\s*([A-Z]{2})\s*-\s*CEP/i);
-  if (mun) dados.municipioPrestador = chaveMunicipio(`${mun[1]}${mun[2]}`);
+  if (mun) { dados.municipioPrestador = chaveMunicipio(`${mun[1]}${mun[2]}`); dados.ufPrestador = mun[2].toUpperCase(); }
 
   const iCab = U.findIndex((l) => l.includes('NUMERO NFS-E'));
   const linhaCab = iCab >= 0 ? L[iCab + 1] || '' : '';
@@ -125,7 +132,7 @@ function extrairModeloRps(L, U) {
     for (let k = iTom; k < Math.min(iTom + 4, L.length); k += 1) {
       if (!dados.cnpjTomador) { const m = L[k].match(RE_CNPJ); if (m) dados.cnpjTomador = m[1].replace(/\D/g, ''); }
       const m2 = L[k].match(/^MUN\s+([^¦]+?)\s*-\s*([A-Z]{2})\b/i);
-      if (m2 && !dados.municipioTomador) dados.municipioTomador = chaveMunicipio(`${m2[1]}${m2[2]}`);
+      if (m2 && !dados.municipioTomador) { dados.municipioTomador = chaveMunicipio(`${m2[1]}${m2[2]}`); dados.ufTomador = m2[2].toUpperCase(); }
     }
   }
   const todo = L.join('\n');
