@@ -503,7 +503,7 @@ export default function LancamentoNfseRobo() {
           <span style={numStyle}>2</span>
           <div>
             <div className="panel-title" style={{ margin: 0 }}>Criar pedido e MIRO no SAP</div>
-            <p style={{ margin: '4px 0 10px' }}>Gera o script com as notas acima. Ele cria o pedido (ME21N) das notas sem pedido e depois a MIRO das que têm pedido e ainda não têm MIRO. Para no primeiro erro e mostra qual nota falhou; ao rodar de novo, pula o que já tem número.</p>
+            <p style={{ margin: '4px 0 10px' }}>Gera o script com as notas acima. Ele cria o pedido (ME21N) das notas sem pedido e depois a MIRO das que têm pedido e ainda não têm MIRO. Se uma nota falhar (ex.: precisa de aprovação), o robô pula, segue com as demais e no fim lista as pendências (também em pendencias_nfse.csv); ao rodar de novo, pula o que já tem número.</p>
             <CampoPasta pasta={pasta} onChange={setPasta} padrao={PASTA_NFSE} />
             <button type="button" className="btn-primary" disabled={!prontas.length} onClick={baixarScript}>Baixar script de lançamento (.vbs)</button>
           </div>

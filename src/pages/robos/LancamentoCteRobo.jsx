@@ -310,7 +310,7 @@ export default function LancamentoCteRobo() {
               <span style={numStyle}>4</span>
               <div>
                 <div className="panel-title" style={{ margin: 0 }}>Trazer o resultado</div>
-                <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue <code>{caminhoArquivo(pasta, 'resultado_cte.csv')}</code> para preencher pedido e MIRO; os CT-e com MIRO entram sozinhos no histórico (aba “Acompanhamento de lançamentos”). O script para no primeiro erro e diz qual CT-e falhou; ao rodar de novo pula o que já tem número.</p>
+                <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue <code>{caminhoArquivo(pasta, 'resultado_cte.csv')}</code> para preencher pedido e MIRO; os CT-e com MIRO entram sozinhos no histórico (aba “Acompanhamento de lançamentos”). Se um CT-e falhar, o script pula, segue com os demais e no fim lista as pendências (também em pendencias_cte.csv); ao rodar de novo pula o que já tem número.</p>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <input ref={refRes} type="file" accept=".csv,.txt" onChange={(e) => importarResultado(e.target.files?.[0])} />
                   <button type="button" className="btn-secondary" onClick={baixarEnviar}>Baixar resumo (Enviar) .xlsx</button>
