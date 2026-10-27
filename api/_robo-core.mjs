@@ -42,6 +42,18 @@ var init_define_import_meta_env = __esm({
   }
 });
 
+// node_modules/@supabase/supabase-js/dist/tracingRegistry.mjs
+function getTraceContextExtractor() {
+  return globalThis[EXTRACTOR_KEY];
+}
+var EXTRACTOR_KEY;
+var init_tracingRegistry = __esm({
+  "node_modules/@supabase/supabase-js/dist/tracingRegistry.mjs"() {
+    init_define_import_meta_env();
+    EXTRACTOR_KEY = Symbol.for("@supabase/supabase-js.traceContextExtractor");
+  }
+});
+
 // node_modules/tslib/tslib.es6.mjs
 var tslib_es6_exports = {};
 __export(tslib_es6_exports, {
@@ -714,7 +726,9 @@ var require_FunctionsClient = __commonJS({
        * @category Edge Functions
        *
        * @remarks
-       * - Requires an Authorization header.
+       * - The API key is sent in the `apikey` header. The `Authorization` header is reserved
+       *   for the signed-in user's JWT (or a custom auth token) — when there is no session, a
+       *   new-format API key (`sb_publishable_…` / `sb_secret_…`) is not sent as a Bearer token.
        * - Invoke params generally match the [Fetch API](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API) spec.
        * - When you pass in a body to your function, we automatically attach the Content-Type header for `Blob`, `ArrayBuffer`, `File`, `FormData` and `String`. If it doesn't match any of these types we assume the payload is `json`, serialize it and attach the `Content-Type` header as `application/json`. You can override this behavior by passing in a `Content-Type` header of your own.
        * - Responses are automatically parsed as `json`, `blob` and `form-data` depending on the `Content-Type` header sent by your function. Responses are parsed as `text` by default.
@@ -727,7 +741,7 @@ var require_FunctionsClient = __commonJS({
        * ```
        *
        * @exampleDescription Error handling
-       * A `FunctionsHttpError` error is returned if your function throws an error, `FunctionsRelayError` if the Supabase Relay has an error processing your function and `FunctionsFetchError` if there is a network error in calling your function.
+       * A `FunctionsHttpError` error is returned if your function throws an error, `FunctionsRelayError` if the Supabase Relay has an error processing your function and `FunctionsFetchError` if there is a network error in calling your function. Log the full error object so fields like `name`, `context`, and any structured body aren't hidden.
        *
        * @example Error handling
        * ```js
@@ -742,11 +756,11 @@ var require_FunctionsClient = __commonJS({
        *
        * if (error instanceof FunctionsHttpError) {
        *   const errorMessage = await error.context.json()
-       *   console.log('Function returned an error', errorMessage)
+       *   console.error('Function returned an error', errorMessage)
        * } else if (error instanceof FunctionsRelayError) {
-       *   console.log('Relay error:', error.message)
+       *   console.error('Relay error:', error)
        * } else if (error instanceof FunctionsFetchError) {
-       *   console.log('Fetch error:', error.message)
+       *   console.error('Fetch error:', error)
        * }
        * ```
        *
@@ -827,9 +841,10 @@ var require_FunctionsClient = __commonJS({
        */
       invoke(functionName_1) {
         return tslib_1.__awaiter(this, arguments, void 0, function* (functionName, options = {}) {
-          var _a;
+          var _a, _b;
           let timeoutId;
           let timeoutController;
+          let onAbort;
           try {
             const { headers, method, body: functionArgs, signal, timeout } = options;
             let _headers = {};
@@ -843,7 +858,8 @@ var require_FunctionsClient = __commonJS({
               url.searchParams.set("forceFunctionRegion", region);
             }
             let body;
-            if (functionArgs && (headers && !Object.prototype.hasOwnProperty.call(headers, "Content-Type") || !headers)) {
+            const hasContentTypeHeader = !!headers && Object.keys(headers).some((key) => key.toLowerCase() === "content-type");
+            if (functionArgs && !hasContentTypeHeader) {
               if (typeof Blob !== "undefined" && functionArgs instanceof Blob || functionArgs instanceof ArrayBuffer) {
                 _headers["Content-Type"] = "application/octet-stream";
                 body = functionArgs;
@@ -869,7 +885,8 @@ var require_FunctionsClient = __commonJS({
               timeoutId = setTimeout(() => timeoutController.abort(), timeout);
               if (signal) {
                 effectiveSignal = timeoutController.signal;
-                signal.addEventListener("abort", () => timeoutController.abort());
+                onAbort = () => timeoutController.abort();
+                signal.addEventListener("abort", onAbort);
               } else {
                 effectiveSignal = timeoutController.signal;
               }
@@ -893,7 +910,7 @@ var require_FunctionsClient = __commonJS({
             if (!response.ok) {
               throw new types_1.FunctionsHttpError(response);
             }
-            let responseType = ((_a = response.headers.get("Content-Type")) !== null && _a !== void 0 ? _a : "text/plain").split(";")[0].trim();
+            let responseType = ((_a = response.headers.get("Content-Type")) !== null && _a !== void 0 ? _a : "text/plain").split(";")[0].trim().toLowerCase();
             let data;
             if (responseType === "application/json") {
               data = yield response.json();
@@ -916,6 +933,9 @@ var require_FunctionsClient = __commonJS({
           } finally {
             if (timeoutId) {
               clearTimeout(timeoutId);
+            }
+            if (onAbort) {
+              (_b = options.signal) === null || _b === void 0 ? void 0 : _b.removeEventListener("abort", onAbort);
             }
           }
         });
@@ -956,29 +976,6 @@ var require_main = __commonJS({
 });
 
 // node_modules/@supabase/postgrest-js/dist/index.mjs
-function sleep(ms, signal) {
-  return new Promise((resolve) => {
-    if (signal === null || signal === void 0 ? void 0 : signal.aborted) {
-      resolve();
-      return;
-    }
-    const id = setTimeout(() => {
-      signal === null || signal === void 0 || signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    function onAbort() {
-      clearTimeout(id);
-      resolve();
-    }
-    signal === null || signal === void 0 || signal.addEventListener("abort", onAbort);
-  });
-}
-function shouldRetry(method, status, attemptCount, retryEnabled) {
-  if (!retryEnabled || attemptCount >= DEFAULT_MAX_RETRIES) return false;
-  if (!RETRYABLE_METHODS.includes(method)) return false;
-  if (!RETRYABLE_STATUS_CODES.includes(status)) return false;
-  return true;
-}
 function _typeof(o) {
   "@babel/helpers - typeof";
   return _typeof = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o$1) {
@@ -1029,6 +1026,29 @@ function _objectSpread2(e) {
     });
   }
   return e;
+}
+function sleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal === null || signal === void 0 ? void 0 : signal.aborted) {
+      resolve();
+      return;
+    }
+    const id = setTimeout(() => {
+      signal === null || signal === void 0 || signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(id);
+      resolve();
+    }
+    signal === null || signal === void 0 || signal.addEventListener("abort", onAbort);
+  });
+}
+function shouldRetry(method, status, attemptCount, retryEnabled) {
+  if (!retryEnabled || attemptCount >= DEFAULT_MAX_RETRIES) return false;
+  if (!RETRYABLE_METHODS.includes(method)) return false;
+  if (!RETRYABLE_STATUS_CODES.includes(status)) return false;
+  return true;
 }
 var DEFAULT_MAX_RETRIES, getRetryDelay, RETRYABLE_STATUS_CODES, RETRYABLE_METHODS, PostgrestError, PostgrestBuilder, PostgrestTransformBuilder, PostgrestReservedCharsRegexp, PostgrestFilterBuilder, PostgrestQueryBuilder, PostgrestClient;
 var init_dist = __esm({
@@ -1122,6 +1142,7 @@ var init_dist = __esm({
       * {@link https://github.com/supabase/supabase-js/issues/92}
       *
       * @category Database
+      * @subcategory Using modifiers
       */
       throwOnError() {
         this.shouldThrowOnError = true;
@@ -1183,9 +1204,20 @@ var init_dist = __esm({
         return this;
       }
       /**
-      * Set an HTTP header for the request.
+      * Set an HTTP header on this single PostgREST request, overriding any header
+      * with the same name set on the client.
+      *
+      * This is an advanced escape hatch for one-off needs (passing a custom
+      * `Authorization` for a single query, attaching a tracing header, etc.).
+      * Most callers do not need it: configure client-wide headers via the
+      * `headers` option when constructing the client, and authentication via
+      * Supabase Auth.
+      *
+      * @param name - HTTP header name
+      * @param value - HTTP header value
       *
       * @category Database
+      * @subcategory Using modifiers
       */
       setHeader(name, value) {
         this.headers = new Headers(this.headers);
@@ -1194,6 +1226,7 @@ var init_dist = __esm({
       }
       /**
       * @category Database
+      * @subcategory Using modifiers
       *
       * Configure retry behavior for this request.
       *
@@ -1231,13 +1264,16 @@ var init_dist = __esm({
         const executeWithRetry = async () => {
           let attemptCount = 0;
           while (true) {
-            const requestHeaders = new Headers(_this.headers);
-            if (attemptCount > 0) requestHeaders.set("X-Retry-Count", String(attemptCount));
+            const headers = {};
+            _this.headers.forEach((value, key) => {
+              headers[key] = value;
+            });
+            if (attemptCount > 0) headers["X-Retry-Count"] = String(attemptCount);
             let res$1;
             try {
               res$1 = await _fetch(_this.url.toString(), {
                 method: _this.method,
-                headers: requestHeaders,
+                headers,
                 body: JSON.stringify(_this.body, (_, value) => typeof value === "bigint" ? value.toString() : value),
                 signal: _this.signal
               });
@@ -1330,7 +1366,18 @@ ${cause.stack}`;
             if (body === "") {
             } else if (_this2.headers.get("Accept") === "text/csv") data = body;
             else if (_this2.headers.get("Accept") && ((_this$headers$get = _this2.headers.get("Accept")) === null || _this$headers$get === void 0 ? void 0 : _this$headers$get.includes("application/vnd.pgrst.plan+text"))) data = body;
-            else data = JSON.parse(body);
+            else try {
+              data = JSON.parse(body);
+            } catch (_unused) {
+              error = { message: body };
+              data = null;
+              if (_this2.shouldThrowOnError) throw new PostgrestError({
+                message: body,
+                details: "",
+                hint: "",
+                code: ""
+              });
+            }
           }
           const countHeader = (_this$headers$get2 = _this2.headers.get("Prefer")) === null || _this$headers$get2 === void 0 ? void 0 : _this$headers$get2.match(/count=(exact|planned|estimated)/);
           const contentRange = (_res$headers$get2 = res.headers.get("content-range")) === null || _res$headers$get2 === void 0 ? void 0 : _res$headers$get2.split("/");
@@ -1346,6 +1393,10 @@ ${cause.stack}`;
             count = null;
             status = 406;
             statusText = "Not Acceptable";
+            if (_this2.shouldThrowOnError) {
+              var _error$hint;
+              throw new PostgrestError(_objectSpread2(_objectSpread2({}, error), {}, { hint: (_error$hint = error.hint) !== null && _error$hint !== void 0 ? _error$hint : "" }));
+            }
           } else if (data.length === 1) data = data[0];
           else data = null;
         } else {
@@ -1358,7 +1409,7 @@ ${cause.stack}`;
               status = 200;
               statusText = "OK";
             }
-          } catch (_unused) {
+          } catch (_unused2) {
             if (res.status === 404 && body === "") {
               status = 204;
               statusText = "No Content";
@@ -1382,6 +1433,7 @@ ${cause.stack}`;
       * @deprecated Use overrideTypes<yourType, { merge: false }>() method at the end of your call chain instead
       *
       * @category Database
+      * @subcategory Using modifiers
       */
       returns() {
         return this;
@@ -1485,6 +1537,9 @@ ${cause.stack}`;
       }
     };
     PostgrestTransformBuilder = class extends PostgrestBuilder {
+      throwOnError() {
+        return super.throwOnError();
+      }
       /**
       * Perform a SELECT on the query result.
       *
@@ -1526,7 +1581,7 @@ ${cause.stack}`;
       *     }
       *   ],
       *   "status": 201,
-      *   "statusText": "Created"
+      *   "statusText": ""
       * }
       * ```
       */
@@ -1737,9 +1792,9 @@ ${cause.stack}`;
         return this;
       }
       /**
-      * Limit the query result by `count`.
+      * Limit the query result by `rows`.
       *
-      * @param count - The maximum number of rows to return
+      * @param rows - The maximum number of rows to return
       * @param options - Named parameters
       * @param options.referencedTable - Set this to limit rows of referenced
       * tables instead of the parent table
@@ -1836,9 +1891,9 @@ ${cause.stack}`;
       * }
       * ```
       */
-      limit(count, { foreignTable, referencedTable = foreignTable } = {}) {
+      limit(rows, { foreignTable, referencedTable = foreignTable } = {}) {
         const key = typeof referencedTable === "undefined" ? "limit" : `${referencedTable}.limit`;
-        this.url.searchParams.set(key, `${count}`);
+        this.url.searchParams.set(key, `${rows}`);
         return this;
       }
       /**
@@ -1963,8 +2018,8 @@ ${cause.stack}`;
       *       "hint": "",
       *       "code": ""
       *     },
-      *     "status": 400,
-      *     "statusText": "Bad Request"
+      *     "status": 0,
+      *     "statusText": ""
       *   }
       *
       * ```
@@ -2109,6 +2164,7 @@ ${cause.stack}`;
       * Return `data` as an object in [GeoJSON](https://geojson.org) format.
       *
       * @category Database
+      * @subcategory Using modifiers
       */
       geojson() {
         this.headers.set("Accept", "application/geo+json");
@@ -2225,11 +2281,33 @@ ${cause.stack}`;
         else return this;
       }
       /**
-      * Rollback the query.
+      * Dry-run this request: execute the query but discard the changes.
       *
-      * `data` will still be returned, but the query is not committed.
+      * Server-side, PostgREST runs the query inside a transaction and rolls it back
+      * instead of committing. The response still contains the data that *would* have
+      * been returned — `RETURNING` clauses execute and RLS, triggers, and constraints
+      * are all evaluated — but no row is actually inserted, updated, or deleted.
+      *
+      * This affects only the single request it is chained to. The JS caller has no
+      * handle on the transaction: supabase-js does not group multiple queries into
+      * one transaction. For multi-statement transactional logic, use a database
+      * function (`supabase.rpc(...)`).
+      *
+      * Sets the `Prefer: tx=rollback` header. See PostgREST's docs on transaction
+      * preferences for the underlying mechanism.
       *
       * @category Database
+      * @subcategory Using modifiers
+      *
+      * @example Validate an insert without persisting
+      * ```ts
+      * const { data, error } = await supabase
+      *   .from('countries')
+      *   .insert({ name: 'France' })
+      *   .select()
+      *   .rollback()
+      * // `data` shows what would have been inserted; nothing is saved.
+      * ```
       */
       rollback() {
         this.headers.append("Prefer", "tx=rollback");
@@ -2281,18 +2359,22 @@ ${cause.stack}`;
       * Set the maximum number of rows that can be affected by the query.
       * Only available in PostgREST v13+ and only works with PATCH and DELETE methods.
       *
-      * @param value - The maximum number of rows that can be affected
+      * @param rows - The maximum number of rows that can be affected
       *
       * @category Database
+      * @subcategory Using modifiers
       */
-      maxAffected(value) {
+      maxAffected(rows) {
         this.headers.append("Prefer", "handling=strict");
-        this.headers.append("Prefer", `max-affected=${value}`);
+        this.headers.append("Prefer", `max-affected=${rows}`);
         return this;
       }
     };
     PostgrestReservedCharsRegexp = /* @__PURE__ */ new RegExp("[,()]");
     PostgrestFilterBuilder = class extends PostgrestTransformBuilder {
+      throwOnError() {
+        return super.throwOnError();
+      }
       /**
       * Match only rows where `column` is equal to `value`.
       *
@@ -2346,6 +2428,9 @@ ${cause.stack}`;
       /**
       * Match only rows where `column` is not equal to `value`.
       *
+      * This filter does not include rows where `column` is `NULL`. To match null
+      * values, use `.is(column, null)` instead.
+      *
       * @param column - The column to filter on
       * @param value - The value to filter with
       *
@@ -2395,434 +2480,54 @@ ${cause.stack}`;
         this.url.searchParams.append(column, `neq.${value}`);
         return this;
       }
-      /**
-      * Match only rows where `column` is greater than `value`.
-      *
-      * @param column - The column to filter on
-      * @param value - The value to filter with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @exampleDescription With `select()`
-      * When using [reserved words](https://www.postgresql.org/docs/current/sql-keywords-appendix.html) for column names you need
-      * to add double quotes e.g. `.gt('"order"', 2)`
-      *
-      * @example With `select()`
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('characters')
-      *   .select()
-      *   .gt('id', 2)
-      * ```
-      *
-      * @exampleSql With `select()`
-      * ```sql
-      * create table
-      *   characters (id int8 primary key, name text);
-      *
-      * insert into
-      *   characters (id, name)
-      * values
-      *   (1, 'Luke'),
-      *   (2, 'Leia'),
-      *   (3, 'Han');
-      * ```
-      *
-      * @exampleResponse With `select()`
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "id": 3,
-      *       "name": "Han"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      */
       gt(column, value) {
         this.url.searchParams.append(column, `gt.${value}`);
         return this;
       }
-      /**
-      * Match only rows where `column` is greater than or equal to `value`.
-      *
-      * @param column - The column to filter on
-      * @param value - The value to filter with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @example With `select()`
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('characters')
-      *   .select()
-      *   .gte('id', 2)
-      * ```
-      *
-      * @exampleSql With `select()`
-      * ```sql
-      * create table
-      *   characters (id int8 primary key, name text);
-      *
-      * insert into
-      *   characters (id, name)
-      * values
-      *   (1, 'Luke'),
-      *   (2, 'Leia'),
-      *   (3, 'Han');
-      * ```
-      *
-      * @exampleResponse With `select()`
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "id": 2,
-      *       "name": "Leia"
-      *     },
-      *     {
-      *       "id": 3,
-      *       "name": "Han"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      */
       gte(column, value) {
         this.url.searchParams.append(column, `gte.${value}`);
         return this;
       }
-      /**
-      * Match only rows where `column` is less than `value`.
-      *
-      * @param column - The column to filter on
-      * @param value - The value to filter with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @example With `select()`
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('characters')
-      *   .select()
-      *   .lt('id', 2)
-      * ```
-      *
-      * @exampleSql With `select()`
-      * ```sql
-      * create table
-      *   characters (id int8 primary key, name text);
-      *
-      * insert into
-      *   characters (id, name)
-      * values
-      *   (1, 'Luke'),
-      *   (2, 'Leia'),
-      *   (3, 'Han');
-      * ```
-      *
-      * @exampleResponse With `select()`
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "id": 1,
-      *       "name": "Luke"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      */
       lt(column, value) {
         this.url.searchParams.append(column, `lt.${value}`);
         return this;
       }
-      /**
-      * Match only rows where `column` is less than or equal to `value`.
-      *
-      * @param column - The column to filter on
-      * @param value - The value to filter with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @example With `select()`
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('characters')
-      *   .select()
-      *   .lte('id', 2)
-      * ```
-      *
-      * @exampleSql With `select()`
-      * ```sql
-      * create table
-      *   characters (id int8 primary key, name text);
-      *
-      * insert into
-      *   characters (id, name)
-      * values
-      *   (1, 'Luke'),
-      *   (2, 'Leia'),
-      *   (3, 'Han');
-      * ```
-      *
-      * @exampleResponse With `select()`
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "id": 1,
-      *       "name": "Luke"
-      *     },
-      *     {
-      *       "id": 2,
-      *       "name": "Leia"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      */
       lte(column, value) {
         this.url.searchParams.append(column, `lte.${value}`);
         return this;
       }
-      /**
-      * Match only rows where `column` matches `pattern` case-sensitively.
-      *
-      * @param column - The column to filter on
-      * @param pattern - The pattern to match with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @example With `select()`
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('characters')
-      *   .select()
-      *   .like('name', '%Lu%')
-      * ```
-      *
-      * @exampleSql With `select()`
-      * ```sql
-      * create table
-      *   characters (id int8 primary key, name text);
-      *
-      * insert into
-      *   characters (id, name)
-      * values
-      *   (1, 'Luke'),
-      *   (2, 'Leia'),
-      *   (3, 'Han');
-      * ```
-      *
-      * @exampleResponse With `select()`
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "id": 1,
-      *       "name": "Luke"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      */
       like(column, pattern) {
         this.url.searchParams.append(column, `like.${pattern}`);
         return this;
       }
-      /**
-      * Match only rows where `column` matches all of `patterns` case-sensitively.
-      *
-      * @param column - The column to filter on
-      * @param patterns - The patterns to match with
-      *
-      * @category Database
-      * @subcategory Using filters
-      */
       likeAllOf(column, patterns) {
         this.url.searchParams.append(column, `like(all).{${patterns.join(",")}}`);
         return this;
       }
-      /**
-      * Match only rows where `column` matches any of `patterns` case-sensitively.
-      *
-      * @param column - The column to filter on
-      * @param patterns - The patterns to match with
-      *
-      * @category Database
-      * @subcategory Using filters
-      */
       likeAnyOf(column, patterns) {
         this.url.searchParams.append(column, `like(any).{${patterns.join(",")}}`);
         return this;
       }
-      /**
-      * Match only rows where `column` matches `pattern` case-insensitively.
-      *
-      * @param column - The column to filter on
-      * @param pattern - The pattern to match with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @example With `select()`
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('characters')
-      *   .select()
-      *   .ilike('name', '%lu%')
-      * ```
-      *
-      * @exampleSql With `select()`
-      * ```sql
-      * create table
-      *   characters (id int8 primary key, name text);
-      *
-      * insert into
-      *   characters (id, name)
-      * values
-      *   (1, 'Luke'),
-      *   (2, 'Leia'),
-      *   (3, 'Han');
-      * ```
-      *
-      * @exampleResponse With `select()`
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "id": 1,
-      *       "name": "Luke"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      */
       ilike(column, pattern) {
         this.url.searchParams.append(column, `ilike.${pattern}`);
         return this;
       }
-      /**
-      * Match only rows where `column` matches all of `patterns` case-insensitively.
-      *
-      * @param column - The column to filter on
-      * @param patterns - The patterns to match with
-      *
-      * @category Database
-      * @subcategory Using filters
-      */
       ilikeAllOf(column, patterns) {
         this.url.searchParams.append(column, `ilike(all).{${patterns.join(",")}}`);
         return this;
       }
-      /**
-      * Match only rows where `column` matches any of `patterns` case-insensitively.
-      *
-      * @param column - The column to filter on
-      * @param patterns - The patterns to match with
-      *
-      * @category Database
-      * @subcategory Using filters
-      */
       ilikeAnyOf(column, patterns) {
         this.url.searchParams.append(column, `ilike(any).{${patterns.join(",")}}`);
         return this;
       }
-      /**
-      * Match only rows where `column` matches the PostgreSQL regex `pattern`
-      * case-sensitively (using the `~` operator).
-      *
-      * @param column - The column to filter on
-      * @param pattern - The PostgreSQL regular expression pattern to match with
-      */
       regexMatch(column, pattern) {
         this.url.searchParams.append(column, `match.${pattern}`);
         return this;
       }
-      /**
-      * Match only rows where `column` matches the PostgreSQL regex `pattern`
-      * case-insensitively (using the `~*` operator).
-      *
-      * @param column - The column to filter on
-      * @param pattern - The PostgreSQL regular expression pattern to match with
-      */
       regexIMatch(column, pattern) {
         this.url.searchParams.append(column, `imatch.${pattern}`);
         return this;
       }
-      /**
-      * Match only rows where `column` IS `value`.
-      *
-      * For non-boolean columns, this is only relevant for checking if the value of
-      * `column` is NULL by setting `value` to `null`.
-      *
-      * For boolean columns, you can also set `value` to `true` or `false` and it
-      * will behave the same way as `.eq()`.
-      *
-      * @param column - The column to filter on
-      * @param value - The value to filter with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @exampleDescription Checking for nullness, true or false
-      * Using the `eq()` filter doesn't work when filtering for `null`.
-      *
-      * Instead, you need to use `is()`.
-      *
-      * @example Checking for nullness, true or false
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('countries')
-      *   .select()
-      *   .is('name', null)
-      * ```
-      *
-      * @exampleSql Checking for nullness, true or false
-      * ```sql
-      * create table
-      *   countries (id int8 primary key, name text);
-      *
-      * insert into
-      *   countries (id, name)
-      * values
-      *   (1, 'null'),
-      *   (2, null);
-      * ```
-      *
-      * @exampleResponse Checking for nullness, true or false
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "id": 2,
-      *       "name": "null"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      */
       is(column, value) {
         this.url.searchParams.append(column, `is.${value}`);
         return this;
@@ -2911,779 +2616,43 @@ ${cause.stack}`;
         this.url.searchParams.append(column, `not.in.(${cleanedValues})`);
         return this;
       }
-      /**
-      * Only relevant for jsonb, array, and range columns. Match only rows where
-      * `column` contains every element appearing in `value`.
-      *
-      * @param column - The jsonb, array, or range column to filter on
-      * @param value - The jsonb, array, or range value to filter with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @example On array columns
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('issues')
-      *   .select()
-      *   .contains('tags', ['is:open', 'priority:low'])
-      * ```
-      *
-      * @exampleSql On array columns
-      * ```sql
-      * create table
-      *   issues (
-      *     id int8 primary key,
-      *     title text,
-      *     tags text[]
-      *   );
-      *
-      * insert into
-      *   issues (id, title, tags)
-      * values
-      *   (1, 'Cache invalidation is not working', array['is:open', 'severity:high', 'priority:low']),
-      *   (2, 'Use better names', array['is:open', 'severity:low', 'priority:medium']);
-      * ```
-      *
-      * @exampleResponse On array columns
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "title": "Cache invalidation is not working"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      *
-      * @exampleDescription On range columns
-      * Postgres supports a number of [range
-      * types](https://www.postgresql.org/docs/current/rangetypes.html). You
-      * can filter on range columns using the string representation of range
-      * values.
-      *
-      * @example On range columns
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('reservations')
-      *   .select()
-      *   .contains('during', '[2000-01-01 13:00, 2000-01-01 13:30)')
-      * ```
-      *
-      * @exampleSql On range columns
-      * ```sql
-      * create table
-      *   reservations (
-      *     id int8 primary key,
-      *     room_name text,
-      *     during tsrange
-      *   );
-      *
-      * insert into
-      *   reservations (id, room_name, during)
-      * values
-      *   (1, 'Emerald', '[2000-01-01 13:00, 2000-01-01 15:00)'),
-      *   (2, 'Topaz', '[2000-01-02 09:00, 2000-01-02 10:00)');
-      * ```
-      *
-      * @exampleResponse On range columns
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "id": 1,
-      *       "room_name": "Emerald",
-      *       "during": "[\"2000-01-01 13:00:00\",\"2000-01-01 15:00:00\")"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      *
-      * @example On `jsonb` columns
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('users')
-      *   .select('name')
-      *   .contains('address', { postcode: 90210 })
-      * ```
-      *
-      * @exampleSql On `jsonb` columns
-      * ```sql
-      * create table
-      *   users (
-      *     id int8 primary key,
-      *     name text,
-      *     address jsonb
-      *   );
-      *
-      * insert into
-      *   users (id, name, address)
-      * values
-      *   (1, 'Michael', '{ "postcode": 90210, "street": "Melrose Place" }'),
-      *   (2, 'Jane', '{}');
-      * ```
-      *
-      * @exampleResponse On `jsonb` columns
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "name": "Michael"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      */
       contains(column, value) {
         if (typeof value === "string") this.url.searchParams.append(column, `cs.${value}`);
         else if (Array.isArray(value)) this.url.searchParams.append(column, `cs.{${value.join(",")}}`);
         else this.url.searchParams.append(column, `cs.${JSON.stringify(value)}`);
         return this;
       }
-      /**
-      * Only relevant for jsonb, array, and range columns. Match only rows where
-      * every element appearing in `column` is contained by `value`.
-      *
-      * @param column - The jsonb, array, or range column to filter on
-      * @param value - The jsonb, array, or range value to filter with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @example On array columns
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('classes')
-      *   .select('name')
-      *   .containedBy('days', ['monday', 'tuesday', 'wednesday', 'friday'])
-      * ```
-      *
-      * @exampleSql On array columns
-      * ```sql
-      * create table
-      *   classes (
-      *     id int8 primary key,
-      *     name text,
-      *     days text[]
-      *   );
-      *
-      * insert into
-      *   classes (id, name, days)
-      * values
-      *   (1, 'Chemistry', array['monday', 'friday']),
-      *   (2, 'History', array['monday', 'wednesday', 'thursday']);
-      * ```
-      *
-      * @exampleResponse On array columns
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "name": "Chemistry"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      *
-      * @exampleDescription On range columns
-      * Postgres supports a number of [range
-      * types](https://www.postgresql.org/docs/current/rangetypes.html). You
-      * can filter on range columns using the string representation of range
-      * values.
-      *
-      * @example On range columns
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('reservations')
-      *   .select()
-      *   .containedBy('during', '[2000-01-01 00:00, 2000-01-01 23:59)')
-      * ```
-      *
-      * @exampleSql On range columns
-      * ```sql
-      * create table
-      *   reservations (
-      *     id int8 primary key,
-      *     room_name text,
-      *     during tsrange
-      *   );
-      *
-      * insert into
-      *   reservations (id, room_name, during)
-      * values
-      *   (1, 'Emerald', '[2000-01-01 13:00, 2000-01-01 15:00)'),
-      *   (2, 'Topaz', '[2000-01-02 09:00, 2000-01-02 10:00)');
-      * ```
-      *
-      * @exampleResponse On range columns
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "id": 1,
-      *       "room_name": "Emerald",
-      *       "during": "[\"2000-01-01 13:00:00\",\"2000-01-01 15:00:00\")"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      *
-      * @example On `jsonb` columns
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('users')
-      *   .select('name')
-      *   .containedBy('address', {})
-      * ```
-      *
-      * @exampleSql On `jsonb` columns
-      * ```sql
-      * create table
-      *   users (
-      *     id int8 primary key,
-      *     name text,
-      *     address jsonb
-      *   );
-      *
-      * insert into
-      *   users (id, name, address)
-      * values
-      *   (1, 'Michael', '{ "postcode": 90210, "street": "Melrose Place" }'),
-      *   (2, 'Jane', '{}');
-      * ```
-      *
-      * @exampleResponse On `jsonb` columns
-      * ```json
-      *   {
-      *     "data": [
-      *       {
-      *         "name": "Jane"
-      *       }
-      *     ],
-      *     "status": 200,
-      *     "statusText": "OK"
-      *   }
-      *
-      * ```
-      */
       containedBy(column, value) {
         if (typeof value === "string") this.url.searchParams.append(column, `cd.${value}`);
         else if (Array.isArray(value)) this.url.searchParams.append(column, `cd.{${value.join(",")}}`);
         else this.url.searchParams.append(column, `cd.${JSON.stringify(value)}`);
         return this;
       }
-      /**
-      * Only relevant for range columns. Match only rows where every element in
-      * `column` is greater than any element in `range`.
-      *
-      * @param column - The range column to filter on
-      * @param range - The range to filter with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @exampleDescription With `select()`
-      * Postgres supports a number of [range
-      * types](https://www.postgresql.org/docs/current/rangetypes.html). You
-      * can filter on range columns using the string representation of range
-      * values.
-      *
-      * @example With `select()`
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('reservations')
-      *   .select()
-      *   .rangeGt('during', '[2000-01-02 08:00, 2000-01-02 09:00)')
-      * ```
-      *
-      * @exampleSql With `select()`
-      * ```sql
-      * create table
-      *   reservations (
-      *     id int8 primary key,
-      *     room_name text,
-      *     during tsrange
-      *   );
-      *
-      * insert into
-      *   reservations (id, room_name, during)
-      * values
-      *   (1, 'Emerald', '[2000-01-01 13:00, 2000-01-01 15:00)'),
-      *   (2, 'Topaz', '[2000-01-02 09:00, 2000-01-02 10:00)');
-      * ```
-      *
-      * @exampleResponse With `select()`
-      * ```json
-      *   {
-      *     "data": [
-      *       {
-      *         "id": 2,
-      *         "room_name": "Topaz",
-      *         "during": "[\"2000-01-02 09:00:00\",\"2000-01-02 10:00:00\")"
-      *       }
-      *     ],
-      *     "status": 200,
-      *     "statusText": "OK"
-      *   }
-      *
-      * ```
-      */
       rangeGt(column, range) {
         this.url.searchParams.append(column, `sr.${range}`);
         return this;
       }
-      /**
-      * Only relevant for range columns. Match only rows where every element in
-      * `column` is either contained in `range` or greater than any element in
-      * `range`.
-      *
-      * @param column - The range column to filter on
-      * @param range - The range to filter with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @exampleDescription With `select()`
-      * Postgres supports a number of [range
-      * types](https://www.postgresql.org/docs/current/rangetypes.html). You
-      * can filter on range columns using the string representation of range
-      * values.
-      *
-      * @example With `select()`
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('reservations')
-      *   .select()
-      *   .rangeGte('during', '[2000-01-02 08:30, 2000-01-02 09:30)')
-      * ```
-      *
-      * @exampleSql With `select()`
-      * ```sql
-      * create table
-      *   reservations (
-      *     id int8 primary key,
-      *     room_name text,
-      *     during tsrange
-      *   );
-      *
-      * insert into
-      *   reservations (id, room_name, during)
-      * values
-      *   (1, 'Emerald', '[2000-01-01 13:00, 2000-01-01 15:00)'),
-      *   (2, 'Topaz', '[2000-01-02 09:00, 2000-01-02 10:00)');
-      * ```
-      *
-      * @exampleResponse With `select()`
-      * ```json
-      *   {
-      *     "data": [
-      *       {
-      *         "id": 2,
-      *         "room_name": "Topaz",
-      *         "during": "[\"2000-01-02 09:00:00\",\"2000-01-02 10:00:00\")"
-      *       }
-      *     ],
-      *     "status": 200,
-      *     "statusText": "OK"
-      *   }
-      *
-      * ```
-      */
       rangeGte(column, range) {
         this.url.searchParams.append(column, `nxl.${range}`);
         return this;
       }
-      /**
-      * Only relevant for range columns. Match only rows where every element in
-      * `column` is less than any element in `range`.
-      *
-      * @param column - The range column to filter on
-      * @param range - The range to filter with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @exampleDescription With `select()`
-      * Postgres supports a number of [range
-      * types](https://www.postgresql.org/docs/current/rangetypes.html). You
-      * can filter on range columns using the string representation of range
-      * values.
-      *
-      * @example With `select()`
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('reservations')
-      *   .select()
-      *   .rangeLt('during', '[2000-01-01 15:00, 2000-01-01 16:00)')
-      * ```
-      *
-      * @exampleSql With `select()`
-      * ```sql
-      * create table
-      *   reservations (
-      *     id int8 primary key,
-      *     room_name text,
-      *     during tsrange
-      *   );
-      *
-      * insert into
-      *   reservations (id, room_name, during)
-      * values
-      *   (1, 'Emerald', '[2000-01-01 13:00, 2000-01-01 15:00)'),
-      *   (2, 'Topaz', '[2000-01-02 09:00, 2000-01-02 10:00)');
-      * ```
-      *
-      * @exampleResponse With `select()`
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "id": 1,
-      *       "room_name": "Emerald",
-      *       "during": "[\"2000-01-01 13:00:00\",\"2000-01-01 15:00:00\")"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      */
       rangeLt(column, range) {
         this.url.searchParams.append(column, `sl.${range}`);
         return this;
       }
-      /**
-      * Only relevant for range columns. Match only rows where every element in
-      * `column` is either contained in `range` or less than any element in
-      * `range`.
-      *
-      * @param column - The range column to filter on
-      * @param range - The range to filter with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @exampleDescription With `select()`
-      * Postgres supports a number of [range
-      * types](https://www.postgresql.org/docs/current/rangetypes.html). You
-      * can filter on range columns using the string representation of range
-      * values.
-      *
-      * @example With `select()`
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('reservations')
-      *   .select()
-      *   .rangeLte('during', '[2000-01-01 14:00, 2000-01-01 16:00)')
-      * ```
-      *
-      * @exampleSql With `select()`
-      * ```sql
-      * create table
-      *   reservations (
-      *     id int8 primary key,
-      *     room_name text,
-      *     during tsrange
-      *   );
-      *
-      * insert into
-      *   reservations (id, room_name, during)
-      * values
-      *   (1, 'Emerald', '[2000-01-01 13:00, 2000-01-01 15:00)'),
-      *   (2, 'Topaz', '[2000-01-02 09:00, 2000-01-02 10:00)');
-      * ```
-      *
-      * @exampleResponse With `select()`
-      * ```json
-      *   {
-      *     "data": [
-      *       {
-      *         "id": 1,
-      *         "room_name": "Emerald",
-      *         "during": "[\"2000-01-01 13:00:00\",\"2000-01-01 15:00:00\")"
-      *       }
-      *     ],
-      *     "status": 200,
-      *     "statusText": "OK"
-      *   }
-      *
-      * ```
-      */
       rangeLte(column, range) {
         this.url.searchParams.append(column, `nxr.${range}`);
         return this;
       }
-      /**
-      * Only relevant for range columns. Match only rows where `column` is
-      * mutually exclusive to `range` and there can be no element between the two
-      * ranges.
-      *
-      * @param column - The range column to filter on
-      * @param range - The range to filter with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @exampleDescription With `select()`
-      * Postgres supports a number of [range
-      * types](https://www.postgresql.org/docs/current/rangetypes.html). You
-      * can filter on range columns using the string representation of range
-      * values.
-      *
-      * @example With `select()`
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('reservations')
-      *   .select()
-      *   .rangeAdjacent('during', '[2000-01-01 12:00, 2000-01-01 13:00)')
-      * ```
-      *
-      * @exampleSql With `select()`
-      * ```sql
-      * create table
-      *   reservations (
-      *     id int8 primary key,
-      *     room_name text,
-      *     during tsrange
-      *   );
-      *
-      * insert into
-      *   reservations (id, room_name, during)
-      * values
-      *   (1, 'Emerald', '[2000-01-01 13:00, 2000-01-01 15:00)'),
-      *   (2, 'Topaz', '[2000-01-02 09:00, 2000-01-02 10:00)');
-      * ```
-      *
-      * @exampleResponse With `select()`
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "id": 1,
-      *       "room_name": "Emerald",
-      *       "during": "[\"2000-01-01 13:00:00\",\"2000-01-01 15:00:00\")"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      */
       rangeAdjacent(column, range) {
         this.url.searchParams.append(column, `adj.${range}`);
         return this;
       }
-      /**
-      * Only relevant for array and range columns. Match only rows where
-      * `column` and `value` have an element in common.
-      *
-      * @param column - The array or range column to filter on
-      * @param value - The array or range value to filter with
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @example On array columns
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('issues')
-      *   .select('title')
-      *   .overlaps('tags', ['is:closed', 'severity:high'])
-      * ```
-      *
-      * @exampleSql On array columns
-      * ```sql
-      * create table
-      *   issues (
-      *     id int8 primary key,
-      *     title text,
-      *     tags text[]
-      *   );
-      *
-      * insert into
-      *   issues (id, title, tags)
-      * values
-      *   (1, 'Cache invalidation is not working', array['is:open', 'severity:high', 'priority:low']),
-      *   (2, 'Use better names', array['is:open', 'severity:low', 'priority:medium']);
-      * ```
-      *
-      * @exampleResponse On array columns
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "title": "Cache invalidation is not working"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      *
-      * @exampleDescription On range columns
-      * Postgres supports a number of [range
-      * types](https://www.postgresql.org/docs/current/rangetypes.html). You
-      * can filter on range columns using the string representation of range
-      * values.
-      *
-      * @example On range columns
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('reservations')
-      *   .select()
-      *   .overlaps('during', '[2000-01-01 12:45, 2000-01-01 13:15)')
-      * ```
-      *
-      * @exampleSql On range columns
-      * ```sql
-      * create table
-      *   reservations (
-      *     id int8 primary key,
-      *     room_name text,
-      *     during tsrange
-      *   );
-      *
-      * insert into
-      *   reservations (id, room_name, during)
-      * values
-      *   (1, 'Emerald', '[2000-01-01 13:00, 2000-01-01 15:00)'),
-      *   (2, 'Topaz', '[2000-01-02 09:00, 2000-01-02 10:00)');
-      * ```
-      *
-      * @exampleResponse On range columns
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "id": 1,
-      *       "room_name": "Emerald",
-      *       "during": "[\"2000-01-01 13:00:00\",\"2000-01-01 15:00:00\")"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      */
       overlaps(column, value) {
         if (typeof value === "string") this.url.searchParams.append(column, `ov.${value}`);
         else this.url.searchParams.append(column, `ov.{${value.join(",")}}`);
         return this;
       }
-      /**
-      * Only relevant for text and tsvector columns. Match only rows where
-      * `column` matches the query string in `query`.
-      *
-      * @param column - The text or tsvector column to filter on
-      * @param query - The query text to match with
-      * @param options - Named parameters
-      * @param options.config - The text search configuration to use
-      * @param options.type - Change how the `query` text is interpreted
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @remarks
-      * - For more information, see [Postgres full text search](/docs/guides/database/full-text-search).
-      *
-      * @example Text search
-      * ```ts
-      * const result = await supabase
-      *   .from("texts")
-      *   .select("content")
-      *   .textSearch("content", `'eggs' & 'ham'`, {
-      *     config: "english",
-      *   });
-      * ```
-      *
-      * @exampleSql Text search
-      * ```sql
-      * create table texts (
-      *   id      bigint
-      *           primary key
-      *           generated always as identity,
-      *   content text
-      * );
-      *
-      * insert into texts (content) values
-      *     ('Four score and seven years ago'),
-      *     ('The road goes ever on and on'),
-      *     ('Green eggs and ham')
-      * ;
-      * ```
-      *
-      * @exampleResponse Text search
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "content": "Green eggs and ham"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      *
-      * @exampleDescription Basic normalization
-      * Uses PostgreSQL's `plainto_tsquery` function.
-      *
-      * @example Basic normalization
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('quotes')
-      *   .select('catchphrase')
-      *   .textSearch('catchphrase', `'fat' & 'cat'`, {
-      *     type: 'plain',
-      *     config: 'english'
-      *   })
-      * ```
-      *
-      * @exampleDescription Full normalization
-      * Uses PostgreSQL's `phraseto_tsquery` function.
-      *
-      * @example Full normalization
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('quotes')
-      *   .select('catchphrase')
-      *   .textSearch('catchphrase', `'fat' & 'cat'`, {
-      *     type: 'phrase',
-      *     config: 'english'
-      *   })
-      * ```
-      *
-      * @exampleDescription Websearch
-      * Uses PostgreSQL's `websearch_to_tsquery` function.
-      * This function will never raise syntax errors, which makes it possible to use raw user-supplied input for search, and can be used
-      * with advanced operators.
-      *
-      * - `unquoted text`: text not inside quote marks will be converted to terms separated by & operators, as if processed by plainto_tsquery.
-      * - `"quoted text"`: text inside quote marks will be converted to terms separated by `<->` operators, as if processed by phraseto_tsquery.
-      * - `OR`: the word “or” will be converted to the | operator.
-      * - `-`: a dash will be converted to the ! operator.
-      *
-      * @example Websearch
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('quotes')
-      *   .select('catchphrase')
-      *   .textSearch('catchphrase', `'fat or cat'`, {
-      *     type: 'websearch',
-      *     config: 'english'
-      *   })
-      * ```
-      */
       textSearch(column, query, { config, type } = {}) {
         let typePart = "";
         if (type === "plain") typePart = "pl";
@@ -3693,50 +2662,6 @@ ${cause.stack}`;
         this.url.searchParams.append(column, `${typePart}fts${configPart}.${query}`);
         return this;
       }
-      /**
-      * Match only rows where each column in `query` keys is equal to its
-      * associated value. Shorthand for multiple `.eq()`s.
-      *
-      * @param query - The object to filter with, with column names as keys mapped
-      * to their filter values
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @example With `select()`
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('characters')
-      *   .select('name')
-      *   .match({ id: 2, name: 'Leia' })
-      * ```
-      *
-      * @exampleSql With `select()`
-      * ```sql
-      * create table
-      *   characters (id int8 primary key, name text);
-      *
-      * insert into
-      *   characters (id, name)
-      * values
-      *   (1, 'Luke'),
-      *   (2, 'Leia'),
-      *   (3, 'Han');
-      * ```
-      *
-      * @exampleResponse With `select()`
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "name": "Leia"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      */
       match(query) {
         Object.entries(query).filter(([_, value]) => value !== void 0).forEach(([column, value]) => {
           this.url.searchParams.append(column, `eq.${value}`);
@@ -3962,119 +2887,6 @@ ${cause.stack}`;
         this.url.searchParams.append(key, `(${filters})`);
         return this;
       }
-      /**
-      * Match only rows which satisfy the filter. This is an escape hatch - you
-      * should use the specific filter methods wherever possible.
-      *
-      * Unlike most filters, `opearator` and `value` are used as-is and need to
-      * follow [PostgREST
-      * syntax](https://postgrest.org/en/stable/api.html#operators). You also need
-      * to make sure they are properly sanitized.
-      *
-      * @param column - The column to filter on
-      * @param operator - The operator to filter with, following PostgREST syntax
-      * @param value - The value to filter with, following PostgREST syntax
-      *
-      * @category Database
-      * @subcategory Using filters
-      *
-      * @remarks
-      * filter() expects you to use the raw PostgREST syntax for the filter values.
-      *
-      * ```ts
-      * .filter('id', 'in', '(5,6,7)')  // Use `()` for `in` filter
-      * .filter('arraycol', 'cs', '{"a","b"}')  // Use `cs` for `contains()`, `{}` for array values
-      * ```
-      *
-      * @example With `select()`
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('characters')
-      *   .select()
-      *   .filter('name', 'in', '("Han","Yoda")')
-      * ```
-      *
-      * @exampleSql With `select()`
-      * ```sql
-      * create table
-      *   characters (id int8 primary key, name text);
-      *
-      * insert into
-      *   characters (id, name)
-      * values
-      *   (1, 'Luke'),
-      *   (2, 'Leia'),
-      *   (3, 'Han');
-      * ```
-      *
-      * @exampleResponse With `select()`
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "id": 3,
-      *       "name": "Han"
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      *
-      * @example On a referenced table
-      * ```ts
-      * const { data, error } = await supabase
-      *   .from('orchestral_sections')
-      *   .select(`
-      *     name,
-      *     instruments!inner (
-      *       name
-      *     )
-      *   `)
-      *   .filter('instruments.name', 'eq', 'flute')
-      * ```
-      *
-      * @exampleSql On a referenced table
-      * ```sql
-      * create table
-      *   orchestral_sections (id int8 primary key, name text);
-      * create table
-      *    instruments (
-      *     id int8 primary key,
-      *     section_id int8 not null references orchestral_sections,
-      *     name text
-      *   );
-      *
-      * insert into
-      *   orchestral_sections (id, name)
-      * values
-      *   (1, 'strings'),
-      *   (2, 'woodwinds');
-      * insert into
-      *   instruments (id, section_id, name)
-      * values
-      *   (1, 2, 'flute'),
-      *   (2, 1, 'violin');
-      * ```
-      *
-      * @exampleResponse On a referenced table
-      * ```json
-      * {
-      *   "data": [
-      *     {
-      *       "name": "woodwinds",
-      *       "instruments": [
-      *         {
-      *           "name": "flute"
-      *         }
-      *       ]
-      *     }
-      *   ],
-      *   "status": 200,
-      *   "statusText": "OK"
-      * }
-      * ```
-      */
       filter(column, operator, value) {
         this.url.searchParams.append(column, `${operator}.${value}`);
         return this;
@@ -4199,6 +3011,33 @@ ${cause.stack}`;
       *   ],
       *   "status": 200,
       *   "statusText": "OK"
+      * }
+      * ```
+      *
+      * @exampleDescription Handling errors
+      * The most useful field on a Postgres error is usually `hint` — when the database knows the fix, it puts the literal SQL there. For example, a permission-denied error (`code: '42501'`) arrives with a `hint` like `"Grant the required privileges to the current role with: GRANT SELECT ON public.characters TO anon;"`. Log the full `error` object so the hint isn't hidden behind `error.message`.
+      *
+      * @example Handling errors
+      * ```js
+      * const { data, error } = await supabase.from('characters').select()
+      * if (error) {
+      *   // Logs the full error: message, code, details, and hint.
+      *   console.error(error)
+      *   return
+      * }
+      * ```
+      *
+      * @exampleResponse Handling errors
+      * ```json
+      * {
+      *   "error": {
+      *     "code": "42501",
+      *     "details": null,
+      *     "hint": "Grant the required privileges to the current role with: GRANT SELECT ON public.characters TO anon;",
+      *     "message": "permission denied for table characters"
+      *   },
+      *   "status": 401,
+      *   "statusText": ""
       * }
       * ```
       *
@@ -4975,8 +3814,17 @@ ${cause.stack}`;
       * ```json
       * {
       *   "status": 201,
-      *   "statusText": "Created"
+      *   "statusText": ""
       * }
+      * ```
+      *
+      * @exampleDescription Handling errors
+      * `error.hint` from Postgres often contains the actionable fix (e.g. `"Grant the required privileges to the current role with: GRANT INSERT ON public.countries TO anon;"` for a `42501` permission-denied error). Log the full `error` object so it isn't hidden behind `error.message`.
+      *
+      * @example Handling errors
+      * ```js
+      * const { error } = await supabase.from('countries').insert({ id: 1, name: 'Mordor' })
+      * if (error) console.error(error)
       * ```
       *
       * @example Create a record and return it
@@ -5003,7 +3851,7 @@ ${cause.stack}`;
       *     }
       *   ],
       *   "status": 201,
-      *   "statusText": "Created"
+      *   "statusText": ""
       * }
       * ```
       *
@@ -5037,7 +3885,7 @@ ${cause.stack}`;
       *     "message": "duplicate key value violates unique constraint \"countries_pkey\""
       *   },
       *   "status": 409,
-      *   "statusText": "Conflict"
+      *   "statusText": ""
       * }
       * ```
       */
@@ -5184,8 +4032,17 @@ ${cause.stack}`;
       *     }
       *   ],
       *   "status": 201,
-      *   "statusText": "Created"
+      *   "statusText": ""
       * }
+      * ```
+      *
+      * @exampleDescription Handling errors
+      * `error.hint` from Postgres often contains the actionable fix (e.g. `"Grant the required privileges to the current role with: GRANT INSERT, UPDATE ON public.instruments TO anon;"` for a `42501` permission-denied error). Log the full `error` object so it isn't hidden behind `error.message`.
+      *
+      * @example Handling errors
+      * ```js
+      * const { data, error } = await supabase.from('instruments').upsert({ id: 1, name: 'piano' }).select()
+      * if (error) console.error(error)
       * ```
       *
       * @example Bulk Upsert your data
@@ -5224,7 +4081,7 @@ ${cause.stack}`;
       *     }
       *   ],
       *   "status": 201,
-      *   "statusText": "Created"
+      *   "statusText": ""
       * }
       * ```
       *
@@ -5269,7 +4126,7 @@ ${cause.stack}`;
       *     "message": "duplicate key value violates unique constraint \"users_handle_key\""
       *   },
       *   "status": 409,
-      *   "statusText": "Conflict"
+      *   "statusText": ""
       * }
       * ```
       */
@@ -5348,8 +4205,17 @@ ${cause.stack}`;
       * ```json
       * {
       *   "status": 204,
-      *   "statusText": "No Content"
+      *   "statusText": ""
       * }
+      * ```
+      *
+      * @exampleDescription Handling errors
+      * `error.hint` from Postgres often contains the actionable fix (e.g. `"Grant the required privileges to the current role with: GRANT UPDATE ON public.instruments TO anon;"` for a `42501` permission-denied error). Log the full `error` object so it isn't hidden behind `error.message`.
+      *
+      * @example Handling errors
+      * ```js
+      * const { error } = await supabase.from('instruments').update({ name: 'piano' }).eq('id', 1)
+      * if (error) console.error(error)
       * ```
       *
       * @example Update a record and return it
@@ -5507,8 +4373,17 @@ ${cause.stack}`;
       * ```json
       * {
       *   "status": 204,
-      *   "statusText": "No Content"
+      *   "statusText": ""
       * }
+      * ```
+      *
+      * @exampleDescription Handling errors
+      * `error.hint` from Postgres often contains the actionable fix (e.g. `"Grant the required privileges to the current role with: GRANT DELETE ON public.countries TO anon;"` for a `42501` permission-denied error). Log the full `error` object so it isn't hidden behind `error.message`.
+      *
+      * @example Handling errors
+      * ```js
+      * const { error } = await supabase.from('countries').delete().eq('id', 1)
+      * if (error) console.error(error)
       * ```
       *
       * @example Delete a record and return it
@@ -5568,7 +4443,7 @@ ${cause.stack}`;
       * ```json
       * {
       *   "status": 204,
-      *   "statusText": "No Content"
+      *   "statusText": ""
       * }
       * ```
       */
@@ -5658,13 +4533,6 @@ ${cause.stack}`;
         else this.fetch = originalFetch;
         this.retry = retry;
       }
-      /**
-      * Perform a query on a table or a view.
-      *
-      * @param relation - The table or view name to query
-      *
-      * @category Database
-      */
       from(relation) {
         if (!relation || typeof relation !== "string" || relation.trim() === "") throw new Error("Invalid relation name: relation must be a non-empty string.");
         return new PostgrestQueryBuilder(new URL(`${this.url}/${relation}`), {
@@ -5939,22 +4807,10 @@ var require_websocket_factory = __commonJS({
         if (_process) {
           const processVersions = _process["versions"];
           if (processVersions && processVersions["node"]) {
-            const versionString = processVersions["node"];
-            const nodeVersion = parseInt(versionString.replace(/^v/, "").split(".")[0]);
-            if (nodeVersion >= 22) {
-              if (typeof globalThis.WebSocket !== "undefined") {
-                return { type: "native", wsConstructor: globalThis.WebSocket };
-              }
-              return {
-                type: "unsupported",
-                error: `Node.js ${nodeVersion} detected but native WebSocket not found.`,
-                workaround: "Provide a WebSocket implementation via the transport option."
-              };
-            }
             return {
               type: "unsupported",
-              error: `Node.js ${nodeVersion} detected without native WebSocket support.`,
-              workaround: 'For Node.js < 22, install "ws" package and provide it via the transport option:\nimport ws from "ws"\nnew RealtimeClient(url, { transport: ws })'
+              error: "Node.js detected but native WebSocket not found.",
+              workaround: "Ensure you are running Node.js 22+ or provide a WebSocket implementation via the transport option."
             };
           }
         }
@@ -6008,7 +4864,7 @@ Suggested solution: ${env.workaround}`;
       static isWebSocketSupported() {
         try {
           const env = this.detectEnvironment();
-          return env.type === "native" || env.type === "ws";
+          return env.type === "native";
         } catch (_a) {
           return false;
         }
@@ -6026,7 +4882,7 @@ var require_version = __commonJS({
     init_define_import_meta_env();
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.version = void 0;
-    exports.version = "2.105.4";
+    exports.version = "2.112.2";
   }
 });
 
@@ -6125,12 +4981,13 @@ var require_serializer = __commonJS({
       }
       _encodeUserBroadcastPush(message, encodingType, encodedPayload) {
         var _a, _b;
-        const topic = message.topic;
-        const ref = (_a = message.ref) !== null && _a !== void 0 ? _a : "";
-        const joinRef = (_b = message.join_ref) !== null && _b !== void 0 ? _b : "";
-        const userEvent = message.payload.event;
+        const encoder = new TextEncoder();
+        const topic = encoder.encode(message.topic);
+        const ref = encoder.encode((_a = message.ref) !== null && _a !== void 0 ? _a : "");
+        const joinRef = encoder.encode((_b = message.join_ref) !== null && _b !== void 0 ? _b : "");
+        const userEvent = encoder.encode(message.payload.event);
         const rest = this.allowedMetadataKeys ? this._pick(message.payload, this.allowedMetadataKeys) : {};
-        const metadata = Object.keys(rest).length === 0 ? "" : JSON.stringify(rest);
+        const metadata = encoder.encode(Object.keys(rest).length === 0 ? "" : JSON.stringify(rest));
         if (joinRef.length > 255) {
           throw new Error(`joinRef length ${joinRef.length} exceeds maximum of 255`);
         }
@@ -6148,7 +5005,8 @@ var require_serializer = __commonJS({
         }
         const metaLength = this.USER_BROADCAST_PUSH_META_LENGTH + joinRef.length + ref.length + topic.length + userEvent.length + metadata.length;
         const header = new ArrayBuffer(this.HEADER_LENGTH + metaLength);
-        let view = new DataView(header);
+        const view = new DataView(header);
+        const bytes = new Uint8Array(header);
         let offset = 0;
         view.setUint8(offset++, this.KINDS.userBroadcastPush);
         view.setUint8(offset++, joinRef.length);
@@ -6157,11 +5015,16 @@ var require_serializer = __commonJS({
         view.setUint8(offset++, userEvent.length);
         view.setUint8(offset++, metadata.length);
         view.setUint8(offset++, encodingType);
-        Array.from(joinRef, (char) => view.setUint8(offset++, char.charCodeAt(0)));
-        Array.from(ref, (char) => view.setUint8(offset++, char.charCodeAt(0)));
-        Array.from(topic, (char) => view.setUint8(offset++, char.charCodeAt(0)));
-        Array.from(userEvent, (char) => view.setUint8(offset++, char.charCodeAt(0)));
-        Array.from(metadata, (char) => view.setUint8(offset++, char.charCodeAt(0)));
+        bytes.set(joinRef, offset);
+        offset += joinRef.length;
+        bytes.set(ref, offset);
+        offset += ref.length;
+        bytes.set(topic, offset);
+        offset += topic.length;
+        bytes.set(userEvent, offset);
+        offset += userEvent.length;
+        bytes.set(metadata, offset);
+        offset += metadata.length;
         var combined = new Uint8Array(header.byteLength + encodedPayload.byteLength);
         combined.set(new Uint8Array(header), 0);
         combined.set(new Uint8Array(encodedPayload), header.byteLength);
@@ -6452,6 +5315,7 @@ var require_phoenix_cjs = __commonJS({
     var DEFAULT_VSN = "2.0.0";
     var DEFAULT_TIMEOUT = 1e4;
     var WS_CLOSE_NORMAL = 1e3;
+    var MAX_LONGPOLL_BATCH_SIZE = 100;
     var SOCKET_STATES = (
       /** @type {const} */
       { connecting: 0, open: 1, closing: 2, closed: 3 }
@@ -7170,16 +6034,22 @@ var require_phoenix_cjs = __commonJS({
           }, 0);
         }
       }
-      batchSend(messages) {
+      batchSend(messages, offset = 0) {
         this.awaitingBatchAck = true;
-        this.ajax("POST", { "Content-Type": "application/x-ndjson" }, messages.join("\n"), () => this.onerror("timeout"), (resp) => {
-          this.awaitingBatchAck = false;
+        const next = offset + MAX_LONGPOLL_BATCH_SIZE;
+        const batch = messages.slice(offset, next);
+        this.ajax("POST", { "Content-Type": "application/x-ndjson" }, batch.join("\n"), () => this.onerror("timeout"), (resp) => {
           if (!resp || resp.status !== 200) {
+            this.awaitingBatchAck = false;
             this.onerror(resp && resp.status);
             this.closeAndRetry(1011, "internal server error", false);
+          } else if (next < messages.length) {
+            this.batchSend(messages, next);
           } else if (this.batchBuffer.length > 0) {
             this.batchSend(this.batchBuffer);
             this.batchBuffer = [];
+          } else {
+            this.awaitingBatchAck = false;
           }
         });
       }
@@ -7222,7 +6092,7 @@ var require_phoenix_cjs = __commonJS({
       constructor(channel, opts = {}) {
         let events = opts.events || /** @type {PresenceEvents} */
         { state: "presence_state", diff: "presence_diff" };
-        this.state = {};
+        this.state = /* @__PURE__ */ Object.create(null);
         this.pendingDiffs = [];
         this.channel = channel;
         this.joinRef = null;
@@ -7301,9 +6171,10 @@ var require_phoenix_cjs = __commonJS({
        * @returns {Record<string, PresenceState>}
        */
       static syncState(currentState, newState, onJoin, onLeave) {
-        let state = this.clone(currentState);
-        let joins = {};
-        let leaves = {};
+        let state = this.toNullProtoObj(this.clone(currentState));
+        newState = this.toNullProtoObj(newState);
+        let joins = /* @__PURE__ */ Object.create(null);
+        let leaves = /* @__PURE__ */ Object.create(null);
         this.map(state, (key, presence) => {
           if (!newState[key]) {
             leaves[key] = presence;
@@ -7345,6 +6216,7 @@ var require_phoenix_cjs = __commonJS({
        * @returns {Record<string, PresenceState>}
        */
       static syncDiff(state, diff, onJoin, onLeave) {
+        state = this.toNullProtoObj(state);
         let { joins, leaves } = this.clone(diff);
         if (!onJoin) {
           onJoin = function() {
@@ -7408,6 +6280,22 @@ var require_phoenix_cjs = __commonJS({
       static map(obj, func) {
         return Object.getOwnPropertyNames(obj).map((key) => func(key, obj[key]));
       }
+      // Presence keys are chosen on the server and may collide with
+      // Object.prototype properties ("__proto__", "constructor", ...), so any
+      // object indexed by presence key must not have a prototype chain
+      //
+      // TODO: replace the null-prototype objects with Maps in Phoenix 2.0
+      // (breaking change for the lower-level static API)
+      static toNullProtoObj(obj) {
+        if (Object.getPrototypeOf(obj) === null) {
+          return obj;
+        }
+        let cleaned = /* @__PURE__ */ Object.create(null);
+        Object.getOwnPropertyNames(obj).forEach((key) => {
+          cleaned[key] = obj[key];
+        });
+        return cleaned;
+      }
       /**
       * @template T
       * @param {T} obj
@@ -7452,23 +6340,42 @@ var require_phoenix_cjs = __commonJS({
       /** @private */
       binaryEncode(message) {
         let { join_ref, ref, event, topic, payload } = message;
-        let metaLength = this.META_LENGTH + join_ref.length + ref.length + topic.length + event.length;
+        let encoder = new TextEncoder();
+        let joinRefBytes = encoder.encode(join_ref);
+        let refBytes = encoder.encode(ref);
+        let topicBytes = encoder.encode(topic);
+        let eventBytes = encoder.encode(event);
+        this.assertFieldSize(joinRefBytes.byteLength, "join_ref");
+        this.assertFieldSize(refBytes.byteLength, "ref");
+        this.assertFieldSize(topicBytes.byteLength, "topic");
+        this.assertFieldSize(eventBytes.byteLength, "event");
+        let metaLength = this.META_LENGTH + joinRefBytes.byteLength + refBytes.byteLength + topicBytes.byteLength + eventBytes.byteLength;
         let header = new ArrayBuffer(this.HEADER_LENGTH + metaLength);
+        let headerBytes = new Uint8Array(header);
         let view = new DataView(header);
         let offset = 0;
         view.setUint8(offset++, this.KINDS.push);
-        view.setUint8(offset++, join_ref.length);
-        view.setUint8(offset++, ref.length);
-        view.setUint8(offset++, topic.length);
-        view.setUint8(offset++, event.length);
-        Array.from(join_ref, (char) => view.setUint8(offset++, char.charCodeAt(0)));
-        Array.from(ref, (char) => view.setUint8(offset++, char.charCodeAt(0)));
-        Array.from(topic, (char) => view.setUint8(offset++, char.charCodeAt(0)));
-        Array.from(event, (char) => view.setUint8(offset++, char.charCodeAt(0)));
+        view.setUint8(offset++, joinRefBytes.byteLength);
+        view.setUint8(offset++, refBytes.byteLength);
+        view.setUint8(offset++, topicBytes.byteLength);
+        view.setUint8(offset++, eventBytes.byteLength);
+        headerBytes.set(joinRefBytes, offset);
+        offset += joinRefBytes.byteLength;
+        headerBytes.set(refBytes, offset);
+        offset += refBytes.byteLength;
+        headerBytes.set(topicBytes, offset);
+        offset += topicBytes.byteLength;
+        headerBytes.set(eventBytes, offset);
+        offset += eventBytes.byteLength;
         var combined = new Uint8Array(header.byteLength + payload.byteLength);
-        combined.set(new Uint8Array(header), 0);
+        combined.set(headerBytes, 0);
         combined.set(new Uint8Array(payload), header.byteLength);
         return combined.buffer;
+      },
+      assertFieldSize(size, name) {
+        if (size > 255) {
+          throw new Error(`unable to convert ${name} to binary: must be less than or equal to 255 bytes, but is ${size} bytes`);
+        }
       },
       /**
       * @private
@@ -7647,7 +6554,7 @@ var require_phoenix_cjs = __commonJS({
             this.connect();
           });
         }, this.reconnectAfterMs);
-        this.authToken = opts.authToken;
+        this.authToken = opts.authToken && closure(opts.authToken);
       }
       /**
        * Returns the LongPoll transport reference
@@ -7848,7 +6755,7 @@ var require_phoenix_cjs = __commonJS({
         this.closeWasClean = false;
         let protocols = void 0;
         if (this.authToken) {
-          protocols = ["phoenix", `${AUTH_TOKEN_PREFIX}${btoa(this.authToken).replace(/=/g, "")}`];
+          protocols = ["phoenix", `${AUTH_TOKEN_PREFIX}${btoa(this.authToken()).replace(/=/g, "")}`];
         }
         this.conn = new this.transport(this.endPointURL(), protocols);
         this.conn.binaryType = this.binaryType;
@@ -8290,10 +7197,12 @@ var require_presenceAdapter = __commonJS({
     exports.default = PresenceAdapter;
     function transformState(presences) {
       return presences.metas.map((presence) => {
-        presence["presence_ref"] = presence["phx_ref"];
-        delete presence["phx_ref"];
-        delete presence["phx_ref_prev"];
-        return presence;
+        const descriptors = Object.getOwnPropertyDescriptors(presence);
+        const transformedPresence = Object.defineProperties({}, descriptors);
+        transformedPresence["presence_ref"] = transformedPresence["phx_ref"];
+        delete transformedPresence["phx_ref"];
+        delete transformedPresence["phx_ref_prev"];
+        return transformedPresence;
       });
     }
     function cloneState(state) {
@@ -8488,13 +7397,138 @@ var require_channelAdapter = __commonJS({
   }
 });
 
+// node_modules/@supabase/realtime-js/dist/main/RealtimePostgresFilterBuilder.js
+var require_RealtimePostgresFilterBuilder = __commonJS({
+  "node_modules/@supabase/realtime-js/dist/main/RealtimePostgresFilterBuilder.js"(exports) {
+    "use strict";
+    init_define_import_meta_env();
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.postgresChangesFilter = exports.RealtimePostgresFilterBuilder = void 0;
+    var PostgrestReservedCharsRegexp2 = /[,()"\\]/;
+    var needsQuoting = (value) => PostgrestReservedCharsRegexp2.test(value) || value !== value.trim();
+    var quote = (value) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+    var serializeScalar = (value) => {
+      const serialized = value === null ? "null" : String(value);
+      return needsQuoting(serialized) ? quote(serialized) : serialized;
+    };
+    var serializeIsValue = (value) => value === null ? "null" : String(value);
+    var serialize = (operator, value) => {
+      if (operator === "in") {
+        const values = Array.isArray(value) ? value : [value];
+        if (values.length === 0) {
+          throw new Error("Realtime `in` filter requires at least one value.");
+        }
+        const items = Array.from(new Set(values)).map((v) => serializeScalar(v)).join(",");
+        return `in.(${items})`;
+      }
+      if (operator === "is") {
+        return `is.${serializeIsValue(value)}`;
+      }
+      return `${operator}.${serializeScalar(value)}`;
+    };
+    var RealtimePostgresFilterBuilder = class {
+      constructor() {
+        this.filters = [];
+      }
+      add(column, operator, value, negate = false) {
+        const prefix = negate ? "not." : "";
+        this.filters.push(`${column}=${prefix}${serialize(operator, value)}`);
+        return this;
+      }
+      /** Match rows where `column` equals `value` (`column=eq.value`). */
+      eq(column, value) {
+        return this.add(column, "eq", value);
+      }
+      /** Match rows where `column` does not equal `value` (`column=neq.value`). */
+      neq(column, value) {
+        return this.add(column, "neq", value);
+      }
+      /** Match rows where `column` is greater than `value` (`column=gt.value`). */
+      gt(column, value) {
+        return this.add(column, "gt", value);
+      }
+      /** Match rows where `column` is greater than or equal to `value` (`column=gte.value`). */
+      gte(column, value) {
+        return this.add(column, "gte", value);
+      }
+      /** Match rows where `column` is less than `value` (`column=lt.value`). */
+      lt(column, value) {
+        return this.add(column, "lt", value);
+      }
+      /** Match rows where `column` is less than or equal to `value` (`column=lte.value`). */
+      lte(column, value) {
+        return this.add(column, "lte", value);
+      }
+      /**
+       * Match rows where `column` is one of `values` (`column=in.(a,b,c)`).
+       * Requires at least one value; duplicates are removed. An element containing a
+       * reserved character is double-quoted (`in.("a,b",c)`), so commas inside an
+       * element are preserved. `null` is intentionally not accepted (`IN (null)`
+       * never matches in SQL) — use `is`/`not('col','is',null)` for null checks.
+       */
+      in(column, values) {
+        return this.add(column, "in", values);
+      }
+      /** Match rows where `column` matches the case-sensitive `pattern` (`column=like.pattern`). */
+      like(column, pattern) {
+        return this.add(column, "like", pattern);
+      }
+      /** Match rows where `column` matches the case-insensitive `pattern` (`column=ilike.pattern`). */
+      ilike(column, pattern) {
+        return this.add(column, "ilike", pattern);
+      }
+      /** Match rows where `column` matches the POSIX regex `pattern` (`column=match.pattern`). */
+      match(column, pattern) {
+        return this.add(column, "match", pattern);
+      }
+      /** Match rows where `column` matches the case-insensitive POSIX regex `pattern` (`column=imatch.pattern`). */
+      imatch(column, pattern) {
+        return this.add(column, "imatch", pattern);
+      }
+      /**
+       * Match rows where `column` `IS` the given value (`column=is.null`).
+       * Accepts `null`, a boolean, or the keywords `'null' | 'true' | 'false' | 'unknown'`.
+       */
+      is(column, value) {
+        return this.add(column, "is", value);
+      }
+      /** Match rows where `column` is distinct from `value` (`column=isdistinct.value`). NULL-safe inequality. */
+      isDistinct(column, value) {
+        return this.add(column, "isdistinct", value);
+      }
+      not(column, operator, value) {
+        return this.add(column, operator, value, true);
+      }
+      /**
+       * Serialize all conditions into the comma-separated (AND) filter string.
+       *
+       * Conditions are joined by commas, which the server applies as `AND`. A scalar
+       * value (or single `in` element) that contains a reserved character — `,`,
+       * `(`, `)`, `"`, `\` — or surrounding whitespace is double-quoted and escaped
+       * the way PostgREST does, so commas inside a value are preserved rather than
+       * read as a condition boundary.
+       */
+      build() {
+        return this.filters.join(",");
+      }
+      /** Alias for {@link build}; lets the builder be used wherever a string is expected. */
+      toString() {
+        return this.build();
+      }
+    };
+    exports.RealtimePostgresFilterBuilder = RealtimePostgresFilterBuilder;
+    var postgresChangesFilter = () => new RealtimePostgresFilterBuilder();
+    exports.postgresChangesFilter = postgresChangesFilter;
+  }
+});
+
 // node_modules/@supabase/realtime-js/dist/main/RealtimeChannel.js
 var require_RealtimeChannel = __commonJS({
   "node_modules/@supabase/realtime-js/dist/main/RealtimeChannel.js"(exports) {
     "use strict";
     init_define_import_meta_env();
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.REALTIME_CHANNEL_STATES = exports.REALTIME_SUBSCRIBE_STATES = exports.REALTIME_LISTEN_TYPES = exports.REALTIME_POSTGRES_CHANGES_LISTEN_EVENT = void 0;
+    exports.REALTIME_CHANNEL_STATES = exports.REALTIME_SUBSCRIBE_STATES = exports.REALTIME_LISTEN_TYPES = exports.REALTIME_POSTGRES_CHANGES_LISTEN_EVENT = exports.postgresChangesFilter = exports.RealtimePostgresFilterBuilder = void 0;
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
     var constants_1 = require_constants();
     var RealtimePresence_1 = tslib_1.__importDefault(require_RealtimePresence());
@@ -8502,6 +7536,14 @@ var require_RealtimeChannel = __commonJS({
     var transformers_1 = require_transformers();
     var normalizeChannelError_1 = require_normalizeChannelError();
     var channelAdapter_1 = tslib_1.__importDefault(require_channelAdapter());
+    var RealtimePostgresFilterBuilder_1 = require_RealtimePostgresFilterBuilder();
+    var RealtimePostgresFilterBuilder_2 = require_RealtimePostgresFilterBuilder();
+    Object.defineProperty(exports, "RealtimePostgresFilterBuilder", { enumerable: true, get: function() {
+      return RealtimePostgresFilterBuilder_2.RealtimePostgresFilterBuilder;
+    } });
+    Object.defineProperty(exports, "postgresChangesFilter", { enumerable: true, get: function() {
+      return RealtimePostgresFilterBuilder_2.postgresChangesFilter;
+    } });
     var REALTIME_POSTGRES_CHANGES_LISTEN_EVENT;
     (function(REALTIME_POSTGRES_CHANGES_LISTEN_EVENT2) {
       REALTIME_POSTGRES_CHANGES_LISTEN_EVENT2["ALL"] = "*";
@@ -8597,8 +7639,23 @@ var require_RealtimeChannel = __commonJS({
         }
       }
       /**
-       * Subscribe registers your client with the server
+       * Subscribe registers your client with the server.
+       *
+       * The optional `callback` receives a `status` and, on failure, an `err` argument.
+       * Log the full `err` so its `cause`, `name`, and any structured fields aren't hidden
+       * behind `err.message`.
+       *
        * @category Realtime
+       *
+       * @example Handling errors
+       * ```js
+       * supabase.channel('room1').subscribe((status, err) => {
+       *   if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+       *     // Log the full error: its `cause` often holds the underlying reason.
+       *     console.error(status, err)
+       *   }
+       * })
+       * ```
        */
       subscribe(callback, timeout = this.timeout) {
         var _a, _b, _c;
@@ -8682,6 +7739,11 @@ var require_RealtimeChannel = __commonJS({
        * Sends the supplied payload to the presence tracker so other subscribers can see that this
        * client is online. Use `untrack` to stop broadcasting presence for the same key.
        *
+       * Tracking makes this client visible to other subscribers immediately, regardless of this
+       * channel's `config.presence.enabled` setting or whether it has a `presence` listener — that
+       * flag only affects whether *this* client receives presence updates from others (and, on
+       * RLS-protected channels, whether it's authorized to do so).
+       *
        * @category Realtime
        */
       async track(payload, opts = {}) {
@@ -8689,7 +7751,7 @@ var require_RealtimeChannel = __commonJS({
           type: "presence",
           event: "track",
           payload
-        }, opts.timeout || this.timeout);
+        }, opts);
       }
       /**
        * Removes the current presence state for this client.
@@ -8771,6 +7833,10 @@ var require_RealtimeChannel = __commonJS({
        *     }
        *   })
        * ```
+       *
+       * Registering the same `postgres_changes` filter more than once on a channel is a no-op: the
+       * duplicate is ignored and an error is logged, since the server only ever creates one
+       * subscription per distinct filter.
        *
        * @example Listen to all database changes
        * ```js
@@ -8876,6 +7942,9 @@ var require_RealtimeChannel = __commonJS({
        * This method always uses the REST API endpoint regardless of WebSocket connection state.
        * Useful when you want to guarantee REST delivery or when gradually migrating from implicit REST fallback.
        *
+       * Payloads that are `ArrayBuffer` or `ArrayBufferView` (e.g. `Uint8Array`) are sent as
+       * `application/octet-stream`; all other payloads are JSON-encoded.
+       *
        * @param event The name of the broadcast event
        * @param payload Payload to be sent (required)
        * @param opts Options including timeout
@@ -8888,30 +7957,30 @@ var require_RealtimeChannel = __commonJS({
         if (payload === void 0 || payload === null) {
           return Promise.reject(new Error("Payload is required for httpSend()"));
         }
+        const isBinary = payload instanceof ArrayBuffer || ArrayBuffer.isView(payload);
         const headers = {
           apikey: this.socket.apiKey ? this.socket.apiKey : "",
-          "Content-Type": "application/json"
+          "Content-Type": isBinary ? "application/octet-stream" : "application/json"
         };
         if (this.socket.accessTokenValue) {
           headers["Authorization"] = `Bearer ${this.socket.accessTokenValue}`;
         }
+        const url = new URL(this.broadcastEndpointURL);
+        url.pathname += `/${encodeURIComponent(this.subTopic)}/events/${encodeURIComponent(event)}`;
+        if (this.private) {
+          url.searchParams.set("private", "true");
+        }
         const options = {
           method: "POST",
           headers,
-          body: JSON.stringify({
-            messages: [
-              {
-                topic: this.subTopic,
-                event,
-                payload,
-                private: this.private
-              }
-            ]
-          })
+          body: isBinary ? payload : JSON.stringify(payload)
         };
-        const response = await this._fetchWithTimeout(this.broadcastEndpointURL, options, (_a = opts.timeout) !== null && _a !== void 0 ? _a : this.timeout);
+        const response = await this._fetchWithTimeout(url.toString(), options, (_a = opts.timeout) !== null && _a !== void 0 ? _a : this.timeout);
         if (response.status === 202) {
           return { success: true };
+        }
+        if (response.status === 404) {
+          return Promise.reject(new Error("httpSend() requires Realtime server v2.97.0 or newer; the endpoint returned 404. Update your Supabase CLI to a recent version, or upgrade the Realtime server in your self-hosted setup. See https://github.com/supabase/supabase-js/blob/master/packages/core/realtime-js/migrations/httpsend-server-version.md"));
         }
         let errorMessage = response.statusText;
         try {
@@ -8935,6 +8004,8 @@ var require_RealtimeChannel = __commonJS({
        * @remarks
        * - When using REST you don't need to subscribe to the channel
        * - REST calls are only available from 2.37.0 onwards
+       * - If you create a channel only to send a REST broadcast, remove it from
+       *   the client when the send completes
        *
        * @example Send a message via websocket
        * ```js
@@ -8958,9 +8029,13 @@ var require_RealtimeChannel = __commonJS({
        *
        * @example Send a message via REST
        * ```js
-       * supabase
-       *   .channel('room1')
-       *   .httpSend('cursor-pos', { x: Math.random(), y: Math.random() })
+       * const channel = supabase.channel('room1')
+       *
+       * try {
+       *   await channel.httpSend('cursor-pos', { x: Math.random(), y: Math.random() })
+       * } finally {
+       *   await supabase.removeChannel(channel)
+       * }
        * ```
        */
       async send(args, opts = {}) {
@@ -9056,7 +8131,19 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _on(type, filter, callback) {
+        var _a;
         const typeLower = type.toLocaleLowerCase();
+        const filterValue = filter === null || filter === void 0 ? void 0 : filter.filter;
+        if (filterValue instanceof RealtimePostgresFilterBuilder_1.RealtimePostgresFilterBuilder || typeof filterValue === "object" && filterValue !== null && typeof filterValue.build === "function") {
+          filter = Object.assign(Object.assign({}, filter), { filter: filterValue.build() });
+        }
+        if (typeLower === REALTIME_LISTEN_TYPES.POSTGRES_CHANGES) {
+          const duplicate = (_a = this.bindings[typeLower]) === null || _a === void 0 ? void 0 : _a.find((bind) => _RealtimeChannel.isSamePostgresFilter(bind.filter, filter));
+          if (duplicate) {
+            this.socket.log("error", `duplicate \`postgres_changes\` binding for ${this.topic} ignored`, filter);
+            return this;
+          }
+        }
         const ref = this.channelAdapter.on(type, callback);
         const binding = {
           type: typeLower,
@@ -9159,6 +8246,17 @@ var require_RealtimeChannel = __commonJS({
         const normalizedServer = serverValue !== null && serverValue !== void 0 ? serverValue : void 0;
         const normalizedClient = clientValue !== null && clientValue !== void 0 ? clientValue : void 0;
         return normalizedServer === normalizedClient;
+      }
+      /**
+       * Two `postgres_changes` filters are the same when the server would collapse them into a single
+       * subscription.
+       * @internal
+       */
+      static isSamePostgresFilter(a, b) {
+        var _a, _b, _c, _d;
+        const selectA = (_b = (_a = a === null || a === void 0 ? void 0 : a.select) === null || _a === void 0 ? void 0 : _a.join()) !== null && _b !== void 0 ? _b : void 0;
+        const selectB = (_d = (_c = b === null || b === void 0 ? void 0 : b.select) === null || _c === void 0 ? void 0 : _c.join()) !== null && _d !== void 0 ? _d : void 0;
+        return (a === null || a === void 0 ? void 0 : a.event) === (b === null || b === void 0 ? void 0 : b.event) && _RealtimeChannel.isFilterValueEqual(a === null || a === void 0 ? void 0 : a.schema, b === null || b === void 0 ? void 0 : b.schema) && _RealtimeChannel.isFilterValueEqual(a === null || a === void 0 ? void 0 : a.table, b === null || b === void 0 ? void 0 : b.table) && _RealtimeChannel.isFilterValueEqual(a === null || a === void 0 ? void 0 : a.filter, b === null || b === void 0 ? void 0 : b.filter) && selectA === selectB;
       }
       /** @internal */
       _getPayloadRecords(payload) {
@@ -9410,7 +8508,6 @@ var require_RealtimeClient = __commonJS({
        * Initializes the Socket.
        *
        * @param endPoint The string WebSocket endpoint, ie, "ws://example.com/socket", "wss://example.com", "/socket" (inherited host & protocol)
-       * @param httpEndpoint The string HTTP endpoint, ie, "https://example.com", "/" (inherited host & protocol)
        * @param options.transport The Websocket Transport, for example WebSocket. This can be a custom implementation
        * @param options.timeout The default timeout in milliseconds to trigger push timeouts.
        * @param options.params The optional params to pass when connecting.
@@ -9462,6 +8559,7 @@ var require_RealtimeClient = __commonJS({
         this.serializer = new serializer_1.default();
         this._manuallySetToken = false;
         this._authPromise = null;
+        this._authGeneration = 0;
         this._workerHeartbeatTimer = void 0;
         this._pendingWorkerHeartbeatRef = null;
         this._pendingDisconnectTimer = null;
@@ -9498,22 +8596,6 @@ var require_RealtimeClient = __commonJS({
           this.socketAdapter.connect();
         } catch (error) {
           const errorMessage = error.message;
-          if (errorMessage.includes("Node.js")) {
-            throw new Error(`${errorMessage}
-
-To use Realtime in Node.js, you need to provide a WebSocket implementation:
-
-Option 1: Use Node.js 22+ which has native WebSocket support
-Option 2: Install and provide the "ws" package:
-
-  npm install ws
-
-  import ws from "ws"
-  const client = new RealtimeClient(url, {
-    ...options,
-    transport: ws
-  })`);
-          }
           throw new Error(`WebSocket not available: ${errorMessage}`);
         }
         this._handleNodeJsRaceCondition();
@@ -9661,14 +8743,18 @@ Option 2: Install and provide the "ws" package:
        *
        * On callback used, it will set the value of the token internal to the client.
        *
-       * When a token is explicitly provided, it will be preserved across channel operations
-       * (including removeChannel and resubscribe). The `accessToken` callback will not be
-       * invoked until `setAuth()` is called without arguments.
+       * When a token is explicitly provided AND no `accessToken` callback is configured,
+       * it will be preserved across channel operations (including removeChannel and
+       * resubscribe) and the client stays in manual-token mode.
+       *
+       * When an `accessToken` callback IS configured, the callback is the source of truth:
+       * the client remains in callback mode and continues to refresh from it on heartbeat,
+       * even after a bootstrap/override `setAuth(token)` call.
        *
        * @param token A JWT string to override the token set on the client.
        *
        * @example Setting the authorization header
-       * // Use a manual token (preserved across resubscribes, ignores accessToken callback)
+       * // Use a manual token (preserved across resubscribes when no accessToken callback is set)
        * client.realtime.setAuth('my-custom-jwt')
        *
        * // Switch back to using the accessToken callback
@@ -9677,11 +8763,17 @@ Option 2: Install and provide the "ws" package:
        * @category Realtime
        */
       async setAuth(token = null) {
-        this._authPromise = this._performAuth(token);
+        const authGeneration = ++this._authGeneration;
+        const authPromise = this._performAuth(token, authGeneration);
+        if (authGeneration === this._authGeneration) {
+          this._authPromise = authPromise;
+        }
         try {
-          await this._authPromise;
+          await authPromise;
         } finally {
-          this._authPromise = null;
+          if (this._authPromise === authPromise) {
+            this._authPromise = null;
+          }
         }
       }
       /**
@@ -9702,7 +8794,7 @@ Option 2: Install and provide the "ws" package:
       }
       /**
        * Sets a callback that receives lifecycle events for internal heartbeat messages.
-       * Useful for instrumenting connection health (e.g. sent/ok/timeout/disconnected).
+       * Useful for instrumenting connection health (e.g. sent/ok/timeout).
        *
        * @category Realtime
        */
@@ -9760,7 +8852,7 @@ Option 2: Install and provide the "ws" package:
        * Perform the actual auth operation
        * @internal
        */
-      async _performAuth(token = null) {
+      async _performAuth(token, authGeneration) {
         let tokenToSend;
         let isManualToken = false;
         if (token) {
@@ -9776,10 +8868,13 @@ Option 2: Install and provide the "ws" package:
         } else {
           tokenToSend = this.accessTokenValue;
         }
-        if (isManualToken) {
-          this._manuallySetToken = true;
-        } else if (this.accessToken) {
+        if (authGeneration !== this._authGeneration) {
+          return;
+        }
+        if (this.accessToken) {
           this._manuallySetToken = false;
+        } else if (isManualToken) {
+          this._manuallySetToken = true;
         }
         if (this.accessTokenValue != tokenToSend) {
           this.accessTokenValue = tokenToSend;
@@ -9788,7 +8883,7 @@ Option 2: Install and provide the "ws" package:
               access_token: tokenToSend,
               version: constants_1.DEFAULT_VERSION
             };
-            tokenToSend && channel.updateJoinPayload(payload);
+            channel.updateJoinPayload(payload);
             if (channel.joinedOnce && channel.channelAdapter.isJoined()) {
               channel.channelAdapter.push(constants_1.CHANNEL_EVENTS.access_token, {
                 access_token: tokenToSend
@@ -9848,6 +8943,8 @@ Option 2: Install and provide the "ws" package:
       /** @internal */
       _wrapHeartbeatCallback(heartbeatCallback) {
         return (status, latency) => {
+          if (status === "disconnected")
+            return;
           if (status == "sent")
             this._setAuthSafely();
           if (heartbeatCallback)
@@ -9974,12 +9071,18 @@ var require_main2 = __commonJS({
     "use strict";
     init_define_import_meta_env();
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.WebSocketFactory = exports.REALTIME_CHANNEL_STATES = exports.REALTIME_SUBSCRIBE_STATES = exports.REALTIME_PRESENCE_LISTEN_EVENTS = exports.REALTIME_POSTGRES_CHANGES_LISTEN_EVENT = exports.REALTIME_LISTEN_TYPES = exports.RealtimeClient = exports.RealtimeChannel = exports.RealtimePresence = void 0;
+    exports.WebSocketFactory = exports.REALTIME_CHANNEL_STATES = exports.REALTIME_SUBSCRIBE_STATES = exports.REALTIME_PRESENCE_LISTEN_EVENTS = exports.REALTIME_POSTGRES_CHANGES_LISTEN_EVENT = exports.REALTIME_LISTEN_TYPES = exports.postgresChangesFilter = exports.RealtimePostgresFilterBuilder = exports.RealtimeClient = exports.RealtimeChannel = exports.RealtimePresence = void 0;
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
     var RealtimeClient_1 = tslib_1.__importDefault(require_RealtimeClient());
     exports.RealtimeClient = RealtimeClient_1.default;
     var RealtimeChannel_1 = tslib_1.__importStar(require_RealtimeChannel());
     exports.RealtimeChannel = RealtimeChannel_1.default;
+    Object.defineProperty(exports, "RealtimePostgresFilterBuilder", { enumerable: true, get: function() {
+      return RealtimeChannel_1.RealtimePostgresFilterBuilder;
+    } });
+    Object.defineProperty(exports, "postgresChangesFilter", { enumerable: true, get: function() {
+      return RealtimeChannel_1.postgresChangesFilter;
+    } });
     Object.defineProperty(exports, "REALTIME_LISTEN_TYPES", { enumerable: true, get: function() {
       return RealtimeChannel_1.REALTIME_LISTEN_TYPES;
     } });
@@ -10641,7 +9744,7 @@ function createFetchApi(namespace = "storage") {
     }
   };
 }
-var StorageError, StorageApiError, StorageUnknownError, resolveFetch, isPlainObject, recursiveToCamel, isValidBucketName, _getErrorMessage, handleError, _getRequestParams, defaultApi, get, post, put, head, remove, vectorsApi, BaseApiClient, StreamDownloadBuilder, _Symbol$toStringTag, BlobDownloadBuilder, DEFAULT_SEARCH_OPTIONS, DEFAULT_FILE_OPTIONS, StorageFileApi, version, DEFAULT_HEADERS, StorageBucketApi, StorageAnalyticsClient, VectorIndexApi, VectorDataApi, VectorBucketApi, StorageVectorsClient, VectorBucketScope, VectorIndexScope, StorageClient;
+var StorageError, StorageApiError, StorageUnknownError, resolveFetch, isPlainObject, recursiveToCamel, isValidBucketName, encodeStoragePath, _getErrorMessage, handleError, _getRequestParams, defaultApi, get, post, put, head, remove, vectorsApi, BaseApiClient, _Symbol$toStringTag$1, StreamDownloadBuilder, _Symbol$toStringTag, BlobDownloadBuilder, DEFAULT_SEARCH_OPTIONS, DEFAULT_FILE_OPTIONS, StorageFileApi, version, DEFAULT_HEADERS, StorageBucketApi, StorageAnalyticsClient, VectorIndexApi, VectorDataApi, VectorBucketApi, StorageVectorsClient, VectorBucketScope, VectorIndexScope, StorageClient;
 var init_dist3 = __esm({
   "node_modules/@supabase/storage-js/dist/index.mjs"() {
     init_define_import_meta_env();
@@ -10665,14 +9768,15 @@ var init_dist3 = __esm({
       }
     };
     StorageApiError = class extends StorageError {
-      constructor(message, status, statusCode, namespace = "storage") {
+      constructor(message, status, statusCode, namespace = "storage", code) {
         super(message, namespace, status, statusCode);
         this.name = namespace === "vectors" ? "StorageVectorsApiError" : "StorageApiError";
         this.status = status;
         this.statusCode = statusCode;
+        this.code = code;
       }
       toJSON() {
-        return _objectSpread22({}, super.toJSON());
+        return _objectSpread22(_objectSpread22({}, super.toJSON()), {}, { code: this.code });
       }
     };
     StorageUnknownError = class extends StorageError {
@@ -10708,6 +9812,7 @@ var init_dist3 = __esm({
       if (bucketName.includes("/") || bucketName.includes("\\")) return false;
       return /^[\w!.\*'() &$@=;:+,?-]+$/.test(bucketName);
     };
+    encodeStoragePath = (path) => path.split("/").map(encodeURIComponent).join("/");
     _getErrorMessage = (err) => {
       if (typeof err === "object" && err !== null) {
         const e = err;
@@ -10729,7 +9834,7 @@ var init_dist3 = __esm({
         if (!Number.isFinite(status)) status = 500;
         responseError.json().then((err) => {
           const statusCode = (err === null || err === void 0 ? void 0 : err.statusCode) || (err === null || err === void 0 ? void 0 : err.code) || status + "";
-          reject(new StorageApiError(_getErrorMessage(err), status, statusCode, namespace));
+          reject(new StorageApiError(_getErrorMessage(err), status, statusCode, namespace, err === null || err === void 0 ? void 0 : err.code));
         }).catch(() => {
           const statusCode = status + "";
           reject(new StorageApiError(responseError.statusText || `HTTP ${status} error`, status, statusCode, namespace));
@@ -10835,13 +9940,26 @@ var init_dist3 = __esm({
         }
       }
     };
+    _Symbol$toStringTag$1 = Symbol.toStringTag;
     StreamDownloadBuilder = class {
       constructor(downloadFn, shouldThrowOnError) {
         this.downloadFn = downloadFn;
         this.shouldThrowOnError = shouldThrowOnError;
+        this[_Symbol$toStringTag$1] = "StreamDownloadBuilder";
+        this.promise = null;
       }
       then(onfulfilled, onrejected) {
-        return this.execute().then(onfulfilled, onrejected);
+        return this.getPromise().then(onfulfilled, onrejected);
+      }
+      catch(onrejected) {
+        return this.getPromise().catch(onrejected);
+      }
+      finally(onfinally) {
+        return this.getPromise().finally(onfinally);
+      }
+      getPromise() {
+        if (!this.promise) this.promise = this.execute();
+        return this.promise;
       }
       async execute() {
         var _this = this;
@@ -11003,6 +10121,21 @@ var init_dist3 = __esm({
       *   .upload('public/avatar1.png', decode('base64FileData'), {
       *     contentType: 'image/png'
       *   })
+      * ```
+      *
+      * @example Handling errors
+      * ```js
+      * const { data, error } = await supabase
+      *   .storage
+      *   .from('avatars')
+      *   .upload('public/avatar1.png', avatarFile)
+      *
+      * if (error) {
+      *   // Log the full error so fields like `statusCode` and `error` (the
+      *   // Storage error name, e.g. "Duplicate") aren't hidden behind `error.message`.
+      *   console.error(error)
+      *   return
+      * }
       * ```
       *
       * @remarks
@@ -11427,8 +10560,7 @@ var init_dist3 = __esm({
       * @category Storage
       * @subcategory File Buckets
       * @param path The full path and file name of the file to be downloaded. For example `folder/image.png`.
-      * @param options.transform Transform the asset before serving it to the client.
-      * @param options.cacheNonce Append a cache nonce parameter to the URL to invalidate the cache.
+      * @param options Optional settings: `transform` to transform the asset before serving it to the client, and `cacheNonce` to append a cache nonce parameter to the URL to invalidate the cache.
       * @param parameters Additional fetch parameters like signal for cancellation. Supports standard fetch options including cache control.
       * @returns BlobDownloadBuilder instance for downloading the file
       *
@@ -11678,6 +10810,57 @@ var init_dist3 = __esm({
         });
       }
       /**
+      * Purges the CDN cache for a single object in this bucket.
+      *
+      * Maps to `DELETE /cdn/{bucket}/{path}` on the Storage API. The server
+      * issues a CDN invalidation for the object and returns `{ message: 'success' }`.
+      *
+      * **Requires the `service_role` key.** The underlying endpoint enforces
+      * `service_role` JWT — calls made with the anon key or a user JWT will be
+      * rejected by the server.
+      *
+      * **Hosted CDN feature.** On self-hosted Supabase, the Storage service must
+      * have `CDN_PURGE_ENDPOINT_URL` configured and the `purgeCache` tenant
+      * feature enabled, otherwise the server returns an error.
+      *
+      * Operates on a single object path. There is no wildcard or recursion: pass
+      * the exact path of the object you want invalidated.
+      *
+      * @category Storage
+      * @subcategory File Buckets
+      * @param path The path (relative to the bucket) of the object to purge, e.g. `folder/avatar.png`.
+      * @param options Optional purge cache options.
+      * @param options.transformations If true, purges only transformations (resized/formatted variants), leaving the original cached file intact.
+      * @param parameters Optional fetch parameters such as an `AbortController` signal.
+      * @returns Promise with `{ data: { message }, error: null }` on success or `{ data: null, error }` on failure.
+      *
+      * @example Purge a single cached object
+      * ```js
+      * const { data, error } = await supabase
+      *   .storage
+      *   .from('avatars')
+      *   .purgeCache('folder/avatar1.png')
+      * ```
+      *
+      * @example Purge only transformations for a single object
+      * ```js
+      * const { data, error } = await supabase
+      *   .storage
+      *   .from('avatars')
+      *   .purgeCache('folder/avatar1.png', { transformations: true })
+      * ```
+      */
+      async purgeCache(path, options, parameters) {
+        var _this13 = this;
+        return _this13.handleOperation(async () => {
+          const _path = encodeStoragePath(_this13._getFinalPath(path));
+          const query = new URLSearchParams();
+          if (options === null || options === void 0 ? void 0 : options.transformations) query.set("transformations", "true");
+          const queryString = query.toString();
+          return await remove(_this13.fetch, `${_this13.url}/cdn/${_path}${queryString ? `?${queryString}` : ""}`, {}, { headers: _this13.headers }, parameters);
+        });
+      }
+      /**
       * Get file metadata
       * @param id the file id to retrieve metadata
       */
@@ -11769,10 +10952,14 @@ var init_dist3 = __esm({
       * - Refer to the [Storage guide](/docs/guides/storage/security/access-control) on how access control works
       */
       async list(path, options, parameters) {
-        var _this13 = this;
-        return _this13.handleOperation(async () => {
-          const body = _objectSpread22(_objectSpread22(_objectSpread22({}, DEFAULT_SEARCH_OPTIONS), options), {}, { prefix: path || "" });
-          return await post(_this13.fetch, `${_this13.url}/object/list/${_this13.bucketId}`, body, { headers: _this13.headers }, parameters);
+        var _this14 = this;
+        return _this14.handleOperation(async () => {
+          const sortBy = (options === null || options === void 0 ? void 0 : options.sortBy) ? _objectSpread22(_objectSpread22({}, DEFAULT_SEARCH_OPTIONS.sortBy), options.sortBy) : DEFAULT_SEARCH_OPTIONS.sortBy;
+          const body = _objectSpread22(_objectSpread22(_objectSpread22({}, DEFAULT_SEARCH_OPTIONS), options), {}, {
+            sortBy,
+            prefix: path || ""
+          });
+          return await post(_this14.fetch, `${_this14.url}/object/list/${_this14.bucketId}`, body, { headers: _this14.headers }, parameters);
         });
       }
       /**
@@ -11823,10 +11010,10 @@ var init_dist3 = __esm({
       * ```
       */
       async listV2(options, parameters) {
-        var _this14 = this;
-        return _this14.handleOperation(async () => {
+        var _this15 = this;
+        return _this15.handleOperation(async () => {
           const body = _objectSpread22({}, options);
-          return await post(_this14.fetch, `${_this14.url}/object/list-v2/${_this14.bucketId}`, body, { headers: _this14.headers }, parameters);
+          return await post(_this15.fetch, `${_this15.url}/object/list-v2/${_this15.bucketId}`, body, { headers: _this15.headers }, parameters);
         });
       }
       encodeMetadata(metadata) {
@@ -11852,7 +11039,7 @@ var init_dist3 = __esm({
         return query;
       }
     };
-    version = "2.105.4";
+    version = "2.112.2";
     DEFAULT_HEADERS = { "X-Client-Info": `storage-js/${version}` };
     StorageBucketApi = class extends BaseApiClient {
       constructor(url, headers = {}, fetch$1, opts) {
@@ -12140,6 +11327,51 @@ var init_dist3 = __esm({
         var _this6 = this;
         return _this6.handleOperation(async () => {
           return await remove(_this6.fetch, `${_this6.url}/bucket/${id}`, {}, { headers: _this6.headers });
+        });
+      }
+      /**
+      * Purges the CDN cache for an entire bucket.
+      *
+      * Maps to `DELETE /cdn/{bucket}` on the Storage API. The server
+      * issues a CDN invalidation for the bucket and returns `{ message: 'success' }`.
+      *
+      * **Requires the `service_role` key.** The underlying endpoint enforces
+      * `service_role` JWT — calls made with the anon key or a user JWT will be
+      * rejected by the server.
+      *
+      * **Hosted CDN feature.** On self-hosted Supabase, the Storage service must
+      * have `CDN_PURGE_ENDPOINT_URL` configured and the `purgeCache` tenant
+      * feature enabled, otherwise the server returns an error.
+      *
+      * @category Storage
+      * @subcategory File Buckets
+      * @param id The unique identifier of the bucket you would like to purge from cache.
+      * @param options Optional purge cache options.
+      * @param options.transformations If true, purges only transformations (resized/formatted variants), leaving original cached files intact.
+      * @param parameters Optional fetch parameters such as an `AbortController` signal.
+      * @returns Promise with `{ data: { message }, error: null }` on success or `{ data: null, error }` on failure.
+      *
+      * @example Purge cache for an entire bucket
+      * ```js
+      * const { data, error } = await supabase
+      *   .storage
+      *   .purgeBucketCache('avatars')
+      * ```
+      *
+      * @example Purge only transformations for an entire bucket
+      * ```js
+      * const { data, error } = await supabase
+      *   .storage
+      *   .purgeBucketCache('avatars', { transformations: true })
+      * ```
+      */
+      async purgeBucketCache(id, options, parameters) {
+        var _this7 = this;
+        return _this7.handleOperation(async () => {
+          const query = new URLSearchParams();
+          if (options === null || options === void 0 ? void 0 : options.transformations) query.set("transformations", "true");
+          const queryString = query.toString();
+          return await remove(_this7.fetch, `${_this7.url}/cdn/${encodeStoragePath(id)}${queryString ? `?${queryString}` : ""}`, {}, { headers: _this7.headers }, parameters);
         });
       }
       listBucketOptionsToQueryString(options) {
@@ -13217,7 +12449,7 @@ var require_version2 = __commonJS({
     init_define_import_meta_env();
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.version = void 0;
-    exports.version = "2.105.4";
+    exports.version = "2.112.2";
   }
 });
 
@@ -13227,11 +12459,12 @@ var require_constants2 = __commonJS({
     "use strict";
     init_define_import_meta_env();
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.JWKS_TTL = exports.BASE64URL_REGEX = exports.API_VERSIONS = exports.API_VERSION_HEADER_NAME = exports.NETWORK_FAILURE = exports.DEFAULT_HEADERS = exports.AUDIENCE = exports.STORAGE_KEY = exports.GOTRUE_URL = exports.EXPIRY_MARGIN_MS = exports.AUTO_REFRESH_TICK_THRESHOLD = exports.AUTO_REFRESH_TICK_DURATION_MS = void 0;
+    exports.JWKS_TTL = exports.PKCE_MAX_CONCURRENT_FLOWS = exports.PKCE_FLOW_ID_PARAM = exports.BASE64URL_REGEX = exports.API_VERSIONS = exports.API_VERSION_HEADER_NAME = exports.NETWORK_FAILURE = exports.DEFAULT_HEADERS = exports.AUDIENCE = exports.STORAGE_KEY = exports.GOTRUE_URL = exports.REFRESH_FAILURE_COOLDOWN_MS = exports.EXPIRY_MARGIN_MS = exports.AUTO_REFRESH_TICK_THRESHOLD = exports.AUTO_REFRESH_TICK_DURATION_MS = void 0;
     var version_1 = require_version2();
     exports.AUTO_REFRESH_TICK_DURATION_MS = 30 * 1e3;
     exports.AUTO_REFRESH_TICK_THRESHOLD = 3;
     exports.EXPIRY_MARGIN_MS = exports.AUTO_REFRESH_TICK_THRESHOLD * exports.AUTO_REFRESH_TICK_DURATION_MS;
+    exports.REFRESH_FAILURE_COOLDOWN_MS = 2 * exports.AUTO_REFRESH_TICK_DURATION_MS;
     exports.GOTRUE_URL = "http://localhost:9999";
     exports.STORAGE_KEY = "supabase.auth.token";
     exports.AUDIENCE = "";
@@ -13249,6 +12482,8 @@ var require_constants2 = __commonJS({
       }
     };
     exports.BASE64URL_REGEX = /^([a-z0-9_-]{4})*($|[a-z0-9_-]{3}$|[a-z0-9_-]{2}$)$/i;
+    exports.PKCE_FLOW_ID_PARAM = "sb_flow_id";
+    exports.PKCE_MAX_CONCURRENT_FLOWS = 5;
     exports.JWKS_TTL = 10 * 60 * 1e3;
   }
 });
@@ -13259,13 +12494,14 @@ var require_errors = __commonJS({
     "use strict";
     init_define_import_meta_env();
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.AuthInvalidJwtError = exports.AuthWeakPasswordError = exports.AuthRetryableFetchError = exports.AuthPKCECodeVerifierMissingError = exports.AuthPKCEGrantCodeExchangeError = exports.AuthImplicitGrantRedirectError = exports.AuthInvalidCredentialsError = exports.AuthInvalidTokenResponseError = exports.AuthSessionMissingError = exports.CustomAuthError = exports.AuthUnknownError = exports.AuthApiError = exports.AuthError = void 0;
+    exports.AuthInvalidJwtError = exports.AuthWeakPasswordError = exports.AuthRefreshDiscardedError = exports.AuthRetryableFetchError = exports.AuthPKCECodeVerifierMissingError = exports.AuthPKCEGrantCodeExchangeError = exports.AuthImplicitGrantRedirectError = exports.AuthInvalidCredentialsError = exports.AuthInvalidTokenResponseError = exports.AuthSessionMissingError = exports.CustomAuthError = exports.AuthUnknownError = exports.AuthApiError = exports.AuthError = void 0;
     exports.isAuthError = isAuthError;
     exports.isAuthApiError = isAuthApiError;
     exports.isAuthSessionMissingError = isAuthSessionMissingError;
     exports.isAuthImplicitGrantRedirectError = isAuthImplicitGrantRedirectError;
     exports.isAuthPKCECodeVerifierMissingError = isAuthPKCECodeVerifierMissingError;
     exports.isAuthRetryableFetchError = isAuthRetryableFetchError;
+    exports.isAuthRefreshDiscardedError = isAuthRefreshDiscardedError;
     exports.isAuthWeakPasswordError = isAuthWeakPasswordError;
     var AuthError = class extends Error {
       constructor(message, status, code) {
@@ -13379,6 +12615,15 @@ var require_errors = __commonJS({
     exports.AuthRetryableFetchError = AuthRetryableFetchError;
     function isAuthRetryableFetchError(error) {
       return isAuthError(error) && error.name === "AuthRetryableFetchError";
+    }
+    var AuthRefreshDiscardedError = class extends CustomAuthError {
+      constructor(message = "Refresh result discarded: session state changed mid-flight (e.g., concurrent signOut)") {
+        super(message, "AuthRefreshDiscardedError", 409, void 0);
+      }
+    };
+    exports.AuthRefreshDiscardedError = AuthRefreshDiscardedError;
+    function isAuthRefreshDiscardedError(error) {
+      return isAuthError(error) && error.name === "AuthRefreshDiscardedError";
     }
     var AuthWeakPasswordError = class extends CustomAuthError {
       constructor(message, status, reasons) {
@@ -13599,7 +12844,7 @@ var require_helpers = __commonJS({
     "use strict";
     init_define_import_meta_env();
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.Deferred = exports.removeItemAsync = exports.getItemAsync = exports.setItemAsync = exports.looksLikeFetchResponse = exports.resolveFetch = exports.supportsLocalStorage = exports.isBrowser = void 0;
+    exports.pkceVerifierSlotKey = exports.Deferred = exports.removeItemAsync = exports.getItemAsync = exports.setItemAsync = exports.looksLikeFetchResponse = exports.resolveFetch = exports.supportsLocalStorage = exports.isBrowser = void 0;
     exports.expiresAt = expiresAt;
     exports.generateCallbackId = generateCallbackId;
     exports.parseParametersFromURL = parseParametersFromURL;
@@ -13608,6 +12853,13 @@ var require_helpers = __commonJS({
     exports.retryable = retryable;
     exports.generatePKCEVerifier = generatePKCEVerifier;
     exports.generatePKCEChallenge = generatePKCEChallenge;
+    exports.validatePKCEFlowId = validatePKCEFlowId;
+    exports.generatePKCEFlowId = generatePKCEFlowId;
+    exports.storePKCEVerifier = storePKCEVerifier;
+    exports.retrievePKCEVerifier = retrievePKCEVerifier;
+    exports.removePKCEVerifier = removePKCEVerifier;
+    exports.removeAllPKCEVerifiers = removeAllPKCEVerifiers;
+    exports.appendFlowIdToRedirectTo = appendFlowIdToRedirectTo;
     exports.getCodeChallengeAndMethod = getCodeChallengeAndMethod;
     exports.parseResponseAPIVersion = parseResponseAPIVersion;
     exports.validateExp = validateExp;
@@ -13803,16 +13055,103 @@ var require_helpers = __commonJS({
       const hashed = await sha256(verifier);
       return btoa(hashed).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     }
-    async function getCodeChallengeAndMethod(storage, storageKey, isPasswordRecovery = false) {
+    var PKCE_FLOW_ID_PATTERN = /^[a-zA-Z0-9_-]{8,64}$/;
+    function validatePKCEFlowId(flowId) {
+      return typeof flowId === "string" && PKCE_FLOW_ID_PATTERN.test(flowId) ? flowId : null;
+    }
+    function generatePKCEFlowId() {
+      if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+        const bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        return Array.from(bytes, dec2hex).join("");
+      }
+      let flowId = "";
+      for (let i = 0; i < 32; i++) {
+        flowId += Math.floor(Math.random() * 16).toString(16);
+      }
+      return flowId;
+    }
+    var pkceVerifierSlotKey = (storageKey, flowId) => `${storageKey}-flow-${flowId}-code-verifier`;
+    exports.pkceVerifierSlotKey = pkceVerifierSlotKey;
+    var pkceFlowIndexKey = (storageKey) => `${storageKey}-flows-code-verifier`;
+    async function getPKCEFlowIndex(storage, storageKey) {
+      const index = await (0, exports.getItemAsync)(storage, pkceFlowIndexKey(storageKey));
+      return Array.isArray(index) ? index.filter((id) => validatePKCEFlowId(id) !== null) : [];
+    }
+    async function storePKCEVerifier(storage, storageKey, flowId, verifier, onEvictFlow) {
+      await (0, exports.setItemAsync)(storage, (0, exports.pkceVerifierSlotKey)(storageKey, flowId), verifier);
+      const index = (await getPKCEFlowIndex(storage, storageKey)).filter((id) => id !== flowId);
+      index.push(flowId);
+      while (index.length > constants_1.PKCE_MAX_CONCURRENT_FLOWS) {
+        const evicted = index.shift();
+        await (0, exports.removeItemAsync)(storage, (0, exports.pkceVerifierSlotKey)(storageKey, evicted));
+        onEvictFlow === null || onEvictFlow === void 0 ? void 0 : onEvictFlow(evicted);
+      }
+      await (0, exports.setItemAsync)(storage, pkceFlowIndexKey(storageKey), index);
+      await (0, exports.setItemAsync)(storage, `${storageKey}-code-verifier`, verifier);
+    }
+    async function retrievePKCEVerifier(storage, storageKey, flowId) {
+      if (flowId) {
+        const verifier2 = await (0, exports.getItemAsync)(storage, (0, exports.pkceVerifierSlotKey)(storageKey, flowId));
+        return { verifier: typeof verifier2 === "string" ? verifier2 : null, flowId };
+      }
+      const verifier = await (0, exports.getItemAsync)(storage, `${storageKey}-code-verifier`);
+      return { verifier: typeof verifier === "string" ? verifier : null, flowId: null };
+    }
+    async function removePKCEVerifier(storage, storageKey, flowId) {
+      const legacyKey = `${storageKey}-code-verifier`;
+      if (!flowId) {
+        await (0, exports.removeItemAsync)(storage, legacyKey);
+        return;
+      }
+      const slotKey = (0, exports.pkceVerifierSlotKey)(storageKey, flowId);
+      const slotValue = await (0, exports.getItemAsync)(storage, slotKey);
+      await (0, exports.removeItemAsync)(storage, slotKey);
+      const index = await getPKCEFlowIndex(storage, storageKey);
+      const remaining = index.filter((id) => id !== flowId);
+      if (remaining.length !== index.length) {
+        if (remaining.length > 0) {
+          await (0, exports.setItemAsync)(storage, pkceFlowIndexKey(storageKey), remaining);
+        } else {
+          await (0, exports.removeItemAsync)(storage, pkceFlowIndexKey(storageKey));
+        }
+      }
+      if (slotValue != null && slotValue === await (0, exports.getItemAsync)(storage, legacyKey)) {
+        await (0, exports.removeItemAsync)(storage, legacyKey);
+      }
+    }
+    async function removeAllPKCEVerifiers(storage, storageKey) {
+      const index = await getPKCEFlowIndex(storage, storageKey);
+      for (const flowId of index) {
+        await (0, exports.removeItemAsync)(storage, (0, exports.pkceVerifierSlotKey)(storageKey, flowId));
+      }
+      await (0, exports.removeItemAsync)(storage, pkceFlowIndexKey(storageKey));
+      await (0, exports.removeItemAsync)(storage, `${storageKey}-code-verifier`);
+    }
+    function appendFlowIdToRedirectTo(redirectTo, flowId) {
+      const hashIndex = redirectTo.indexOf("#");
+      let base = hashIndex === -1 ? redirectTo : redirectTo.slice(0, hashIndex);
+      const fragment = hashIndex === -1 ? "" : redirectTo.slice(hashIndex);
+      const queryIndex = base.indexOf("?");
+      if (queryIndex !== -1) {
+        const path = base.slice(0, queryIndex);
+        const remaining = base.slice(queryIndex + 1).split("&").filter((pair) => pair !== "" && pair !== constants_1.PKCE_FLOW_ID_PARAM && !pair.startsWith(`${constants_1.PKCE_FLOW_ID_PARAM}=`));
+        base = remaining.length > 0 ? `${path}?${remaining.join("&")}` : path;
+      }
+      const separator = base.includes("?") ? "&" : "?";
+      return `${base}${separator}${constants_1.PKCE_FLOW_ID_PARAM}=${encodeURIComponent(flowId)}${fragment}`;
+    }
+    async function getCodeChallengeAndMethod(storage, storageKey, isPasswordRecovery = false, onEvictFlow) {
       const codeVerifier = generatePKCEVerifier();
       let storedCodeVerifier = codeVerifier;
       if (isPasswordRecovery) {
         storedCodeVerifier += "/recovery";
       }
-      await (0, exports.setItemAsync)(storage, `${storageKey}-code-verifier`, storedCodeVerifier);
+      const flowId = generatePKCEFlowId();
+      await storePKCEVerifier(storage, storageKey, flowId, storedCodeVerifier, onEvictFlow);
       const codeChallenge = await generatePKCEChallenge(codeVerifier);
       const codeChallengeMethod = codeVerifier === codeChallenge ? "plain" : "s256";
-      return [codeChallenge, codeChallengeMethod];
+      return [codeChallenge, codeChallengeMethod, flowId];
     }
     var API_VERSION_REGEX = /^2[0-9]{3}-(0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-9]|3[0-1])$/i;
     function parseResponseAPIVersion(response) {
@@ -13856,7 +13195,7 @@ var require_helpers = __commonJS({
           throw new Error("Invalid alg claim");
       }
     }
-    var UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    var UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     function validateUUID(str) {
       if (!UUID_REGEX.test(str)) {
         throw new Error("@supabase/auth-js: Expected parameter to be UUID but is not");
@@ -13948,20 +13287,40 @@ var require_fetch = __commonJS({
       }
       return JSON.stringify(err);
     };
-    var NETWORK_ERROR_CODES = [502, 503, 504, 520, 521, 522, 523, 524, 530];
+    var NETWORK_ERROR_CODES = [
+      500,
+      501,
+      502,
+      503,
+      504,
+      520,
+      521,
+      522,
+      523,
+      524,
+      525,
+      526,
+      527,
+      528,
+      529,
+      530
+    ];
     async function handleError2(error) {
       var _a;
       if (!(0, helpers_1.looksLikeFetchResponse)(error)) {
         throw new errors_1.AuthRetryableFetchError(_getErrorMessage2(error), 0);
       }
-      if (NETWORK_ERROR_CODES.includes(error.status)) {
-        throw new errors_1.AuthRetryableFetchError(_getErrorMessage2(error), error.status);
-      }
       let data;
       try {
         data = await error.json();
       } catch (e) {
+        if (NETWORK_ERROR_CODES.includes(error.status)) {
+          throw new errors_1.AuthRetryableFetchError(error.statusText || `HTTP ${error.status}`, error.status);
+        }
         throw new errors_1.AuthUnknownError(_getErrorMessage2(e), e);
+      }
+      if (NETWORK_ERROR_CODES.includes(error.status)) {
+        throw new errors_1.AuthRetryableFetchError(_getErrorMessage2(data), error.status);
       }
       let errorCode = void 0;
       const responseAPIVersion = (0, helpers_1.parseResponseAPIVersion)(error);
@@ -14016,7 +13375,6 @@ var require_fetch = __commonJS({
       try {
         result = await fetcher(url, Object.assign({}, requestParams));
       } catch (e) {
-        console.error(e);
         throw new errors_1.AuthRetryableFetchError(_getErrorMessage2(e), 0);
       }
       if (!result.ok) {
@@ -14040,7 +13398,7 @@ var require_fetch = __commonJS({
           session.expires_at = (0, helpers_1.expiresAt)(data.expires_in);
         }
       }
-      const user = (_a = data.user) !== null && _a !== void 0 ? _a : data;
+      const user = (_a = data.user) !== null && _a !== void 0 ? _a : typeof (data === null || data === void 0 ? void 0 : data.id) === "string" ? data : null;
       return { data: { session, user }, error: null };
     }
     function _sessionResponsePassword(data) {
@@ -14265,10 +13623,7 @@ var require_GoTrueAdminApi = __commonJS({
       }
       /**
        * Generates email links and OTPs to be sent via a custom email provider.
-       * @param email The user's email.
-       * @param options.password User password. For signup only.
-       * @param options.data Optional user metadata. For signup only.
-       * @param options.redirectTo The redirect url which should be appended to the generated link
+       * @param params The parameters for generating the link, including the link `type`, the user's `email`, and type-specific options such as `password`, `data`, and `redirectTo`.
        *
        * @category Auth
        * @subcategory Auth Admin
@@ -16279,13 +15634,10 @@ var require_GoTrueClient = __commonJS({
       hasCustomAuthorizationHeader: false,
       throwOnError: false,
       lockAcquireTimeout: 5e3,
-      // 5 seconds
+      // 5 seconds. Only used when a custom `lock` is supplied. TODO(v3): remove.
       skipAutoInitialize: false,
       experimental: {}
     };
-    async function lockNoOp(name, acquireTimeout, fn) {
-      return await fn();
-    }
     var GLOBAL_JWKS = {};
     var GoTrueClient = class _GoTrueClient {
       /**
@@ -16328,7 +15680,7 @@ var require_GoTrueClient = __commonJS({
        * ```
        */
       constructor(options) {
-        var _a, _b, _c, _d;
+        var _a, _b, _c;
         this.userStorage = null;
         this.memoryStorage = null;
         this.stateChangeEmitters = /* @__PURE__ */ new Map();
@@ -16336,10 +15688,14 @@ var require_GoTrueClient = __commonJS({
         this.autoRefreshTickTimeout = null;
         this.visibilityChangedCallback = null;
         this.refreshingDeferred = null;
+        this.lastRefreshFailure = null;
+        this._sessionRemovalEpoch = 0;
         this.initializePromise = null;
+        this._pendingInitNotifications = null;
         this.detectSessionInUrl = true;
         this.hasCustomAuthorizationHeader = false;
         this.suppressGetSessionWarning = false;
+        this.lock = null;
         this.lockAcquired = false;
         this.pendingInLock = [];
         this.broadcastChannel = null;
@@ -16371,18 +15727,13 @@ var require_GoTrueClient = __commonJS({
         this.url = settings.url;
         this.headers = settings.headers;
         this.fetch = (0, helpers_1.resolveFetch)(settings.fetch);
-        this.lock = settings.lock || lockNoOp;
         this.detectSessionInUrl = settings.detectSessionInUrl;
         this.flowType = settings.flowType;
         this.hasCustomAuthorizationHeader = settings.hasCustomAuthorizationHeader;
         this.throwOnError = settings.throwOnError;
         this.lockAcquireTimeout = settings.lockAcquireTimeout;
-        if (settings.lock) {
+        if (settings.lock != null) {
           this.lock = settings.lock;
-        } else if (this.persistSession && (0, helpers_1.isBrowser)() && ((_c = globalThis === null || globalThis === void 0 ? void 0 : globalThis.navigator) === null || _c === void 0 ? void 0 : _c.locks)) {
-          this.lock = locks_1.navigatorLock;
-        } else {
-          this.lock = lockNoOp;
         }
         if (!this.jwks) {
           this.jwks = { keys: [] };
@@ -16438,8 +15789,11 @@ var require_GoTrueClient = __commonJS({
           } catch (e) {
             console.error("Failed to create a new BroadcastChannel, multi-tab state changes will not be available", e);
           }
-          (_d = this.broadcastChannel) === null || _d === void 0 ? void 0 : _d.addEventListener("message", async (event) => {
+          (_c = this.broadcastChannel) === null || _c === void 0 ? void 0 : _c.addEventListener("message", async (event) => {
             this._debug("received broadcast notification from other tab or client", event);
+            if (event.data.event === "TOKEN_REFRESHED" || event.data.event === "SIGNED_IN") {
+              this.lastRefreshFailure = null;
+            }
             try {
               await this._notifyAllSubscribers(event.data.event, event.data.session, false);
             } catch (error) {
@@ -16480,22 +15834,44 @@ var require_GoTrueClient = __commonJS({
         return this;
       }
       /**
-       * Initializes the client session either from the url or from storage.
-       * This method is automatically called when instantiating the client, but should also be called
-       * manually when checking for an error from an auth redirect (oauth, magiclink, password recovery, etc).
+       * Initialize the auth client by loading the session from storage or
+       * detecting it from the URL after an OAuth, magic-link, or password-recovery
+       * redirect.
+       *
+       * **Most callers do not need to invoke this directly.** The client calls it
+       * automatically during construction, and to react to sign-in events (including
+       * post-redirect events) you should subscribe to `onAuthStateChange` rather
+       * than awaiting `initialize()`.
+       *
+       * You only need to call it manually when you have opted out of the automatic
+       * call by passing `skipAutoInitialize: true` — for example, in an SSR context
+       * where you need to control initialization timing. In that case, awaiting
+       * `initialize()` returns the resolved session result (or any error encountered
+       * while detecting it from the URL).
        *
        * @category Auth
        */
       async initialize() {
+        var _a;
         if (this.initializePromise) {
           return await this.initializePromise;
         }
+        this._pendingInitNotifications = [];
         this.initializePromise = (async () => {
-          return await this._acquireLock(this.lockAcquireTimeout, async () => {
-            return await this._initialize();
-          });
+          if (this.lock != null) {
+            return await this._acquireLock(this.lockAcquireTimeout, async () => {
+              return await this._initialize();
+            });
+          }
+          return await this._initialize();
         })();
-        return await this.initializePromise;
+        const result = await this.initializePromise;
+        const queue = (_a = this._pendingInitNotifications) !== null && _a !== void 0 ? _a : [];
+        this._pendingInitNotifications = null;
+        for (const n of queue) {
+          await this._notifyAllSubscribers(n.event, n.session, n.broadcast);
+        }
+        return result;
       }
       /**
        * IMPORTANT:
@@ -16835,6 +16211,7 @@ var require_GoTrueClient = __commonJS({
        */
       async signUp(credentials) {
         var _a, _b, _c;
+        let flowId = null;
         try {
           let res;
           if ("email" in credentials) {
@@ -16843,11 +16220,11 @@ var require_GoTrueClient = __commonJS({
             let codeChallengeMethod = null;
             if (this.flowType === "pkce") {
               ;
-              [codeChallenge, codeChallengeMethod] = await (0, helpers_1.getCodeChallengeAndMethod)(this.storage, this.storageKey);
+              [codeChallenge, codeChallengeMethod, flowId] = await this._getCodeChallengeAndMethod();
             }
             res = await (0, fetch_1._request)(this.fetch, "POST", `${this.url}/signup`, {
               headers: this.headers,
-              redirectTo: options === null || options === void 0 ? void 0 : options.emailRedirectTo,
+              redirectTo: this._maybeAppendFlowIdToRedirect(options === null || options === void 0 ? void 0 : options.emailRedirectTo, flowId),
               body: {
                 email,
                 password,
@@ -16876,7 +16253,7 @@ var require_GoTrueClient = __commonJS({
           }
           const { data, error } = res;
           if (error || !data) {
-            await (0, helpers_1.removeItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
+            await (0, helpers_1.removePKCEVerifier)(this.storage, this.storageKey, flowId);
             return this._returnResult({ data: { user: null, session: null }, error });
           }
           const session = data.session;
@@ -16887,7 +16264,7 @@ var require_GoTrueClient = __commonJS({
           }
           return this._returnResult({ data: { user, session }, error: null });
         } catch (error) {
-          await (0, helpers_1.removeItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
+          await (0, helpers_1.removePKCEVerifier)(this.storage, this.storageKey, flowId);
           if ((0, errors_1.isAuthError)(error)) {
             return this._returnResult({ data: { user: null, session: null }, error });
           }
@@ -17010,6 +16387,21 @@ var require_GoTrueClient = __commonJS({
        *   password: 'some-password',
        * })
        * ```
+       *
+       * @exampleDescription Handling errors
+       * Log the full `error` object so fields like `code`, `status`, and `name` aren't hidden. The `error.code` (e.g. `'invalid_credentials'`, `'email_not_confirmed'`) is often more useful for branching than `error.message`, and the full object surfaces both.
+       *
+       * @example Handling errors
+       * ```js
+       * const { data, error } = await supabase.auth.signInWithPassword({
+       *   email: 'example@email.com',
+       *   password: 'example-password',
+       * })
+       * if (error) {
+       *   console.error(error)
+       *   return
+       * }
+       * ```
        */
       async signInWithPassword(credentials) {
         try {
@@ -17083,7 +16475,8 @@ var require_GoTrueClient = __commonJS({
        * {
        *   data: {
        *     provider: 'github',
-       *     url: <PROVIDER_URL_TO_REDIRECT_TO>
+       *     url: <PROVIDER_URL_TO_REDIRECT_TO>,
+       *     flowId: <PKCE_FLOW_ID_OR_NULL>
        *   },
        *   error: null
        * }
@@ -17156,10 +16549,27 @@ var require_GoTrueClient = __commonJS({
        *
        * @remarks
        * - Used when `flowType` is set to `pkce` in client options.
+       * - When several PKCE flows are in flight at once, pass `options.flowId` so
+       *   the code is exchanged with the verifier created by that specific flow.
+       *   The flow id is returned by `signInWithOAuth`, and with
+       *   `experimental.appendPkceFlowIdToRedirects` enabled it also arrives on
+       *   your callback URL as the reserved `sb_flow_id` query parameter (read
+       *   automatically in a browser).
+       * - When a flow id is present but its stored verifier is gone (evicted,
+       *   already used, or from another device), the call fails with a verifier
+       *   missing error instead of trying another flow's verifier — a mismatched
+       *   verifier would consume the single-use code. Without any flow id the
+       *   most recently stored verifier is used, as before.
        *
        * @example Exchange Auth Code
        * ```js
        * supabase.auth.exchangeCodeForSession('34e770dd-9ff9-416c-87fa-43b31d7ef225')
+       * ```
+       *
+       * @example Exchange Auth Code for a specific flow (e.g. in a server-side callback handler)
+       * ```js
+       * const flowId = requestUrl.searchParams.get('sb_flow_id')
+       * supabase.auth.exchangeCodeForSession(code, flowId ? { flowId } : undefined)
        * ```
        *
        * @exampleResponse Exchange Auth Code
@@ -17319,11 +16729,14 @@ var require_GoTrueClient = __commonJS({
        * }
        * ```
        */
-      async exchangeCodeForSession(authCode) {
+      async exchangeCodeForSession(authCode, options) {
         await this.initializePromise;
-        return this._acquireLock(this.lockAcquireTimeout, async () => {
-          return this._exchangeCodeForSession(authCode);
-        });
+        if (this.lock != null) {
+          return this._acquireLock(this.lockAcquireTimeout, async () => {
+            return this._exchangeCodeForSession(authCode, options);
+          });
+        }
+        return this._exchangeCodeForSession(authCode, options);
       }
       /**
        * Signs in a user by verifying a message signed by the user's private key.
@@ -17615,8 +17028,13 @@ var require_GoTrueClient = __commonJS({
           throw error;
         }
       }
-      async _exchangeCodeForSession(authCode) {
-        const storageItem = await (0, helpers_1.getItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
+      async _exchangeCodeForSession(authCode, options) {
+        const hasExplicitFlowId = (options === null || options === void 0 ? void 0 : options.flowId) != null;
+        const requestedFlowId = hasExplicitFlowId ? (0, helpers_1.validatePKCEFlowId)(options === null || options === void 0 ? void 0 : options.flowId) : (0, helpers_1.isBrowser)() ? (0, helpers_1.validatePKCEFlowId)((0, helpers_1.parseParametersFromURL)(window.location.href)[constants_1.PKCE_FLOW_ID_PARAM]) : null;
+        if (hasExplicitFlowId && !requestedFlowId) {
+          this._debug("#_exchangeCodeForSession()", "provided flowId is not a valid flow id", options === null || options === void 0 ? void 0 : options.flowId);
+        }
+        const { verifier: storageItem, flowId } = hasExplicitFlowId && !requestedFlowId ? { verifier: null, flowId: null } : await (0, helpers_1.retrievePKCEVerifier)(this.storage, this.storageKey, requestedFlowId);
         const [codeVerifier, redirectType] = (storageItem !== null && storageItem !== void 0 ? storageItem : "").split("/");
         try {
           if (!codeVerifier && this.flowType === "pkce") {
@@ -17630,7 +17048,7 @@ var require_GoTrueClient = __commonJS({
             },
             xform: fetch_1._sessionResponse
           });
-          await (0, helpers_1.removeItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
+          await (0, helpers_1.removePKCEVerifier)(this.storage, this.storageKey, flowId);
           if (error) {
             throw error;
           }
@@ -17647,7 +17065,7 @@ var require_GoTrueClient = __commonJS({
           }
           return this._returnResult({ data: Object.assign(Object.assign({}, data), { redirectType: redirectType !== null && redirectType !== void 0 ? redirectType : null }), error });
         } catch (error) {
-          await (0, helpers_1.removeItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
+          await (0, helpers_1.removePKCEVerifier)(this.storage, this.storageKey, flowId);
           if ((0, errors_1.isAuthError)(error)) {
             return this._returnResult({
               data: { user: null, session: null, redirectType: null },
@@ -17844,6 +17262,7 @@ var require_GoTrueClient = __commonJS({
        */
       async signInWithOtp(credentials) {
         var _a, _b, _c, _d, _f;
+        let flowId = null;
         try {
           if ("email" in credentials) {
             const { email, options } = credentials;
@@ -17851,7 +17270,7 @@ var require_GoTrueClient = __commonJS({
             let codeChallengeMethod = null;
             if (this.flowType === "pkce") {
               ;
-              [codeChallenge, codeChallengeMethod] = await (0, helpers_1.getCodeChallengeAndMethod)(this.storage, this.storageKey);
+              [codeChallenge, codeChallengeMethod, flowId] = await this._getCodeChallengeAndMethod();
             }
             const { error } = await (0, fetch_1._request)(this.fetch, "POST", `${this.url}/otp`, {
               headers: this.headers,
@@ -17863,7 +17282,7 @@ var require_GoTrueClient = __commonJS({
                 code_challenge: codeChallenge,
                 code_challenge_method: codeChallengeMethod
               },
-              redirectTo: options === null || options === void 0 ? void 0 : options.emailRedirectTo
+              redirectTo: this._maybeAppendFlowIdToRedirect(options === null || options === void 0 ? void 0 : options.emailRedirectTo, flowId)
             });
             return this._returnResult({ data: { user: null, session: null }, error });
           }
@@ -17886,7 +17305,7 @@ var require_GoTrueClient = __commonJS({
           }
           throw new errors_1.AuthInvalidCredentialsError("You must provide either an email or phone number.");
         } catch (error) {
-          await (0, helpers_1.removeItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
+          await (0, helpers_1.removePKCEVerifier)(this.storage, this.storageKey, flowId);
           if ((0, errors_1.isAuthError)(error)) {
             return this._returnResult({ data: { user: null, session: null }, error });
           }
@@ -18120,25 +17539,26 @@ var require_GoTrueClient = __commonJS({
        * ```
        */
       async signInWithSSO(params) {
-        var _a, _b, _c, _d, _f;
+        var _a, _b, _c, _d;
+        let flowId = null;
         try {
           let codeChallenge = null;
           let codeChallengeMethod = null;
           if (this.flowType === "pkce") {
             ;
-            [codeChallenge, codeChallengeMethod] = await (0, helpers_1.getCodeChallengeAndMethod)(this.storage, this.storageKey);
+            [codeChallenge, codeChallengeMethod, flowId] = await this._getCodeChallengeAndMethod();
           }
           const result = await (0, fetch_1._request)(this.fetch, "POST", `${this.url}/sso`, {
-            body: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, "providerId" in params ? { provider_id: params.providerId } : null), "domain" in params ? { domain: params.domain } : null), { redirect_to: (_b = (_a = params.options) === null || _a === void 0 ? void 0 : _a.redirectTo) !== null && _b !== void 0 ? _b : void 0 }), ((_c = params === null || params === void 0 ? void 0 : params.options) === null || _c === void 0 ? void 0 : _c.captchaToken) ? { gotrue_meta_security: { captcha_token: params.options.captchaToken } } : null), { skip_http_redirect: true, code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod }),
+            body: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, "providerId" in params ? { provider_id: params.providerId } : null), "domain" in params ? { domain: params.domain } : null), { redirect_to: this._maybeAppendFlowIdToRedirect((_a = params.options) === null || _a === void 0 ? void 0 : _a.redirectTo, flowId) }), ((_b = params === null || params === void 0 ? void 0 : params.options) === null || _b === void 0 ? void 0 : _b.captchaToken) ? { gotrue_meta_security: { captcha_token: params.options.captchaToken } } : null), { skip_http_redirect: true, code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod }),
             headers: this.headers,
             xform: fetch_1._ssoResponse
           });
-          if (((_d = result.data) === null || _d === void 0 ? void 0 : _d.url) && (0, helpers_1.isBrowser)() && !((_f = params.options) === null || _f === void 0 ? void 0 : _f.skipBrowserRedirect)) {
+          if (((_c = result.data) === null || _c === void 0 ? void 0 : _c.url) && (0, helpers_1.isBrowser)() && !((_d = params.options) === null || _d === void 0 ? void 0 : _d.skipBrowserRedirect)) {
             window.location.assign(result.data.url);
           }
           return this._returnResult(result);
         } catch (error) {
-          await (0, helpers_1.removeItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
+          await (0, helpers_1.removePKCEVerifier)(this.storage, this.storageKey, flowId);
           if ((0, errors_1.isAuthError)(error)) {
             return this._returnResult({ data: null, error });
           }
@@ -18168,9 +17588,12 @@ var require_GoTrueClient = __commonJS({
        */
       async reauthenticate() {
         await this.initializePromise;
-        return await this._acquireLock(this.lockAcquireTimeout, async () => {
-          return await this._reauthenticate();
-        });
+        if (this.lock != null) {
+          return await this._acquireLock(this.lockAcquireTimeout, async () => {
+            return await this._reauthenticate();
+          });
+        }
+        return await this._reauthenticate();
       }
       async _reauthenticate() {
         try {
@@ -18253,19 +17676,31 @@ var require_GoTrueClient = __commonJS({
        * ```
        */
       async resend(credentials) {
+        let flowId = null;
         try {
           const endpoint = `${this.url}/resend`;
           if ("email" in credentials) {
             const { email, type, options } = credentials;
+            let codeChallenge = null;
+            let codeChallengeMethod = null;
+            if (this.flowType === "pkce") {
+              ;
+              [codeChallenge, codeChallengeMethod, flowId] = await this._getCodeChallengeAndMethod();
+            }
             const { error } = await (0, fetch_1._request)(this.fetch, "POST", endpoint, {
               headers: this.headers,
               body: {
                 email,
                 type,
-                gotrue_meta_security: { captcha_token: options === null || options === void 0 ? void 0 : options.captchaToken }
+                gotrue_meta_security: { captcha_token: options === null || options === void 0 ? void 0 : options.captchaToken },
+                code_challenge: codeChallenge,
+                code_challenge_method: codeChallengeMethod
               },
-              redirectTo: options === null || options === void 0 ? void 0 : options.emailRedirectTo
+              redirectTo: this._maybeAppendFlowIdToRedirect(options === null || options === void 0 ? void 0 : options.emailRedirectTo, flowId)
             });
+            if (error) {
+              await (0, helpers_1.removePKCEVerifier)(this.storage, this.storageKey, flowId);
+            }
             return this._returnResult({ data: { user: null, session: null }, error });
           } else if ("phone" in credentials) {
             const { phone, type, options } = credentials;
@@ -18284,6 +17719,7 @@ var require_GoTrueClient = __commonJS({
           }
           throw new errors_1.AuthInvalidCredentialsError("You must provide either an email or phone number and a type");
         } catch (error) {
+          await (0, helpers_1.removePKCEVerifier)(this.storage, this.storageKey, flowId);
           if ((0, errors_1.isAuthError)(error)) {
             return this._returnResult({ data: { user: null, session: null }, error });
           }
@@ -18299,7 +17735,7 @@ var require_GoTrueClient = __commonJS({
        * to the client. If that storage is based on request cookies for example,
        * the values in it may not be authentic and therefore it's strongly advised
        * against using this method and its results in such circumstances. A warning
-       * will be emitted if this is detected. Use {@link #getUser()} instead.
+       * will be emitted if this is detected. Use {@link GoTrueClient.getUser} instead.
        *
        * @category Auth
        *
@@ -18310,7 +17746,7 @@ var require_GoTrueClient = __commonJS({
        * - If the session's access token is expired or is about to expire, this method will use the refresh token to refresh the session.
        * - When using in a browser, or you've called `startAutoRefresh()` in your environment (React Native, etc.) this function always returns a valid access token without refreshing the session itself, as this is done in the background. This function returns very fast.
        * - **IMPORTANT SECURITY NOTICE:** If using an insecure storage medium, such as cookies or request headers, the user object returned by this function **must not be trusted**. Always verify the JWT using `getClaims()` or your own JWT verification library to securely establish the user's identity and access. You can also use `getUser()` to fetch the user object directly from the Auth server for this purpose.
-       * - When using in a browser, this function is synchronized across all tabs using the [LockManager](https://developer.mozilla.org/en-US/docs/Web/API/LockManager) API. In other environments make sure you've defined a proper `lock` property, if necessary, to make sure there are no race conditions while the session is being refreshed.
+       * - Cross-tab refresh races are handled by the GoTrue server (the rotated token from the first tab is returned to subsequent tabs via the parent-of-active mechanism), so no client-side serialization is needed.
        *
        * @example Get the session data
        * ```js
@@ -18377,15 +17813,23 @@ var require_GoTrueClient = __commonJS({
        */
       async getSession() {
         await this.initializePromise;
-        const result = await this._acquireLock(this.lockAcquireTimeout, async () => {
-          return this._useSession(async (result2) => {
-            return result2;
+        if (this.lock != null) {
+          return await this._acquireLock(this.lockAcquireTimeout, async () => {
+            return this._useSession(async (result) => {
+              return result;
+            });
           });
+        }
+        return await this._useSession(async (result) => {
+          return result;
         });
-        return result;
       }
       /**
        * Acquires a global lock based on the storage key.
+       *
+       * TODO(v3): remove along with the legacy lock path. Only called when
+       * `this.lock` is non-null (custom lock supplied via constructor). The
+       * default lockless path bypasses this entirely.
        */
       async _acquireLock(acquireTimeout, fn) {
         this._debug("#_acquireLock", "begin", acquireTimeout);
@@ -18432,10 +17876,9 @@ var require_GoTrueClient = __commonJS({
         }
       }
       /**
-       * Use instead of {@link #getSession} inside the library. It is
-       * semantically usually what you want, as getting a session involves some
-       * processing afterwards that requires only one client operating on the
-       * session at once across multiple tabs or processes.
+       * Use instead of {@link GoTrueClient.getSession} inside the library. Loads the session
+       * via `__loadSession` (which may trigger a refresh if the access token is
+       * within the expiry margin) and runs `fn` with the result.
        */
       async _useSession(fn) {
         this._debug("#_useSession", "begin");
@@ -18449,11 +17892,11 @@ var require_GoTrueClient = __commonJS({
       /**
        * NEVER USE DIRECTLY!
        *
-       * Always use {@link #_useSession}.
+       * Always use `_useSession`.
        */
       async __loadSession() {
         this._debug("#__loadSession()", "begin");
-        if (!this.lockAcquired) {
+        if (this.lock != null && !this.lockAcquired) {
           this._debug("#__loadSession()", "used outside of an acquired lock!", new Error().stack);
         }
         try {
@@ -18493,6 +17936,13 @@ var require_GoTrueClient = __commonJS({
           }
           const { data: session, error } = await this._callRefreshToken(currentSession.refresh_token);
           if (error) {
+            const accessTokenStillValid = !!(currentSession.expires_at && currentSession.expires_at * 1e3 > Date.now());
+            if (accessTokenStillValid) {
+              const stillStored = await (0, helpers_1.getItemAsync)(this.storage, this.storageKey);
+              if (stillStored && stillStored.refresh_token === currentSession.refresh_token) {
+                return this._returnResult({ data: { session: currentSession }, error: null });
+              }
+            }
             return this._returnResult({ data: { session: null }, error });
           }
           return this._returnResult({ data: { session }, error: null });
@@ -18581,9 +18031,14 @@ var require_GoTrueClient = __commonJS({
           return await this._getUser(jwt);
         }
         await this.initializePromise;
-        const result = await this._acquireLock(this.lockAcquireTimeout, async () => {
-          return await this._getUser();
-        });
+        let result;
+        if (this.lock != null) {
+          result = await this._acquireLock(this.lockAcquireTimeout, async () => {
+            return await this._getUser();
+          });
+        } else {
+          result = await this._getUser();
+        }
         if (result.data.user) {
           this.suppressGetSessionWarning = true;
         }
@@ -18617,7 +18072,6 @@ var require_GoTrueClient = __commonJS({
           if ((0, errors_1.isAuthError)(error)) {
             if ((0, errors_1.isAuthSessionMissingError)(error)) {
               await this._removeSession();
-              await (0, helpers_1.removeItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
             }
             return this._returnResult({ data: { user: null }, error });
           }
@@ -18740,11 +18194,15 @@ var require_GoTrueClient = __commonJS({
        */
       async updateUser(attributes, options = {}) {
         await this.initializePromise;
-        return await this._acquireLock(this.lockAcquireTimeout, async () => {
-          return await this._updateUser(attributes, options);
-        });
+        if (this.lock != null) {
+          return await this._acquireLock(this.lockAcquireTimeout, async () => {
+            return await this._updateUser(attributes, options);
+          });
+        }
+        return await this._updateUser(attributes, options);
       }
       async _updateUser(attributes, options = {}) {
+        let flowId = null;
         try {
           return await this._useSession(async (result) => {
             const { data: sessionData, error: sessionError } = result;
@@ -18759,11 +18217,11 @@ var require_GoTrueClient = __commonJS({
             let codeChallengeMethod = null;
             if (this.flowType === "pkce" && attributes.email != null) {
               ;
-              [codeChallenge, codeChallengeMethod] = await (0, helpers_1.getCodeChallengeAndMethod)(this.storage, this.storageKey);
+              [codeChallenge, codeChallengeMethod, flowId] = await this._getCodeChallengeAndMethod();
             }
             const { data, error: userError } = await (0, fetch_1._request)(this.fetch, "PUT", `${this.url}/user`, {
               headers: this.headers,
-              redirectTo: options === null || options === void 0 ? void 0 : options.emailRedirectTo,
+              redirectTo: this._maybeAppendFlowIdToRedirect(options === null || options === void 0 ? void 0 : options.emailRedirectTo, flowId),
               body: Object.assign(Object.assign({}, attributes), { code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod }),
               jwt: session.access_token,
               xform: fetch_1._userResponse
@@ -18777,7 +18235,7 @@ var require_GoTrueClient = __commonJS({
             return this._returnResult({ data: { user: session.user }, error: null });
           });
         } catch (error) {
-          await (0, helpers_1.removeItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
+          await (0, helpers_1.removePKCEVerifier)(this.storage, this.storageKey, flowId);
           if ((0, errors_1.isAuthError)(error)) {
             return this._returnResult({ data: { user: null }, error });
           }
@@ -18910,9 +18368,12 @@ var require_GoTrueClient = __commonJS({
        */
       async setSession(currentSession) {
         await this.initializePromise;
-        return await this._acquireLock(this.lockAcquireTimeout, async () => {
-          return await this._setSession(currentSession);
-        });
+        if (this.lock != null) {
+          return await this._acquireLock(this.lockAcquireTimeout, async () => {
+            return await this._setSession(currentSession);
+          });
+        }
+        return await this._setSession(currentSession);
       }
       async _setSession(currentSession) {
         try {
@@ -19088,9 +18549,12 @@ var require_GoTrueClient = __commonJS({
        */
       async refreshSession(currentSession) {
         await this.initializePromise;
-        return await this._acquireLock(this.lockAcquireTimeout, async () => {
-          return await this._refreshSession(currentSession);
-        });
+        if (this.lock != null) {
+          return await this._acquireLock(this.lockAcquireTimeout, async () => {
+            return await this._refreshSession(currentSession);
+          });
+        }
+        return await this._refreshSession(currentSession);
       }
       async _refreshSession(currentSession) {
         try {
@@ -19153,11 +18617,14 @@ var require_GoTrueClient = __commonJS({
             this._debug("#_initialize()", "begin", "is PKCE flow", true);
             if (!params.code)
               throw new errors_1.AuthPKCEGrantCodeExchangeError("No code detected.");
-            const { data: data2, error: error2 } = await this._exchangeCodeForSession(params.code);
+            const { data: data2, error: error2 } = await this._exchangeCodeForSession(params.code, {
+              flowId: params[constants_1.PKCE_FLOW_ID_PARAM]
+            });
             if (error2)
               throw error2;
             const url = new URL(window.location.href);
             url.searchParams.delete("code");
+            url.searchParams.delete(constants_1.PKCE_FLOW_ID_PARAM);
             window.history.replaceState(window.history.state, "", url.toString());
             return {
               data: { session: data2.session, redirectType: (_a = data2.redirectType) !== null && _a !== void 0 ? _a : null },
@@ -19218,14 +18685,21 @@ var require_GoTrueClient = __commonJS({
         if (typeof this.detectSessionInUrl === "function") {
           return this.detectSessionInUrl(new URL(window.location.href), params);
         }
-        return Boolean(params.access_token || params.error_description);
+        return Boolean(params.access_token || params.error || params.error_description || params.error_code);
       }
       /**
        * Checks if the current URL and backing storage contain parameters given by a PKCE flow
        */
       async _isPKCECallback(params) {
+        if (!params.code) {
+          return false;
+        }
+        const flowId = (0, helpers_1.validatePKCEFlowId)(params[constants_1.PKCE_FLOW_ID_PARAM]);
+        if (flowId && await (0, helpers_1.getItemAsync)(this.storage, (0, helpers_1.pkceVerifierSlotKey)(this.storageKey, flowId))) {
+          return true;
+        }
         const currentStorageContent = await (0, helpers_1.getItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
-        return !!(params.code && currentStorageContent);
+        return !!currentStorageContent;
       }
       /**
        * Inside a browser context, `signOut()` will remove the logged in user from the browser session and log them out - removing all items from localstorage and then trigger a `"SIGNED_OUT"` event.
@@ -19270,13 +18744,19 @@ var require_GoTrueClient = __commonJS({
        */
       async signOut(options = { scope: "global" }) {
         await this.initializePromise;
-        return await this._acquireLock(this.lockAcquireTimeout, async () => {
-          return await this._signOut(options);
-        });
+        if (this.lock != null) {
+          return await this._acquireLock(this.lockAcquireTimeout, async () => {
+            return await this._signOut(options);
+          });
+        }
+        return await this._signOut(options);
       }
       async _signOut({ scope } = { scope: "global" }) {
         return await this._useSession(async (result) => {
           var _a;
+          const removeCurrentSession = async () => {
+            await this._removeSession();
+          };
           const { data, error: sessionError } = result;
           if (sessionError && !(0, errors_1.isAuthSessionMissingError)(sessionError)) {
             return this._returnResult({ error: sessionError });
@@ -19286,13 +18766,15 @@ var require_GoTrueClient = __commonJS({
             const { error } = await this.admin.signOut(accessToken, scope);
             if (error) {
               if (!((0, errors_1.isAuthApiError)(error) && (error.status === 404 || error.status === 401 || error.status === 403) || (0, errors_1.isAuthSessionMissingError)(error))) {
+                if (scope !== "others") {
+                  await removeCurrentSession();
+                }
                 return this._returnResult({ error });
               }
             }
           }
           if (scope !== "others") {
-            await this._removeSession();
-            await (0, helpers_1.removeItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
+            await removeCurrentSession();
           }
           return this._returnResult({ error: null });
         });
@@ -19304,18 +18786,8 @@ var require_GoTrueClient = __commonJS({
        * - Subscribes to important events occurring on the user's session.
        * - Use on the frontend/client. It is less useful on the server.
        * - Events are emitted across tabs to keep your application's UI up-to-date. Some events can fire very frequently, based on the number of tabs open. Use a quick and efficient callback function, and defer or debounce as many operations as you can to be performed outside of the callback.
-       * - **Important:** A callback can be an `async` function and it runs synchronously during the processing of the changes causing the event. You can easily create a dead-lock by using `await` on a call to another method of the Supabase library.
-       *   - Avoid using `async` functions as callbacks.
-       *   - Limit the number of `await` calls in `async` callbacks.
-       *   - Do not use other Supabase functions in the callback function. If you must, dispatch the functions once the callback has finished executing. Use this as a quick way to achieve this:
-       *     ```js
-       *     supabase.auth.onAuthStateChange((event, session) => {
-       *       setTimeout(async () => {
-       *         // await on other Supabase function here
-       *         // this runs right after the callback has finished
-       *       }, 0)
-       *     })
-       *     ```
+       * - Callbacks can be `async` and can safely call other Supabase auth methods (`getUser`, `setSession`, etc.) from inside the callback.
+       * - Keep callbacks quick. Events are awaited in order, so a slow callback delays subsequent events to subscribers in this tab.
        * - Emitted events:
        *   - `INITIAL_SESSION`
        *     - Emitted right after the Supabase client is constructed and the initial session from storage is loaded.
@@ -19498,9 +18970,13 @@ var require_GoTrueClient = __commonJS({
         this.stateChangeEmitters.set(id, subscription);
         (async () => {
           await this.initializePromise;
-          await this._acquireLock(this.lockAcquireTimeout, async () => {
-            this._emitInitialSession(id);
-          });
+          if (this.lock != null) {
+            await this._acquireLock(this.lockAcquireTimeout, async () => {
+              this._emitInitialSession(id);
+            });
+          } else {
+            await this._emitInitialSession(id);
+          }
         })();
         return { data: { subscription } };
       }
@@ -19516,7 +18992,7 @@ var require_GoTrueClient = __commonJS({
           } catch (err) {
             await ((_b = this.stateChangeEmitters.get(id)) === null || _b === void 0 ? void 0 : _b.callback("INITIAL_SESSION", null));
             this._debug("INITIAL_SESSION", "callback id", id, "error", err);
-            if ((0, errors_1.isAuthSessionMissingError)(err)) {
+            if ((0, errors_1.isAuthSessionMissingError)(err) || (0, errors_1.isAuthRetryableFetchError)(err) || (0, errors_1.isAuthApiError)(err) && (err.code === "refresh_token_not_found" || err.code === "refresh_token_already_used" || err.code === "session_expired")) {
               console.warn(err);
             } else {
               console.error(err);
@@ -19594,11 +19070,10 @@ var require_GoTrueClient = __commonJS({
       async resetPasswordForEmail(email, options = {}) {
         let codeChallenge = null;
         let codeChallengeMethod = null;
+        let flowId = null;
         if (this.flowType === "pkce") {
           ;
-          [codeChallenge, codeChallengeMethod] = await (0, helpers_1.getCodeChallengeAndMethod)(
-            this.storage,
-            this.storageKey,
+          [codeChallenge, codeChallengeMethod, flowId] = await this._getCodeChallengeAndMethod(
             true
             // isPasswordRecovery
           );
@@ -19612,10 +19087,10 @@ var require_GoTrueClient = __commonJS({
               gotrue_meta_security: { captcha_token: options.captchaToken }
             },
             headers: this.headers,
-            redirectTo: options.redirectTo
+            redirectTo: this._maybeAppendFlowIdToRedirect(options.redirectTo, flowId)
           });
         } catch (error) {
-          await (0, helpers_1.removeItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
+          await (0, helpers_1.removePKCEVerifier)(this.storage, this.storageKey, flowId);
           if ((0, errors_1.isAuthError)(error)) {
             return this._returnResult({ data: null, error });
           }
@@ -19697,7 +19172,8 @@ var require_GoTrueClient = __commonJS({
        * {
        *   data: {
        *     provider: 'github',
-       *     url: <PROVIDER_URL_TO_REDIRECT_TO>
+       *     url: <PROVIDER_URL_TO_REDIRECT_TO>,
+       *     flowId: <PKCE_FLOW_ID_OR_NULL>
        *   },
        *   error: null
        * }
@@ -19711,18 +19187,20 @@ var require_GoTrueClient = __commonJS({
       }
       async linkIdentityOAuth(credentials) {
         var _a;
+        let flowId = null;
         try {
           const { data, error } = await this._useSession(async (result) => {
             var _a2, _b, _c, _d, _f;
             const { data: data2, error: error2 } = result;
             if (error2)
               throw error2;
-            const url = await this._getUrlForProvider(`${this.url}/user/identities/authorize`, credentials.provider, {
+            const { url, flowId: urlFlowId } = await this._getUrlForProvider(`${this.url}/user/identities/authorize`, credentials.provider, {
               redirectTo: (_a2 = credentials.options) === null || _a2 === void 0 ? void 0 : _a2.redirectTo,
               scopes: (_b = credentials.options) === null || _b === void 0 ? void 0 : _b.scopes,
               queryParams: (_c = credentials.options) === null || _c === void 0 ? void 0 : _c.queryParams,
               skipBrowserRedirect: true
             });
+            flowId = urlFlowId;
             return await (0, fetch_1._request)(this.fetch, "GET", url, {
               headers: this.headers,
               jwt: (_f = (_d = data2.session) === null || _d === void 0 ? void 0 : _d.access_token) !== null && _f !== void 0 ? _f : void 0
@@ -19734,12 +19212,15 @@ var require_GoTrueClient = __commonJS({
             window.location.assign(data === null || data === void 0 ? void 0 : data.url);
           }
           return this._returnResult({
-            data: { provider: credentials.provider, url: data === null || data === void 0 ? void 0 : data.url },
+            data: { provider: credentials.provider, url: data === null || data === void 0 ? void 0 : data.url, flowId },
             error: null
           });
         } catch (error) {
           if ((0, errors_1.isAuthError)(error)) {
-            return this._returnResult({ data: { provider: credentials.provider, url: null }, error });
+            return this._returnResult({
+              data: { provider: credentials.provider, url: null, flowId },
+              error
+            });
           }
           throw error;
         }
@@ -19780,7 +19261,7 @@ var require_GoTrueClient = __commonJS({
             }
             return this._returnResult({ data, error });
           } catch (error) {
-            await (0, helpers_1.removeItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
+            await (0, helpers_1.removePKCEVerifier)(this.storage, this.storageKey, null);
             if ((0, errors_1.isAuthError)(error)) {
               return this._returnResult({ data: { user: null, session: null }, error });
             }
@@ -19838,7 +19319,7 @@ var require_GoTrueClient = __commonJS({
        * @param refreshToken A valid refresh token that was returned on login.
        */
       async _refreshAccessToken(refreshToken) {
-        const debugName = `#_refreshAccessToken(${refreshToken.substring(0, 5)}...)`;
+        const debugName = `#_refreshAccessToken()`;
         this._debug(debugName, "begin");
         try {
           const startedAt = Date.now();
@@ -19872,7 +19353,7 @@ var require_GoTrueClient = __commonJS({
         return isValidSession;
       }
       async _handleProviderSignIn(provider, options) {
-        const url = await this._getUrlForProvider(`${this.url}/authorize`, provider, {
+        const { url, flowId } = await this._getUrlForProvider(`${this.url}/authorize`, provider, {
           redirectTo: options.redirectTo,
           scopes: options.scopes,
           queryParams: options.queryParams
@@ -19881,7 +19362,7 @@ var require_GoTrueClient = __commonJS({
         if ((0, helpers_1.isBrowser)() && !options.skipBrowserRedirect) {
           window.location.assign(url);
         }
-        return { data: { provider, url }, error: null };
+        return { data: { provider, url, flowId }, error: null };
       }
       /**
        * Recovers the session from LocalStorage and refreshes the token
@@ -19926,10 +19407,10 @@ var require_GoTrueClient = __commonJS({
             if (this.autoRefreshToken && currentSession.refresh_token) {
               const { error } = await this._callRefreshToken(currentSession.refresh_token);
               if (error) {
-                console.error(error);
-                if (!(0, errors_1.isAuthRetryableFetchError)(error)) {
-                  this._debug(debugName, "refresh failed with a non-retryable error, removing the session", error);
-                  await this._removeSession();
+                if ((0, errors_1.isAuthRefreshDiscardedError)(error)) {
+                  this._debug(debugName, "refresh discarded by commit guard", error);
+                } else {
+                  this._debug(debugName, "refresh failed", error);
                 }
               }
             }
@@ -19952,7 +19433,11 @@ var require_GoTrueClient = __commonJS({
           }
         } catch (err) {
           this._debug(debugName, "error", err);
-          console.error(err);
+          if ((0, errors_1.isAuthRetryableFetchError)(err)) {
+            console.warn(err);
+          } else {
+            console.error(err);
+          }
           return;
         } finally {
           this._debug(debugName, "end");
@@ -19966,18 +19451,54 @@ var require_GoTrueClient = __commonJS({
         if (this.refreshingDeferred) {
           return this.refreshingDeferred.promise;
         }
-        const debugName = `#_callRefreshToken(${refreshToken.substring(0, 5)}...)`;
+        if (this.lastRefreshFailure && this.lastRefreshFailure.refreshToken === refreshToken && Date.now() < this.lastRefreshFailure.expiresAt) {
+          this._debug("#_callRefreshToken()", "returning cached failure (cooldown active)");
+          return this.lastRefreshFailure.result;
+        }
+        const debugName = `#_callRefreshToken()`;
         this._debug(debugName, "begin");
         try {
           this.refreshingDeferred = new helpers_1.Deferred();
+          const storedAtStart = await (0, helpers_1.getItemAsync)(this.storage, this.storageKey);
           const { data, error } = await this._refreshAccessToken(refreshToken);
           if (error)
             throw error;
           if (!data.session)
             throw new errors_1.AuthSessionMissingError();
+          const storedAfter = await (0, helpers_1.getItemAsync)(this.storage, this.storageKey);
+          const storageChangedUnderUs = storedAtStart !== null && (storedAfter === null || storedAfter.refresh_token !== storedAtStart.refresh_token);
+          if (storageChangedUnderUs) {
+            this._debug(debugName, "commit guard: storage changed since refresh started, discarding rotated tokens", {
+              // Presence indicators only — never log refresh token fragments,
+              // even partial. Logs may be forwarded to third-party services.
+              startedWith: "present",
+              nowHolds: storedAfter ? "replaced" : "cleared"
+            });
+            const discarded = {
+              data: null,
+              error: new errors_1.AuthRefreshDiscardedError()
+            };
+            this.refreshingDeferred.resolve(discarded);
+            return discarded;
+          }
+          const epochBeforeSave = this._sessionRemovalEpoch;
           await this._saveSession(data.session);
+          if (this._sessionRemovalEpoch !== epochBeforeSave) {
+            this._debug(debugName, "commit guard (post-save): _removeSession ran during _saveSession, undoing write");
+            await (0, helpers_1.removeItemAsync)(this.storage, this.storageKey);
+            if (this.userStorage) {
+              await (0, helpers_1.removeItemAsync)(this.userStorage, this.storageKey + "-user");
+            }
+            const discarded = {
+              data: null,
+              error: new errors_1.AuthRefreshDiscardedError()
+            };
+            this.refreshingDeferred.resolve(discarded);
+            return discarded;
+          }
           await this._notifyAllSubscribers("TOKEN_REFRESHED", data.session);
           const result = { data: data.session, error: null };
+          this.lastRefreshFailure = null;
           this.refreshingDeferred.resolve(result);
           return result;
         } catch (error) {
@@ -19985,8 +19506,19 @@ var require_GoTrueClient = __commonJS({
           if ((0, errors_1.isAuthError)(error)) {
             const result = { data: null, error };
             if (!(0, errors_1.isAuthRetryableFetchError)(error)) {
-              await this._removeSession();
+              const storedNow = await (0, helpers_1.getItemAsync)(this.storage, this.storageKey);
+              const accessTokenStillValid = !!((storedNow === null || storedNow === void 0 ? void 0 : storedNow.expires_at) && storedNow.expires_at * 1e3 > Date.now());
+              if (accessTokenStillValid) {
+                this._debug(debugName, "proactive refresh failed, access token still valid \u2014 preserving session");
+              } else {
+                await this._removeSession();
+              }
             }
+            this.lastRefreshFailure = {
+              refreshToken,
+              result,
+              expiresAt: Date.now() + constants_1.REFRESH_FAILURE_COOLDOWN_MS
+            };
             (_a = this.refreshingDeferred) === null || _a === void 0 ? void 0 : _a.resolve(result);
             return result;
           }
@@ -19998,6 +19530,10 @@ var require_GoTrueClient = __commonJS({
         }
       }
       async _notifyAllSubscribers(event, session, broadcast = true) {
+        if (this._pendingInitNotifications !== null && broadcast) {
+          this._pendingInitNotifications.push({ event, session, broadcast });
+          return;
+        }
         const debugName = `#_notifyAllSubscribers(${event})`;
         this._debug(debugName, "begin", session, `broadcast = ${broadcast}`);
         try {
@@ -20030,7 +19566,6 @@ var require_GoTrueClient = __commonJS({
       async _saveSession(session) {
         this._debug("#_saveSession()", session);
         this.suppressGetSessionWarning = true;
-        await (0, helpers_1.removeItemAsync)(this.storage, `${this.storageKey}-code-verifier`);
         const sessionToProcess = Object.assign({}, session);
         const userIsProxy = sessionToProcess.user && sessionToProcess.user.__isUserNotAvailableProxy === true;
         if (this.userStorage) {
@@ -20050,10 +19585,12 @@ var require_GoTrueClient = __commonJS({
         }
       }
       async _removeSession() {
+        this._sessionRemovalEpoch += 1;
         this._debug("#_removeSession()");
+        this.lastRefreshFailure = null;
         this.suppressGetSessionWarning = false;
         await (0, helpers_1.removeItemAsync)(this.storage, this.storageKey);
-        await (0, helpers_1.removeItemAsync)(this.storage, this.storageKey + "-code-verifier");
+        await (0, helpers_1.removeAllPKCEVerifiers)(this.storage, this.storageKey);
         await (0, helpers_1.removeItemAsync)(this.storage, this.storageKey + "-user");
         if (this.userStorage) {
           await (0, helpers_1.removeItemAsync)(this.userStorage, this.storageKey + "-user");
@@ -20063,8 +19600,8 @@ var require_GoTrueClient = __commonJS({
       /**
        * Removes any registered visibilitychange callback.
        *
-       * {@see #startAutoRefresh}
-       * {@see #stopAutoRefresh}
+       * {@link GoTrueClient.startAutoRefresh}
+       * {@link GoTrueClient.stopAutoRefresh}
        */
       _removeVisibilityChangedCallback() {
         this._debug("#_removeVisibilityChangedCallback()");
@@ -20079,7 +19616,7 @@ var require_GoTrueClient = __commonJS({
         }
       }
       /**
-       * This is the private implementation of {@link #startAutoRefresh}. Use this
+       * This is the private implementation of {@link GoTrueClient.startAutoRefresh}. Use this
        * within the library.
        */
       async _startAutoRefresh() {
@@ -20104,7 +19641,7 @@ var require_GoTrueClient = __commonJS({
         }
       }
       /**
-       * This is the private implementation of {@link #stopAutoRefresh}. Use this
+       * This is the private implementation of {@link GoTrueClient.stopAutoRefresh}. Use this
        * within the library.
        */
       async _stopAutoRefresh() {
@@ -20140,7 +19677,7 @@ var require_GoTrueClient = __commonJS({
        * platform's foreground indication mechanism and call these methods
        * appropriately to conserve resources.
        *
-       * {@see #stopAutoRefresh}
+       * {@link GoTrueClient.stopAutoRefresh}
        *
        * @category Auth
        *
@@ -20174,7 +19711,7 @@ var require_GoTrueClient = __commonJS({
        * If you call this method any managed visibility change callback will be
        * removed and you must manage visibility changes on your own.
        *
-       * See {@link #startAutoRefresh} for more details.
+       * See {@link GoTrueClient.startAutoRefresh} for more details.
        *
        * @category Auth
        *
@@ -20203,40 +19740,106 @@ var require_GoTrueClient = __commonJS({
         await this._stopAutoRefresh();
       }
       /**
+       * Tears down the client's background work: stops the auto-refresh interval,
+       * removes the `visibilitychange` listener, closes the cross-tab
+       * `BroadcastChannel`, and clears registered `onAuthStateChange` subscribers.
+       *
+       * Call this from cleanup hooks when the client is being replaced before
+       * its JS realm is destroyed. React Strict Mode and HMR are the common
+       * cases. Any in-flight `fetch` calls continue to completion and may still
+       * write to storage; dispose doesn't abort them or erase storage.
+       *
+       * Lifecycle caveat: because in-flight refreshes are not aborted, a
+       * disposed instance can still persist a rotated session to storage after
+       * `dispose()` returns. A subsequent `createClient` against the same
+       * `storageKey` will pick up that session on its next read. If you need
+       * strict isolation between client lifecycles, await any pending auth
+       * operation before calling `dispose()` (or change the `storageKey` for
+       * the replacement client).
+       *
+       * Safe to call repeatedly.
+       *
+       * @category Auth
+       *
+       * @example Cleanup on React unmount
+       * ```ts
+       * useEffect(() => {
+       *   const client = createClient(...)
+       *   return () => { client.auth.dispose() }
+       * }, [])
+       * ```
+       */
+      async dispose() {
+        var _a;
+        this._removeVisibilityChangedCallback();
+        await this._stopAutoRefresh();
+        (_a = this.broadcastChannel) === null || _a === void 0 ? void 0 : _a.close();
+        this.broadcastChannel = null;
+        this.stateChangeEmitters.clear();
+      }
+      /**
        * Runs the auto refresh token tick.
        */
       async _autoRefreshTokenTick() {
         this._debug("#_autoRefreshTokenTick()", "begin");
-        try {
-          await this._acquireLock(0, async () => {
-            try {
-              const now = Date.now();
+        if (this.lock != null) {
+          try {
+            await this._acquireLock(0, async () => {
               try {
-                return await this._useSession(async (result) => {
-                  const { data: { session } } = result;
-                  if (!session || !session.refresh_token || !session.expires_at) {
-                    this._debug("#_autoRefreshTokenTick()", "no session");
-                    return;
-                  }
-                  const expiresInTicks = Math.floor((session.expires_at * 1e3 - now) / constants_1.AUTO_REFRESH_TICK_DURATION_MS);
-                  this._debug("#_autoRefreshTokenTick()", `access token expires in ${expiresInTicks} ticks, a tick lasts ${constants_1.AUTO_REFRESH_TICK_DURATION_MS}ms, refresh threshold is ${constants_1.AUTO_REFRESH_TICK_THRESHOLD} ticks`);
-                  if (expiresInTicks <= constants_1.AUTO_REFRESH_TICK_THRESHOLD) {
-                    await this._callRefreshToken(session.refresh_token);
-                  }
-                });
-              } catch (e) {
-                console.error("Auto refresh tick failed with error. This is likely a transient error.", e);
+                const now = Date.now();
+                try {
+                  return await this._useSession(async (result) => {
+                    const { data: { session } } = result;
+                    if (!session || !session.refresh_token || !session.expires_at) {
+                      this._debug("#_autoRefreshTokenTick()", "no session");
+                      return;
+                    }
+                    const expiresInTicks = Math.floor((session.expires_at * 1e3 - now) / constants_1.AUTO_REFRESH_TICK_DURATION_MS);
+                    this._debug("#_autoRefreshTokenTick()", `access token expires in ${expiresInTicks} ticks, a tick lasts ${constants_1.AUTO_REFRESH_TICK_DURATION_MS}ms, refresh threshold is ${constants_1.AUTO_REFRESH_TICK_THRESHOLD} ticks`);
+                    if (expiresInTicks <= constants_1.AUTO_REFRESH_TICK_THRESHOLD) {
+                      await this._callRefreshToken(session.refresh_token);
+                    }
+                  });
+                } catch (e) {
+                  console.error("Auto refresh tick failed with error. This is likely a transient error.", e);
+                }
+              } finally {
+                this._debug("#_autoRefreshTokenTick()", "end");
               }
-            } finally {
-              this._debug("#_autoRefreshTokenTick()", "end");
+            });
+          } catch (e) {
+            if (e instanceof locks_1.LockAcquireTimeoutError) {
+              this._debug("auto refresh token tick lock not available");
+            } else {
+              throw e;
             }
-          });
-        } catch (e) {
-          if (e instanceof locks_1.LockAcquireTimeoutError) {
-            this._debug("auto refresh token tick lock not available");
-          } else {
-            throw e;
           }
+          return;
+        }
+        if (this.refreshingDeferred !== null) {
+          this._debug("#_autoRefreshTokenTick()", "refresh already in flight, skipping");
+          return;
+        }
+        try {
+          const now = Date.now();
+          try {
+            await this._useSession(async (result) => {
+              const { data: { session } } = result;
+              if (!session || !session.refresh_token || !session.expires_at) {
+                this._debug("#_autoRefreshTokenTick()", "no session");
+                return;
+              }
+              const expiresInTicks = Math.floor((session.expires_at * 1e3 - now) / constants_1.AUTO_REFRESH_TICK_DURATION_MS);
+              this._debug("#_autoRefreshTokenTick()", `access token expires in ${expiresInTicks} ticks, a tick lasts ${constants_1.AUTO_REFRESH_TICK_DURATION_MS}ms, refresh threshold is ${constants_1.AUTO_REFRESH_TICK_THRESHOLD} ticks`);
+              if (expiresInTicks <= constants_1.AUTO_REFRESH_TICK_THRESHOLD) {
+                await this._callRefreshToken(session.refresh_token);
+              }
+            });
+          } catch (e) {
+            console.error("Auto refresh tick failed with error. This is likely a transient error.", e);
+          }
+        } finally {
+          this._debug("#_autoRefreshTokenTick()", "end");
         }
       }
       /**
@@ -20278,13 +19881,21 @@ var require_GoTrueClient = __commonJS({
           }
           if (!calledFromInitialize) {
             await this.initializePromise;
-            await this._acquireLock(this.lockAcquireTimeout, async () => {
+            if (this.lock != null) {
+              await this._acquireLock(this.lockAcquireTimeout, async () => {
+                if (document.visibilityState !== "visible") {
+                  this._debug(methodName, "acquired the lock to recover the session, but the browser visibilityState is no longer visible, aborting");
+                  return;
+                }
+                await this._recoverAndRefresh();
+              });
+            } else {
               if (document.visibilityState !== "visible") {
-                this._debug(methodName, "acquired the lock to recover the session, but the browser visibilityState is no longer visible, aborting");
+                this._debug(methodName, "visibilityState is no longer visible, skipping recovery");
                 return;
               }
               await this._recoverAndRefresh();
-            });
+            }
           }
         } else if (document.visibilityState === "hidden") {
           if (this.autoRefreshToken) {
@@ -20299,15 +19910,23 @@ var require_GoTrueClient = __commonJS({
        * @param options.queryParams An object of key-value pairs containing query parameters granted to the OAuth application.
        */
       async _getUrlForProvider(url, provider, options) {
+        let redirectTo = options === null || options === void 0 ? void 0 : options.redirectTo;
+        let codeChallenge = null;
+        let codeChallengeMethod = null;
+        let flowId = null;
+        if (this.flowType === "pkce") {
+          ;
+          [codeChallenge, codeChallengeMethod, flowId] = await this._getCodeChallengeAndMethod();
+          redirectTo = this._maybeAppendFlowIdToRedirect(redirectTo, flowId);
+        }
         const urlParams = [`provider=${encodeURIComponent(provider)}`];
-        if (options === null || options === void 0 ? void 0 : options.redirectTo) {
-          urlParams.push(`redirect_to=${encodeURIComponent(options.redirectTo)}`);
+        if (redirectTo) {
+          urlParams.push(`redirect_to=${encodeURIComponent(redirectTo)}`);
         }
         if (options === null || options === void 0 ? void 0 : options.scopes) {
           urlParams.push(`scopes=${encodeURIComponent(options.scopes)}`);
         }
-        if (this.flowType === "pkce") {
-          const [codeChallenge, codeChallengeMethod] = await (0, helpers_1.getCodeChallengeAndMethod)(this.storage, this.storageKey);
+        if (codeChallenge != null && codeChallengeMethod != null) {
           const flowParams = new URLSearchParams({
             code_challenge: `${encodeURIComponent(codeChallenge)}`,
             code_challenge_method: `${encodeURIComponent(codeChallengeMethod)}`
@@ -20321,7 +19940,27 @@ var require_GoTrueClient = __commonJS({
         if (options === null || options === void 0 ? void 0 : options.skipBrowserRedirect) {
           urlParams.push(`skip_http_redirect=${options.skipBrowserRedirect}`);
         }
-        return `${url}?${urlParams.join("&")}`;
+        return { url: `${url}?${urlParams.join("&")}`, flowId };
+      }
+      /**
+       * Appends the reserved flow id parameter to a redirect URL so the callback
+       * can be matched to the verifier stored for its flow. Opt-in via
+       * `experimental.appendPkceFlowIdToRedirects`: redirect URLs are validated
+       * against the project's allow list including the query string, so an extra
+       * parameter can stop exact (non-wildcard) entries from matching.
+       */
+      _maybeAppendFlowIdToRedirect(redirectTo, flowId) {
+        if (!redirectTo || !flowId || !this.experimental.appendPkceFlowIdToRedirects) {
+          return redirectTo !== null && redirectTo !== void 0 ? redirectTo : void 0;
+        }
+        return (0, helpers_1.appendFlowIdToRedirectTo)(redirectTo, flowId);
+      }
+      /**
+       * Generates and stores a PKCE challenge/verifier pair for a new flow,
+       * logging any pending verifier the bounded slot ring evicts.
+       */
+      async _getCodeChallengeAndMethod(isPasswordRecovery = false) {
+        return (0, helpers_1.getCodeChallengeAndMethod)(this.storage, this.storageKey, isPasswordRecovery, (evictedFlowId) => this._debug("#_getCodeChallengeAndMethod()", "evicted oldest pending PKCE verifier slot", evictedFlowId));
       }
       async _unenroll(params) {
         try {
@@ -20373,7 +20012,7 @@ var require_GoTrueClient = __commonJS({
         }
       }
       async _verify(params) {
-        return this._acquireLock(this.lockAcquireTimeout, async () => {
+        const run = async () => {
           try {
             return await this._useSession(async (result) => {
               var _a;
@@ -20402,10 +20041,14 @@ var require_GoTrueClient = __commonJS({
             }
             throw error;
           }
-        });
+        };
+        if (this.lock != null) {
+          return this._acquireLock(this.lockAcquireTimeout, run);
+        }
+        return run();
       }
       async _challenge(params) {
-        return this._acquireLock(this.lockAcquireTimeout, async () => {
+        const run = async () => {
           try {
             return await this._useSession(async (result) => {
               var _a;
@@ -20444,10 +20087,14 @@ var require_GoTrueClient = __commonJS({
             }
             throw error;
           }
-        });
+        };
+        if (this.lock != null) {
+          return this._acquireLock(this.lockAcquireTimeout, run);
+        }
+        return run();
       }
       /**
-       * {@see GoTrueMFAApi#challengeAndVerify}
+       * {@link GoTrueMFAApi#challengeAndVerify}
        */
       async _challengeAndVerify(params) {
         const { data: challengeData, error: challengeError } = await this._challenge({
@@ -20463,7 +20110,7 @@ var require_GoTrueClient = __commonJS({
         });
       }
       /**
-       * {@see GoTrueMFAApi#listFactors}
+       * {@link GoTrueMFAApi#listFactors}
        */
       async _listFactors() {
         var _a;
@@ -20490,7 +20137,7 @@ var require_GoTrueClient = __commonJS({
         };
       }
       /**
-       * {@see GoTrueMFAApi#getAuthenticatorAssuranceLevel}
+       * {@link GoTrueMFAApi#getAuthenticatorAssuranceLevel}
        */
       async _getAuthenticatorAssuranceLevel(jwt) {
         var _a, _b, _c, _d;
@@ -20728,15 +20375,15 @@ var require_GoTrueClient = __commonJS({
        * Extracts the JWT claims present in the access token by first verifying the
        * JWT against the server's JSON Web Key Set endpoint
        * `/.well-known/jwks.json` which is often cached, resulting in significantly
-       * faster responses. Prefer this method over {@link #getUser} which always
+       * faster responses. Prefer this method over {@link GoTrueClient.getUser} which always
        * sends a request to the Auth server for each JWT.
        *
        * If the project is not using an asymmetric JWT signing key (like ECC or
-       * RSA) it always sends a request to the Auth server (similar to {@link
-       * #getUser}) to verify the JWT.
+       * RSA) it always sends a request to the Auth server (similar to
+       * {@link GoTrueClient.getUser}) to verify the JWT.
        *
        * @param jwt An optional specific JWT you wish to verify, not the one you
-       *            can obtain from {@link #getSession}.
+       *            can obtain from {@link GoTrueClient.getSession}.
        * @param options Various additional options that allow you to customize the
        *                behavior of this method.
        *
@@ -20801,7 +20448,11 @@ var require_GoTrueClient = __commonJS({
           }
           const { header, payload, signature, raw: { header: rawHeader, payload: rawPayload } } = (0, helpers_1.decodeJWT)(token);
           if (!(options === null || options === void 0 ? void 0 : options.allowExpired)) {
-            (0, helpers_1.validateExp)(payload.exp);
+            try {
+              (0, helpers_1.validateExp)(payload.exp);
+            } catch (e) {
+              throw new errors_1.AuthInvalidJwtError(e instanceof Error ? e.message : "JWT validation failed");
+            }
           }
           const signingKey = !header.alg || header.alg.startsWith("HS") || !header.kid || !("crypto" in globalThis && "subtle" in globalThis.crypto) ? null : await this.fetchJwk(header.kid, (options === null || options === void 0 ? void 0 : options.keys) ? { keys: options.keys } : options === null || options === void 0 ? void 0 : options.jwks);
           if (!signingKey) {
@@ -21234,6 +20885,66 @@ __export(dist_exports, {
   SupabaseClient: () => SupabaseClient,
   createClient: () => createClient
 });
+function parseTraceParent(traceparent) {
+  if (!traceparent || typeof traceparent !== "string") return null;
+  const parts = traceparent.split("-");
+  if (parts.length !== 4) return null;
+  const [version$1, traceId, parentId, traceFlags] = parts;
+  if (version$1.length !== 2 || traceId.length !== 32 || parentId.length !== 16 || traceFlags.length !== 2) return null;
+  const hexRegex = /^[0-9a-f]+$/i;
+  if (!hexRegex.test(version$1) || !hexRegex.test(traceId) || !hexRegex.test(parentId) || !hexRegex.test(traceFlags)) return null;
+  if (traceId === "00000000000000000000000000000000" || parentId === "0000000000000000") return null;
+  return {
+    version: version$1,
+    traceId,
+    parentId,
+    traceFlags,
+    isSampled: (parseInt(traceFlags, 16) & 1) === 1
+  };
+}
+function shouldPropagateToTarget(targetUrl, targets) {
+  if (!targetUrl || !targets || targets.length === 0) return false;
+  let url;
+  if (targetUrl instanceof URL) url = targetUrl;
+  else try {
+    url = new URL(targetUrl);
+  } catch (error) {
+    return false;
+  }
+  for (const target of targets) try {
+    if (typeof target === "string") {
+      if (matchStringTarget(url.hostname, target)) return true;
+    } else if (target instanceof RegExp) {
+      if (target.test(url.hostname)) return true;
+    } else if (typeof target === "function") {
+      if (target(url)) return true;
+    }
+  } catch (error) {
+    continue;
+  }
+  return false;
+}
+function matchStringTarget(hostname, target) {
+  if (target === hostname) return true;
+  if (target.startsWith("*.")) {
+    const domain = target.slice(2);
+    if (hostname.endsWith(domain)) {
+      if (hostname === domain || hostname.endsWith("." + domain)) return true;
+    }
+  }
+  return false;
+}
+function getDefaultPropagationTargets(supabaseUrl2) {
+  const targets = [];
+  try {
+    const url = new URL(supabaseUrl2);
+    targets.push(url.hostname);
+  } catch (error) {
+  }
+  targets.push("*.supabase.co", "*.supabase.in");
+  targets.push("localhost", "127.0.0.1", "[::1]");
+  return targets;
+}
 function _typeof3(o) {
   "@babel/helpers - typeof";
   return _typeof3 = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o$1) {
@@ -21285,19 +20996,46 @@ function _objectSpread23(e) {
   }
   return e;
 }
+function getTraceHeaders(input, targets, respectSampling) {
+  const extractTraceContext = getTraceContextExtractor();
+  if (!extractTraceContext) {
+    if (!warnedMissingTracingRuntime) {
+      warnedMissingTracingRuntime = true;
+      console.warn("@supabase/supabase-js: tracePropagation is enabled but the tracing runtime is not loaded, so trace headers will not be attached. Add `import '@supabase/supabase-js/tracing'` at your application entry point (requires the OpenTelemetry API package to be installed). The CDN/UMD build does not support trace propagation.");
+    }
+    return null;
+  }
+  if (!shouldPropagateToTarget(typeof input === "string" ? input : input instanceof URL ? input : input.url, targets)) return null;
+  const traceContext = extractTraceContext();
+  if (!traceContext || !traceContext.traceparent) return null;
+  if (respectSampling) {
+    const parsed = parseTraceParent(traceContext.traceparent);
+    if (parsed && !parsed.isSampled) return null;
+  }
+  return traceContext;
+}
+function normalizeTracePropagation(value) {
+  return typeof value === "boolean" ? { enabled: value } : value;
+}
 function ensureTrailingSlash(url) {
   return url.endsWith("/") ? url : url + "/";
 }
 function applySettingDefaults(options, defaults) {
-  var _DEFAULT_GLOBAL_OPTIO, _globalOptions$header;
+  var _DEFAULT_GLOBAL_OPTIO, _globalOptions$header, _ref, _tracePropagationOpti, _ref2, _tracePropagationOpti2;
   const { db: dbOptions, auth: authOptions, realtime: realtimeOptions, global: globalOptions } = options;
   const { db: DEFAULT_DB_OPTIONS$1, auth: DEFAULT_AUTH_OPTIONS$1, realtime: DEFAULT_REALTIME_OPTIONS$1, global: DEFAULT_GLOBAL_OPTIONS$1 } = defaults;
+  const tracePropagationOptions = normalizeTracePropagation(options.tracePropagation);
+  const DEFAULT_TRACE_PROPAGATION_OPTIONS$1 = normalizeTracePropagation(defaults.tracePropagation);
   const result = {
     db: _objectSpread23(_objectSpread23({}, DEFAULT_DB_OPTIONS$1), dbOptions),
     auth: _objectSpread23(_objectSpread23({}, DEFAULT_AUTH_OPTIONS$1), authOptions),
     realtime: _objectSpread23(_objectSpread23({}, DEFAULT_REALTIME_OPTIONS$1), realtimeOptions),
     storage: {},
     global: _objectSpread23(_objectSpread23(_objectSpread23({}, DEFAULT_GLOBAL_OPTIONS$1), globalOptions), {}, { headers: _objectSpread23(_objectSpread23({}, (_DEFAULT_GLOBAL_OPTIO = DEFAULT_GLOBAL_OPTIONS$1 === null || DEFAULT_GLOBAL_OPTIONS$1 === void 0 ? void 0 : DEFAULT_GLOBAL_OPTIONS$1.headers) !== null && _DEFAULT_GLOBAL_OPTIO !== void 0 ? _DEFAULT_GLOBAL_OPTIO : {}), (_globalOptions$header = globalOptions === null || globalOptions === void 0 ? void 0 : globalOptions.headers) !== null && _globalOptions$header !== void 0 ? _globalOptions$header : {}) }),
+    tracePropagation: {
+      enabled: (_ref = (_tracePropagationOpti = tracePropagationOptions === null || tracePropagationOptions === void 0 ? void 0 : tracePropagationOptions.enabled) !== null && _tracePropagationOpti !== void 0 ? _tracePropagationOpti : DEFAULT_TRACE_PROPAGATION_OPTIONS$1 === null || DEFAULT_TRACE_PROPAGATION_OPTIONS$1 === void 0 ? void 0 : DEFAULT_TRACE_PROPAGATION_OPTIONS$1.enabled) !== null && _ref !== void 0 ? _ref : false,
+      respectSamplingDecision: (_ref2 = (_tracePropagationOpti2 = tracePropagationOptions === null || tracePropagationOptions === void 0 ? void 0 : tracePropagationOptions.respectSamplingDecision) !== null && _tracePropagationOpti2 !== void 0 ? _tracePropagationOpti2 : DEFAULT_TRACE_PROPAGATION_OPTIONS$1 === null || DEFAULT_TRACE_PROPAGATION_OPTIONS$1 === void 0 ? void 0 : DEFAULT_TRACE_PROPAGATION_OPTIONS$1.respectSamplingDecision) !== null && _ref2 !== void 0 ? _ref2 : true
+    },
     accessToken: async () => ""
   };
   if (options.accessToken) result.accessToken = options.accessToken;
@@ -21315,19 +21053,20 @@ function validateSupabaseUrl(supabaseUrl2) {
   }
 }
 function shouldShowDeprecationWarning() {
-  if (typeof window !== "undefined") return false;
+  if (typeof window !== "undefined" || globalThis["Deno"] !== void 0) return false;
   const _process = globalThis["process"];
   if (!_process) return false;
   const processVersion = _process["version"];
   if (processVersion === void 0 || processVersion === null) return false;
   const versionMatch = processVersion.match(/^v(\d+)\./);
   if (!versionMatch) return false;
-  return parseInt(versionMatch[1], 10) <= 18;
+  return parseInt(versionMatch[1], 10) <= 20;
 }
-var import_functions_js, import_realtime_js, import_auth_js, version2, JS_ENV, DEFAULT_HEADERS2, DEFAULT_GLOBAL_OPTIONS, DEFAULT_DB_OPTIONS, DEFAULT_AUTH_OPTIONS, DEFAULT_REALTIME_OPTIONS, resolveFetch2, resolveHeadersConstructor, fetchWithAuth, SupabaseAuthClient, SupabaseClient, createClient;
+var import_functions_js, import_realtime_js, import_auth_js, version2, JS_ENV, JS_RUNTIME_VERSION, _Deno$version, _process$version, _runtimeMeta, DEFAULT_HEADERS2, DEFAULT_GLOBAL_OPTIONS, DEFAULT_DB_OPTIONS, DEFAULT_AUTH_OPTIONS, DEFAULT_REALTIME_OPTIONS, DEFAULT_TRACE_PROPAGATION_OPTIONS, resolveFetch2, resolveHeadersConstructor, isNewApiKey, TEMP_KEY_PREFIX, warnedKeySubtypes, checkApiKeyFormat, fetchWithAuth, warnedMissingTracingRuntime, SupabaseAuthClient, SupabaseClient, createClient;
 var init_dist4 = __esm({
   "node_modules/@supabase/supabase-js/dist/index.mjs"() {
     init_define_import_meta_env();
+    init_tracingRegistry();
     import_functions_js = __toESM(require_main(), 1);
     init_dist();
     import_realtime_js = __toESM(require_main2(), 1);
@@ -21335,13 +21074,21 @@ var init_dist4 = __esm({
     import_auth_js = __toESM(require_main3(), 1);
     __reExport(dist_exports, __toESM(require_main2(), 1));
     __reExport(dist_exports, __toESM(require_main3(), 1));
-    version2 = "2.105.4";
+    version2 = "2.112.2";
     JS_ENV = "";
-    if (typeof Deno !== "undefined") JS_ENV = "deno";
-    else if (typeof document !== "undefined") JS_ENV = "web";
+    if (typeof Deno !== "undefined") {
+      JS_ENV = "deno";
+      JS_RUNTIME_VERSION = (_Deno$version = Deno.version) === null || _Deno$version === void 0 ? void 0 : _Deno$version.deno;
+    } else if (typeof document !== "undefined") JS_ENV = "web";
     else if (typeof navigator !== "undefined" && navigator.product === "ReactNative") JS_ENV = "react-native";
-    else JS_ENV = "node";
-    DEFAULT_HEADERS2 = { "X-Client-Info": `supabase-js-${JS_ENV}/${version2}` };
+    else {
+      JS_ENV = "node";
+      const _process = globalThis["process"];
+      JS_RUNTIME_VERSION = _process === null || _process === void 0 || (_process$version = _process["version"]) === null || _process$version === void 0 ? void 0 : _process$version.replace(/^v/, "");
+    }
+    _runtimeMeta = [`runtime=${JS_ENV}`];
+    if (JS_RUNTIME_VERSION) _runtimeMeta.push(`runtime-version=${JS_RUNTIME_VERSION}`);
+    DEFAULT_HEADERS2 = { "X-Client-Info": `supabase-js/${version2}; ${_runtimeMeta.join("; ")}` };
     DEFAULT_GLOBAL_OPTIONS = { headers: DEFAULT_HEADERS2 };
     DEFAULT_DB_OPTIONS = { schema: "public" };
     DEFAULT_AUTH_OPTIONS = {
@@ -21351,6 +21098,10 @@ var init_dist4 = __esm({
       flowType: "implicit"
     };
     DEFAULT_REALTIME_OPTIONS = {};
+    DEFAULT_TRACE_PROPAGATION_OPTIONS = {
+      enabled: false,
+      respectSamplingDecision: true
+    };
     resolveFetch2 = (customFetch) => {
       if (customFetch) return (...args) => customFetch(...args);
       return (...args) => fetch(...args);
@@ -21358,18 +21109,44 @@ var init_dist4 = __esm({
     resolveHeadersConstructor = () => {
       return Headers;
     };
-    fetchWithAuth = (supabaseKey, getAccessToken, customFetch) => {
+    isNewApiKey = (key) => key.startsWith("sb_publishable_") || key.startsWith("sb_secret_");
+    TEMP_KEY_PREFIX = "sb_temp_";
+    warnedKeySubtypes = /* @__PURE__ */ new Set();
+    checkApiKeyFormat = (key) => {
+      var _key$match$, _key$match;
+      if (!key.startsWith("sb_") || isNewApiKey(key) || key.startsWith(TEMP_KEY_PREFIX)) return;
+      const subtype = (_key$match$ = (_key$match = key.match(/^sb_[a-zA-Z0-9]+_/)) === null || _key$match === void 0 ? void 0 : _key$match[0]) !== null && _key$match$ !== void 0 ? _key$match$ : "unknown";
+      if (warnedKeySubtypes.has(subtype)) return;
+      warnedKeySubtypes.add(subtype);
+      console.warn("@supabase/supabase-js: Unrecognized Supabase API key format. The client will proceed and send this key as-is; if you see authentication errors you may need to upgrade @supabase/supabase-js to a version that recognizes this key type.");
+    };
+    fetchWithAuth = (supabaseKey, supabaseUrl2, getAccessToken, customFetch, tracePropagationOptions, options) => {
       const fetch$1 = resolveFetch2(customFetch);
       const HeadersConstructor = resolveHeadersConstructor();
+      const traceEnabled = (tracePropagationOptions === null || tracePropagationOptions === void 0 ? void 0 : tracePropagationOptions.enabled) === true;
+      const respectSampling = (tracePropagationOptions === null || tracePropagationOptions === void 0 ? void 0 : tracePropagationOptions.respectSamplingDecision) !== false;
+      const traceTargets = traceEnabled ? getDefaultPropagationTargets(supabaseUrl2) : null;
+      const allowKeyAsBearer = !((options === null || options === void 0 ? void 0 : options.omitApiKeyAsBearer) && isNewApiKey(supabaseKey));
       return async (input, init) => {
-        var _await$getAccessToken;
-        const accessToken = (_await$getAccessToken = await getAccessToken()) !== null && _await$getAccessToken !== void 0 ? _await$getAccessToken : supabaseKey;
+        const realToken = await getAccessToken();
         let headers = new HeadersConstructor(init === null || init === void 0 ? void 0 : init.headers);
         if (!headers.has("apikey")) headers.set("apikey", supabaseKey);
-        if (!headers.has("Authorization")) headers.set("Authorization", `Bearer ${accessToken}`);
+        if (!headers.has("Authorization")) {
+          const bearer = realToken !== null && realToken !== void 0 ? realToken : allowKeyAsBearer ? supabaseKey : null;
+          if (bearer) headers.set("Authorization", `Bearer ${bearer}`);
+        }
+        if (traceTargets) {
+          const traceHeaders = getTraceHeaders(input, traceTargets, respectSampling);
+          if (traceHeaders) {
+            if (traceHeaders.traceparent && !headers.has("traceparent")) headers.set("traceparent", traceHeaders.traceparent);
+            if (traceHeaders.tracestate && !headers.has("tracestate")) headers.set("tracestate", traceHeaders.tracestate);
+            if (traceHeaders.baggage && !headers.has("baggage")) headers.set("baggage", traceHeaders.baggage);
+          }
+        }
         return fetch$1(input, _objectSpread23(_objectSpread23({}, init), {}, { headers }));
       };
     };
+    warnedMissingTracingRuntime = false;
     SupabaseAuthClient = class extends import_auth_js.AuthClient {
       constructor(options) {
         super(options);
@@ -21383,14 +21160,15 @@ var init_dist4 = __esm({
       *
       * @param supabaseUrl The unique Supabase URL which is supplied when you create a new project in your project dashboard.
       * @param supabaseKey The unique Supabase Key which is supplied when you create a new project in your project dashboard.
-      * @param options.db.schema You can switch in between schemas. The schema needs to be on the list of exposed schemas inside Supabase.
-      * @param options.auth.autoRefreshToken Set to "true" if you want to automatically refresh the token before expiring.
-      * @param options.auth.persistSession Set to "true" if you want to automatically save the user session into local storage.
-      * @param options.auth.detectSessionInUrl Set to "true" if you want to automatically detects OAuth grants in the URL and signs in the user.
-      * @param options.realtime Options passed along to realtime-js constructor.
-      * @param options.storage Options passed along to the storage-js constructor.
-      * @param options.global.fetch A custom fetch implementation.
-      * @param options.global.headers Any additional headers to send with each network request.
+      * @param options Optional configuration for the client:
+      * - `db.schema` — You can switch in between schemas. The schema needs to be on the list of exposed schemas inside Supabase.
+      * - `auth.autoRefreshToken` — Set to `true` if you want to automatically refresh the token before expiring.
+      * - `auth.persistSession` — Set to `true` if you want to automatically save the user session into local storage.
+      * - `auth.detectSessionInUrl` — Set to `true` if you want to automatically detect OAuth grants in the URL and sign in the user.
+      * - `realtime` — Options passed along to the realtime-js constructor.
+      * - `storage` — Options passed along to the storage-js constructor.
+      * - `global.fetch` — A custom fetch implementation.
+      * - `global.headers` — Any additional headers to send with each network request.
       *
       * @example Creating a client
       * ```js
@@ -21445,9 +21223,9 @@ var init_dist4 = __esm({
       * ```
       *
       * @exampleDescription Custom fetch implementation
-      * `supabase-js` uses the [`cross-fetch`](https://www.npmjs.com/package/cross-fetch) library to make HTTP requests,
+      * `supabase-js` uses the runtime's global `fetch` to make HTTP requests,
       * but an alternative `fetch` implementation can be provided as an option.
-      * This is most useful in environments where `cross-fetch` is not compatible (for instance Cloudflare Workers).
+      * This is useful in environments where the global `fetch` is unavailable or where you want to customize request behavior.
       *
       * @example Custom fetch implementation
       * ```js
@@ -21562,6 +21340,32 @@ var init_dist4 = __esm({
       *
       * const { data } = await supabase.from('profiles').select('*')
       * ```
+      *
+      * @exampleDescription With OpenTelemetry tracing
+      * Opt in to W3C trace context propagation so the `trace_id` from your
+      * client-side spans is attached to Supabase requests and appears in API
+      * Gateway and Edge Function logs. Requires `@opentelemetry/api` to be
+      * installed in your application and the tracing runtime to be loaded via
+      * `import '@supabase/supabase-js/tracing'`. See [Tracing with the JS SDK](https://supabase.com/docs/guides/telemetry/client-side-tracing).
+      *
+      * @example With OpenTelemetry tracing
+      * ```ts
+      * import '@supabase/supabase-js/tracing'
+      * import { createClient } from '@supabase/supabase-js'
+      * import { trace } from '@opentelemetry/api'
+      *
+      * const supabase = createClient('https://xyzcompany.supabase.co', 'your-publishable-key', {
+      *   tracePropagation: true,
+      * })
+      *
+      * const tracer = trace.getTracer('my-app')
+      *
+      * await tracer.startActiveSpan('fetch-users', async (span) => {
+      *   // Outgoing request carries the active trace context.
+      *   const { data, error } = await supabase.from('users').select('*')
+      *   span.end()
+      * })
+      * ```
       */
       constructor(supabaseUrl2, supabaseKey, options) {
         var _settings$auth$storag, _settings$global$head;
@@ -21569,6 +21373,7 @@ var init_dist4 = __esm({
         this.supabaseKey = supabaseKey;
         const baseUrl = validateSupabaseUrl(supabaseUrl2);
         if (!supabaseKey) throw new Error("supabaseKey is required.");
+        checkApiKeyFormat(supabaseKey);
         this.realtimeUrl = new URL("realtime/v1", baseUrl);
         this.realtimeUrl.protocol = this.realtimeUrl.protocol.replace("http", "ws");
         this.authUrl = new URL("auth/v1", baseUrl);
@@ -21579,9 +21384,11 @@ var init_dist4 = __esm({
           db: DEFAULT_DB_OPTIONS,
           realtime: DEFAULT_REALTIME_OPTIONS,
           auth: _objectSpread23(_objectSpread23({}, DEFAULT_AUTH_OPTIONS), {}, { storageKey: defaultStorageKey }),
-          global: DEFAULT_GLOBAL_OPTIONS
+          global: DEFAULT_GLOBAL_OPTIONS,
+          tracePropagation: DEFAULT_TRACE_PROPAGATION_OPTIONS
         };
         const settings = applySettingDefaults(options !== null && options !== void 0 ? options : {}, DEFAULTS);
+        this.settings = settings;
         this.storageKey = (_settings$auth$storag = settings.auth.storageKey) !== null && _settings$auth$storag !== void 0 ? _settings$auth$storag : "";
         this.headers = (_settings$global$head = settings.global.headers) !== null && _settings$global$head !== void 0 ? _settings$global$head : {};
         if (!settings.accessToken) {
@@ -21593,7 +21400,8 @@ var init_dist4 = __esm({
             throw new Error(`@supabase/supabase-js: Supabase Client is configured with the accessToken option, accessing supabase.auth.${String(prop)} is not possible`);
           } });
         }
-        this.fetch = fetchWithAuth(supabaseKey, this._getAccessToken.bind(this), settings.global.fetch);
+        this.fetch = fetchWithAuth(supabaseKey, supabaseUrl2, this._getSessionToken.bind(this), settings.global.fetch, settings.tracePropagation);
+        this.functionsFetch = fetchWithAuth(supabaseKey, supabaseUrl2, this._getSessionToken.bind(this), settings.global.fetch, settings.tracePropagation, { omitApiKeyAsBearer: true });
         this.realtime = this._initRealtimeClient(_objectSpread23({
           headers: this.headers,
           accessToken: this._getAccessToken.bind(this),
@@ -21605,7 +21413,8 @@ var init_dist4 = __esm({
           schema: settings.db.schema,
           fetch: this.fetch,
           timeout: settings.db.timeout,
-          urlLengthLimit: settings.db.urlLengthLimit
+          urlLengthLimit: settings.db.urlLengthLimit,
+          retry: settings.db.retry
         });
         this.storage = new StorageClient(this.storageUrl.href, this.headers, this.fetch, options === null || options === void 0 ? void 0 : options.storage);
         if (!settings.accessToken) this._listenForAuthEvents();
@@ -21616,7 +21425,7 @@ var init_dist4 = __esm({
       get functions() {
         return new import_functions_js.FunctionsClient(this.functionsUrl.href, {
           headers: this.headers,
-          customFetch: this.fetch
+          customFetch: this.functionsFetch
         });
       }
       /**
@@ -21726,12 +21535,22 @@ var init_dist4 = __esm({
       removeAllChannels() {
         return this.realtime.removeAllChannels();
       }
-      async _getAccessToken() {
+      /**
+      * The raw session token — the custom `accessToken` result or the signed-in user's JWT —
+      * or `null` when there is no session. Unlike {@link _getAccessToken} it does not fall back
+      * to `supabaseKey`, so callers can distinguish "no session" from "has session".
+      */
+      async _getSessionToken() {
         var _this = this;
         var _data$session$access_, _data$session;
         if (_this.accessToken) return await _this.accessToken();
         const { data } = await _this.auth.getSession();
-        return (_data$session$access_ = (_data$session = data.session) === null || _data$session === void 0 ? void 0 : _data$session.access_token) !== null && _data$session$access_ !== void 0 ? _data$session$access_ : _this.supabaseKey;
+        return (_data$session$access_ = (_data$session = data.session) === null || _data$session === void 0 ? void 0 : _data$session.access_token) !== null && _data$session$access_ !== void 0 ? _data$session$access_ : null;
+      }
+      async _getAccessToken() {
+        var _this2 = this;
+        var _await$this$_getSessi;
+        return (_await$this$_getSessi = await _this2._getSessionToken()) !== null && _await$this$_getSessi !== void 0 ? _await$this$_getSessi : _this2.supabaseKey;
       }
       _initSupabaseAuthClient({ autoRefreshToken, persistSession, detectSessionInUrl, storage, userStorage, storageKey, flowType, lock, debug, throwOnError, experimental, lockAcquireTimeout, skipAutoInitialize }, headers, fetch$1) {
         const authHeaders = {
@@ -21767,7 +21586,7 @@ var init_dist4 = __esm({
         });
       }
       _handleTokenChanged(event, source, token) {
-        if ((event === "TOKEN_REFRESHED" || event === "SIGNED_IN") && this.changedAccessToken !== token) {
+        if ((event === "TOKEN_REFRESHED" || event === "SIGNED_IN" || event === "INITIAL_SESSION") && this.changedAccessToken !== token) {
           this.changedAccessToken = token;
           this.realtime.setAuth(token);
         } else if (event === "SIGNED_OUT") {
@@ -21780,7 +21599,7 @@ var init_dist4 = __esm({
     createClient = (supabaseUrl2, supabaseKey, options) => {
       return new SupabaseClient(supabaseUrl2, supabaseKey, options);
     };
-    if (shouldShowDeprecationWarning()) console.warn("\u26A0\uFE0F  Node.js 18 and below are deprecated and will no longer be supported in future versions of @supabase/supabase-js. Please upgrade to Node.js 20 or later. For more information, visit: https://github.com/orgs/supabase/discussions/37217");
+    if (shouldShowDeprecationWarning()) console.warn("\u26A0\uFE0F  Node.js 20 and below are deprecated and will no longer be supported in future versions of @supabase/supabase-js. Please upgrade to Node.js 22 or later. For more information, visit: https://github.com/orgs/supabase/discussions/45715");
   }
 });
 
@@ -22113,6 +21932,7 @@ var init_authLocal = __esm({
       { chave: "oportunidade-origem", label: "Oportunidade de Origem", grupo: "Transportadoras" },
       { chave: "oportunidade-transportadora", label: "Oportunidade Transportadora", grupo: "Transportadoras" },
       { chave: "simular-saida-transportadora", label: "Simular Sa\xEDda de Transportadora", grupo: "Transportadoras" },
+      { chave: "tabela-padrao-b2c", label: "Tabela Padr\xE3o B2C", grupo: "Transportadoras" },
       { chave: "gestao-contratos", label: "Gest\xE3o de Contratos", grupo: "Transportadoras" },
       { chave: "gestao-base-cte", label: "Gest\xE3o da Base CT-e", grupo: "Auditoria" },
       { chave: "alertas-cte-valor", label: "Alerta CT-e valor alto", grupo: "Auditoria" },
@@ -27792,7 +27612,8 @@ function escolherMaiorPeso(registroCte, registroTracking) {
   const vTrk = Number(registroTracking?.valor_calculado || 0);
   const pesoCte2 = pesoUsadoNoCalculo(registroCte);
   const pesoTrk = pesoUsadoNoCalculo(registroTracking);
-  const usarTracking = Boolean(registroTracking) && vTrk > 0 && (!(vCte > 0) || pesoTrk > pesoCte2 + 1e-3);
+  const trackingSuspeito = pesoCte2 > 0 && pesoTrk > pesoCte2 * FATOR_MAX_PESO_TRACKING_SUSPEITO;
+  const usarTracking = Boolean(registroTracking) && vTrk > 0 && !trackingSuspeito && (!(vCte > 0) || pesoTrk > pesoCte2 + 1e-3);
   const escolhido = usarTracking ? registroTracking : registroCte;
   const det = parseDetalhesCalculoAuditoria(escolhido?.detalhes_calculo);
   return {
@@ -27803,6 +27624,7 @@ function escolherMaiorPeso(registroCte, registroTracking) {
         ...det,
         modo_peso_fatura: usarTracking ? det.modo_peso_fatura || "tracking" : "cte",
         peso_maior_auto: true,
+        peso_tracking_suspeito: trackingSuspeito,
         peso_cte_comparado: Number(pesoCte2.toFixed(3)),
         peso_tracking_comparado: registroTracking ? Number(pesoTrk.toFixed(3)) : null,
         valor_com_peso_cte: Number(vCte.toFixed(2)),
@@ -27811,11 +27633,13 @@ function escolherMaiorPeso(registroCte, registroTracking) {
     }
   };
 }
+var FATOR_MAX_PESO_TRACKING_SUSPEITO;
 var init_correcoesCalculoFatura = __esm({
   "src/utils/correcoesCalculoFatura.js"() {
     "use strict";
     init_define_import_meta_env();
     init_auditoriaFretesDomain();
+    FATOR_MAX_PESO_TRACKING_SUSPEITO = 2;
   }
 });
 
@@ -27979,7 +27803,7 @@ async function detalhesExatos(fatura) {
   return unicos.map((i) => aplicarSaldo(mesclar(i, referencia), saldos, referencia));
 }
 async function apurarFaturaRobo(fatura, aoProgredir = () => {
-}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = false } = {}) {
+}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = true } = {}) {
   const BLOCO = bloco;
   aoProgredir({ fase: "lendo" });
   let lista = await detalhesExatos(fatura);
@@ -28107,7 +27931,7 @@ function emailDoAuditor(fatura, mapa) {
   return String(fatura?.auditor_email || "").trim() || mapa?.get(normalizarNomeAuditor(fatura?.auditor_nome)) || "";
 }
 async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = /* @__PURE__ */ new Map(), usuario = "Robo (automatico)", origem = "automatico", anterior = null, aoProgredir = () => {
-}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = false } = {}) {
+}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = true } = {}) {
   if (faturaPaga(f) || faturaLancadaErp(f)) {
     const agora2 = (/* @__PURE__ */ new Date()).toISOString();
     const doc = [f.partida ? `partida ${f.partida}` : "", f.lancamento_financeiro ? `lancamento ${f.lancamento_financeiro}` : ""].filter(Boolean).join(", ");
