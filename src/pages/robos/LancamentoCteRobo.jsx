@@ -28,6 +28,7 @@ import { PASTA_CTE, gerarScriptCte } from '../../utils/robos/sapLancamentoVbs';
 import { registrarLancamentos } from '../../services/robosLancamentosService';
 import { carregarSessao } from '../../utils/authLocal';
 import { PASTA_ETAPAS_CTE, gerarScriptConsultaNotasCte, gerarScriptPartidasCte } from '../../utils/robos/sapConsultasCte';
+import ScriptParaCopiar from './ScriptParaCopiar';
 
 const CHAVE = 'central_fretes_robo_cte_lote_v1';
 
@@ -53,6 +54,7 @@ export default function LancamentoCteRobo() {
   const [manuais, setManuais] = useState(inicial.manuais || {});
   const [removidos, setRemovidos] = useState(inicial.removidos || []);
   const [falhasXml, setFalhasXml] = useState([]);
+  const [scriptTela, setScriptTela] = useState(null); // script aberto na tela para copiar
   const [erro, setErro] = useState('');
   const [feedback, setFeedback] = useState('');
   const refXml = useRef(null);
@@ -113,9 +115,9 @@ export default function LancamentoCteRobo() {
     return abaParaMatriz(XLSX, wb.Sheets[wb.SheetNames[0]]);
   }
 
-  function baixar(nome, fabrica, msg, mime) {
+  function baixar(nome, fabrica, msg) {
     setErro('');
-    try { baixarArquivo(nome, fabrica(), mime); setFeedback(msg); } catch (e) { setErro(e.message); }
+    try { baixarArquivo(nome, fabrica()); setFeedback(msg); } catch (e) { setErro(e.message); }
   }
 
   async function carregarExport1(arquivo) {
@@ -140,15 +142,22 @@ export default function LancamentoCteRobo() {
     finally { if (refE2.current) refE2.current.value = ''; }
   }
 
-  // txt: mesmo script, para maquinas em que o antivirus bloqueia o download do .vbs.
-  function baixarLancamento(txt = false) {
+  // copiar: mostra o script na tela (para colar no Bloco de Notas) quando o antivirus bloqueia o download.
+  function baixarLancamento(copiar = false) {
     if (!prontas.length) { setErro('Nao ha CT-e prontos para lancar.'); return; }
     if (comErro.length) { setErro(`${comErro.length} CT-e com pendencia. Corrija ou remova antes de gerar o script.`); return; }
-    const nome = txt ? 'lancar-cte.txt' : 'lancar-cte.vbs';
-    const comoRodar = txt ? `Como .txt o antivirus nao bloqueia: renomeie para .vbs e de dois cliques, ou rode no Prompt de Comando: wscript //E:VBScript ${nome}.` : 'Com o SAP aberto, de dois cliques nele.';
-    baixar(nome, () => gerarScriptCte({ linhas: linhasParaScriptCte(prontas), pasta }),
-      `Script baixado com ${fmt(prontas.length)} CT-e (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). ${comoRodar} Resultado em ${caminhoArquivo(pasta, 'resultado_cte.csv')}.`,
-      txt ? 'text/plain' : undefined);
+    const fabrica = () => gerarScriptCte({ linhas: linhasParaScriptCte(prontas), pasta });
+    const resumo = `${fmt(prontas.length)} CT-e (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido)`;
+    const resultado = `Resultado em ${caminhoArquivo(pasta, 'resultado_cte.csv')}.`;
+    if (!copiar) {
+      baixar('lancar-cte.vbs', fabrica, `Script baixado com ${resumo}. Com o SAP aberto, de dois cliques nele. ${resultado}`);
+      return;
+    }
+    setErro('');
+    try {
+      setScriptTela({ script: fabrica(), nome: 'lancar-cte.vbs' });
+      setFeedback(`Script gerado com ${resumo}. Cole no Bloco de Notas, salve como lancar-cte.vbs e, com o SAP aberto, de dois cliques nele. ${resultado}`);
+    } catch (e) { setErro(e.message); }
   }
 
   async function importarResultado(arquivo) {
@@ -199,6 +208,7 @@ export default function LancamentoCteRobo() {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
+      {scriptTela ? <ScriptParaCopiar script={scriptTela.script} nomeArquivo={scriptTela.nome} onFechar={() => setScriptTela(null)} /> : null}
       {erro ? <div style={{ padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{erro}</div> : null}
       {feedback && !erro ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}
 
@@ -303,7 +313,7 @@ export default function LancamentoCteRobo() {
                 <CampoPasta pasta={pasta} onChange={setPasta} padrao={PASTA_CTE} />
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
                   <button type="button" className="btn-primary" disabled={!prontas.length} onClick={() => baixarLancamento()}>Baixar script de lançamento (.vbs)</button>
-                  <button type="button" className="btn-secondary" disabled={!prontas.length} onClick={() => baixarLancamento(true)} title="Mesmo script em .txt, para quando o antivirus bloqueia o .vbs">Baixar em .txt (se o antivírus bloquear)</button>
+                  <button type="button" className="btn-secondary" disabled={!prontas.length} onClick={() => baixarLancamento(true)} title="Mostra o script na tela para copiar e colar no Bloco de Notas, sem baixar arquivo">Copiar código (se o antivírus bloquear)</button>
                   <button type="button" className="btn-secondary" onClick={() => baixarXlsx('cte-lancamento.xlsx', linhasLancamentoCte(linhas), CABECALHO_LANCAMENTO_CTE)}>Baixar tabela (.xlsx)</button>
                 </div>
               </div>
@@ -332,7 +342,8 @@ export default function LancamentoCteRobo() {
         <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>
           <li>Abra o SAP Logon e entre no sistema (scripting habilitado, como na planilha).</li>
           <li>Se o navegador avisar sobre o download do .vbs, escolha “Manter”. Se vier como <code>.vbs.txt</code>, renomeie para <code>.vbs</code>.</li>
-          <li>Se o antivírus bloquear o .vbs, use “Baixar em .txt”: renomeie o arquivo para <code>.vbs</code> e dê dois cliques, ou rode no Prompt de Comando (na pasta do arquivo) <code>wscript //E:VBScript lancar-cte.txt</code>.</li>
+          <li>Se o antivírus bloquear o download, use “Copiar código”: cole no Bloco de Notas e salve como <code>lancar-cte.vbs</code> (Tipo: Todos os arquivos).</li>
+          <li>Se o antivírus bloquear ao dar dois cliques, rode pelo próprio SAP: <b>Alt+F12</b> → <b>Script Recording and Playback…</b> → no campo do arquivo, escolha o <code>lancar-cte.vbs</code> salvo → <b>Playback</b> (botão ▶).</li>
           <li>Dê dois cliques no arquivo e não mexa no SAP até a mensagem final.</li>
         </ol>
         <div style={{ fontSize: 12, color: '#64748b', marginTop: 6 }}>Datas: emissão {linhas[0] ? isoParaBr(linhas[0].dataEmissao) : '—'} (primeiro CT-e). Vencimento usado: {isoParaBr(vencimento)}.</div>

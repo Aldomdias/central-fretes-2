@@ -34,6 +34,7 @@ import { carregarSessao } from '../../utils/authLocal';
 import ParametrosLancamentoCard from './ParametrosLancamentoCard';
 import CampoPasta, { caminhoArquivo, usePastaTrabalho } from './PastaTrabalho';
 import { nfComSufixoF } from '../../utils/robos/nfsePdf';
+import ScriptParaCopiar from './ScriptParaCopiar';
 
 const CHAVE_LOTE = 'central_fretes_robo_nfse_lote_v2';
 
@@ -82,6 +83,7 @@ export default function LancamentoNfseRobo() {
   const [erro, setErro] = useState('');
   const [feedback, setFeedback] = useState('');
   const [focar, setFocar] = useState(null);
+  const [scriptTela, setScriptTela] = useState(null); // script aberto na tela para copiar
   const refArquivo = useRef(null);
   const refResultado = useRef(null);
   const refPdf = useRef(null);
@@ -321,16 +323,17 @@ export default function LancamentoNfseRobo() {
   }
 
   // ---------------------------------------------------------------- SAP
-  // txt: mesmo script, para maquinas em que o antivirus bloqueia o download do .vbs.
-  function baixarScript(txt = false) {
+  // copiar: mostra o script na tela (para colar no Bloco de Notas) quando o antivirus bloqueia o download.
+  function baixarScript(copiar = false) {
     setErro('');
     if (!prontas.length) { setErro('Nao ha notas prontas para lancar.'); return; }
     if (comErro.length) { setErro(`${comErro.length} nota(s) com pendencia. Corrija ou remova antes de gerar o script.`); return; }
     try {
-      const nome = txt ? 'lancar-nfse.txt' : 'lancar-nfse.vbs';
-      baixarArquivo(nome, gerarScriptNfse({ linhas: linhasParaScriptNfse(prontas), pasta }), txt ? 'text/plain' : undefined);
-      const comoRodar = txt ? `Como .txt o antivirus nao bloqueia: renomeie para .vbs e de dois cliques, ou rode no Prompt de Comando: wscript //E:VBScript ${nome}.` : 'Com o SAP aberto e logado, de dois cliques nele.';
-      setFeedback(`Script baixado com ${fmt(prontas.length)} nota(s) (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). ${comoRodar} O resultado fica em ${caminhoArquivo(pasta, 'resultado_nfse.csv')}.`);
+      const script = gerarScriptNfse({ linhas: linhasParaScriptNfse(prontas), pasta });
+      if (copiar) setScriptTela({ script, nome: 'lancar-nfse.vbs' });
+      else baixarArquivo('lancar-nfse.vbs', script);
+      const comoRodar = copiar ? 'Cole no Bloco de Notas, salve como lancar-nfse.vbs e, com o SAP aberto e logado, de dois cliques nele.' : 'Com o SAP aberto e logado, de dois cliques nele.';
+      setFeedback(`Script ${copiar ? 'gerado' : 'baixado'} com ${fmt(prontas.length)} nota(s) (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). ${comoRodar} O resultado fica em ${caminhoArquivo(pasta, 'resultado_nfse.csv')}.`);
     } catch (e) { setErro(e.message); }
   }
 
@@ -381,6 +384,7 @@ export default function LancamentoNfseRobo() {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
+      {scriptTela ? <ScriptParaCopiar script={scriptTela.script} nomeArquivo={scriptTela.nome} onFechar={() => setScriptTela(null)} /> : null}
       {erro ? <div style={{ padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{erro}</div> : null}
       {feedback && !erro ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}
 
@@ -523,7 +527,7 @@ export default function LancamentoNfseRobo() {
             <CampoPasta pasta={pasta} onChange={setPasta} padrao={PASTA_NFSE} />
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button type="button" className="btn-primary" disabled={!prontas.length} onClick={() => baixarScript()}>Baixar script de lançamento (.vbs)</button>
-              <button type="button" className="btn-secondary" disabled={!prontas.length} onClick={() => baixarScript(true)} title="Mesmo script em .txt, para quando o antivirus bloqueia o .vbs">Baixar em .txt (se o antivírus bloquear)</button>
+              <button type="button" className="btn-secondary" disabled={!prontas.length} onClick={() => baixarScript(true)} title="Mostra o script na tela para copiar e colar no Bloco de Notas, sem baixar arquivo">Copiar código (se o antivírus bloquear)</button>
             </div>
           </div>
         </div>
@@ -549,7 +553,8 @@ export default function LancamentoNfseRobo() {
         <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>
           <li>Abra o SAP Logon e entre no sistema (scripting habilitado, como na planilha).</li>
           <li>Se o navegador avisar sobre o download do .vbs, escolha “Manter”. Se vier como <code>.vbs.txt</code>, renomeie para <code>.vbs</code>.</li>
-          <li>Se o antivírus bloquear o .vbs, use “Baixar em .txt”: renomeie o arquivo para <code>.vbs</code> e dê dois cliques, ou rode no Prompt de Comando (na pasta do arquivo) <code>wscript //E:VBScript lancar-nfse.txt</code>.</li>
+          <li>Se o antivírus bloquear o download, use “Copiar código”: cole no Bloco de Notas e salve como <code>lancar-nfse.vbs</code> (Tipo: Todos os arquivos).</li>
+          <li>Se o antivírus bloquear ao dar dois cliques, rode pelo próprio SAP: <b>Alt+F12</b> → <b>Script Recording and Playback…</b> → no campo do arquivo, escolha o <code>lancar-nfse.vbs</code> salvo → <b>Playback</b> (botão ▶).</li>
           <li>Dê dois cliques no arquivo e não mexa no SAP até a mensagem final. Se der erro, a mensagem diz qual nota; corrija no SAP e rode de novo.</li>
         </ol>
       </div>
