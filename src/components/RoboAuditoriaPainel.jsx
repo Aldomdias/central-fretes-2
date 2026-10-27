@@ -544,7 +544,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
           )}
 
           <label style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 }}
-            title="Ao reavaliar: calcula cada CT-e com o peso do CT-e e com o peso do Tracking (cubagem x fator da tabela) e fica com o MAIOR peso.">
+            title="Na primeira auditoria e ao reavaliar: calcula cada CT-e com o peso do CT-e e com o peso do Tracking (cubagem x fator da tabela) e fica com o MAIOR peso. Peso do Tracking mais de 2x o do CT-e e ignorado (cubagem suspeita).">
             <input type="checkbox" checked={pesoMaisProximo} onChange={(ev) => { setPesoMaisProximo(ev.target.checked); gravarPreferenciaPesoMaisProximo(ev.target.checked); }} />
             Reavaliar usando o maior peso (CT-e ou Tracking)
           </label>

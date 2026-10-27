@@ -114,7 +114,7 @@ async function detalhesExatos(fatura) {
 // limite da funcao; so apura o que ja esta calculado (navegador, auditor abrindo a fatura, importacao).
 // recalcularTudo (reavaliacao manual): refaz o calculo de TODOS os CT-es da fatura, e nao so dos que estavam sem
 // resultado; so fica "sem calculo" o que realmente der erro no calculo.
-export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = false } = {}) {
+export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = true } = {}) {
   // Blocos de 100 no navegador (cada bloco recarrega as tabelas das rotas dele: blocos maiores repetem menos esse
   // carregamento, que e o grosso do tempo) e pequenos na nuvem (parametro `bloco`). Blocos pequenos: cada bloco e calculado E GRAVADO, o andamento aparece na tela e, se a pagina
   // for fechada no meio, o que ja foi calculado fica salvo. Na nuvem (limiteBlocoMs) um bloco que demora
@@ -264,7 +264,7 @@ export function emailDoAuditor(fatura, mapa) {
 // Analisa UMA fatura do inicio ao fim: apura, decide, envia para a gestao se correta e devolve o
 // registro pronto para gravar em auditor_robo_execucoes. Usado pelo robo na nuvem e pelo botao.
 // anterior = registro anterior da fatura (reavaliacao), para manter/zerar a aprovacao do auditor.
-export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = new Map(), usuario = 'Robo (automatico)', origem = 'automatico', anterior = null, aoProgredir = () => {}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = false } = {}) {
+export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = new Map(), usuario = 'Robo (automatico)', origem = 'automatico', anterior = null, aoProgredir = () => {}, prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = true } = {}) {
   // Ja tem partida/lancamento (ou ja foi paga): o financeiro ja tratou por fora. O robo nao envia nada (gestao/laudo):
   // sai das listas direto ("Tratadas fora do robo", ou concluida se paga). Guarda o que o robo teria encontrado
   // (desconto, sem calculo, entrega) para medir o que esta passando por fora: fatura nova e apurada so para
@@ -326,9 +326,9 @@ export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = ne
   return registro;
 }
 
-// Para cada CT-e, entre o calculo com peso do CT-e e o com peso do Tracking, fica o mais proximo do valor cobrado
-// (empate = peso do CT-e). Registra os dois valores no detalhe do calculo para conferencia.
-// Reavaliar com "usar o maior peso": CT-e a CT-e, fica o calculo de maior peso (CT-e x Tracking cubado).
+// Primeira auditoria e reavaliacao com "usar o maior peso" (padrao): CT-e a CT-e, fica o calculo de maior peso
+// (CT-e x Tracking cubado), ignorando o Tracking quando o peso e suspeito (muito acima do CT-e).
+// Registra os dois valores no detalhe do calculo para conferencia.
 function escolherPesoMaisProximo(registrosCte = [], registrosTracking = []) {
   const porChave = new Map(registrosTracking.map((r) => [normalizarChaveCte(r.chave_cte), r]));
   return registrosCte.map((r) => escolherMaiorPeso(r, porChave.get(normalizarChaveCte(r.chave_cte))).registro);

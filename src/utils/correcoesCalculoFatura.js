@@ -171,12 +171,17 @@ function pesoUsadoNoCalculo(r = {}) {
 
 // Flag "usar o maior peso" (fatura / Reavaliar): entre o calculo com o peso do CT-e e o calculo com o peso do Tracking
 // (maior entre fisico e cubagem x fator da tabela), fica o de MAIOR PESO. Sem resultado em um deles, fica o outro.
+// Peso do Tracking (cubado) muito acima do peso do CT-e e suspeito de cubagem errada: a cubagem normal fica em torno
+// de 80% acima do peso do CT-e. Acima deste fator o Tracking e ignorado e fica o peso do CT-e.
+export const FATOR_MAX_PESO_TRACKING_SUSPEITO = 2;
+
 export function escolherMaiorPeso(registroCte, registroTracking) {
   const vCte = Number(registroCte?.valor_calculado || 0);
   const vTrk = Number(registroTracking?.valor_calculado || 0);
   const pesoCte = pesoUsadoNoCalculo(registroCte);
   const pesoTrk = pesoUsadoNoCalculo(registroTracking);
-  const usarTracking = Boolean(registroTracking) && vTrk > 0 && (!(vCte > 0) || pesoTrk > pesoCte + 0.001);
+  const trackingSuspeito = pesoCte > 0 && pesoTrk > pesoCte * FATOR_MAX_PESO_TRACKING_SUSPEITO;
+  const usarTracking = Boolean(registroTracking) && vTrk > 0 && !trackingSuspeito && (!(vCte > 0) || pesoTrk > pesoCte + 0.001);
   const escolhido = usarTracking ? registroTracking : registroCte;
   const det = parseDetalhesCalculoAuditoria(escolhido?.detalhes_calculo);
   return {
@@ -187,6 +192,7 @@ export function escolherMaiorPeso(registroCte, registroTracking) {
         ...det,
         modo_peso_fatura: usarTracking ? (det.modo_peso_fatura || 'tracking') : 'cte',
         peso_maior_auto: true,
+        peso_tracking_suspeito: trackingSuspeito,
         peso_cte_comparado: Number(pesoCte.toFixed(3)),
         peso_tracking_comparado: registroTracking ? Number(pesoTrk.toFixed(3)) : null,
         valor_com_peso_cte: Number(vCte.toFixed(2)),

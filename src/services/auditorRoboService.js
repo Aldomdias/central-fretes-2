@@ -185,7 +185,7 @@ export async function desfazerAprovacaoLaudoRobo(faturaId) {
 // Reavalia UMA fatura agora (botao "Reavaliar agora"): calcula o que faltar, decide e, se ficou
 // correta, envia para a gestao. Grava o resultado e devolve o registro.
 // soEntrega: nao recalcula os CT-es; so confere de novo a entrega (tracking, comprovante, baixa aprovada) com o calculo ja gravado.
-export async function reavaliarFaturaRobo(fatura, anterior, { usuario = 'auditor', aoProgredir = () => {}, pesoMaisProximo = false, soEntrega = false } = {}) {
+export async function reavaliarFaturaRobo(fatura, anterior, { usuario = 'auditor', aoProgredir = () => {}, pesoMaisProximo = true, soEntrega = false } = {}) {
   const core = await import('../utils/auditoriaRoboCore');
   const db = getSupabaseClient();
   const { data: cfgs } = await db.from('auditor_robo_transportadoras').select('*');
@@ -281,7 +281,7 @@ export async function registrarRodadaRobo(rodada) {
 // Preferencia do auditor (por navegador): reavaliar usando o peso do Tracking quando mais proximo do cobrado.
 const CHAVE_PESO_PROXIMO = 'cf_robo_reavaliar_peso_mais_proximo';
 export function lerPreferenciaPesoMaisProximo() {
-  try { return localStorage.getItem(CHAVE_PESO_PROXIMO) === '1'; } catch { return false; }
+  try { return localStorage.getItem(CHAVE_PESO_PROXIMO) !== '0'; } catch { return true; }
 }
 export function gravarPreferenciaPesoMaisProximo(valor) {
   try { localStorage.setItem(CHAVE_PESO_PROXIMO, valor ? '1' : '0'); } catch { /* sem armazenamento */ }
