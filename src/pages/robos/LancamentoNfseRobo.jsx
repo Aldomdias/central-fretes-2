@@ -127,9 +127,14 @@ export default function LancamentoNfseRobo() {
     return mapa;
   }, [parametros.escritorios]);
 
-  function digitarCentroCusto(uid, texto, emp) {
+  function digitarCentroCusto(uid, texto, emp, escrAtual) {
     const valor = texto.toUpperCase().trim();
     setCcEdit((a) => ({ ...a, [uid]: texto.toUpperCase() }));
+    // EscrV N/D: aceita qualquer centro de custo, mesmo sem cadastro
+    if (String(escrAtual || '').trim().toUpperCase() === 'N/D') {
+      setCampo(uid, 'ccDireto', valor);
+      return;
+    }
     const achados = ccParaEscr.get(valor) || [];
     // centro de custo cadastrado como N/D (sem escritorio de vendas): aceita sem vinculo
     if (achados.some((a) => a.nd)) {
@@ -454,7 +459,7 @@ export default function LancamentoNfseRobo() {
                             value={ccEdit[e.uid] ?? (l?.cc || '')}
                             placeholder="C.Custo"
                             title="Digite o centro de custo para preencher o EscrV sozinho"
-                            onChange={(ev) => digitarCentroCusto(e.uid, ev.target.value, l?.emp)}
+                            onChange={(ev) => digitarCentroCusto(e.uid, ev.target.value, l?.emp, e.escrV)}
                             onBlur={() => setCcEdit((a) => { const n = { ...a }; delete n[e.uid]; return n; })}
                           />
                         </td>
