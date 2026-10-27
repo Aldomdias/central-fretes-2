@@ -33,7 +33,7 @@ export default function ScriptParaCopiar({ script, nomeArquivo, onFechar }) {
           <li>Clique em <b>Copiar código</b>.</li>
           <li>Abra o <b>Bloco de Notas</b> e cole (Ctrl+V).</li>
           <li>Arquivo → Salvar como: em “Tipo”, escolha <b>Todos os arquivos</b> e salve com o nome <code>{nomeArquivo}</code>.</li>
-          <li>Com o SAP aberto e logado, dê dois cliques no arquivo salvo.</li>
+          <li>Com o SAP aberto e logado, dê dois cliques no arquivo salvo. Se o antivírus bloquear, rode pelo SAP: <b>Alt+F12</b> → <b>Script Recording and Playback…</b> → escolha o arquivo → <b>Playback</b>.</li>
         </ol>
         <textarea
           ref={ref}

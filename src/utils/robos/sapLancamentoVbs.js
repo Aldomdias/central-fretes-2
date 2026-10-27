@@ -54,6 +54,36 @@ function marcarPassos(corpo, etapa) {
     .join('\n');
 }
 
+// Rodando pelo SAP (Alt+F12 > Script Recording and Playback) o objeto WScript nao existe: o script
+// usa Esperar/Parar, que tentam o WScript e, sem ele, fazem a espera e a parada por conta propria.
+const SEM_WSCRIPT = [
+  "' Espera ms milissegundos (WScript.Sleep fora do SAP; laco no relogio dentro do Playback do SAP).",
+  'Sub Esperar(ms)',
+  '    Dim ini, fim',
+  '    On Error Resume Next',
+  '    WScript.Sleep ms',
+  '    If Err.Number = 0 Then Exit Sub',
+  '    Err.Clear',
+  '    ini = Timer : fim = ini + ms / 1000',
+  '    Do While Timer < fim And Timer >= ini',
+  '    Loop',
+  'End Sub',
+  '',
+  "' Encerra o robo (no Playback do SAP, interrompe com uma mensagem de erro).",
+  'Sub Parar()',
+  '    On Error Resume Next',
+  '    WScript.Quit 1',
+  '    On Error GoTo 0',
+  '    Err.Raise 5999, , "Robo interrompido."',
+  'End Sub',
+];
+
+// Texto final do script: troca WScript.Sleep/Quit por Esperar/Parar, poe os auxiliares no fim e usa CRLF.
+export function finalizarScript(corpo) {
+  const texto = corpo.join('\n').replace(/WScript\.Sleep /g, 'Esperar ').replace(/WScript\.Quit 1/g, 'Parar');
+  return [texto, '', ...SEM_WSCRIPT].join('\n').replace(/\r?\n/g, '\r\n') + '\r\n';
+}
+
 export const CONEXAO = [
   'Sub Conectar()',
   '    On Error Resume Next',
@@ -409,7 +439,7 @@ export function gerarScriptNfse({ linhas = [], pasta = PASTA_NFSE } = {}) {
     'logf.Close',
     'MostrarResumo "Robo NFS-e", "resultado_nfse.csv"',
   ];
-  return corpo.join('\n').replace(/\r?\n/g, '\r\n') + '\r\n';
+  return finalizarScript(corpo);
 }
 
 // ---------------------------------------------------------------- CT-e
@@ -518,5 +548,5 @@ export function gerarScriptCte({ linhas = [], pasta = PASTA_CTE } = {}) {
     'logf.Close',
     'MostrarResumo "Robo CT-e", "resultado_cte.csv"',
   ];
-  return corpo.join('\n').replace(/\r?\n/g, '\r\n') + '\r\n';
+  return finalizarScript(corpo);
 }

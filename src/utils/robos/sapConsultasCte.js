@@ -3,7 +3,7 @@
 //   2c. ZSD0004 pelos numeros de documento (partidas: escritorio de vendas)            -> EXPORT2
 // Os passos 2b/2d (ler os arquivos exportados) sao feitos na propria tela.
 
-import { CONEXAO, cabecalho, vbs } from './sapLancamentoVbs';
+import { CONEXAO, cabecalho, finalizarScript, vbs } from './sapLancamentoVbs';
 
 export const PASTA_ETAPAS_CTE = 'C:\\Temp\\Etapas';
 
@@ -26,9 +26,12 @@ function rodape(nome, msgFinal) {
     '',
     'On Error Resume Next',
     'Executar',
-    'If Err.Number <> 0 Then Falha "execucao"',
-    'On Error GoTo 0',
-    `MsgBox ${vbs(msgFinal)}, vbInformation, ${vbs(nome)}`,
+    'If Err.Number <> 0 Then',
+    '    Falha "execucao"',
+    'Else',
+    '    On Error GoTo 0',
+    `    MsgBox ${vbs(msgFinal)}, vbInformation, ${vbs(nome)}`,
+    'End If',
   ];
 }
 
@@ -36,7 +39,7 @@ const F2 = 'wnd[1]/usr/ssubSUB_CONFIGURATION:SAPLSALV_GUI_CUL_EXPORT_AS:0512/';
 const L1 = 'wnd[1]/usr/subSUB_CONFIGURATION:SAPLSALV_CUL_LAYOUT_CHOOSE:0500/cntlD500_CONTAINER/shellcont/shell';
 
 function juntar(corpo) {
-  return corpo.join('\n').replace(/\r?\n/g, '\r\n') + '\r\n';
+  return finalizarScript(corpo);
 }
 
 // Passo 2a — equivale ao inicio da macro "Consultar".
