@@ -295,7 +295,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
           aoProgredir: (p) => setLote({ atual: i + 1, total: alvo.length, enviadas, numero: f.numero_fatura, faseId: p.fase, ctAtual: p.atual || 0, ctTotal: p.total || 0 }),
         });
         ok += 1;
-        if (reg.acao_executada) enviadas += 1;
+        if (reg.acao_executada && reg.modo === 'GESTAO') enviadas += 1;
       } catch (ex) { falhas.push(`${f.numero_fatura}: ${ex.message || ex}`); }
     }
     const interrompido = parar.current;
