@@ -122,7 +122,7 @@ export default function LancamentoNfseRobo() {
       const conc = String(e.conc);
       const k = String(e.titulo || '').toUpperCase();
       if (!mapa.has(k)) mapa.set(k, []);
-      mapa.get(k).push({ emp: conc.slice(0, 4), escr: conc.slice(4) });
+      mapa.get(k).push({ emp: conc.slice(0, 4), escr: conc.slice(4), nd: conc.toUpperCase().includes('N/D') });
     });
     return mapa;
   }, [parametros.escritorios]);
@@ -131,6 +131,13 @@ export default function LancamentoNfseRobo() {
     const valor = texto.toUpperCase().trim();
     setCcEdit((a) => ({ ...a, [uid]: texto.toUpperCase() }));
     const achados = ccParaEscr.get(valor) || [];
+    // centro de custo cadastrado como N/D (sem escritorio de vendas): aceita sem vinculo
+    if (achados.some((a) => a.nd)) {
+      setCampo(uid, 'escrV', 'N/D');
+      setCampo(uid, 'ccDireto', valor);
+      return;
+    }
+    setCampo(uid, 'ccDireto', '');
     const certos = emp ? achados.filter((a) => a.emp === emp) : achados;
     const escrs = [...new Set(certos.map((a) => a.escr))];
     if (escrs.length === 1) setCampo(uid, 'escrV', escrs[0]);

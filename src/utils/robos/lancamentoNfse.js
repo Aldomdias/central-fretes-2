@@ -87,7 +87,10 @@ export function montarLancamentoNfse(entradas = [], indices, { vencimento = hoje
     const filial = indices.filiais.get(e.cnpjTomador);
     const emp = filial?.emp || '';
     const centro = filial?.centro || '';
-    const cc = emp && e.escrV ? indices.escritorios.get(`${emp}${e.escrV}`) || '' : '';
+    // Escritorio "N/D": centro de custo sem escritorio de vendas, aceito como digitado (sem vinculo)
+    const semVinculo = e.escrV === 'N/D';
+    const ccDireto = String(e0.ccDireto ?? '').trim().toUpperCase();
+    const cc = semVinculo ? ccDireto : emp && e.escrV ? indices.escritorios.get(`${emp}${e.escrV}`) || '' : '';
     const erros = [];
     if (!e.nf) erros.push('NF vazia');
     if (e.cnpjTransp.length !== 14) erros.push('CNPJ do prestador invalido');
@@ -98,7 +101,7 @@ export function montarLancamentoNfse(entradas = [], indices, { vencimento = hoje
     if (!e.cnpjTomador) erros.push('CNPJ do tomador vazio');
     else if (!emp) erros.push('CNPJ do tomador nao esta em Filiais');
     else if (!e.escrV) erros.push('escritorio de vendas vazio');
-    else if (!cc) erros.push(`sem centro de custo para ${emp}${e.escrV}`);
+    else if (!cc) erros.push(semVinculo ? 'N/D: informe o centro de custo' : `sem centro de custo para ${emp}${e.escrV}`);
     return {
       uid: e0.uid,
       id: ids[i],
