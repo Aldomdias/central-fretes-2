@@ -321,13 +321,16 @@ export default function LancamentoNfseRobo() {
   }
 
   // ---------------------------------------------------------------- SAP
-  function baixarScript() {
+  // txt: mesmo script, para maquinas em que o antivirus bloqueia o download do .vbs.
+  function baixarScript(txt = false) {
     setErro('');
     if (!prontas.length) { setErro('Nao ha notas prontas para lancar.'); return; }
     if (comErro.length) { setErro(`${comErro.length} nota(s) com pendencia. Corrija ou remova antes de gerar o script.`); return; }
     try {
-      baixarArquivo('lancar-nfse.vbs', gerarScriptNfse({ linhas: linhasParaScriptNfse(prontas), pasta }));
-      setFeedback(`Script baixado com ${fmt(prontas.length)} nota(s) (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). Com o SAP aberto e logado, de dois cliques nele. O resultado fica em ${caminhoArquivo(pasta, 'resultado_nfse.csv')}.`);
+      const nome = txt ? 'lancar-nfse.txt' : 'lancar-nfse.vbs';
+      baixarArquivo(nome, gerarScriptNfse({ linhas: linhasParaScriptNfse(prontas), pasta }), txt ? 'text/plain' : undefined);
+      const comoRodar = txt ? `Como .txt o antivirus nao bloqueia: renomeie para .vbs e de dois cliques, ou rode no Prompt de Comando: wscript //E:VBScript ${nome}.` : 'Com o SAP aberto e logado, de dois cliques nele.';
+      setFeedback(`Script baixado com ${fmt(prontas.length)} nota(s) (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). ${comoRodar} O resultado fica em ${caminhoArquivo(pasta, 'resultado_nfse.csv')}.`);
     } catch (e) { setErro(e.message); }
   }
 
@@ -518,7 +521,10 @@ export default function LancamentoNfseRobo() {
             <div className="panel-title" style={{ margin: 0 }}>Criar pedido e MIRO no SAP</div>
             <p style={{ margin: '4px 0 10px' }}>Gera o script com as notas acima. Ele cria o pedido (ME21N) das notas sem pedido e depois a MIRO das que têm pedido e ainda não têm MIRO. Se uma nota falhar (ex.: precisa de aprovação), o robô pula, segue com as demais e no fim lista as pendências (também em pendencias_nfse.csv); ao rodar de novo, pula o que já tem número.</p>
             <CampoPasta pasta={pasta} onChange={setPasta} padrao={PASTA_NFSE} />
-            <button type="button" className="btn-primary" disabled={!prontas.length} onClick={baixarScript}>Baixar script de lançamento (.vbs)</button>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" className="btn-primary" disabled={!prontas.length} onClick={() => baixarScript()}>Baixar script de lançamento (.vbs)</button>
+              <button type="button" className="btn-secondary" disabled={!prontas.length} onClick={() => baixarScript(true)} title="Mesmo script em .txt, para quando o antivirus bloqueia o .vbs">Baixar em .txt (se o antivírus bloquear)</button>
+            </div>
           </div>
         </div>
       </div>
@@ -543,6 +549,7 @@ export default function LancamentoNfseRobo() {
         <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>
           <li>Abra o SAP Logon e entre no sistema (scripting habilitado, como na planilha).</li>
           <li>Se o navegador avisar sobre o download do .vbs, escolha “Manter”. Se vier como <code>.vbs.txt</code>, renomeie para <code>.vbs</code>.</li>
+          <li>Se o antivírus bloquear o .vbs, use “Baixar em .txt”: renomeie o arquivo para <code>.vbs</code> e dê dois cliques, ou rode no Prompt de Comando (na pasta do arquivo) <code>wscript //E:VBScript lancar-nfse.txt</code>.</li>
           <li>Dê dois cliques no arquivo e não mexa no SAP até a mensagem final. Se der erro, a mensagem diz qual nota; corrija no SAP e rode de novo.</li>
         </ol>
       </div>
