@@ -137,11 +137,68 @@ function extrairModeloRps(L, U) {
   return resultado(dados);
 }
 
+// Modelo ISS.NET / Nota Control (ex.: Governo do Distrito Federal): blocos "Dados do Prestador de
+// Servico" e "Dados do Tomador de Servicos", valores na linha abaixo dos titulos do "Detalhamento dos Tributos".
+function extrairModeloIssNet(L, U) {
+  const dados = { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null, chave: '', valorLiquido: null, municipioPrestador: '', municipioTomador: '' };
+  const todo = L.join('\n');
+  const chave = (todo.match(/\b(\d{50})\b/) || [])[1];
+  if (chave) {
+    dados.chave = chave;
+    dados.cnpjTransp = chave.slice(9, 23);
+    dados.numeroNfse = numeroDaChave(chave.slice(23, 36));
+  }
+  if (!dados.numeroNfse) {
+    const i = U.findIndex((l) => l.includes('NUMERO DA NOTA FISCAL'));
+    const m = i >= 0 ? (L[i + 1] || '').match(/^\s*(\d+)\s*$/) : null;
+    if (m) dados.numeroNfse = String(Number(m[1]));
+  }
+  dados.nf = nfComSufixoF(dados.numeroNfse);
+  const d = todo.match(/(\d{2})\/(\d{2})\/(\d{4})\s+\d{2}:\d{2}(?::\d{2})?/);
+  if (d) dados.dataEmissao = `${d[3]}-${d[2]}-${d[1]}`;
+
+  const iPrest = U.findIndex((l) => l.includes('DADOS DO PRESTADOR DE SERVICO'));
+  const iTom = U.findIndex((l) => l.includes('DADOS DO TOMADOR DE SERVICO'));
+  const fimPrest = iTom > iPrest ? iTom : L.length;
+  if (iPrest >= 0) {
+    // nome: primeira linha do bloco que nao e titulo nem data (as datas da coluna da direita se intercalam)
+    for (let k = iPrest + 1; k < fimPrest; k += 1) {
+      const t = L[k].split(SEP)[0].trim();
+      if (!t || /^(DATA|COD\.|RESPONSAVEL|IDENTIFICACAO)/.test(semAcento(t).toUpperCase()) || /^[\d/: ]+$/.test(t)) continue;
+      dados.transportadora = t;
+      break;
+    }
+    for (let k = iPrest + 1; k < fimPrest; k += 1) {
+      const cnpj = L[k].match(RE_CNPJ);
+      if (cnpj && !dados.cnpjTransp) dados.cnpjTransp = cnpj[1].replace(/\D/g, '');
+      const mun = L[k].match(/CEP\s*[\d.-]+\s*-\s*([^/¦]+?)\s*\/\s*([A-Za-z]{2})\b/);
+      if (mun && !dados.municipioPrestador) dados.municipioPrestador = chaveMunicipio(`${mun[1]}${mun[2]}`);
+    }
+  }
+  if (iTom >= 0) {
+    for (let k = iTom + 1; k < Math.min(iTom + 8, L.length); k += 1) {
+      const cnpj = L[k].match(RE_CNPJ);
+      if (cnpj && !dados.cnpjTomador) dados.cnpjTomador = cnpj[1].replace(/\D/g, '');
+      const mun = L[k].match(/Cidade\s*\/\s*UF\s*:\s*(?:¦\s*)?([^/¦]+?)\s*\/\s*([A-Za-z]{2})\b/i);
+      if (mun && !dados.municipioTomador) dados.municipioTomador = chaveMunicipio(`${mun[1]}${mun[2]}`);
+    }
+  }
+
+  // "Vl. Total dos Servicos" e a 1a coluna; "Vl. Liquido da NotaFiscal" e a ultima
+  const iTot = U.findIndex((l) => l.includes('VL. TOTAL DOS SERVICOS'));
+  if (iTot >= 0) { const v = (L[iTot + 1] || '').match(RE_VALOR); if (v) dados.valor = paraNumero(v[1]); }
+  const iLiq = U.findIndex((l) => l.includes('VL. LIQUIDO DA NOTA'));
+  if (iLiq >= 0) { const v = numeros(L[iLiq + 1] || ''); if (v.length) dados.valorLiquido = v[v.length - 1]; }
+  aplicarRegrasLancamento(dados);
+  return resultado(dados);
+}
+
 // linhas: saida de itensParaLinhas (ou o texto do PDF dividido por linha).
 export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   const L = linhas.map((l) => String(l ?? ''));
   const U = L.map((l) => semAcento(l).toUpperCase());
   if (U.some((l) => l.includes('RECIBO PROVISORIO DE SERVICOS'))) return extrairModeloRps(L, U);
+  if (U.some((l) => l.includes('DADOS DO TOMADOR DE SERVICO')) && U.some((l) => l.includes('VL. TOTAL DOS SERVICOS'))) return extrairModeloIssNet(L, U);
   const todo = L.join('\n');
   const dados = { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null, chave: '' };
   const faltando = [];
