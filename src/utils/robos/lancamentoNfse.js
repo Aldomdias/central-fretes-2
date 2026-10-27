@@ -161,6 +161,38 @@ export function aplicarResultado(linhas = [], resultado = new Map()) {
   return { linhas: novas, atualizadas };
 }
 
+// Le o log_lancamento_nfse.txt ("Pedido criado: NF 3773-F -> 4510183552" / "MIRO criada: ...").
+// O log so tem a NF (sem CNPJ), entao o casamento e por NF.
+export function lerLogLancamento(texto = '') {
+  const mapa = new Map();
+  String(texto).split(/\r?\n/).forEach((linha) => {
+    const m = linha.match(/(Pedido criado|MIRO criada):\s*NF\s+(\S+)\s*->\s*(\d+)/i);
+    if (!m) return;
+    const nf = nfComSufixoF(m[2]).toUpperCase();
+    const atual = mapa.get(nf) || {};
+    atual[/^pedido/i.test(m[1]) ? 'pedido' : 'miro'] = m[3];
+    mapa.set(nf, atual);
+  });
+  return mapa;
+}
+
+// NF repetida no lote (outra transportadora) fica de fora: sem CNPJ no log nao da para saber de quem e.
+export function aplicarLog(linhas = [], logPorNf = new Map()) {
+  const contagem = new Map();
+  linhas.forEach((l) => { const nf = String(l.nf || '').toUpperCase(); contagem.set(nf, (contagem.get(nf) || 0) + 1); });
+  let atualizadas = 0;
+  let ambiguas = 0;
+  const novas = linhas.map((l) => {
+    const nf = String(l.nf || '').toUpperCase();
+    const r = logPorNf.get(nf);
+    if (!r) return l;
+    if (contagem.get(nf) > 1) { ambiguas += 1; return l; }
+    atualizadas += 1;
+    return { ...l, pedido: r.pedido || l.pedido, miro: r.miro || l.miro };
+  });
+  return { linhas: novas, atualizadas, ambiguas };
+}
+
 // Aba "Enviar" da planilha: Transportadora, Fatura, NF Servico, NrPedido, NrMIRO.
 export const CABECALHO_ENVIAR_NFSE = ['Transportadora', 'Fatura', 'NF Serviço', 'NrPedido', 'NrMIRO'];
 

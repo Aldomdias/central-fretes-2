@@ -3,7 +3,9 @@ import {
   CABECALHO_ENVIAR_NFSE,
   CABECALHO_MODELO_NFSE,
   EXEMPLO_MODELO_NFSE,
+  aplicarLog,
   aplicarResultado,
+  lerLogLancamento,
   entradaVazia,
   lerEntradaNfse,
   linhasEnviarNfse,
@@ -332,13 +334,19 @@ export default function LancamentoNfseRobo() {
   async function importarResultado(arquivo) {
     if (!arquivo) return;
     try {
-      const { linhas: novas, atualizadas } = aplicarResultado(linhas, lerResultadoCsv(await arquivo.text()));
+      const texto = await arquivo.text();
+      const logPorNf = lerLogLancamento(texto);
+      const ehLog = logPorNf.size > 0;
+      const { linhas: novas, atualizadas, ambiguas = 0 } = ehLog
+        ? aplicarLog(linhas, logPorNf)
+        : aplicarResultado(linhas, lerResultadoCsv(texto));
       const mapa = {};
       novas.forEach((l) => { mapa[l.uid] = { ...(manuais[l.uid] || {}), pedido: l.pedido, miro: l.miro }; });
       setManuais((a) => ({ ...a, ...mapa }));
       setErro('');
       const r = atualizadas ? await registrarHistorico(novas, true) : null;
-      setFeedback(atualizadas ? `Resultado aplicado em ${fmt(atualizadas)} nota(s).${textoHistorico(r)}` : 'Nenhuma nota do arquivo bate com o lote atual (confira se e o resultado deste lote).');
+      const aviso = ambiguas ? ` ${fmt(ambiguas)} nota(s) com NF repetida no lote ficaram de fora (o log nao traz o CNPJ).` : '';
+      setFeedback(atualizadas ? `${ehLog ? 'Log' : 'Resultado'} aplicado em ${fmt(atualizadas)} nota(s).${aviso}${textoHistorico(r)}` : `Nenhuma nota do arquivo bate com o lote atual (confira se e o resultado deste lote).${aviso}`);
     } catch (e) { setErro(e.message || 'Nao consegui ler o resultado.'); }
     finally { if (refResultado.current) refResultado.current.value = ''; }
   }
@@ -520,7 +528,7 @@ export default function LancamentoNfseRobo() {
           <span style={numStyle}>3</span>
           <div>
             <div className="panel-title" style={{ margin: 0 }}>Trazer o resultado e enviar</div>
-            <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue o arquivo <code>{caminhoArquivo(pasta, 'resultado_nfse.csv')}</code> para preencher os números de pedido e MIRO. As notas com MIRO entram sozinhas no histórico (aba “Acompanhamento de lançamentos”). Em seguida baixe o resumo para envio.</p>
+            <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue o arquivo <code>{caminhoArquivo(pasta, 'resultado_nfse.csv')}</code> (ou o <code>log_lancamento_nfse.txt</code>, inclusive de outra máquina) para preencher os números de pedido e MIRO. As notas com MIRO entram sozinhas no histórico (aba “Acompanhamento de lançamentos”). Em seguida baixe o resumo para envio.</p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <input ref={refResultado} type="file" accept=".csv,.txt" onChange={(e) => importarResultado(e.target.files?.[0])} />
               <button type="button" className="btn-secondary" onClick={baixarEnviar}>Baixar resumo (Enviar) .xlsx</button>
