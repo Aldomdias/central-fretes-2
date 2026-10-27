@@ -50,7 +50,7 @@ test('NFS-e ISS.NET (Distrito Federal): le todos os campos do lancamento', () =>
   assert.equal(dados.cfop, '1933AA');
 });
 
-test('NFS-e ISS.NET: retencao no liquido vira IN e municipio diferente vira 2933AA', () => {
+test('NFS-e ISS.NET: retencao no liquido vira IN e UF diferente vira 2933AA', () => {
   const linhas = LINHAS_DF.map((l) => l
     .replace('Cidade/UF : Brasília/ DF', 'Cidade/UF : Goiânia/ GO')
     .replace('R$ 0,00 ¦ R$ 0,00 ¦ R$ 157,84', 'R$ 0,00 ¦ R$ 7,89 ¦ R$ 149,95'));

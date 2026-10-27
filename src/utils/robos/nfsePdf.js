@@ -179,7 +179,7 @@ function extrairModeloIssNet(L, U) {
       const cnpj = L[k].match(RE_CNPJ);
       if (cnpj && !dados.cnpjTransp) dados.cnpjTransp = cnpj[1].replace(/\D/g, '');
       const mun = L[k].match(/CEP\s*[\d.-]+\s*-\s*([^/¦]+?)\s*\/\s*([A-Za-z]{2})\b/);
-      if (mun && !dados.municipioPrestador) dados.municipioPrestador = chaveMunicipio(`${mun[1]}${mun[2]}`);
+      if (mun && !dados.municipioPrestador) { dados.municipioPrestador = chaveMunicipio(`${mun[1]}${mun[2]}`); dados.ufPrestador = mun[2].toUpperCase(); }
     }
   }
   if (iTom >= 0) {
@@ -187,7 +187,7 @@ function extrairModeloIssNet(L, U) {
       const cnpj = L[k].match(RE_CNPJ);
       if (cnpj && !dados.cnpjTomador) dados.cnpjTomador = cnpj[1].replace(/\D/g, '');
       const mun = L[k].match(/Cidade\s*\/\s*UF\s*:\s*(?:¦\s*)?([^/¦]+?)\s*\/\s*([A-Za-z]{2})\b/i);
-      if (mun && !dados.municipioTomador) dados.municipioTomador = chaveMunicipio(`${mun[1]}${mun[2]}`);
+      if (mun && !dados.municipioTomador) { dados.municipioTomador = chaveMunicipio(`${mun[1]}${mun[2]}`); dados.ufTomador = mun[2].toUpperCase(); }
     }
   }
 
