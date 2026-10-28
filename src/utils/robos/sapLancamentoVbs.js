@@ -333,6 +333,11 @@ export function gerarScriptNfse({ linhas = [], pasta = PASTA_NFSE } = {}) {
   const semDados = linhas.filter((l) => !l.emp || !l.centro || !l.cc || !l.dtEmissao || !l.dtVenc || !l.valor);
   if (semDados.length) throw new Error(`${semDados.length} nota(s) sem empresa, centro, centro de custo, datas ou valor. Corrija antes de gerar o script.`);
 
+  return finalizarScript(corpoNfse(linhas, pasta));
+}
+
+// Linhas do script (antes do CRLF): base do .vbs e da macro do Excel (gerarMacroNfse).
+export function corpoNfse(linhas, pasta) {
   const I = Object.fromEntries(CAMPOS_NFSE.map((c, i) => [c, i]));
   const corpo = [
     ...cabecalho('Robo NFS-e - Criar pedido (ME21N) e MIRO'),
@@ -439,7 +444,7 @@ export function gerarScriptNfse({ linhas = [], pasta = PASTA_NFSE } = {}) {
     'logf.Close',
     'MostrarResumo "Robo NFS-e", "resultado_nfse.csv"',
   ];
-  return finalizarScript(corpo);
+  return corpo;
 }
 
 // ---------------------------------------------------------------- CT-e
@@ -450,6 +455,11 @@ export function gerarScriptCte({ linhas = [], pasta = PASTA_CTE } = {}) {
   const semDados = linhas.filter((l) => !l.emp || !l.centro || !l.cc || !l.codImp || !l.dtEmissao || !l.dtVenc || !l.bruto || !l.liquido);
   if (semDados.length) throw new Error(`${semDados.length} CT-e sem empresa, centro, centro de custo, codigo de imposto, datas ou valores. Corrija antes de gerar o script.`);
 
+  return finalizarScript(corpoCte(linhas, pasta));
+}
+
+// Linhas do script (antes do CRLF): base do .vbs e da macro do Excel (gerarMacroCte).
+export function corpoCte(linhas, pasta) {
   const I = Object.fromEntries(CAMPOS_CTE.map((c, i) => [c, i]));
   const corpo = [
     ...cabecalho('Robo CT-e - Criar pedido de servico (ME21N) e MIRO'),
@@ -548,5 +558,5 @@ export function gerarScriptCte({ linhas = [], pasta = PASTA_CTE } = {}) {
     'logf.Close',
     'MostrarResumo "Robo CT-e", "resultado_cte.csv"',
   ];
-  return finalizarScript(corpo);
+  return corpo;
 }
