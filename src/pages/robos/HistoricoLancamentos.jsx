@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { listarLancamentos } from '../../services/robosLancamentosService';
+import { atualizarContabil, listarLancamentos } from '../../services/robosLancamentosService';
+import { casarContabil, lerRelatorioContabil } from '../../utils/robos/contabilHana';
 import { descartarDaFila, listarPendentesFila, sincronizarHistoricoDaFila } from '../../services/robosFilaService';
 import { aguardandoResultado, mandarParaLote, tamanhoLoteSalvo } from '../../utils/robos/filaRobo';
 import { TextoAguardando } from './AvisoFila';
 import { carregarSessao } from '../../utils/authLocal';
 import { TIPOS_LANCAMENTO, agregarPorMes, anosDisponiveis, registrosVisiveis } from '../../utils/robos/historicoLancamentos';
-import { baixarXlsx, isoParaBr } from '../../utils/robos/lancamentoComum';
+import { abaParaMatriz, baixarXlsx, isoParaBr, lerPlanilhaArquivo } from '../../utils/robos/lancamentoComum';
 
 const MESES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 const fmt = (n) => Number(n || 0).toLocaleString('pt-BR');
@@ -13,7 +14,10 @@ const moeda = (n) => Number(n || 0).toLocaleString('pt-BR', { style: 'currency',
 const th = { textAlign: 'left', padding: '6px 8px', fontSize: 12, color: '#475569', borderBottom: '1px solid #e2e8f0', whiteSpace: 'nowrap' };
 const td = { padding: '5px 8px', fontSize: 12, borderBottom: '1px solid #f1f5f9', whiteSpace: 'nowrap' };
 
-const CABECALHO = ['Tipo', 'Documento', 'Transportadora', 'CNPJ Transp', 'Empresa', 'Centro', 'C.Custo', 'Valor', 'Emissão', 'Vencimento', 'Fatura', 'Pedido', 'MIRO', 'Lançado em', 'Lançado por'];
+const CABECALHO = ['Tipo', 'Documento', 'Transportadora', 'CNPJ Transp', 'Empresa', 'Centro', 'C.Custo', 'Valor', 'Emissão', 'Vencimento', 'Fatura', 'Pedido', 'MIRO', 'Lançamento contábil', 'Compensação (HANA)', 'Doc. compensação', 'Data compensação', 'Vencimento líq.', 'Lançado em', 'Lançado por'];
+const CABECALHO_SEM_HISTORICO = ['Referência', 'CNPJ', 'Fornecedor', 'Empresa', 'Valor', 'Lançamento contábil', 'Compensação (HANA)', 'Doc. compensação', 'Data compensação'];
+// So informativo (vem do relatorio do HANA importado aqui): nao tem relacao com o controle de pagamentos.
+const textoPagamento = (r) => (r.situacao_pagamento === 'pago' ? `Compensado${r.data_compensacao ? ` ${isoParaBr(r.data_compensacao)}` : ''}` : r.situacao_pagamento === 'aberto' ? 'Em aberto' : '');
 
 // Acompanhamento dos lancamentos feitos pelos robos: quantas notas por mes, valor e detalhe.
 const CABECALHO_PENDENTES = ['Tipo', 'Documento', 'Transportadora', 'CNPJ Transp', 'Valor', 'Pedido', 'Motivo', 'Atualizado em', 'Por'];
@@ -30,6 +34,31 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
 
   const [fila, setFila] = useState({ itens: [], onde: '' });
   const [aviso, setAviso] = useState('');
+  const [contabil, setContabil] = useState({ texto: '', erro: '', semHistorico: [] });
+
+  // Relatorio de partidas do fornecedor do SAP HANA: casa Referencia + CNPJ com o historico e grava o
+  // lancamento contabil e o pagamento (compensacao).
+  async function importarContabil(arquivo) {
+    if (!arquivo) return;
+    setContabil({ texto: 'Lendo o relatorio…', erro: '', semHistorico: [] });
+    try {
+      const XLSX = await import('xlsx');
+      const wb = await lerPlanilhaArquivo(arquivo);
+      const porNota = lerRelatorioContabil(abaParaMatriz(XLSX, wb.Sheets[wb.SheetNames[0]]));
+      const { atualizar, iguais, semHistorico } = casarContabil(dados.registros, porNota);
+      const r = await atualizarContabil(atualizar);
+      if (!r.ok) { setContabil({ texto: '', erro: r.erro || 'Nao consegui gravar.', semHistorico }); return; }
+      const pagos = atualizar.filter((a) => a.situacao_pagamento === 'pago').length;
+      setContabil({
+        texto: `${fmt(porNota.size)} nota(s) no relatorio. ${fmt(atualizar.length)} documento(s) do historico atualizados (${fmt(pagos)} compensados, ${fmt(atualizar.length - pagos)} em aberto); ${fmt(iguais)} ja estavam iguais. ${fmt(semHistorico.length)} nota(s) do relatorio nao estao no historico (lancadas fora do robo).`,
+        erro: '',
+        semHistorico,
+      });
+      setVersao((v) => v + 1);
+    } catch (e) {
+      setContabil({ texto: '', erro: e.message || 'Nao consegui ler o relatorio.', semHistorico: [] });
+    }
+  }
 
   useEffect(() => {
     let vivo = true;
@@ -88,13 +117,14 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
     const t = busca.trim().toLowerCase();
     return registrosVisiveis(dados.registros)
       .filter((r) => (!tipo || r.tipo === tipo) && String(r.lancado_em || '').startsWith(ano))
-      .filter((r) => !t || [r.documento, r.transportadora, r.cnpj_transp, r.fatura, r.pedido, r.miro, r.empresa].some((c) => String(c ?? '').toLowerCase().includes(t)));
+      .filter((r) => !t || [r.documento, r.transportadora, r.cnpj_transp, r.fatura, r.pedido, r.miro, r.empresa, r.lancamento_contabil].some((c) => String(c ?? '').toLowerCase().includes(t)));
   }, [dados.registros, tipo, ano, busca]);
 
   function linhaXlsx(r) {
     return {
       Tipo: TIPOS_LANCAMENTO[r.tipo] || r.tipo, Documento: r.documento, Transportadora: r.transportadora, 'CNPJ Transp': r.cnpj_transp, Empresa: r.empresa, Centro: r.centro,
       'C.Custo': r.centro_custo, Valor: Number(r.valor) || 0, Emissão: isoParaBr(r.data_emissao), Vencimento: isoParaBr(r.vencimento), Fatura: r.fatura, Pedido: r.pedido, MIRO: r.miro,
+      'Lançamento contábil': r.lancamento_contabil, 'Compensação (HANA)': textoPagamento(r), 'Doc. compensação': r.compensacao, 'Data compensação': isoParaBr(r.data_compensacao), 'Vencimento líq.': isoParaBr(r.vencimento_liquido),
       'Lançado em': isoParaBr(String(r.lancado_em || '').slice(0, 10)), 'Lançado por': r.lancado_por,
     };
   }
@@ -115,7 +145,18 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
           </div>
           <button type="button" className="btn-secondary" onClick={() => setVersao((v) => v + 1)}>Atualizar</button>
           <button type="button" className="btn-secondary" disabled={!detalhe.length} onClick={() => baixarXlsx(`lancamentos-${ano}.xlsx`, detalhe.map(linhaXlsx), CABECALHO)}>Baixar {ano} (.xlsx)</button>
+          <label className="btn-secondary" style={{ cursor: 'pointer' }} title="Relatorio de partidas do fornecedor exportado do SAP HANA (Referencia, N ID fiscal 1, Lancamento contabil, Lancto.compensacao...)">
+            Importar lançamento contábil (HANA)
+            <input type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={(e) => { importarContabil(e.target.files?.[0]); e.target.value = ''; }} />
+          </label>
         </div>
+        {contabil.texto ? <div style={{ marginTop: 8, fontSize: 13, color: '#166534' }}>{contabil.texto}</div> : null}
+        {contabil.erro ? <div style={{ marginTop: 8, fontSize: 13, color: '#b91c1c' }}>{contabil.erro}</div> : null}
+        {contabil.semHistorico.length ? (
+          <button type="button" className="btn-link" style={{ marginTop: 4 }} onClick={() => baixarXlsx('hana-fora-do-historico.xlsx', contabil.semHistorico.map((i) => ({ Referência: i.referencia, CNPJ: i.cnpj, Fornecedor: i.fornecedor, Empresa: i.empresa, Valor: i.montante, 'Lançamento contábil': i.lancamento_contabil, 'Compensação (HANA)': textoPagamento(i), 'Doc. compensação': i.compensacao, 'Data compensação': isoParaBr(i.data_compensacao) })), CABECALHO_SEM_HISTORICO)}>
+            Baixar as {fmt(contabil.semHistorico.length)} nota(s) do relatório que não estão no histórico
+          </button>
+        ) : null}
         {dados.onde === 'navegador' ? <div style={{ marginTop: 8, fontSize: 12, color: '#b45309' }}>O banco ainda não tem a tabela de histórico (migration pendente): estes registros estão guardados só neste navegador.</div> : null}
       </div>
 
@@ -193,16 +234,17 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
         </div>
         <div style={{ overflow: 'auto', maxHeight: 420 }}>
           <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-            <thead><tr>{['Tipo', 'Documento', 'Transportadora', 'Emp', 'Valor', 'Fatura', 'Pedido', 'MIRO', 'Lançado em', 'Por'].map((c) => <th key={c} style={th}>{c}</th>)}</tr></thead>
+            <thead><tr>{['Tipo', 'Documento', 'Transportadora', 'Emp', 'Valor', 'Fatura', 'Pedido', 'MIRO', 'Lanç. contábil', 'Compensação', 'Lançado em', 'Por'].map((c) => <th key={c} style={th}>{c}</th>)}</tr></thead>
             <tbody>
               {detalhe.slice(0, 300).map((r) => (
                 <tr key={`${r.tipo}-${r.miro}-${r.documento}`}>
                   <td style={td}>{TIPOS_LANCAMENTO[r.tipo] || r.tipo}</td><td style={td}>{r.documento}</td><td style={td}>{r.transportadora}</td><td style={td}>{r.empresa}</td>
                   <td style={td}>{moeda(r.valor)}</td><td style={td}>{r.fatura}</td><td style={td}>{r.pedido}</td><td style={td}>{r.miro || <span style={{ color: '#b45309' }}>sem MIRO</span>}</td>
+                  <td style={td}>{r.lancamento_contabil}</td><td style={{ ...td, color: r.situacao_pagamento === 'pago' ? '#166534' : '#b45309' }}>{textoPagamento(r)}</td>
                   <td style={td}>{isoParaBr(String(r.lancado_em || '').slice(0, 10))}</td><td style={td}>{r.lancado_por}</td>
                 </tr>
               ))}
-              {!detalhe.length ? <tr><td style={{ ...td, padding: 14, color: '#64748b' }} colSpan={10}>Nenhum lançamento registrado neste período.</td></tr> : null}
+              {!detalhe.length ? <tr><td style={{ ...td, padding: 14, color: '#64748b' }} colSpan={12}>Nenhum lançamento registrado neste período.</td></tr> : null}
             </tbody>
           </table>
         </div>

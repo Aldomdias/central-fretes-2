@@ -68,3 +68,30 @@ export async function listarLancamentos({ desde = '' } = {}) {
   }
   return { ok: true, registros: lerLocal().slice().reverse(), onde: 'navegador', locais: 0 };
 }
+
+// Grava o lancamento contabil / pagamento (relatorio do HANA) nos registros do historico.
+// registros: linhas do historico ja com os campos novos (vem de casarContabil).
+export async function atualizarContabil(registros = []) {
+  if (!registros.length) return { ok: true, atualizados: 0, onde: 'nenhum' };
+  const agora = new Date().toISOString();
+  const linhas = registros.map((r) => ({ ...r, contabil_atualizado_em: agora }));
+  const supabase = isSupabaseConfigured() ? getSupabaseClient() : null;
+  if (supabase && linhas.every((r) => r.id)) {
+    try {
+      for (let i = 0; i < linhas.length; i += 500) {
+        const { error } = await supabase.from(TABELA).upsert(linhas.slice(i, i + 500), { onConflict: 'id' });
+        if (error) throw error;
+      }
+      return { ok: true, atualizados: linhas.length, onde: 'banco' };
+    } catch (e) {
+      const msg = String(e?.message || '');
+      if (/column .* does not exist|lancamento_contabil|PGRST204/i.test(msg)) {
+        return { ok: false, erro: 'O banco ainda nao tem as colunas do lancamento contabil: rode o SQL 20261028_003_robos_lancamentos_contabil.sql no Supabase.' };
+      }
+      if (!tabelaAusente(msg)) return { ok: false, erro: msg };
+    }
+  }
+  const novos = new Map(linhas.map((r) => [chaveRegistro(r), r]));
+  gravarLocal(lerLocal().map((r) => novos.get(chaveRegistro(r)) || r));
+  return { ok: true, atualizados: linhas.length, onde: 'navegador' };
+}
