@@ -21,6 +21,7 @@ import {
   carregarParametros,
   criarIndices,
   hojeIso,
+  naoAntesDeHoje,
   isoParaBr,
   lerPlanilhaArquivo,
   lerResultadoCsv,
@@ -53,7 +54,7 @@ export default function LancamentoCteRobo() {
   const [partidasArr, setPartidasArr] = useState(inicial.partidas || []);
   const [docnums, setDocnums] = useState(inicial.docnums || []);
   const [pasta, setPasta] = usePastaTrabalho('central_fretes_robo_cte_pasta', PASTA_CTE);
-  const [vencimento, setVencimento] = useState(inicial.vencimento || hojeIso());
+  const [vencimento, setVencimento] = useState(naoAntesDeHoje(inicial.vencimento));
   const [manuais, setManuais] = useState(inicial.manuais || {});
   const [removidos, setRemovidos] = useState(inicial.removidos || []);
   const [falhasXml, setFalhasXml] = useState([]);
@@ -300,7 +301,7 @@ export default function LancamentoCteRobo() {
                 </div>
                 <div className="field" style={{ marginTop: 10, maxWidth: 220 }}>
                   <label>Vencimento (todos os CT-e)</label>
-                  <input type="date" value={vencimento} onChange={(e) => setVencimento(e.target.value)} />
+                  <input type="date" min={hojeIso()} value={vencimento} onChange={(e) => setVencimento(naoAntesDeHoje(e.target.value))} title="Nunca antes de hoje" />
                 </div>
                 <div style={{ overflowX: 'auto', marginTop: 10, maxHeight: 440, overflowY: 'auto' }}>
                   <table style={{ borderCollapse: 'collapse', width: '100%' }}>
