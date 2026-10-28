@@ -11,6 +11,7 @@ import {
   dataParaIso,
   gerarIds,
   hojeIso,
+  naoAntesDeHoje,
   isoParaBr,
   isoParaDdmmaaaa,
   mapearColunas,
@@ -113,7 +114,7 @@ export function montarLancamentoNfse(entradas = [], indices, { vencimento = hoje
       valor: e.valor,
       codImp: e.codImp,
       cfop: e.cfop,
-      vencimento: dataParaIso(e0.vencimento) || vencimento,
+      vencimento: naoAntesDeHoje(dataParaIso(e0.vencimento) || vencimento),
       centro,
       cc,
       escrV: e.escrV,
@@ -161,6 +162,27 @@ export function aplicarResultado(linhas = [], resultado = new Map()) {
   return { linhas: novas, atualizadas };
 }
 
+// Notas que o robo pulou: pendencias_nfse.csv ("etapa;NF;motivo") ou as linhas "ERRO em MIRO (3773-F): ..."
+// do log. NF -> { etapa, motivo }; a ultima falha da nota vence.
+export function lerPendencias(texto = '') {
+  const mapa = new Map();
+  String(texto).split(/\r?\n/).forEach((linha) => {
+    const log = linha.match(/ERRO em (pedido|MIRO) \((\S+)\):\s*(.*)$/i);
+    const csv = log ? null : linha.match(/^\s*(pedido|MIRO);([^;]+);(.*)$/i);
+    const m = log || csv;
+    if (!m) return;
+    mapa.set(nfComSufixoF(m[2].trim()).toUpperCase(), { etapa: /^pedido/i.test(m[1]) ? 'pedido' : 'MIRO', motivo: m[3].trim() });
+  });
+  return mapa;
+}
+
+// Texto curto do motivo: a mensagem do SAP quando houver, senao o erro do script.
+export function motivoCurto(motivo = '') {
+  const sap = String(motivo).match(/.*SAP:\s*(.+)$/); // a ultima "SAP:" e a barra de status
+  const texto = sap && !/^\(sem mensagem\)$/.test(sap[1].trim()) ? sap[1] : String(motivo).split(' | ')[0].replace(/\s*\[erro.*$/, '');
+  return texto.trim();
+}
+
 // Le o log_lancamento_nfse.txt ("Pedido criado: NF 3773-F -> 4510183552" / "MIRO criada: ...").
 // O log so tem a NF (sem CNPJ), entao o casamento e por NF.
 export function lerLogLancamento(texto = '') {
@@ -191,6 +213,15 @@ export function aplicarLog(linhas = [], logPorNf = new Map()) {
     return { ...l, pedido: r.pedido || l.pedido, miro: r.miro || l.miro };
   });
   return { linhas: novas, atualizadas, ambiguas };
+}
+
+// Notas que falharam no SAP e continuam sem MIRO, para tratar (Excel).
+export const CABECALHO_PENDENTES_NFSE = ['NF', 'Transportadora', 'CNPJ Transp', 'Valor', 'Fatura', 'Etapa', 'Motivo', 'Detalhe'];
+
+export function linhasPendentesNfse(linhas = []) {
+  return linhas
+    .filter((l) => l.falhaSap && !l.miro)
+    .map((l) => ({ NF: l.nf, Transportadora: l.transportadora, 'CNPJ Transp': l.cnpjTransp, Valor: l.valor, Fatura: l.fatura, Etapa: l.falhaSap.etapa, Motivo: motivoCurto(l.falhaSap.motivo), Detalhe: l.falhaSap.motivo }));
 }
 
 // Aba "Enviar" da planilha: Transportadora, Fatura, NF Servico, NrPedido, NrMIRO.

@@ -33,6 +33,12 @@ export function hojeIso() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+// Vencimento nunca antes de hoje: data passada (ex.: lote salvo de outro dia) da erro na MIRO.
+export function naoAntesDeHoje(iso) {
+  const hoje = hojeIso();
+  return !iso || iso < hoje ? hoje : iso;
+}
+
 // Aceita serial do Excel, Date, "dd/mm/aaaa", "dd.mm.aaaa", "aaaa-mm-dd" e "aaaa-mm-ddThh:..".
 export function dataParaIso(valor) {
   if (valor === null || valor === undefined || valor === '') return '';

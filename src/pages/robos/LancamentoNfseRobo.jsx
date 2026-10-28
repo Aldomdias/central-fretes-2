@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CABECALHO_ENVIAR_NFSE,
+  CABECALHO_PENDENTES_NFSE,
   CABECALHO_MODELO_NFSE,
   EXEMPLO_MODELO_NFSE,
   aplicarLog,
   aplicarResultado,
   lerLogLancamento,
+  lerPendencias,
   entradaVazia,
   lerEntradaNfse,
   linhasEnviarNfse,
+  linhasPendentesNfse,
+  motivoCurto,
   linhasParaScriptNfse,
   montarLancamentoNfse,
   novaEntradaNfse,
@@ -21,6 +25,7 @@ import {
   carregarParametros,
   criarIndices,
   hojeIso,
+  naoAntesDeHoje,
   isoParaBr,
   normalizarCnpj,
   numeroPlanilha,
@@ -80,7 +85,7 @@ export default function LancamentoNfseRobo() {
   const [parametros, setParametros] = useState(carregarParametros);
   const [entradas, setEntradas] = useState(() => (inicial.entradas || []).map((e) => ({ ...novaEntradaNfse(e.uid || novoUid()), ...e })));
   const [manuais, setManuais] = useState(inicial.manuais || {});
-  const [vencimento, setVencimento] = useState(inicial.vencimento || hojeIso());
+  const [vencimento, setVencimento] = useState(naoAntesDeHoje(inicial.vencimento));
   const [pasta, setPasta] = usePastaTrabalho('central_fretes_robo_nfse_pasta', PASTA_NFSE);
   const [colado, setColado] = useState('');
   const [erro, setErro] = useState('');
@@ -159,6 +164,7 @@ export default function LancamentoNfseRobo() {
   const prontas = linhas.filter((l) => !l.erros.length);
   const semPedido = prontas.filter((l) => !l.pedido).length;
   const semMiro = prontas.filter((l) => l.pedido && !l.miro).length;
+  const falhasSap = linhas.filter((l) => l.falhaSap && !l.miro);
   const concluidas = linhas.filter((l) => l.miro).length;
   const semTabelas = !parametros.filiais.length || !parametros.escritorios.length;
 
@@ -359,24 +365,63 @@ export default function LancamentoNfseRobo() {
     } catch (e) { setErro(e.message); }
   }
 
-  async function importarResultado(arquivo) {
-    if (!arquivo) return;
+  // Aceita varios arquivos de uma vez: resultado_nfse.csv, pendencias_nfse.csv e/ou log_lancamento_nfse.txt.
+  // Pedido/MIRO vem do resultado ou do log; as falhas (pendencias ou "ERRO em" do log) marcam a nota.
+  async function importarResultado(arquivos) {
+    const lista = [...(arquivos || [])];
+    if (!lista.length) return;
     try {
-      const texto = await arquivo.text();
-      const logPorNf = lerLogLancamento(texto);
-      const ehLog = logPorNf.size > 0;
-      const { linhas: novas, atualizadas, ambiguas = 0 } = ehLog
-        ? aplicarLog(linhas, logPorNf)
-        : aplicarResultado(linhas, lerResultadoCsv(texto));
+      let atual = linhas;
+      let ambiguas = 0;
+      const falhas = new Map();
+      for (const arquivo of lista) {
+        const texto = await arquivo.text();
+        lerPendencias(texto).forEach((v, k) => falhas.set(k, v));
+        const logPorNf = lerLogLancamento(texto);
+        const r = logPorNf.size ? aplicarLog(atual, logPorNf) : aplicarResultado(atual, lerResultadoCsv(texto));
+        atual = r.linhas;
+        ambiguas += r.ambiguas || 0;
+      }
+      const antes = new Map(linhas.map((l) => [l.uid, l]));
+      const atualizadas = atual.filter((l) => l.pedido !== antes.get(l.uid)?.pedido || l.miro !== antes.get(l.uid)?.miro).length;
+      const contagemNf = new Map();
+      atual.forEach((l) => { const nf = String(l.nf || '').toUpperCase(); contagemNf.set(nf, (contagemNf.get(nf) || 0) + 1); });
+      let marcadas = 0;
       const mapa = {};
-      novas.forEach((l) => { mapa[l.uid] = { ...(manuais[l.uid] || {}), pedido: l.pedido, miro: l.miro }; });
+      atual.forEach((l) => {
+        const nf = String(l.nf || '').toUpperCase();
+        const m = { ...(manuais[l.uid] || {}), pedido: l.pedido, miro: l.miro };
+        const falha = contagemNf.get(nf) === 1 ? falhas.get(nf) : null;
+        if (l.miro) delete m.falhaSap;
+        else if (falha) { m.falhaSap = falha; marcadas += 1; }
+        mapa[l.uid] = m;
+      });
       setManuais((a) => ({ ...a, ...mapa }));
       setErro('');
-      const r = atualizadas ? await registrarHistorico(novas, true) : null;
+      const r = atualizadas ? await registrarHistorico(atual, true) : null;
       const aviso = ambiguas ? ` ${fmt(ambiguas)} nota(s) com NF repetida no lote ficaram de fora (o log nao traz o CNPJ).` : '';
-      setFeedback(atualizadas ? `${ehLog ? 'Log' : 'Resultado'} aplicado em ${fmt(atualizadas)} nota(s).${aviso}${textoHistorico(r)}` : `Nenhuma nota do arquivo bate com o lote atual (confira se e o resultado deste lote).${aviso}`);
+      const textoFalhas = marcadas ? ` ${fmt(marcadas)} nota(s) falharam no SAP: veja o motivo na grade e use "Baixar pendentes do SAP".` : '';
+      if (!atualizadas && !marcadas) setFeedback(`Nenhuma nota do arquivo bate com o lote atual (confira se e o resultado deste lote).${aviso}`);
+      else setFeedback(`Resultado aplicado em ${fmt(atualizadas)} nota(s).${textoFalhas}${aviso}${textoHistorico(r)}`);
     } catch (e) { setErro(e.message || 'Nao consegui ler o resultado.'); }
     finally { if (refResultado.current) refResultado.current.value = ''; }
+  }
+
+  async function baixarPendentes() {
+    const dados = linhasPendentesNfse(linhas);
+    if (!dados.length) { setErro('Nenhuma nota com falha no SAP.'); return; }
+    await baixarXlsx('nfse-pendentes-sap.xlsx', dados, CABECALHO_PENDENTES_NFSE);
+  }
+
+  // Tira do lote as notas que ja tem MIRO (ja estao no historico): sobram so as que faltam lancar.
+  function manterSoPendentes() {
+    const concluidasUids = new Set(linhas.filter((l) => l.miro).map((l) => l.uid));
+    if (!concluidasUids.size) { setErro('Nenhuma nota com MIRO para tirar do lote.'); return; }
+    if (!window.confirm(`Tirar do lote as ${concluidasUids.size} nota(s) que ja tem MIRO? Elas continuam no historico.`)) return;
+    setEntradas((a) => a.filter((e) => !concluidasUids.has(e.uid)));
+    setManuais((a) => Object.fromEntries(Object.entries(a).filter(([uid]) => !concluidasUids.has(uid))));
+    setErro('');
+    setFeedback(`${fmt(concluidasUids.size)} nota(s) com MIRO saíram do lote. Corrija as que sobraram e gere os dados de novo: o robo so lanca o que falta.`);
   }
 
   async function baixarEnviar() {
@@ -434,7 +479,7 @@ export default function LancamentoNfseRobo() {
               {entradas.length ? <button type="button" className="btn-secondary" onClick={limparTudo}>Limpar tudo</button> : null}
               <div className="field" style={{ marginLeft: 'auto' }}>
                 <label>Vencimento padrão</label>
-                <input type="date" value={vencimento} onChange={(e) => setVencimento(e.target.value)} />
+                <input type="date" min={hojeIso()} value={vencimento} onChange={(e) => setVencimento(naoAntesDeHoje(e.target.value))} title="Nunca antes de hoje: data passada da erro na MIRO" />
               </div>
             </div>
             {semTabelas ? <div style={{ marginTop: 6, color: '#b91c1c', fontSize: 12 }}>Importe as tabelas de parâmetros acima antes de lançar notas.</div> : null}
@@ -509,6 +554,7 @@ export default function LancamentoNfseRobo() {
                             </span>
                           ) : null}
                           {temErro ? <span style={{ color: '#b91c1c', marginRight: 8 }} title={l.erros.join('; ')}>{l.erros[0]}</span> : null}
+                          {l && l.falhaSap && !l.miro ? <span style={{ color: '#b45309', marginRight: 8 }} title={l.falhaSap.motivo}>SAP ({l.falhaSap.etapa}): {motivoCurto(l.falhaSap.motivo).slice(0, 60)}</span> : null}
                           <button type="button" className="btn-link" onClick={() => duplicarLinha(e.uid)}>duplicar</button>{' '}
                           <button type="button" className="btn-link" onClick={() => removerLinha(e.uid)}>remover</button>
                         </td>
@@ -532,6 +578,7 @@ export default function LancamentoNfseRobo() {
                 <div className="summary-card"><span>Com pendência</span><strong style={{ color: comErro.length ? '#b91c1c' : undefined }}>{fmt(comErro.length)}</strong></div>
                 <div className="summary-card"><span>Sem pedido</span><strong>{fmt(semPedido)}</strong></div>
                 <div className="summary-card"><span>Pedido sem MIRO</span><strong>{fmt(semMiro)}</strong></div>
+                <div className="summary-card"><span>Falha no SAP</span><strong style={{ color: falhasSap.length ? '#b45309' : undefined }}>{fmt(falhasSap.length)}</strong></div>
                 <div className="summary-card"><span>Concluídas</span><strong>{fmt(concluidas)}</strong></div>
                 <div className="summary-card"><span>Valor total</span><strong style={{ fontSize: 15 }}>{moeda(linhas.reduce((s, l) => s + (l.valor || 0), 0))}</strong></div>
               </div>
@@ -563,9 +610,11 @@ export default function LancamentoNfseRobo() {
           <span style={numStyle}>3</span>
           <div>
             <div className="panel-title" style={{ margin: 0 }}>Trazer o resultado e enviar</div>
-            <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue o arquivo <code>{caminhoArquivo(pasta, 'resultado_nfse.csv')}</code> (ou o <code>log_lancamento_nfse.txt</code>, inclusive de outra máquina) para preencher os números de pedido e MIRO. As notas com MIRO entram sozinhas no histórico (aba “Acompanhamento de lançamentos”). Em seguida baixe o resumo para envio.</p>
+            <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue o <code>resultado_nfse.csv</code> e, se houver, o <code>pendencias_nfse.csv</code> (pode selecionar os dois juntos; o <code>log_lancamento_nfse.txt</code> também serve, inclusive de outra máquina) para preencher os números de pedido e MIRO e marcar as notas que falharam no SAP. Para tratar as falhas: baixe as pendentes, corrija e use “Deixar só as pendentes no lote” antes de gerar os dados de novo. As notas com MIRO entram sozinhas no histórico (aba “Acompanhamento de lançamentos”). Em seguida baixe o resumo para envio.</p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <input ref={refResultado} type="file" accept=".csv,.txt" onChange={(e) => importarResultado(e.target.files?.[0])} />
+              <input ref={refResultado} type="file" accept=".csv,.txt" multiple onChange={(e) => importarResultado(e.target.files)} />
+              <button type="button" className="btn-secondary" disabled={!falhasSap.length} onClick={baixarPendentes} title="Notas que o robo pulou, com o motivo do SAP">Baixar pendentes do SAP ({fmt(falhasSap.length)})</button>
+              <button type="button" className="btn-secondary" onClick={manterSoPendentes} title="Tira do lote as notas que ja tem MIRO">Deixar só as pendentes no lote</button>
               <button type="button" className="btn-secondary" onClick={baixarEnviar}>Baixar resumo (Enviar) .xlsx</button>
               <button type="button" className="btn-secondary" onClick={guardarHistoricoManual}>Registrar no histórico</button>
             </div>
