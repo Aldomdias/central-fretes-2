@@ -40,7 +40,7 @@ function linhasEmbutidas(linhas, campos) {
 }
 
 // Marca cada comando do SAP com o passo atual (variavel "passo"), para o erro dizer onde parou.
-function marcarPassos(corpo, etapa) {
+export function marcarPassos(corpo, etapa) {
   let n = 0;
   return corpo
     .split('\n')
