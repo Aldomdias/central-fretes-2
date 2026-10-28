@@ -278,11 +278,13 @@ export async function baixarXlsx(nome, linhas, cabecalho) {
   await baixarMatrizXlsx(nome, [cabecalho, ...linhas.map((l) => cabecalho.map((c) => l[c] ?? ''))]);
 }
 
-export async function baixarMatrizXlsx(nome, matriz) {
+// extras: abas a mais [{ nome, matriz }] depois da aba "Dados".
+export async function baixarMatrizXlsx(nome, matriz, extras = []) {
   const XLSX = await import('xlsx');
   const ws = XLSX.utils.aoa_to_sheet(matriz);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Dados');
+  extras.forEach((a) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(a.matriz), a.nome));
   const out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
   baixarArquivo(nome, new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
 }
