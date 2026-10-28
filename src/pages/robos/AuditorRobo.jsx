@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { carregarSessao } from '../../utils/authLocal';
+import { carregarSessao, usuarioPodeAdministrarUsuarios } from '../../utils/authLocal';
 import { getSupabaseClient } from '../../lib/supabaseClient';
 import RoboProgressoAmd from '../../components/RoboProgressoAmd';
 import HistoricoRodadasRobo from '../../components/HistoricoRodadasRobo';
@@ -35,6 +35,7 @@ const vazio = { transportadora: '', emails_transportadora: '', email_aprovacao: 
 
 export default function AuditorRobo() {
   const sessao = carregarSessao();
+  const podeContingencia = usuarioPodeAdministrarUsuarios(sessao);
   const [lista, setLista] = useState([]);
   const [semTabela, setSemTabela] = useState(false);
   const [faturas, setFaturas] = useState([]);
@@ -250,7 +251,7 @@ export default function AuditorRobo() {
   const salvarCfg = async () => {
     setCfgSalvando(true); setErro(''); setMsg('');
     try {
-      const salvo = await salvarConfigRobo(cfgRobo, sessao?.nome || sessao?.email || '');
+      const salvo = await salvarConfigRobo(cfgRobo, sessao?.nome || sessao?.email || '', podeContingencia);
       setCfgRobo((a) => ({ ...a, ...salvo }));
       setMsg('Configuracao do robo salva. Vale a partir da proxima hora cheia.');
     } catch (ex) { setErro(ex.message); } finally { setCfgSalvando(false); }
@@ -261,7 +262,7 @@ export default function AuditorRobo() {
     setCfgRobo(novo);
     setErro('');
     try {
-      const salvo = await salvarConfigRobo(novo, sessao?.nome || sessao?.email || '');
+      const salvo = await salvarConfigRobo(novo, sessao?.nome || sessao?.email || '', podeContingencia);
       setCfgRobo((a) => ({ ...a, ...salvo }));
       setMsg(`${texto} Vale a partir da proxima hora cheia.`);
     } catch (ex) { setCfgRobo(anterior); setErro(ex.message); }
@@ -470,6 +471,13 @@ export default function AuditorRobo() {
                 style={{ padding: '3px 10px', borderRadius: 999, cursor: 'pointer', fontWeight: 700, fontSize: 12, border: `1px solid ${cfgRobo.calcular_nuvem === false ? '#b45309' : '#0369a1'}`, background: cfgRobo.calcular_nuvem === false ? '#fffbeb' : '#eff6ff', color: cfgRobo.calcular_nuvem === false ? '#b45309' : '#0369a1' }}
               >
                 {cfgRobo.calcular_nuvem === false ? 'SEM calculo de CT-es (economia)' : 'COM calculo de CT-es'}
+              </button>
+              <button
+                type="button" disabled={!podeContingencia} onClick={() => aplicarCfg({ ...cfgRobo, liberar_entrega_contingencia: !cfgRobo.liberar_entrega_contingencia }, cfgRobo.liberar_entrega_contingencia ? 'Contingencia desligada: o robo volta a exigir a entrega.' : 'Contingencia ligada: o robo libera sem olhar a entrega.')}
+                title={"Ligado: o robo nao trava a fatura por falta de entrega; grava baixa aprovada 'Liberado em contingencia' nos CT-es pendentes e segue para a gestao. Desligado: volta a exigir a entrega." + (podeContingencia ? '' : ' Somente o administrador altera.')}
+                style={{ padding: '3px 10px', borderRadius: 999, cursor: podeContingencia ? 'pointer' : 'not-allowed', opacity: podeContingencia ? 1 : 0.7, fontWeight: 700, fontSize: 12, border: `1px solid ${cfgRobo.liberar_entrega_contingencia ? '#b91c1c' : '#64748b'}`, background: cfgRobo.liberar_entrega_contingencia ? '#fef2f2' : '#f8fafc', color: cfgRobo.liberar_entrega_contingencia ? '#b91c1c' : '#475569' }}
+              >
+                {cfgRobo.liberar_entrega_contingencia ? 'CONTINGENCIA: libera sem entrega' : 'Entrega exigida'}
               </button>
             </span>
           )}

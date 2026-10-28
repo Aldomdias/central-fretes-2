@@ -4,6 +4,7 @@
 //
 // ATENCAO: a apuracao espelha resumirFaturasExato da tela de Auditoria
 // (CentralAuditoriaFretesPage.jsx). Nao toca naquela tela; se a regra de la mudar, ajustar aqui.
+import { getSupabaseClient } from '../lib/supabaseClient';
 import { carregarDetalhesFaturaSupabase } from '../services/lotacaoSupabaseService';
 import { buscarReferenciaCtes, vincularChavesDetalhesPorNumero } from '../services/auditoriaFretesService';
 import { carregarSaldosAutorizadosPorChave } from '../services/transporteAutorizacoesService';
@@ -106,6 +107,33 @@ async function detalhesExatos(fatura) {
   return unicos.map((i) => aplicarSaldo(mesclar(i, referencia), saldos, referencia));
 }
 
+// Flag de contingencia (auditor_robo_config.liberar_entrega_contingencia): enquanto ligada, o robo nao trava a
+// fatura por falta de entrega; grava baixa de entrega APROVADA ("Liberado em contingencia") nos CT-es pendentes,
+// para a entrega valer tambem na Auditoria/pagamento. Desligada, volta a exigir a entrega. Falha = desligada.
+const JUSTIFICATIVA_CONTINGENCIA = 'Liberado em contingencia';
+async function contingenciaEntregaLigada() {
+  try {
+    const { data } = await getSupabaseClient().from('auditor_robo_config').select('liberar_entrega_contingencia').eq('id', 1).maybeSingle();
+    return data?.liberar_entrega_contingencia === true;
+  } catch { return false; }
+}
+
+async function baixarEntregaContingencia(fatura, pendentes = []) {
+  const soDig = (v) => String(v || '').replace(/\D/g, '');
+  const agora = new Date().toISOString();
+  const loteId = `lote_${Date.now().toString(36)}`;
+  const linhas = pendentes.map((i) => ({
+    lote_id: loteId, fatura_id: String(fatura.id), numero_fatura: fatura.numero_fatura || null, transportadora: fatura.transportadora || null,
+    chave: chaveEntregaRegistro(i), chave_cte: soDig(i.chave_cte) || null, numero_cte: i.numero_cte || null, data_entrega: agora.slice(0, 10),
+    status: 'APROVADO', solicitado_por: 'Robo Auditor', solicitado_em: agora, decidido_por: 'Robo Auditor (contingencia)', decidido_em: agora,
+    justificativa: JUSTIFICATIVA_CONTINGENCIA, observacao: JUSTIFICATIVA_CONTINGENCIA,
+  })).filter((l) => l.chave);
+  for (let i = 0; i < linhas.length; i += 500) {
+    const { error } = await getSupabaseClient().from('entrega_baixas_manuais').insert(linhas.slice(i, i + 500));
+    if (error) throw new Error(error.message);
+  }
+}
+
 // Calcula (se faltar) e resume a fatura. Retorna o resumo no formato esperado por classificarFatura.
 // prazoFinal (timestamp ms, opcional): na nuvem a funcao tem limite de tempo. Calcula os CT-es em
 // blocos pequenos, gravando cada bloco; se o prazo acabar, lanca '__parcial__' e a proxima
@@ -184,6 +212,11 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
     const entrega = await buscarStatusEntregaCtes(lista);
     lista.forEach((i) => { if (entrega.get(chaveEntregaRegistro(i))?.status === STATUS_ENTREGA.ENTREGUE) entregues += 1; });
     pendentes = lista.length - entregues;
+    if (pendentes > 0 && await contingenciaEntregaLigada()) {
+      await baixarEntregaContingencia(fatura, lista.filter((i) => entrega.get(chaveEntregaRegistro(i))?.status !== STATUS_ENTREGA.ENTREGUE));
+      entregues = lista.length;
+      pendentes = 0;
+    }
   } catch { /* entrega nao verificada: classificarFatura manda para o auditor */ }
   return { ...r, entregues, pendentes, erroCalculo, falhasCalculo };
 }

@@ -27802,6 +27802,40 @@ async function detalhesExatos(fatura) {
   const saldos = chaves.length ? await carregarSaldosAutorizadosPorChave(chaves) : /* @__PURE__ */ new Map();
   return unicos.map((i) => aplicarSaldo(mesclar(i, referencia), saldos, referencia));
 }
+async function contingenciaEntregaLigada() {
+  try {
+    const { data } = await getSupabaseClient().from("auditor_robo_config").select("liberar_entrega_contingencia").eq("id", 1).maybeSingle();
+    return data?.liberar_entrega_contingencia === true;
+  } catch {
+    return false;
+  }
+}
+async function baixarEntregaContingencia(fatura, pendentes2 = []) {
+  const soDig = (v) => String(v || "").replace(/\D/g, "");
+  const agora = (/* @__PURE__ */ new Date()).toISOString();
+  const loteId = `lote_${Date.now().toString(36)}`;
+  const linhas = pendentes2.map((i) => ({
+    lote_id: loteId,
+    fatura_id: String(fatura.id),
+    numero_fatura: fatura.numero_fatura || null,
+    transportadora: fatura.transportadora || null,
+    chave: chaveEntregaRegistro(i),
+    chave_cte: soDig(i.chave_cte) || null,
+    numero_cte: i.numero_cte || null,
+    data_entrega: agora.slice(0, 10),
+    status: "APROVADO",
+    solicitado_por: "Robo Auditor",
+    solicitado_em: agora,
+    decidido_por: "Robo Auditor (contingencia)",
+    decidido_em: agora,
+    justificativa: JUSTIFICATIVA_CONTINGENCIA,
+    observacao: JUSTIFICATIVA_CONTINGENCIA
+  })).filter((l) => l.chave);
+  for (let i = 0; i < linhas.length; i += 500) {
+    const { error } = await getSupabaseClient().from("entrega_baixas_manuais").insert(linhas.slice(i, i + 500));
+    if (error) throw new Error(error.message);
+  }
+}
 async function apurarFaturaRobo(fatura, aoProgredir = () => {
 }, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = true } = {}) {
   const BLOCO = bloco;
@@ -27863,6 +27897,11 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
       if (entrega.get(chaveEntregaRegistro(i))?.status === STATUS_ENTREGA.ENTREGUE) entregues += 1;
     });
     pendentes2 = lista.length - entregues;
+    if (pendentes2 > 0 && await contingenciaEntregaLigada()) {
+      await baixarEntregaContingencia(fatura, lista.filter((i) => entrega.get(chaveEntregaRegistro(i))?.status !== STATUS_ENTREGA.ENTREGUE));
+      entregues = lista.length;
+      pendentes2 = 0;
+    }
   } catch {
   }
   return { ...r, entregues, pendentes: pendentes2, erroCalculo, falhasCalculo };
@@ -28016,10 +28055,11 @@ function escolherPesoMaisProximo(registrosCte = [], registrosTracking = []) {
   const porChave = new Map(registrosTracking.map((r) => [normalizarChaveCte(r.chave_cte), r]));
   return registrosCte.map((r) => escolherMaiorPeso(r, porChave.get(normalizarChaveCte(r.chave_cte))).registro);
 }
-var TOLERANCIA, dentroDaTolerancia, normalizarNomeAuditor;
+var TOLERANCIA, dentroDaTolerancia, JUSTIFICATIVA_CONTINGENCIA, normalizarNomeAuditor;
 var init_auditoriaRoboCore = __esm({
   "src/utils/auditoriaRoboCore.js"() {
     init_define_import_meta_env();
+    init_supabaseClient();
     init_lotacaoSupabaseService();
     init_auditoriaFretesService();
     init_transporteAutorizacoesService();
@@ -28032,6 +28072,7 @@ var init_auditoriaRoboCore = __esm({
     init_auditorRoboService();
     TOLERANCIA = { acima: 1, abaixo: 5 };
     dentroDaTolerancia = (dif) => Number.isFinite(Number(dif)) && Number(dif) <= TOLERANCIA.acima && Number(dif) >= -TOLERANCIA.abaixo;
+    JUSTIFICATIVA_CONTINGENCIA = "Liberado em contingencia";
     normalizarNomeAuditor = (v) => String(v || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase().replace(/\s+/g, " ");
   }
 });
