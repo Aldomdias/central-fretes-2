@@ -225,3 +225,12 @@ export function matrizDadosMacro(linhas, { campos, versao }) {
     ...linhas.map((l) => campos.map((c) => String(l[c] ?? ''))),
   ];
 }
+
+// Planilha do robo pronta (montada no Excel com o codigo acima e publicada em public/robos).
+// Quando o robo mudar, a versao do codigo muda: remonte a planilha com o codigo novo, troque o
+// arquivo e atualize as versoes abaixo. Enquanto isso, a tela avisa que a planilha esta desatualizada.
+export const PLANILHA_ROBO = {
+  url: '/robos/robo-lancamento.xlsm',
+  nome: 'Robo Lancamento.xlsm',
+  versoes: { LancarNFSe: 'a50dafe0', LancarCTe: '16a68cea' },
+};
