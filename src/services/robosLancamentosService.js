@@ -95,3 +95,27 @@ export async function atualizarContabil(registros = []) {
   gravarLocal(lerLocal().map((r) => novos.get(chaveRegistro(r)) || r));
   return { ok: true, atualizados: linhas.length, onde: 'navegador' };
 }
+
+// Lancamentos do robo (NFS-e/CT-e) que vieram com o numero da fatura preenchido.
+// Usado para mostrar, na fatura da Auditoria, as notas ja lancadas (pedido, MIRO, partida, pagamento).
+export async function listarLancamentosComFatura({ numeros = [] } = {}) {
+  const supabase = isSupabaseConfigured() ? getSupabaseClient() : null;
+  if (supabase) {
+    try {
+      const todos = [];
+      for (let de = 0; de < 200000; de += PAGINA) {
+        let q = supabase.from(TABELA).select('*').not('fatura', 'is', null).order('lancado_em', { ascending: false }).range(de, de + PAGINA - 1);
+        if (numeros.length) q = q.in('fatura', numeros);
+        const { data, error } = await q;
+        if (error) throw error;
+        todos.push(...(data || []));
+        if (!data || data.length < PAGINA) break;
+      }
+      return { ok: true, registros: todos, onde: 'banco' };
+    } catch (e) {
+      if (!tabelaAusente(e?.message)) console.warn('Historico de lancamentos:', e?.message);
+    }
+  }
+  const set = new Set(numeros.map(String));
+  return { ok: true, registros: lerLocal().filter((r) => r.fatura && (!set.size || set.has(String(r.fatura)))).reverse(), onde: 'navegador' };
+}
