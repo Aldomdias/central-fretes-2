@@ -258,5 +258,5 @@ export function matrizDadosMacro(linhas, { campos, versao }) {
 export const PLANILHA_ROBO = {
   url: '/robos/robo-lancamento.xlsm',
   nome: 'Robo Lancamento.xlsm',
-  versoes: { LancarNFSe: 'e857f523', LancarCTe: 'ed8f8ae9' },
+  versoes: { LancarNFSe: 'f6d4c12e', LancarCTe: '1efd2204' },
 };
