@@ -304,11 +304,11 @@ function utilitarios({ pasta, arquivoResultado }) {
     '    Dim ja : ja = ""',
     '    If nJaLancadas > 0 Then ja = vbCrLf & vbCrLf & nJaLancadas & " nota(s) ja tinham MIRO no SAP: o numero existente foi gravado no resultado (veja o log)."',
     '    If nFalhas = 0 Then',
-    '        MsgBox "Lancamento concluido sem pendencias. Volte para a Central de Fretes e importe o arquivo " & arquivoRes & "." & ja, vbInformation, titulo',
+    '        MsgBox "Lancamento concluido sem pendencias. Volte para a Central de Fretes e importe o arquivo " & pastaLog & "\\" & arquivoRes & "." & ja, vbInformation, titulo',
     '    Else',
     '        Dim t : t = resumoFalhas',
     '        If Len(t) > 1500 Then t = Left(t, 1500) & "..."',
-    '        MsgBox nFalhas & " pendencia(s) - o robo pulou e seguiu com o resto:" & vbCrLf & vbCrLf & t & vbCrLf & "Detalhes em " & pastaLog & ". Corrija (ex.: aprovacao) e rode de novo: o robo pula o que ja tem numero. Importe tambem " & arquivoRes & "." & ja, vbExclamation, titulo',
+    '        MsgBox nFalhas & " pendencia(s) - o robo pulou e seguiu com o resto:" & vbCrLf & vbCrLf & t & vbCrLf & "Detalhes em " & pastaLog & ". Corrija (ex.: aprovacao) e rode de novo: o robo pula o que ja tem numero. Importe tambem " & pastaLog & "\\" & arquivoRes & "." & ja, vbExclamation, titulo',
     '    End If',
     'End Sub',
   ];
