@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx';
 import CtesSemFaturaPainel from './CtesSemFaturaPainel';
 import BoletosPendentesPainel from './BoletosPendentesPainel';
 import FaturasViaRoboPainel from './FaturasViaRoboPainel';
+import FaturasLancadasRoboPainel from './FaturasLancadasRoboPainel';
 import FilaRoboAuditor from './FilaRoboAuditor';
 import { listarProtocolosComDesconto } from '../services/descontosObtidosService';
 import { listarAguardandoNovaFaturaAbertos } from '../services/baixaEntregaService';
@@ -469,6 +470,7 @@ export default function MeuPainelAuditor({ state, onAbrirFatura, onEnviarEmailLa
       )}
       <FilaRoboAuditor onEnviarEmail={onEnviarEmailLaudo} faturas={(state.faturas || []).filter((f) => (auditorSel === 'MINHAS' ? eMinha(f) : auditorSel ? (f.auditor_nome || 'SEM AUDITOR') === auditorSel : true))} onAbrirFatura={onAbrirFatura} />
       <FaturasViaRoboPainel faturas={(state.faturas || []).filter((f) => (auditorSel === 'MINHAS' ? eMinha(f) : auditorSel ? (f.auditor_nome || 'SEM AUDITOR') === auditorSel : true))} onAbrirFatura={onAbrirFatura} />
+      <FaturasLancadasRoboPainel faturas={(state.faturas || []).filter((f) => (auditorSel === 'MINHAS' ? eMinha(f) : auditorSel ? (f.auditor_nome || 'SEM AUDITOR') === auditorSel : true))} onAbrirFatura={onAbrirFatura} />
       <BoletosPendentesPainel faturas={doAuditor} desde={desde} mostrarAuditor={mostrarAuditorCol} onAbrirFatura={onAbrirFatura} />
 
       <div style={{ fontWeight: 700, fontSize: 13, margin: '4px 0 6px' }}>Por vencimento</div>

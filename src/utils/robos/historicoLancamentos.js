@@ -67,3 +67,47 @@ export function anosDisponiveis(registros = []) {
   anos.add(String(new Date().getFullYear()));
   return [...anos].sort().reverse();
 }
+
+// Numero da fatura sem zeros a esquerda e sem pontuacao ("005.508" e "5508" sao a mesma fatura).
+export function normalizarNumeroFatura(v) {
+  return String(v ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^0+(?=.)/, '');
+}
+
+const raiz = (cnpj) => String(cnpj || '').replace(/\D/g, '').slice(0, 8);
+const nomeChave = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
+  .replace(/\b(LTDA|EIRELI|S\/?A|ME|EPP)\b/g, '').replace(/[^A-Z0-9]/g, '');
+
+// O lancamento do robo e desta fatura? Mesmo numero de fatura e mesma transportadora
+// (raiz do CNPJ quando os dois lados tem; senao o nome).
+export function lancamentoDaFatura(registro = {}, fatura = {}) {
+  const num = normalizarNumeroFatura(registro.fatura);
+  if (!num || num !== normalizarNumeroFatura(fatura.numero_fatura)) return false;
+  const rr = raiz(registro.cnpj_transp);
+  const rf = raiz(fatura.cnpj_transportadora);
+  if (rr.length === 8 && rf.length === 8) return rr === rf;
+  const nr = nomeChave(registro.transportadora);
+  const nf = nomeChave(fatura.transportadora);
+  return Boolean(nr && nf) && (nr === nf || nr.startsWith(nf) || nf.startsWith(nr));
+}
+
+// Etapa do lancamento: pedido -> MIRO -> partida (lancamento contabil) -> pago.
+export function etapaLancamento(r = {}) {
+  if (r.situacao_pagamento === 'pago') return 'pago';
+  if (r.lancamento_contabil) return 'partida';
+  if (r.miro) return 'miro';
+  return 'pedido';
+}
+
+// Resumo dos lancamentos de uma fatura (ja filtrados): quantos em cada etapa e o valor.
+export function resumirLancamentosFatura(registros = []) {
+  const visiveis = registrosVisiveis(registros);
+  const etapas = { pedido: 0, miro: 0, partida: 0, pago: 0 };
+  let valor = 0;
+  visiveis.forEach((r) => { etapas[etapaLancamento(r)] += 1; valor += Number(r.valor) || 0; });
+  const total = visiveis.length;
+  let etapa = 'pedido';
+  if (total && etapas.pago === total) etapa = 'pago';
+  else if (total && etapas.partida + etapas.pago === total) etapa = 'partida';
+  else if (total && etapas.miro + etapas.partida + etapas.pago === total) etapa = 'miro';
+  return { registros: visiveis, total, etapas, etapa, valor: Math.round(valor * 100) / 100 };
+}

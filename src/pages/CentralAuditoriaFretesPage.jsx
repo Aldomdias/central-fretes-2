@@ -120,6 +120,7 @@ import ProdutividadeDiaFaturas from '../components/ProdutividadeDiaFaturas';
 import MeuPainelAuditor from '../components/MeuPainelAuditor';
 import BoletosPendentesPainel from '../components/BoletosPendentesPainel';
 import RoboAuditoriaPainel from '../components/RoboAuditoriaPainel';
+import LancamentosRoboFatura from '../components/LancamentosRoboFatura';
 import CampoCidadeIbge from '../components/CampoCidadeIbge';
 import { urlBaseApp } from '../utils/urlBaseApp';
 import { enviarLaudoPorEmail } from '../services/laudoEmailService';
@@ -3616,6 +3617,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <Card label="Cobranca abaixo" value={dinheiro(resumoAuditoriaFatura.cobrancaAbaixo)} color="#d97706" onClick={() => cliqueCard('abaixo')} ativo={cardAtivo('abaixo')} />
         <Card label="Total a descontar" value={dinheiro(totalDescontarFatura)} color={totalDescontarFatura ? '#d97706' : '#047857'} detail={faturaConsideraMenor(fatura) ? 'Considerando cobranca a menor' : 'So cobranca a maior'} />
       </div>
+      <LancamentosRoboFatura fatura={fatura} />
       {duplicadosRemovidos > 0 && (
         <div className="hint-box compact">
           {duplicadosRemovidos} linha(s) repetida(s) do bloco foram ocultadas. A fatura esta sendo analisada com um registro por CT-e.
