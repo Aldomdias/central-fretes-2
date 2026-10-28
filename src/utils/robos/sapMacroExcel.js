@@ -9,6 +9,25 @@ import { CAMPOS_CTE, CAMPOS_NFSE, corpoCte, corpoNfse } from './sapLancamentoVbs
 const SUBSTITUTAS = {
   EscolherPasta: null,
   CriarPasta: null,
+  AvisarCentral: [
+    "' Manda o pedido / a MIRO para a fila do robo na Central (se o arquivo de dados trouxe o endereco).",
+    'Sub AvisarCentral(id, tipo, valor)',
+    '    If tipo = "miro" Then',
+    '        EnviarCentral id, """miro"":""" & valor & """,""motivo"":null"',
+    '    Else',
+    '        EnviarCentral id, """pedido"":""" & valor & """"',
+    '    End If',
+    'End Sub',
+  ],
+  AvisarFalhaCentral: [
+    "' Manda o motivo da falha da nota atual (L(kk)) para a fila do robo.",
+    'Sub AvisarFalhaCentral(sap, desc)',
+    '    Dim m',
+    '    m = sap',
+    '    If m = "" Or m = "(sem mensagem)" Then m = desc',
+    '    EnviarCentral L(kk)(0), """motivo"":""" & JsonTexto(m) & """"',
+    'End Sub',
+  ],
   NumeroDoStatus: [
     "' Pega o numero de 10 digitos do documento na mensagem do SAP (ex.: Pedido normal criado sob o no 4510056532).",
     'Function NumeroDoStatus(txt)',
@@ -72,6 +91,35 @@ const AUXILIARES_EXCEL = [
   '    Close #h',
   'End Sub',
   '',
+  "' Atualiza a nota na fila do robo da Central (tabela robos_fila). Sem internet ou bloqueado: so conta a falha,",
+  "' o robo segue e no fim pede para importar o arquivo de resultado. Resposta [] = a nota nao estava na fila.",
+  'Sub EnviarCentral(id, campos)',
+  '    Dim http, url',
+  '    If urlCentral = "" Then Exit Sub',
+  '    On Error Resume Next',
+  '    Set http = CreateObject("MSXML2.XMLHTTP.6.0")',
+  '    url = urlCentral & "/rest/v1/robos_fila?tipo=eq." & TIPO_FILA & "&chave=eq." & Application.WorksheetFunction.EncodeURL(id)',
+  '    http.Open "PATCH", url, False',
+  '    http.setRequestHeader "apikey", chaveCentral',
+  '    http.setRequestHeader "Authorization", "Bearer " & chaveCentral',
+  '    http.setRequestHeader "Content-Type", "application/json"',
+  '    http.setRequestHeader "Prefer", "return=representation"',
+  '    http.send "{" & campos & "}"',
+  '    If Err.Number <> 0 Then',
+  '        nFalhaEnvio = nFalhaEnvio + 1',
+  '    ElseIf http.Status >= 300 Or Len(http.responseText) < 5 Then',
+  '        nFalhaEnvio = nFalhaEnvio + 1',
+  '    Else',
+  '        nEnviados = nEnviados + 1',
+  '    End If',
+  '    Err.Clear',
+  'End Sub',
+  '',
+  "' Texto seguro dentro de aspas no JSON.",
+  'Function JsonTexto(t)',
+  '    JsonTexto = Replace(Replace(Replace(Replace(CStr(t), "\\", "\\\\"), """", "\\"""), vbCr, " "), vbLf, " ")',
+  'End Function',
+  '',
   "' Primeiro (ou ultimo) numero de 10 digitos do texto; vazio se nao houver.",
   'Function Numero10(txt, ultimo)',
   '    Dim i, c, atual',
@@ -113,6 +161,9 @@ const AUXILIARES_EXCEL = [
   '            Exit Function',
   '        End If',
   '    End If',
+  "    ' Endereco e chave publica da Central (vem no arquivo de dados): sem eles, o resultado vai so pelo arquivo.",
+  '    urlCentral = CStr(ws.Cells(1, NCAMPOS + 3).Value)',
+  '    chaveCentral = CStr(ws.Cells(1, NCAMPOS + 4).Value)',
   '    ultima = ws.Cells(ws.Rows.Count, 1).End(-4162).Row',
   '    If ultima < 2 Then',
   '        wb.Close False',
@@ -189,7 +240,7 @@ function assinatura(texto) {
   return h.toString(16).padStart(8, '0');
 }
 
-function gerarMacro({ corpo, campos, robo, macro }) {
+function gerarMacro({ corpo, campos, robo, macro, tipoFila }) {
   const { dims, inicio, rotinas, principal } = separar(corpo);
   const rotinasVba = rotinas.flatMap((r) => {
     if (!(r.nome in SUBSTITUTAS)) return [...r.linhas, ''];
@@ -206,18 +257,28 @@ function gerarMacro({ corpo, campos, robo, macro }) {
     '    If VarType(arq) = vbBoolean Then Exit Sub',
     '    If Not CarregarDados(arq) Then Exit Sub',
     ...inicio.map((a) => `    ${a}`),
+    '    nEnviados = 0',
+    '    nFalhaEnvio = 0',
     "    ' Pasta de trabalho = a da planilha do robo (na nuvem/OneDrive o caminho e um link: usa a do arquivo de dados)",
     '    pastaLog = ThisWorkbook.Path',
     '    If pastaLog = "" Or LCase(Left(pastaLog, 4)) = "http" Then pastaLog = Left(arq, InStrRev(arq, "\\") - 1)',
     ...principal.map((l) => (l ? `    ${l}` : l)),
     '    On Error Resume Next',
-    '    If MsgBox("Abrir a pasta com o resultado?" & vbCrLf & vbCrLf & pastaLog, vbYesNo + vbQuestion, ROBO) = vbYes Then ThisWorkbook.FollowHyperlink pastaLog',
+    '    Dim aviso',
+    '    aviso = ""',
+    '    If nFalhaEnvio > 0 Then',
+    '        aviso = "ATENCAO: " & nFalhaEnvio & " resultado(s) nao chegaram na Central. Importe o arquivo de resultado na Central de Fretes." & vbCrLf & vbCrLf',
+    '    ElseIf nEnviados > 0 Then',
+    '        aviso = "Resultado ja enviado para a Central de Fretes (" & nEnviados & " registro(s)). Nao precisa importar." & vbCrLf & vbCrLf',
+    '    End If',
+    '    If MsgBox(aviso & "Abrir a pasta com o resultado?" & vbCrLf & vbCrLf & pastaLog, vbYesNo + vbQuestion, ROBO) = vbYes Then ThisWorkbook.FollowHyperlink pastaLog',
     'End Sub',
   ].join('\n');
   const declaracoes = [
     ...dims,
-    'Dim arqLog',
+    'Dim arqLog, urlCentral, chaveCentral, nEnviados, nFalhaEnvio',
     `Private Const ROBO = "${robo}"`,
+    `Private Const TIPO_FILA = "${tipoFila}"`,
     `Private Const NCAMPOS = ${campos.length}`,
     `Private Const CABECALHO_DADOS = "${campos.join(';')};"`,
   ].join('\n');
@@ -237,17 +298,18 @@ function gerarMacro({ corpo, campos, robo, macro }) {
 }
 
 export function gerarMacroNfse() {
-  return gerarMacro({ corpo: corpoNfse([], ''), campos: CAMPOS_NFSE, robo: 'Robo NFS-e', macro: 'LancarNFSe' });
+  return gerarMacro({ corpo: corpoNfse([], ''), campos: CAMPOS_NFSE, robo: 'Robo NFS-e', macro: 'LancarNFSe', tipoFila: 'NFSE' });
 }
 
 export function gerarMacroCte() {
-  return gerarMacro({ corpo: corpoCte([], ''), campos: CAMPOS_CTE, robo: 'Robo CT-e', macro: 'LancarCTe' });
+  return gerarMacro({ corpo: corpoCte([], ''), campos: CAMPOS_CTE, robo: 'Robo CT-e', macro: 'LancarCTe', tipoFila: 'CTE' });
 }
 
-// Linhas da planilha de dados: cabecalho = campos (+ a versao da macro na coluna depois de um espaco).
-export function matrizDadosMacro(linhas, { campos, versao }) {
+// Linhas da planilha de dados: cabecalho = campos (+ a versao da macro na coluna depois de um espaco e,
+// se informados, o endereco e a chave publica da Central, para a macro mandar o resultado direto).
+export function matrizDadosMacro(linhas, { campos, versao }, central = {}) {
   return [
-    [...campos, '', `macro ${versao}`],
+    [...campos, '', `macro ${versao}`, central.url || '', central.chave || ''],
     ...linhas.map((l) => campos.map((c) => String(l[c] ?? ''))),
   ];
 }

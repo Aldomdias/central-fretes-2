@@ -21,7 +21,12 @@ function gravarLocal(lista) {
 // documento) entra uma vez so, mesmo que o resultado seja importado de novo.
 // Se o banco nao estiver pronto, guarda neste navegador (aparece no acompanhamento com aviso).
 export async function registrarLancamentos(tipo, linhas = [], por = '') {
-  const registros = linhas.map((l) => linhaParaRegistro(tipo, l)).filter((r) => r && r.documento);
+  return registrarRegistros(linhas.map((l) => linhaParaRegistro(tipo, l)), por);
+}
+
+// registros ja no formato da tabela (ex.: montados da fila do robo).
+export async function registrarRegistros(lista = [], por = '') {
+  const registros = lista.filter((r) => r && r.documento);
   if (!registros.length) return { ok: true, enviados: 0, novos: 0, onde: 'nenhum' };
   const agora = new Date().toISOString();
   const supabase = isSupabaseConfigured() ? getSupabaseClient() : null;
@@ -29,7 +34,7 @@ export async function registrarLancamentos(tipo, linhas = [], por = '') {
     try {
       const { data, error } = await supabase
         .from(TABELA)
-        .upsert(registros.map((r) => ({ ...r, lancado_por: por || null })), { onConflict: 'tipo,miro,documento', ignoreDuplicates: true })
+        .upsert(registros.map((r) => ({ ...r, lancado_por: r.lancado_por || por || null })), { onConflict: 'tipo,miro,documento', ignoreDuplicates: true })
         .select('id');
       if (!error) return { ok: true, enviados: registros.length, novos: data?.length ?? 0, onde: 'banco' };
       if (!tabelaAusente(error.message)) console.warn('Historico de lancamentos:', error.message);
@@ -37,7 +42,7 @@ export async function registrarLancamentos(tipo, linhas = [], por = '') {
   }
   const local = lerLocal();
   const chaves = new Set(local.map(chaveRegistro));
-  const novos = registros.filter((r) => !chaves.has(chaveRegistro(r))).map((r) => ({ ...r, lancado_em: agora, lancado_por: por || null }));
+  const novos = registros.filter((r) => !chaves.has(chaveRegistro(r))).map((r) => ({ ...r, lancado_em: agora, lancado_por: r.lancado_por || por || null }));
   gravarLocal([...local, ...novos]);
   return { ok: true, enviados: registros.length, novos: novos.length, onde: 'navegador' };
 }

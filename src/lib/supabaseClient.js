@@ -83,6 +83,12 @@ export function getSupabaseInfo() {
   };
 }
 
+// Endereco e chave publica (anon) do banco: ja vao no codigo do site; a planilha do robo usa para mandar
+// o resultado direto para a fila do robo (robos_fila).
+export function getSupabaseAcessoPublico() {
+  return isSupabaseConfigured() ? { url: supabaseUrl, chave: supabaseAnonKey } : {};
+}
+
 export function getSupabaseClient() {
   if (!isSupabaseConfigured()) {
     return null;
