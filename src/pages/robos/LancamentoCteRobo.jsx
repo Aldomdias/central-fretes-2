@@ -16,6 +16,7 @@ import {
 import {
   abaParaMatriz,
   baixarArquivo,
+  baixarMatrizXlsx,
   baixarXlsx,
   carregarParametros,
   criarIndices,
@@ -29,6 +30,8 @@ import { registrarLancamentos } from '../../services/robosLancamentosService';
 import { carregarSessao } from '../../utils/authLocal';
 import { PASTA_ETAPAS_CTE, gerarScriptConsultaNotasCte, gerarScriptPartidasCte } from '../../utils/robos/sapConsultasCte';
 import ScriptParaCopiar from './ScriptParaCopiar';
+import { passosMacroExcel } from './MacroExcel';
+import { gerarMacroCte, matrizDadosMacro } from '../../utils/robos/sapMacroExcel';
 
 const CHAVE = 'central_fretes_robo_cte_lote_v1';
 
@@ -160,6 +163,25 @@ export default function LancamentoCteRobo() {
     } catch (e) { setErro(e.message); }
   }
 
+  // Planilha do robo no Excel: o codigo da macro e copiado uma vez; a cada lote baixa so os dados (.xlsx).
+  function verMacro() {
+    const m = gerarMacroCte();
+    setScriptTela({ script: m.codigo, nome: 'Robo Lancamento.xlsm', macro: m.macro });
+  }
+
+  async function baixarDadosMacro() {
+    setErro('');
+    if (!prontas.length) { setErro('Nao ha CT-e prontos para lancar.'); return; }
+    if (comErro.length) { setErro(`${comErro.length} CT-e com pendencia. Corrija ou remova antes de gerar os dados.`); return; }
+    try {
+      const linhasScript = linhasParaScriptCte(prontas);
+      gerarScriptCte({ linhas: linhasScript, pasta }); // mesma validacao do .vbs
+      const m = gerarMacroCte();
+      await baixarMatrizXlsx('dados-robo-cte.xlsx', matrizDadosMacro(linhasScript, m));
+      setFeedback(`Dados de ${fmt(prontas.length)} CT-e baixados (dados-robo-cte.xlsx). Na planilha do robo, com o SAP logado, rode a macro ${m.macro} e escolha esse arquivo. O resultado_cte.csv fica na mesma pasta dele.`);
+    } catch (e) { setErro(e.message); }
+  }
+
   async function importarResultado(arquivo) {
     if (!arquivo) return;
     try {
@@ -208,7 +230,7 @@ export default function LancamentoCteRobo() {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
-      {scriptTela ? <ScriptParaCopiar script={scriptTela.script} nomeArquivo={scriptTela.nome} onFechar={() => setScriptTela(null)} /> : null}
+      {scriptTela ? <ScriptParaCopiar script={scriptTela.script} nomeArquivo={scriptTela.nome} onFechar={() => setScriptTela(null)} titulo={scriptTela.macro ? 'Código da macro (Excel)' : undefined} passos={scriptTela.macro ? passosMacroExcel(scriptTela.macro) : undefined} /> : null}
       {erro ? <div style={{ padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{erro}</div> : null}
       {feedback && !erro ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}
 
@@ -314,6 +336,8 @@ export default function LancamentoCteRobo() {
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
                   <button type="button" className="btn-primary" disabled={!prontas.length} onClick={() => baixarLancamento()}>Baixar script de lançamento (.vbs)</button>
                   <button type="button" className="btn-secondary" disabled={!prontas.length} onClick={() => baixarLancamento(true)} title="Mostra o script na tela para copiar e colar no Bloco de Notas, sem baixar arquivo">Copiar código (se o antivírus bloquear)</button>
+                  <button type="button" className="btn-secondary" disabled={!prontas.length} onClick={baixarDadosMacro} title="Planilha comum (sem codigo) com os CT-e, para a macro do robo no Excel">Baixar dados para o Excel (.xlsx)</button>
+                  <button type="button" className="btn-secondary" onClick={verMacro} title="Codigo da macro para a planilha do robo no Excel (copiar uma vez)">Código da macro (Excel)</button>
                   <button type="button" className="btn-secondary" onClick={() => baixarXlsx('cte-lancamento.xlsx', linhasLancamentoCte(linhas), CABECALHO_LANCAMENTO_CTE)}>Baixar tabela (.xlsx)</button>
                 </div>
               </div>
@@ -343,6 +367,7 @@ export default function LancamentoCteRobo() {
           <li>Abra o SAP Logon e entre no sistema (scripting habilitado, como na planilha).</li>
           <li>Se o navegador avisar sobre o download do .vbs, escolha “Manter”. Se vier como <code>.vbs.txt</code>, renomeie para <code>.vbs</code>.</li>
           <li>Se o antivírus bloquear o download, use “Copiar código”: cole no Bloco de Notas e salve como <code>lancar-cte.vbs</code> (Tipo: Todos os arquivos).</li>
+          <li>Se o antivírus bloquear até salvar o <code>.vbs</code>, use a planilha do robô no Excel: copie uma vez o <b>Código da macro (Excel)</b> para uma planilha .xlsm e, a cada lote, baixe os <b>Dados para o Excel</b> e rode a macro <code>LancarCTe</code>. O resultado (<code>resultado_cte.csv</code>) fica na mesma pasta do arquivo de dados.</li>
           <li>Se o antivírus bloquear ao dar dois cliques, rode pelo próprio SAP: <b>Alt+F12</b> → <b>Script Recording and Playback…</b> → no campo do arquivo, escolha o <code>lancar-cte.vbs</code> salvo → <b>Playback</b> (botão ▶).</li>
           <li>Dê dois cliques no arquivo e não mexa no SAP até a mensagem final.</li>
         </ol>

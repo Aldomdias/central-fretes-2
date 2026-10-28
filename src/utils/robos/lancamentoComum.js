@@ -269,8 +269,12 @@ export function baixarArquivo(nome, conteudo, mime = 'application/octet-stream')
 }
 
 export async function baixarXlsx(nome, linhas, cabecalho) {
+  await baixarMatrizXlsx(nome, [cabecalho, ...linhas.map((l) => cabecalho.map((c) => l[c] ?? ''))]);
+}
+
+export async function baixarMatrizXlsx(nome, matriz) {
   const XLSX = await import('xlsx');
-  const ws = XLSX.utils.aoa_to_sheet([cabecalho, ...linhas.map((l) => cabecalho.map((c) => l[c] ?? ''))]);
+  const ws = XLSX.utils.aoa_to_sheet(matriz);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Dados');
   const out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });

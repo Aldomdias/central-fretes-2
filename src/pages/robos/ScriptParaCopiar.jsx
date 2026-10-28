@@ -2,7 +2,8 @@ import { useRef, useState } from 'react';
 
 // Mostra o script na tela para copiar e colar no Bloco de Notas: nas maquinas em que o antivirus
 // bloqueia o download (.vbs ou .txt), nenhum arquivo e baixado pelo navegador.
-export default function ScriptParaCopiar({ script, nomeArquivo, onFechar }) {
+// titulo/passos: outro texto e outro passo a passo (ex.: codigo da macro do Excel).
+export default function ScriptParaCopiar({ script, nomeArquivo, onFechar, titulo = 'Código do script', passos = null }) {
   const ref = useRef(null);
   const [copiado, setCopiado] = useState('');
 
@@ -28,12 +29,14 @@ export default function ScriptParaCopiar({ script, nomeArquivo, onFechar }) {
         onClick={(e) => e.stopPropagation()}
         style={{ background: '#fff', borderRadius: 10, padding: 18, width: 'min(900px, 100%)', maxHeight: '90vh', display: 'flex', flexDirection: 'column', gap: 10 }}
       >
-        <div className="panel-title" style={{ margin: 0 }}>Código do script</div>
+        <div className="panel-title" style={{ margin: 0 }}>{titulo}</div>
         <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6, fontSize: 14 }}>
+          {passos || (<>
           <li>Clique em <b>Copiar código</b>.</li>
           <li>Abra o <b>Bloco de Notas</b> e cole (Ctrl+V).</li>
           <li>Arquivo → Salvar como: em “Tipo”, escolha <b>Todos os arquivos</b> e salve com o nome <code>{nomeArquivo}</code>.</li>
           <li>Com o SAP aberto e logado, dê dois cliques no arquivo salvo. Se o antivírus bloquear, rode pelo SAP: <b>Alt+F12</b> → <b>Script Recording and Playback…</b> → escolha o arquivo → <b>Playback</b>.</li>
+          </>)}
         </ol>
         <textarea
           ref={ref}
