@@ -37,45 +37,21 @@ function rodape(nome, msgFinal) {
 
 const F2 = 'wnd[1]/usr/ssubSUB_CONFIGURATION:SAPLSALV_GUI_CUL_EXPORT_AS:0512/';
 const L1 = 'wnd[1]/usr/subSUB_CONFIGURATION:SAPLSALV_CUL_LAYOUT_CHOOSE:0500/cntlD500_CONTAINER/shellcont/shell';
+const TBL = 'wnd[0]/usr/subTAB_SUB:SAPLSE16N:0121/tblSAPLSE16NSELFIELDS_TC';
 
-function juntar(corpo) {
-  return finalizarScript(corpo);
-}
+// Passos do SAP, os mesmos no .vbs e na planilha do robo (sapMacroExcel). pasta: expressao com a pasta
+// de exportacao; col(0..8): as partes das chaves (uma por linha); texto: os documentos (um por linha).
+export const COLAR_NO_CAMPO = [
+  'Sub ColarNoCampo(j)',
+  `    session.findById("${TBL}/btnPUSH[4," & j & "]").SetFocus`,
+  `    session.findById("${TBL}/btnPUSH[4," & j & "]").press`,
+  '    session.findById("wnd[1]/tbar[0]/btn[24]").press',
+  '    session.findById("wnd[1]/tbar[0]/btn[8]").press',
+  'End Sub',
+];
 
-// Passo 2a — equivale ao inicio da macro "Consultar".
-// consultas: [{ regiao, ano, mes, cnpj, modelo, serie, nnf, aleatorio, dv }]
-export function gerarScriptConsultaNotasCte({ consultas = [], pasta = PASTA_ETAPAS_CTE } = {}) {
-  if (!consultas.length) throw new Error('Nao ha chaves de NF de venda para consultar.');
-  const CAMPOS = ['regiao', 'ano', 'mes', 'cnpj', 'modelo', 'serie', 'nnf', 'aleatorio', 'dv'];
-  const TBL = 'wnd[0]/usr/subTAB_SUB:SAPLSE16N:0121/tblSAPLSE16NSELFIELDS_TC';
-  return juntar([
-    ...cabecalho('Robo CT-e - 2a. Consultar NFs de venda (SE16N / J_1BNFE_ACTIVE)'),
-    'Dim fso, sh, sapGuiAuto, appl, con, session, D(), i, j, partes, col(8), f',
-    ...CONEXAO,
-    '',
-    ...CLIPBOARD,
-    '',
-    'Sub ColarNoCampo(j)',
-    `    session.findById("${TBL}/btnPUSH[4," & j & "]").SetFocus`,
-    `    session.findById("${TBL}/btnPUSH[4," & j & "]").press`,
-    '    session.findById("wnd[1]/tbar[0]/btn[24]").press',
-    '    session.findById("wnd[1]/tbar[0]/btn[8]").press',
-    'End Sub',
-    '',
-    'Sub Executar()',
-    '    Set fso = CreateObject("Scripting.FileSystemObject")',
-    '    Set sh = CreateObject("WScript.Shell")',
-    `    ReDim D(${consultas.length - 1})`,
-    ...consultas.map((c, i) => `    D(${i}) = ${vbs(CAMPOS.map((k) => c[k]).join('|'))}`),
-    '    For j = 0 To 8 : col(j) = "" : Next',
-    `    For i = 0 To ${consultas.length - 1}`,
-    '        partes = Split(D(i), "|")',
-    '        For j = 0 To 8 : col(j) = col(j) & partes(j) & vbCrLf : Next',
-    '    Next',
-    "    ' limpa a pasta de etapas (como o botao 1. Importar da planilha)",
-    `    If Not fso.FolderExists(${vbs(pasta)}) Then fso.CreateFolder ${vbs(pasta)}`,
-    `    For Each f In fso.GetFolder(${vbs(pasta)}).Files : f.Delete True : Next`,
-    '    Conectar',
+export function passosSe16n(pasta) {
+  return [
     '    session.findById("wnd[0]").maximize',
     '    session.findById("wnd[0]/tbar[0]/okcd").Text = "/nse16n"',
     '    session.findById("wnd[0]").sendVKey 0',
@@ -105,9 +81,69 @@ export function gerarScriptConsultaNotasCte({ consultas = [], pasta = PASTA_ETAP
     '    session.findById("wnd[0]/shellcont/shell").selectContextMenuItem "&XXL"',
     `    session.findById("${F2}txtGS_EXPORT-FILE_NAME").Text = "EXPORT1"`,
     '    session.findById("wnd[1]/tbar[0]/btn[20]").press',
-    `    session.findById("wnd[1]/usr/ctxtDY_PATH").Text = ${vbs(pasta)}`,
+    `    session.findById("wnd[1]/usr/ctxtDY_PATH").Text = ${pasta}`,
     '    session.findById("wnd[1]/usr/ctxtDY_PATH").SetFocus',
     '    session.findById("wnd[1]/tbar[0]/btn[0]").press',
+  ];
+}
+
+export function passosZsd0004(pasta) {
+  return [
+    '    session.findById("wnd[0]").maximize',
+    '    session.findById("wnd[0]/tbar[0]/okcd").Text = "/nzsd0004"',
+    '    session.findById("wnd[0]").sendVKey 0',
+    '    Copiar texto',
+    '    session.findById("wnd[0]/usr/btn%_S_DOCNUM_%_APP_%-VALU_PUSH").press',
+    '    session.findById("wnd[1]/tbar[0]/btn[24]").press',
+    '    session.findById("wnd[1]/tbar[0]/btn[8]").press',
+    '    session.findById("wnd[0]/tbar[1]/btn[8]").press',
+    '    session.findById("wnd[0]/tbar[1]/btn[33]").press',
+    '    session.findById("wnd[0]/tbar[1]/btn[33]").press',
+    `    session.findById("${L1}").currentCellColumn = "DEFAULT"`,
+    `    session.findById("${L1}").clickCurrentCell`,
+    '    session.findById("wnd[0]").maximize',
+    '    session.findById("wnd[0]/mbar/menu[0]/menu[3]/menu[1]").Select',
+    `    session.findById("${F2}txtGS_EXPORT-FILE_NAME").Text = "EXPORT2"`,
+    '    session.findById("wnd[1]/tbar[0]/btn[20]").press',
+    `    session.findById("wnd[1]/usr/ctxtDY_PATH").Text = ${pasta}`,
+    '    session.findById("wnd[1]/usr/ctxtDY_PATH").SetFocus',
+    '    session.findById("wnd[1]/tbar[0]/btn[0]").press',
+  ];
+}
+
+function juntar(corpo) {
+  return finalizarScript(corpo);
+}
+
+// Passo 2a — equivale ao inicio da macro "Consultar".
+// consultas: [{ regiao, ano, mes, cnpj, modelo, serie, nnf, aleatorio, dv }]
+export function gerarScriptConsultaNotasCte({ consultas = [], pasta = PASTA_ETAPAS_CTE } = {}) {
+  if (!consultas.length) throw new Error('Nao ha chaves de NF de venda para consultar.');
+  const CAMPOS = ['regiao', 'ano', 'mes', 'cnpj', 'modelo', 'serie', 'nnf', 'aleatorio', 'dv'];
+  return juntar([
+    ...cabecalho('Robo CT-e - 2a. Consultar NFs de venda (SE16N / J_1BNFE_ACTIVE)'),
+    'Dim fso, sh, sapGuiAuto, appl, con, session, D(), i, j, partes, col(8), f',
+    ...CONEXAO,
+    '',
+    ...CLIPBOARD,
+    '',
+    ...COLAR_NO_CAMPO,
+    '',
+    'Sub Executar()',
+    '    Set fso = CreateObject("Scripting.FileSystemObject")',
+    '    Set sh = CreateObject("WScript.Shell")',
+    `    ReDim D(${consultas.length - 1})`,
+    ...consultas.map((c, i) => `    D(${i}) = ${vbs(CAMPOS.map((k) => c[k]).join('|'))}`),
+    '    For j = 0 To 8 : col(j) = "" : Next',
+    `    For i = 0 To ${consultas.length - 1}`,
+    '        partes = Split(D(i), "|")',
+    '        For j = 0 To 8 : col(j) = col(j) & partes(j) & vbCrLf : Next',
+    '    Next',
+    "    ' limpa a pasta de etapas (como o botao 1. Importar da planilha)",
+    `    If Not fso.FolderExists(${vbs(pasta)}) Then fso.CreateFolder ${vbs(pasta)}`,
+    `    For Each f In fso.GetFolder(${vbs(pasta)}).Files : f.Delete True : Next`,
+    '    Conectar',
+    ...passosSe16n(vbs(pasta)),
     '    WScript.Sleep 3000',
     'End Sub',
     ...rodape('Robo CT-e', `Consulta exportada para ${pasta}. Volte para a Central de Fretes e carregue o arquivo EXPORT1.XLSX (passo 2b).`),
@@ -132,25 +168,7 @@ export function gerarScriptPartidasCte({ docnums = [], pasta = PASTA_ETAPAS_CTE 
     '    texto = Join(D, vbCrLf) & vbCrLf',
     `    If Not fso.FolderExists(${vbs(pasta)}) Then fso.CreateFolder ${vbs(pasta)}`,
     '    Conectar',
-    '    session.findById("wnd[0]").maximize',
-    '    session.findById("wnd[0]/tbar[0]/okcd").Text = "/nzsd0004"',
-    '    session.findById("wnd[0]").sendVKey 0',
-    '    Copiar texto',
-    '    session.findById("wnd[0]/usr/btn%_S_DOCNUM_%_APP_%-VALU_PUSH").press',
-    '    session.findById("wnd[1]/tbar[0]/btn[24]").press',
-    '    session.findById("wnd[1]/tbar[0]/btn[8]").press',
-    '    session.findById("wnd[0]/tbar[1]/btn[8]").press',
-    '    session.findById("wnd[0]/tbar[1]/btn[33]").press',
-    '    session.findById("wnd[0]/tbar[1]/btn[33]").press',
-    `    session.findById("${L1}").currentCellColumn = "DEFAULT"`,
-    `    session.findById("${L1}").clickCurrentCell`,
-    '    session.findById("wnd[0]").maximize',
-    '    session.findById("wnd[0]/mbar/menu[0]/menu[3]/menu[1]").Select',
-    `    session.findById("${F2}txtGS_EXPORT-FILE_NAME").Text = "EXPORT2"`,
-    '    session.findById("wnd[1]/tbar[0]/btn[20]").press',
-    `    session.findById("wnd[1]/usr/ctxtDY_PATH").Text = ${vbs(pasta)}`,
-    '    session.findById("wnd[1]/usr/ctxtDY_PATH").SetFocus',
-    '    session.findById("wnd[1]/tbar[0]/btn[0]").press',
+    ...passosZsd0004(vbs(pasta)),
     '    WScript.Sleep 3000',
     'End Sub',
     ...rodape('Robo CT-e', `Partidas exportadas para ${pasta}. Volte para a Central de Fretes e carregue o arquivo EXPORT2.XLSX (passo 2d).`),

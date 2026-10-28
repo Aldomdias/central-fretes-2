@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ParametrosLancamentoCard from './ParametrosLancamentoCard';
-import CampoPasta, { caminhoArquivo, usePastaTrabalho } from './PastaTrabalho';
 import {
   CABECALHO_ENVIAR_CTE,
   CABECALHO_LANCAMENTO_CTE,
-  docnumsDoExport1,
   extrairCte,
   linhasConsultaSe16n,
   linhasEnviarCte,
@@ -15,7 +13,6 @@ import {
 } from '../../utils/robos/lancamentoCte';
 import {
   abaParaMatriz,
-  baixarArquivo,
   baixarMatrizXlsx,
   baixarXlsx,
   carregarParametros,
@@ -26,17 +23,17 @@ import {
   lerPlanilhaArquivo,
   lerResultadoCsv,
 } from '../../utils/robos/lancamentoComum';
-import { PASTA_CTE, gerarScriptCte } from '../../utils/robos/sapLancamentoVbs';
+import { gerarScriptCte } from '../../utils/robos/sapLancamentoVbs';
 import { registrarLancamentos } from '../../services/robosLancamentosService';
 import { buscarNaFila, salvarNaFila } from '../../services/robosFilaService';
 import { CHAVE_LOTE_CTE, itemFilaCte, numerosDaFila } from '../../utils/robos/filaRobo';
 import { getSupabaseAcessoPublico } from '../../lib/supabaseClient';
 import AvisoFila from './AvisoFila';
 import { carregarSessao } from '../../utils/authLocal';
-import { PASTA_ETAPAS_CTE, gerarScriptConsultaNotasCte, gerarScriptPartidasCte } from '../../utils/robos/sapConsultasCte';
+import { PASTA_ETAPAS_CTE } from '../../utils/robos/sapConsultasCte';
 import ScriptParaCopiar from './ScriptParaCopiar';
 import { BaixarPlanilhaRobo, passosMacroExcel } from './MacroExcel';
-import { gerarMacroCte, matrizDadosMacro } from '../../utils/robos/sapMacroExcel';
+import { gerarMacroConsultaCte, gerarMacroCte, matrizChavesConsulta, matrizDadosMacro } from '../../utils/robos/sapMacroExcel';
 
 const CHAVE = CHAVE_LOTE_CTE;
 
@@ -51,13 +48,15 @@ const numStyle = { width: 26, height: 26, borderRadius: '50%', background: '#0f1
 const th = { textAlign: 'left', padding: '6px 8px', fontSize: 12, color: '#475569', borderBottom: '1px solid #e2e8f0', whiteSpace: 'nowrap' };
 const td = { padding: '5px 8px', fontSize: 12, borderBottom: '1px solid #f1f5f9', whiteSpace: 'nowrap' };
 
+// Versoes conferidas no botao da planilha: lancamento e consulta do centro de custo.
+const gerarMacrosCte = () => [gerarMacroCte(), gerarMacroConsultaCte()];
+
 export default function LancamentoCteRobo() {
   const inicial = useMemo(() => ler({}), []);
   const [parametros, setParametros] = useState(carregarParametros);
   const [cts, setCts] = useState(inicial.cts || []);
   const [partidasArr, setPartidasArr] = useState(inicial.partidas || []);
   const [docnums, setDocnums] = useState(inicial.docnums || []);
-  const [pasta, setPasta] = usePastaTrabalho('central_fretes_robo_cte_pasta', PASTA_CTE);
   const [vencimento, setVencimento] = useState(naoAntesDeHoje(inicial.vencimento));
   const [manuais, setManuais] = useState(inicial.manuais || {});
   const [removidos, setRemovidos] = useState(inicial.removidos || []);
@@ -67,7 +66,6 @@ export default function LancamentoCteRobo() {
   const [feedback, setFeedback] = useState('');
   const refXml = useRef(null);
   const refPasta = useRef(null);
-  const refE1 = useRef(null);
   const refE2 = useRef(null);
   const refRes = useRef(null);
 
@@ -94,7 +92,8 @@ export default function LancamentoCteRobo() {
   const semPedido = prontas.filter((l) => !l.pedido).length;
   const semMiro = prontas.filter((l) => l.pedido && !l.miro).length;
   const comCc = linhas.filter((l) => l.cc).length;
-  const consultas = useMemo(() => linhasConsultaSe16n(linhas), [linhas]);
+  // chaves das NFs de venda para a consulta do centro de custo (planilha do robo)
+  const chavesNf = useMemo(() => [...new Set(linhasConsultaSe16n(linhas).map((p) => Object.values(p).join('')))], [linhas]);
 
   function editar(id, campo, valor) {
     setManuais((a) => ({ ...a, [id]: { ...(a[id] || {}), [campo]: valor } }));
@@ -152,21 +151,7 @@ export default function LancamentoCteRobo() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function baixar(nome, fabrica, msg) {
-    setErro('');
-    try { baixarArquivo(nome, fabrica()); setFeedback(msg); } catch (e) { setErro(e.message); }
-  }
 
-  async function carregarExport1(arquivo) {
-    if (!arquivo) return;
-    try {
-      const nums = docnumsDoExport1(await lerExportacao(arquivo));
-      if (!nums.length) throw new Error('Nao encontrei numeros de documento na 1a coluna do arquivo.');
-      setDocnums(nums); setErro('');
-      setFeedback(`${fmt(nums.length)} documento(s) lido(s) do EXPORT1. Agora gere o script do passo 2c.`);
-    } catch (e) { setErro(e.message || 'Nao consegui ler o EXPORT1.'); }
-    finally { if (refE1.current) refE1.current.value = ''; }
-  }
 
   async function carregarExport2(arquivo) {
     if (!arquivo) return;
@@ -179,25 +164,18 @@ export default function LancamentoCteRobo() {
     finally { if (refE2.current) refE2.current.value = ''; }
   }
 
-  // copiar: mostra o script na tela (para colar no Bloco de Notas) quando o antivirus bloqueia o download.
-  async function baixarLancamento(copiar = false) {
-    if (!prontas.length) { setErro('Nao ha CT-e prontos para lancar.'); return; }
-    if (comErro.length) { setErro(`${comErro.length} CT-e com pendencia. Corrija ou remova antes de gerar o script.`); return; }
-    const { lista } = await trazerDaFila(prontas);
-    const fabrica = () => gerarScriptCte({ linhas: linhasParaScriptCte(lista), pasta });
-    const resumo = `${fmt(prontas.length)} CT-e (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido)`;
-    const resultado = `Resultado em ${caminhoArquivo(pasta, 'resultado_cte.csv')}.`;
-    if (!copiar) {
-      baixar('lancar-cte.vbs', fabrica, `Script baixado com ${resumo}. Com o SAP aberto, de dois cliques nele. ${resultado}`);
-      guardarNaFila(lista, { descartado: false });
-      return;
-    }
+
+  // Consulta do centro de custo na planilha do robo: arquivo com as chaves das NFs de venda.
+  async function baixarChavesConsulta() {
+    if (!chavesNf.length) { setErro('Nenhum CT-e com NF de venda para consultar.'); return; }
     setErro('');
-    try {
-      setScriptTela({ script: fabrica(), nome: 'lancar-cte.vbs' });
-      guardarNaFila(lista, { descartado: false });
-      setFeedback(`Script gerado com ${resumo}. Cole no Bloco de Notas, salve como lancar-cte.vbs e, com o SAP aberto, de dois cliques nele. ${resultado}`);
-    } catch (e) { setErro(e.message); }
+    await baixarMatrizXlsx('chaves-nf-venda-cte.xlsx', matrizChavesConsulta(chavesNf, gerarMacroConsultaCte()));
+    setFeedback(`Chaves de ${fmt(chavesNf.length)} NF(s) de venda baixadas (chaves-nf-venda-cte.xlsx). Na planilha do robo, com o SAP logado, clique em "Consultar centro de custo" e escolha esse arquivo; depois carregue aqui o EXPORT2.XLSX (passo 2c).`);
+  }
+
+  function verMacroConsulta() {
+    const m = gerarMacroConsultaCte();
+    setScriptTela({ script: m.codigo, nome: 'Robo Lancamento.xlsm', macro: m.macro });
   }
 
   // Planilha do robo no Excel: o codigo da macro e copiado uma vez; a cada lote baixa so os dados (.xlsx).
@@ -213,7 +191,7 @@ export default function LancamentoCteRobo() {
     try {
       const { lista } = await trazerDaFila(prontas);
       const linhasScript = linhasParaScriptCte(lista);
-      gerarScriptCte({ linhas: linhasScript, pasta }); // mesma validacao do .vbs
+      gerarScriptCte({ linhas: linhasScript }); // mesma validacao do script
       const m = gerarMacroCte();
       await baixarMatrizXlsx('dados-robo-cte.xlsx', matrizDadosMacro(linhasScript, m, getSupabaseAcessoPublico()));
       guardarNaFila(lista, { descartado: false });
@@ -301,23 +279,18 @@ export default function LancamentoCteRobo() {
               <span style={numStyle}>2</span>
               <div style={{ flex: 1 }}>
                 <div className="panel-title" style={{ margin: 0 }}>Consultar o centro de custo no SAP</div>
-                <p style={{ margin: '4px 0 10px' }}>O centro de custo vem da NF de venda do CT-e. São dois scripts, com uma leitura de arquivo no meio: (a) SE16N acha o número do documento de cada NF de venda; (b) você carrega o arquivo; (c) ZSD0004 busca as partidas desses documentos; (d) você carrega o segundo arquivo. Se preferir, pule e digite o centro de custo direto na tabela.</p>
+                <p style={{ margin: '4px 0 10px' }}>O centro de custo vem da NF de venda do CT-e. A planilha do robô consulta a SE16N e a ZSD0004 de uma vez e grava o <code>EXPORT2.XLSX</code>; você só carrega esse arquivo aqui. Se preferir, pule e digite o centro de custo direto na tabela.</p>
                 <div style={{ display: 'grid', gap: 10 }}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                     <b>2a</b>
-                    <button type="button" className="btn-primary" disabled={!consultas.length} onClick={() => baixar('2a-consultar-notas-cte.vbs', () => gerarScriptConsultaNotasCte({ consultas }), `Script baixado (${fmt(consultas.length)} chave(s) de NF de venda). Rode com o SAP aberto; o resultado vai para ${PASTA_ETAPAS_CTE}\\EXPORT1.XLSX.`)}>Baixar script de consulta (SE16N)</button>
+                    <button type="button" className="btn-primary" disabled={!chavesNf.length} onClick={baixarChavesConsulta}>Baixar chaves para o Excel ({fmt(chavesNf.length)})</button>
                   </div>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <b>2b</b> <span>Carregar <code>EXPORT1.XLSX</code>:</span>
-                    <input ref={refE1} type="file" accept=".xlsx,.xls" onChange={(e) => carregarExport1(e.target.files?.[0])} />
-                    {docnums.length ? <span style={{ color: '#166534' }}>{fmt(docnums.length)} documento(s)</span> : null}
+                    <b>2b</b> <span>Na planilha do robô, com o SAP logado, clique em <b>Consultar centro de custo</b> (ou Alt+F8 → <code>ConsultarCentroCustoCTe</code>) e escolha o arquivo de chaves. O resultado vai para <code>{PASTA_ETAPAS_CTE}\EXPORT2.XLSX</code>.</span>
+                    <button type="button" className="btn-link" onClick={verMacroConsulta} title="Codigo da consulta para a planilha do robo (copiar uma vez, num modulo proprio)">código da consulta (Excel)</button>
                   </div>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <b>2c</b>
-                    <button type="button" className="btn-primary" disabled={!docnums.length} onClick={() => baixar('2c-partidas-cte.vbs', () => gerarScriptPartidasCte({ docnums }), `Script baixado (${fmt(docnums.length)} documento(s)). Rode com o SAP aberto; o resultado vai para ${PASTA_ETAPAS_CTE}\\EXPORT2.XLSX.`)}>Baixar script de partidas (ZSD0004)</button>
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <b>2d</b> <span>Carregar <code>EXPORT2.XLSX</code>:</span>
+                    <b>2c</b> <span>Carregar <code>EXPORT2.XLSX</code>:</span>
                     <input ref={refE2} type="file" accept=".xlsx,.xls" onChange={(e) => carregarExport2(e.target.files?.[0])} />
                     {partidasArr.length ? <span style={{ color: '#166534' }}>{fmt(partidasArr.length)} partida(s)</span> : null}
                   </div>
@@ -373,13 +346,10 @@ export default function LancamentoCteRobo() {
                   </table>
                 </div>
                 <p style={{ fontSize: 12, color: '#64748b' }}>Preencher o Pedido à mão equivale ao botão “Criar Miro (exceção)”: o robô pula o pedido e lança só a MIRO. Vencimento padrão = hoje.</p>
-                <CampoPasta pasta={pasta} onChange={setPasta} padrao={PASTA_CTE} />
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
-                  <button type="button" className="btn-primary" disabled={!prontas.length} onClick={() => baixarLancamento()}>Baixar script de lançamento (.vbs)</button>
-                  <button type="button" className="btn-secondary" disabled={!prontas.length} onClick={() => baixarLancamento(true)} title="Mostra o script na tela para copiar e colar no Bloco de Notas, sem baixar arquivo">Copiar código (se o antivírus bloquear)</button>
-                  <button type="button" className="btn-secondary" disabled={!prontas.length} onClick={baixarDadosMacro} title="Planilha comum (sem codigo) com os CT-e, para a macro do robo no Excel">Baixar dados para o Excel (.xlsx)</button>
+                  <button type="button" className="btn-primary" disabled={!prontas.length} onClick={baixarDadosMacro} title="Planilha comum (sem codigo) com os CT-e, para a planilha do robo">Baixar dados para o Excel (.xlsx)</button>
                   <button type="button" className="btn-secondary" onClick={verMacro} title="Codigo da macro para a planilha do robo no Excel (copiar uma vez)">Código da macro (Excel)</button>
-                  <BaixarPlanilhaRobo gerar={gerarMacroCte} />
+                  <BaixarPlanilhaRobo gerar={gerarMacrosCte} />
                   <button type="button" className="btn-secondary" onClick={() => baixarXlsx('cte-lancamento.xlsx', linhasLancamentoCte(linhas), CABECALHO_LANCAMENTO_CTE)}>Baixar tabela (.xlsx)</button>
                 </div>
               </div>
@@ -391,7 +361,7 @@ export default function LancamentoCteRobo() {
               <span style={numStyle}>4</span>
               <div>
                 <div className="panel-title" style={{ margin: 0 }}>Trazer o resultado</div>
-                <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue <code>{caminhoArquivo(pasta, 'resultado_cte.csv')}</code> para preencher pedido e MIRO; os CT-e com MIRO entram sozinhos no histórico (aba “Acompanhamento de lançamentos”). Se um CT-e falhar, o script pula, segue com os demais e no fim lista as pendências (também em pendencias_cte.csv); ao rodar de novo pula o que já tem número.</p>
+                <p style={{ margin: '4px 0 10px' }}>A planilha do robô manda pedido e MIRO direto para a Central (no fim aparece “Resultado já enviado”). Se aparecer que não chegou, carregue aqui o <code>resultado_cte.csv</code>, que fica na pasta da planilha do robô. Os CT-e com MIRO entram sozinhos no histórico; os que falharem aparecem em “Sem MIRO” (aba “Acompanhamento de lançamentos”). Ao rodar de novo, o robô pula o que já tem número.</p>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <input ref={refRes} type="file" accept=".csv,.txt" onChange={(e) => importarResultado(e.target.files?.[0])} />
                   <button type="button" className="btn-secondary" onClick={baixarEnviar}>Baixar resumo (Enviar) .xlsx</button>
@@ -406,12 +376,10 @@ export default function LancamentoCteRobo() {
       <div className="panel-card">
         <div className="panel-title">Como rodar</div>
         <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>
+          <li>Uma vez só: baixe a <b>Planilha do robô (.xlsm)</b>, salve na sua pasta de trabalho e, no arquivo, clique com o botão direito → Propriedades → marque <b>Desbloquear</b>.</li>
           <li>Abra o SAP Logon e entre no sistema (scripting habilitado, como na planilha).</li>
-          <li>Se o navegador avisar sobre o download do .vbs, escolha “Manter”. Se vier como <code>.vbs.txt</code>, renomeie para <code>.vbs</code>.</li>
-          <li>Se o antivírus bloquear o download, use “Copiar código”: cole no Bloco de Notas e salve como <code>lancar-cte.vbs</code> (Tipo: Todos os arquivos).</li>
-          <li>Se o antivírus bloquear até salvar o <code>.vbs</code>, use a planilha do robô no Excel: baixe uma vez a <b>Planilha do robô (.xlsm)</b> (na primeira vez, clique com o botão direito no arquivo → Propriedades → marque <b>Desbloquear</b>) e, a cada lote, baixe os <b>Dados para o Excel</b> e rode a macro <code>LancarCTe</code>. O resultado (<code>resultado_cte.csv</code>), o log e as pendências ficam na pasta onde está salva a planilha do robô (guarde-a na sua pasta de trabalho); no fim o robô oferece abrir essa pasta.</li>
-          <li>Se o antivírus bloquear ao dar dois cliques, rode pelo próprio SAP: <b>Alt+F12</b> → <b>Script Recording and Playback…</b> → no campo do arquivo, escolha o <code>lancar-cte.vbs</code> salvo → <b>Playback</b> (botão ▶).</li>
-          <li>Dê dois cliques no arquivo e não mexa no SAP até a mensagem final.</li>
+          <li>Centro de custo: baixe as chaves (2a), rode <b>Consultar centro de custo</b> na planilha (2b) e carregue o EXPORT2 (2c) — ou digite o centro de custo na tabela.</li>
+          <li>Lançamento: baixe os <b>Dados para o Excel</b>, clique em <b>▶ Lançar CT-e</b> na planilha e escolha o arquivo. Não mexa no SAP até a mensagem final.</li>
         </ol>
         <div style={{ fontSize: 12, color: '#64748b', marginTop: 6 }}>Datas: emissão {linhas[0] ? isoParaBr(linhas[0].dataEmissao) : '—'} (primeiro CT-e). Vencimento usado: {isoParaBr(vencimento)}.</div>
       </div>

@@ -15,11 +15,11 @@ export function passosMacroExcel(macro) {
   );
 }
 
-// Download da planilha do robo ja montada. gerar(): gerarMacroNfse/gerarMacroCte, para comparar a
-// versao do codigo atual com a da planilha publicada.
+// Download da planilha do robo ja montada. gerar(): gerarMacroNfse/gerarMacroCte (ou uma lista), para
+// comparar a versao do codigo atual com a da planilha publicada.
 export function BaixarPlanilhaRobo({ gerar }) {
-  const atual = useMemo(() => gerar(), [gerar]);
-  const desatualizada = PLANILHA_ROBO.versoes[atual.macro] !== atual.versao;
+  const atual = useMemo(() => [gerar()].flat(), [gerar]);
+  const desatualizada = atual.some((m) => PLANILHA_ROBO.versoes[m.macro] !== m.versao);
   return (
     <>
       <a

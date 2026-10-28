@@ -19,7 +19,6 @@ import {
 } from '../../utils/robos/lancamentoNfse';
 import {
   abaParaMatriz,
-  baixarArquivo,
   baixarMatrizXlsx,
   baixarXlsx,
   carregarParametros,
@@ -34,7 +33,7 @@ import {
   tsvParaMatriz,
   valorParaSap,
 } from '../../utils/robos/lancamentoComum';
-import { PASTA_NFSE, gerarScriptNfse } from '../../utils/robos/sapLancamentoVbs';
+import { gerarScriptNfse } from '../../utils/robos/sapLancamentoVbs';
 import { registrarLancamentos } from '../../services/robosLancamentosService';
 import { buscarNaFila, salvarNaFila } from '../../services/robosFilaService';
 import { CHAVE_LOTE_NFSE, itemFilaNfse, numerosDaFila } from '../../utils/robos/filaRobo';
@@ -42,7 +41,6 @@ import { getSupabaseAcessoPublico } from '../../lib/supabaseClient';
 import AvisoFila from './AvisoFila';
 import { carregarSessao } from '../../utils/authLocal';
 import ParametrosLancamentoCard from './ParametrosLancamentoCard';
-import CampoPasta, { caminhoArquivo, usePastaTrabalho } from './PastaTrabalho';
 import { nfComSufixoF } from '../../utils/robos/nfsePdf';
 import ScriptParaCopiar from './ScriptParaCopiar';
 import { BaixarPlanilhaRobo, passosMacroExcel } from './MacroExcel';
@@ -90,7 +88,6 @@ export default function LancamentoNfseRobo() {
   const [entradas, setEntradas] = useState(() => (inicial.entradas || []).map((e) => ({ ...novaEntradaNfse(e.uid || novoUid()), ...e })));
   const [manuais, setManuais] = useState(inicial.manuais || {});
   const [vencimento, setVencimento] = useState(naoAntesDeHoje(inicial.vencimento));
-  const [pasta, setPasta] = usePastaTrabalho('central_fretes_robo_nfse_pasta', PASTA_NFSE);
   const [colado, setColado] = useState('');
   const [erro, setErro] = useState('');
   const [feedback, setFeedback] = useState('');
@@ -366,22 +363,6 @@ export default function LancamentoNfseRobo() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // copiar: mostra o script na tela (para colar no Bloco de Notas) quando o antivirus bloqueia o download.
-  async function baixarScript(copiar = false) {
-    setErro('');
-    if (!prontas.length) { setErro('Nao ha notas prontas para lancar.'); return; }
-    if (comErro.length) { setErro(`${comErro.length} nota(s) com pendencia. Corrija ou remova antes de gerar o script.`); return; }
-    try {
-      const { lista } = await trazerDaFila(prontas);
-      const script = gerarScriptNfse({ linhas: linhasParaScriptNfse(lista), pasta });
-      if (copiar) setScriptTela({ script, nome: 'lancar-nfse.vbs' });
-      else baixarArquivo('lancar-nfse.vbs', script);
-      guardarNaFila(lista, { descartado: false });
-      const comoRodar = copiar ? 'Cole no Bloco de Notas, salve como lancar-nfse.vbs e, com o SAP aberto e logado, de dois cliques nele.' : 'Com o SAP aberto e logado, de dois cliques nele.';
-      setFeedback(`Script ${copiar ? 'gerado' : 'baixado'} com ${fmt(prontas.length)} nota(s) (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). ${comoRodar} O resultado fica em ${caminhoArquivo(pasta, 'resultado_nfse.csv')}.`);
-    } catch (e) { setErro(e.message); }
-  }
-
   // Planilha do robo no Excel: o codigo da macro e copiado uma vez; a cada lote baixa so os dados (.xlsx).
   function verMacro() {
     const m = gerarMacroNfse();
@@ -395,7 +376,7 @@ export default function LancamentoNfseRobo() {
     try {
       const { lista } = await trazerDaFila(prontas);
       const linhasScript = linhasParaScriptNfse(lista);
-      gerarScriptNfse({ linhas: linhasScript, pasta }); // mesma validacao do .vbs
+      gerarScriptNfse({ linhas: linhasScript }); // mesma validacao do script
       const m = gerarMacroNfse();
       await baixarMatrizXlsx('dados-robo-nfse.xlsx', matrizDadosMacro(linhasScript, m, getSupabaseAcessoPublico()));
       guardarNaFila(lista, { descartado: false });
@@ -631,13 +612,10 @@ export default function LancamentoNfseRobo() {
         <div style={passoStyle}>
           <span style={numStyle}>2</span>
           <div>
-            <div className="panel-title" style={{ margin: 0 }}>Criar pedido e MIRO no SAP</div>
-            <p style={{ margin: '4px 0 10px' }}>Gera o script com as notas acima. Ele cria o pedido (ME21N) das notas sem pedido e depois a MIRO das que têm pedido e ainda não têm MIRO. Se uma nota falhar (ex.: precisa de aprovação), o robô pula, segue com as demais e no fim lista as pendências (também em pendencias_nfse.csv); ao rodar de novo, pula o que já tem número.</p>
-            <CampoPasta pasta={pasta} onChange={setPasta} padrao={PASTA_NFSE} />
+            <div className="panel-title" style={{ margin: 0 }}>Criar pedido e MIRO no SAP (planilha do robô)</div>
+            <p style={{ margin: '4px 0 10px' }}>Baixe os dados e rode na planilha do robô (Excel): ela cria o pedido (ME21N) das notas sem pedido e depois a MIRO das que têm pedido e ainda não têm MIRO. Se uma nota falhar (ex.: precisa de aprovação), o robô pula, segue com as demais e no fim lista as pendências; ao rodar de novo, pula o que já tem número.</p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button type="button" className="btn-primary" disabled={!prontas.length} onClick={() => baixarScript()}>Baixar script de lançamento (.vbs)</button>
-              <button type="button" className="btn-secondary" disabled={!prontas.length} onClick={() => baixarScript(true)} title="Mostra o script na tela para copiar e colar no Bloco de Notas, sem baixar arquivo">Copiar código (se o antivírus bloquear)</button>
-              <button type="button" className="btn-secondary" disabled={!prontas.length} onClick={baixarDadosMacro} title="Planilha comum (sem codigo) com as notas, para a macro do robo no Excel">Baixar dados para o Excel (.xlsx)</button>
+              <button type="button" className="btn-primary" disabled={!prontas.length} onClick={baixarDadosMacro} title="Planilha comum (sem codigo) com as notas, para a planilha do robo">Baixar dados para o Excel (.xlsx)</button>
               <button type="button" className="btn-secondary" onClick={verMacro} title="Codigo da macro para a planilha do robo no Excel (copiar uma vez)">Código da macro (Excel)</button>
               <BaixarPlanilhaRobo gerar={gerarMacroNfse} />
             </div>
@@ -665,12 +643,10 @@ export default function LancamentoNfseRobo() {
       <div className="panel-card">
         <div className="panel-title">Como rodar</div>
         <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>
+          <li>Uma vez só: baixe a <b>Planilha do robô (.xlsm)</b>, salve na sua pasta de trabalho e, no arquivo, clique com o botão direito → Propriedades → marque <b>Desbloquear</b>.</li>
           <li>Abra o SAP Logon e entre no sistema (scripting habilitado, como na planilha).</li>
-          <li>Se o navegador avisar sobre o download do .vbs, escolha “Manter”. Se vier como <code>.vbs.txt</code>, renomeie para <code>.vbs</code>.</li>
-          <li>Se o antivírus bloquear o download, use “Copiar código”: cole no Bloco de Notas e salve como <code>lancar-nfse.vbs</code> (Tipo: Todos os arquivos).</li>
-          <li>Se o antivírus bloquear até salvar o <code>.vbs</code>, use a planilha do robô no Excel: baixe uma vez a <b>Planilha do robô (.xlsm)</b> (na primeira vez, clique com o botão direito no arquivo → Propriedades → marque <b>Desbloquear</b>) e, a cada lote, baixe os <b>Dados para o Excel</b> e rode a macro <code>LancarNFSe</code>. O resultado (<code>resultado_nfse.csv</code>), o log e as pendências ficam na pasta onde está salva a planilha do robô (guarde-a na sua pasta de trabalho); no fim o robô oferece abrir essa pasta.</li>
-          <li>Se o antivírus bloquear ao dar dois cliques, rode pelo próprio SAP: <b>Alt+F12</b> → <b>Script Recording and Playback…</b> → no campo do arquivo, escolha o <code>lancar-nfse.vbs</code> salvo → <b>Playback</b> (botão ▶).</li>
-          <li>Dê dois cliques no arquivo e não mexa no SAP até a mensagem final. Se der erro, a mensagem diz qual nota; corrija no SAP e rode de novo.</li>
+          <li>A cada lote: baixe os <b>Dados para o Excel</b>, abra a planilha do robô, clique em <b>▶ Lançar NFS-e</b> e escolha o arquivo de dados. Não mexa no SAP até a mensagem final.</li>
+          <li>O resultado vai direto para a Central (no fim aparece “Resultado já enviado”). Se aparecer que não chegou, importe o <code>resultado_nfse.csv</code> no passo 3: ele fica na pasta da planilha do robô, junto com o log e as pendências.</li>
         </ol>
       </div>
     </div>
