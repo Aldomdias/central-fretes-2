@@ -2,6 +2,9 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles.css";
+import { instalarTimersSegundoPlano } from "./utils/timersSegundoPlano";
+
+instalarTimersSegundoPlano();
 
 // Depois de uma nova versao no ar, uma aba antiga pede arquivos (chunks) que nao existem mais e a
 // importacao dinamica falha ("Failed to fetch dynamically imported module"). O Vite avisa por este
