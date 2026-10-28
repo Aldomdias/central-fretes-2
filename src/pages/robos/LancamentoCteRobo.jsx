@@ -30,7 +30,7 @@ import { registrarLancamentos } from '../../services/robosLancamentosService';
 import { carregarSessao } from '../../utils/authLocal';
 import { PASTA_ETAPAS_CTE, gerarScriptConsultaNotasCte, gerarScriptPartidasCte } from '../../utils/robos/sapConsultasCte';
 import ScriptParaCopiar from './ScriptParaCopiar';
-import { passosMacroExcel } from './MacroExcel';
+import { BaixarPlanilhaRobo, passosMacroExcel } from './MacroExcel';
 import { gerarMacroCte, matrizDadosMacro } from '../../utils/robos/sapMacroExcel';
 
 const CHAVE = 'central_fretes_robo_cte_lote_v1';
@@ -338,6 +338,7 @@ export default function LancamentoCteRobo() {
                   <button type="button" className="btn-secondary" disabled={!prontas.length} onClick={() => baixarLancamento(true)} title="Mostra o script na tela para copiar e colar no Bloco de Notas, sem baixar arquivo">Copiar código (se o antivírus bloquear)</button>
                   <button type="button" className="btn-secondary" disabled={!prontas.length} onClick={baixarDadosMacro} title="Planilha comum (sem codigo) com os CT-e, para a macro do robo no Excel">Baixar dados para o Excel (.xlsx)</button>
                   <button type="button" className="btn-secondary" onClick={verMacro} title="Codigo da macro para a planilha do robo no Excel (copiar uma vez)">Código da macro (Excel)</button>
+                  <BaixarPlanilhaRobo gerar={gerarMacroCte} />
                   <button type="button" className="btn-secondary" onClick={() => baixarXlsx('cte-lancamento.xlsx', linhasLancamentoCte(linhas), CABECALHO_LANCAMENTO_CTE)}>Baixar tabela (.xlsx)</button>
                 </div>
               </div>
@@ -367,7 +368,7 @@ export default function LancamentoCteRobo() {
           <li>Abra o SAP Logon e entre no sistema (scripting habilitado, como na planilha).</li>
           <li>Se o navegador avisar sobre o download do .vbs, escolha “Manter”. Se vier como <code>.vbs.txt</code>, renomeie para <code>.vbs</code>.</li>
           <li>Se o antivírus bloquear o download, use “Copiar código”: cole no Bloco de Notas e salve como <code>lancar-cte.vbs</code> (Tipo: Todos os arquivos).</li>
-          <li>Se o antivírus bloquear até salvar o <code>.vbs</code>, use a planilha do robô no Excel: copie uma vez o <b>Código da macro (Excel)</b> para uma planilha .xlsm e, a cada lote, baixe os <b>Dados para o Excel</b> e rode a macro <code>LancarCTe</code>. O resultado (<code>resultado_cte.csv</code>) fica na mesma pasta do arquivo de dados.</li>
+          <li>Se o antivírus bloquear até salvar o <code>.vbs</code>, use a planilha do robô no Excel: baixe uma vez a <b>Planilha do robô (.xlsm)</b> (na primeira vez, clique com o botão direito no arquivo → Propriedades → marque <b>Desbloquear</b>) e, a cada lote, baixe os <b>Dados para o Excel</b> e rode a macro <code>LancarCTe</code>. O resultado (<code>resultado_cte.csv</code>) fica na mesma pasta do arquivo de dados.</li>
           <li>Se o antivírus bloquear ao dar dois cliques, rode pelo próprio SAP: <b>Alt+F12</b> → <b>Script Recording and Playback…</b> → no campo do arquivo, escolha o <code>lancar-cte.vbs</code> salvo → <b>Playback</b> (botão ▶).</li>
           <li>Dê dois cliques no arquivo e não mexa no SAP até a mensagem final.</li>
         </ol>
