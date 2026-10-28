@@ -282,7 +282,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
     parar.current = false;
     setErro(''); setAviso('');
     const usuario = sessao?.nome || sessao?.email || 'auditor';
-    let enviadas = 0; let ok = 0; const falhas = [];
+    let enviadas = 0; let tratadasFora = 0; let ok = 0; const falhas = [];
     for (let i = 0; i < alvo.length; i += 1) {
       if (parar.current) break;
       const { e, f } = alvo[i];
@@ -296,11 +296,12 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
         });
         ok += 1;
         if (reg.acao_executada && reg.modo === 'GESTAO') enviadas += 1;
+        if (reg.modo === 'TRATADA_FORA') tratadasFora += 1;
       } catch (ex) { falhas.push(`${f.numero_fatura}: ${ex.message || ex}`); }
     }
     const interrompido = parar.current;
     setLote(null);
-    setAviso(`${ok} reavaliada(s), ${enviadas} enviada(s) para a gestao${interrompido ? ` (interrompido; restam ${alvo.length - ok - falhas.length})` : ''}${falhas.length ? `; ${falhas.length} falharam` : ''}.`);
+    setAviso(`${ok} reavaliada(s), ${enviadas} enviada(s) para a gestao, ${tratadasFora} ja tratada(s) por fora${interrompido ? ` (interrompido; restam ${alvo.length - ok - falhas.length})` : ''}${falhas.length ? `; ${falhas.length} falharam` : ''}.`);
     if (falhas.length) setErro(falhas.slice(0, 5).join(' | '));
     await recarregar();
   };

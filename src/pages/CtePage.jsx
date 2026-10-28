@@ -3,6 +3,7 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import BaseCtesStatus, { invalidarStatusBaseCtes } from '../components/BaseCtesStatus';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import { parseRealizadoCtesFile } from '../utils/realizadoCtes';
+import { lerCteXml } from '../utils/cteXml';
 import {
   competenciaPrecisaEnxuta,
   competenciaPrecisaProcessamento,
@@ -2218,7 +2219,7 @@ function ValidacaoUpload({ validacao }) {
   );
 }
 
-export default function CtePage() {
+export default function CtePage({ transportadoras = [] }) {
   const [filtros, setFiltros] = useState({
     transportadoraRealizada: '',
     origem: '',
@@ -2233,6 +2234,10 @@ export default function CtePage() {
 
   const [competenciaUpload, setCompetenciaUpload] = useState(monthNow());
   const [arquivoUpload, setArquivoUpload] = useState(null);
+  const [tipoArquivoUpload, setTipoArquivoUpload] = useState('planilha');
+  const [arquivosXmlUpload, setArquivosXmlUpload] = useState([]);
+  const [transportadoraXmlId, setTransportadoraXmlId] = useState('');
+  const [falhasXmlUpload, setFalhasXmlUpload] = useState([]);
   const [statusCompetencia, setStatusCompetencia] = useState(null);
   const [validacaoUpload, setValidacaoUpload] = useState(null);
   const [metaUpload, setMetaUpload] = useState(null);
@@ -2297,7 +2302,60 @@ export default function CtePage() {
     verTodos: '',
   });
 
-  const podeImportar = Boolean((modoMultiMesUpload || competenciaUpload) && arquivoUpload && !importando);
+  const transportadoraXml = useMemo(
+    () => transportadoras.find((item) => String(item.id) === String(transportadoraXmlId)) || null,
+    [transportadoras, transportadoraXmlId],
+  );
+  const origemUploadSelecionada = tipoArquivoUpload === 'xml'
+    ? arquivosXmlUpload.length > 0 && Boolean(transportadoraXml)
+    : Boolean(arquivoUpload);
+  const podeImportar = Boolean((modoMultiMesUpload || competenciaUpload) && origemUploadSelecionada && !importando);
+
+  function selecionarXmlsUpload(fileList) {
+    const xmls = Array.from(fileList || []).filter((item) => /\.xml$/i.test(item.name));
+    setArquivosXmlUpload(xmls);
+    setFalhasXmlUpload([]);
+    setMetaUpload(null);
+    setValidacaoUpload(null);
+    setResultadoUpload(null);
+    setResultadoMultiMesUpload(null);
+    setErro(xmls.length ? '' : 'Nenhum arquivo XML foi encontrado na seleção.');
+    setFeedback(xmls.length ? `${fmtN(xmls.length)} XML(s) selecionado(s).` : '');
+  }
+
+  async function lerXmlsUpload() {
+    if (!transportadoraXml) throw new Error('Selecione a transportadora dos XMLs.');
+    const lidos = [];
+    const falhas = [];
+    for (let index = 0; index < arquivosXmlUpload.length; index += 1) {
+      const arquivo = arquivosXmlUpload[index];
+      setProgressoUpload({
+        etapa: 'leitura',
+        mensagem: `Lendo XML ${fmtN(index + 1)} de ${fmtN(arquivosXmlUpload.length)}...`,
+        percentual: Math.max(2, Math.round(((index + 1) / arquivosXmlUpload.length) * 12)),
+      });
+      try {
+        const row = lerCteXml(await arquivo.text(), arquivo.name);
+        lidos.push({
+          ...row,
+          transportadora: transportadoraXml.nome,
+          cnpj_transportadora: String(transportadoraXml.cnpj || row.cnpj_transportadora || '').replace(/\D/g, ''),
+        });
+      } catch (error) {
+        falhas.push(`${arquivo.name}: ${error.message || 'XML inválido'}`);
+      }
+    }
+    setFalhasXmlUpload(falhas);
+    if (!lidos.length) throw new Error('Nenhum XML de CT-e válido foi encontrado no lote.');
+    const registros = aplicarPoliticaBaseCte(lidos, opcoesPoliticaCte);
+    const aceitos = new Set(registros.map((row) => row.chave_cte || row.chaveCte));
+    const ignorados = lidos.filter((row) => !aceitos.has(row.chave_cte || row.chaveCte));
+    return {
+      registros,
+      ignorados,
+      meta: { aba: 'XMLs em massa', registrosValidos: registros.length, linhasOriginais: arquivosXmlUpload.length },
+    };
+  }
 
   const pendenciaProcessamento = useMemo(
     () => competenciaPrecisaProcessamento(statusCompetencia),
@@ -2488,8 +2546,10 @@ export default function CtePage() {
   }
 
   async function importarArquivoCte({ forcarSubstituir = false } = {}) {
-    if (!arquivoUpload || (!modoMultiMesUpload && !competenciaUpload)) {
-      setErro('Selecione a competência e o arquivo CT-e para subir.');
+    if (!origemUploadSelecionada || (!modoMultiMesUpload && !competenciaUpload)) {
+      setErro(tipoArquivoUpload === 'xml'
+        ? 'Selecione a transportadora, os XMLs e a competência para subir.'
+        : 'Selecione a competência e o arquivo CT-e para subir.');
       return;
     }
 
@@ -2505,7 +2565,12 @@ export default function CtePage() {
 
     try {
       const modo = forcarSubstituir ? 'substituir' : modoImportacao;
-      const { registros, ignorados, meta } = await parseRealizadoCtesFile(arquivoUpload, opcoesPoliticaCte);
+      const { registros, ignorados, meta } = tipoArquivoUpload === 'xml'
+        ? await lerXmlsUpload()
+        : await parseRealizadoCtesFile(arquivoUpload, opcoesPoliticaCte);
+      const arquivoOrigem = tipoArquivoUpload === 'xml'
+        ? `XML em massa - ${transportadoraXml.nome} (${arquivosXmlUpload.length} arquivos)`
+        : arquivoUpload.name;
       setMetaUpload(meta);
       setIgnoradosUpload(ignorados);
       salvarIgnoradosUploadSessao(ignorados);
@@ -2551,7 +2616,7 @@ export default function CtePage() {
           const faixaPercentual = Math.round(100 / meses.length);
           const respostaMes = await importarRealizadoMensalEnxuto({
             competencia: mes,
-            arquivoOrigem: arquivoUpload.name,
+            arquivoOrigem,
             registros: registrosDoMes,
             modo,
             onProgress: (event) => {
@@ -2630,7 +2695,7 @@ export default function CtePage() {
 
       const resposta = await importarRealizadoMensalEnxuto({
         competencia: competenciaUpload,
-        arquivoOrigem: arquivoUpload.name,
+        arquivoOrigem,
         registros,
         modo,
         onProgress: (event) => {
@@ -2795,6 +2860,8 @@ export default function CtePage() {
 
   function limparUpload() {
     setArquivoUpload(null);
+    setArquivosXmlUpload([]);
+    setFalhasXmlUpload([]);
     setValidacaoUpload(null);
     setMetaUpload(null);
     setResultadoUpload(null);
@@ -2808,6 +2875,10 @@ export default function CtePage() {
     setFeedback('Seleção de arquivo limpa.');
     const input = document.getElementById('cte-upload-file-input');
     if (input) input.value = '';
+    const xmlInput = document.getElementById('cte-upload-xml-input');
+    if (xmlInput) xmlInput.value = '';
+    const pastaInput = document.getElementById('cte-upload-xml-folder-input');
+    if (pastaInput) pastaInput.value = '';
   }
 
   async function diagnosticarChaveInformada() {
@@ -3146,6 +3217,16 @@ export default function CtePage() {
         badge={statusCompetencia ? `${fmtN(statusCompetencia.detalhado)} CT-es na competência` : 'Upload CTS'}
         defaultOpen
       >
+        <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginBottom: 10 }}>
+          <label className="audit-inline-check" style={{ fontWeight: 700 }}>
+            <input type="radio" name="tipo-arquivo-cte" checked={tipoArquivoUpload === 'planilha'} onChange={() => setTipoArquivoUpload('planilha')} disabled={importando} />
+            Planilha
+          </label>
+          <label className="audit-inline-check" style={{ fontWeight: 700 }}>
+            <input type="radio" name="tipo-arquivo-cte" checked={tipoArquivoUpload === 'xml'} onChange={() => setTipoArquivoUpload('xml')} disabled={importando} />
+            XMLs de CT-e em massa
+          </label>
+        </div>
         <label className="audit-inline-check" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, fontWeight: 700, margin: '0 0 10px' }}>
           <input type="checkbox" checked={modoMultiMesUpload} onChange={(e) => setModoMultiMesUpload(e.target.checked)} disabled={importando} />
           Este arquivo tem CT-es de vários meses (ex.: lote de um transportador) — cada CT-e é gravado na sua própria competência automaticamente.
@@ -3161,7 +3242,7 @@ export default function CtePage() {
             />
           </div>
 
-          <div className="field">
+          {tipoArquivoUpload === 'planilha' ? <div className="field">
             <label>Arquivo CT-e (completo ou parcial)</label>
             <input
               id="cte-upload-file-input"
@@ -3170,7 +3251,15 @@ export default function CtePage() {
               onChange={(event) => setArquivoUpload(event.target.files?.[0] || null)}
               disabled={importando}
             />
-          </div>
+          </div> : (
+            <div className="field">
+              <label>Transportadora dos XMLs</label>
+              <select value={transportadoraXmlId} onChange={(event) => setTransportadoraXmlId(event.target.value)} disabled={importando}>
+                <option value="">Selecione...</option>
+                {transportadoras.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
+              </select>
+            </div>
+          )}
 
           <div className="field">
             <label>Ação</label>
@@ -3187,6 +3276,19 @@ export default function CtePage() {
             </div>
           </div>
         </div>
+
+        {tipoArquivoUpload === 'xml' ? (
+          <div className="form-grid" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10, marginTop: 10 }}>
+            <div className="field">
+              <label>Selecionar vários XMLs</label>
+              <input id="cte-upload-xml-input" type="file" accept=".xml,text/xml,application/xml" multiple onChange={(event) => selecionarXmlsUpload(event.target.files)} disabled={importando} />
+            </div>
+            <div className="field">
+              <label>Ou selecionar uma pasta inteira</label>
+              <input id="cte-upload-xml-folder-input" type="file" accept=".xml,text/xml,application/xml" multiple webkitdirectory="" directory="" onChange={(event) => selecionarXmlsUpload(event.target.files)} disabled={importando} />
+            </div>
+          </div>
+        ) : null}
 
         <div style={{ display: 'grid', gap: 10, margin: '12px 0' }}>
           <label
@@ -3327,8 +3429,21 @@ export default function CtePage() {
               {importando ? 'Processando...' : 'Continuar processamento'}
             </button>
           ) : null}
-          {arquivoUpload ? <span style={{ fontSize: 13, color: 'var(--muted)' }}>Arquivo: <strong>{arquivoUpload.name}</strong></span> : null}
+          {tipoArquivoUpload === 'planilha' && arquivoUpload ? <span style={{ fontSize: 13, color: 'var(--muted)' }}>Arquivo: <strong>{arquivoUpload.name}</strong></span> : null}
+          {tipoArquivoUpload === 'xml' && arquivosXmlUpload.length ? (
+            <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+              <strong>{fmtN(arquivosXmlUpload.length)} XML(s)</strong> para <strong>{transportadoraXml?.nome || 'transportadora não selecionada'}</strong>
+            </span>
+          ) : null}
         </div>
+
+        {falhasXmlUpload.length ? (
+          <div className="sim-alert warn" style={{ marginTop: 10 }}>
+            <strong>{fmtN(falhasXmlUpload.length)} XML(s) inválido(s) foram ignorados:</strong>
+            {falhasXmlUpload.slice(0, 8).map((item) => <div key={item} style={{ marginTop: 4 }}>{item}</div>)}
+            {falhasXmlUpload.length > 8 ? <div style={{ marginTop: 4 }}>… e mais {fmtN(falhasXmlUpload.length - 8)}.</div> : null}
+          </div>
+        ) : null}
 
         {pendenciaProcessamento ? (
           <div className="sim-alert warn" style={{ marginTop: 10 }}>

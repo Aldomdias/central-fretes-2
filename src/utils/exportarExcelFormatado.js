@@ -4,7 +4,7 @@
 // colunas: [{ titulo, largura?, tipo?: 'texto' | 'moeda' | 'numero' | 'inteiro' | 'data' | 'datahora' | 'centro' }]
 // linhas:  arrays na mesma ordem das colunas (datas podem vir como Date ou string ISO)
 // resumo:  opcional, [[rotulo, valor], ...] -> aba "Filtros" com o que foi aplicado na tela
-export async function exportarExcelFormatado({ nomeArquivo, aba = 'Dados', colunas = [], linhas = [], resumo = null }) {
+export async function exportarExcelFormatado({ nomeArquivo, aba = 'Dados', colunas = [], linhas = [], resumo = null, retornarBytes = false }) {
   const { default: XS } = await import('xlsx-js-style');
   const paraData = (v) => {
     if (!v) return '';
@@ -70,5 +70,7 @@ export async function exportarExcelFormatado({ nomeArquivo, aba = 'Dados', colun
     XS.utils.book_append_sheet(wb, wr, 'Filtros');
   }
 
+  if (retornarBytes) return XS.write(wb, { type: 'array', bookType: 'xlsx', cellDates: true });
   XS.writeFile(wb, nomeArquivo, { cellDates: true });
+  return null;
 }

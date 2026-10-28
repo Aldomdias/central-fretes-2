@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { parseRealizadoCtesFile, formatDateBr } from '../utils/realizadoCtes';
+import { lerCteXml } from '../utils/cteXml';
+import { listarTransportadorasCadastro } from '../services/tabelasNegociacaoService';
 import {
   importarRealizadoMensalEnxuto,
   listarPendenciasIbgeRealizadoMensal,
@@ -83,8 +85,13 @@ function ValidacaoLista({ validacao }) {
 }
 
 export default function ImportarRealizadoCtePage() {
+  const [tipoEntrada, setTipoEntrada] = useState('planilha');
   const [competencia, setCompetencia] = useState(monthNow());
   const [arquivo, setArquivo] = useState(null);
+  const [arquivosXml, setArquivosXml] = useState([]);
+  const [transportadoras, setTransportadoras] = useState([]);
+  const [transportadoraId, setTransportadoraId] = useState('');
+  const [falhasXml, setFalhasXml] = useState([]);
   const [processando, setProcessando] = useState(false);
   const [erro, setErro] = useState('');
   const [feedback, setFeedback] = useState('');
@@ -98,11 +105,74 @@ export default function ImportarRealizadoCtePage() {
   const [modoMultiMes, setModoMultiMes] = useState(false);
   const [resultadoMultiMes, setResultadoMultiMes] = useState(null);
 
-  const podeImportar = useMemo(
-    () => Boolean((modoMultiMes || competencia) && arquivo && !processando),
-    [modoMultiMes, competencia, arquivo, processando]
+  const transportadoraSelecionada = useMemo(
+    () => transportadoras.find((item) => String(item.id) === String(transportadoraId)) || null,
+    [transportadoras, transportadoraId]
   );
+  const podeImportar = useMemo(() => {
+    const temOrigem = tipoEntrada === 'xml'
+      ? arquivosXml.length > 0 && Boolean(transportadoraSelecionada)
+      : Boolean(arquivo);
+    return Boolean((modoMultiMes || competencia) && temOrigem && !processando);
+  }, [modoMultiMes, competencia, tipoEntrada, arquivosXml.length, transportadoraSelecionada, arquivo, processando]);
   const possuiBaseNaCompetencia = Number(statusCompetencia?.detalhado || 0) > 0;
+
+  useEffect(() => {
+    let ativo = true;
+    listarTransportadorasCadastro()
+      .then((lista) => { if (ativo) setTransportadoras(lista || []); })
+      .catch((error) => { if (ativo) setErro(error.message || 'Não foi possível carregar as transportadoras.'); });
+    return () => { ativo = false; };
+  }, []);
+
+  function selecionarXmls(fileList) {
+    const xmls = Array.from(fileList || []).filter((item) => /\.xml$/i.test(item.name));
+    setArquivosXml(xmls);
+    setFalhasXml([]);
+    setMeta(null);
+    setValidacao(null);
+    setResultado(null);
+    setResultadoMultiMes(null);
+    setErro(xmls.length ? '' : 'Nenhum arquivo XML foi encontrado na seleção.');
+    setFeedback(xmls.length ? `${formatInt(xmls.length)} XML(s) selecionado(s) para importação.` : '');
+  }
+
+  async function lerLoteXml() {
+    if (!transportadoraSelecionada) throw new Error('Selecione a transportadora dos XMLs.');
+    const registros = [];
+    const falhas = [];
+
+    for (let index = 0; index < arquivosXml.length; index += 1) {
+      const item = arquivosXml[index];
+      setProgresso({
+        etapa: 'leitura',
+        mensagem: `Lendo XML ${formatInt(index + 1)} de ${formatInt(arquivosXml.length)}...`,
+        percentual: Math.max(2, Math.round(((index + 1) / arquivosXml.length) * 12)),
+      });
+      try {
+        const registro = lerCteXml(await item.text(), item.name);
+        registros.push({
+          ...registro,
+          transportadora: transportadoraSelecionada.nome,
+          cnpj_transportadora: String(transportadoraSelecionada.cnpj || registro.cnpj_transportadora || '').replace(/\D/g, ''),
+        });
+      } catch (error) {
+        falhas.push(`${item.name}: ${error.message || 'XML inválido'}`);
+      }
+    }
+
+    setFalhasXml(falhas);
+    if (!registros.length) throw new Error('Nenhum XML de CT-e válido foi encontrado no lote.');
+    return {
+      registros,
+      meta: {
+        aba: 'XMLs em massa',
+        registrosValidos: registros.length,
+        linhasOriginais: arquivosXml.length,
+        arquivosInvalidos: falhas.length,
+      },
+    };
+  }
 
   async function consultarCompetencia() {
     if (!competencia) {
@@ -167,8 +237,10 @@ export default function ImportarRealizadoCtePage() {
   }
 
   async function importar({ forcarSubstituir = false } = {}) {
-    if (!arquivo || (!modoMultiMes && !competencia)) {
-      setErro('Selecione a competência e o arquivo de CT-e.');
+    if (!podeImportar) {
+      setErro(tipoEntrada === 'xml'
+        ? 'Selecione a transportadora, os XMLs e a competência.'
+        : 'Selecione a competência e o arquivo de CT-e.');
       return;
     }
 
@@ -184,8 +256,13 @@ export default function ImportarRealizadoCtePage() {
 
     try {
       const substituir = Boolean(forcarSubstituir || modoSubstituir);
-      const { registros, meta: metaArquivo } = await parseRealizadoCtesFile(arquivo);
+      const { registros, meta: metaArquivo } = tipoEntrada === 'xml'
+        ? await lerLoteXml()
+        : await parseRealizadoCtesFile(arquivo);
       setMeta(metaArquivo);
+      const arquivoOrigem = tipoEntrada === 'xml'
+        ? `XML em massa - ${transportadoraSelecionada.nome} (${arquivosXml.length} arquivos)`
+        : arquivo.name;
 
       if (modoMultiMes) {
         // Cada registro ja vem com sua propria competencia (calculada pela
@@ -213,7 +290,7 @@ export default function ImportarRealizadoCtePage() {
           setProgresso({ etapa: 'processamento', mensagem: `Importando ${mes} (${index + 1}/${meses.length}): ${formatInt(registrosDoMes.length)} CT-e(s)...`, percentual: Math.round((index / meses.length) * 100) });
           const resposta = await importarUmaCompetencia(mes, registrosDoMes, {
             substituir,
-            arquivoOrigem: arquivo.name,
+            arquivoOrigem,
             onProgress: (event) => {
               if (event.etapa === 'temporaria') {
                 const total = Number(event.total || registrosDoMes.length || 1);
@@ -262,7 +339,7 @@ export default function ImportarRealizadoCtePage() {
 
       const resposta = await importarUmaCompetencia(competencia, registros, {
         substituir,
-        arquivoOrigem: arquivo.name,
+        arquivoOrigem,
         onProgress: (event) => {
           if (event.etapa === 'validacao') {
             setValidacao(event.validacao);
@@ -318,6 +395,8 @@ export default function ImportarRealizadoCtePage() {
 
   function limparSelecao() {
     setArquivo(null);
+    setArquivosXml([]);
+    setFalhasXml([]);
     setMeta(null);
     setValidacao(null);
     setResultado(null);
@@ -328,6 +407,10 @@ export default function ImportarRealizadoCtePage() {
 
     const input = document.getElementById('realizado-cte-file-input');
     if (input) input.value = '';
+    const xmlInput = document.getElementById('realizado-cte-xml-input');
+    if (xmlInput) xmlInput.value = '';
+    const pastaInput = document.getElementById('realizado-cte-xml-folder-input');
+    if (pastaInput) pastaInput.value = '';
   }
 
   return (
@@ -381,13 +464,26 @@ export default function ImportarRealizadoCtePage() {
       <div className="feature-grid two">
         <section className="panel-card">
           <div>
-            <div className="panel-title">1. Selecionar competência e arquivo</div>
+            <div className="panel-title">1. Selecionar competência e arquivos</div>
             <p>
               Use importação normal para mês novo. Para subir novamente um mês já existente, marque substituição ou use o botão de reimportação.
             </p>
           </div>
 
           <div className="form-grid">
+            <div className="field" style={{ gridColumn: '1 / -1' }}>
+              <label>Formato da importação</label>
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                <label className="audit-inline-check">
+                  <input type="radio" name="tipo-importacao-cte" value="planilha" checked={tipoEntrada === 'planilha'} onChange={() => setTipoEntrada('planilha')} disabled={processando} />
+                  Planilha (.xlsx, .xls ou .csv)
+                </label>
+                <label className="audit-inline-check">
+                  <input type="radio" name="tipo-importacao-cte" value="xml" checked={tipoEntrada === 'xml'} onChange={() => setTipoEntrada('xml')} disabled={processando} />
+                  XMLs de CT-e em massa
+                </label>
+              </div>
+            </div>
             <div className="field" style={{ gridColumn: '1 / -1' }}>
               <label className="audit-inline-check" style={{ fontWeight: 700 }}>
                 <input type="checkbox" checked={modoMultiMes} onChange={(e) => setModoMultiMes(e.target.checked)} disabled={processando} />
@@ -398,7 +494,7 @@ export default function ImportarRealizadoCtePage() {
               <label>Competência{modoMultiMes ? ' (ignorada no modo multi-mês)' : ''}</label>
               <input type="month" value={competencia} onChange={(event) => setCompetencia(event.target.value)} disabled={processando || modoMultiMes} />
             </div>
-            <div className="field">
+            {tipoEntrada === 'planilha' ? <div className="field">
               <label>Arquivo CT-e completo</label>
               <input
                 id="realizado-cte-file-input"
@@ -407,7 +503,25 @@ export default function ImportarRealizadoCtePage() {
                 onChange={(event) => setArquivo(event.target.files?.[0] || null)}
                 disabled={processando}
               />
-            </div>
+            </div> : (
+              <>
+                <div className="field">
+                  <label>Transportadora dos CT-e</label>
+                  <select value={transportadoraId} onChange={(event) => setTransportadoraId(event.target.value)} disabled={processando}>
+                    <option value="">Selecione...</option>
+                    {transportadoras.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Selecionar vários XMLs</label>
+                  <input id="realizado-cte-xml-input" type="file" accept=".xml,text/xml,application/xml" multiple onChange={(event) => selecionarXmls(event.target.files)} disabled={processando} />
+                </div>
+                <div className="field" style={{ gridColumn: '1 / -1' }}>
+                  <label>Ou selecionar uma pasta inteira</label>
+                  <input id="realizado-cte-xml-folder-input" type="file" accept=".xml,text/xml,application/xml" multiple webkitdirectory="" directory="" onChange={(event) => selecionarXmls(event.target.files)} disabled={processando} />
+                </div>
+              </>
+            )}
           </div>
 
           <label
@@ -454,7 +568,19 @@ export default function ImportarRealizadoCtePage() {
             </div>
           ) : null}
 
-          {arquivo ? <div className="import-meta-box">Arquivo selecionado: <strong>{arquivo.name}</strong></div> : null}
+          {tipoEntrada === 'planilha' && arquivo ? <div className="import-meta-box">Arquivo selecionado: <strong>{arquivo.name}</strong></div> : null}
+          {tipoEntrada === 'xml' && arquivosXml.length ? (
+            <div className="import-meta-box">
+              <strong>{formatInt(arquivosXml.length)} XML(s)</strong> selecionado(s) para <strong>{transportadoraSelecionada?.nome || 'transportadora não selecionada'}</strong>.
+            </div>
+          ) : null}
+          {falhasXml.length ? (
+            <div className="sim-alert" style={{ marginTop: 10 }}>
+              <strong>{formatInt(falhasXml.length)} XML(s) não puderam ser lidos:</strong>
+              {falhasXml.slice(0, 8).map((item) => <div key={item} style={{ marginTop: 4 }}>{item}</div>)}
+              {falhasXml.length > 8 ? <div style={{ marginTop: 4 }}>… e mais {formatInt(falhasXml.length - 8)} arquivo(s).</div> : null}
+            </div>
+          ) : null}
           {meta ? (
             <div className="import-meta-box">
               Leitura: aba {meta.aba || '—'} • {formatInt(meta.registrosValidos)} CT-e(s) válido(s) • {formatInt(meta.linhasOriginais)} linha(s)
