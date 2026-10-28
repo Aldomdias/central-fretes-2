@@ -464,11 +464,6 @@ export default function LancamentoNfseRobo() {
     return ` ${fmt(r.novos)} nova(s) registrada(s) ${onde}.`;
   }
 
-  async function guardarHistoricoManual() {
-    const r = await registrarHistorico(linhas);
-    if (r) { setErro(''); setFeedback(`Historico atualizado.${textoHistorico(r)}`); }
-  }
-
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <AvisoFila tipo="NFSE" />
@@ -616,9 +611,12 @@ export default function LancamentoNfseRobo() {
             <p style={{ margin: '4px 0 10px' }}>Baixe os dados e rode na planilha do robô (Excel): ela cria o pedido (ME21N) das notas sem pedido e depois a MIRO das que têm pedido e ainda não têm MIRO. Se uma nota falhar (ex.: precisa de aprovação), o robô pula, segue com as demais e no fim lista as pendências; ao rodar de novo, pula o que já tem número.</p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button type="button" className="btn-primary" disabled={!prontas.length} onClick={baixarDadosMacro} title="Planilha comum (sem codigo) com as notas, para a planilha do robo">Baixar dados para o Excel (.xlsx)</button>
-              <button type="button" className="btn-secondary" onClick={verMacro} title="Codigo da macro para a planilha do robo no Excel (copiar uma vez)">Código da macro (Excel)</button>
               <BaixarPlanilhaRobo gerar={gerarMacroNfse} />
             </div>
+            <details style={{ marginTop: 8, fontSize: 13 }}>
+              <summary style={{ cursor: 'pointer', color: '#64748b' }}>Outras opções</summary>
+              <button type="button" className="btn-secondary" style={{ marginTop: 6 }} onClick={verMacro} title="Para montar ou atualizar a planilha do robo">Código da macro (Excel)</button>
+            </details>
           </div>
         </div>
       </div>
@@ -627,15 +625,18 @@ export default function LancamentoNfseRobo() {
         <div style={passoStyle}>
           <span style={numStyle}>3</span>
           <div>
-            <div className="panel-title" style={{ margin: 0 }}>Trazer o resultado e enviar</div>
-            <p style={{ margin: '4px 0 10px' }}>Depois de rodar, carregue o <code>resultado_nfse.csv</code> e, se houver, o <code>pendencias_nfse.csv</code> (pode selecionar os dois juntos; o <code>log_lancamento_nfse.txt</code> também serve, inclusive de outra máquina) para preencher os números de pedido e MIRO e marcar as notas que falharam no SAP. Para tratar as falhas: baixe as pendentes, corrija e use “Deixar só as pendentes no lote” antes de gerar os dados de novo. As notas com MIRO entram sozinhas no histórico (aba “Acompanhamento de lançamentos”). Em seguida baixe o resumo para envio.</p>
+            <div className="panel-title" style={{ margin: 0 }}>Resultado</div>
+            <p style={{ margin: '4px 0 10px' }}>Não precisa fazer nada: a planilha do robô manda pedido, MIRO e o motivo das falhas para a Central sozinha (no fim aparece “Resultado já enviado”) e eles aparecem nesta tela ao abrir de novo. As notas com MIRO entram no histórico; as que falharem ficam marcadas em laranja e em “Sem MIRO” (aba “Acompanhamento de lançamentos”). Para lançar só as que faltam: corrija e use “Deixar só as pendentes no lote” antes de baixar os dados de novo.</p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <input ref={refResultado} type="file" accept=".csv,.txt" multiple onChange={(e) => importarResultado(e.target.files)} />
               <button type="button" className="btn-secondary" disabled={!falhasSap.length} onClick={baixarPendentes} title="Notas que o robo pulou, com o motivo do SAP">Baixar pendentes do SAP ({fmt(falhasSap.length)})</button>
               <button type="button" className="btn-secondary" onClick={manterSoPendentes} title="Tira do lote as notas que ja tem MIRO">Deixar só as pendentes no lote</button>
               <button type="button" className="btn-secondary" onClick={baixarEnviar}>Baixar resumo (Enviar) .xlsx</button>
-              <button type="button" className="btn-secondary" onClick={guardarHistoricoManual}>Registrar no histórico</button>
             </div>
+            <details style={{ marginTop: 8, fontSize: 13 }}>
+              <summary style={{ cursor: 'pointer', color: '#64748b' }}>A planilha avisou que o resultado não chegou?</summary>
+              <p style={{ margin: '6px 0' }}>Carregue o <code>resultado_nfse.csv</code> e o <code>pendencias_nfse.csv</code> (pode selecionar os dois juntos), que ficam na pasta da planilha do robô:</p>
+              <input ref={refResultado} type="file" accept=".csv,.txt" multiple onChange={(e) => importarResultado(e.target.files)} />
+            </details>
           </div>
         </div>
       </div>
@@ -643,10 +644,11 @@ export default function LancamentoNfseRobo() {
       <div className="panel-card">
         <div className="panel-title">Como rodar</div>
         <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>
-          <li>Uma vez só: baixe a <b>Planilha do robô (.xlsm)</b>, salve na sua pasta de trabalho e, no arquivo, clique com o botão direito → Propriedades → marque <b>Desbloquear</b>.</li>
-          <li>Abra o SAP Logon e entre no sistema (scripting habilitado, como na planilha).</li>
-          <li>A cada lote: baixe os <b>Dados para o Excel</b>, abra a planilha do robô, clique em <b>▶ Lançar NFS-e</b> e escolha o arquivo de dados. Não mexa no SAP até a mensagem final.</li>
-          <li>O resultado vai direto para a Central (no fim aparece “Resultado já enviado”). Se aparecer que não chegou, importe o <code>resultado_nfse.csv</code> no passo 3: ele fica na pasta da planilha do robô, junto com o log e as pendências.</li>
+          <li>Importe as notas (passo 1).</li>
+          <li>Clique em <b>Baixar dados para o Excel</b> (passo 2).</li>
+          <li>Com o SAP logado, abra a planilha do robô, clique em <b>▶ Lançar NFS-e</b> e escolha o arquivo baixado. Não mexa no SAP até a mensagem final.</li>
+          <li>Pronto: o resultado volta sozinho para a Central. O que falhar aparece em laranja e em “Sem MIRO” com o motivo.</li>
+          <li style={{ color: '#64748b' }}>Primeira vez: baixe a <b>Planilha do robô (.xlsm)</b>, salve na sua pasta e, no arquivo, botão direito → Propriedades → marque <b>Desbloquear</b>.</li>
         </ol>
       </div>
     </div>

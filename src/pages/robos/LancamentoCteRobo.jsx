@@ -82,9 +82,6 @@ export default function LancamentoCteRobo() {
   const comErro = linhas.filter((l) => !podeIrParaRobo(l));
   const prontas = linhas.filter(podeIrParaRobo);
   const ccPeloRobo = prontas.filter((l) => l.erros.length).length;
-  const semPedido = prontas.filter((l) => !l.pedido).length;
-  const semMiro = prontas.filter((l) => l.pedido && !l.miro).length;
-  const comCc = linhas.filter((l) => l.cc).length;
   // chaves das NFs de venda para a consulta do centro de custo (planilha do robo)
 
   function editar(id, campo, valor) {
@@ -192,12 +189,6 @@ export default function LancamentoCteRobo() {
     return registrarLancamentos('CTE', com, sessao?.nome || sessao?.email || '');
   }
 
-  async function guardarHistoricoManual() {
-    const r = await registrarHistorico(linhas);
-    if (!r) { setErro('Nenhum CT-e com MIRO para registrar no historico.'); return; }
-    setErro(''); setFeedback(`Historico atualizado. ${fmt(r.novos)} novo(s) registrado(s).`);
-  }
-
   async function baixarEnviar() {
     const dados = linhasEnviarCte(linhas);
     if (!dados.length) { setErro('Ainda nao ha pedido/MIRO para enviar.'); return; }
@@ -240,14 +231,13 @@ export default function LancamentoCteRobo() {
             <div style={passoStyle}>
               <span style={numStyle}>2</span>
               <div style={{ flex: 1 }}>
-                <div className="panel-title" style={{ margin: 0 }}>Conferir e lançar</div>
+                <div className="panel-title" style={{ margin: 0 }}>Conferir e baixar os dados para a planilha do robô</div>
+                <p style={{ margin: '4px 0 0' }}>Confira a tabela e clique em <b>Baixar dados para o Excel</b>. Na planilha do robô, <b>▶ Lançar CT-e</b> faz tudo: consulta no SAP o centro de custo que faltar (linhas em laranja), cria o pedido e a MIRO e manda o resultado para a Central.</p>
                 <div className="summary-strip" style={{ marginTop: 10 }}>
                   <div className="summary-card"><span>CT-e</span><strong>{fmt(linhas.length)}</strong></div>
+                  <div className="summary-card"><span>Prontos para o robô</span><strong>{fmt(prontas.length)}</strong></div>
+                  {ccPeloRobo ? <div className="summary-card"><span>Centro de custo pelo robô</span><strong style={{ color: '#b45309' }}>{fmt(ccPeloRobo)}</strong></div> : null}
                   <div className="summary-card"><span>Com pendência</span><strong style={{ color: comErro.length ? '#b91c1c' : undefined }}>{fmt(comErro.length)}</strong></div>
-                  <div className="summary-card"><span>C.Custo pelo robô</span><strong style={{ color: ccPeloRobo ? '#b45309' : undefined }}>{fmt(ccPeloRobo)}</strong></div>
-                  <div className="summary-card"><span>Com centro de custo</span><strong>{fmt(comCc)}</strong></div>
-                  <div className="summary-card"><span>Sem pedido</span><strong>{fmt(semPedido)}</strong></div>
-                  <div className="summary-card"><span>Pedido sem MIRO</span><strong>{fmt(semMiro)}</strong></div>
                   <div className="summary-card"><span>Valor bruto</span><strong style={{ fontSize: 15 }}>{moeda(linhas.reduce((s, l) => s + l.bruto, 0))}</strong></div>
                 </div>
                 <div className="field" style={{ marginTop: 10, maxWidth: 220 }}>
@@ -286,10 +276,15 @@ export default function LancamentoCteRobo() {
                 <p style={{ fontSize: 12, color: '#64748b' }}>Preencher o Pedido à mão equivale ao botão “Criar Miro (exceção)”: o robô pula o pedido e lança só a MIRO. Vencimento padrão = hoje.</p>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
                   <button type="button" className="btn-primary" disabled={!prontas.length} onClick={baixarDadosMacro} title="Planilha comum (sem codigo) com os CT-e, para a planilha do robo">Baixar dados para o Excel (.xlsx)</button>
-                  <button type="button" className="btn-secondary" onClick={verMacro} title="Codigo da macro para a planilha do robo no Excel (copiar uma vez)">Código da macro (Excel)</button>
                   <BaixarPlanilhaRobo gerar={gerarMacroCte} />
-                  <button type="button" className="btn-secondary" onClick={() => baixarXlsx('cte-lancamento.xlsx', linhasLancamentoCte(linhas), CABECALHO_LANCAMENTO_CTE)}>Baixar tabela (.xlsx)</button>
                 </div>
+                <details style={{ marginTop: 8, fontSize: 13 }}>
+                  <summary style={{ cursor: 'pointer', color: '#64748b' }}>Outras opções</summary>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+                    <button type="button" className="btn-secondary" onClick={verMacro} title="Para montar ou atualizar a planilha do robo">Código da macro (Excel)</button>
+                    <button type="button" className="btn-secondary" onClick={() => baixarXlsx('cte-lancamento.xlsx', linhasLancamentoCte(linhas), CABECALHO_LANCAMENTO_CTE)}>Baixar tabela (.xlsx)</button>
+                  </div>
+                </details>
               </div>
             </div>
           </div>
@@ -298,13 +293,16 @@ export default function LancamentoCteRobo() {
             <div style={passoStyle}>
               <span style={numStyle}>3</span>
               <div>
-                <div className="panel-title" style={{ margin: 0 }}>Trazer o resultado</div>
-                <p style={{ margin: '4px 0 10px' }}>A planilha do robô manda pedido e MIRO direto para a Central (no fim aparece “Resultado já enviado”). Se aparecer que não chegou, carregue aqui o <code>resultado_cte.csv</code>, que fica na pasta da planilha do robô. Os CT-e com MIRO entram sozinhos no histórico; os que falharem aparecem em “Sem MIRO” (aba “Acompanhamento de lançamentos”). Ao rodar de novo, o robô pula o que já tem número.</p>
+                <div className="panel-title" style={{ margin: 0 }}>Resultado</div>
+                <p style={{ margin: '4px 0 10px' }}>Não precisa fazer nada: a planilha do robô manda pedido e MIRO para a Central sozinha (no fim aparece “Resultado já enviado”) e eles aparecem nesta tela ao abrir de novo. Os CT-e com MIRO entram no histórico; os que falharem ficam em “Sem MIRO”, na aba “Acompanhamento de lançamentos”.</p>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                  <input ref={refRes} type="file" accept=".csv,.txt" onChange={(e) => importarResultado(e.target.files?.[0])} />
                   <button type="button" className="btn-secondary" onClick={baixarEnviar}>Baixar resumo (Enviar) .xlsx</button>
-                  <button type="button" className="btn-secondary" onClick={guardarHistoricoManual}>Registrar no histórico</button>
                 </div>
+                <details style={{ marginTop: 8, fontSize: 13 }}>
+                  <summary style={{ cursor: 'pointer', color: '#64748b' }}>A planilha avisou que o resultado não chegou?</summary>
+                  <p style={{ margin: '6px 0' }}>Carregue o <code>resultado_cte.csv</code>, que fica na pasta da planilha do robô:</p>
+                  <input ref={refRes} type="file" accept=".csv,.txt" onChange={(e) => importarResultado(e.target.files?.[0])} />
+                </details>
               </div>
             </div>
           </div>
@@ -314,10 +312,11 @@ export default function LancamentoCteRobo() {
       <div className="panel-card">
         <div className="panel-title">Como rodar</div>
         <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>
-          <li>Uma vez só: baixe a <b>Planilha do robô (.xlsm)</b>, salve na sua pasta de trabalho e, no arquivo, clique com o botão direito → Propriedades → marque <b>Desbloquear</b>.</li>
-          <li>Abra o SAP Logon e entre no sistema (scripting habilitado, como na planilha).</li>
-          <li>Centro de custo: o que a Central não achar (em laranja na tabela) o robô consulta no SAP pela NF de venda antes de lançar. Se nem o SAP achar, o CT-e fica em “Sem MIRO” com o motivo; aí digite o centro de custo na tabela.</li>
-          <li>Lançamento: baixe os <b>Dados para o Excel</b>, clique em <b>▶ Lançar CT-e</b> na planilha e escolha o arquivo. Não mexa no SAP até a mensagem final.</li>
+          <li>Importe os XMLs (passo 1).</li>
+          <li>Clique em <b>Baixar dados para o Excel</b> (passo 2).</li>
+          <li>Com o SAP logado, abra a planilha do robô, clique em <b>▶ Lançar CT-e</b> e escolha o arquivo baixado. Não mexa no SAP até a mensagem final.</li>
+          <li>Pronto: o resultado volta sozinho para a Central. O que falhar aparece em “Sem MIRO” com o motivo.</li>
+          <li style={{ color: '#64748b' }}>Primeira vez: baixe a <b>Planilha do robô (.xlsm)</b>, salve na sua pasta e, no arquivo, botão direito → Propriedades → marque <b>Desbloquear</b>.</li>
         </ol>
         <div style={{ fontSize: 12, color: '#64748b', marginTop: 6 }}>Datas: emissão {linhas[0] ? isoParaBr(linhas[0].dataEmissao) : '—'} (primeiro CT-e). Vencimento usado: {isoParaBr(vencimento)}.</div>
       </div>
