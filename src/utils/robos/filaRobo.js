@@ -2,6 +2,7 @@
 // lancar a nota de novo) e o caminho de volta, da fila para o lote salvo da tela do robo.
 import { hojeIso } from './lancamentoComum';
 import { motivoCurto } from './lancamentoNfse';
+import { linhaParaRegistro } from './historicoLancamentos';
 
 export const CHAVE_LOTE_NFSE = 'central_fretes_robo_nfse_lote_v2';
 export const CHAVE_LOTE_CTE = 'central_fretes_robo_cte_lote_v1';
@@ -10,9 +11,18 @@ function semVazio(obj) {
   return obj && Object.keys(obj).length ? obj : undefined;
 }
 
+// Registro do historico (robos_lancamentos) desta linha, sem pedido/MIRO: quando a MIRO chega pela
+// planilha do robo (direto na fila), a Central monta o historico com ele.
+function registroBase(tipo, l) {
+  const r = linhaParaRegistro(tipo, { ...l, pedido: l.pedido || '-' });
+  if (!r) return undefined;
+  const { pedido, miro, tipo: t, ...resto } = r;
+  return resto;
+}
+
 // l: linha calculada da NFS-e; entrada: a linha digitada/importada da grade (sem o uid).
 export function itemFilaNfse(l, entrada) {
-  const { uid, ...resto } = entrada || {};
+  const { uid, registro, ...resto } = entrada || {};
   return {
     tipo: 'NFSE',
     chave: l.id,
@@ -20,7 +30,7 @@ export function itemFilaNfse(l, entrada) {
     transportadora: l.transportadora,
     cnpj_transp: l.cnpjTransp,
     valor: l.valor,
-    entrada: semVazio(resto),
+    entrada: semVazio(resto) ? { ...resto, registro: registroBase('NFSE', l) } : undefined,
     pedido: l.pedido || '',
     miro: l.miro || '',
     motivo: l.falhaSap && !l.miro ? motivoCurto(l.falhaSap.motivo) : undefined,
@@ -38,7 +48,7 @@ export function itemFilaCte(l, partida, manual = {}) {
     transportadora: l.transportadora,
     cnpj_transp: l.cnpjTransp,
     valor: l.bruto,
-    entrada: l.ct ? { ct: l.ct, partida: l.danfe && partida ? [l.danfe, partida] : null, manual: digitado } : undefined,
+    entrada: l.ct ? { ct: l.ct, partida: l.danfe && partida ? [l.danfe, partida] : null, manual: digitado, registro: registroBase('CTE', l) } : undefined,
     pedido: l.pedido || '',
     miro: l.miro || '',
   };
@@ -75,7 +85,8 @@ export function mandarParaLote(tipo, itens = []) {
   const manuais = {};
   comEntrada.forEach((i) => {
     const uid = novoUid();
-    entradas.push({ ...i.entrada, uid, vencimento: '' });
+    const { registro, ...entrada } = i.entrada;
+    entradas.push({ ...entrada, uid, vencimento: '' });
     manuais[uid] = {
       pedido: i.pedido || '',
       miro: '',
@@ -84,4 +95,34 @@ export function mandarParaLote(tipo, itens = []) {
   });
   gravarLocal(CHAVE_LOTE_NFSE, { entradas, vencimento: hojeIso(), manuais });
   return entradas.length;
+}
+
+// Numeros que ja estao na fila (ex.: a planilha do robo mandou direto) e faltam na tela.
+// mapa: chave -> item da fila. Devolve so as linhas que ganharam algo, ja com pedido/MIRO/falha.
+export function numerosDaFila(linhas = [], mapa = new Map()) {
+  const mudou = [];
+  linhas.forEach((l) => {
+    const f = mapa.get(l.id);
+    if (!f) return;
+    const pedido = l.pedido || f.pedido || '';
+    const miro = l.miro || f.miro || '';
+    const motivo = !miro && f.motivo && !l.falhaSap ? f.motivo : null;
+    if (pedido === (l.pedido || '') && miro === (l.miro || '') && !motivo) return;
+    mudou.push({ ...l, pedido, miro, ...(motivo ? { falhaSap: { etapa: pedido ? 'MIRO' : 'pedido', motivo } } : {}) });
+  });
+  return mudou;
+}
+
+// Itens mandados para o robo que ainda nao voltaram com nada (sem pedido, MIRO ou motivo), por pessoa e dia.
+export function aguardandoResultado(itens = []) {
+  const grupos = new Map();
+  itens.filter((i) => !i.pedido && !i.miro && !i.motivo && !i.descartado).forEach((i) => {
+    const quando = String(i.atualizado_em || '');
+    const k = `${i.tipo}|${i.atualizado_por || ''}|${quando.slice(0, 10)}`;
+    const g = grupos.get(k) || { tipo: i.tipo, por: i.atualizado_por || '', quando, total: 0 };
+    g.total += 1;
+    if (quando > g.quando) g.quando = quando;
+    grupos.set(k, g);
+  });
+  return [...grupos.values()].sort((a, b) => b.quando.localeCompare(a.quando));
 }

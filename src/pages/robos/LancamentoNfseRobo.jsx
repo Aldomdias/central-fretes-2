@@ -36,8 +36,10 @@ import {
 } from '../../utils/robos/lancamentoComum';
 import { PASTA_NFSE, gerarScriptNfse } from '../../utils/robos/sapLancamentoVbs';
 import { registrarLancamentos } from '../../services/robosLancamentosService';
-import { salvarNaFila } from '../../services/robosFilaService';
-import { CHAVE_LOTE_NFSE, itemFilaNfse } from '../../utils/robos/filaRobo';
+import { buscarNaFila, salvarNaFila } from '../../services/robosFilaService';
+import { CHAVE_LOTE_NFSE, itemFilaNfse, numerosDaFila } from '../../utils/robos/filaRobo';
+import { getSupabaseAcessoPublico } from '../../lib/supabaseClient';
+import AvisoFila from './AvisoFila';
 import { carregarSessao } from '../../utils/authLocal';
 import ParametrosLancamentoCard from './ParametrosLancamentoCard';
 import CampoPasta, { caminhoArquivo, usePastaTrabalho } from './PastaTrabalho';
@@ -342,16 +344,39 @@ export default function LancamentoNfseRobo() {
     return salvarNaFila(lista.map((l) => ({ ...itemFilaNfse(l, porUid.get(l.uid)), ...extra })), sessao?.nome || sessao?.email || '').catch(() => null);
   }
 
+  // Traz para a tela o que a planilha do robo ja mandou direto para a fila (pedido, MIRO, falha).
+  // Devolve a lista com os numeros aplicados.
+  async function trazerDaFila(lista) {
+    const mudou = numerosDaFila(lista, await buscarNaFila('NFSE', lista.map((l) => l.id)));
+    if (!mudou.length) return { lista, mudou: 0 };
+    const porUid = new Map(mudou.map((l) => [l.uid, l]));
+    setManuais((a) => {
+      const n = { ...a };
+      mudou.forEach((l) => { n[l.uid] = { ...(a[l.uid] || {}), pedido: l.pedido, miro: l.miro, ...(l.falhaSap ? { falhaSap: l.falhaSap } : {}) }; });
+      return n;
+    });
+    registrarHistorico(mudou.filter((l) => l.miro), true);
+    return { lista: lista.map((l) => porUid.get(l.uid) || l), mudou: mudou.length };
+  }
+
+  useEffect(() => {
+    if (!linhas.length) return;
+    trazerDaFila(linhas).then((r) => { if (r.mudou) setFeedback(`${fmt(r.mudou)} nota(s) atualizada(s) com o que a planilha do robo mandou para a Central.`); }).catch(() => null);
+  // so ao abrir a tela
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // copiar: mostra o script na tela (para colar no Bloco de Notas) quando o antivirus bloqueia o download.
-  function baixarScript(copiar = false) {
+  async function baixarScript(copiar = false) {
     setErro('');
     if (!prontas.length) { setErro('Nao ha notas prontas para lancar.'); return; }
     if (comErro.length) { setErro(`${comErro.length} nota(s) com pendencia. Corrija ou remova antes de gerar o script.`); return; }
     try {
-      const script = gerarScriptNfse({ linhas: linhasParaScriptNfse(prontas), pasta });
+      const { lista } = await trazerDaFila(prontas);
+      const script = gerarScriptNfse({ linhas: linhasParaScriptNfse(lista), pasta });
       if (copiar) setScriptTela({ script, nome: 'lancar-nfse.vbs' });
       else baixarArquivo('lancar-nfse.vbs', script);
-      guardarNaFila(prontas, { descartado: false });
+      guardarNaFila(lista, { descartado: false });
       const comoRodar = copiar ? 'Cole no Bloco de Notas, salve como lancar-nfse.vbs e, com o SAP aberto e logado, de dois cliques nele.' : 'Com o SAP aberto e logado, de dois cliques nele.';
       setFeedback(`Script ${copiar ? 'gerado' : 'baixado'} com ${fmt(prontas.length)} nota(s) (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). ${comoRodar} O resultado fica em ${caminhoArquivo(pasta, 'resultado_nfse.csv')}.`);
     } catch (e) { setErro(e.message); }
@@ -368,11 +393,12 @@ export default function LancamentoNfseRobo() {
     if (!prontas.length) { setErro('Nao ha notas prontas para lancar.'); return; }
     if (comErro.length) { setErro(`${comErro.length} nota(s) com pendencia. Corrija ou remova antes de gerar os dados.`); return; }
     try {
-      const linhasScript = linhasParaScriptNfse(prontas);
+      const { lista } = await trazerDaFila(prontas);
+      const linhasScript = linhasParaScriptNfse(lista);
       gerarScriptNfse({ linhas: linhasScript, pasta }); // mesma validacao do .vbs
       const m = gerarMacroNfse();
-      await baixarMatrizXlsx('dados-robo-nfse.xlsx', matrizDadosMacro(linhasScript, m));
-      guardarNaFila(prontas, { descartado: false });
+      await baixarMatrizXlsx('dados-robo-nfse.xlsx', matrizDadosMacro(linhasScript, m, getSupabaseAcessoPublico()));
+      guardarNaFila(lista, { descartado: false });
       setFeedback(`Dados de ${fmt(prontas.length)} nota(s) baixados (dados-robo-nfse.xlsx). Na planilha do robo, com o SAP logado, rode a macro ${m.macro} e escolha esse arquivo. O resultado_nfse.csv fica na pasta da planilha do robo (no fim ela oferece abrir a pasta).`);
     } catch (e) { setErro(e.message); }
   }
@@ -464,6 +490,7 @@ export default function LancamentoNfseRobo() {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
+      <AvisoFila tipo="NFSE" />
       {scriptTela ? <ScriptParaCopiar script={scriptTela.script} nomeArquivo={scriptTela.nome} onFechar={() => setScriptTela(null)} titulo={scriptTela.macro ? 'Código da macro (Excel)' : undefined} passos={scriptTela.macro ? passosMacroExcel(scriptTela.macro) : undefined} /> : null}
       {erro ? <div style={{ padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{erro}</div> : null}
       {feedback && !erro ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}

@@ -28,8 +28,10 @@ import {
 } from '../../utils/robos/lancamentoComum';
 import { PASTA_CTE, gerarScriptCte } from '../../utils/robos/sapLancamentoVbs';
 import { registrarLancamentos } from '../../services/robosLancamentosService';
-import { salvarNaFila } from '../../services/robosFilaService';
-import { CHAVE_LOTE_CTE, itemFilaCte } from '../../utils/robos/filaRobo';
+import { buscarNaFila, salvarNaFila } from '../../services/robosFilaService';
+import { CHAVE_LOTE_CTE, itemFilaCte, numerosDaFila } from '../../utils/robos/filaRobo';
+import { getSupabaseAcessoPublico } from '../../lib/supabaseClient';
+import AvisoFila from './AvisoFila';
 import { carregarSessao } from '../../utils/authLocal';
 import { PASTA_ETAPAS_CTE, gerarScriptConsultaNotasCte, gerarScriptPartidasCte } from '../../utils/robos/sapConsultasCte';
 import ScriptParaCopiar from './ScriptParaCopiar';
@@ -129,6 +131,27 @@ export default function LancamentoCteRobo() {
     return salvarNaFila(itens, sessao?.nome || sessao?.email || '').catch(() => null);
   }
 
+  // Traz para a tela o que a planilha do robo ja mandou direto para a fila (pedido, MIRO).
+  async function trazerDaFila(lista) {
+    const mudou = numerosDaFila(lista, await buscarNaFila('CTE', lista.map((l) => l.id)));
+    if (!mudou.length) return { lista, mudou: 0 };
+    const porId = new Map(mudou.map((l) => [l.id, l]));
+    setManuais((a) => {
+      const n = { ...a };
+      mudou.forEach((l) => { n[l.id] = { ...(a[l.id] || {}), pedido: l.pedido, miro: l.miro }; });
+      return n;
+    });
+    registrarHistorico(mudou.filter((l) => l.miro));
+    return { lista: lista.map((l) => porId.get(l.id) || l), mudou: mudou.length };
+  }
+
+  useEffect(() => {
+    if (!linhas.length) return;
+    trazerDaFila(linhas).then((r) => { if (r.mudou) setFeedback(`${fmt(r.mudou)} CT-e atualizado(s) com o que a planilha do robo mandou para a Central.`); }).catch(() => null);
+  // so ao abrir a tela
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function baixar(nome, fabrica, msg) {
     setErro('');
     try { baixarArquivo(nome, fabrica()); setFeedback(msg); } catch (e) { setErro(e.message); }
@@ -157,21 +180,22 @@ export default function LancamentoCteRobo() {
   }
 
   // copiar: mostra o script na tela (para colar no Bloco de Notas) quando o antivirus bloqueia o download.
-  function baixarLancamento(copiar = false) {
+  async function baixarLancamento(copiar = false) {
     if (!prontas.length) { setErro('Nao ha CT-e prontos para lancar.'); return; }
     if (comErro.length) { setErro(`${comErro.length} CT-e com pendencia. Corrija ou remova antes de gerar o script.`); return; }
-    const fabrica = () => gerarScriptCte({ linhas: linhasParaScriptCte(prontas), pasta });
+    const { lista } = await trazerDaFila(prontas);
+    const fabrica = () => gerarScriptCte({ linhas: linhasParaScriptCte(lista), pasta });
     const resumo = `${fmt(prontas.length)} CT-e (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido)`;
     const resultado = `Resultado em ${caminhoArquivo(pasta, 'resultado_cte.csv')}.`;
     if (!copiar) {
       baixar('lancar-cte.vbs', fabrica, `Script baixado com ${resumo}. Com o SAP aberto, de dois cliques nele. ${resultado}`);
-      guardarNaFila(prontas, { descartado: false });
+      guardarNaFila(lista, { descartado: false });
       return;
     }
     setErro('');
     try {
       setScriptTela({ script: fabrica(), nome: 'lancar-cte.vbs' });
-      guardarNaFila(prontas, { descartado: false });
+      guardarNaFila(lista, { descartado: false });
       setFeedback(`Script gerado com ${resumo}. Cole no Bloco de Notas, salve como lancar-cte.vbs e, com o SAP aberto, de dois cliques nele. ${resultado}`);
     } catch (e) { setErro(e.message); }
   }
@@ -187,11 +211,12 @@ export default function LancamentoCteRobo() {
     if (!prontas.length) { setErro('Nao ha CT-e prontos para lancar.'); return; }
     if (comErro.length) { setErro(`${comErro.length} CT-e com pendencia. Corrija ou remova antes de gerar os dados.`); return; }
     try {
-      const linhasScript = linhasParaScriptCte(prontas);
+      const { lista } = await trazerDaFila(prontas);
+      const linhasScript = linhasParaScriptCte(lista);
       gerarScriptCte({ linhas: linhasScript, pasta }); // mesma validacao do .vbs
       const m = gerarMacroCte();
-      await baixarMatrizXlsx('dados-robo-cte.xlsx', matrizDadosMacro(linhasScript, m));
-      guardarNaFila(prontas, { descartado: false });
+      await baixarMatrizXlsx('dados-robo-cte.xlsx', matrizDadosMacro(linhasScript, m, getSupabaseAcessoPublico()));
+      guardarNaFila(lista, { descartado: false });
       setFeedback(`Dados de ${fmt(prontas.length)} CT-e baixados (dados-robo-cte.xlsx). Na planilha do robo, com o SAP logado, rode a macro ${m.macro} e escolha esse arquivo. O resultado_cte.csv fica na pasta da planilha do robo (no fim ela oferece abrir a pasta).`);
     } catch (e) { setErro(e.message); }
   }
@@ -245,6 +270,7 @@ export default function LancamentoCteRobo() {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
+      <AvisoFila tipo="CTE" />
       {scriptTela ? <ScriptParaCopiar script={scriptTela.script} nomeArquivo={scriptTela.nome} onFechar={() => setScriptTela(null)} titulo={scriptTela.macro ? 'Código da macro (Excel)' : undefined} passos={scriptTela.macro ? passosMacroExcel(scriptTela.macro) : undefined} /> : null}
       {erro ? <div style={{ padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{erro}</div> : null}
       {feedback && !erro ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}

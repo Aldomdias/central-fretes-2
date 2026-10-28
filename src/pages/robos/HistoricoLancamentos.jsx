@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { listarLancamentos } from '../../services/robosLancamentosService';
-import { descartarDaFila, listarPendentesFila } from '../../services/robosFilaService';
-import { mandarParaLote, tamanhoLoteSalvo } from '../../utils/robos/filaRobo';
+import { descartarDaFila, listarPendentesFila, sincronizarHistoricoDaFila } from '../../services/robosFilaService';
+import { aguardandoResultado, mandarParaLote, tamanhoLoteSalvo } from '../../utils/robos/filaRobo';
+import { TextoAguardando } from './AvisoFila';
 import { carregarSessao } from '../../utils/authLocal';
 import { TIPOS_LANCAMENTO, agregarPorMes, anosDisponiveis, registrosVisiveis } from '../../utils/robos/historicoLancamentos';
 import { baixarXlsx, isoParaBr } from '../../utils/robos/lancamentoComum';
@@ -33,13 +34,15 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
   useEffect(() => {
     let vivo = true;
     setCarregando(true);
-    listarLancamentos().then((r) => { if (vivo) { setDados(r); setCarregando(false); } });
+    // MIRO que a planilha do robo mandou direto para a fila entra no historico antes de listar
+    sincronizarHistoricoDaFila().catch(() => null).then(() => listarLancamentos()).then((r) => { if (vivo) { setDados(r); setCarregando(false); } });
     listarPendentesFila().then((r) => { if (vivo) setFila(r); });
     return () => { vivo = false; };
   }, [versao]);
 
   const pendentes = useMemo(() => fila.itens.filter((i) => !tipo || i.tipo === tipo), [fila.itens, tipo]);
   const pendentesPorTipo = (t) => fila.itens.filter((i) => i.tipo === t);
+  const aguardando = useMemo(() => aguardandoResultado(pendentes), [pendentes]);
 
   // Manda as sem MIRO de volta para a tela do robo (substitui o lote salvo dela) e abre a aba.
   function mandarParaRobo(t) {
@@ -125,6 +128,12 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
           <button type="button" className="btn-secondary" disabled={!pendentes.length} onClick={() => baixarXlsx('sem-miro.xlsx', pendentes.map(linhaPendente), CABECALHO_PENDENTES)}>Baixar lista (.xlsx)</button>
         </div>
         {aviso ? <div style={{ color: '#b91c1c', fontSize: 12, marginBottom: 6 }}>{aviso}</div> : null}
+        {aguardando.length ? (
+          <div style={{ padding: 10, borderRadius: 8, background: '#fef3c7', color: '#92400e', fontSize: 13, marginBottom: 8 }}>
+            Resultado ainda não voltou para a Central (o robô rodou e ninguém importou, ou ainda está rodando):
+            <TextoAguardando grupos={aguardando} />
+          </div>
+        ) : null}
         {fila.onde === 'navegador' ? <div style={{ marginBottom: 6, fontSize: 12, color: '#b45309' }}>O banco ainda não tem a tabela da fila (migration pendente): esta lista está guardada só neste navegador.</div> : null}
         {fila.onde === 'erro' ? <div style={{ marginBottom: 6, fontSize: 12, color: '#b91c1c' }}>Não consegui ler a fila: {fila.erro}</div> : null}
         {pendentes.length ? (
