@@ -36,6 +36,8 @@ import {
 } from '../../utils/robos/lancamentoComum';
 import { PASTA_NFSE, gerarScriptNfse } from '../../utils/robos/sapLancamentoVbs';
 import { registrarLancamentos } from '../../services/robosLancamentosService';
+import { salvarNaFila } from '../../services/robosFilaService';
+import { CHAVE_LOTE_NFSE, itemFilaNfse } from '../../utils/robos/filaRobo';
 import { carregarSessao } from '../../utils/authLocal';
 import ParametrosLancamentoCard from './ParametrosLancamentoCard';
 import CampoPasta, { caminhoArquivo, usePastaTrabalho } from './PastaTrabalho';
@@ -44,7 +46,7 @@ import ScriptParaCopiar from './ScriptParaCopiar';
 import { BaixarPlanilhaRobo, passosMacroExcel } from './MacroExcel';
 import { gerarMacroNfse, matrizDadosMacro } from '../../utils/robos/sapMacroExcel';
 
-const CHAVE_LOTE = 'central_fretes_robo_nfse_lote_v2';
+const CHAVE_LOTE = CHAVE_LOTE_NFSE;
 
 function ler(chave, padrao) {
   try { return JSON.parse(window.localStorage.getItem(chave) || 'null') ?? padrao; } catch { return padrao; }
@@ -332,6 +334,14 @@ export default function LancamentoNfseRobo() {
   }
 
   // ---------------------------------------------------------------- SAP
+  // Fila do robo (robos_fila): guarda as notas mandadas para o robo, com tudo para lancar de novo de
+  // qualquer computador, e o que saiu no SAP. Falha aqui nao atrapalha o lancamento.
+  function guardarNaFila(lista, extra = {}) {
+    const porUid = new Map(entradas.map((e) => [e.uid, e]));
+    const sessao = carregarSessao();
+    return salvarNaFila(lista.map((l) => ({ ...itemFilaNfse(l, porUid.get(l.uid)), ...extra })), sessao?.nome || sessao?.email || '').catch(() => null);
+  }
+
   // copiar: mostra o script na tela (para colar no Bloco de Notas) quando o antivirus bloqueia o download.
   function baixarScript(copiar = false) {
     setErro('');
@@ -341,6 +351,7 @@ export default function LancamentoNfseRobo() {
       const script = gerarScriptNfse({ linhas: linhasParaScriptNfse(prontas), pasta });
       if (copiar) setScriptTela({ script, nome: 'lancar-nfse.vbs' });
       else baixarArquivo('lancar-nfse.vbs', script);
+      guardarNaFila(prontas, { descartado: false });
       const comoRodar = copiar ? 'Cole no Bloco de Notas, salve como lancar-nfse.vbs e, com o SAP aberto e logado, de dois cliques nele.' : 'Com o SAP aberto e logado, de dois cliques nele.';
       setFeedback(`Script ${copiar ? 'gerado' : 'baixado'} com ${fmt(prontas.length)} nota(s) (${fmt(semPedido)} sem pedido, ${fmt(semMiro)} so com pedido). ${comoRodar} O resultado fica em ${caminhoArquivo(pasta, 'resultado_nfse.csv')}.`);
     } catch (e) { setErro(e.message); }
@@ -361,7 +372,8 @@ export default function LancamentoNfseRobo() {
       gerarScriptNfse({ linhas: linhasScript, pasta }); // mesma validacao do .vbs
       const m = gerarMacroNfse();
       await baixarMatrizXlsx('dados-robo-nfse.xlsx', matrizDadosMacro(linhasScript, m));
-      setFeedback(`Dados de ${fmt(prontas.length)} nota(s) baixados (dados-robo-nfse.xlsx). Na planilha do robo, com o SAP logado, rode a macro ${m.macro} e escolha esse arquivo. O resultado_nfse.csv fica na mesma pasta dele.`);
+      guardarNaFila(prontas, { descartado: false });
+      setFeedback(`Dados de ${fmt(prontas.length)} nota(s) baixados (dados-robo-nfse.xlsx). Na planilha do robo, com o SAP logado, rode a macro ${m.macro} e escolha esse arquivo. O resultado_nfse.csv fica na pasta da planilha do robo (no fim ela oferece abrir a pasta).`);
     } catch (e) { setErro(e.message); }
   }
 
@@ -397,6 +409,7 @@ export default function LancamentoNfseRobo() {
         mapa[l.uid] = m;
       });
       setManuais((a) => ({ ...a, ...mapa }));
+      guardarNaFila(atual.map((l) => ({ ...l, falhaSap: mapa[l.uid]?.falhaSap })).filter((l) => l.pedido || l.miro || l.falhaSap));
       setErro('');
       const r = atualizadas ? await registrarHistorico(atual, true) : null;
       const aviso = ambiguas ? ` ${fmt(ambiguas)} nota(s) com NF repetida no lote ficaram de fora (o log nao traz o CNPJ).` : '';
@@ -628,7 +641,7 @@ export default function LancamentoNfseRobo() {
           <li>Abra o SAP Logon e entre no sistema (scripting habilitado, como na planilha).</li>
           <li>Se o navegador avisar sobre o download do .vbs, escolha “Manter”. Se vier como <code>.vbs.txt</code>, renomeie para <code>.vbs</code>.</li>
           <li>Se o antivírus bloquear o download, use “Copiar código”: cole no Bloco de Notas e salve como <code>lancar-nfse.vbs</code> (Tipo: Todos os arquivos).</li>
-          <li>Se o antivírus bloquear até salvar o <code>.vbs</code>, use a planilha do robô no Excel: baixe uma vez a <b>Planilha do robô (.xlsm)</b> (na primeira vez, clique com o botão direito no arquivo → Propriedades → marque <b>Desbloquear</b>) e, a cada lote, baixe os <b>Dados para o Excel</b> e rode a macro <code>LancarNFSe</code>. O resultado (<code>resultado_nfse.csv</code>) fica na mesma pasta do arquivo de dados.</li>
+          <li>Se o antivírus bloquear até salvar o <code>.vbs</code>, use a planilha do robô no Excel: baixe uma vez a <b>Planilha do robô (.xlsm)</b> (na primeira vez, clique com o botão direito no arquivo → Propriedades → marque <b>Desbloquear</b>) e, a cada lote, baixe os <b>Dados para o Excel</b> e rode a macro <code>LancarNFSe</code>. O resultado (<code>resultado_nfse.csv</code>), o log e as pendências ficam na pasta onde está salva a planilha do robô (guarde-a na sua pasta de trabalho); no fim o robô oferece abrir essa pasta.</li>
           <li>Se o antivírus bloquear ao dar dois cliques, rode pelo próprio SAP: <b>Alt+F12</b> → <b>Script Recording and Playback…</b> → no campo do arquivo, escolha o <code>lancar-nfse.vbs</code> salvo → <b>Playback</b> (botão ▶).</li>
           <li>Dê dois cliques no arquivo e não mexa no SAP até a mensagem final. Se der erro, a mensagem diz qual nota; corrija no SAP e rode de novo.</li>
         </ol>

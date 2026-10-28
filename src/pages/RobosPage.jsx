@@ -36,7 +36,7 @@ export default function RobosPage() {
       </div>
 
       <p style={{ margin: '0 0 12px', color: '#475569' }}>{robo.descricao}</p>
-      <Componente />
+      <Componente onAbrirRobo={setAtivo} />
     </div>
   );
 }

@@ -172,6 +172,7 @@ export function montarLancamentoCte(cts = [], indices, partidas = new Map(), { v
     if (c.outroIcms) avisos.push(`ICMS ${c.outroIcms}: aliquota nao lida, tratado como isento (F2)`);
     return {
       id: ids[i],
+      ct: c, // XML lido: vai para a fila do robo (robos_fila) para lancar de novo sem reimportar
       cte: `${c.nCT}-${c.serie}`,
       emp,
       centro,

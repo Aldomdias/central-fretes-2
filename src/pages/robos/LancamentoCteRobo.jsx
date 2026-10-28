@@ -28,13 +28,15 @@ import {
 } from '../../utils/robos/lancamentoComum';
 import { PASTA_CTE, gerarScriptCte } from '../../utils/robos/sapLancamentoVbs';
 import { registrarLancamentos } from '../../services/robosLancamentosService';
+import { salvarNaFila } from '../../services/robosFilaService';
+import { CHAVE_LOTE_CTE, itemFilaCte } from '../../utils/robos/filaRobo';
 import { carregarSessao } from '../../utils/authLocal';
 import { PASTA_ETAPAS_CTE, gerarScriptConsultaNotasCte, gerarScriptPartidasCte } from '../../utils/robos/sapConsultasCte';
 import ScriptParaCopiar from './ScriptParaCopiar';
 import { BaixarPlanilhaRobo, passosMacroExcel } from './MacroExcel';
 import { gerarMacroCte, matrizDadosMacro } from '../../utils/robos/sapMacroExcel';
 
-const CHAVE = 'central_fretes_robo_cte_lote_v1';
+const CHAVE = CHAVE_LOTE_CTE;
 
 function ler(padrao) {
   try { return JSON.parse(window.localStorage.getItem(CHAVE) || 'null') ?? padrao; } catch { return padrao; }
@@ -119,6 +121,14 @@ export default function LancamentoCteRobo() {
     return abaParaMatriz(XLSX, wb.Sheets[wb.SheetNames[0]]);
   }
 
+  // Fila do robo (robos_fila): guarda os CT-e mandados para o robo, com o XML lido, para lancar de novo
+  // de qualquer computador, e o que saiu no SAP. Falha aqui nao atrapalha o lancamento.
+  function guardarNaFila(lista, extra = {}) {
+    const sessao = carregarSessao();
+    const itens = lista.map((l) => ({ ...itemFilaCte(l, l.danfe ? partidas.get(l.danfe) : null, manuais[l.id]), ...extra }));
+    return salvarNaFila(itens, sessao?.nome || sessao?.email || '').catch(() => null);
+  }
+
   function baixar(nome, fabrica, msg) {
     setErro('');
     try { baixarArquivo(nome, fabrica()); setFeedback(msg); } catch (e) { setErro(e.message); }
@@ -155,11 +165,13 @@ export default function LancamentoCteRobo() {
     const resultado = `Resultado em ${caminhoArquivo(pasta, 'resultado_cte.csv')}.`;
     if (!copiar) {
       baixar('lancar-cte.vbs', fabrica, `Script baixado com ${resumo}. Com o SAP aberto, de dois cliques nele. ${resultado}`);
+      guardarNaFila(prontas, { descartado: false });
       return;
     }
     setErro('');
     try {
       setScriptTela({ script: fabrica(), nome: 'lancar-cte.vbs' });
+      guardarNaFila(prontas, { descartado: false });
       setFeedback(`Script gerado com ${resumo}. Cole no Bloco de Notas, salve como lancar-cte.vbs e, com o SAP aberto, de dois cliques nele. ${resultado}`);
     } catch (e) { setErro(e.message); }
   }
@@ -179,7 +191,8 @@ export default function LancamentoCteRobo() {
       gerarScriptCte({ linhas: linhasScript, pasta }); // mesma validacao do .vbs
       const m = gerarMacroCte();
       await baixarMatrizXlsx('dados-robo-cte.xlsx', matrizDadosMacro(linhasScript, m));
-      setFeedback(`Dados de ${fmt(prontas.length)} CT-e baixados (dados-robo-cte.xlsx). Na planilha do robo, com o SAP logado, rode a macro ${m.macro} e escolha esse arquivo. O resultado_cte.csv fica na mesma pasta dele.`);
+      guardarNaFila(prontas, { descartado: false });
+      setFeedback(`Dados de ${fmt(prontas.length)} CT-e baixados (dados-robo-cte.xlsx). Na planilha do robo, com o SAP logado, rode a macro ${m.macro} e escolha esse arquivo. O resultado_cte.csv fica na pasta da planilha do robo (no fim ela oferece abrir a pasta).`);
     } catch (e) { setErro(e.message); }
   }
 
@@ -196,6 +209,7 @@ export default function LancamentoCteRobo() {
         novos[l.id] = { ...(manuais[l.id] || {}), pedido: r.pedido || l.pedido, miro: r.miro || l.miro };
       });
       setManuais((a) => ({ ...a, ...novos })); setErro('');
+      if (n) guardarNaFila(linhas.filter((l) => novos[l.id]).map((l) => ({ ...l, ...novos[l.id] })));
       let extra = '';
       if (n) {
         const r = await registrarHistorico(linhas.map((l) => ({ ...l, ...(novos[l.id] || {}) })));
@@ -369,7 +383,7 @@ export default function LancamentoCteRobo() {
           <li>Abra o SAP Logon e entre no sistema (scripting habilitado, como na planilha).</li>
           <li>Se o navegador avisar sobre o download do .vbs, escolha “Manter”. Se vier como <code>.vbs.txt</code>, renomeie para <code>.vbs</code>.</li>
           <li>Se o antivírus bloquear o download, use “Copiar código”: cole no Bloco de Notas e salve como <code>lancar-cte.vbs</code> (Tipo: Todos os arquivos).</li>
-          <li>Se o antivírus bloquear até salvar o <code>.vbs</code>, use a planilha do robô no Excel: baixe uma vez a <b>Planilha do robô (.xlsm)</b> (na primeira vez, clique com o botão direito no arquivo → Propriedades → marque <b>Desbloquear</b>) e, a cada lote, baixe os <b>Dados para o Excel</b> e rode a macro <code>LancarCTe</code>. O resultado (<code>resultado_cte.csv</code>) fica na mesma pasta do arquivo de dados.</li>
+          <li>Se o antivírus bloquear até salvar o <code>.vbs</code>, use a planilha do robô no Excel: baixe uma vez a <b>Planilha do robô (.xlsm)</b> (na primeira vez, clique com o botão direito no arquivo → Propriedades → marque <b>Desbloquear</b>) e, a cada lote, baixe os <b>Dados para o Excel</b> e rode a macro <code>LancarCTe</code>. O resultado (<code>resultado_cte.csv</code>), o log e as pendências ficam na pasta onde está salva a planilha do robô (guarde-a na sua pasta de trabalho); no fim o robô oferece abrir essa pasta.</li>
           <li>Se o antivírus bloquear ao dar dois cliques, rode pelo próprio SAP: <b>Alt+F12</b> → <b>Script Recording and Playback…</b> → no campo do arquivo, escolha o <code>lancar-cte.vbs</code> salvo → <b>Playback</b> (botão ▶).</li>
           <li>Dê dois cliques no arquivo e não mexa no SAP até a mensagem final.</li>
         </ol>
