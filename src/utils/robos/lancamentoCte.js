@@ -138,6 +138,14 @@ export function partesChaveConsulta(chave = '') {
   };
 }
 
+// Sem centro de custo mas com NF de venda: a planilha do robo consulta no SAP (SE16N + ZSD0004) antes de
+// lancar. Nao bloqueia o envio para o robo (ver podeIrParaRobo).
+export const CC_PELO_ROBO = 'sem centro de custo: o robo consulta no SAP';
+
+export function podeIrParaRobo(l) {
+  return l.erros.every((e) => e === CC_PELO_ROBO);
+}
+
 // partidas: Map(chaveNF -> { escritorioVendas, empresa }) vindo do export do ZSD0004.
 export function montarLancamentoCte(cts = [], indices, partidas = new Map(), { vencimento = hojeIso() } = {}) {
   // distinct por (CNPJ transportadora + CT-e) e depois por chave do CT-e (como as queries)
@@ -168,7 +176,7 @@ export function montarLancamentoCte(cts = [], indices, partidas = new Map(), { v
     if (!emp) erros.push('CNPJ do tomador nao esta em Filiais');
     if (!(c.valorBruto > 0)) erros.push('valor invalido');
     if (!c.dataEmissao) erros.push('data de emissao invalida');
-    if (emp && !cc) erros.push(c.danfe ? 'sem centro de custo (consulte no SAP ou digite)' : 'CT-e sem NF de venda: digite o centro de custo');
+    if (emp && !cc) erros.push(c.danfe ? CC_PELO_ROBO : 'CT-e sem NF de venda: digite o centro de custo');
     if (c.outroIcms) avisos.push(`ICMS ${c.outroIcms}: aliquota nao lida, tratado como isento (F2)`);
     return {
       id: ids[i],
@@ -250,6 +258,7 @@ export function linhasParaScriptCte(linhas = []) {
     centro1: l.centro1,
     pedido: l.pedido || '',
     miro: l.miro || '',
+    danfe: l.danfe || '',
   }));
 }
 

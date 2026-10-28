@@ -492,7 +492,8 @@ export function corpoNfse(linhas, pasta) {
 }
 
 // ---------------------------------------------------------------- CT-e
-export const CAMPOS_CTE = ['id', 'emp', 'cte', 'bruto', 'prot', 'cnpj', 'centro', 'liquido', 'aliquota', 'cc', 'codImp', 'dtEmissao', 'dtVenc', 'tpEmis', 'cNF', 'dv', 'centro1', 'pedido', 'miro'];
+// danfe: chave da NF de venda, para a planilha do robo consultar o centro de custo de quem veio sem.
+export const CAMPOS_CTE = ['id', 'emp', 'cte', 'bruto', 'prot', 'cnpj', 'centro', 'liquido', 'aliquota', 'cc', 'codImp', 'dtEmissao', 'dtVenc', 'tpEmis', 'cNF', 'dv', 'centro1', 'pedido', 'miro', 'danfe'];
 
 export function gerarScriptCte({ linhas = [], pasta = PASTA_CTE } = {}) {
   if (!linhas.length) throw new Error('Nao ha CT-e para lancar.');
@@ -515,6 +516,10 @@ export function corpoCte(linhas, pasta) {
     ...utilitarios({ pasta, arquivoResultado: 'resultado_cte.csv' }),
     '',
     ...CONEXAO,
+    '',
+    "' Na planilha do Excel consulta o centro de custo de quem veio sem (SE16N + ZSD0004). No .vbs nao faz nada.",
+    'Sub PrepararLote()',
+    'End Sub',
     '',
     'Sub CarregarLinha()',
     '    r = L(kk)',
@@ -556,6 +561,7 @@ export function corpoCte(linhas, pasta) {
     `Set logf = fso.OpenTextFile(pastaLog & ${vbs('\\log_lancamento_cte.txt')}, 8, True)`,
     'Log "Inicio: " & n & " CT-e."',
     'Conectar',
+    'PrepararLote',
     '',
     "' Fase 1: pedidos (ME21N) dos CT-e que ainda nao tem pedido",
     'pend = 0',

@@ -241,15 +241,19 @@ function assinatura(texto) {
   return h.toString(16).padStart(8, '0');
 }
 
-function gerarMacro({ corpo, campos, robo, macro, tipoFila }) {
+// extra (so de um robo): substitutas a mais, rotinas a mais, declaracoes a mais e linhas logo depois de
+// carregar os dados.
+function gerarMacro({ corpo, campos, robo, macro, tipoFila, extra = {} }) {
   const { dims, inicio, rotinas, principal } = separar(corpo);
+  const substitutas = { ...SUBSTITUTAS, ...(extra.substitutas || {}) };
   const rotinasVba = rotinas.flatMap((r) => {
-    if (!(r.nome in SUBSTITUTAS)) return [...r.linhas, ''];
-    return SUBSTITUTAS[r.nome] ? [...SUBSTITUTAS[r.nome], ''] : [];
+    if (!(r.nome in substitutas)) return [...r.linhas, ''];
+    return substitutas[r.nome] ? [...substitutas[r.nome], ''] : [];
   });
   const programa = [
     ...rotinasVba,
     ...AUXILIARES_EXCEL,
+    ...(extra.rotinas ? ['', ...extra.rotinas] : []),
     '',
     `' Botao / Alt+F8: escolha a planilha de dados baixada da Central. O resultado e o log ficam na pasta desta planilha do robo.`,
     `Public Sub ${macro}()`,
@@ -257,6 +261,7 @@ function gerarMacro({ corpo, campos, robo, macro, tipoFila }) {
     '    arq = Application.GetOpenFilename("Dados do lote (*.xlsx), *.xlsx", , "Escolha a planilha de dados baixada da Central de Fretes")',
     '    If VarType(arq) = vbBoolean Then Exit Sub',
     '    If Not CarregarDados(arq) Then Exit Sub',
+    ...(extra.aposCarregar || []),
     ...inicio.map((a) => `    ${a}`),
     '    nEnviados = 0',
     '    nFalhaEnvio = 0',
@@ -282,6 +287,7 @@ function gerarMacro({ corpo, campos, robo, macro, tipoFila }) {
     `Private Const TIPO_FILA = "${tipoFila}"`,
     `Private Const NCAMPOS = ${campos.length}`,
     `Private Const CABECALHO_DADOS = "${campos.join(';')};"`,
+    ...(extra.declaracoes || []),
   ].join('\n');
   const semVersao = `${declaracoes}\n\n${paraVba(programa)}`;
   const versao = assinatura(semVersao);
@@ -303,7 +309,7 @@ export function gerarMacroNfse() {
 }
 
 export function gerarMacroCte() {
-  return gerarMacro({ corpo: corpoCte([], ''), campos: CAMPOS_CTE, robo: 'Robo CT-e', macro: 'LancarCTe', tipoFila: 'CTE' });
+  return gerarMacro({ corpo: corpoCte([], ''), campos: CAMPOS_CTE, robo: 'Robo CT-e', macro: 'LancarCTe', tipoFila: 'CTE', extra: extraConsultaCte() });
 }
 
 // Linhas da planilha de dados: cabecalho = campos (+ a versao da macro na coluna depois de um espaco e,
@@ -324,18 +330,19 @@ export const PLANILHA_ROBO = {
   versoes: { LancarNFSe: '5d2bc9ee', LancarCTe: '6f7bc98a' },
 };
 
-// ---------------------------------------------------------------- CT-e: consulta do centro de custo
-// Um botao faz o que eram os passos 2a/2b/2c: SE16N (EXPORT1), le os documentos do EXPORT1 e ZSD0004
-// (EXPORT2). Na Central so se carrega o EXPORT2 (2d). Os passos do SAP sao os mesmos do .vbs
-// (sapConsultasCte); a area de transferencia e preenchida por uma planilha temporaria (sem "cmd /c clip").
+// ---------------------------------------------------------------- CT-e: centro de custo pelo robo
+// No "Lancar CT-e", antes do pedido, os CT-e sem centro de custo (e com NF de venda) sao consultados no SAP:
+// SE16N (chave da NF -> documento, EXPORT1), ZSD0004 (partidas, EXPORT2) e a 2a aba do arquivo de dados
+// (empresa + escritorio de vendas -> centro de custo), como a Central faz com o EXPORT2. Quem continuar sem
+// centro de custo vira pendencia (log, pendencias_cte.csv e a fila da Central) e nao e lancado.
+// Os passos do SAP sao os mesmos do .vbs (sapConsultasCte); a area de transferencia e preenchida por uma
+// planilha temporaria do Excel (sem "cmd /c clip").
 const PARTES_CHAVE = [[1, 2], [3, 2], [5, 2], [7, 14], [21, 2], [23, 3], [26, 9], [35, 9], [44, 1]]; // regiao, ano, mes, CNPJ, modelo, serie, NF, aleatorio, DV
 
-export function gerarMacroConsultaCte() {
-  const macro = 'ConsultarCentroCustoCTe';
+function extraConsultaCte() {
+  const I = Object.fromEntries(CAMPOS_CTE.map((c, i) => [c, i]));
   const privado = (linhas) => linhas.map((l) => l.replace(/^(Sub|Function) /, 'Private $1 '));
-  const programa = [
-    ...privado(CONEXAO).map((l) => l.replace('WScript.Quit 1', 'End')),
-    '',
+  const rotinas = [
     ...privado(COLAR_NO_CAMPO),
     '',
     "' Poe as linhas na area de transferencia por uma planilha temporaria (o SAP cola com \"Carregar da area de transf.\").",
@@ -386,121 +393,159 @@ export function gerarMacroConsultaCte() {
     '    Next',
     'End Function',
     '',
-    "' Numeros de documento (1a coluna do EXPORT1), sem repetir, um por linha. O SAP pode ter aberto o arquivo no Excel.",
-    'Private Function DocumentosDoExport1(caminho)',
-    '    Dim wb, ws, i, ultima, v, vistos, lista',
-    '    Set vistos = CreateObject("Scripting.Dictionary")',
+    "' Abre um arquivo exportado pelo SAP (ou pega o que o SAP ja abriu no Excel).",
+    'Private Function AbrirExport(caminho)',
+    '    Dim wb',
     '    On Error Resume Next',
-    '    Set wb = Workbooks("EXPORT1.XLSX")',
+    '    Set wb = Workbooks(Mid(caminho, InStrRev(caminho, "\\") + 1))',
     '    On Error GoTo 0',
     '    If IsEmpty(wb) Then Set wb = Workbooks.Open(caminho, False, True)',
-    '    Set ws = wb.Worksheets(1)',
-    '    ultima = ws.Cells(ws.Rows.Count, 1).End(-4162).Row',
-    '    lista = ""',
-    '    For i = 2 To ultima',
-    '        v = SoDigitos(CStr(ws.Cells(i, 1).Value))',
-    '        If v <> "" And Not vistos.Exists(v) Then',
-    '            vistos.Add v, True',
-    '            lista = lista & v & vbCrLf',
-    '        End If',
-    '    Next',
-    '    wb.Close False',
-    '    DocumentosDoExport1 = lista',
+    '    Set AbrirExport = wb',
     'End Function',
     '',
-    'Private Sub FecharExports()',
+    'Private Sub PrepararPastaEtapas()',
     '    On Error Resume Next',
+    '    MkDir Left(PASTA_ETAPAS, InStrRev(PASTA_ETAPAS, "\\") - 1)',
+    '    MkDir PASTA_ETAPAS',
     '    Workbooks("EXPORT1.XLSX").Close False',
     '    Workbooks("EXPORT2.XLSX").Close False',
     '    Kill PASTA_ETAPAS & "\\EXPORT1.XLSX"',
     '    Kill PASTA_ETAPAS & "\\EXPORT2.XLSX"',
+    '    Err.Clear',
     'End Sub',
     '',
-    `' Botao "Consultar centro de custo" / Alt+F8: escolha o arquivo de chaves baixado da Central (passo 2 do CT-e).`,
-    `Public Sub ${macro}()`,
-    '    Dim arq, wb, ws, ultima, i, chave, n, desc',
-    '    arq = Application.GetOpenFilename("Chaves das NFs de venda (*.xlsx), *.xlsx", , "Escolha o arquivo de chaves baixado da Central de Fretes (CT-e, passo 2)")',
-    '    If VarType(arq) = vbBoolean Then Exit Sub',
-    '    Set wb = Workbooks.Open(arq, False, True)',
+    "' Tabela de escritorios (2a aba do arquivo de dados): empresa + escritorio de vendas -> centro de custo.",
+    'Private Sub CarregarEscritorios()',
+    '    Dim wb, ws, i, k',
+    '    Set escritorios = CreateObject("Scripting.Dictionary")',
+    '    Set wb = Workbooks.Open(arqDados, False, True)',
+    '    If wb.Worksheets.Count >= 2 Then',
+    '        Set ws = wb.Worksheets(2)',
+    '        For i = 2 To ws.Cells(ws.Rows.Count, 1).End(-4162).Row',
+    '            k = Trim(CStr(ws.Cells(i, 1).Value))',
+    '            If k <> "" And Not escritorios.Exists(k) Then escritorios.Add k, Trim(CStr(ws.Cells(i, 2).Value))',
+    '        Next',
+    '    End If',
+    '    wb.Close False',
+    'End Sub',
+    '',
+    "' SE16N -> EXPORT1 -> documentos -> ZSD0004 -> EXPORT2 -> ccPorChave (chave da NF de venda -> centro de custo).",
+    'Private Sub ConsultarCentroCusto()',
+    '    Dim wb, ws, ultima, i, c, h, chave, conc, vistos, cChave, cEsc, cEmp',
+    '    Set ccPorChave = CreateObject("Scripting.Dictionary")',
+    '    CarregarEscritorios',
+    '    PrepararPastaEtapas',
+    marcarPassos(passosSe16n('PASTA_ETAPAS').join('\n'), 'se16n'),
+    '    FecharCopia',
+    '    If Not EsperarArquivo(PASTA_ETAPAS & "\\EXPORT1.XLSX", 60) Then Err.Raise 5100, , "o SAP nao gravou o EXPORT1.XLSX em " & PASTA_ETAPAS',
+    "    ' documentos (1a coluna do EXPORT1), sem repetir",
+    '    Set vistos = CreateObject("Scripting.Dictionary")',
+    '    texto = ""',
+    '    Set wb = AbrirExport(PASTA_ETAPAS & "\\EXPORT1.XLSX")',
     '    Set ws = wb.Worksheets(1)',
-    '    If LCase(CStr(ws.Cells(1, 1).Value)) <> "chave_nf_venda" Then',
-    '        wb.Close False',
-    '        MsgBox "Este arquivo nao e o de chaves das NFs de venda (CT-e, passo 2 da Central de Fretes).", vbExclamation, ROBO',
-    '        Exit Sub',
-    '    End If',
-    '    If CStr(ws.Cells(1, 3).Value) <> "consulta " & VERSAO_MACRO Then',
-    '        If MsgBox("O codigo desta planilha e de outra versao da consulta. Baixe a planilha do robo de novo na Central quando puder." & vbCrLf & vbCrLf & "Continuar mesmo assim?", vbYesNo + vbQuestion, ROBO) = vbNo Then',
-    '            wb.Close False',
-    '            Exit Sub',
-    '        End If',
-    '    End If',
-    '    For j = 0 To 8',
-    '        col(j) = ""',
-    '    Next',
-    '    n = 0',
-    '    ultima = ws.Cells(ws.Rows.Count, 1).End(-4162).Row',
-    '    For i = 2 To ultima',
-    '        chave = SoDigitos(CStr(ws.Cells(i, 1).Value))',
-    '        If Len(chave) = 44 Then',
-    '            n = n + 1',
-    ...PARTES_CHAVE.map(([ini, tam], k) => `            col(${k}) = col(${k}) & Mid(chave, ${ini}, ${tam}) & vbCrLf`),
+    '    For i = 2 To ws.Cells(ws.Rows.Count, 1).End(-4162).Row',
+    '        h = SoDigitos(CStr(ws.Cells(i, 1).Value))',
+    '        If h <> "" And Not vistos.Exists(h) Then',
+    '            vistos.Add h, True',
+    '            texto = texto & h & vbCrLf',
     '        End If',
     '    Next',
     '    wb.Close False',
-    '    If n = 0 Then',
-    '        MsgBox "Nenhuma chave de NF de venda (44 digitos) no arquivo.", vbExclamation, ROBO',
-    '        Exit Sub',
-    '    End If',
-    '    On Error Resume Next',
-    '    MkDir Left(PASTA_ETAPAS, InStrRev(PASTA_ETAPAS, "\\") - 1)',
-    '    MkDir PASTA_ETAPAS',
-    '    Err.Clear',
-    '    On Error GoTo 0',
-    '    FecharExports',
-    '    On Error GoTo Falha',
-    '    Conectar',
-    "    ' SE16N (J_1BNFE_ACTIVE): chave da NF de venda -> numero do documento (EXPORT1)",
-    marcarPassos(passosSe16n('PASTA_ETAPAS').join('\n'), 'se16n'),
-    '    FecharCopia',
-    '    If Not EsperarArquivo(PASTA_ETAPAS & "\\EXPORT1.XLSX", 60) Then Err.Raise 5100, , "O SAP nao gravou o EXPORT1.XLSX em " & PASTA_ETAPAS',
-    '    texto = DocumentosDoExport1(PASTA_ETAPAS & "\\EXPORT1.XLSX")',
-    '    If texto = "" Then',
-    '        MsgBox "A SE16N nao achou documento para essas NFs de venda. Digite o centro de custo direto na tabela da Central.", vbExclamation, ROBO',
-    '        Exit Sub',
-    '    End If',
-    "    ' ZSD0004: partidas dos documentos (escritorio de vendas) (EXPORT2)",
+    '    If texto = "" Then Exit Sub',
     marcarPassos(passosZsd0004('PASTA_ETAPAS').join('\n'), 'zsd0004'),
     '    FecharCopia',
-    '    If Not EsperarArquivo(PASTA_ETAPAS & "\\EXPORT2.XLSX", 60) Then Err.Raise 5101, , "O SAP nao gravou o EXPORT2.XLSX em " & PASTA_ETAPAS',
-    '    On Error Resume Next',
-    '    If MsgBox("Pronto. Na Central de Fretes, carregue no passo 2d o arquivo:" & vbCrLf & vbCrLf & PASTA_ETAPAS & "\\EXPORT2.XLSX" & vbCrLf & vbCrLf & "Abrir a pasta?", vbYesNo + vbInformation, ROBO) = vbYes Then ThisWorkbook.FollowHyperlink PASTA_ETAPAS',
-    '    Exit Sub',
-    'Falha:',
-    '    desc = Err.Description',
-    '    FecharCopia',
-    '    MsgBox "ERRO na consulta: " & desc & " [passo: " & passo & "]" & vbCrLf & vbCrLf & "Confira a tela do SAP.", vbCritical, ROBO',
+    '    If Not EsperarArquivo(PASTA_ETAPAS & "\\EXPORT2.XLSX", 60) Then Err.Raise 5101, , "o SAP nao gravou o EXPORT2.XLSX em " & PASTA_ETAPAS',
+    "    ' EXPORT2: Chave NF, Escritorio de vendas e Empresa (pelo cabecalho; sem ele, as colunas de sempre)",
+    '    Set wb = AbrirExport(PASTA_ETAPAS & "\\EXPORT2.XLSX")',
+    '    Set ws = wb.Worksheets(1)',
+    '    cChave = 6',
+    '    cEsc = 9',
+    '    cEmp = 10',
+    '    For c = 1 To ws.Cells(1, ws.Columns.Count).End(-4159).Column',
+    '        h = LCase(Trim(CStr(ws.Cells(1, c).Value)))',
+    '        If InStr(h, "chave nf") > 0 Then cChave = c',
+    '        If InStr(h, "escrit") > 0 Then cEsc = c',
+    '        If h = "empresa" Then cEmp = c',
+    '    Next',
+    '    ultima = ws.Cells(ws.Rows.Count, cChave).End(-4162).Row',
+    '    For i = 2 To ultima',
+    '        chave = SoDigitos(CStr(ws.Cells(i, cChave).Value))',
+    '        If Len(chave) = 44 And Not ccPorChave.Exists(chave) Then',
+    '            conc = Trim(CStr(ws.Cells(i, cEmp).Value)) & Trim(CStr(ws.Cells(i, cEsc).Value))',
+    '            If escritorios.Exists(conc) Then ccPorChave.Add chave, escritorios(conc)',
+    '        End If',
+    '    Next',
+    '    wb.Close False',
     'End Sub',
-  ].join('\n');
-  const declaracoes = [
-    'Dim sapGuiAuto, appl, con, session, col(8), j, texto, passo, wbCopia',
-    'Private Const ROBO = "Robo CT-e - centro de custo"',
-    `Private Const PASTA_ETAPAS = "${PASTA_ETAPAS_CTE}"`,
-  ].join('\n');
-  const semVersao = `${declaracoes}\n\n${programa}`;
-  const versao = assinatura(semVersao);
-  const codigo = [
-    "' Robo CT-e (Excel) - Consultar centro de custo (SE16N + ZSD0004) - Central de Fretes.",
-    "' Cole num Modulo proprio da planilha do robo (ex.: Modulo3). Para rodar: botao \"Consultar centro de custo\"",
-    `' ou Alt+F8 > ${macro}, e escolha o arquivo de chaves baixado da Central. Nao edite.`,
-    'Option Explicit',
     '',
-    `Private Const VERSAO_MACRO = "${versao}"`,
-    semVersao,
-  ].join('\n');
-  return { codigo: codigo.replace(/\r?\n/g, '\r\n') + '\r\n', versao, macro };
+    "' CT-e que continua sem centro de custo: nao e lancado (o robo pula) e vira pendencia.",
+    'Private Sub SemCentroCusto(k, motivo)',
+    '    Pedidos(k) = "SEMCC"',
+    '    Miros(k) = "SEMCC"',
+    '    nFalhas = nFalhas + 1',
+    `    resumoFalhas = resumoFalhas & "CT-e " & L(k)(${I.cte}) & ": " & motivo & vbCrLf`,
+    `    Registrar "ERRO em pedido (" & L(k)(${I.cte}) & "): " & motivo`,
+    `    AnexarLinha pastaLog & "\\pendencias_cte.csv", "pedido;" & L(k)(${I.cte}) & ";" & motivo`,
+    `    EnviarCentral L(k)(${I.id}), """motivo"":""" & JsonTexto(motivo) & """"`,
+    'End Sub',
+  ];
+  const prepararLote = [
+    "' Centro de custo dos CT-e que vieram sem (e ainda sem pedido): consulta no SAP pela NF de venda.",
+    'Sub PrepararLote()',
+    '    Dim k, chave, n, cc, falha',
+    '    n = 0',
+    '    For j = 0 To 8',
+    '        col(j) = ""',
+    '    Next',
+    '    For k = 0 To UBound(L)',
+    `        If Pedidos(k) = "" And L(k)(${I.cc}) = "" Then`,
+    `            chave = SoDigitos(L(k)(${I.danfe}))`,
+    '            If Len(chave) = 44 Then',
+    '                n = n + 1',
+    ...PARTES_CHAVE.map(([ini, tam], k) => `                col(${k}) = col(${k}) & Mid(chave, ${ini}, ${tam}) & vbCrLf`),
+    '            End If',
+    '        End If',
+    '    Next',
+    '    If n = 0 Then Exit Sub',
+    '    Log "Consultando o centro de custo de " & n & " CT-e no SAP (SE16N + ZSD0004)."',
+    '    falha = ""',
+    '    Set ccPorChave = CreateObject("Scripting.Dictionary")',
+    '    On Error Resume Next',
+    '    ConsultarCentroCusto',
+    '    If Err.Number <> 0 Then falha = Err.Description & " [passo: " & passo & "]"',
+    '    Err.Clear',
+    '    On Error GoTo 0',
+    '    FecharCopia',
+    '    If falha <> "" Then Log "Consulta do centro de custo falhou: " & falha',
+    '    For k = 0 To UBound(L)',
+    `        If Pedidos(k) = "" And L(k)(${I.cc}) = "" Then`,
+    `            chave = SoDigitos(L(k)(${I.danfe}))`,
+    '            cc = ""',
+    '            If ccPorChave.Exists(chave) Then cc = ccPorChave(chave)',
+    '            If cc <> "" Then',
+    `                L(k)(${I.cc}) = cc`,
+    `                Log "Centro de custo do CT-e " & L(k)(${I.cte}) & ": " & cc & " (consultado no SAP)"`,
+    '            ElseIf falha <> "" Then',
+    '                SemCentroCusto k, "sem centro de custo: a consulta no SAP falhou (" & falha & ")"',
+    '            Else',
+    '                SemCentroCusto k, "sem centro de custo: a consulta no SAP nao achou (digite na Central)"',
+    '            End If',
+    '        End If',
+    '    Next',
+    'End Sub',
+  ];
+  return {
+    substitutas: { PrepararLote: prepararLote },
+    rotinas,
+    declaracoes: [
+      'Dim arqDados, escritorios, ccPorChave, col(8), j, texto, wbCopia',
+      `Private Const PASTA_ETAPAS = "${PASTA_ETAPAS_CTE}"`,
+    ],
+    aposCarregar: ['    arqDados = arq'],
+  };
 }
 
-// Arquivo de chaves para a consulta: uma chave de NF de venda (44 digitos) por linha + a versao.
-export function matrizChavesConsulta(chaves = [], { versao }) {
-  return [['chave_nf_venda', '', `consulta ${versao}`], ...[...new Set(chaves.filter(Boolean))].map((c) => [String(c)])];
+// Tabela de escritorios para a 2a aba do arquivo de dados do CT-e (empresa + escritorio -> centro de custo).
+export function matrizEscritorios(escritorios = new Map()) {
+  return [['empresa_escritorio', 'centro_custo'], ...[...escritorios.entries()].map(([conc, cc]) => [String(conc), String(cc ?? '')])];
 }
