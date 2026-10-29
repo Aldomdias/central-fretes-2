@@ -35,7 +35,7 @@ import {
 } from '../../utils/robos/lancamentoComum';
 import { gerarScriptNfse } from '../../utils/robos/sapLancamentoVbs';
 import { registrarLancamentos } from '../../services/robosLancamentosService';
-import { buscarNaFila, salvarNaFila } from '../../services/robosFilaService';
+import { buscarNaFila, limparMiroDaFila, salvarNaFila } from '../../services/robosFilaService';
 import { CHAVE_LOTE_NFSE, itemFilaNfse, numerosDaFila } from '../../utils/robos/filaRobo';
 import { getSupabaseAcessoPublico } from '../../lib/supabaseClient';
 import AvisoFila from './AvisoFila';
@@ -196,6 +196,20 @@ export default function LancamentoNfseRobo() {
 
   function editarResultado(uid, campo, valor) {
     setManuais((a) => ({ ...a, [uid]: { ...(a[uid] || {}), [campo]: valor } }));
+    // apagar a MIRO na grade tambem tira da fila: senao a Central traz o numero de volta ao abrir a tela / baixar os dados
+    if (campo === 'miro' && valor === '') {
+      const l = porUid.get(uid);
+      if (l && (manuais[uid]?.miro || '')) limparMiroDaFila('NFSE', [l.id], carregarSessao()?.nome || '').catch(() => null);
+    }
+  }
+
+  // MIRO estornada no SAP: tira o numero da grade e da fila para o robo lancar a MIRO de novo (o pedido fica).
+  async function miroEstornada(uid) {
+    const l = porUid.get(uid);
+    if (!l) return;
+    setManuais((a) => ({ ...a, [uid]: { ...(a[uid] || {}), miro: '', aviso: '', avisoOk: false, estornar: false, falhaSap: undefined } }));
+    const r = await limparMiroDaFila('NFSE', [l.id], carregarSessao()?.nome || '').catch(() => null);
+    setFeedback(r?.ok === false ? 'MIRO tirada da grade, mas nao consegui limpar na fila da Central. Tente de novo.' : 'MIRO tirada da grade e da fila da Central. Baixe os dados e rode o robo: ele lanca so a MIRO de novo (o pedido fica).');
   }
 
   // OK do aviso de valor da MIRO: a nota segue normalmente e entra no historico.
@@ -596,6 +610,7 @@ export default function LancamentoNfseRobo() {
                           ) : null}
                           {temErro ? <span style={{ color: '#b91c1c', marginRight: 8 }} title={l.erros.join('; ')}>{l.erros[0]}</span> : null}
                           {l && l.falhaSap && !l.miro ? <span style={{ color: '#b45309', marginRight: 8 }} title={l.falhaSap.motivo}>SAP ({l.falhaSap.etapa}): {motivoCurto(l.falhaSap.motivo).slice(0, 60)}</span> : null}
+                          {m.miro ? <><button type="button" className="btn-link" title="A MIRO foi estornada no SAP: tira o numero daqui e da fila para lancar a MIRO de novo" onClick={() => miroEstornada(e.uid)}>MIRO estornada</button>{' '}</> : null}
                           <button type="button" className="btn-link" onClick={() => duplicarLinha(e.uid)}>duplicar</button>{' '}
                           <button type="button" className="btn-link" onClick={() => removerLinha(e.uid)}>remover</button>
                         </td>

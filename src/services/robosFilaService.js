@@ -98,6 +98,28 @@ export async function descartarDaFila(itens = [], por = '') {
   return salvarNaFila(itens.map((i) => ({ ...i, descartado: true })), por);
 }
 
+// MIRO estornada: tira o numero da MIRO da fila (a fila nunca apaga MIRO sozinha) para a nota poder ser lancada de novo.
+// O pedido continua; so a MIRO e refeita.
+export async function limparMiroDaFila(tipo, chaves = [], por = '') {
+  const unicas = [...new Set(chaves.filter(Boolean))];
+  if (!unicas.length) return { ok: true, onde: 'nenhum' };
+  const agora = new Date().toISOString();
+  const supabase = isSupabaseConfigured() ? getSupabaseClient() : null;
+  if (supabase) {
+    try {
+      const { error } = await supabase.from(TABELA)
+        .update({ miro: null, motivo: null, descartado: false, atualizado_em: agora, atualizado_por: por || null })
+        .eq('tipo', tipo).in('chave', unicas);
+      if (error) throw error;
+      return { ok: true, onde: 'banco' };
+    } catch (e) {
+      if (!tabelaAusente(e?.message)) { console.warn('Fila do robo:', e?.message); return { ok: false, onde: 'erro', erro: e?.message }; }
+    }
+  }
+  gravarLocal(lerLocal().map((r) => (r.tipo === tipo && unicas.includes(r.chave) ? { ...r, miro: null, motivo: null, descartado: false, atualizado_em: agora } : r)));
+  return { ok: true, onde: 'navegador' };
+}
+
 // Itens da fila destas chaves (para trazer para a tela o que a planilha do robo mandou direto).
 export async function buscarNaFila(tipo, chaves = []) {
   const mapa = new Map();
