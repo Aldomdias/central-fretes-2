@@ -243,9 +243,10 @@ export function lerResultadoCsv(texto = '') {
   const mapa = new Map();
   String(texto).split(/\r?\n/).forEach((linha) => {
     const [id, tipo, numero] = linha.split(';').map((p) => (p ?? '').trim());
-    if (!id || !numero || (tipo !== 'pedido' && tipo !== 'miro')) return;
+    if (!id || !numero || !['pedido', 'miro', 'aviso', 'estorno'].includes(tipo)) return;
     const atual = mapa.get(id) || {};
-    atual[tipo] = numero;
+    // estorno (MR8M): a MIRO anterior deixa de valer; se o robo lancar outra, ela vem em seguida
+    if (tipo === 'estorno') { atual.miro = ''; atual.estornado = numero; atual.aviso = ''; } else atual[tipo] = numero;
     mapa.set(id, atual);
   });
   return mapa;

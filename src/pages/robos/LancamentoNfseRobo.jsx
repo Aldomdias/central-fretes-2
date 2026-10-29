@@ -198,11 +198,24 @@ export default function LancamentoNfseRobo() {
     setManuais((a) => ({ ...a, [uid]: { ...(a[uid] || {}), [campo]: valor } }));
   }
 
+  // OK do aviso de valor da MIRO: a nota segue normalmente e entra no historico.
+  async function confirmarAviso(uid) {
+    editarResultado(uid, 'avisoOk', true);
+    editarResultado(uid, 'aviso', '');
+    editarResultado(uid, 'estornar', false);
+    const l = linhas.find((x) => x.uid === uid);
+    if (l) await registrarHistorico([{ ...l, aviso: '' }], true);
+  }
+
   // Acrescenta linhas (vindas de colagem ou arquivo) depois de tirar as linhas em branco.
   // Com mesclar (arquivo preenchido de volta): a nota que ja esta na grade (mesma NF + CNPJ do
   // prestador) so recebe os campos preenchidos no arquivo; as demais entram como novas.
   function acrescentar(lista, origem, { mesclar = false } = {}) {
-    const paraGrade = (e) => ({ ...e, valor: e.valor === null || e.valor === undefined ? '' : valorParaSap(e.valor) });
+    const paraGrade = (e) => ({
+      ...e,
+      valor: e.valor === null || e.valor === undefined ? '' : valorParaSap(e.valor),
+      valorLiquido: e.valorLiquido === null || e.valorLiquido === undefined ? '' : valorParaSap(e.valorLiquido),
+    });
     const chave = (e) => `${nfComSufixoF(e.nf)}/${normalizarCnpj(e.cnpjTransp)}`.toUpperCase();
     const novas = lista.map((e) => novaEntradaNfse(novoUid(), paraGrade(e)));
     setEntradas((atual) => {
@@ -305,7 +318,7 @@ export default function LancamentoNfseRobo() {
         const chave = `${d.nf}/${d.cnpjTransp}`.toUpperCase();
         if (existentes.has(chave)) { falhas.push({ arquivo, motivo: 'Repetida: a nota ja esta na grade (ou em outro PDF do lote)', faltando: '', nf: d.nf }); return; }
         existentes.add(chave);
-        novas.push({ nf: d.nf, transportadora: d.transportadora, cnpjTransp: d.cnpjTransp, dataEmissao: d.dataEmissao, valor: d.valor, codImp: d.codImp, cfop: d.cfop, cnpjTomador: d.cnpjTomador, ocr: Boolean(viaOcr) });
+        novas.push({ nf: d.nf, transportadora: d.transportadora, cnpjTransp: d.cnpjTransp, dataEmissao: d.dataEmissao, valor: d.valor, valorLiquido: d.valorLiquido, codImp: d.codImp, cfop: d.cfop, cnpjTomador: d.cnpjTomador, ocr: Boolean(viaOcr) });
       });
       if (ocrUsado) await encerrarOcr();
       setFalhasPdf(falhas);
@@ -409,7 +422,9 @@ export default function LancamentoNfseRobo() {
       const mapa = {};
       atual.forEach((l) => {
         const nf = String(l.nf || '').toUpperCase();
-        const m = { ...(manuais[l.uid] || {}), pedido: l.pedido, miro: l.miro };
+        const m0 = manuais[l.uid] || {};
+        // aviso ja confirmado com OK nao volta; MIRO estornada limpa a flag de estorno
+        const m = { ...m0, pedido: l.pedido, miro: l.miro, aviso: m0.avisoOk && !l.estornado ? '' : l.aviso || '', estornar: l.estornado ? false : m0.estornar, ...(l.estornado ? { avisoOk: false } : {}) };
         const falha = contagemNf.get(nf) === 1 ? falhas.get(nf) : null;
         if (l.miro) delete m.falhaSap;
         else if (falha) { m.falhaSap = falha; marcadas += 1; }
@@ -451,7 +466,8 @@ export default function LancamentoNfseRobo() {
   }
 
   async function registrarHistorico(lista, automatico = false) {
-    const com = lista.filter((l) => l.miro || l.pedido);
+    // MIRO com aviso de valor so entra no historico depois do OK de quem conferiu
+    const com = lista.filter((l) => (l.miro || l.pedido) && !(l.miro && l.aviso));
     if (!com.length) { if (!automatico) setErro('Nenhuma nota com pedido ou MIRO para registrar no historico.'); return null; }
     const sessao = carregarSessao();
     const r = await registrarLancamentos('NFSE', com, sessao?.nome || sessao?.email || '');
@@ -567,6 +583,15 @@ export default function LancamentoNfseRobo() {
                           {e.ocr ? (
                             <span style={{ color: '#b45309', marginRight: 8 }} title="Lida por OCR (imagem): confira CNPJ, data e valor com a nota">
                               OCR: conferir <button type="button" className="btn-link" onClick={() => setCampo(e.uid, 'ocr', false)}>ok</button>
+                            </span>
+                          ) : null}
+                          {m.miro && m.aviso ? (
+                            <span style={{ color: '#b45309', marginRight: 8 }} title={m.aviso}>
+                              Conferir valor da MIRO: {m.aviso}{' '}
+                              <button type="button" className="btn-link" onClick={() => confirmarAviso(e.uid)}>OK, está correto</button>{' '}
+                              <label style={{ cursor: 'pointer' }}>
+                                <input type="checkbox" checked={Boolean(m.estornar)} onChange={(ev) => editarResultado(e.uid, 'estornar', ev.target.checked)} /> estornar
+                              </label>
                             </span>
                           ) : null}
                           {temErro ? <span style={{ color: '#b91c1c', marginRight: 8 }} title={l.erros.join('; ')}>{l.erros[0]}</span> : null}

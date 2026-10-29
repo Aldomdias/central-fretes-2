@@ -66,7 +66,7 @@ export function entradaVazia(e = {}) {
 }
 
 export function novaEntradaNfse(uid, base = {}) {
-  return { uid, nf: '', transportadora: '', cnpjTransp: '', dataEmissao: '', valor: '', codImp: '', cfop: '', cnpjTomador: '', escrV: '', fatura: '', vencimento: '', ...base };
+  return { uid, nf: '', transportadora: '', cnpjTransp: '', dataEmissao: '', valor: '', codImp: '', cfop: '', cnpjTomador: '', escrV: '', fatura: '', vencimento: '', valorLiquido: '', ...base };
 }
 
 // Equivale a consulta "Lancamento (2)" do Power Query + regras das colunas. Aceita os campos
@@ -112,6 +112,7 @@ export function montarLancamentoNfse(entradas = [], indices, { vencimento = hoje
       cnpjTransp: e.cnpjTransp,
       dataEmissao: e.dataEmissao,
       valor: e.valor,
+      valorLiquido: numeroPlanilha(e0.valorLiquido),
       codImp: e.codImp,
       cfop: e.cfop,
       vencimento: naoAntesDeHoje(dataParaIso(e0.vencimento) || vencimento),
@@ -140,6 +141,7 @@ export function linhasParaScriptNfse(linhas = []) {
     cnpj: apenasDigitos(l.cnpjTransp),
     dtEmissao: isoParaDdmmaaaa(l.dataEmissao),
     valor: valorParaSap(l.valor),
+    liquido: valorParaSap(l.valorLiquido),
     codImp: l.codImp,
     cfop: l.cfop,
     dtVenc: isoParaDdmmaaaa(l.vencimento),
@@ -147,6 +149,7 @@ export function linhasParaScriptNfse(linhas = []) {
     cc: l.cc,
     pedido: l.pedido || '',
     miro: l.miro || '',
+    estornar: l.estornar && l.miro ? '1' : '',
   }));
 }
 
@@ -157,7 +160,8 @@ export function aplicarResultado(linhas = [], resultado = new Map()) {
     const r = resultado.get(l.id);
     if (!r) return l;
     atualizadas += 1;
-    return { ...l, pedido: r.pedido || l.pedido, miro: r.miro || l.miro };
+    const miro = r.estornado && !r.miro ? '' : r.miro || l.miro;
+    return { ...l, pedido: r.pedido || l.pedido, miro, aviso: r.aviso !== undefined ? r.aviso : l.aviso, estornado: r.estornado || l.estornado };
   });
   return { linhas: novas, atualizadas };
 }
