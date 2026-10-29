@@ -69,13 +69,24 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
     return () => { vivo = false; };
   }, [versao]);
 
-  const pendentes = useMemo(() => fila.itens.filter((i) => !tipo || i.tipo === tipo), [fila.itens, tipo]);
-  const pendentesPorTipo = (t) => fila.itens.filter((i) => i.tipo === t);
+  // filtro por quem lancou e marcacao das notas que vao para o robo (so as marcadas seguem; o resto fica na fila)
+  const [filtroPor, setFiltroPor] = useState('');
+  const [marcados, setMarcados] = useState(() => new Set());
+  const chaveItem = (i) => `${i.tipo}|${i.chave}`;
+  const pessoas = useMemo(() => [...new Set(fila.itens.map((i) => i.atualizado_por || '').filter(Boolean))].sort((a, b) => a.localeCompare(b)), [fila.itens]);
+  const pendentes = useMemo(() => fila.itens.filter((i) => (!tipo || i.tipo === tipo) && (!filtroPor || (i.atualizado_por || '') === filtroPor)), [fila.itens, tipo, filtroPor]);
+  const marcadosPorTipo = (t) => fila.itens.filter((i) => i.tipo === t && marcados.has(chaveItem(i)));
   const aguardando = useMemo(() => aguardandoResultado(pendentes), [pendentes]);
+  const marcarVisiveis = (ligar) => setMarcados((a) => {
+    const n = new Set(a);
+    pendentes.slice(0, 300).forEach((i) => { if (ligar) n.add(chaveItem(i)); else n.delete(chaveItem(i)); });
+    return n;
+  });
+  const alternar = (i) => setMarcados((a) => { const n = new Set(a); const k = chaveItem(i); if (n.has(k)) n.delete(k); else n.add(k); return n; });
 
-  // Manda as sem MIRO de volta para a tela do robo (substitui o lote salvo dela) e abre a aba.
+  // Manda as marcadas de volta para a tela do robo (substitui o lote salvo dela) e abre a aba.
   function mandarParaRobo(t) {
-    const itens = pendentesPorTipo(t);
+    const itens = marcadosPorTipo(t);
     if (!itens.length) return;
     const atual = tamanhoLoteSalvo(t);
     const nome = t === 'CTE' ? 'CT-e' : 'NFS-e';
@@ -162,10 +173,20 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
 
       <div className="panel-card">
         <div className="panel-title">Sem MIRO — o que falta lançar ({fmt(pendentes.length)})</div>
-        <p style={{ marginTop: 0 }}>Notas e CT-e mandados para o robô (de qualquer computador) que ainda não têm MIRO, com o motivo quando o SAP recusou. Mande de volta para o robô sem importar nada de novo: o lote da tela é trocado por estes e quem já tem pedido vai só para a MIRO.</p>
+        <p style={{ marginTop: 0 }}>Notas e CT-e mandados para o robô (de qualquer computador) que ainda não têm MIRO, com o motivo quando o SAP recusou. Filtre por quem lançou, marque só as que quer e mande para o robô sem importar nada de novo: o lote da tela é trocado pelas marcadas (as outras ficam aqui) e quem já tem pedido vai só para a MIRO.</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8, alignItems: 'center' }}>
+          <label style={{ fontSize: 12 }}>Lançado por{' '}
+            <select value={filtroPor} onChange={(e) => setFiltroPor(e.target.value)}>
+              <option value="">Todos</option>
+              {pessoas.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </label>
+          <button type="button" className="btn-secondary" disabled={!pendentes.length} onClick={() => marcarVisiveis(true)}>Marcar todas da lista</button>
+          <button type="button" className="btn-secondary" disabled={!marcados.size} onClick={() => setMarcados(new Set())}>Limpar marcação ({fmt(marcados.size)})</button>
+        </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-          <button type="button" className="btn-primary" disabled={!pendentesPorTipo('NFSE').length} onClick={() => mandarParaRobo('NFSE')}>Mandar NFS-e para o robô ({fmt(pendentesPorTipo('NFSE').length)})</button>
-          <button type="button" className="btn-primary" disabled={!pendentesPorTipo('CTE').length} onClick={() => mandarParaRobo('CTE')}>Mandar CT-e para o robô ({fmt(pendentesPorTipo('CTE').length)})</button>
+          <button type="button" className="btn-primary" disabled={!marcadosPorTipo('NFSE').length} onClick={() => mandarParaRobo('NFSE')} title="Só as NFS-e marcadas vão para o robô; as outras ficam na fila">Mandar NFS-e marcadas para o robô ({fmt(marcadosPorTipo('NFSE').length)})</button>
+          <button type="button" className="btn-primary" disabled={!marcadosPorTipo('CTE').length} onClick={() => mandarParaRobo('CTE')} title="Só os CT-e marcados vão para o robô; os outros ficam na fila">Mandar CT-e marcados para o robô ({fmt(marcadosPorTipo('CTE').length)})</button>
           <button type="button" className="btn-secondary" disabled={!pendentes.length} onClick={() => baixarXlsx('sem-miro.xlsx', pendentes.map(linhaPendente), CABECALHO_PENDENTES)}>Baixar lista (.xlsx)</button>
         </div>
         {aviso ? <div style={{ color: '#b91c1c', fontSize: 12, marginBottom: 6 }}>{aviso}</div> : null}
@@ -180,10 +201,11 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
         {pendentes.length ? (
           <div style={{ overflow: 'auto', maxHeight: 320 }}>
             <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-              <thead><tr>{['Tipo', 'Documento', 'Transportadora', 'Valor', 'Pedido', 'Motivo', 'Atualizado em', 'Por', ''].map((c) => <th key={c} style={th}>{c}</th>)}</tr></thead>
+              <thead><tr><th style={th}><input type="checkbox" title="Marcar / desmarcar todas da lista" checked={pendentes.slice(0, 300).every((i) => marcados.has(chaveItem(i)))} onChange={(e) => marcarVisiveis(e.target.checked)} /></th>{['Tipo', 'Documento', 'Transportadora', 'Valor', 'Pedido', 'Motivo', 'Atualizado em', 'Por', ''].map((c) => <th key={c} style={th}>{c}</th>)}</tr></thead>
               <tbody>
                 {pendentes.slice(0, 300).map((i) => (
-                  <tr key={`${i.tipo}-${i.chave}`}>
+                  <tr key={`${i.tipo}-${i.chave}`} style={{ background: marcados.has(chaveItem(i)) ? '#eff6ff' : undefined }}>
+                    <td style={td}><input type="checkbox" checked={marcados.has(chaveItem(i))} onChange={() => alternar(i)} /></td>
                     <td style={td}>{TIPOS_LANCAMENTO[i.tipo] || i.tipo}</td><td style={td}>{i.documento}</td><td style={td}>{i.transportadora}</td>
                     <td style={td}>{moeda(i.valor)}</td><td style={td}>{i.pedido || <span style={{ color: '#64748b' }}>sem pedido</span>}</td>
                     <td style={{ ...td, whiteSpace: 'normal', minWidth: 220, color: i.motivo ? '#b45309' : '#64748b' }}>{i.motivo || '—'}</td>
