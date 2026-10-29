@@ -140,6 +140,8 @@ function extrairModeloRps(L, U) {
   const liquido = todo.match(/VALOR A RECEBER \(R\$\)\s*(?:¦\s*)?([\d.]+,\d{2})/i);
   if (bruto) dados.valor = paraNumero(bruto[1]);
   if (liquido) dados.valorLiquido = paraNumero(liquido[1]);
+  // RPS sozinho (a coluna "NUMERO NFS-E" vazia): e so o recibo; a nota fiscal vem em outra pagina e e ela que vale
+  if (!dados.numeroNfse) return { dados, faltando: [], rps: true };
   aplicarRegrasLancamento(dados);
   return resultado(dados);
 }
@@ -200,6 +202,23 @@ function extrairModeloIssNet(L, U) {
   return resultado(dados);
 }
 
+// Modelo municipal "Nota Fiscal de Servico Eletronica - Serie NFS-e" (ex.: Pouso Alegre): titulos numa linha e
+// valores na de baixo ("Valor Total ... Base de Calculo ISSQN"); prestador no cabecalho, tomador em "Cidade".
+function completarModeloSerieNfse(L, U, dados) {
+  if (!(dados.valor > 0)) {
+    const i = U.findIndex((l) => l.includes('VALOR TOTAL') && l.includes('BASE DE CALCULO'));
+    const v = i >= 0 ? numeros(L[i + 1] || '') : [];
+    if (v.length) dados.valor = v[0];
+  }
+  if (!dados.transportadora && L[0]) dados.transportadora = semEmail(L[0].split(SEP)[0].split(' - ')[0].trim());
+  if (!dados.municipioPrestador && dados.chave) dados.municipioPrestador = `IBGE${dados.chave.slice(0, 7)}`;
+  if (!dados.ufTomador) {
+    const i = U.findIndex((l) => l.includes('BAIRRO') && l.includes('CEP') && l.includes('CIDADE'));
+    const m = i >= 0 ? String(L[i + 1] || '').match(/([A-Za-zÀ-ÿ' ]+?)\s*-\s*([A-Z]{2})\s*$/) : null;
+    if (m) { dados.municipioTomador = chaveMunicipio(`${m[1]}${m[2]}`); dados.ufTomador = m[2].toUpperCase(); }
+  }
+}
+
 // linhas: saida de itensParaLinhas (ou o texto do PDF dividido por linha).
 export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   const L = linhas.map((l) => String(l ?? ''));
@@ -231,7 +250,7 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   dados.nf =nfComSufixoF(dados.numeroNfse);
 
   // data da emissao da NFS-e: primeira data seguida de hora (a competencia vem sem hora)
-  const d = todo.match(/(\d{2})\/(\d{2})\/(\d{4})\s+\d{2}:\d{2}(?::\d{2})?/);
+  const d = todo.match(/(\d{2})\/(\d{2})\/(\d{4})\s*,?\s+\d{2}:\d{2}(?::\d{2})?/);
   if (d) dados.dataEmissao = `${d[3]}-${d[2]}-${d[1]}`;
 
   // prestador (nome e, se faltar a chave, o CNPJ) e tomador (CNPJ)
@@ -325,6 +344,7 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   dados.municipioPrestador = municipioApos(iPrest);
   dados.municipioTomador = municipioApos(iTom);
   if (!dados.municipioPrestador || !dados.municipioTomador) Object.assign(dados, municipiosPorEndereco(L, U));
+  if (U.some((l) => l.includes('SERIE NFS-E')) && U.some((l) => l.includes('BASE DE CALCULO') && l.includes('ISSQN'))) completarModeloSerieNfse(L, U, dados);
   aplicarRegrasLancamento(dados);
   return resultado(dados);
 }
@@ -351,14 +371,17 @@ async function linhasDaPagina(pdf, n) {
 // opcoes.ocr: leitura de texto vindo de OCR; opcoes.ocrPaginas[i]: so a pagina i veio de OCR.
 export function lerPaginas(paginas = [], opcoes = {}) {
   const notas = [];
+  let rps = 0;
   paginas.forEach((linhas, i) => {
     const ocr = Boolean(opcoes.ocr || (opcoes.ocrPaginas || [])[i]);
     const r = { pagina: i + 1, ocr, ...extrairDadosNfse(linhas, { ocr }), semTexto: linhas.length === 0 };
+    if (r.rps) { rps += 1; return; } // RPS (recibo provisorio): ignora, vale so a nota fiscal
     const vazia = !r.dados.numeroNfse && r.dados.cnpjTransp.length !== 14 && !(r.dados.valor > 0);
     const anteriorOk = notas.some((n) => !n.faltando.length);
     if (i > 0 && anteriorOk && (r.semTexto || vazia)) return;
     notas.push(r);
   });
+  if (!notas.length && rps) notas.push({ pagina: 1, ocr: false, dados: { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null }, faltando: ['NFS-e (o arquivo so tem RPS)'], semTexto: false });
   return notas;
 }
 
