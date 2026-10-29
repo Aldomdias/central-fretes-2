@@ -15,9 +15,10 @@ const SUBSTITUTAS = {
     'Sub AvisarCentral(id, tipo, valor)',
     '    If tipo = "miro" Then',
     '        EnviarCentral id, """miro"":""" & valor & """,""motivo"":null"',
-    '    Else',
+    '    ElseIf tipo = "pedido" Then',
     '        EnviarCentral id, """pedido"":""" & valor & """"',
     '    End If',
+    "    ' aviso de valor e estorno (MR8M) so vao no arquivo de resultado: importe-o na Central",
     'End Sub',
   ],
   AvisarFalhaCentral: [
