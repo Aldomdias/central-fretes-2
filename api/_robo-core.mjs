@@ -22609,6 +22609,54 @@ async function buscarReferenciaCtes(chaves = [], { comDetalhes = false, lancarEr
   }
   return referencia;
 }
+async function corrigirBaseCtesPeloTracking(chaves = [], onProgress = null) {
+  const resultado = { corrigidos: [], iguais: 0, semTracking: 0 };
+  const normalizadas = [...new Set((chaves || []).map((c) => String(c || '').replace(/\D/g, '')).filter((c) => c.length >= 40))];
+  if (!isSupabaseConfigured() || !normalizadas.length) return resultado;
+  const client = getSupabaseClient();
+  const dig7 = (v) => String(v || '').replace(/\D/g, '').slice(0, 7);
+  for (let inicio = 0; inicio < normalizadas.length; inicio += 100) {
+    const lote = normalizadas.slice(inicio, inicio + 100);
+    const [{ data: tracking, error: erroTracking }, { data: base, error: erroBase }] = await Promise.all([
+      client.from('tracking_rows').select('chave_cte, cidade_origem, uf_origem, ibge_origem, cidade_destino, uf_destino, ibge_destino').in('chave_cte', lote),
+      client.from('realizado_local_ctes').select('chave_cte, cidade_origem, uf_origem, ibge_origem, cidade_destino, uf_destino, ibge_destino').in('chave_cte', lote),
+    ]);
+    if (erroTracking) throw new Error(`Erro ao consultar o tracking: ${erroTracking.message}`);
+    if (erroBase) throw new Error(`Erro ao consultar a base de CT-es: ${erroBase.message}`);
+    onProgress?.({ etapa: 'consultando', processados: inicio, total: normalizadas.length, corrigidos: resultado.corrigidos.length });
+    const trackingPorChave = new Map();
+    (tracking || []).forEach((row) => {
+      if (dig7(row.ibge_origem).length !== 7 || dig7(row.ibge_destino).length !== 7) return;
+      if (!trackingPorChave.has(row.chave_cte)) trackingPorChave.set(row.chave_cte, row);
+    });
+    let processados = 0;
+    for (const atual of base || []) {
+      processados += 1;
+      onProgress?.({ etapa: 'corrigindo', processados: inicio + processados, total: normalizadas.length, corrigidos: resultado.corrigidos.length });
+      const t = trackingPorChave.get(atual.chave_cte);
+      if (!t) { resultado.semTracking += 1; continue; }
+      if (dig7(t.ibge_origem) === dig7(atual.ibge_origem) && dig7(t.ibge_destino) === dig7(atual.ibge_destino)
+        && String(t.uf_origem || '') === String(atual.uf_origem || '') && String(t.uf_destino || '') === String(atual.uf_destino || '')) {
+        resultado.iguais += 1;
+        continue;
+      }
+      const novo = {
+        cidade_origem: t.cidade_origem, uf_origem: t.uf_origem, ibge_origem: dig7(t.ibge_origem),
+        cidade_destino: t.cidade_destino, uf_destino: t.uf_destino, ibge_destino: dig7(t.ibge_destino),
+        chave_rota_ibge: `${dig7(t.ibge_origem)}-${dig7(t.ibge_destino)}`,
+        updated_at: new Date().toISOString(),
+      };
+      const { error } = await client.from('realizado_local_ctes').update(novo).eq('chave_cte', atual.chave_cte);
+      if (error) throw new Error(`Erro ao corrigir o CT-e na base: ${error.message}`);
+      resultado.corrigidos.push({
+        chave: atual.chave_cte,
+        de: `${atual.cidade_origem}/${atual.uf_origem} → ${atual.cidade_destino}/${atual.uf_destino}`,
+        para: `${t.cidade_origem}/${t.uf_origem} → ${t.cidade_destino}/${t.uf_destino}`,
+      });
+    }
+  }
+  return resultado;
+}
 async function vincularChavesDetalhesPorNumero(fatura, detalhes = []) {
   const semChave = (detalhes || []).filter((d) => !normalizarChaveCte(d.chave_cte) && String(d.numero_cte || "").replace(/\D/g, ""));
   if (!semChave.length || !isSupabaseConfigured()) return { detalhes, vinculados: 0, pendentes: semChave.length };
@@ -27769,6 +27817,11 @@ function aplicarSaldo(item, saldos, referencia) {
   const diferenca = Number((Number(item.valor_frete || 0) - calculado).toFixed(2));
   return { ...item, calculado_frete: calculado, diferenca };
 }
+function motivoSemChave(item = {}) {
+  const serie = String(item.serie_cte || "").trim().toUpperCase();
+  if (/^[A-Z]{2}N$/.test(serie) || serie === "OS") return `NFS-e (serie ${serie}) nao localizado na base de CT-e: conferir manualmente`;
+  return "CT-e nao localizado na base (sem chave, nao achado por numero/CNPJ): importar o XML ou atualizar a base de CT-es";
+}
 function resumir(lista) {
   const total = lista.length;
   const calculados = lista.filter((i) => Number(i.calculado_frete || 0) > 0).length;
@@ -27787,7 +27840,7 @@ function resumir(lista) {
   const calculoAmd = lista.reduce((acc, i) => acc + Number(i.calculado_frete || 0), 0);
   const motivos = /* @__PURE__ */ new Map();
   lista.filter((i) => !(Number(i.calculado_frete || 0) > 0)).forEach((i) => {
-    const m = String(i.motivo_sem_calculo || "").trim() || (normalizarChaveCte(i.chave_cte).length !== 44 ? "CT-e sem chave: nao localizado na base por numero/CNPJ" : "sem resultado de calculo na base");
+    const m = String(i.motivo_sem_calculo || "").trim() || (normalizarChaveCte(i.chave_cte).length !== 44 ? motivoSemChave(i) : "sem resultado de calculo na base");
     if (m) motivos.set(m, (motivos.get(m) || 0) + 1);
   });
   const motivoSemCalculo = [...motivos.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
@@ -27849,6 +27902,15 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
     entrarCacheCalculo(prazoFinal ? 54e4 : 18e4);
     try {
       const chaves = [...new Set(lista.filter(precisaCalcular).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
+      const semCalculo = [...new Set(lista.filter((i) => !(Number(i.calculado_frete || 0) > 0)).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
+      if (semCalculo.length) {
+        aoProgredir({ fase: "corrigindo_tracking", atual: 0, total: semCalculo.length });
+        try {
+          await corrigirBaseCtesPeloTracking(semCalculo);
+        } catch (e) {
+          console.warn("[robo] correcao pelo tracking falhou:", e?.message || e);
+        }
+      }
       const correcoes = montarCorrecoesCalculoFatura(lista.filter(precisaCalcular), { pesoTrackingMaisProximo: pesoMaisProximo });
       const opcoesBase = {
         ignorarCubagem: true,
