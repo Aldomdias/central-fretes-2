@@ -124,12 +124,49 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
   const doAnterior = todosMeses.find((m) => m.mes === anterior);
   const totalAno = meses.reduce((s, m) => s + m.total, 0);
 
+  // filtros da lista de documentos lancados: periodo (substitui o ano), quem lancou, transportadora, pagamento
+  const [de, setDe] = useState('');
+  const [ate, setAte] = useState('');
+  const [porLanc, setPorLanc] = useState('');
+  const [transpFiltro, setTranspFiltro] = useState('');
+  const [pagFiltro, setPagFiltro] = useState('');
+  const [marcadosDet, setMarcadosDet] = useState(() => new Set());
+  const chaveReg = (r) => `${r.tipo}|${r.miro}|${r.documento}`;
+  const visiveis = useMemo(() => registrosVisiveis(dados.registros), [dados.registros]);
+  const lancadores = useMemo(() => [...new Set(visiveis.map((r) => r.lancado_por || '').filter(Boolean))].sort((a, b) => a.localeCompare(b)), [visiveis]);
+  const transportadoras = useMemo(() => [...new Set(visiveis.map((r) => r.transportadora || '').filter(Boolean))].sort((a, b) => a.localeCompare(b)), [visiveis]);
+
   const detalhe = useMemo(() => {
     const t = busca.trim().toLowerCase();
-    return registrosVisiveis(dados.registros)
-      .filter((r) => (!tipo || r.tipo === tipo) && String(r.lancado_em || '').startsWith(ano))
+    const tr = transpFiltro.trim().toLowerCase();
+    return visiveis
+      .filter((r) => {
+        if (tipo && r.tipo !== tipo) return false;
+        const dia = String(r.lancado_em || '').slice(0, 10);
+        if (de || ate) return (!de || dia >= de) && (!ate || dia <= ate);
+        return dia.startsWith(ano);
+      })
+      .filter((r) => !porLanc || (r.lancado_por || '') === porLanc)
+      .filter((r) => !tr || String(r.transportadora || '').toLowerCase().includes(tr))
+      .filter((r) => {
+        if (!pagFiltro) return true;
+        if (pagFiltro === 'pago') return r.situacao_pagamento === 'pago';
+        if (pagFiltro === 'aberto') return r.situacao_pagamento === 'aberto';
+        return !r.situacao_pagamento; // sem informacao do HANA
+      })
       .filter((r) => !t || [r.documento, r.transportadora, r.cnpj_transp, r.fatura, r.pedido, r.miro, r.empresa, r.lancamento_contabil].some((c) => String(c ?? '').toLowerCase().includes(t)));
-  }, [dados.registros, tipo, ano, busca]);
+  }, [visiveis, tipo, ano, busca, de, ate, porLanc, transpFiltro, pagFiltro]);
+  const marcadasDet = useMemo(() => detalhe.filter((r) => marcadosDet.has(chaveReg(r))), [detalhe, marcadosDet]);
+  const nomeArquivoDet = () => {
+    const slug = (s) => String(s || '').normalize('NFD').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase().slice(0, 30);
+    return ['lancamentos', slug(transpFiltro), slug(porLanc), de || ate ? `${de || 'inicio'}_a_${ate || 'hoje'}` : ano].filter(Boolean).join('-') + '.xlsx';
+  };
+  const marcarDet = (ligar) => setMarcadosDet((a) => {
+    const n = new Set(a);
+    detalhe.forEach((r) => { if (ligar) n.add(chaveReg(r)); else n.delete(chaveReg(r)); });
+    return n;
+  });
+  const alternarDet = (r) => setMarcadosDet((a) => { const n = new Set(a); const k = chaveReg(r); if (n.has(k)) n.delete(k); else n.add(k); return n; });
 
   function linhaXlsx(r) {
     return {
@@ -155,7 +192,6 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
             <select value={ano} onChange={(e) => setAno(e.target.value)}>{anos.map((a) => <option key={a} value={a}>{a}</option>)}</select>
           </div>
           <button type="button" className="btn-secondary" onClick={() => setVersao((v) => v + 1)}>Atualizar</button>
-          <button type="button" className="btn-secondary" disabled={!detalhe.length} onClick={() => baixarXlsx(`lancamentos-${ano}.xlsx`, detalhe.map(linhaXlsx), CABECALHO)}>Baixar {ano} (.xlsx)</button>
           <label className="btn-secondary" style={{ cursor: 'pointer' }} title="Relatorio de partidas do fornecedor exportado do SAP HANA (Referencia, N ID fiscal 1, Lancamento contabil, Lancto.compensacao...)">
             Importar lançamento contábil (HANA)
             <input type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={(e) => { importarContabil(e.target.files?.[0]); e.target.value = ''; }} />
@@ -249,24 +285,52 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
       </div>
 
       <div className="panel-card">
-        <div className="panel-title">Documentos lançados em {ano} ({fmt(detalhe.length)})</div>
-        <div className="field" style={{ maxWidth: 320, marginBottom: 8 }}>
-          <label>Buscar (nota, transportadora, fatura, pedido, MIRO…)</label>
-          <input value={busca} onChange={(e) => setBusca(e.target.value)} />
+        <div className="panel-title">Documentos lançados {de || ate ? `de ${de ? isoParaBr(de) : 'o início'} até ${ate ? isoParaBr(ate) : 'hoje'}` : `em ${ano}`} ({fmt(detalhe.length)})</div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 8 }}>
+          <div className="field" style={{ maxWidth: 260 }}>
+            <label>Buscar (nota, fatura, pedido, MIRO…)</label>
+            <input value={busca} onChange={(e) => setBusca(e.target.value)} />
+          </div>
+          <div className="field"><label>Lançado de</label><input type="date" value={de} onChange={(e) => setDe(e.target.value)} /></div>
+          <div className="field"><label>até</label><input type="date" value={ate} onChange={(e) => setAte(e.target.value)} /></div>
+          <div className="field"><label>Lançado por</label>
+            <select value={porLanc} onChange={(e) => setPorLanc(e.target.value)}>
+              <option value="">Todos</option>
+              {lancadores.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
+          <div className="field" style={{ maxWidth: 240 }}>
+            <label>Transportadora</label>
+            <input list="dl-transp-lanc" value={transpFiltro} onChange={(e) => setTranspFiltro(e.target.value)} placeholder="digite parte do nome" />
+            <datalist id="dl-transp-lanc">{transportadoras.map((n) => <option key={n} value={n} />)}</datalist>
+          </div>
+          <div className="field"><label>Pagamento</label>
+            <select value={pagFiltro} onChange={(e) => setPagFiltro(e.target.value)}>
+              <option value="">Todos</option><option value="pago">Pagos</option><option value="aberto">Em aberto</option><option value="semhana">Sem dado do HANA</option>
+            </select>
+          </div>
+          <button type="button" className="btn-secondary" onClick={() => { setDe(''); setAte(''); setPorLanc(''); setTranspFiltro(''); setPagFiltro(''); setBusca(''); }}>Limpar filtros</button>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+          <button type="button" className="btn-primary" disabled={!detalhe.length} onClick={() => baixarXlsx(nomeArquivoDet(), detalhe.map(linhaXlsx), CABECALHO)}>Baixar o filtro ({fmt(detalhe.length)}) .xlsx</button>
+          <button type="button" className="btn-secondary" disabled={!marcadasDet.length} onClick={() => baixarXlsx(nomeArquivoDet().replace('.xlsx', '-marcadas.xlsx'), marcadasDet.map(linhaXlsx), CABECALHO)}>Baixar só as marcadas ({fmt(marcadasDet.length)})</button>
+          <button type="button" className="btn-secondary" disabled={!detalhe.length} onClick={() => marcarDet(true)}>Marcar todas do filtro</button>
+          <button type="button" className="btn-secondary" disabled={!marcadosDet.size} onClick={() => setMarcadosDet(new Set())}>Limpar marcação</button>
         </div>
         <div style={{ overflow: 'auto', maxHeight: 420 }}>
           <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-            <thead><tr>{['Tipo', 'Documento', 'Transportadora', 'Emp', 'Valor', 'Fatura', 'Pedido', 'MIRO', 'Lanç. contábil', 'Compensação', 'Lançado em', 'Por'].map((c) => <th key={c} style={th}>{c}</th>)}</tr></thead>
+            <thead><tr><th style={th}><input type="checkbox" title="Marcar / desmarcar todas do filtro" checked={detalhe.length > 0 && detalhe.every((r) => marcadosDet.has(chaveReg(r)))} onChange={(e) => marcarDet(e.target.checked)} /></th>{['Tipo', 'Documento', 'Transportadora', 'Emp', 'Valor', 'Fatura', 'Pedido', 'MIRO', 'Lanç. contábil', 'Compensação', 'Lançado em', 'Por'].map((c) => <th key={c} style={th}>{c}</th>)}</tr></thead>
             <tbody>
               {detalhe.slice(0, 300).map((r) => (
-                <tr key={`${r.tipo}-${r.miro}-${r.documento}`}>
+                <tr key={`${r.tipo}-${r.miro}-${r.documento}`} style={{ background: marcadosDet.has(chaveReg(r)) ? '#eff6ff' : undefined }}>
+                  <td style={td}><input type="checkbox" checked={marcadosDet.has(chaveReg(r))} onChange={() => alternarDet(r)} /></td>
                   <td style={td}>{TIPOS_LANCAMENTO[r.tipo] || r.tipo}</td><td style={td}>{r.documento}</td><td style={td}>{r.transportadora}</td><td style={td}>{r.empresa}</td>
                   <td style={td}>{moeda(r.valor)}</td><td style={td}>{r.fatura}</td><td style={td}>{r.pedido}</td><td style={td}>{r.miro || <span style={{ color: '#b45309' }}>sem MIRO</span>}</td>
                   <td style={td}>{r.lancamento_contabil}</td><td style={{ ...td, color: r.situacao_pagamento === 'pago' ? '#166534' : '#b45309' }}>{textoPagamento(r)}</td>
                   <td style={td}>{isoParaBr(String(r.lancado_em || '').slice(0, 10))}</td><td style={td}>{r.lancado_por}</td>
                 </tr>
               ))}
-              {!detalhe.length ? <tr><td style={{ ...td, padding: 14, color: '#64748b' }} colSpan={12}>Nenhum lançamento registrado neste período.</td></tr> : null}
+              {!detalhe.length ? <tr><td style={{ ...td, padding: 14, color: '#64748b' }} colSpan={13}>Nenhum lançamento encontrado com estes filtros.</td></tr> : null}
             </tbody>
           </table>
         </div>
