@@ -1693,10 +1693,15 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
   const resultadoSimulador = processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
   if (resultadoSimulador) return anexarComparativoPesos(resultadoSimulador, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
 
-  const tabelaDireta = localizarTabelaAuditoria(transportadoras, cte, mapaVinculos, transportadoraAlvo, opcoes);
+  // Contingência (ex.: CT-e sem peso): a tabela TRANSFERENCIA só vale pra CT-e
+  // de transferência — sem este filtro ela entrava como candidata comum.
+  const transportadorasContingencia = ctePareceTransferencia(cte)
+    ? transportadoras
+    : (transportadoras || []).filter((entrada) => !ehTabelaTransferencia(entrada));
+  const tabelaDireta = localizarTabelaAuditoria(transportadorasContingencia, cte, mapaVinculos, transportadoraAlvo, opcoes);
   const tabelaInvertida = tabelaDireta.status === 'OK'
     ? null
-    : localizarTabelaAuditoria(transportadoras, inverterOrigemDestinoCte(cte), mapaVinculos, transportadoraAlvo, opcoes);
+    : localizarTabelaAuditoria(transportadorasContingencia, inverterOrigemDestinoCte(cte), mapaVinculos, transportadoraAlvo, opcoes);
   const calculoInvertido = tabelaDireta.status !== 'OK' && tabelaInvertida?.status === 'OK';
   const cteCalculo = calculoInvertido ? inverterOrigemDestinoCte(cte) : cte;
   const tabela = calculoInvertido ? tabelaInvertida : tabelaDireta;
@@ -1823,7 +1828,7 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
     // Chamar processarCte com uma unica entrada nao recursa: nao ha comparativo
     // quando o array possui apenas uma tabela.
     const nomeAlvo = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
-    const gruposVinculados = agruparTabelasAlternativasPorTransportadora(transportadoras, nomeAlvo);
+    const gruposVinculados = agruparTabelasAlternativasPorTransportadora(transportadorasContingencia, nomeAlvo);
     const tabelaAtualId = String(transportadora.negociacaoId || transportadora.id || '');
     const entradasVinculadas = gruposVinculados.find((grupo) => grupo.some((entrada) => (
       String(entrada.negociacaoId || entrada.id || '') === tabelaAtualId
