@@ -327,7 +327,7 @@ export function matrizDadosMacro(linhas, { campos, versao }, central = {}) {
 export const PLANILHA_ROBO = {
   url: '/robos/robo-lancamento.xlsm',
   nome: 'Robo Lancamento.xlsm',
-  versoes: { LancarNFSe: '0d334ec8', LancarCTe: '1b139baf' },
+  versoes: { LancarNFSe: 'e06ea4a2', LancarCTe: '81d8a185' },
 };
 
 // ---------------------------------------------------------------- CT-e: centro de custo pelo robo
