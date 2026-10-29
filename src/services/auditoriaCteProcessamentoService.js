@@ -1252,7 +1252,8 @@ function ctePareceTransferencia(cte = {}) {
 
 function ehTabelaTransferencia(entrada = {}) {
   if (!entrada?.tabelaAlternativaDe) return false;
-  return normalizeCompare(entrada.varianteTabela || '').includes('TRANSFERENCIA');
+  // normalizeCompare devolve minúsculo: comparar com 'transferencia'.
+  return normalizeCompare(entrada.varianteTabela || '').includes('transferencia');
 }
 
 // Calcula o comparativo entre a tabela vencedora (que já gerou `detalheVencedor`)
