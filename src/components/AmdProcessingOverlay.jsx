@@ -24,6 +24,7 @@ export const ETAPA_LABEL_AUDITORIA = {
   carregando_resultado_salvo: 'Carregando resultado salvo',
   concluido: 'Concluído',
   robo_lendo: 'Lendo os CT-es da fatura',
+  robo_corrigindo_tracking: 'Corrigindo origem/destino pelo tracking',
   robo_calculando: 'Calculando status AMD',
   robo_apurando: 'Apurando desconto e entrega',
   salvando_pedidos_ecommerce: 'Salvando pedidos do marketplace',

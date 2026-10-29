@@ -2,6 +2,7 @@ import AmdProcessingOverlay from './AmdProcessingOverlay';
 
 const ETAPA_POR_FASE = {
   lendo: 'robo_lendo',
+  corrigindo_tracking: 'robo_corrigindo_tracking',
   calculando: 'robo_calculando',
   apurando: 'robo_apurando',
 };

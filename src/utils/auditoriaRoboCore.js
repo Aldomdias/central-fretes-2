@@ -6,7 +6,7 @@
 // (CentralAuditoriaFretesPage.jsx). Nao toca naquela tela; se a regra de la mudar, ajustar aqui.
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { carregarDetalhesFaturaSupabase } from '../services/lotacaoSupabaseService';
-import { buscarReferenciaCtes, vincularChavesDetalhesPorNumero } from '../services/auditoriaFretesService';
+import { buscarReferenciaCtes, vincularChavesDetalhesPorNumero, corrigirBaseCtesPeloTracking } from '../services/auditoriaFretesService';
 import { carregarSaldosAutorizadosPorChave } from '../services/transporteAutorizacoesService';
 import { buscarStatusEntregaCtes, chaveEntregaRegistro, STATUS_ENTREGA } from '../services/auditoriaEntregaCteService';
 import { processarCtesPorChave } from '../services/auditoriaCteProcessamentoService';
@@ -71,6 +71,15 @@ function aplicarSaldo(item, saldos, referencia) {
   return { ...item, calculado_frete: calculado, diferenca };
 }
 
+// Linha da fatura sem chave que nao casou por numero/CNPJ. Serie de NFS-e municipal (SPN, CWN, RJN, OS...) nao e
+// CT-e e nunca vai estar na base de CT-es; o resto e CT-e que ainda nao foi carregado na base. Mantem "nao localizado"
+// no texto: o painel do robo classifica por ele.
+function motivoSemChave(item = {}) {
+  const serie = String(item.serie_cte || '').trim().toUpperCase();
+  if (/^[A-Z]{2}N$/.test(serie) || serie === 'OS') return `NFS-e (serie ${serie}) nao localizado na base de CT-e: conferir manualmente`;
+  return 'CT-e nao localizado na base (sem chave, nao achado por numero/CNPJ): importar o XML ou atualizar a base de CT-es';
+}
+
 function resumir(lista) {
   const total = lista.length;
   const calculados = lista.filter((i) => Number(i.calculado_frete || 0) > 0).length;
@@ -90,7 +99,7 @@ function resumir(lista) {
   const motivos = new Map();
   lista.filter((i) => !(Number(i.calculado_frete || 0) > 0)).forEach((i) => {
     const m = String(i.motivo_sem_calculo || '').trim()
-      || (normalizarChaveCte(i.chave_cte).length !== 44 ? 'CT-e sem chave: nao localizado na base por numero/CNPJ' : 'sem resultado de calculo na base');
+      || (normalizarChaveCte(i.chave_cte).length !== 44 ? motivoSemChave(i) : 'sem resultado de calculo na base');
     if (m) motivos.set(m, (motivos.get(m) || 0) + 1);
   });
   const motivoSemCalculo = [...motivos.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '';
@@ -158,6 +167,14 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
     entrarCacheCalculo(prazoFinal ? 540000 : 180000);
     try {
     const chaves = [...new Set(lista.filter(precisaCalcular).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
+    // Como o botao "corrigir pelo tracking" da fatura: origem/destino errados na base (distrito no lugar do municipio,
+    // UF trocada, "Humildes" em vez de Feira de Santana) davam "rota/origem nao encontrada". O tracking manda; so
+    // nos CT-es ainda sem calculo. Falha aqui nao impede o calculo.
+    const semCalculo = [...new Set(lista.filter((i) => !(Number(i.calculado_frete || 0) > 0)).map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
+    if (semCalculo.length) {
+      aoProgredir({ fase: 'corrigindo_tracking', atual: 0, total: semCalculo.length });
+      try { await corrigirBaseCtesPeloTracking(semCalculo); } catch (e) { console.warn('[robo] correcao pelo tracking falhou:', e?.message || e); }
+    }
     // Mesmas correcoes manuais do Recalcular da fatura (endereco, canal, NF/peso, reentrega, forma de peso da linha).
     const correcoes = montarCorrecoesCalculoFatura(lista.filter(precisaCalcular), { pesoTrackingMaisProximo: pesoMaisProximo });
     const opcoesBase = {

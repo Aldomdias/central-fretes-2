@@ -139,7 +139,9 @@ export default function AuditorRobo() {
             cfg: ativas.get(normNome(f.transportadora)), emailsAuditores, usuario, origem: `manual - ${usuario}`, anterior, recalcularTudo: Boolean(anterior),
             aoProgredir: (p) => {
               setProgAmd({ atual: i + 1, total: fila.length, numero: f.numero_fatura, faseId: p.fase, ctAtual: p.atual || 0, ctTotal: p.total || 0, enviadas });
-              const fase = p.fase === 'calculando' ? `calculando ${p.atual}/${p.total} CT-es` : p.fase === 'apurando' ? 'apurando desconto e entrega' : 'lendo CT-es';
+              const fase = p.fase === 'calculando' ? `calculando ${p.atual}/${p.total} CT-es`
+                : p.fase === 'corrigindo_tracking' ? `corrigindo origem/destino de ${p.total} CT-e(s) pelo tracking`
+                  : p.fase === 'apurando' ? 'apurando desconto e entrega' : 'lendo CT-es';
               setMsg(`${prefixo}: ${fase} — ${analisadas + reavaliadas} concluida(s), ${enviadas} enviada(s) para a gestao.`);
             },
           });
