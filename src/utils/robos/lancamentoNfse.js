@@ -7,7 +7,6 @@
 // (sapLancamentoVbs.js).
 
 import {
-  apenasDigitos,
   dataParaIso,
   gerarIds,
   hojeIso,
@@ -20,6 +19,7 @@ import {
   valorParaSap,
 } from './lancamentoComum';
 import { nfComSufixoF } from './nfsePdf';
+import { fornecedorParaSap } from './fornecedoresSap';
 
 export const ALIASES_ENTRADA_NFSE = {
   nf: ['NF', 'NF Servico', 'NF Serviço', 'Nota'],
@@ -138,7 +138,7 @@ export function linhasParaScriptNfse(linhas = []) {
     id: l.id,
     emp: l.emp,
     nf: l.nf,
-    cnpj: apenasDigitos(l.cnpjTransp),
+    cnpj: fornecedorParaSap(l.cnpjTransp),
     dtEmissao: isoParaDdmmaaaa(l.dataEmissao),
     valor: valorParaSap(l.valor),
     liquido: valorParaSap(l.valorLiquido),

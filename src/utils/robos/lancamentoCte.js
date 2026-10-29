@@ -17,6 +17,7 @@ import {
   normalizarCnpj,
   valorParaSap,
 } from './lancamentoComum';
+import { fornecedorParaSap } from './fornecedoresSap';
 
 // ---------------------------------------------------------------- XML (parser minimo, sem DOMParser)
 // Os XMLs de CT-e sao regulares; este parser cobre tags, atributos, texto, CDATA e comentarios
@@ -244,7 +245,7 @@ export function linhasParaScriptCte(linhas = []) {
     cte: l.cte,
     bruto: valorParaSap(l.bruto),
     prot: l.protocolo,
-    cnpj: apenasDigitos(l.cnpjTransp),
+    cnpj: fornecedorParaSap(l.cnpjTransp),
     centro: l.centro,
     liquido: valorParaSap(l.liquido),
     aliquota: String(Math.round(l.icms * 10000) / 100), // ponto decimal: o script converte com ParaNumero()
