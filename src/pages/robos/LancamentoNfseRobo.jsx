@@ -105,8 +105,13 @@ export default function LancamentoNfseRobo() {
     () => montarLancamentoNfse(entradas.filter((e) => !entradaVazia(e)), indices, { vencimento }),
     [entradas, indices, vencimento],
   );
-  const porUid = useMemo(() => new Map(calculadas.map((l) => [l.uid, l])), [calculadas]);
-  const linhas = useMemo(() => calculadas.map((l) => ({ ...l, ...(manuais[l.uid] || {}) })), [calculadas, manuais]);
+  const linhas = useMemo(() => calculadas.map((l) => {
+    const n = { ...l, ...(manuais[l.uid] || {}) };
+    // numero da fatura obrigatorio para lancar (quem ja tem MIRO nao precisa)
+    if (!n.miro && !String(n.fatura ?? '').trim()) n.erros = [...n.erros, 'fatura vazia'];
+    return n;
+  }), [calculadas, manuais]);
+  const porUid = useMemo(() => new Map(linhas.map((l) => [l.uid, l])), [linhas]);
 
   useEffect(() => { gravar(CHAVE_LOTE, { entradas, vencimento, manuais }); }, [entradas, vencimento, manuais]);
 

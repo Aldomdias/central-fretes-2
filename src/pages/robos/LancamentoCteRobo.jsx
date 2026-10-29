@@ -74,6 +74,8 @@ export default function LancamentoCteRobo() {
     const m = manuais[l.id] || {};
     const novo = { ...l, ...m };
     if (novo.cc) novo.erros = novo.erros.filter((e) => !/centro de custo/.test(e));
+    // numero da fatura obrigatorio para lancar (quem ja tem MIRO nao precisa)
+    if (!novo.miro && !String(novo.fatura ?? '').trim()) novo.erros = [...novo.erros, 'fatura vazia'];
     return novo;
   }), [base, manuais]);
 
