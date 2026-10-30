@@ -1593,6 +1593,13 @@ async function resolverOrigemIdParaGravacao(origemId, contexto = {}) {
     && String(origem.canal || 'ATACADO').trim().toUpperCase() === canalEsperado
   );
 
+  // Origem criada na tela e ainda não gravada no banco (ex.: recriada após
+  // exclusão): o chamador grava a origem completa e tenta de novo.
+  if (!candidatas.length) {
+    const erro = new Error(`A origem ${contexto.cidade || idInformado} ainda não existe no Supabase.`);
+    erro.code = 'ORIGEM_NAO_PERSISTIDA';
+    throw erro;
+  }
   if (candidatas.length !== 1 || !UUID_REGEX.test(String(candidatas[0]?.id || ''))) {
     throw new Error(
       `A origem ${contexto.cidade || idInformado} está com um identificador antigo e não pôde ser reconciliada no Supabase. Recarregue a página e tente novamente.`

@@ -790,14 +790,27 @@ export function useFreteStore(sessao = null) {
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
         try {
           const atual = next.find((item) => String(item.id) === String(transportadoraId));
-          const resultadoPersistencia = await salvarGeneralidadesOrigemDb(origemId, generalidadesAtualizadas, {
+          const opcoesPersistencia = {
             invalidarValidacao: Boolean(origemAnterior?.validado),
             transportadoraId,
             transportadoraNome: atual?.nome || '',
             cidade: origemAnterior?.cidade || '',
             canal: origemAnterior?.canal || '',
             grupoTabelaAlternativa,
-          });
+          };
+          let resultadoPersistencia;
+          try {
+            resultadoPersistencia = await salvarGeneralidadesOrigemDb(origemId, generalidadesAtualizadas, opcoesPersistencia);
+          } catch (erroPontual) {
+            if (erroPontual?.code !== 'ORIGEM_NAO_PERSISTIDA' || !atual) throw erroPontual;
+            // Origem nova (só na tela): grava a origem inteira e depois as generalidades.
+            const somenteOrigem = normalizeTransportadora({
+              ...atual,
+              origens: (atual.origens || []).filter((origem) => String(origem.id) === String(origemId)),
+            });
+            await salvarSecaoDb([somenteOrigem], ['generalidades', 'rotas', 'cotacoes', 'taxas'], undefined, { atualizarSnapshot: false });
+            resultadoPersistencia = await salvarGeneralidadesOrigemDb(origemId, generalidadesAtualizadas, opcoesPersistencia);
+          }
           if (String(resultadoPersistencia.origemId) !== String(origemId)) {
             setTransportadoras((prev) => (prev || []).map((transportadora) =>
               String(transportadora.id) !== String(transportadoraId)
