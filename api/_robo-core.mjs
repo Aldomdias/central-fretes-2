@@ -26189,10 +26189,11 @@ async function carregarFluxoLotacaoAuditoria(supabase2) {
     if ((data || []).length < PAGE_SIZE2) break;
   }
   const adicionaisPorDist = /* @__PURE__ */ new Map();
-  const { data: solicitacoes } = await supabase2.from("lotacao_solicitacoes").select("dist_key,dist,status,valor_adicional").in("status", STATUS_ADICIONAL_APROVADO);
+  const { data: solicitacoes } = await supabase2.from("lotacao_solicitacoes").select("tipo,dist_key,dist,status,valor_adicional,valor_lancado,excedente").in("status", STATUS_ADICIONAL_APROVADO);
   (solicitacoes || []).forEach((s) => {
     const dist = normalizeText2(s.dist_key || s.dist);
-    if (dist && toNumber4(s.valor_adicional) > 0) adicionaisPorDist.set(dist, (adicionaisPorDist.get(dist) || 0) + toNumber4(s.valor_adicional));
+    const valor = s.tipo === "CUSTO_ADICIONAL" ? toNumber4(s.valor_adicional) || toNumber4(s.valor_lancado) : toNumber4(s.valor_adicional ?? s.excedente);
+    if (dist && valor > 0) adicionaisPorDist.set(dist, (adicionaisPorDist.get(dist) || 0) + valor);
   });
   const porNumeroCte = /* @__PURE__ */ new Map();
   cargas.forEach((carga) => {
@@ -27369,7 +27370,7 @@ var init_auditoriaCteProcessamentoService = __esm({
     indicesCotacoesPorLista2 = /* @__PURE__ */ new WeakMap();
     _cacheRaizesAdicionaisPorId = /* @__PURE__ */ new Map();
     _cacheFluxoLotacao = { em: 0, dados: null };
-    STATUS_ADICIONAL_APROVADO = ["APROVADO", "APROVADO_OPERACAO", "FINALIZADO"];
+    STATUS_ADICIONAL_APROVADO = ["APROVADO", "APROVADO_OPERACAO"];
     raizDaChaveCte = (cte = {}) => {
       const chave = pickDigits(cte, ["chave_cte", "chaveCte", "chave"]);
       return chave.length === 44 ? chave.slice(6, 14) : "";
@@ -27686,6 +27687,20 @@ var init_auditoriaService = __esm({
     DIVERGENCIA_THRESHOLD = 0.05;
     INSERT_CHUNK_SIZE = 500;
     CAMPOS_RESULTADO_OPCIONAIS = ["valor_excessivo", "valor_insuficiente"];
+  }
+});
+
+// src/utils/lotacaoFluxoCargas.js
+function limparTexto(valor = "") {
+  return String(valor ?? "").trim().replace(/\s+/g, " ");
+}
+function normalizarTexto2(valor = "") {
+  return limparTexto(valor).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/Ç/g, "C").replace(/ç/g, "c").replace(/\s+/g, " ").toUpperCase();
+}
+var init_lotacaoFluxoCargas = __esm({
+  "src/utils/lotacaoFluxoCargas.js"() {
+    "use strict";
+    init_define_import_meta_env();
   }
 });
 
@@ -28074,6 +28089,64 @@ async function baixarEntregaContingencia(fatura, pendentes2 = []) {
     if (error) throw new Error(error.message);
   }
 }
+async function abrirSolicitacoesExcedenteLotacao(fatura, registros = []) {
+  const excedentes = registros.filter((r) => r?.detalhes_calculo?.motor === "fluxo_lotacao" && Number(r.detalhes_calculo.excedente_viagem || 0) > TOLERANCIA.acima);
+  if (!excedentes.length) return 0;
+  const db = getSupabaseClient();
+  const dists = [...new Set(excedentes.map((r) => normalizarTexto2(r.detalhes_calculo.dist)))];
+  const { data: existentes, error } = await db.from("lotacao_solicitacoes").select("dist_key,cte").eq("tipo", "EXCEDENTE_AUDITORIA").in("dist_key", dists);
+  if (error) throw new Error(`Solicitacoes de lotacao: ${error.message}`);
+  const jaAbertas = new Set((existentes || []).map((s) => `${normalizarTexto2(s.dist_key)}|${soNumeroCte(s.cte)}`));
+  const agora = (/* @__PURE__ */ new Date()).toISOString();
+  const novas = excedentes.map((r) => {
+    const d = r.detalhes_calculo;
+    const distKey = normalizarTexto2(d.dist);
+    const cte = soNumeroCte(r.numero_cte);
+    if (!distKey || !cte || jaAbertas.has(`${distKey}|${cte}`)) return null;
+    jaAbertas.add(`${distKey}|${cte}`);
+    const autorizado = Number(d.valor_autorizado_viagem || 0);
+    const saldo = Number(d.saldo_antes_deste_cte || 0);
+    const excedente = Number(d.excedente_viagem || 0);
+    return {
+      id: `sol-robo-${globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`}`,
+      tipo: "EXCEDENTE_AUDITORIA",
+      origem_solicitacao: "AUDITORIA",
+      carga_id: String(d.carga_id || ""),
+      dist: String(d.dist || ""),
+      dist_key: distKey,
+      cte,
+      fatura: String(fatura.numero_fatura || ""),
+      transportadora: String(r.transportadora_tabela || fatura.transportadora || ""),
+      origem: String(d.origem_cidade || ""),
+      destino: String(d.destino_cidade || ""),
+      tipo_veiculo: String(d.tipo_veiculo || ""),
+      valor_autorizado_carga: autorizado,
+      total_anterior: Number((autorizado - saldo).toFixed(2)),
+      saldo_anterior: saldo,
+      valor_lancado: Number(r.valor_cte || 0),
+      excedente,
+      valor_adicional: excedente,
+      tipo_custo: "",
+      status: "PENDENTE",
+      observacao: `Aberta pelo Robo Auditor: CT-e ${cte} (fatura ${fatura.numero_fatura}) cobrou R$ ${Number(r.valor_cte || 0).toFixed(2)} com saldo de R$ ${saldo.toFixed(2)} na viagem ${d.dist}; excedente R$ ${excedente.toFixed(2)}.`,
+      resposta: "",
+      criado_em: agora,
+      atualizado_em: null
+    };
+  }).filter(Boolean);
+  if (novas.length) {
+    const { error: erroInsert } = await db.from("lotacao_solicitacoes").insert(novas);
+    if (erroInsert) throw new Error(`Abrir solicitacao de excedente: ${erroInsert.message}`);
+  }
+  return novas.length;
+}
+async function excedentesLotacaoPendentes(fatura, lista = []) {
+  const ctes = new Set(lista.map((i) => soNumeroCte(i.numero_cte)).filter(Boolean));
+  if (!ctes.size || !fatura?.numero_fatura) return 0;
+  const { data, error } = await getSupabaseClient().from("lotacao_solicitacoes").select("cte,status").eq("tipo", "EXCEDENTE_AUDITORIA").eq("fatura", String(fatura.numero_fatura));
+  if (error) return 0;
+  return (data || []).filter((s) => ctes.has(soNumeroCte(s.cte)) && !STATUS_SOLICITACAO_DECIDIDA.includes(String(s.status || "").toUpperCase())).length;
+}
 async function apurarFaturaRobo(fatura, aoProgredir = () => {
 }, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = true } = {}) {
   const BLOCO = bloco;
@@ -28123,6 +28196,11 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
             const competencia = registros.find((r2) => r2.competencia)?.competencia || (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
             await salvarRecorteCarregadoAuditoria({ competencia, registros, atualizarResumoMensal: false });
             calculou = true;
+            try {
+              await abrirSolicitacoesExcedenteLotacao(fatura, registros);
+            } catch (e) {
+              console.warn("[robo] solicitacao de excedente:", e?.message || e);
+            }
           }
         } catch (e) {
           falhasCalculo += Math.min(BLOCO, chaves.length - i);
@@ -28151,7 +28229,12 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
     }
   } catch {
   }
-  return { ...r, entregues, pendentes: pendentes2, erroCalculo, falhasCalculo };
+  const excedentesLotacao = await excedentesLotacaoPendentes(fatura, lista);
+  return { ...r, entregues, pendentes: pendentes2, erroCalculo, falhasCalculo, excedentesLotacao };
+}
+function aguardarOperacaoLotacao(c, resumo) {
+  if (!(resumo?.excedentesLotacao > 0) || c.decisao === DECISAO.REVISAO_AUDITOR) return c;
+  return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Aguardando aprovacao da operacao: ${resumo.excedentesLotacao} excedente(s) de lotacao acima do saldo da DIST.`, descontar: c.descontar };
 }
 async function enviarFaturaParaGestaoRobo(db, fatura, resumo, { usuario = "Robo Auditor", origem = "automatico" } = {}) {
   const { data: atual, error: erroLeitura } = await db.from("faturas").select("id,status").eq("id", fatura.id).maybeSingle();
@@ -28256,7 +28339,7 @@ async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = /* @__PUR
     return registro2;
   }
   const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs, pesoMaisProximo });
-  const c = classificarFatura(resumo, Boolean(f.auditoria_considerar_menor));
+  const c = aguardarOperacaoLotacao(classificarFatura(resumo, Boolean(f.auditoria_considerar_menor)), resumo);
   let enviada = false;
   let motivo = c.motivo;
   if (!calcular && c.decisao === DECISAO.REVISAO_AUDITOR && resumo.semCalculo > 0) {
@@ -28302,7 +28385,7 @@ function escolherPesoMaisProximo(registrosCte = [], registrosTracking = []) {
   const porChave = new Map(registrosTracking.map((r) => [normalizarChaveCte(r.chave_cte), r]));
   return registrosCte.map((r) => escolherMaiorPeso(r, porChave.get(normalizarChaveCte(r.chave_cte))).registro);
 }
-var TOLERANCIA, dentroDaTolerancia, JUSTIFICATIVA_CONTINGENCIA, normalizarNomeAuditor;
+var TOLERANCIA, dentroDaTolerancia, JUSTIFICATIVA_CONTINGENCIA, STATUS_SOLICITACAO_DECIDIDA, soNumeroCte, normalizarNomeAuditor;
 var init_auditoriaRoboCore = __esm({
   "src/utils/auditoriaRoboCore.js"() {
     init_define_import_meta_env();
@@ -28315,11 +28398,14 @@ var init_auditoriaRoboCore = __esm({
     init_freteDatabaseService();
     init_auditoriaService();
     init_auditoriaFretesDomain();
+    init_lotacaoFluxoCargas();
     init_correcoesCalculoFatura();
     init_auditorRoboService();
     TOLERANCIA = { acima: 1, abaixo: 5 };
     dentroDaTolerancia = (dif) => Number.isFinite(Number(dif)) && Number(dif) <= TOLERANCIA.acima && Number(dif) >= -TOLERANCIA.abaixo;
     JUSTIFICATIVA_CONTINGENCIA = "Liberado em contingencia";
+    STATUS_SOLICITACAO_DECIDIDA = ["APROVADO", "APROVADO_OPERACAO", "RECUSADO", "FINALIZADO", "CANCELADO"];
+    soNumeroCte = (v) => String(Number(String(v || "").replace(/\D/g, "")) || "");
     normalizarNomeAuditor = (v) => String(v || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase().replace(/\s+/g, " ");
   }
 });
