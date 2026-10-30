@@ -256,6 +256,7 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
   let calculou = false;
   let erroCalculo = '';
   let falhasCalculo = 0;
+  let falhaFilaLotacao = '';
   const precisaCalcular = (i) => recalcularTudo || !(Number(i.calculado_frete || 0) > 0);
   if (calcular && lista.length && lista.some(precisaCalcular)) {
     entrarCacheCalculo(prazoFinal ? 540000 : 180000);
@@ -303,7 +304,7 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
           // e era repetido a cada bloco. O resumo mensal e atualizado pelo fluxo mensal da Auditoria CT-e.
           await salvarRecorteCarregadoAuditoria({ competencia, registros, atualizarResumoMensal: false });
           calculou = true;
-          try { await abrirAutorizacoesExcedenteLotacao(fatura, registros); } catch (e) { console.warn('[robo] autorizacao de excedente:', e?.message || e); }
+          try { await abrirAutorizacoesExcedenteLotacao(fatura, registros); } catch (e) { falhaFilaLotacao = String(e?.message || e).slice(0, 140); }
           try { await abrirQuestionamentosSemDistLotacao(fatura, registros); } catch (e) { console.warn('[robo] questionamento para a operacao:', e?.message || e); }
         }
       } catch (e) {
@@ -332,12 +333,15 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
     }
   } catch { /* entrega nao verificada: classificarFatura manda para o auditor */ }
   const excedentesLotacao = await excedentesLotacaoPendentes(fatura, lista);
-  return { ...r, entregues, pendentes, erroCalculo, falhasCalculo, excedentesLotacao };
+  return { ...r, entregues, pendentes, erroCalculo, falhasCalculo, excedentesLotacao, falhaFilaLotacao };
 }
 
 // Excedente de lotacao aguardando a operacao: nao manda laudo nem gestao antes da decisao.
 function aguardarOperacaoLotacao(c, resumo) {
-  if (!(resumo?.excedentesLotacao > 0) || c.decisao === DECISAO.REVISAO_AUDITOR) return c;
+  if (c.decisao === DECISAO.REVISAO_AUDITOR) return c;
+  // Excedente que nao entrou na fila (ex.: migration do canal LOTACAO ainda nao aplicada): segura do mesmo jeito.
+  if (resumo?.falhaFilaLotacao) return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Excedente de lotacao nao entrou em Autorizacoes Lotacao (${resumo.falhaFilaLotacao}).`, descontar: c.descontar };
+  if (!(resumo?.excedentesLotacao > 0)) return c;
   return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Aguardando a Operacao Lotacao autorizar ${resumo.excedentesLotacao} excedente(s) acima do saldo da DIST (Autorizacoes Lotacao).`, descontar: c.descontar };
 }
 
