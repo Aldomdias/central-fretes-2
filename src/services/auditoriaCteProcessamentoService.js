@@ -1978,9 +1978,67 @@ function anexarComparativoPesos(resultado, cte, transportadoras, mapaVinculos, t
   };
 }
 
+// ─── Canal cobrado divergente (ex.: WM Itajaí) ───────────────────────────
+// Algumas transportadoras faturam CT-e de um canal pela tabela do OUTRO canal
+// (ex.: pedido leve de ATACADO cobrado pela faixa de peso do B2C). Uma tabela
+// alternativa não serve aqui: o comparativo de alternativas escolhe a mais
+// próxima do valor pago e aprovaria a cobrança a maior. Então o CT-e continua
+// auditado pela tabela do canal DELE (valor_calculado/diferença não mudam e a
+// regra de sinalizar a maior/a menor segue valendo); quando não bate, recalcula
+// pelo outro canal e, se o valor pago fecha com ele, só anota pro auditor qual
+// tabela foi cobrada e se ficou a maior ou a menor que a correta.
+const TOLERANCIA_CANAL_COBRADO = 0.1;
+
+function anexarCanalCobradoDivergente(resultado, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes = {}) {
+  if (!resultado || resultado.status_calculo !== 'CALCULADO' || opcoes.semCanalCruzado) return resultado;
+  const valorPago = toNumber(resultado.valor_cte);
+  const valorCorreto = toNumber(resultado.valor_calculado);
+  if (!(valorPago > 0) || !(valorCorreto > 0)) return resultado;
+  if (Math.abs(valorPago - valorCorreto) <= TOLERANCIA_CANAL_COBRADO) return resultado;
+
+  const canalCte = normalizarCanalResultado(pick(cte, ['canal', 'canal_original']));
+  const outroCanal = canalCte === 'ATACADO' ? 'B2C' : canalCte === 'B2C' ? 'ATACADO' : '';
+  if (!outroCanal) return resultado;
+
+  const outro = processarCte({ ...cte, canal: outroCanal, canal_original: outroCanal }, transportadoras, mapaVinculos, transportadoraAlvo, {
+    ...opcoes,
+    semCanalCruzado: true,
+  });
+  if (outro?.status_calculo !== 'CALCULADO') return resultado;
+  const valorOutro = toNumber(outro.valor_calculado);
+  // Mesmo valor = mesma tabela (origem AMBOS): não há canal trocado a apontar.
+  if (!(valorOutro > 0) || Math.abs(valorOutro - valorCorreto) <= TOLERANCIA_CANAL_COBRADO) return resultado;
+  if (Math.abs(valorPago - valorOutro) > TOLERANCIA_CANAL_COBRADO) return resultado;
+
+  const aMaior = valorPago > valorCorreto;
+  const detOutro = outro.detalhes_calculo || {};
+  return {
+    ...resultado,
+    detalhes_calculo: {
+      ...(resultado.detalhes_calculo || {}),
+      canal_cobrado_divergente: {
+        canal_cte: canalCte,
+        canal_tabela_cobrada: outroCanal,
+        valor_tabela_canal_cobrado: valorOutro,
+        valor_tabela_canal_correto: valorCorreto,
+        diferenca: Number((valorPago - valorCorreto).toFixed(2)),
+        situacao: aMaior ? 'COBRADO_A_MAIOR' : 'COBRADO_A_MENOR',
+        origem_cidade: detOutro.origem_cidade || null,
+        rota_nome: detOutro.rota_nome || null,
+        observacao: `Canal incorreto: CT-e ${canalCte} cobrado pela tabela ${outroCanal} (R$ ${valorOutro.toFixed(2)}). `
+          + `Tabela ${canalCte} = R$ ${valorCorreto.toFixed(2)} — cobrado a ${aMaior ? 'maior' : 'menor'}.`,
+      },
+    },
+  };
+}
+
 export function processarCte(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '', opcoes = {}) {
   const resultadoSimulador = processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
-  if (resultadoSimulador) return anexarComparativoPesos(resultadoSimulador, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
+  if (resultadoSimulador && opcoes?.semComparativoPesos) return anexarCanalCobradoDivergente(resultadoSimulador, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
+  if (resultadoSimulador) {
+    const comPesos = anexarComparativoPesos(resultadoSimulador, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
+    return anexarCanalCobradoDivergente(comPesos, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
+  }
 
   // Contingência (ex.: CT-e sem peso): a tabela TRANSFERENCIA só vale pra CT-e
   // de transferência — sem este filtro ela entrava como candidata comum.

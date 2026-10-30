@@ -548,7 +548,11 @@ function mesclarDetalheComReferenciaAuditoria(item = {}, referenciaCtes = new Ma
     // Idem: se a base calculou com sucesso (motivo vazio), nao reaproveitar
     // o motivo antigo do item ("Transportadora nao encontrada" de uma
     // checagem anterior) so porque o texto da base esta vazio.
-    motivo_divergencia: amd > 0 ? (base.motivo_sem_calculo || '') : (base.motivo_sem_calculo || item.motivo_divergencia || ''),
+    // Canal cobrado divergente (CT-e cobrado pela tabela do outro canal) vira o
+    // motivo da linha pro auditor enxergar sem abrir o detalhe.
+    motivo_divergencia: amd > 0
+      ? (base.motivo_sem_calculo || base.detalhes_calculo?.canal_cobrado_divergente?.observacao || '')
+      : (base.motivo_sem_calculo || item.motivo_divergencia || ''),
   };
 }
 // Peso do Tracking com o fator de cubagem da TABELA da transportadora (o mesmo do calculo), e nao 300 fixo.
@@ -971,6 +975,11 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
           {linhaDetalhe('Tabela específica', det.tabela_nome_aplicada || det.tabela_alternativa_aplicada || (det.tabela_id_aplicada ? `Tabela ${det.tabela_id_aplicada}` : 'Principal'), true)}
           {det.tabela_id_aplicada ? linhaDetalhe('ID da tabela', det.tabela_id_aplicada) : null}
           {linhaDetalhe('Canal', resultado.canal || det.canal || '-')}
+          {det.canal_cobrado_divergente ? (
+            <div style={{ margin: '6px 0', padding: '6px 8px', borderRadius: 6, fontSize: 12, fontWeight: 700, background: det.canal_cobrado_divergente.situacao === 'COBRADO_A_MAIOR' ? '#fef2f2' : '#f0fdf4', color: det.canal_cobrado_divergente.situacao === 'COBRADO_A_MAIOR' ? '#b91c1c' : '#15803d' }}>
+              {det.canal_cobrado_divergente.observacao}
+            </div>
+          ) : null}
           {linhaDetalhe('Origem tabela', det.origem_cidade || '-')}
           {linhaDetalhe('Tabela validada?', det.origem_validada ? `Sim${det.origem_validado_por ? ` (${det.origem_validado_por})` : ''}` : 'Não')}
           {det.calculo_devolucao_invertida ? linhaDetalhe('Regra devolucao', det.observacao_devolucao || 'Calculado pela rota de ida equivalente.', true) : null}
