@@ -1094,14 +1094,41 @@ async function carregarFluxoLotacaoAuditoria(supabase) {
     if (dist && valor > 0) adicionaisPorDist.set(dist, (adicionaisPorDist.get(dist) || 0) + valor);
   });
   const porNumeroCte = new Map();
+  const porId = new Map();
   cargas.forEach((carga) => {
-    if (/CANCEL/i.test(String(carga.status || '')) || !(toNumber(carga.frete_transp) > 0)) return;
+    if (/CANCEL/i.test(String(carga.status || ''))) return;
     const numeros = [...new Set(String(carga.cte || '').split(/[^0-9]+/).filter(Boolean).map((n) => String(Number(n))))];
-    if (!numeros.length) return;
     const item = { ...carga, numerosCte: numeros };
-    numeros.forEach((numero) => porNumeroCte.set(numero, [...(porNumeroCte.get(numero) || []), item]));
+    porId.set(String(carga.id), item);
+    // Viagem sem frete no fluxo só vale pelo vínculo da Operação (que valida o valor na resposta).
+    if (toNumber(carga.frete_transp) > 0) numeros.forEach((numero) => porNumeroCte.set(numero, [...(porNumeroCte.get(numero) || []), item]));
   });
-  const dados = { porNumeroCte, adicionaisPorDist };
+  // Questionamento respondido pela Operação (ela escolhe a DIST/viagem do CT-e): vale como vínculo do CT-e à viagem.
+  // O fluxo é reimportado e a viagem ganha outro id: sem o id, casa pela DIST (única no fluxo).
+  const porDist = new Map();
+  porId.forEach((carga) => {
+    const dist = normalizeText(carga.dist);
+    if (dist) porDist.set(dist, porDist.has(dist) ? null : carga);
+  });
+  const cargaPorChaveCte = new Map();
+  const { data: respostas } = await supabase
+    .from('audit_solicitacoes_informacao')
+    .select('chave_informada,carga_id,dist,status,resposta,resposta_operacao,justificativa_operacao,respondido_por_nome')
+    .in('status', ['RESPONDIDO_OPERACAO', 'FINALIZADO', 'TRATADO'])
+    .neq('carga_id', '');
+  (respostas || []).forEach((r) => {
+    const chave = onlyDigits(r.chave_informada);
+    const carga = porId.get(String(r.carga_id)) || porDist.get(normalizeText(r.dist));
+    if (chave.length === 44 && carga) {
+      cargaPorChaveCte.set(chave, {
+        ...carga,
+        respostaOperacao: [r.resposta_operacao || r.resposta, r.justificativa_operacao].filter(Boolean).join(' | '),
+        respondidoPor: r.respondido_por_nome || '',
+      });
+    }
+  });
+  const nomesTransportadoras = [...new Set(cargas.map((c) => String(c.transportadora || '').trim()).filter(Boolean))];
+  const dados = { porNumeroCte, adicionaisPorDist, cargaPorChaveCte, nomesTransportadoras };
   _cacheFluxoLotacao = { em: Date.now(), dados };
   return dados;
 }
@@ -1118,13 +1145,13 @@ function transportadoraDoFluxoCompativel(nomeFluxo, nomesCte = []) {
 }
 
 const raizDaChaveCte = (cte = {}) => {
-  const chave = pickDigits(cte, ['chave_cte', 'chaveCte', 'chave']);
+  const chave = pickDigits(cte, ['chave_cte', 'chaveCte', 'chave'], 0);
   return chave.length === 44 ? chave.slice(6, 14) : '';
 };
 const numeroDoCte = (cte = {}) => {
-  const numero = pickDigits(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']);
+  const numero = pickDigits(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte'], 0);
   if (numero) return String(Number(numero));
-  const chave = pickDigits(cte, ['chave_cte', 'chaveCte', 'chave']);
+  const chave = pickDigits(cte, ['chave_cte', 'chaveCte', 'chave'], 0);
   return chave.length === 44 ? String(Number(chave.slice(25, 34))) : '';
 };
 
@@ -1135,6 +1162,12 @@ function localizarViagemFluxoLotacao(cte = {}, contexto = null, mapaVinculos = n
   const fluxo = contexto?.fluxo;
   const numero = numeroDoCte(cte);
   if (!fluxo?.porNumeroCte?.size || !numero) return null;
+  const vinculadaPelaOperacao = fluxo.cargaPorChaveCte?.get(pickDigits(cte, ['chave_cte', 'chaveCte', 'chave'], 0));
+  if (vinculadaPelaOperacao) {
+    return vinculadaPelaOperacao.numerosCte.includes(numero)
+      ? vinculadaPelaOperacao
+      : { ...vinculadaPelaOperacao, numerosCte: [...vinculadaPelaOperacao.numerosCte, numero] };
+  }
   const nomeBruto = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);
   const nomes = [nomeBruto, aplicarVinculoTransportadora(nomeBruto, mapaVinculos)].filter(Boolean);
   const emissao = dataEmissaoIsoCte(cte);
@@ -1186,6 +1219,7 @@ async function prepararFluxoLotacaoParaCtes(supabase, contexto = null, ctes = []
 export function calcularCtePeloFluxoLotacao(cte = {}, contexto = null, mapaVinculos = null) {
   const viagem = localizarViagemFluxoLotacao(cte, contexto, mapaVinculos);
   if (!viagem) return null;
+  if (!(toNumber(viagem.frete_transp) > 0)) return calcularCteValidadoPelaOperacao(cte, viagem);
   const raiz = raizDaChaveCte(cte);
   const numero = numeroDoCte(cte);
   const valorCte = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
@@ -1251,6 +1285,31 @@ export function calcularCtePeloFluxoLotacao(cte = {}, contexto = null, mapaVincu
   };
 }
 
+// A Operação respondeu o questionamento escolhendo a DIST e justificando o valor, mas a viagem está sem
+// frete no fluxo: a resposta é a aprovação — o CT-e vale o que cobrou (resposta registrada no detalhe).
+function calcularCteValidadoPelaOperacao(cte = {}, viagem = {}) {
+  if (!viagem.respostaOperacao) return null;
+  const valorCte = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
+  if (!(valorCte > 0)) return null;
+  const base = montarResultadoBase(cte, 'CALCULADO', '', {
+    transportadora_tabela: viagem.transportadora,
+    tipo_calculo: 'LOTACAO',
+    detalhes_calculo: {
+      modalidade: 'LOTACAO',
+      motor: 'resposta_operacao_lotacao',
+      dist: viagem.dist,
+      carga_id: viagem.id,
+      origem_cidade: viagem.origem,
+      destino_cidade: viagem.destino,
+      tipo_veiculo: viagem.tipo_veiculo,
+      resposta_operacao: viagem.respostaOperacao,
+      respondido_por: viagem.respondidoPor,
+      observacao_lotacao: `Valor validado pela Operação na resposta do questionamento (viagem ${viagem.dist} sem frete no fluxo).`,
+    },
+  });
+  return { ...base, valor_calculado: valorCte, diferenca: 0, diferenca_abs: 0, percentual_diferenca: 0 };
+}
+
 // Tabela de lotação primeiro; depois o fracionado. Se nenhum dos dois calculou
 // (rota fora da tabela de lotação, transportadora sem tabela, origem/rota fora do
 // fracionado), usa o valor combinado da viagem no fluxo de lotação.
@@ -1259,7 +1318,29 @@ function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracio
   if (porTabela && toNumber(porTabela.valor_calculado) > 0) return porTabela;
   const resultado = porTabela || calcularFracionado();
   if (toNumber(resultado?.valor_calculado) > 0) return resultado;
-  return calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos) || resultado;
+  const peloFluxo = calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos);
+  if (peloFluxo) return peloFluxo;
+  return cteDeLotacao(cte, contexto, mapaVinculos, porTabela) ? marcarSemDistLotacao(resultado) : resultado;
+}
+
+// CT-e de lotação (não fracionado): transportadora com tabela de lotação, que aparece no fluxo, ou canal
+// de transferência/lotação. Sem DIST na tabela nem no fluxo, quem informa a viagem é a Operação.
+function cteDeLotacao(cte, contexto, mapaVinculos, porTabela) {
+  if (porTabela) return true;
+  const canal = canalCategoria(pick(cte, ['canal', 'canal_original']));
+  if (['INTERCOMPANY', 'LOTACAO', 'LOTAÇÃO'].includes(canal)) return true;
+  const nomeBruto = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);
+  const nomes = [nomeBruto, aplicarVinculoTransportadora(nomeBruto, mapaVinculos)].filter(Boolean);
+  return (contexto?.fluxo?.nomesTransportadoras || []).some((nome) => transportadoraDoFluxoCompativel(nome, nomes));
+}
+
+function marcarSemDistLotacao(resultado = {}) {
+  return {
+    ...resultado,
+    status_calculo: 'SEM_DIST_LOTACAO',
+    motivo_sem_calculo: 'Lotacao: DIST nao localizada na tabela nem no fluxo de lotacao (pedir a viagem para a Operacao).',
+    detalhes_calculo: { ...(resultado.detalhes_calculo || {}), modalidade: 'LOTACAO', motivo_original: resultado.motivo_sem_calculo || '' },
+  };
 }
 
 function localizarTabelaLotacaoContexto(cte = {}, contexto = null, mapaVinculos = null) {

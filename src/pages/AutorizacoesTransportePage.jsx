@@ -28,9 +28,9 @@ function NfSerieDestaque({ chave }) {
   return <strong style={{ color: '#b91c1c', fontSize: 13, whiteSpace: 'nowrap' }}>{numero} / Série {serie}</strong>;
 }
 
-const rotulo = (canal) => (canal === 'B2C' ? 'B2C' : canal === 'SUPRIMENTOS' ? 'Suprimentos' : 'Atacado');
+const rotulo = (canal) => ({ B2C: 'B2C', SUPRIMENTOS: 'Suprimentos', LOTACAO: 'Lotação' }[canal] || 'Atacado');
 
-// Um modulo por canal (B2C / Atacado): cada gestor so ve a fila do seu.
+// Um modulo por canal (B2C / Atacado / Lotacao): cada gestor so ve a fila do seu.
 export default function AutorizacoesTransportePage({ canal = 'B2C' }) {
   const sessao = carregarSessao();
   const usuarioNome = sessao?.nome || sessao?.email || '';

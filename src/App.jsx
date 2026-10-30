@@ -71,7 +71,7 @@ const PAGINAS_PERMITIDAS = [
   'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
   'icms-uf', 'auditoria-ecommerce', 'usuarios-ativos',
   'importar-descontos-obtidos', 'painel-descontos-obtidos',
-  'gestao-contratos', 'autorizacoes-transporte-b2c', 'autorizacoes-transporte-atacado', 'autorizacoes-suprimentos', 'robos', 'alertas-cte-valor', 'consulta-tracking',
+  'gestao-contratos', 'autorizacoes-transporte-b2c', 'autorizacoes-transporte-atacado', 'autorizacoes-transporte-lotacao', 'autorizacoes-suprimentos', 'robos', 'alertas-cte-valor', 'consulta-tracking',
 ];
 
 function primeiraPaginaPermitida(usuario) {
@@ -254,6 +254,7 @@ export default function App() {
     'painel-descontos-obtidos': <CentralControlePage />,
     'autorizacoes-transporte-b2c': <AutorizacoesTransportePage canal="B2C" />,
     'autorizacoes-transporte-atacado': <AutorizacoesTransportePage canal="ATACADO" />,
+    'autorizacoes-transporte-lotacao': <AutorizacoesTransportePage canal="LOTACAO" />,
     'autorizacoes-suprimentos': <AutorizacoesTransportePage canal="SUPRIMENTOS" />,
     'gestao-contratos': <GestaoContratosPage sessao={sessao} />,
     robos: <RobosPage />,

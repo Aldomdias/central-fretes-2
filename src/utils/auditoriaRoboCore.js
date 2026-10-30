@@ -13,7 +13,6 @@ import { processarCtesPorChave } from '../services/auditoriaCteProcessamentoServ
 import { entrarCacheCalculo, sairCacheCalculo } from '../services/freteDatabaseService';
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { normalizarChaveCte } from './auditoriaFretesDomain';
-import { normalizarTexto } from './lotacaoFluxoCargas';
 import { montarCorrecoesCalculoFatura, numeroValorNfAuditoria, numeroPesoAuditoria, escolherMaiorPeso } from './correcoesCalculoFatura';
 import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas, laudoResolvidoFora, faturaPaga, faturaLancadaErp } from '../services/auditorRoboService';
 
@@ -144,58 +143,98 @@ async function baixarEntregaContingencia(fatura, pendentes = []) {
   }
 }
 
-// Excedente de lotacao (CT-e auditado pela DIST do fluxo e acima do saldo da viagem): abre a mesma solicitacao
-// EXCEDENTE_AUDITORIA da Auditoria de Lotacao para a operacao aprovar. Aprovada, soma ao saldo da DIST e o CT-e
-// passa a bater no proximo calculo; recusada, segue para o laudo. Nao duplica: uma por DIST + CT-e.
-const STATUS_SOLICITACAO_DECIDIDA = ['APROVADO', 'APROVADO_OPERACAO', 'RECUSADO', 'FINALIZADO', 'CANCELADO'];
-const soNumeroCte = (v) => String(Number(String(v || '').replace(/\D/g, '')) || '');
+const brl = (v) => `R$ ${Number(v || 0).toFixed(2).replace('.', ',')}`;
+const dataBr = (v) => { const t = String(v || '').slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t.split('-').reverse().join('/') : ''; };
 
-async function abrirSolicitacoesExcedenteLotacao(fatura, registros = []) {
+// Excedente de lotacao (CT-e auditado pela DIST do fluxo e acima do saldo da viagem): vai para a fila
+// "Autorizacoes Lotacao" (transporte_autorizacoes, canal LOTACAO), igual ao B2C/Atacado. A Operacao autoriza e o
+// valor autorizado soma ao calculado do CT-e na fatura (aplicarSaldo), liberando o custo; recusado, segue o laudo.
+// Um por CT-e: autorizado ou recusado nao volta para a fila.
+async function abrirAutorizacoesExcedenteLotacao(fatura, registros = []) {
   const excedentes = registros.filter((r) => r?.detalhes_calculo?.motor === 'fluxo_lotacao'
-    && Number(r.detalhes_calculo.excedente_viagem || 0) > TOLERANCIA.acima);
+    && Number(r.detalhes_calculo.excedente_viagem || 0) > TOLERANCIA.acima && normalizarChaveCte(r.chave_cte).length === 44);
   if (!excedentes.length) return 0;
   const db = getSupabaseClient();
-  const dists = [...new Set(excedentes.map((r) => normalizarTexto(r.detalhes_calculo.dist)))];
-  const { data: existentes, error } = await db.from('lotacao_solicitacoes').select('dist_key,cte').eq('tipo', 'EXCEDENTE_AUDITORIA').in('dist_key', dists);
-  if (error) throw new Error(`Solicitacoes de lotacao: ${error.message}`);
-  const jaAbertas = new Set((existentes || []).map((s) => `${normalizarTexto(s.dist_key)}|${soNumeroCte(s.cte)}`));
-  const agora = new Date().toISOString();
-  const novas = excedentes.map((r) => {
+  const chaves = [...new Set(excedentes.map((r) => normalizarChaveCte(r.chave_cte)))];
+  const { data: existentes, error } = await db.from('transporte_autorizacoes').select('chave_cte').eq('ativo', true).eq('canal', 'LOTACAO').in('chave_cte', chaves);
+  if (error) throw new Error(`Autorizacoes de lotacao: ${error.message}`);
+  const jaNaFila = new Set((existentes || []).map((a) => normalizarChaveCte(a.chave_cte)));
+  const novas = chaves.filter((c) => !jaNaFila.has(c)).map((chave) => {
+    const r = excedentes.find((x) => normalizarChaveCte(x.chave_cte) === chave);
     const d = r.detalhes_calculo;
-    const distKey = normalizarTexto(d.dist);
-    const cte = soNumeroCte(r.numero_cte);
-    if (!distKey || !cte || jaAbertas.has(`${distKey}|${cte}`)) return null;
-    jaAbertas.add(`${distKey}|${cte}`);
-    const autorizado = Number(d.valor_autorizado_viagem || 0);
     const saldo = Number(d.saldo_antes_deste_cte || 0);
     const excedente = Number(d.excedente_viagem || 0);
     return {
-      id: `sol-robo-${globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`}`,
-      tipo: 'EXCEDENTE_AUDITORIA', origem_solicitacao: 'AUDITORIA',
-      carga_id: String(d.carga_id || ''), dist: String(d.dist || ''), dist_key: distKey, cte,
-      fatura: String(fatura.numero_fatura || ''), transportadora: String(r.transportadora_tabela || fatura.transportadora || ''),
-      origem: String(d.origem_cidade || ''), destino: String(d.destino_cidade || ''), tipo_veiculo: String(d.tipo_veiculo || ''),
-      valor_autorizado_carga: autorizado, total_anterior: Number((autorizado - saldo).toFixed(2)), saldo_anterior: saldo,
-      valor_lancado: Number(r.valor_cte || 0), excedente, valor_adicional: excedente, tipo_custo: '', status: 'PENDENTE',
-      observacao: `Aberta pelo Robo Auditor: CT-e ${cte} (fatura ${fatura.numero_fatura}) cobrou R$ ${Number(r.valor_cte || 0).toFixed(2)} com saldo de R$ ${saldo.toFixed(2)} na viagem ${d.dist}; excedente R$ ${excedente.toFixed(2)}.`,
-      resposta: '', criado_em: agora, atualizado_em: null,
+      canal: 'LOTACAO', origem: 'AUDITORIA', status: 'PENDENTE', chave_cte: chave, chave_nfe: normalizarChaveCte(r.chave_nfe) || null,
+      transportadora: r.transportadora_tabela || r.transportadora || fatura.transportadora || null,
+      cidade_origem: r.cidade_origem || d.origem_cidade || null, cidade_destino: r.cidade_destino || d.destino_cidade || null,
+      valor_nf: Number(r.valor_nf || 0), valor_cte: Number(r.valor_cte || 0), valor_calculado: Number(r.valor_calculado || 0), valor_divergente: excedente,
+      observacao_auditoria: `[ROBO] Viagem ${d.dist} (${d.origem_cidade || ''} -> ${d.destino_cidade || ''}, ${d.tipo_veiculo || ''}): valor da viagem ${brl(d.valor_autorizado_viagem)}, saldo antes deste CT-e ${brl(saldo)}, CT-e cobrou ${brl(r.valor_cte)}; excedente ${brl(excedente)}.`,
+      enviado_por: 'Robo Auditor', fatura_id: fatura.id || null,
     };
-  }).filter(Boolean);
+  });
   if (novas.length) {
-    const { error: erroInsert } = await db.from('lotacao_solicitacoes').insert(novas);
-    if (erroInsert) throw new Error(`Abrir solicitacao de excedente: ${erroInsert.message}`);
+    const { error: erroInsert } = await db.from('transporte_autorizacoes').insert(novas);
+    if (erroInsert) throw new Error(`Enviar excedente para autorizacao: ${erroInsert.message}`);
   }
   return novas.length;
 }
 
+// CT-e de lotacao sem DIST (nem na tabela nem no fluxo): abre o mesmo "Questionamento para Operacao" da
+// Auditoria de Lotacao pedindo a viagem. Quando a Operacao responde escolhendo a DIST, o motor passa a usar
+// esse vinculo e o CT-e calcula na proxima reavaliacao. Um por CT-e (inclusive se o auditor ja abriu a mao).
+
+async function abrirQuestionamentosSemDistLotacao(fatura, registros = []) {
+  const semDist = registros.filter((r) => r?.status_calculo === 'SEM_DIST_LOTACAO' && normalizarChaveCte(r.chave_cte).length === 44);
+  if (!semDist.length) return 0;
+  const db = getSupabaseClient();
+  const chaves = [...new Set(semDist.map((r) => normalizarChaveCte(r.chave_cte)))];
+  const { data: existentes, error } = await db.from('audit_solicitacoes_informacao').select('chave_informada').in('chave_informada', chaves);
+  if (error) throw new Error(`Questionamentos de lotacao: ${error.message}`);
+  const jaAbertos = new Set((existentes || []).map((q) => normalizarChaveCte(q.chave_informada)));
+  const agora = new Date().toISOString();
+  const novos = chaves.filter((c) => !jaAbertos.has(c)).map((chave) => {
+    const r = semDist.find((x) => normalizarChaveCte(x.chave_cte) === chave);
+    const descricao = [
+      'Questionamento para Operação — Auditoria Lotação',
+      '',
+      `Motivo principal: CT-e de lotação sem DIST/viagem na tabela de lotação nem no fluxo de cargas${r.detalhes_calculo?.motivo_original ? ` (${r.detalhes_calculo.motivo_original})` : ''}.`,
+      'Observação do auditor: INFORMAR DIST OU PEDIDO (aberto automaticamente pelo Robô Auditor)',
+      '',
+      'Dados do CT-e encontrado na base:',
+      `- Chave CT-e: ${chave}`,
+      `- Número CT-e: ${r.numero_cte || ''}`,
+      `- Transportadora CT-e: ${r.transportadora || ''}`,
+      `- Fatura: ${fatura.numero_fatura || ''}`,
+      `- Origem: ${r.cidade_origem || ''}/${r.uf_origem || ''}`,
+      `- Destino: ${r.cidade_destino || ''}/${r.uf_destino || ''}`,
+      `- Emissão: ${dataBr(r.data_emissao)}`,
+      `- Valor CT-e: ${brl(r.valor_cte)}`,
+      `- Peso: ${Number(r.peso || 0).toLocaleString('pt-BR')} kg`,
+      `- Canal/Operação: ${r.canal || ''}`,
+    ].join('\n');
+    return {
+      id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `quest-robo-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      tipo: 'CTE', chave_informada: chave, numero_informado: String(r.numero_cte || ''), transportadora: String(r.transportadora || ''),
+      fatura: String(fatura.numero_fatura || ''), descricao_problema: descricao, prioridade: 'ALTA', status: 'AGUARDANDO_INFORMACAO',
+      aberto_por_nome: 'Robo Auditor', created_at: agora, updated_at: agora,
+    };
+  });
+  if (novos.length) {
+    const { error: erroInsert } = await db.from('audit_solicitacoes_informacao').insert(novos);
+    if (erroInsert) throw new Error(`Abrir questionamento para a operacao: ${erroInsert.message}`);
+  }
+  return novos.length;
+}
+
 // Excedentes de lotacao desta fatura ainda sem decisao da operacao.
 async function excedentesLotacaoPendentes(fatura, lista = []) {
-  const ctes = new Set(lista.map((i) => soNumeroCte(i.numero_cte)).filter(Boolean));
-  if (!ctes.size || !fatura?.numero_fatura) return 0;
-  const { data, error } = await getSupabaseClient().from('lotacao_solicitacoes').select('cte,status')
-    .eq('tipo', 'EXCEDENTE_AUDITORIA').eq('fatura', String(fatura.numero_fatura));
+  const chaves = [...new Set(lista.map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
+  if (!chaves.length) return 0;
+  const { data, error } = await getSupabaseClient().from('transporte_autorizacoes').select('chave_cte')
+    .eq('ativo', true).eq('canal', 'LOTACAO').eq('status', 'PENDENTE').in('chave_cte', chaves);
   if (error) return 0;
-  return (data || []).filter((s) => ctes.has(soNumeroCte(s.cte)) && !STATUS_SOLICITACAO_DECIDIDA.includes(String(s.status || '').toUpperCase())).length;
+  return new Set((data || []).map((a) => a.chave_cte)).size;
 }
 
 // Calcula (se faltar) e resume a fatura. Retorna o resumo no formato esperado por classificarFatura.
@@ -264,7 +303,8 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
           // e era repetido a cada bloco. O resumo mensal e atualizado pelo fluxo mensal da Auditoria CT-e.
           await salvarRecorteCarregadoAuditoria({ competencia, registros, atualizarResumoMensal: false });
           calculou = true;
-          try { await abrirSolicitacoesExcedenteLotacao(fatura, registros); } catch (e) { console.warn('[robo] solicitacao de excedente:', e?.message || e); }
+          try { await abrirAutorizacoesExcedenteLotacao(fatura, registros); } catch (e) { console.warn('[robo] autorizacao de excedente:', e?.message || e); }
+          try { await abrirQuestionamentosSemDistLotacao(fatura, registros); } catch (e) { console.warn('[robo] questionamento para a operacao:', e?.message || e); }
         }
       } catch (e) {
         // Um bloco com erro nao derruba a fatura: os CT-es dele ficam "sem calculo" e os demais seguem.
@@ -298,7 +338,7 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
 // Excedente de lotacao aguardando a operacao: nao manda laudo nem gestao antes da decisao.
 function aguardarOperacaoLotacao(c, resumo) {
   if (!(resumo?.excedentesLotacao > 0) || c.decisao === DECISAO.REVISAO_AUDITOR) return c;
-  return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Aguardando aprovacao da operacao: ${resumo.excedentesLotacao} excedente(s) de lotacao acima do saldo da DIST.`, descontar: c.descontar };
+  return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Aguardando a Operacao Lotacao autorizar ${resumo.excedentesLotacao} excedente(s) acima do saldo da DIST (Autorizacoes Lotacao).`, descontar: c.descontar };
 }
 
 // Envia a fatura (auditoria completa, sem desconto, tudo entregue) para a APROVACAO DA GESTAO,

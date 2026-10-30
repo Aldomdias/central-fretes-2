@@ -15,6 +15,7 @@ function exigirClient() {
 export function normalizarCanalAutorizacao(canal) {
   const texto = String(canal || '').toUpperCase();
   if (texto.includes('SUPRIMENTOS')) return 'SUPRIMENTOS';
+  if (texto.includes('LOTACAO') || texto.includes('LOTAÇÃO')) return 'LOTACAO';
   return texto.includes('B2C') ? 'B2C' : 'ATACADO';
 }
 

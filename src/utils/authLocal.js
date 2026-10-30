@@ -46,6 +46,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'painel-descontos-obtidos', label: 'Central de Controle (produtividade e descontos)', grupo: 'Financeiro' },
   { chave: 'autorizacoes-transporte-b2c', label: 'Autorizações Transporte B2C', grupo: 'Operação' },
   { chave: 'autorizacoes-transporte-atacado', label: 'Autorizações Transporte Atacado', grupo: 'Operação' },
+  { chave: 'autorizacoes-transporte-lotacao', label: 'Autorizações Lotação', grupo: 'Operação' },
   { chave: 'autorizacoes-suprimentos', label: 'Autorizações Suprimentos', grupo: 'Operação' },
   { chave: 'consulta-ibge', label: 'Consulta IBGE', grupo: 'Cadastros' },
   { chave: 'icms-uf', label: 'Matriz ICMS UF', grupo: 'Cadastros' },
@@ -104,7 +105,7 @@ export const PERFIS_USUARIO = {
   OPERACAO_LOTACAO: {
     nome: 'Operação Lotação',
     descricao: 'Consulta lotação, histórico de cargas, custos adicionais e aprovações.',
-    paginas: ['dashboard', 'conceito-app', 'lotacao', 'lotacao-cotacao', 'lotacao-operacao', 'painel-operacao', 'tratativas', 'avaliacao-prazos'],
+    paginas: ['dashboard', 'conceito-app', 'lotacao', 'lotacao-cotacao', 'lotacao-operacao', 'autorizacoes-transporte-lotacao', 'painel-operacao', 'tratativas', 'avaliacao-prazos'],
   },
   AUDITORIA_LOTACAO: {
     nome: 'Auditoria Lotação',
@@ -370,6 +371,8 @@ export function usuarioTemAcesso(usuario, pagina) {
   if (pagina === 'autorizacoes-suprimentos' && usuario.perfil === 'GESTAO') return true;
   // Modulo novo: Gestao ve sempre, mesmo com lista de paginas salva antes dele existir.
   if (pagina === 'robos' && usuario.perfil === 'GESTAO') return true;
+  // Autorizacoes Lotacao: a Operacao Lotacao decide; vale mesmo com lista de paginas salva antes dela existir.
+  if (pagina === 'autorizacoes-transporte-lotacao' && ['GESTAO', 'OPERACAO_LOTACAO'].includes(usuario.perfil)) return true;
   if (pagina === 'usuarios' || pagina === 'usuarios-ativos') return usuarioPodeAdministrarUsuarios(usuario);
 
   const permissoes = permissoesUsuario(usuario);
