@@ -1066,7 +1066,8 @@ async function carregarContextoLotacaoAuditoria(supabase, mapaVinculos = null) {
 // excedente daquele CT-e (vai para aprovação). Excedente aprovado pela operação
 // (lotacao_solicitacoes) aumenta o saldo da viagem.
 let _cacheFluxoLotacao = { em: 0, dados: null };
-const STATUS_ADICIONAL_APROVADO = ['APROVADO', 'APROVADO_OPERACAO', 'FINALIZADO'];
+// Mesmo criterio da Auditoria de Lotacao (totalAdicionalAutorizadoCarga em lotacaoFluxoCargas.js).
+const STATUS_ADICIONAL_APROVADO = ['APROVADO', 'APROVADO_OPERACAO'];
 
 async function carregarFluxoLotacaoAuditoria(supabase) {
   if (_cacheFluxoLotacao.dados && Date.now() - _cacheFluxoLotacao.em < 5 * 60 * 1000) return _cacheFluxoLotacao.dados;
@@ -1083,11 +1084,14 @@ async function carregarFluxoLotacaoAuditoria(supabase) {
   const adicionaisPorDist = new Map();
   const { data: solicitacoes } = await supabase
     .from('lotacao_solicitacoes')
-    .select('dist_key,dist,status,valor_adicional')
+    .select('tipo,dist_key,dist,status,valor_adicional,valor_lancado,excedente')
     .in('status', STATUS_ADICIONAL_APROVADO);
   (solicitacoes || []).forEach((s) => {
     const dist = normalizeText(s.dist_key || s.dist);
-    if (dist && toNumber(s.valor_adicional) > 0) adicionaisPorDist.set(dist, (adicionaisPorDist.get(dist) || 0) + toNumber(s.valor_adicional));
+    const valor = s.tipo === 'CUSTO_ADICIONAL'
+      ? (toNumber(s.valor_adicional) || toNumber(s.valor_lancado))
+      : toNumber(s.valor_adicional ?? s.excedente);
+    if (dist && valor > 0) adicionaisPorDist.set(dist, (adicionaisPorDist.get(dist) || 0) + valor);
   });
   const porNumeroCte = new Map();
   cargas.forEach((carga) => {
