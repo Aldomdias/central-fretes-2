@@ -14,6 +14,7 @@ import {
   excluirTransportadoraDb,
   limparSecaoOrigemDb,
   salvarGeneralidadesOrigemDb,
+  salvarHubOrigemDb,
   salvarVigenciaTabelaAlternativaDb,
   converterOrigemEmReajusteDb,
   excluirGeneralidadesAlternativaDb,
@@ -948,6 +949,38 @@ export function useFreteStore(sessao = null) {
           setSyncStatus((prev) => ({ ...prev, erro: error.message || 'Erro ao salvar validação no Supabase.' }));
           return { ok: false, erro: error };
         }
+      },
+      // Tabela HUB da origem (cidades de emissão do CT-e, vigência e % de custo
+      // de transferência). Salva direto no Supabase, como a validação.
+      async salvarHubOrigem(transportadoraId, origemId, config = {}) {
+        if (!podeEditarTransportadoras()) return { ok: false, erro: new Error(ERRO_SEM_PERMISSAO) };
+        const hubConfig = {
+          hub: Boolean(config.hub),
+          hubCidadesEmissao: Array.isArray(config.hubCidadesEmissao) ? config.hubCidadesEmissao : [],
+          hubVigenciaInicio: config.hubVigenciaInicio || '',
+          hubCustoTransferenciaPct: Number(config.hubCustoTransferenciaPct) || 0,
+        };
+        try {
+          if (bancoConfigurado()) await salvarHubOrigemDb(origemId, hubConfig);
+        } catch (error) {
+          return { ok: false, erro: error };
+        }
+        setTransportadoras((prev) =>
+          (prev || []).map((t) =>
+            t.id !== transportadoraId
+              ? t
+              : { ...t, origens: t.origens.map((o) => (o.id !== origemId ? o : { ...o, ...hubConfig })) }
+          )
+        );
+        registrarAlteracaoTransportadora(sessao, {
+          tipo: 'tabela_hub_origem',
+          transportadoraId,
+          origemId,
+          detalhe: hubConfig.hub
+            ? `Tabela HUB: emissão em ${hubConfig.hubCidadesEmissao.join(', ') || '-'}; vigência ${hubConfig.hubVigenciaInicio || 'sempre'}; transferência ${hubConfig.hubCustoTransferenciaPct}%`
+            : 'Desmarcou Tabela HUB',
+        });
+        return { ok: true };
       },
       // Atualiza só o canal da origem (merge), preservando rotas/cotações/taxas.
       // Usado para trocar o canal direto no card, sem abrir o formulário.

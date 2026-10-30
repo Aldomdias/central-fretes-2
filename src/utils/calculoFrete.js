@@ -503,6 +503,8 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
       valorEmergencial: toNumber(calculo.valorEmergencial),
       subtotal: calculo.subtotal,
       icms: calculo.icms,
+      custoTransferencia: toNumber(calculo.custoTransferencia),
+      custoTransferenciaPct: toNumber(calculo.custoTransferenciaPct),
       total: calculo.total,
       aliquotaIcms: toNumber(icmsInfo?.aliquota),
       origemAliquotaIcms: icmsInfo?.origem || (toNumber(origem?.generalidades?.aliquotaIcms) > 0 ? 'manual' : 'legislacao'),
@@ -543,7 +545,7 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
   };
 }
 
-export function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal, ignorarCubagem = false, documentoDestinatario = '', inverterIcms = false, destinoCep = '' }) {
+export function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal, ignorarCubagem = false, documentoDestinatario = '', inverterIcms = false, destinoCep = '', incluirCustoTransferencia = true }) {
   const gradeLinha = getLinhaGradeMaisProxima(gradeCanal, peso);
   const fatoresCubagem = [
     origem?.generalidades?.cubagem,
@@ -572,9 +574,17 @@ export function calcularItem({ transportadora, origem, rota, peso, valorNF, cuba
     tdeCnpjs: Array.isArray(transportadora?.tdeCnpjs) ? transportadora.tdeCnpjs : [],
   };
   const engineInput = { rota, cotacao, generalidades: generalidadesCalculadas, taxaDestino, pesoKg: pesosAplicados.pesoConsiderado, valorNf: valorNFUtilizado, documentoDestinatario };
-  const calculo = tipoCalculo === 'FAIXA_DE_PESO'
+  const calculoTabela = tipoCalculo === 'FAIXA_DE_PESO'
     ? calcularFreteFaixaPeso(engineInput)
     : calcularFretePercentual(engineInput);
+  // Tabela HUB: custo de levar a carga até o HUB (% sobre a NF). Entra nas
+  // simulações/comparativos pra comparação justa com quem sai direto da origem;
+  // a Auditoria passa incluirCustoTransferencia=false (não é cobrado no CT-e).
+  const custoTransferenciaPct = incluirCustoTransferencia && origem?.hub ? toNumber(origem?.hubCustoTransferenciaPct) : 0;
+  const custoTransferencia = custoTransferenciaPct > 0 ? valorNFUtilizado * (custoTransferenciaPct / 100) : 0;
+  const calculo = custoTransferencia > 0
+    ? { ...calculoTabela, total: calculoTabela.total + custoTransferencia, custoTransferencia, custoTransferenciaPct }
+    : calculoTabela;
 
   const cidadeDestino = getCidadeByIbge(rota.ibgeDestino, cidadePorIbge);
   const ufDestino = getUfByIbge(rota.ibgeDestino);
@@ -1561,6 +1571,7 @@ function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo
           gradeCanal: [],
           ignorarCubagem: filtros.ignorarCubagem,
           documentoDestinatario: row.documentoDestinatario || '',
+          incluirCustoTransferencia: !filtros.ignorarCustoTransferencia,
         });
 
         if (item) {

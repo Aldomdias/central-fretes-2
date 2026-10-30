@@ -240,6 +240,15 @@ function mapGeneralidadeRow(generalidade) {
   };
 }
 
+function mapHubOrigemRow(origem = {}) {
+  return {
+    hub: Boolean(origem?.hub),
+    hubCidadesEmissao: Array.isArray(origem?.hub_cidades_emissao) ? origem.hub_cidades_emissao.filter(Boolean) : [],
+    hubVigenciaInicio: origem?.hub_vigencia_inicio || '',
+    hubCustoTransferenciaPct: Number(origem?.hub_custo_transferencia_pct) || 0,
+  };
+}
+
 function normalizeOrigemFromDb(origem, generalidadesRows, rotas, cotacoes, taxasEspeciais) {
   const listaGeneralidades = Array.isArray(generalidadesRows)
     ? generalidadesRows
@@ -274,6 +283,9 @@ function normalizeOrigemFromDb(origem, generalidadesRows, rotas, cotacoes, taxas
     validado: Boolean(origem.validado),
     validado_em: origem.validado_em || null,
     validado_por: origem.validado_por || null,
+    // Tabela HUB (ver 20261030_002_origens_tabela_hub.sql). Ausente = migration
+    // ainda não aplicada: origem comum.
+    ...mapHubOrigemRow(origem),
     generalidades: mapGeneralidadeRow(generalidadePrincipal),
     // Generalidades das tabelas alternativas desta origem (uma entrada por
     // grupo cadastrado). Vazio = nenhuma alternativa tem generalidade
@@ -1653,6 +1665,57 @@ export async function salvarGeneralidadesOrigemDb(origemId, generalidades = {}, 
   }
   invalidarCacheBaseCompletaDb();
   return { atualizadas: 1, origemId: origemIdPersistencia };
+}
+
+// Grava só a configuração de Tabela HUB da origem (direto no Supabase, sem
+// passar pelo "Salvar alterações" da transportadora).
+export async function salvarHubOrigemDb(origemId, { hub = false, hubCidadesEmissao = [], hubVigenciaInicio = '', hubCustoTransferenciaPct = 0 } = {}) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  if (!UUID_REGEX.test(String(origemId || ''))) throw new Error('Grave a origem no Supabase antes de configurar a Tabela HUB.');
+  const cidades = Array.from(new Set((hubCidadesEmissao || []).map((item) => String(item || '').trim()).filter(Boolean)));
+  const { error } = await ensureClient().from('origens').update({
+    hub: Boolean(hub),
+    hub_cidades_emissao: cidades,
+    hub_vigencia_inicio: hubVigenciaInicio || null,
+    hub_custo_transferencia_pct: Number(hubCustoTransferenciaPct) || 0,
+  }).eq('id', origemId);
+  if (error) {
+    if (/hub/i.test(error.message || '')) {
+      throw new Error('Rode a migration 20261030_002_origens_tabela_hub.sql no Supabase antes de usar a Tabela HUB.');
+    }
+    throw new Error(`Erro ao salvar Tabela HUB: ${error.message}`);
+  }
+  invalidarCacheBaseCompletaDb();
+  return { ok: true };
+}
+
+// Origens marcadas como HUB, com os IBGEs de origem das rotas delas. Leve (só
+// as origens HUB): a Auditoria usa antes de carregar a base pra incluir as
+// rotas do HUB na busca por par origem-destino. Sem a migration aplicada,
+// devolve lista vazia.
+export async function carregarOrigensHubDb() {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('origens')
+    .select('id, transportadora_id, cidade, canal, hub, hub_cidades_emissao, hub_vigencia_inicio')
+    .eq('hub', true);
+  if (error || !data?.length) return [];
+  const saida = [];
+  for (const origem of data) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data: rotas } = await supabase.from('rotas').select('ibge_origem').eq('origem_id', origem.id).limit(5000);
+    saida.push({
+      id: origem.id,
+      transportadoraId: origem.transportadora_id,
+      cidade: origem.cidade || '',
+      canal: origem.canal || '',
+      hubCidadesEmissao: Array.isArray(origem.hub_cidades_emissao) ? origem.hub_cidades_emissao : [],
+      hubVigenciaInicio: origem.hub_vigencia_inicio || '',
+      ibgesOrigem: Array.from(new Set((rotas || []).map((r) => onlyDigitsDb(r.ibge_origem).slice(0, 7)).filter((v) => v.length === 7))),
+    });
+  }
+  return saida;
 }
 
 // Remove a generalidade de uma tabela alternativa específica (sem afetar a

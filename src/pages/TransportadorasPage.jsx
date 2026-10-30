@@ -2947,6 +2947,79 @@ function CadastroOrigemTab({ transportadoraId, origem, store }) {
         {feedback ? <span style={{ color: '#166534', fontWeight: 600, fontSize: 13 }}>{feedback}</span> : null}
         <button className="btn-primary" onClick={salvar} disabled={!podeEditar || !String(form.cidade || '').trim() || !String(form.codigoCentro || '').trim() || !cnpjPreenchidoValido(form.cnpj)} title={!podeEditar ? 'Apenas Gestão ou Gestor de Auditoria de Fretes podem alterar transportadoras.' : undefined}>Salvar Cadastro</button>
       </div>
+      <TabelaHubOrigem transportadoraId={transportadoraId} origem={origem} store={store} podeEditar={podeEditar} />
+    </div>
+  );
+}
+
+// Tabela HUB: a carga sai deste CD (ex.: Itajaí), mas a transportadora emite
+// o CT-e em outra cidade (ex.: Itupeva) e cobra por esta tabela. A Auditoria
+// calcula esses CT-es por aqui; o % de transferência só entra nas simulações.
+function TabelaHubOrigem({ transportadoraId, origem, store, podeEditar }) {
+  const inicial = () => ({
+    hub: Boolean(origem.hub),
+    cidades: (origem.hubCidadesEmissao || []).join(', '),
+    vigencia: origem.hubVigenciaInicio || '',
+    transferencia: origem.hubCustoTransferenciaPct ? String(origem.hubCustoTransferenciaPct) : '',
+  });
+  const [hubForm, setHubForm] = useState(inicial);
+  const [hubFeedback, setHubFeedback] = useState({ tipo: '', texto: '' });
+  const [salvando, setSalvando] = useState(false);
+  React.useEffect(() => { setHubForm(inicial()); setHubFeedback({ tipo: '', texto: '' }); }, [origem]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const salvarHub = async () => {
+    const cidades = hubForm.cidades.split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean);
+    if (hubForm.hub && !cidades.length) {
+      setHubFeedback({ tipo: 'erro', texto: 'Informe ao menos uma cidade de emissão do CT-e.' });
+      return;
+    }
+    setSalvando(true);
+    const resultado = await store.salvarHubOrigem(transportadoraId, origem.id, {
+      hub: hubForm.hub,
+      hubCidadesEmissao: cidades,
+      hubVigenciaInicio: hubForm.vigencia,
+      hubCustoTransferenciaPct: Number(String(hubForm.transferencia || '0').replace(',', '.')) || 0,
+    });
+    setSalvando(false);
+    setHubFeedback(resultado?.ok
+      ? { tipo: 'ok', texto: 'Tabela HUB salva no Supabase.' }
+      : { tipo: 'erro', texto: resultado?.erro?.message || 'Erro ao salvar Tabela HUB.' });
+  };
+
+  return (
+    <div className="top-space" style={{ borderTop: '1px solid #e2e8f0', paddingTop: 12 }}>
+      <div className="tab-panel-header">
+        <p><strong>Tabela HUB</strong> — a carga sai desta origem, mas a transportadora emite o CT-e em outra cidade e cobra por esta tabela.</p>
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, marginBottom: 8 }}>
+        <input type="checkbox" checked={hubForm.hub} disabled={!podeEditar} onChange={(e) => { setHubForm((prev) => ({ ...prev, hub: e.target.checked })); setHubFeedback({ tipo: '', texto: '' }); }} />
+        Esta origem é uma Tabela HUB
+      </label>
+      {hubForm.hub ? (
+        <div className="form-grid three">
+          <div className="field">
+            <label>Cidades de emissão do CT-e *</label>
+            <input value={hubForm.cidades} placeholder="Ex.: Itupeva (ou IBGE 3524006)" disabled={!podeEditar} onChange={(e) => { setHubForm((prev) => ({ ...prev, cidades: e.target.value })); setHubFeedback({ tipo: '', texto: '' }); }} />
+          </div>
+          <div className="field">
+            <label>Vale para CT-e emitido a partir de</label>
+            <input type="date" value={hubForm.vigencia} disabled={!podeEditar} onChange={(e) => { setHubForm((prev) => ({ ...prev, vigencia: e.target.value })); setHubFeedback({ tipo: '', texto: '' }); }} />
+          </div>
+          <div className="field">
+            <label>Custo de transferência (% NF)</label>
+            <input value={hubForm.transferencia} placeholder="Ex.: 1" disabled={!podeEditar} onChange={(e) => { setHubForm((prev) => ({ ...prev, transferencia: e.target.value })); setHubFeedback({ tipo: '', texto: '' }); }} />
+          </div>
+        </div>
+      ) : null}
+      {hubForm.hub ? (
+        <div className="mini-feedback info top-space">
+          Auditoria: CT-e emitido nessas cidades, no canal desta origem, é calculado por esta tabela (mesmo existindo origem local). O custo de transferência não entra na Auditoria, só nas simulações e comparativos.
+        </div>
+      ) : null}
+      <div className="actions-right top-space" style={{ alignItems: 'center', gap: 12 }}>
+        {hubFeedback.texto ? <span style={{ color: hubFeedback.tipo === 'erro' ? '#b91c1c' : '#166534', fontWeight: 600, fontSize: 13 }}>{hubFeedback.texto}</span> : null}
+        <button className="btn-secondary" onClick={salvarHub} disabled={!podeEditar || salvando}>{salvando ? 'Salvando...' : 'Salvar Tabela HUB'}</button>
+      </div>
     </div>
   );
 }

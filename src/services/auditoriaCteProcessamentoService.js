@@ -1,7 +1,7 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarAguardandoNovaFatura } from './baixaEntregaService';
 import { carregarRaizesAdicionaisPorId } from './transportadoraCnpjsService';
-import { buscarBaseSimulacaoPorRotasDb, carregarBaseCompletaDb, carregarBaseTransportadorasDb, invalidarCacheBaseCompletaDb } from './freteDatabaseService';
+import { buscarBaseSimulacaoPorRotasDb, carregarBaseCompletaDb, carregarBaseTransportadorasDb, carregarOrigensHubDb, invalidarCacheBaseCompletaDb } from './freteDatabaseService';
 import { calcularFreteFaixaPeso, calcularFretePercentual } from './freteCalcEngine';
 import { filtrarCpComercialCte } from './cteBasePolicy';
 import {
@@ -17,7 +17,7 @@ import { carregarMatrizIcmsUfCentralizada, resolverAliquotaIcmsUfContexto } from
 import { buscarTrackingParaRealizado, enriquecerRealizadoComTracking } from './realizadoTrackingEnrichment';
 import { obterRaizCnpj } from '../utils/cnpj.js';
 import { carregarMapaEquivalenciasOrigem } from './origemEquivalenciaService';
-import { ibgesOrigemEquivalentes, origemAceitaPorExcecao } from '../utils/origemEquivalencia';
+import { ibgesOrigemEquivalentes, normalizarTextoOrigemEquiv, origemAceitaPorExcecao } from '../utils/origemEquivalencia';
 import { cederThread, esperarLeve } from '../utils/cederThread';
 
 
@@ -205,6 +205,40 @@ export async function precarregarEquivalenciasOrigemAuditoria() {
 
 export function invalidarCacheEquivalenciasOrigemAuditoria() {
   _cacheMapaEquivalenciasOrigem = new Map();
+}
+
+// ─── Tabela HUB ───────────────────────────────────────────────────────────
+// Origem marcada como HUB (ex.: WM Itajaí B2C) com as cidades em que a
+// transportadora EMITE o CT-e dessa carga (ex.: Itupeva). CT-e emitido numa
+// delas, no canal da origem HUB e a partir da vigência, é calculado pela
+// tabela HUB — mesmo existindo origem local cadastrada (a local tem outra
+// tabela). Escolha fixa por cadastro, nunca "a mais próxima do valor pago".
+let _cacheOrigensHub = { carregadoEm: 0, lista: [] };
+const TTL_ORIGENS_HUB_MS = 5 * 60 * 1000;
+
+async function precarregarOrigensHubAuditoria() {
+  if (Date.now() - _cacheOrigensHub.carregadoEm < TTL_ORIGENS_HUB_MS) return _cacheOrigensHub.lista;
+  try {
+    _cacheOrigensHub = { carregadoEm: Date.now(), lista: await carregarOrigensHubDb() };
+  } catch (error) {
+    console.warn('[Auditoria CT-e] origens HUB indisponíveis; seguindo sem elas.', error?.message || error);
+    _cacheOrigensHub = { carregadoEm: Date.now(), lista: [] };
+  }
+  return _cacheOrigensHub.lista;
+}
+
+function cidadeEmissaoHubBate(cidadesEmissao = [], cidadeCte = '', ibgeCte = '') {
+  const cidade = normalizarTextoOrigemEquiv(cidadeCte);
+  const ibge = String(ibgeCte || '').replace(/\D/g, '').slice(0, 7);
+  return (cidadesEmissao || []).some((item) => {
+    const valor = String(item || '').trim();
+    if (/^\d{7}$/.test(valor)) return Boolean(ibge) && valor === ibge;
+    return Boolean(cidade) && normalizarTextoOrigemEquiv(valor) === cidade;
+  });
+}
+
+function hubVigenteNaData(vigenciaInicio = '', dataIso = '') {
+  return !vigenciaInicio || !dataIso || dataIso >= String(vigenciaInicio).slice(0, 10);
 }
 
 export function invalidarCacheVinculosAuditoriaCte() {
@@ -712,6 +746,13 @@ function routeKeysRegistros(registros = []) {
       pick(cte, ['cidade_origem', 'cidadeOrigem', 'origem']),
       origem,
     ).forEach((valor) => origensBusca.add(valor));
+    // Tabela HUB: CT-e emitido numa cidade de emissão de um HUB também precisa
+    // das rotas do HUB (cadastradas com o IBGE da cidade do HUB).
+    const cidadeCte = pick(cte, ['cidade_origem', 'cidadeOrigem', 'origem']);
+    (_cacheOrigensHub.lista || []).forEach((hub) => {
+      if (!cidadeEmissaoHubBate(hub.hubCidadesEmissao, cidadeCte, origem)) return;
+      (hub.ibgesOrigem || []).forEach((valor) => origensBusca.add(valor));
+    });
 
     origensBusca.forEach((ibgeOrigemBusca) => {
       keys.add(`${ibgeOrigemBusca}-${destino}`);
@@ -727,6 +768,7 @@ function routeKeysRegistros(registros = []) {
 
 async function carregarBaseFreteParaRegistros(registros = [], onProgress, transportadorasAlvo = [], mapaVinculos = null) {
   await precarregarRaizesAdicionaisAuditoria();
+  await precarregarOrigensHubAuditoria();
   const routeKeys = routeKeysRegistros(registros);
   if (routeKeys.length > 0 && routeKeys.length <= 2500 && !(transportadorasAlvo || []).length) {
     onProgress?.({ etapa: 'carregando_tabelas_rotas', carregados: 0, total: routeKeys.length });
@@ -1516,6 +1558,8 @@ function calcularValorParaTabelaEspecifica(cte, tabelaEntry, canaisTentativa, ci
           canal: linha.canal,
           ignorarCubagem: opcoes.ignorarCubagem,
           percentualContingenciaPeso: opcoes.percentualContingenciaPeso,
+          // Custo de transferência da Tabela HUB não é cobrado no CT-e.
+          ignorarCustoTransferencia: true,
         },
         cidadePorIbge,
       });
@@ -1673,6 +1717,8 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
           canal: linha.canal,
           ignorarCubagem: opcoes.ignorarCubagem,
           percentualContingenciaPeso: opcoes.percentualContingenciaPeso,
+          // Custo de transferência da Tabela HUB não é cobrado no CT-e.
+          ignorarCustoTransferencia: true,
         },
         cidadePorIbge,
       });
@@ -2032,7 +2078,75 @@ function anexarCanalCobradoDivergente(resultado, cte, transportadoras, mapaVincu
   };
 }
 
+// Origem HUB da transportadora do CT-e que atende este CT-e (cidade de emissão,
+// canal e vigência). Devolve também o IBGE do HUB pra reescrever a origem.
+function localizarOrigemHubCte(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '') {
+  const nome = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
+  if (!nome) return null;
+  const cidadeCte = pick(cte, ['cidade_origem', 'cidadeOrigem', 'origem']);
+  const ibgeCte = pickDigits(cte, ['ibge_origem', 'ibgeOrigem', 'ibge_corrigido_origem']);
+  const canalCte = pick(cte, ['canal', 'canal_original']);
+  const dataIso = dataEmissaoIsoCte(cte);
+  for (const transportadora of transportadoras || []) {
+    if (transportadora?.tabelaAlternativaDe) continue;
+    if (transportadora.nome !== nome && !nomeCompativel(transportadora.nome, nome)) continue;
+    for (const origem of transportadora.origens || []) {
+      if (!origem?.hub) continue;
+      if (!cidadeEmissaoHubBate(origem.hubCidadesEmissao, cidadeCte, ibgeCte)) continue;
+      if (!canalCompativel(origem.canal, canalCte)) continue;
+      if (!hubVigenteNaData(origem.hubVigenciaInicio, dataIso)) continue;
+      // IBGE do HUB = o mais frequente nas rotas dele, ignorando o da cidade de
+      // emissão (rotas antigas duplicadas com o IBGE de emissão).
+      const contagem = new Map();
+      (origem.rotas || []).forEach((rota) => {
+        const ibge = String(rota.ibgeOrigem || '').replace(/\D/g, '').slice(0, 7);
+        if (ibge.length === 7 && ibge !== ibgeCte) contagem.set(ibge, (contagem.get(ibge) || 0) + 1);
+      });
+      const ibgeHub = [...contagem.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+      if (ibgeHub) return { origem, ibgeHub };
+    }
+  }
+  return null;
+}
+
 export function processarCte(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '', opcoes = {}) {
+  if (!opcoes.hubAplicado) {
+    const hub = localizarOrigemHubCte(cte, transportadoras, mapaVinculos, transportadoraAlvo);
+    if (hub) {
+      const cidadeEmissao = pick(cte, ['cidade_origem', 'cidadeOrigem', 'origem']);
+      const cteHub = {
+        ...cte,
+        cidade_origem: hub.origem.cidade,
+        cidadeOrigem: hub.origem.cidade,
+        origem: hub.origem.cidade,
+        ibge_origem: hub.ibgeHub,
+        ibgeOrigem: hub.ibgeHub,
+        ibge_corrigido_origem: hub.ibgeHub,
+        uf_origem: UF_POR_CODIGO_IBGE[hub.ibgeHub.slice(0, 2)] || '',
+        ufOrigem: UF_POR_CODIGO_IBGE[hub.ibgeHub.slice(0, 2)] || '',
+      };
+      const resultadoHub = processarCte(cteHub, transportadoras, mapaVinculos, transportadoraAlvo, { ...opcoes, hubAplicado: true });
+      if (resultadoHub?.status_calculo === 'CALCULADO') {
+        const original = montarResultadoBase(cte, 'CALCULADO', '');
+        return {
+          ...resultadoHub,
+          cidade_origem: original.cidade_origem,
+          uf_origem: original.uf_origem,
+          ibge_origem: original.ibge_origem,
+          detalhes_calculo: {
+            ...(resultadoHub.detalhes_calculo || {}),
+            tabela_hub: {
+              origem_hub: hub.origem.cidade,
+              cidade_emissao_cte: cidadeEmissao || null,
+              vigencia_inicio: hub.origem.hubVigenciaInicio || null,
+              observacao: `Tabela HUB: CT-e emitido em ${cidadeEmissao || '?'} calculado pela tabela de ${hub.origem.cidade}.`,
+            },
+          },
+        };
+      }
+      // HUB não calculou (rota/cotação ausente): segue pela origem local.
+    }
+  }
   const resultadoSimulador = processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
   if (resultadoSimulador && opcoes?.semComparativoPesos) return anexarCanalCobradoDivergente(resultadoSimulador, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
   if (resultadoSimulador) {

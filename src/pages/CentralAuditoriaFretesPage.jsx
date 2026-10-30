@@ -980,6 +980,7 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
               {det.canal_cobrado_divergente.observacao}
             </div>
           ) : null}
+          {det.tabela_hub ? linhaDetalhe('Tabela HUB', det.tabela_hub.observacao || `Calculado pela tabela de ${det.tabela_hub.origem_hub}.`, true) : null}
           {linhaDetalhe('Origem tabela', det.origem_cidade || '-')}
           {linhaDetalhe('Tabela validada?', det.origem_validada ? `Sim${det.origem_validado_por ? ` (${det.origem_validado_por})` : ''}` : 'Não')}
           {det.calculo_devolucao_invertida ? linhaDetalhe('Regra devolucao', det.observacao_devolucao || 'Calculado pela rota de ida equivalente.', true) : null}
