@@ -2911,6 +2911,30 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
   };
 }
 
+// Carrega só uma origem com rotas, cotações e taxas, para editar sem baixar a
+// transportadora inteira (Atual Cargas passa de 300 mil rotas somando origens).
+export async function carregarOrigemCompletaDb(origemId) {
+  if (!isSupabaseConfigured()) return null;
+  if (!UUID_REGEX.test(String(origemId || '').trim())) return null;
+  const supabase = ensureClient();
+  const { data: origem, error } = await supabase.from('origens').select('*').eq('id', origemId).maybeSingle();
+  if (error) throw error;
+  if (!origem) return null;
+
+  const ids = [origem.id];
+  const [generalidades, rotas, cotacoes, taxas] = await Promise.all([
+    fetchRowsByOrigemIdsDireto(supabase, 'generalidades', ids),
+    fetchRowsByOrigemIdsDireto(supabase, 'rotas', ids),
+    fetchRowsByOrigemIdsDireto(supabase, 'cotacoes', ids),
+    fetchRowsByOrigemIdsDireto(supabase, 'taxas_especiais', ids),
+  ]);
+  const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);
+  return {
+    ...normalizeOrigemFromDb(origem, generalidades, rotasNormalizadas, cotacoes, taxas),
+    detalheCarregado: true,
+  };
+}
+
 
 
 function pickIbgeValue(row, keys = []) {

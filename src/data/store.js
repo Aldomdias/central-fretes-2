@@ -5,6 +5,7 @@ import {
   carregarResumoBaseDb,
   carregarSnapshotFretesDb,
   carregarTransportadoraCompletaDb,
+  carregarOrigemCompletaDb,
   carregarResumoDetalheTransportadoraDb,
   atualizarValidacaoOrigemDb,
   excluirLinhaSecaoDb,
@@ -672,6 +673,34 @@ export function useFreteStore(sessao = null) {
           setSyncStatus((prev) => ({
             ...finalizarCarregamento(prev),
             erro: error.message || 'Erro ao carregar detalhes da transportadora.',
+          }));
+          return false;
+        }
+      },
+      async carregarOrigemCompleta(transportadoraId, origemId) {
+        if (!transportadoraId || !origemId || !bancoConfigurado()) return false;
+        setSyncStatus((prev) => ({ ...prev, carregandoDetalheId: transportadoraId, erro: '' }));
+        try {
+          const origemCompleta = await carregarOrigemCompletaDb(origemId);
+          if (origemCompleta) {
+            setTransportadoras((prev) => (prev || []).map((item) =>
+              String(item.id) !== String(transportadoraId)
+                ? item
+                : normalizeTransportadora({
+                    ...item,
+                    origens: (item.origens || []).map((origem) =>
+                      String(origem.id) === String(origemId) ? { ...origem, ...origemCompleta } : origem
+                    ),
+                  })
+            ));
+          }
+          setSyncStatus((prev) => ({ ...prev, carregandoDetalheId: null }));
+          return Boolean(origemCompleta);
+        } catch (error) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregandoDetalheId: null,
+            erro: error.message || 'Erro ao carregar a origem.',
           }));
           return false;
         }
