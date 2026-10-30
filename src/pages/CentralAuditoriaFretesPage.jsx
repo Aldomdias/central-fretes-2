@@ -92,6 +92,7 @@ import {
   vincularNovaFatura,
   registrarHistoricoCarteiraAuditoria,
   listarHistoricoCarteiraAuditoria,
+  listarDecisoesGestao,
   gerarLinkConfirmacaoFatura,
   registrarNumerosLaudoConfirmacao,
   atribuirAuditorEmLote,
@@ -8663,10 +8664,25 @@ function HistoricoAprovacaoGestao({ state }) {
   const [de, setDe] = useState('');
   const [ate, setAte] = useState('');
   const [busca, setBusca] = useState('');
+  const [doBanco, setDoBanco] = useState(null);
+  const [carregando, setCarregando] = useState(true);
+  const [erroCarga, setErroCarga] = useState('');
+
+  useEffect(() => {
+    let cancelado = false;
+    listarDecisoesGestao(Object.keys(DECISOES_GESTAO))
+      .then((linhas) => { if (!cancelado) setDoBanco(linhas); })
+      .catch((error) => { if (!cancelado) setErroCarga(error.message || String(error)); })
+      .finally(() => { if (!cancelado) setCarregando(false); });
+    return () => { cancelado = true; };
+  }, []);
 
   const registros = useMemo(() => {
     const faturas = new Map((state.faturas || []).map((f) => [f.id, f]));
-    return (state.historico || [])
+    // Junta o banco com o state (decisoes recem-tomadas nesta sessao), sem duplicar.
+    const porId = new Map();
+    [...(doBanco || []), ...(state.historico || [])].forEach((h) => { if (h?.id != null && !porId.has(h.id)) porId.set(h.id, h); });
+    return [...porId.values()]
       .filter((h) => DECISOES_GESTAO[h.acao])
       .map((h) => {
         const fatura = faturas.get(h.fatura_id) || {};
@@ -8684,7 +8700,7 @@ function HistoricoAprovacaoGestao({ state }) {
         };
       })
       .sort((a, b) => String(b.data).localeCompare(String(a.data)));
-  }, [state.historico, state.faturas]);
+  }, [doBanco, state.historico, state.faturas]);
 
   const unicos = (campo) => [...new Set(registros.map((r) => r[campo]).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   const filtrados = useMemo(() => {
@@ -8735,7 +8751,8 @@ function HistoricoAprovacaoGestao({ state }) {
         <table className="sim-analise-tabela">
           <thead><tr><th>Data</th><th>Fatura</th><th>Transportadora</th><th>Solicitante</th><th>Decisao</th><th>Valor</th><th>Decidido por</th><th>Justificativa / detalhe</th></tr></thead>
           <tbody>
-            {!filtrados.length && <tr><td colSpan={8}>Nenhuma decisao encontrada.</td></tr>}
+            {erroCarga && <tr><td colSpan={8} className="error-text">{erroCarga}</td></tr>}
+            {!filtrados.length && <tr><td colSpan={8}>{carregando ? 'Carregando decisoes...' : 'Nenhuma decisao encontrada.'}</td></tr>}
             {filtrados.map((r) => (
               <tr key={r.id}>
                 <td style={{ whiteSpace: 'nowrap' }}>{r.data ? new Date(r.data).toLocaleString('pt-BR') : '-'}</td>

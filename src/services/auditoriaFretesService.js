@@ -219,6 +219,27 @@ export async function carregarPlataformaAuditoria() {
   };
 }
 
+// Historico de decisoes da gestao direto do banco: o state.historico so tem os
+// 1000 eventos mais recentes da plataforma toda e as decisoes caiam fora.
+export async function listarDecisoesGestao(acoes = []) {
+  if (!isSupabaseConfigured() || !acoes.length) return [];
+  const client = getSupabaseClient();
+  const PAGE = 1000;
+  const linhas = [];
+  for (let inicio = 0; inicio < 50000; inicio += PAGE) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await client.from('auditoria_fatura_historico')
+      .select('*')
+      .in('acao', acoes)
+      .order('created_at', { ascending: false })
+      .range(inicio, inicio + PAGE - 1);
+    if (error) throw new Error(`Erro ao carregar decisoes da gestao: ${error.message}`);
+    linhas.push(...(data || []));
+    if (!data || data.length < PAGE) break;
+  }
+  return linhas;
+}
+
 export async function carregarPlataformaAuditoriaFinanceiro() {
   if (!isSupabaseConfigured()) return {};
   const [protocolos, solicitacaoHistorico, pagamentos] = await Promise.all([
