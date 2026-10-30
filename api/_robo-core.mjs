@@ -21939,6 +21939,7 @@ var init_authLocal = __esm({
       { chave: "painel-descontos-obtidos", label: "Central de Controle (produtividade e descontos)", grupo: "Financeiro" },
       { chave: "autorizacoes-transporte-b2c", label: "Autoriza\xE7\xF5es Transporte B2C", grupo: "Opera\xE7\xE3o" },
       { chave: "autorizacoes-transporte-atacado", label: "Autoriza\xE7\xF5es Transporte Atacado", grupo: "Opera\xE7\xE3o" },
+      { chave: "autorizacoes-transporte-lotacao", label: "Autoriza\xE7\xF5es Lota\xE7\xE3o", grupo: "Opera\xE7\xE3o" },
       { chave: "autorizacoes-suprimentos", label: "Autoriza\xE7\xF5es Suprimentos", grupo: "Opera\xE7\xE3o" },
       { chave: "consulta-ibge", label: "Consulta IBGE", grupo: "Cadastros" },
       { chave: "icms-uf", label: "Matriz ICMS UF", grupo: "Cadastros" },
@@ -26196,14 +26197,34 @@ async function carregarFluxoLotacaoAuditoria(supabase2) {
     if (dist && valor > 0) adicionaisPorDist.set(dist, (adicionaisPorDist.get(dist) || 0) + valor);
   });
   const porNumeroCte = /* @__PURE__ */ new Map();
+  const porId = /* @__PURE__ */ new Map();
   cargas.forEach((carga) => {
-    if (/CANCEL/i.test(String(carga.status || "")) || !(toNumber4(carga.frete_transp) > 0)) return;
+    if (/CANCEL/i.test(String(carga.status || ""))) return;
     const numeros = [...new Set(String(carga.cte || "").split(/[^0-9]+/).filter(Boolean).map((n) => String(Number(n))))];
-    if (!numeros.length) return;
     const item = { ...carga, numerosCte: numeros };
-    numeros.forEach((numero4) => porNumeroCte.set(numero4, [...porNumeroCte.get(numero4) || [], item]));
+    porId.set(String(carga.id), item);
+    if (toNumber4(carga.frete_transp) > 0) numeros.forEach((numero4) => porNumeroCte.set(numero4, [...porNumeroCte.get(numero4) || [], item]));
   });
-  const dados = { porNumeroCte, adicionaisPorDist };
+  const porDist = /* @__PURE__ */ new Map();
+  porId.forEach((carga) => {
+    const dist = normalizeText2(carga.dist);
+    if (dist) porDist.set(dist, porDist.has(dist) ? null : carga);
+  });
+  const cargaPorChaveCte = /* @__PURE__ */ new Map();
+  const { data: respostas } = await supabase2.from("audit_solicitacoes_informacao").select("chave_informada,carga_id,dist,status,resposta,resposta_operacao,justificativa_operacao,respondido_por_nome").in("status", ["RESPONDIDO_OPERACAO", "FINALIZADO", "TRATADO"]).neq("carga_id", "");
+  (respostas || []).forEach((r) => {
+    const chave = onlyDigits(r.chave_informada);
+    const carga = porId.get(String(r.carga_id)) || porDist.get(normalizeText2(r.dist));
+    if (chave.length === 44 && carga) {
+      cargaPorChaveCte.set(chave, {
+        ...carga,
+        respostaOperacao: [r.resposta_operacao || r.resposta, r.justificativa_operacao].filter(Boolean).join(" | "),
+        respondidoPor: r.respondido_por_nome || ""
+      });
+    }
+  });
+  const nomesTransportadoras = [...new Set(cargas.map((c) => String(c.transportadora || "").trim()).filter(Boolean))];
+  const dados = { porNumeroCte, adicionaisPorDist, cargaPorChaveCte, nomesTransportadoras };
   _cacheFluxoLotacao = { em: Date.now(), dados };
   return dados;
 }
@@ -26219,6 +26240,10 @@ function localizarViagemFluxoLotacao(cte = {}, contexto = null, mapaVinculos = n
   const fluxo = contexto?.fluxo;
   const numero4 = numeroDoCte(cte);
   if (!fluxo?.porNumeroCte?.size || !numero4) return null;
+  const vinculadaPelaOperacao = fluxo.cargaPorChaveCte?.get(pickDigits(cte, ["chave_cte", "chaveCte", "chave"], 0));
+  if (vinculadaPelaOperacao) {
+    return vinculadaPelaOperacao.numerosCte.includes(numero4) ? vinculadaPelaOperacao : { ...vinculadaPelaOperacao, numerosCte: [...vinculadaPelaOperacao.numerosCte, numero4] };
+  }
   const nomeBruto = pick(cte, ["transportadora", "nome_transportadora", "transportadora_realizada", "transportador"]);
   const nomes = [nomeBruto, aplicarVinculoTransportadora2(nomeBruto, mapaVinculos)].filter(Boolean);
   const emissao = dataEmissaoIsoCte(cte);
@@ -26267,6 +26292,7 @@ async function prepararFluxoLotacaoParaCtes(supabase2, contexto = null, ctes = [
 function calcularCtePeloFluxoLotacao(cte = {}, contexto = null, mapaVinculos = null) {
   const viagem = localizarViagemFluxoLotacao(cte, contexto, mapaVinculos);
   if (!viagem) return null;
+  if (!(toNumber4(viagem.frete_transp) > 0)) return calcularCteValidadoPelaOperacao(cte, viagem);
   const raiz = raizDaChaveCte(cte);
   const numero4 = numeroDoCte(cte);
   const valorCte = toNumber4(pick(cte, ["valor_cte", "valorCte", "valor_frete", "frete"]));
@@ -26322,12 +26348,52 @@ function calcularCtePeloFluxoLotacao(cte = {}, contexto = null, mapaVinculos = n
     percentual_diferenca: diferenca / valorFinal * 100
   };
 }
+function calcularCteValidadoPelaOperacao(cte = {}, viagem = {}) {
+  if (!viagem.respostaOperacao) return null;
+  const valorCte = toNumber4(pick(cte, ["valor_cte", "valorCte", "valor_frete", "frete"]));
+  if (!(valorCte > 0)) return null;
+  const base = montarResultadoBase(cte, "CALCULADO", "", {
+    transportadora_tabela: viagem.transportadora,
+    tipo_calculo: "LOTACAO",
+    detalhes_calculo: {
+      modalidade: "LOTACAO",
+      motor: "resposta_operacao_lotacao",
+      dist: viagem.dist,
+      carga_id: viagem.id,
+      origem_cidade: viagem.origem,
+      destino_cidade: viagem.destino,
+      tipo_veiculo: viagem.tipo_veiculo,
+      resposta_operacao: viagem.respostaOperacao,
+      respondido_por: viagem.respondidoPor,
+      observacao_lotacao: `Valor validado pela Opera\xE7\xE3o na resposta do questionamento (viagem ${viagem.dist} sem frete no fluxo).`
+    }
+  });
+  return { ...base, valor_calculado: valorCte, diferenca: 0, diferenca_abs: 0, percentual_diferenca: 0 };
+}
 function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracionado) {
   const porTabela = calcularCtePelaTabelaLotacao(cte, contexto, mapaVinculos);
   if (porTabela && toNumber4(porTabela.valor_calculado) > 0) return porTabela;
   const resultado = porTabela || calcularFracionado();
   if (toNumber4(resultado?.valor_calculado) > 0) return resultado;
-  return calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos) || resultado;
+  const peloFluxo = calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos);
+  if (peloFluxo) return peloFluxo;
+  return cteDeLotacao(cte, contexto, mapaVinculos, porTabela) ? marcarSemDistLotacao(resultado) : resultado;
+}
+function cteDeLotacao(cte, contexto, mapaVinculos, porTabela) {
+  if (porTabela) return true;
+  const canal2 = canalCategoria2(pick(cte, ["canal", "canal_original"]));
+  if (["INTERCOMPANY", "LOTACAO", "LOTA\xC7\xC3O"].includes(canal2)) return true;
+  const nomeBruto = pick(cte, ["transportadora", "nome_transportadora", "transportadora_realizada", "transportador"]);
+  const nomes = [nomeBruto, aplicarVinculoTransportadora2(nomeBruto, mapaVinculos)].filter(Boolean);
+  return (contexto?.fluxo?.nomesTransportadoras || []).some((nome) => transportadoraDoFluxoCompativel(nome, nomes));
+}
+function marcarSemDistLotacao(resultado = {}) {
+  return {
+    ...resultado,
+    status_calculo: "SEM_DIST_LOTACAO",
+    motivo_sem_calculo: "Lotacao: DIST nao localizada na tabela nem no fluxo de lotacao (pedir a viagem para a Operacao).",
+    detalhes_calculo: { ...resultado.detalhes_calculo || {}, modalidade: "LOTACAO", motivo_original: resultado.motivo_sem_calculo || "" }
+  };
 }
 function localizarTabelaLotacaoContexto(cte = {}, contexto = null, mapaVinculos = null) {
   if (!contexto?.tabelas?.length) return null;
@@ -27372,13 +27438,13 @@ var init_auditoriaCteProcessamentoService = __esm({
     _cacheFluxoLotacao = { em: 0, dados: null };
     STATUS_ADICIONAL_APROVADO = ["APROVADO", "APROVADO_OPERACAO"];
     raizDaChaveCte = (cte = {}) => {
-      const chave = pickDigits(cte, ["chave_cte", "chaveCte", "chave"]);
+      const chave = pickDigits(cte, ["chave_cte", "chaveCte", "chave"], 0);
       return chave.length === 44 ? chave.slice(6, 14) : "";
     };
     numeroDoCte = (cte = {}) => {
-      const numero4 = pickDigits(cte, ["numero_cte", "numeroCte", "cte", "nro_cte"]);
+      const numero4 = pickDigits(cte, ["numero_cte", "numeroCte", "cte", "nro_cte"], 0);
       if (numero4) return String(Number(numero4));
-      const chave = pickDigits(cte, ["chave_cte", "chaveCte", "chave"]);
+      const chave = pickDigits(cte, ["chave_cte", "chaveCte", "chave"], 0);
       return chave.length === 44 ? String(Number(chave.slice(25, 34))) : "";
     };
     _cacheLookupPorTransportadoras = /* @__PURE__ */ new WeakMap();
@@ -27690,20 +27756,6 @@ var init_auditoriaService = __esm({
   }
 });
 
-// src/utils/lotacaoFluxoCargas.js
-function limparTexto(valor = "") {
-  return String(valor ?? "").trim().replace(/\s+/g, " ");
-}
-function normalizarTexto2(valor = "") {
-  return limparTexto(valor).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/Ç/g, "C").replace(/ç/g, "c").replace(/\s+/g, " ").toUpperCase();
-}
-var init_lotacaoFluxoCargas = __esm({
-  "src/utils/lotacaoFluxoCargas.js"() {
-    "use strict";
-    init_define_import_meta_env();
-  }
-});
-
 // src/utils/correcoesCalculoFatura.js
 function parseDetalhesCalculoAuditoria(valor) {
   if (!valor) return {};
@@ -27916,13 +27968,13 @@ function classificarFatura(resumo, considerarMenor = false) {
     return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Auditoria incompleta: ${resumo.semCalculo || resumo.total - resumo.calculados} de ${resumo.total} CT-e(s) sem calculo${resumo.erroCalculo ? ` (erro no calculo: ${resumo.erroCalculo})` : resumo.motivoSemCalculo ? ` (${resumo.motivoSemCalculo})` : ""}.`, descontar };
   }
   if (descontar > 0) {
-    const brl = (v) => `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
+    const brl2 = (v) => `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
     const partes = [
       `${resumo.divergentes} de ${resumo.total} CT-e(s) divergente(s)`,
-      `cobranca acima ${brl(maior)}`,
-      menor > 0 ? `abaixo ${brl(menor)}` : "",
+      `cobranca acima ${brl2(maior)}`,
+      menor > 0 ? `abaixo ${brl2(menor)}` : "",
       resumo.pendentes > 0 ? `${resumo.pendentes} sem entrega comprovada` : "",
-      `a descontar ${brl(descontar)}`
+      `a descontar ${brl2(descontar)}`
     ].filter(Boolean);
     return { decisao: DECISAO.ENVIAR_LAUDO, motivo: `Laudo com desconto: ${partes.join(" \xB7 ")}.`, descontar };
   }
@@ -28089,63 +28141,99 @@ async function baixarEntregaContingencia(fatura, pendentes2 = []) {
     if (error) throw new Error(error.message);
   }
 }
-async function abrirSolicitacoesExcedenteLotacao(fatura, registros = []) {
-  const excedentes = registros.filter((r) => r?.detalhes_calculo?.motor === "fluxo_lotacao" && Number(r.detalhes_calculo.excedente_viagem || 0) > TOLERANCIA.acima);
+async function abrirAutorizacoesExcedenteLotacao(fatura, registros = []) {
+  const excedentes = registros.filter((r) => r?.detalhes_calculo?.motor === "fluxo_lotacao" && Number(r.detalhes_calculo.excedente_viagem || 0) > TOLERANCIA.acima && normalizarChaveCte(r.chave_cte).length === 44);
   if (!excedentes.length) return 0;
   const db = getSupabaseClient();
-  const dists = [...new Set(excedentes.map((r) => normalizarTexto2(r.detalhes_calculo.dist)))];
-  const { data: existentes, error } = await db.from("lotacao_solicitacoes").select("dist_key,cte").eq("tipo", "EXCEDENTE_AUDITORIA").in("dist_key", dists);
-  if (error) throw new Error(`Solicitacoes de lotacao: ${error.message}`);
-  const jaAbertas = new Set((existentes || []).map((s) => `${normalizarTexto2(s.dist_key)}|${soNumeroCte(s.cte)}`));
-  const agora = (/* @__PURE__ */ new Date()).toISOString();
-  const novas = excedentes.map((r) => {
+  const chaves = [...new Set(excedentes.map((r) => normalizarChaveCte(r.chave_cte)))];
+  const { data: existentes, error } = await db.from("transporte_autorizacoes").select("chave_cte").eq("ativo", true).eq("canal", "LOTACAO").in("chave_cte", chaves);
+  if (error) throw new Error(`Autorizacoes de lotacao: ${error.message}`);
+  const jaNaFila = new Set((existentes || []).map((a) => normalizarChaveCte(a.chave_cte)));
+  const novas = chaves.filter((c) => !jaNaFila.has(c)).map((chave) => {
+    const r = excedentes.find((x) => normalizarChaveCte(x.chave_cte) === chave);
     const d = r.detalhes_calculo;
-    const distKey = normalizarTexto2(d.dist);
-    const cte = soNumeroCte(r.numero_cte);
-    if (!distKey || !cte || jaAbertas.has(`${distKey}|${cte}`)) return null;
-    jaAbertas.add(`${distKey}|${cte}`);
-    const autorizado = Number(d.valor_autorizado_viagem || 0);
     const saldo = Number(d.saldo_antes_deste_cte || 0);
     const excedente = Number(d.excedente_viagem || 0);
     return {
-      id: `sol-robo-${globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`}`,
-      tipo: "EXCEDENTE_AUDITORIA",
-      origem_solicitacao: "AUDITORIA",
-      carga_id: String(d.carga_id || ""),
-      dist: String(d.dist || ""),
-      dist_key: distKey,
-      cte,
-      fatura: String(fatura.numero_fatura || ""),
-      transportadora: String(r.transportadora_tabela || fatura.transportadora || ""),
-      origem: String(d.origem_cidade || ""),
-      destino: String(d.destino_cidade || ""),
-      tipo_veiculo: String(d.tipo_veiculo || ""),
-      valor_autorizado_carga: autorizado,
-      total_anterior: Number((autorizado - saldo).toFixed(2)),
-      saldo_anterior: saldo,
-      valor_lancado: Number(r.valor_cte || 0),
-      excedente,
-      valor_adicional: excedente,
-      tipo_custo: "",
+      canal: "LOTACAO",
+      origem: "AUDITORIA",
       status: "PENDENTE",
-      observacao: `Aberta pelo Robo Auditor: CT-e ${cte} (fatura ${fatura.numero_fatura}) cobrou R$ ${Number(r.valor_cte || 0).toFixed(2)} com saldo de R$ ${saldo.toFixed(2)} na viagem ${d.dist}; excedente R$ ${excedente.toFixed(2)}.`,
-      resposta: "",
-      criado_em: agora,
-      atualizado_em: null
+      chave_cte: chave,
+      chave_nfe: normalizarChaveCte(r.chave_nfe) || null,
+      transportadora: r.transportadora_tabela || r.transportadora || fatura.transportadora || null,
+      cidade_origem: r.cidade_origem || d.origem_cidade || null,
+      cidade_destino: r.cidade_destino || d.destino_cidade || null,
+      valor_nf: Number(r.valor_nf || 0),
+      valor_cte: Number(r.valor_cte || 0),
+      valor_calculado: Number(r.valor_calculado || 0),
+      valor_divergente: excedente,
+      observacao_auditoria: `[ROBO] Viagem ${d.dist} (${d.origem_cidade || ""} -> ${d.destino_cidade || ""}, ${d.tipo_veiculo || ""}): valor da viagem ${brl(d.valor_autorizado_viagem)}, saldo antes deste CT-e ${brl(saldo)}, CT-e cobrou ${brl(r.valor_cte)}; excedente ${brl(excedente)}.`,
+      enviado_por: "Robo Auditor",
+      fatura_id: fatura.id || null
     };
-  }).filter(Boolean);
+  });
   if (novas.length) {
-    const { error: erroInsert } = await db.from("lotacao_solicitacoes").insert(novas);
-    if (erroInsert) throw new Error(`Abrir solicitacao de excedente: ${erroInsert.message}`);
+    const { error: erroInsert } = await db.from("transporte_autorizacoes").insert(novas);
+    if (erroInsert) throw new Error(`Enviar excedente para autorizacao: ${erroInsert.message}`);
   }
   return novas.length;
 }
+async function abrirQuestionamentosSemDistLotacao(fatura, registros = []) {
+  const semDist = registros.filter((r) => r?.status_calculo === "SEM_DIST_LOTACAO" && normalizarChaveCte(r.chave_cte).length === 44);
+  if (!semDist.length) return 0;
+  const db = getSupabaseClient();
+  const chaves = [...new Set(semDist.map((r) => normalizarChaveCte(r.chave_cte)))];
+  const { data: existentes, error } = await db.from("audit_solicitacoes_informacao").select("chave_informada").in("chave_informada", chaves);
+  if (error) throw new Error(`Questionamentos de lotacao: ${error.message}`);
+  const jaAbertos = new Set((existentes || []).map((q) => normalizarChaveCte(q.chave_informada)));
+  const agora = (/* @__PURE__ */ new Date()).toISOString();
+  const novos = chaves.filter((c) => !jaAbertos.has(c)).map((chave) => {
+    const r = semDist.find((x) => normalizarChaveCte(x.chave_cte) === chave);
+    const descricao = [
+      "Questionamento para Opera\xE7\xE3o \u2014 Auditoria Lota\xE7\xE3o",
+      "",
+      `Motivo principal: CT-e de lota\xE7\xE3o sem DIST/viagem na tabela de lota\xE7\xE3o nem no fluxo de cargas${r.detalhes_calculo?.motivo_original ? ` (${r.detalhes_calculo.motivo_original})` : ""}.`,
+      "Observa\xE7\xE3o do auditor: INFORMAR DIST OU PEDIDO (aberto automaticamente pelo Rob\xF4 Auditor)",
+      "",
+      "Dados do CT-e encontrado na base:",
+      `- Chave CT-e: ${chave}`,
+      `- N\xFAmero CT-e: ${r.numero_cte || ""}`,
+      `- Transportadora CT-e: ${r.transportadora || ""}`,
+      `- Fatura: ${fatura.numero_fatura || ""}`,
+      `- Origem: ${r.cidade_origem || ""}/${r.uf_origem || ""}`,
+      `- Destino: ${r.cidade_destino || ""}/${r.uf_destino || ""}`,
+      `- Emiss\xE3o: ${dataBr(r.data_emissao)}`,
+      `- Valor CT-e: ${brl(r.valor_cte)}`,
+      `- Peso: ${Number(r.peso || 0).toLocaleString("pt-BR")} kg`,
+      `- Canal/Opera\xE7\xE3o: ${r.canal || ""}`
+    ].join("\n");
+    return {
+      id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `quest-robo-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      tipo: "CTE",
+      chave_informada: chave,
+      numero_informado: String(r.numero_cte || ""),
+      transportadora: String(r.transportadora || ""),
+      fatura: String(fatura.numero_fatura || ""),
+      descricao_problema: descricao,
+      prioridade: "ALTA",
+      status: "AGUARDANDO_INFORMACAO",
+      aberto_por_nome: "Robo Auditor",
+      created_at: agora,
+      updated_at: agora
+    };
+  });
+  if (novos.length) {
+    const { error: erroInsert } = await db.from("audit_solicitacoes_informacao").insert(novos);
+    if (erroInsert) throw new Error(`Abrir questionamento para a operacao: ${erroInsert.message}`);
+  }
+  return novos.length;
+}
 async function excedentesLotacaoPendentes(fatura, lista = []) {
-  const ctes = new Set(lista.map((i) => soNumeroCte(i.numero_cte)).filter(Boolean));
-  if (!ctes.size || !fatura?.numero_fatura) return 0;
-  const { data, error } = await getSupabaseClient().from("lotacao_solicitacoes").select("cte,status").eq("tipo", "EXCEDENTE_AUDITORIA").eq("fatura", String(fatura.numero_fatura));
+  const chaves = [...new Set(lista.map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => c.length === 44))];
+  if (!chaves.length) return 0;
+  const { data, error } = await getSupabaseClient().from("transporte_autorizacoes").select("chave_cte").eq("ativo", true).eq("canal", "LOTACAO").eq("status", "PENDENTE").in("chave_cte", chaves);
   if (error) return 0;
-  return (data || []).filter((s) => ctes.has(soNumeroCte(s.cte)) && !STATUS_SOLICITACAO_DECIDIDA.includes(String(s.status || "").toUpperCase())).length;
+  return new Set((data || []).map((a) => a.chave_cte)).size;
 }
 async function apurarFaturaRobo(fatura, aoProgredir = () => {
 }, { prazoFinal = 0, calcular = true, recalcularTudo = false, bloco = 100, limiteBlocoMs = 0, pesoMaisProximo = true } = {}) {
@@ -28155,6 +28243,7 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
   let calculou = false;
   let erroCalculo = "";
   let falhasCalculo = 0;
+  let falhaFilaLotacao = "";
   const precisaCalcular = (i) => recalcularTudo || !(Number(i.calculado_frete || 0) > 0);
   if (calcular && lista.length && lista.some(precisaCalcular)) {
     entrarCacheCalculo(prazoFinal ? 54e4 : 18e4);
@@ -28197,9 +28286,14 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
             await salvarRecorteCarregadoAuditoria({ competencia, registros, atualizarResumoMensal: false });
             calculou = true;
             try {
-              await abrirSolicitacoesExcedenteLotacao(fatura, registros);
+              await abrirAutorizacoesExcedenteLotacao(fatura, registros);
             } catch (e) {
-              console.warn("[robo] solicitacao de excedente:", e?.message || e);
+              falhaFilaLotacao = String(e?.message || e).slice(0, 140);
+            }
+            try {
+              await abrirQuestionamentosSemDistLotacao(fatura, registros);
+            } catch (e) {
+              console.warn("[robo] questionamento para a operacao:", e?.message || e);
             }
           }
         } catch (e) {
@@ -28230,11 +28324,13 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
   } catch {
   }
   const excedentesLotacao = await excedentesLotacaoPendentes(fatura, lista);
-  return { ...r, entregues, pendentes: pendentes2, erroCalculo, falhasCalculo, excedentesLotacao };
+  return { ...r, entregues, pendentes: pendentes2, erroCalculo, falhasCalculo, excedentesLotacao, falhaFilaLotacao };
 }
 function aguardarOperacaoLotacao(c, resumo) {
-  if (!(resumo?.excedentesLotacao > 0) || c.decisao === DECISAO.REVISAO_AUDITOR) return c;
-  return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Aguardando aprovacao da operacao: ${resumo.excedentesLotacao} excedente(s) de lotacao acima do saldo da DIST.`, descontar: c.descontar };
+  if (c.decisao === DECISAO.REVISAO_AUDITOR) return c;
+  if (resumo?.falhaFilaLotacao) return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Excedente de lotacao nao entrou em Autorizacoes Lotacao (${resumo.falhaFilaLotacao}).`, descontar: c.descontar };
+  if (!(resumo?.excedentesLotacao > 0)) return c;
+  return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Aguardando a Operacao Lotacao autorizar ${resumo.excedentesLotacao} excedente(s) acima do saldo da DIST (Autorizacoes Lotacao).`, descontar: c.descontar };
 }
 async function enviarFaturaParaGestaoRobo(db, fatura, resumo, { usuario = "Robo Auditor", origem = "automatico" } = {}) {
   const { data: atual, error: erroLeitura } = await db.from("faturas").select("id,status").eq("id", fatura.id).maybeSingle();
@@ -28385,7 +28481,7 @@ function escolherPesoMaisProximo(registrosCte = [], registrosTracking = []) {
   const porChave = new Map(registrosTracking.map((r) => [normalizarChaveCte(r.chave_cte), r]));
   return registrosCte.map((r) => escolherMaiorPeso(r, porChave.get(normalizarChaveCte(r.chave_cte))).registro);
 }
-var TOLERANCIA, dentroDaTolerancia, JUSTIFICATIVA_CONTINGENCIA, STATUS_SOLICITACAO_DECIDIDA, soNumeroCte, normalizarNomeAuditor;
+var TOLERANCIA, dentroDaTolerancia, JUSTIFICATIVA_CONTINGENCIA, brl, dataBr, normalizarNomeAuditor;
 var init_auditoriaRoboCore = __esm({
   "src/utils/auditoriaRoboCore.js"() {
     init_define_import_meta_env();
@@ -28398,14 +28494,16 @@ var init_auditoriaRoboCore = __esm({
     init_freteDatabaseService();
     init_auditoriaService();
     init_auditoriaFretesDomain();
-    init_lotacaoFluxoCargas();
     init_correcoesCalculoFatura();
     init_auditorRoboService();
     TOLERANCIA = { acima: 1, abaixo: 5 };
     dentroDaTolerancia = (dif) => Number.isFinite(Number(dif)) && Number(dif) <= TOLERANCIA.acima && Number(dif) >= -TOLERANCIA.abaixo;
     JUSTIFICATIVA_CONTINGENCIA = "Liberado em contingencia";
-    STATUS_SOLICITACAO_DECIDIDA = ["APROVADO", "APROVADO_OPERACAO", "RECUSADO", "FINALIZADO", "CANCELADO"];
-    soNumeroCte = (v) => String(Number(String(v || "").replace(/\D/g, "")) || "");
+    brl = (v) => `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
+    dataBr = (v) => {
+      const t = String(v || "").slice(0, 10);
+      return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t.split("-").reverse().join("/") : "";
+    };
     normalizarNomeAuditor = (v) => String(v || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase().replace(/\s+/g, " ");
   }
 });
