@@ -1052,7 +1052,210 @@ async function carregarContextoLotacaoAuditoria(supabase, mapaVinculos = null) {
     tabelas: tabelasValidas.map((tabela) => ({ ...tabela, rotas: rotasPorTabela.get(tabela.id) || [] })),
     origensFracionadoPorNome,
     mapaVinculos,
+    fluxo: await carregarFluxoLotacaoAuditoria(supabase),
   };
+}
+
+// ─── Fluxo de lotação (lotacao_cargas) ─────────────────────────────────────
+// Viagens da operação (planilha "FLUXO CARGA LOTAÇÃO" / Lotação nativa) com os
+// CT-es emitidos e o frete combinado com a transportadora. Quando a rota não
+// está na tabela de lotação (ou a transportadora nem tem tabela — transferência
+// spot), o valor combinado da viagem é o que audita o CT-e. Uma viagem (DIST) pode
+// ter vários CT-es (às vezes em faturas diferentes): funciona como saldo — na ordem
+// de emissão, cada CT-e consome o que cobrou até o saldo acabar; o que passar vira
+// excedente daquele CT-e (vai para aprovação). Excedente aprovado pela operação
+// (lotacao_solicitacoes) aumenta o saldo da viagem.
+let _cacheFluxoLotacao = { em: 0, dados: null };
+const STATUS_ADICIONAL_APROVADO = ['APROVADO', 'APROVADO_OPERACAO', 'FINALIZADO'];
+
+async function carregarFluxoLotacaoAuditoria(supabase) {
+  if (_cacheFluxoLotacao.dados && Date.now() - _cacheFluxoLotacao.em < 5 * 60 * 1000) return _cacheFluxoLotacao.dados;
+  const cargas = [];
+  for (let pagina = 0; ; pagina += 1) {
+    const { data, error } = await supabase
+      .from('lotacao_cargas')
+      .select('id,dist,cte,transportadora,origem,uf_origem,destino,uf_destino,tipo_veiculo,frete_transp,pedagio,status,coleta_planejada,coleta_realizada,emissao_nf')
+      .range(pagina * PAGE_SIZE, (pagina + 1) * PAGE_SIZE - 1);
+    if (error) return { porNumeroCte: new Map(), adicionaisPorDist: new Map() };
+    cargas.push(...(data || []));
+    if ((data || []).length < PAGE_SIZE) break;
+  }
+  const adicionaisPorDist = new Map();
+  const { data: solicitacoes } = await supabase
+    .from('lotacao_solicitacoes')
+    .select('dist_key,dist,status,valor_adicional')
+    .in('status', STATUS_ADICIONAL_APROVADO);
+  (solicitacoes || []).forEach((s) => {
+    const dist = normalizeText(s.dist_key || s.dist);
+    if (dist && toNumber(s.valor_adicional) > 0) adicionaisPorDist.set(dist, (adicionaisPorDist.get(dist) || 0) + toNumber(s.valor_adicional));
+  });
+  const porNumeroCte = new Map();
+  cargas.forEach((carga) => {
+    if (/CANCEL/i.test(String(carga.status || '')) || !(toNumber(carga.frete_transp) > 0)) return;
+    const numeros = [...new Set(String(carga.cte || '').split(/[^0-9]+/).filter(Boolean).map((n) => String(Number(n))))];
+    if (!numeros.length) return;
+    const item = { ...carga, numerosCte: numeros };
+    numeros.forEach((numero) => porNumeroCte.set(numero, [...(porNumeroCte.get(numero) || []), item]));
+  });
+  const dados = { porNumeroCte, adicionaisPorDist };
+  _cacheFluxoLotacao = { em: Date.now(), dados };
+  return dados;
+}
+
+// Nome curto do fluxo ("TRANSGP", "1500", "CLC", "TRANSGP/SCAPINI") contra o nome do CT-e
+// (bruto e pelo vínculo de Ferramentas): igualdade/contém como nas tabelas ou palavra inteira.
+function transportadoraDoFluxoCompativel(nomeFluxo, nomesCte = []) {
+  const partes = String(nomeFluxo || '').split(/[/()]/).map((p) => normalizeTransportadoraCompare(p)).filter((p) => p.length >= 3);
+  return partes.some((parte) => nomesCte.some((nome) => {
+    const cte = normalizeTransportadoraCompare(nome);
+    if (!cte) return false;
+    return nomeCompativel(parte, nome) || ` ${cte} `.includes(` ${parte} `) || cte.replace(/\s+/g, '').startsWith(parte.replace(/\s+/g, ''));
+  }));
+}
+
+const raizDaChaveCte = (cte = {}) => {
+  const chave = pickDigits(cte, ['chave_cte', 'chaveCte', 'chave']);
+  return chave.length === 44 ? chave.slice(6, 14) : '';
+};
+const numeroDoCte = (cte = {}) => {
+  const numero = pickDigits(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']);
+  if (numero) return String(Number(numero));
+  const chave = pickDigits(cte, ['chave_cte', 'chaveCte', 'chave']);
+  return chave.length === 44 ? String(Number(chave.slice(25, 34))) : '';
+};
+
+// Viagem do fluxo deste CT-e: mesmo numero de CT-e, transportadora compativel, data
+// proxima da emissao (numero de CT-e repete entre transportadoras/series). Mais de
+// uma viagem possivel e nenhuma bate origem/destino: nao chuta.
+function localizarViagemFluxoLotacao(cte = {}, contexto = null, mapaVinculos = null) {
+  const fluxo = contexto?.fluxo;
+  const numero = numeroDoCte(cte);
+  if (!fluxo?.porNumeroCte?.size || !numero) return null;
+  const nomeBruto = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);
+  const nomes = [nomeBruto, aplicarVinculoTransportadora(nomeBruto, mapaVinculos)].filter(Boolean);
+  const emissao = dataEmissaoIsoCte(cte);
+  const dias = (a, b) => Math.abs(new Date(a).getTime() - new Date(b).getTime()) / 86400000;
+  let candidatas = (fluxo.porNumeroCte.get(numero) || []).filter((carga) => transportadoraDoFluxoCompativel(carga.transportadora, nomes));
+  candidatas = candidatas.filter((carga) => {
+    const dataCarga = String(carga.emissao_nf || carga.coleta_realizada || carga.coleta_planejada || '').slice(0, 10);
+    return !emissao || !dataCarga || dias(emissao, dataCarga) <= 20;
+  });
+  const distintas = [...new Map(candidatas.map((c) => [c.id, c])).values()];
+  if (distintas.length <= 1) return distintas[0] || null;
+  const origem = normalizeCompare(pick(cte, ['cidade_origem', 'cidadeOrigem', 'origem']));
+  const destino = normalizeCompare(pick(cte, ['cidade_destino', 'cidadeDestino', 'destino']));
+  const porRota = distintas.filter((c) => normalizeCompare(c.destino) === destino || normalizeCompare(c.origem) === origem);
+  return porRota.length === 1 ? porRota[0] : null;
+}
+
+// Antes do calculo: carrega valor cobrado e emissao dos outros CT-es de cada viagem (para o saldo).
+async function prepararFluxoLotacaoParaCtes(supabase, contexto = null, ctes = [], mapaVinculos = null) {
+  if (!contexto?.fluxo?.porNumeroCte?.size) return;
+  const valores = contexto.valoresCteFluxo || new Map();
+  const pendentes = new Map();
+  (ctes || []).forEach((cte) => {
+    const raiz = raizDaChaveCte(cte);
+    const numero = numeroDoCte(cte);
+    if (raiz && numero) valores.set(`${raiz}|${numero}`, { valor: toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete'])), emissao: dataEmissaoIsoCte(cte) });
+  });
+  (ctes || []).forEach((cte) => {
+    const raiz = raizDaChaveCte(cte);
+    const viagem = raiz ? localizarViagemFluxoLotacao(cte, contexto, mapaVinculos) : null;
+    (viagem?.numerosCte || []).forEach((numero) => {
+      if (!valores.has(`${raiz}|${numero}`)) pendentes.set(`${raiz}|${numero}`, { raiz, numero });
+    });
+  });
+  const numeros = [...new Set([...pendentes.values()].map((p) => p.numero))];
+  for (let inicio = 0; inicio < numeros.length; inicio += 200) {
+    const { data, error } = await supabase.from(TABELA_CTES).select('chave_cte,numero_cte,valor_cte,data_emissao').in('numero_cte', numeros.slice(inicio, inicio + 200));
+    if (error) break;
+    (data || []).forEach((row) => {
+      const chave = onlyDigits(row.chave_cte);
+      if (chave.length !== 44) return;
+      const chaveMapa = `${chave.slice(6, 14)}|${String(Number(onlyDigits(row.numero_cte)))}`;
+      if (pendentes.has(chaveMapa)) valores.set(chaveMapa, { valor: toNumber(row.valor_cte), emissao: dataEmissaoIsoCte(row) });
+    });
+  }
+  contexto.valoresCteFluxo = valores;
+}
+
+export function calcularCtePeloFluxoLotacao(cte = {}, contexto = null, mapaVinculos = null) {
+  const viagem = localizarViagemFluxoLotacao(cte, contexto, mapaVinculos);
+  if (!viagem) return null;
+  const raiz = raizDaChaveCte(cte);
+  const numero = numeroDoCte(cte);
+  const valorCte = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
+  const emissaoCte = dataEmissaoIsoCte(cte);
+  // CT-es da viagem ja emitidos (os que ainda nao estao na base nao consumiram saldo).
+  const ctesViagem = viagem.numerosCte
+    .map((n) => (n === numero ? { numero: n, valor: valorCte, emissao: emissaoCte } : { numero: n, ...(contexto.valoresCteFluxo?.get(`${raiz}|${n}`) || {}) }))
+    .filter((item) => item.valor !== undefined);
+  const adicionais = toNumber(contexto.fluxo.adicionaisPorDist.get(normalizeText(viagem.dist)));
+  const pedagio = toNumber(viagem.pedagio);
+  let autorizado = toNumber(viagem.frete_transp) + adicionais;
+  const cobradoViagem = ctesViagem.reduce((acc, item) => acc + toNumber(item.valor), 0);
+  // O frete do fluxo vem sem pedágio; viagem que cobrou o pedágio junto não é cobrança a maior.
+  const pedagioIncluido = pedagio > 0 && cobradoViagem > autorizado + 0.01 && cobradoViagem <= autorizado + pedagio + 0.5;
+  if (pedagioIncluido) autorizado += pedagio;
+  // Saldo: na ordem de emissao (empate pelo numero), cada CT-e anterior consome o que cobrou.
+  const ordenados = ctesViagem.slice().sort((a, b) => String(a.emissao || '').localeCompare(String(b.emissao || '')) || Number(a.numero) - Number(b.numero));
+  let saldo = autorizado;
+  for (const item of ordenados) {
+    if (item.numero === numero) break;
+    saldo -= Math.min(toNumber(item.valor), Math.max(saldo, 0));
+  }
+  const saldoAntes = Math.max(Number(saldo.toFixed(2)), 0);
+  const valorCalculado = Number(Math.min(valorCte, saldoAntes).toFixed(2));
+  const excedente = Number((valorCte - valorCalculado).toFixed(2));
+  if (!(valorCalculado > 0) && !(excedente > 0)) return null;
+  const base = montarResultadoBase(cte, 'CALCULADO', '', {
+    transportadora_tabela: viagem.transportadora,
+    tipo_calculo: 'LOTACAO',
+    detalhes_calculo: {
+      modalidade: 'LOTACAO',
+      motor: 'fluxo_lotacao',
+      dist: viagem.dist,
+      carga_id: viagem.id,
+      origem_cidade: viagem.origem,
+      destino_cidade: viagem.destino,
+      tipo_veiculo: viagem.tipo_veiculo,
+      frete_viagem: toNumber(viagem.frete_transp),
+      adicionais_aprovados: adicionais,
+      pedagio,
+      pedagio_incluido: pedagioIncluido,
+      valor_autorizado_viagem: autorizado,
+      ctes_viagem: viagem.numerosCte,
+      ctes_viagem_emitidos: ordenados.map((item) => ({ numero: item.numero, valor: item.valor, emissao: item.emissao || null })),
+      valor_cobrado_viagem: Number(cobradoViagem.toFixed(2)),
+      saldo_antes_deste_cte: saldoAntes,
+      excedente_viagem: excedente,
+      observacao_lotacao: excedente > 0
+        ? `CT-e passa ${excedente.toFixed(2)} do saldo da viagem ${viagem.dist}: enviar o excedente para aprovacao.`
+        : '',
+    },
+  });
+  // Saldo zerado (viagem ja consumida por outros CT-es): calculado 0 ficaria "sem calculo";
+  // o valor auditado e 0,01 para o CT-e aparecer como divergente (excedente integral).
+  const valorFinal = valorCalculado > 0 ? valorCalculado : 0.01;
+  const diferenca = base.valor_cte - valorFinal;
+  return {
+    ...base,
+    valor_calculado: valorFinal,
+    diferenca,
+    diferenca_abs: Math.abs(diferenca),
+    percentual_diferenca: (diferenca / valorFinal) * 100,
+  };
+}
+
+// Tabela de lotação primeiro; depois o fracionado. Se nenhum dos dois calculou
+// (rota fora da tabela de lotação, transportadora sem tabela, origem/rota fora do
+// fracionado), usa o valor combinado da viagem no fluxo de lotação.
+function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracionado) {
+  const porTabela = calcularCtePelaTabelaLotacao(cte, contexto, mapaVinculos);
+  if (porTabela && toNumber(porTabela.valor_calculado) > 0) return porTabela;
+  const resultado = porTabela || calcularFracionado();
+  if (toNumber(resultado?.valor_calculado) > 0) return resultado;
+  return calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos) || resultado;
 }
 
 function localizarTabelaLotacaoContexto(cte = {}, contexto = null, mapaVinculos = null) {
@@ -2037,16 +2240,17 @@ export async function resimularRegistros({ registros, transportadorasAlvo, onPro
   ));
   const transportadoraAlvo = alvosNormalizados.length === 1 ? alvosNormalizados[0] : '';
 
-  if (!transportadoras.length && !contextoLotacao.tabelas.length) {
+  if (!transportadoras.length && !contextoLotacao.tabelas.length && !contextoLotacao.fluxo?.porNumeroCte?.size) {
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para resimular.');
   }
 
+  await prepararFluxoLotacaoParaCtes(ensureSupabase(), contextoLotacao, registrosParaCalcular, mapaVinculos);
   const out = [];
   for (let index = 0; index < registros.length; index += 1) {
     const original = registros[index] || {};
     const paraCalculo = registrosParaCalcular[index] || original;
-    const novo = calcularCtePelaTabelaLotacao(paraCalculo, contextoLotacao, mapaVinculos)
-      || processarCte(paraCalculo, transportadoras, mapaVinculos, transportadoraAlvo, { ignorarCubagem, percentualContingenciaPeso });
+    const novo = calcularLotacaoOuFracionado(paraCalculo, contextoLotacao, mapaVinculos,
+      () => processarCte(paraCalculo, transportadoras, mapaVinculos, transportadoraAlvo, { ignorarCubagem, percentualContingenciaPeso }));
 
     const temVerum = original.valor_calculado_verum !== undefined && original.valor_calculado_verum !== null;
     const verum = temVerum ? toNumber(original.valor_calculado_verum) : novo.valor_calculado_verum;
@@ -2399,7 +2603,7 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
   }
   const transportadoras = _cacheBaseFrete;
 
-  if (!transportadoras.length && !contextoLotacao.tabelas.length) {
+  if (!transportadoras.length && !contextoLotacao.tabelas.length && !contextoLotacao.fluxo?.porNumeroCte?.size) {
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para processar a auditoria.');
   }
 
@@ -2419,12 +2623,11 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
   }
 
   const registros = [];
+  await prepararFluxoLotacaoParaCtes(supabase, contextoLotacao, ctes, mapaVinculos);
 
   for (let index = 0; index < ctes.length; index += 1) {
-    registros.push(
-      calcularCtePelaTabelaLotacao(ctes[index], contextoLotacao, mapaVinculos)
-      || processarCte(ctes[index], transportadoras, mapaVinculos, '', { ignorarCubagem, percentualContingenciaPeso })
-    );
+    registros.push(calcularLotacaoOuFracionado(ctes[index], contextoLotacao, mapaVinculos,
+      () => processarCte(ctes[index], transportadoras, mapaVinculos, '', { ignorarCubagem, percentualContingenciaPeso })));
 
     if (index % 500 === 0 || index === ctes.length - 1) {
       onProgress?.({ etapa: 'processando_ctes', carregados: index + 1, total: ctes.length });
@@ -2576,7 +2779,7 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
   });
   const transportadoras = await carregarBaseFreteParaRegistros(ctesParaBuscaBase, onProgress, [], mapaVinculos);
   verificarCancelamento();
-  if (!transportadoras.length && !contextoLotacao.tabelas.length) {
+  if (!transportadoras.length && !contextoLotacao.tabelas.length && !contextoLotacao.fluxo?.porNumeroCte?.size) {
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para recalcular.');
   }
 
@@ -2631,6 +2834,7 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
   onProgress?.({ etapa: 'calculando_amd', carregados: 0, total: ctesUnicos.length });
   await cederThread();
 
+  await prepararFluxoLotacaoParaCtes(supabase, contextoLotacao, ctesParaCalculo, mapaVinculos);
   const registros = [];
   for (let index = 0; index < ctesUnicos.length; index += 1) {
     verificarCancelamento();
@@ -2754,13 +2958,12 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
       };
       ignorarCubagemFinal = true;
     }
-    const registroBase = calcularCtePelaTabelaLotacao(cteFinal, contextoLotacao, mapaVinculos)
-      || processarCte(cteFinal, transportadoras, mapaVinculos, '', {
+    const registroBase = calcularLotacaoOuFracionado(cteFinal, contextoLotacao, mapaVinculos, () => processarCte(cteFinal, transportadoras, mapaVinculos, '', {
       ...opcoesCalculo,
       ignorarCubagem: ignorarCubagemFinal,
       percentualContingenciaPeso: (pesoOverride > 0 || aplicaModoTracking) ? 0 : opcoesCalculo.percentualContingenciaPeso,
       pesoForcado: aplicaModoTracking,
-      });
+    }));
     // A grade da fatura le `peso`; no modo Tracking ele precisa refletir o peso
     // realmente usado no calculo (cubado), nao so o peso fisico do Tracking.
     const pesoUsadoModo = toNumber(registroBase.detalhes_calculo?.peso_considerado);
