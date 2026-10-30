@@ -2147,12 +2147,15 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
       // HUB não calculou (rota/cotação ausente): segue pela origem local.
     }
   }
+  // Checagem de canal no resultado FINAL (simulador ou contingência).
+  const resultado = processarCteSemChecagemCanal(cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
+  return anexarCanalCobradoDivergente(resultado, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
+}
+
+function processarCteSemChecagemCanal(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '', opcoes = {}) {
   const resultadoSimulador = processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
-  if (resultadoSimulador && opcoes?.semComparativoPesos) return anexarCanalCobradoDivergente(resultadoSimulador, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
-  if (resultadoSimulador) {
-    const comPesos = anexarComparativoPesos(resultadoSimulador, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
-    return anexarCanalCobradoDivergente(comPesos, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
-  }
+  if (resultadoSimulador && opcoes?.semComparativoPesos) return resultadoSimulador;
+  if (resultadoSimulador) return anexarComparativoPesos(resultadoSimulador, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
 
   // Contingência (ex.: CT-e sem peso): a tabela TRANSFERENCIA só vale pra CT-e
   // de transferência — sem este filtro ela entrava como candidata comum.
@@ -2299,7 +2302,7 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
     // Reajuste com vigência: a data de emissão decide quais tabelas concorrem.
     const { entradas: entradasVigentes, porVigencia } = aplicarVigenciaNoGrupo(entradasVinculadas, dataEmissaoIsoCte(cte));
     const candidatos = entradasVigentes.map((entrada) => {
-      const calculadoTabela = processarCte(cteCalculo, [entrada], mapaVinculos, entrada.nome, opcoes);
+      const calculadoTabela = processarCteSemChecagemCanal(cteCalculo, [entrada], mapaVinculos, entrada.nome, opcoes);
       if (calculadoTabela?.status_calculo !== 'CALCULADO' || !(Number(calculadoTabela.valor_calculado) > 0)) return null;
       if (calculadoTabela.detalhes_calculo?.calculo_devolucao_invertida) return null;
       const detalhesTabela = calculadoTabela.detalhes_calculo || {};

@@ -2968,11 +2968,9 @@ function TabelaHubOrigem({ transportadoraId, origem, store, podeEditar }) {
   React.useEffect(() => { setHubForm(inicial()); setHubFeedback({ tipo: '', texto: '' }); }, [origem]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const salvarHub = async () => {
+    // Cidades de emissão são opcionais: sem elas a HUB só leva o custo de
+    // transferência pras simulações (CT-e já vem emitido com a cidade do HUB).
     const cidades = hubForm.cidades.split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean);
-    if (hubForm.hub && !cidades.length) {
-      setHubFeedback({ tipo: 'erro', texto: 'Informe ao menos uma cidade de emissão do CT-e.' });
-      return;
-    }
     setSalvando(true);
     const resultado = await store.salvarHubOrigem(transportadoraId, origem.id, {
       hub: hubForm.hub,
@@ -2998,7 +2996,7 @@ function TabelaHubOrigem({ transportadoraId, origem, store, podeEditar }) {
       {hubForm.hub ? (
         <div className="form-grid three">
           <div className="field">
-            <label>Cidades de emissão do CT-e *</label>
+            <label>Cidades de emissão do CT-e (se emitir em outra cidade)</label>
             <input value={hubForm.cidades} placeholder="Ex.: Itupeva (ou IBGE 3524006)" disabled={!podeEditar} onChange={(e) => { setHubForm((prev) => ({ ...prev, cidades: e.target.value })); setHubFeedback({ tipo: '', texto: '' }); }} />
           </div>
           <div className="field">
@@ -3013,7 +3011,7 @@ function TabelaHubOrigem({ transportadoraId, origem, store, podeEditar }) {
       ) : null}
       {hubForm.hub ? (
         <div className="mini-feedback info top-space">
-          Auditoria: CT-e emitido nessas cidades, no canal desta origem, é calculado por esta tabela (mesmo existindo origem local). O custo de transferência não entra na Auditoria, só nas simulações e comparativos.
+          Auditoria: CT-e emitido nas cidades informadas, no canal desta origem, é calculado por esta tabela (mesmo existindo origem local). Sem cidade informada, a Auditoria segue normal. O custo de transferência não entra na Auditoria, só nas simulações e comparativos.
         </div>
       ) : null}
       <div className="actions-right top-space" style={{ alignItems: 'center', gap: 12 }}>
