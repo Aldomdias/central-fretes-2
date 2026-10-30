@@ -5,11 +5,20 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+var __esm = (fn, res, err) => function __init() {
+  if (err) throw err[0];
+  try {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  } catch (e) {
+    throw err = [e], e;
+  }
 };
 var __commonJS = (cb, mod) => function __require() {
-  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
 };
 var __export = (target, all) => {
   for (var name in all)
@@ -50,7 +59,7 @@ var EXTRACTOR_KEY;
 var init_tracingRegistry = __esm({
   "node_modules/@supabase/supabase-js/dist/tracingRegistry.mjs"() {
     init_define_import_meta_env();
-    EXTRACTOR_KEY = Symbol.for("@supabase/supabase-js.traceContextExtractor");
+    EXTRACTOR_KEY = /* @__PURE__ */ Symbol.for("@supabase/supabase-js.traceContextExtractor");
   }
 });
 
@@ -513,7 +522,7 @@ var init_tslib_es6 = __esm({
       };
       return __assign.apply(this, arguments);
     };
-    __createBinding = Object.create ? function(o, m, k, k2) {
+    __createBinding = Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
       var desc = Object.getOwnPropertyDescriptor(m, k);
       if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
@@ -522,13 +531,13 @@ var init_tslib_es6 = __esm({
         } };
       }
       Object.defineProperty(o, k2, desc);
-    } : function(o, m, k, k2) {
+    }) : (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
       o[k2] = m[k];
-    };
-    __setModuleDefault = Object.create ? function(o, v) {
+    });
+    __setModuleDefault = Object.create ? (function(o, v) {
       Object.defineProperty(o, "default", { enumerable: true, value: v });
-    } : function(o, v) {
+    }) : function(o, v) {
       o["default"] = v;
     };
     ownKeys = function(o) {
@@ -5167,17 +5176,24 @@ var require_transformers = __commonJS({
           return (0, exports.toJson)(value);
         case PostgresTypes.timestamp:
           return (0, exports.toTimestampString)(value);
+        // Format to be consistent with PostgREST
         case PostgresTypes.abstime:
+        // To allow users to cast it based on Timezone
         case PostgresTypes.date:
+        // To allow users to cast it based on Timezone
         case PostgresTypes.daterange:
         case PostgresTypes.int4range:
         case PostgresTypes.int8range:
         case PostgresTypes.money:
         case PostgresTypes.reltime:
+        // To allow users to cast it based on Timezone
         case PostgresTypes.text:
         case PostgresTypes.time:
+        // To allow users to cast it based on Timezone
         case PostgresTypes.timestamptz:
+        // To allow users to cast it based on Timezone
         case PostgresTypes.timetz:
+        // To allow users to cast it based on Timezone
         case PostgresTypes.tsrange:
         case PostgresTypes.tstzrange:
           return noop(value);
@@ -9014,9 +9030,9 @@ var require_RealtimeClient = __commonJS({
         result.logger = options === null || options === void 0 ? void 0 : options.logger;
         result.heartbeatCallback = this._wrapHeartbeatCallback(options === null || options === void 0 ? void 0 : options.heartbeatCallback);
         result.sessionStorage = (_h = options === null || options === void 0 ? void 0 : options.sessionStorage) !== null && _h !== void 0 ? _h : resolveSessionStorage();
-        result.reconnectAfterMs = (_j = options === null || options === void 0 ? void 0 : options.reconnectAfterMs) !== null && _j !== void 0 ? _j : (tries) => {
+        result.reconnectAfterMs = (_j = options === null || options === void 0 ? void 0 : options.reconnectAfterMs) !== null && _j !== void 0 ? _j : ((tries) => {
           return RECONNECT_INTERVALS[tries - 1] || DEFAULT_RECONNECT_FALLBACK;
-        };
+        });
         let defaultEncode;
         let defaultDecode;
         const vsn = (_k = options === null || options === void 0 ? void 0 : options.vsn) !== null && _k !== void 0 ? _k : constants_1.DEFAULT_VSN;
@@ -12877,7 +12893,7 @@ var require_helpers = __commonJS({
       return timeNow + expiresIn;
     }
     function generateCallbackId() {
-      return Symbol("auth-callback");
+      return /* @__PURE__ */ Symbol("auth-callback");
     }
     var isBrowser = () => typeof window !== "undefined" && typeof document !== "undefined";
     exports.isBrowser = isBrowser;
@@ -21932,7 +21948,6 @@ var init_authLocal = __esm({
       { chave: "oportunidade-origem", label: "Oportunidade de Origem", grupo: "Transportadoras" },
       { chave: "oportunidade-transportadora", label: "Oportunidade Transportadora", grupo: "Transportadoras" },
       { chave: "simular-saida-transportadora", label: "Simular Sa\xEDda de Transportadora", grupo: "Transportadoras" },
-      { chave: "tabela-padrao-b2c", label: "Tabela Padr\xE3o B2C", grupo: "Transportadoras" },
       { chave: "gestao-contratos", label: "Gest\xE3o de Contratos", grupo: "Transportadoras" },
       { chave: "gestao-base-cte", label: "Gest\xE3o da Base CT-e", grupo: "Auditoria" },
       { chave: "alertas-cte-valor", label: "Alerta CT-e valor alto", grupo: "Auditoria" },
@@ -22611,47 +22626,53 @@ async function buscarReferenciaCtes(chaves = [], { comDetalhes = false, lancarEr
 }
 async function corrigirBaseCtesPeloTracking(chaves = [], onProgress = null) {
   const resultado = { corrigidos: [], iguais: 0, semTracking: 0 };
-  const normalizadas = [...new Set((chaves || []).map((c) => String(c || '').replace(/\D/g, '')).filter((c) => c.length >= 40))];
+  const normalizadas = [...new Set((chaves || []).map((c) => String(c || "").replace(/\D/g, "")).filter((c) => c.length >= 40))];
   if (!isSupabaseConfigured() || !normalizadas.length) return resultado;
-  const client = getSupabaseClient();
-  const dig7 = (v) => String(v || '').replace(/\D/g, '').slice(0, 7);
+  const client2 = getSupabaseClient();
+  const dig72 = (v) => String(v || "").replace(/\D/g, "").slice(0, 7);
   for (let inicio = 0; inicio < normalizadas.length; inicio += 100) {
     const lote = normalizadas.slice(inicio, inicio + 100);
     const [{ data: tracking, error: erroTracking }, { data: base, error: erroBase }] = await Promise.all([
-      client.from('tracking_rows').select('chave_cte, cidade_origem, uf_origem, ibge_origem, cidade_destino, uf_destino, ibge_destino').in('chave_cte', lote),
-      client.from('realizado_local_ctes').select('chave_cte, cidade_origem, uf_origem, ibge_origem, cidade_destino, uf_destino, ibge_destino').in('chave_cte', lote),
+      client2.from("tracking_rows").select("chave_cte, cidade_origem, uf_origem, ibge_origem, cidade_destino, uf_destino, ibge_destino").in("chave_cte", lote),
+      client2.from("realizado_local_ctes").select("chave_cte, cidade_origem, uf_origem, ibge_origem, cidade_destino, uf_destino, ibge_destino").in("chave_cte", lote)
     ]);
     if (erroTracking) throw new Error(`Erro ao consultar o tracking: ${erroTracking.message}`);
     if (erroBase) throw new Error(`Erro ao consultar a base de CT-es: ${erroBase.message}`);
-    onProgress?.({ etapa: 'consultando', processados: inicio, total: normalizadas.length, corrigidos: resultado.corrigidos.length });
-    const trackingPorChave = new Map();
+    onProgress?.({ etapa: "consultando", processados: inicio, total: normalizadas.length, corrigidos: resultado.corrigidos.length });
+    const trackingPorChave = /* @__PURE__ */ new Map();
     (tracking || []).forEach((row) => {
-      if (dig7(row.ibge_origem).length !== 7 || dig7(row.ibge_destino).length !== 7) return;
+      if (dig72(row.ibge_origem).length !== 7 || dig72(row.ibge_destino).length !== 7) return;
       if (!trackingPorChave.has(row.chave_cte)) trackingPorChave.set(row.chave_cte, row);
     });
     let processados = 0;
     for (const atual of base || []) {
       processados += 1;
-      onProgress?.({ etapa: 'corrigindo', processados: inicio + processados, total: normalizadas.length, corrigidos: resultado.corrigidos.length });
+      onProgress?.({ etapa: "corrigindo", processados: inicio + processados, total: normalizadas.length, corrigidos: resultado.corrigidos.length });
       const t = trackingPorChave.get(atual.chave_cte);
-      if (!t) { resultado.semTracking += 1; continue; }
-      if (dig7(t.ibge_origem) === dig7(atual.ibge_origem) && dig7(t.ibge_destino) === dig7(atual.ibge_destino)
-        && String(t.uf_origem || '') === String(atual.uf_origem || '') && String(t.uf_destino || '') === String(atual.uf_destino || '')) {
+      if (!t) {
+        resultado.semTracking += 1;
+        continue;
+      }
+      if (dig72(t.ibge_origem) === dig72(atual.ibge_origem) && dig72(t.ibge_destino) === dig72(atual.ibge_destino) && String(t.uf_origem || "") === String(atual.uf_origem || "") && String(t.uf_destino || "") === String(atual.uf_destino || "")) {
         resultado.iguais += 1;
         continue;
       }
       const novo = {
-        cidade_origem: t.cidade_origem, uf_origem: t.uf_origem, ibge_origem: dig7(t.ibge_origem),
-        cidade_destino: t.cidade_destino, uf_destino: t.uf_destino, ibge_destino: dig7(t.ibge_destino),
-        chave_rota_ibge: `${dig7(t.ibge_origem)}-${dig7(t.ibge_destino)}`,
-        updated_at: new Date().toISOString(),
+        cidade_origem: t.cidade_origem,
+        uf_origem: t.uf_origem,
+        ibge_origem: dig72(t.ibge_origem),
+        cidade_destino: t.cidade_destino,
+        uf_destino: t.uf_destino,
+        ibge_destino: dig72(t.ibge_destino),
+        chave_rota_ibge: `${dig72(t.ibge_origem)}-${dig72(t.ibge_destino)}`,
+        updated_at: (/* @__PURE__ */ new Date()).toISOString()
       };
-      const { error } = await client.from('realizado_local_ctes').update(novo).eq('chave_cte', atual.chave_cte);
+      const { error } = await client2.from("realizado_local_ctes").update(novo).eq("chave_cte", atual.chave_cte);
       if (error) throw new Error(`Erro ao corrigir o CT-e na base: ${error.message}`);
       resultado.corrigidos.push({
         chave: atual.chave_cte,
-        de: `${atual.cidade_origem}/${atual.uf_origem} → ${atual.cidade_destino}/${atual.uf_destino}`,
-        para: `${t.cidade_origem}/${t.uf_origem} → ${t.cidade_destino}/${t.uf_destino}`,
+        de: `${atual.cidade_origem}/${atual.uf_origem} \u2192 ${atual.cidade_destino}/${atual.uf_destino}`,
+        para: `${t.cidade_origem}/${t.uf_origem} \u2192 ${t.cidade_destino}/${t.uf_destino}`
       });
     }
   }
@@ -26154,8 +26175,158 @@ async function carregarContextoLotacaoAuditoria(supabase2, mapaVinculos = null) 
   return {
     tabelas: tabelasValidas.map((tabela) => ({ ...tabela, rotas: rotasPorTabela.get(tabela.id) || [] })),
     origensFracionadoPorNome,
-    mapaVinculos
+    mapaVinculos,
+    fluxo: await carregarFluxoLotacaoAuditoria(supabase2)
   };
+}
+async function carregarFluxoLotacaoAuditoria(supabase2) {
+  if (_cacheFluxoLotacao.dados && Date.now() - _cacheFluxoLotacao.em < 5 * 60 * 1e3) return _cacheFluxoLotacao.dados;
+  const cargas = [];
+  for (let pagina = 0; ; pagina += 1) {
+    const { data, error } = await supabase2.from("lotacao_cargas").select("id,dist,cte,transportadora,origem,uf_origem,destino,uf_destino,tipo_veiculo,frete_transp,pedagio,status,coleta_planejada,coleta_realizada,emissao_nf").range(pagina * PAGE_SIZE2, (pagina + 1) * PAGE_SIZE2 - 1);
+    if (error) return { porNumeroCte: /* @__PURE__ */ new Map(), adicionaisPorDist: /* @__PURE__ */ new Map() };
+    cargas.push(...data || []);
+    if ((data || []).length < PAGE_SIZE2) break;
+  }
+  const adicionaisPorDist = /* @__PURE__ */ new Map();
+  const { data: solicitacoes } = await supabase2.from("lotacao_solicitacoes").select("dist_key,dist,status,valor_adicional").in("status", STATUS_ADICIONAL_APROVADO);
+  (solicitacoes || []).forEach((s) => {
+    const dist = normalizeText2(s.dist_key || s.dist);
+    if (dist && toNumber4(s.valor_adicional) > 0) adicionaisPorDist.set(dist, (adicionaisPorDist.get(dist) || 0) + toNumber4(s.valor_adicional));
+  });
+  const porNumeroCte = /* @__PURE__ */ new Map();
+  cargas.forEach((carga) => {
+    if (/CANCEL/i.test(String(carga.status || "")) || !(toNumber4(carga.frete_transp) > 0)) return;
+    const numeros = [...new Set(String(carga.cte || "").split(/[^0-9]+/).filter(Boolean).map((n) => String(Number(n))))];
+    if (!numeros.length) return;
+    const item = { ...carga, numerosCte: numeros };
+    numeros.forEach((numero4) => porNumeroCte.set(numero4, [...porNumeroCte.get(numero4) || [], item]));
+  });
+  const dados = { porNumeroCte, adicionaisPorDist };
+  _cacheFluxoLotacao = { em: Date.now(), dados };
+  return dados;
+}
+function transportadoraDoFluxoCompativel(nomeFluxo, nomesCte = []) {
+  const partes = String(nomeFluxo || "").split(/[/()]/).map((p) => normalizeTransportadoraCompare(p)).filter((p) => p.length >= 3);
+  return partes.some((parte) => nomesCte.some((nome) => {
+    const cte = normalizeTransportadoraCompare(nome);
+    if (!cte) return false;
+    return nomeCompativel(parte, nome) || ` ${cte} `.includes(` ${parte} `) || cte.replace(/\s+/g, "").startsWith(parte.replace(/\s+/g, ""));
+  }));
+}
+function localizarViagemFluxoLotacao(cte = {}, contexto = null, mapaVinculos = null) {
+  const fluxo = contexto?.fluxo;
+  const numero4 = numeroDoCte(cte);
+  if (!fluxo?.porNumeroCte?.size || !numero4) return null;
+  const nomeBruto = pick(cte, ["transportadora", "nome_transportadora", "transportadora_realizada", "transportador"]);
+  const nomes = [nomeBruto, aplicarVinculoTransportadora2(nomeBruto, mapaVinculos)].filter(Boolean);
+  const emissao = dataEmissaoIsoCte(cte);
+  const dias = (a, b) => Math.abs(new Date(a).getTime() - new Date(b).getTime()) / 864e5;
+  let candidatas = (fluxo.porNumeroCte.get(numero4) || []).filter((carga) => transportadoraDoFluxoCompativel(carga.transportadora, nomes));
+  candidatas = candidatas.filter((carga) => {
+    const dataCarga = String(carga.emissao_nf || carga.coleta_realizada || carga.coleta_planejada || "").slice(0, 10);
+    return !emissao || !dataCarga || dias(emissao, dataCarga) <= 20;
+  });
+  const distintas = [...new Map(candidatas.map((c) => [c.id, c])).values()];
+  if (distintas.length <= 1) return distintas[0] || null;
+  const origem = normalizeCompare2(pick(cte, ["cidade_origem", "cidadeOrigem", "origem"]));
+  const destino = normalizeCompare2(pick(cte, ["cidade_destino", "cidadeDestino", "destino"]));
+  const porRota = distintas.filter((c) => normalizeCompare2(c.destino) === destino || normalizeCompare2(c.origem) === origem);
+  return porRota.length === 1 ? porRota[0] : null;
+}
+async function prepararFluxoLotacaoParaCtes(supabase2, contexto = null, ctes = [], mapaVinculos = null) {
+  if (!contexto?.fluxo?.porNumeroCte?.size) return;
+  const valores = contexto.valoresCteFluxo || /* @__PURE__ */ new Map();
+  const pendentes2 = /* @__PURE__ */ new Map();
+  (ctes || []).forEach((cte) => {
+    const raiz = raizDaChaveCte(cte);
+    const numero4 = numeroDoCte(cte);
+    if (raiz && numero4) valores.set(`${raiz}|${numero4}`, { valor: toNumber4(pick(cte, ["valor_cte", "valorCte", "valor_frete", "frete"])), emissao: dataEmissaoIsoCte(cte) });
+  });
+  (ctes || []).forEach((cte) => {
+    const raiz = raizDaChaveCte(cte);
+    const viagem = raiz ? localizarViagemFluxoLotacao(cte, contexto, mapaVinculos) : null;
+    (viagem?.numerosCte || []).forEach((numero4) => {
+      if (!valores.has(`${raiz}|${numero4}`)) pendentes2.set(`${raiz}|${numero4}`, { raiz, numero: numero4 });
+    });
+  });
+  const numeros = [...new Set([...pendentes2.values()].map((p) => p.numero))];
+  for (let inicio = 0; inicio < numeros.length; inicio += 200) {
+    const { data, error } = await supabase2.from(TABELA_CTES).select("chave_cte,numero_cte,valor_cte,data_emissao").in("numero_cte", numeros.slice(inicio, inicio + 200));
+    if (error) break;
+    (data || []).forEach((row) => {
+      const chave = onlyDigits(row.chave_cte);
+      if (chave.length !== 44) return;
+      const chaveMapa = `${chave.slice(6, 14)}|${String(Number(onlyDigits(row.numero_cte)))}`;
+      if (pendentes2.has(chaveMapa)) valores.set(chaveMapa, { valor: toNumber4(row.valor_cte), emissao: dataEmissaoIsoCte(row) });
+    });
+  }
+  contexto.valoresCteFluxo = valores;
+}
+function calcularCtePeloFluxoLotacao(cte = {}, contexto = null, mapaVinculos = null) {
+  const viagem = localizarViagemFluxoLotacao(cte, contexto, mapaVinculos);
+  if (!viagem) return null;
+  const raiz = raizDaChaveCte(cte);
+  const numero4 = numeroDoCte(cte);
+  const valorCte = toNumber4(pick(cte, ["valor_cte", "valorCte", "valor_frete", "frete"]));
+  const emissaoCte = dataEmissaoIsoCte(cte);
+  const ctesViagem = viagem.numerosCte.map((n) => n === numero4 ? { numero: n, valor: valorCte, emissao: emissaoCte } : { numero: n, ...contexto.valoresCteFluxo?.get(`${raiz}|${n}`) || {} }).filter((item) => item.valor !== void 0);
+  const adicionais = toNumber4(contexto.fluxo.adicionaisPorDist.get(normalizeText2(viagem.dist)));
+  const pedagio = toNumber4(viagem.pedagio);
+  let autorizado = toNumber4(viagem.frete_transp) + adicionais;
+  const cobradoViagem = ctesViagem.reduce((acc, item) => acc + toNumber4(item.valor), 0);
+  const pedagioIncluido = pedagio > 0 && cobradoViagem > autorizado + 0.01 && cobradoViagem <= autorizado + pedagio + 0.5;
+  if (pedagioIncluido) autorizado += pedagio;
+  const ordenados = ctesViagem.slice().sort((a, b) => String(a.emissao || "").localeCompare(String(b.emissao || "")) || Number(a.numero) - Number(b.numero));
+  let saldo = autorizado;
+  for (const item of ordenados) {
+    if (item.numero === numero4) break;
+    saldo -= Math.min(toNumber4(item.valor), Math.max(saldo, 0));
+  }
+  const saldoAntes = Math.max(Number(saldo.toFixed(2)), 0);
+  const valorCalculado = Number(Math.min(valorCte, saldoAntes).toFixed(2));
+  const excedente = Number((valorCte - valorCalculado).toFixed(2));
+  if (!(valorCalculado > 0) && !(excedente > 0)) return null;
+  const base = montarResultadoBase(cte, "CALCULADO", "", {
+    transportadora_tabela: viagem.transportadora,
+    tipo_calculo: "LOTACAO",
+    detalhes_calculo: {
+      modalidade: "LOTACAO",
+      motor: "fluxo_lotacao",
+      dist: viagem.dist,
+      carga_id: viagem.id,
+      origem_cidade: viagem.origem,
+      destino_cidade: viagem.destino,
+      tipo_veiculo: viagem.tipo_veiculo,
+      frete_viagem: toNumber4(viagem.frete_transp),
+      adicionais_aprovados: adicionais,
+      pedagio,
+      pedagio_incluido: pedagioIncluido,
+      valor_autorizado_viagem: autorizado,
+      ctes_viagem: viagem.numerosCte,
+      ctes_viagem_emitidos: ordenados.map((item) => ({ numero: item.numero, valor: item.valor, emissao: item.emissao || null })),
+      valor_cobrado_viagem: Number(cobradoViagem.toFixed(2)),
+      saldo_antes_deste_cte: saldoAntes,
+      excedente_viagem: excedente,
+      observacao_lotacao: excedente > 0 ? `CT-e passa ${excedente.toFixed(2)} do saldo da viagem ${viagem.dist}: enviar o excedente para aprovacao.` : ""
+    }
+  });
+  const valorFinal = valorCalculado > 0 ? valorCalculado : 0.01;
+  const diferenca = base.valor_cte - valorFinal;
+  return {
+    ...base,
+    valor_calculado: valorFinal,
+    diferenca,
+    diferenca_abs: Math.abs(diferenca),
+    percentual_diferenca: diferenca / valorFinal * 100
+  };
+}
+function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracionado) {
+  const porTabela = calcularCtePelaTabelaLotacao(cte, contexto, mapaVinculos);
+  if (porTabela && toNumber4(porTabela.valor_calculado) > 0) return porTabela;
+  const resultado = porTabela || calcularFracionado();
+  if (toNumber4(resultado?.valor_calculado) > 0) return resultado;
+  return calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos) || resultado;
 }
 function localizarTabelaLotacaoContexto(cte = {}, contexto = null, mapaVinculos = null) {
   if (!contexto?.tabelas?.length) return null;
@@ -26307,7 +26478,7 @@ function ctePareceTransferencia(cte = {}) {
 }
 function ehTabelaTransferencia(entrada = {}) {
   if (!entrada?.tabelaAlternativaDe) return false;
-  return normalizeCompare2(entrada.varianteTabela || "").includes("TRANSFERENCIA");
+  return normalizeCompare2(entrada.varianteTabela || "").includes("transferencia");
 }
 function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, detalheVencedor, canaisTentativa, cidadePorIbge, opcoes, usarRotaInvertida = false) {
   const grupos = agruparTabelasAlternativasPorTransportadora(transportadoras, transportadoraTabela);
@@ -26669,8 +26840,9 @@ function anexarComparativoPesos(resultado, cte, transportadoras, mapaVinculos, t
 function processarCte(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = "", opcoes = {}) {
   const resultadoSimulador = processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
   if (resultadoSimulador) return anexarComparativoPesos(resultadoSimulador, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
-  const tabelaDireta = localizarTabelaAuditoria(transportadoras, cte, mapaVinculos, transportadoraAlvo, opcoes);
-  const tabelaInvertida = tabelaDireta.status === "OK" ? null : localizarTabelaAuditoria(transportadoras, inverterOrigemDestinoCte(cte), mapaVinculos, transportadoraAlvo, opcoes);
+  const transportadorasContingencia = ctePareceTransferencia(cte) ? transportadoras : (transportadoras || []).filter((entrada) => !ehTabelaTransferencia(entrada));
+  const tabelaDireta = localizarTabelaAuditoria(transportadorasContingencia, cte, mapaVinculos, transportadoraAlvo, opcoes);
+  const tabelaInvertida = tabelaDireta.status === "OK" ? null : localizarTabelaAuditoria(transportadorasContingencia, inverterOrigemDestinoCte(cte), mapaVinculos, transportadoraAlvo, opcoes);
   const calculoInvertido = tabelaDireta.status !== "OK" && tabelaInvertida?.status === "OK";
   const cteCalculo = calculoInvertido ? inverterOrigemDestinoCte(cte) : cte;
   const tabela = calculoInvertido ? tabelaInvertida : tabelaDireta;
@@ -26774,7 +26946,7 @@ function processarCte(cte, transportadoras = [], mapaVinculos = null, transporta
       motivo_sem_calculo: ""
     };
     const nomeAlvo = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
-    const gruposVinculados = agruparTabelasAlternativasPorTransportadora(transportadoras, nomeAlvo);
+    const gruposVinculados = agruparTabelasAlternativasPorTransportadora(transportadorasContingencia, nomeAlvo);
     const tabelaAtualId = String(transportadora.negociacaoId || transportadora.id || "");
     const entradasVinculadas = gruposVinculados.find((grupo) => grupo.some((entrada) => String(entrada.negociacaoId || entrada.id || "") === tabelaAtualId));
     if (!entradasVinculadas?.length) return resultadoDireto;
@@ -26961,7 +27133,7 @@ async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
   });
   const transportadoras = await carregarBaseFreteParaRegistros(ctesParaBuscaBase, onProgress, [], mapaVinculos);
   verificarCancelamento();
-  if (!transportadoras.length && !contextoLotacao.tabelas.length) {
+  if (!transportadoras.length && !contextoLotacao.tabelas.length && !contextoLotacao.fluxo?.porNumeroCte?.size) {
     throw new Error("Nenhuma tabela de frete cadastrada foi encontrada para recalcular.");
   }
   const faltaDocumentoDestinatario = ctesUnicos.some((cte) => !pickDigits(cte, ["documento_destinatario", "documentoDestinatario", "cnpj_destinatario"], 14));
@@ -26995,6 +27167,7 @@ async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
   }
   onProgress?.({ etapa: "calculando_amd", carregados: 0, total: ctesUnicos.length });
   await cederThread();
+  await prepararFluxoLotacaoParaCtes(supabase2, contextoLotacao, ctesParaCalculo, mapaVinculos);
   const registros = [];
   for (let index = 0; index < ctesUnicos.length; index += 1) {
     verificarCancelamento();
@@ -27095,12 +27268,12 @@ async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
       };
       ignorarCubagemFinal = true;
     }
-    const registroBase = calcularCtePelaTabelaLotacao(cteFinal, contextoLotacao, mapaVinculos) || processarCte(cteFinal, transportadoras, mapaVinculos, "", {
+    const registroBase = calcularLotacaoOuFracionado(cteFinal, contextoLotacao, mapaVinculos, () => processarCte(cteFinal, transportadoras, mapaVinculos, "", {
       ...opcoesCalculo,
       ignorarCubagem: ignorarCubagemFinal,
       percentualContingenciaPeso: pesoOverride > 0 || aplicaModoTracking ? 0 : opcoesCalculo.percentualContingenciaPeso,
       pesoForcado: aplicaModoTracking
-    });
+    }));
     const pesoUsadoModo = toNumber4(registroBase.detalhes_calculo?.peso_considerado);
     const registro = modoPeso === "cte" ? registroBase : {
       ...registroBase,
@@ -27138,7 +27311,7 @@ async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
   }
   return { registros, encontrados: ctesUnicos.length, naoEncontrados: Math.max(0, normalizadas.length - ctesUnicos.length) };
 }
-var PAGE_SIZE2, TABELA_CTES, UF_POR_CODIGO_IBGE, _cacheBaseFrete, _cacheBaseFretePorTransportadora, _cacheMapaVinculosTransportadoras, _cacheMapaEquivalenciasOrigem, memoNormalizeText, indicesCotacoesPorLista2, _cacheRaizesAdicionaisPorId, _cacheLookupPorTransportadoras;
+var PAGE_SIZE2, TABELA_CTES, UF_POR_CODIGO_IBGE, _cacheBaseFrete, _cacheBaseFretePorTransportadora, _cacheMapaVinculosTransportadoras, _cacheMapaEquivalenciasOrigem, memoNormalizeText, indicesCotacoesPorLista2, _cacheRaizesAdicionaisPorId, _cacheFluxoLotacao, STATUS_ADICIONAL_APROVADO, raizDaChaveCte, numeroDoCte, _cacheLookupPorTransportadoras;
 var init_auditoriaCteProcessamentoService = __esm({
   "src/services/auditoriaCteProcessamentoService.js"() {
     "use strict";
@@ -27195,6 +27368,18 @@ var init_auditoriaCteProcessamentoService = __esm({
     memoNormalizeText = /* @__PURE__ */ new Map();
     indicesCotacoesPorLista2 = /* @__PURE__ */ new WeakMap();
     _cacheRaizesAdicionaisPorId = /* @__PURE__ */ new Map();
+    _cacheFluxoLotacao = { em: 0, dados: null };
+    STATUS_ADICIONAL_APROVADO = ["APROVADO", "APROVADO_OPERACAO", "FINALIZADO"];
+    raizDaChaveCte = (cte = {}) => {
+      const chave = pickDigits(cte, ["chave_cte", "chaveCte", "chave"]);
+      return chave.length === 44 ? chave.slice(6, 14) : "";
+    };
+    numeroDoCte = (cte = {}) => {
+      const numero4 = pickDigits(cte, ["numero_cte", "numeroCte", "cte", "nro_cte"]);
+      if (numero4) return String(Number(numero4));
+      const chave = pickDigits(cte, ["chave_cte", "chaveCte", "chave"]);
+      return chave.length === 44 ? String(Number(chave.slice(25, 34))) : "";
+    };
     _cacheLookupPorTransportadoras = /* @__PURE__ */ new WeakMap();
   }
 });
