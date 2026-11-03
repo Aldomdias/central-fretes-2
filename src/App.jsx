@@ -42,6 +42,7 @@ import PerdaRealizadoPage from './pages/PerdaRealizadoPage';
 import OportunidadeOrigemPage from './pages/OportunidadeOrigemPage';
 import OportunidadeTransportadoraPage from './pages/OportunidadeTransportadoraPage';
 import SimularSaidaTransportadoraPage from './pages/SimularSaidaTransportadoraPage';
+import TabelaPadraoB2cPage from './pages/TabelaPadraoB2cPage';
 import SimuladorReversaPage from './pages/SimuladorReversaPage';
 import GestaoBaseCtePage from './pages/GestaoBaseCtePage';
 import VisualConceptPage from './pages/VisualConceptPage';
@@ -68,7 +69,7 @@ const PAGINAS_PERMITIDAS = [
   'importacao-ia-tabelas',
   'lotacao', 'lotacao-cotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
   'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'prazo-pagamento',
-  'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
+  'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'tabela-padrao-b2c', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
   'icms-uf', 'auditoria-ecommerce', 'usuarios-ativos',
   'importar-descontos-obtidos', 'painel-descontos-obtidos',
   'gestao-contratos', 'autorizacoes-transporte-b2c', 'autorizacoes-transporte-atacado', 'autorizacoes-transporte-lotacao', 'autorizacoes-suprimentos', 'robos', 'alertas-cte-valor', 'consulta-tracking',
@@ -242,6 +243,7 @@ export default function App() {
     'oportunidade-origem': <OportunidadeOrigemPage />,
     'oportunidade-transportadora': <OportunidadeTransportadoraPage />,
     'simular-saida-transportadora': <SimularSaidaTransportadoraPage />,
+    'tabela-padrao-b2c': <TabelaPadraoB2cPage />,
     'simulador-reversa': <SimuladorReversaPage />,
     'gestao-base-cte': <GestaoBaseCtePage />,
     'consulta-ibge': <ConsultaIbgePage />,

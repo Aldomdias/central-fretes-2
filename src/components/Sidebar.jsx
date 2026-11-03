@@ -21,6 +21,7 @@ export const MENU_GRUPOS = [
       { chave: 'oportunidade-origem', label: 'Oportunidade por origem' },
       { chave: 'oportunidade-transportadora', label: 'Oportunidade transportadora' },
       { chave: 'simular-saida-transportadora', label: 'Saida de transportadora' },
+      { chave: 'tabela-padrao-b2c', label: 'Tabela padrao B2C' },
       { chave: 'gestao-contratos', label: 'Gestao de contratos' },
     ],
   },

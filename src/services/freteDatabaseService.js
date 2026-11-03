@@ -1172,6 +1172,11 @@ export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [],
   const origemIds = origens.map((o) => o.id);
   const transportadoraIds = [...new Set(origens.map((o) => o.transportadora_id))];
 
+  const porTabela = { rotas: 0, cotacoes: 0 };
+  const reportar = () => onProgress?.({
+    etapa: 'carregando_tabelas_completas_fallback', carregados: origens.length + porTabela.rotas + porTabela.cotacoes,
+    rotas: porTabela.rotas, cotacoes: porTabela.cotacoes, total: null,
+  });
   const [transportadoras, generalidades, rotas, cotacoes, taxas] = await Promise.all([
     (async () => {
       const { data, error } = await supabase.from('transportadoras').select('*').in('id', transportadoraIds);
@@ -1179,8 +1184,8 @@ export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [],
       return data || [];
     })(),
     fetchAllRowsFiltradoPorOrigens(supabase, 'generalidades', origemIds, 'origem_id'),
-    fetchAllRowsFiltradoPorOrigens(supabase, 'rotas', origemIds),
-    fetchAllRowsFiltradoPorOrigens(supabase, 'cotacoes', origemIds),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'rotas', origemIds, null, (e) => { porTabela.rotas = e?.carregados || 0; reportar(); }),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'cotacoes', origemIds, null, (e) => { porTabela.cotacoes = e?.carregados || 0; reportar(); }),
     fetchAllRowsFiltradoPorOrigens(supabase, 'taxas_especiais', origemIds),
   ]);
 
