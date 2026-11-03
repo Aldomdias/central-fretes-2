@@ -1362,15 +1362,19 @@ function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracio
   if (toNumber(resultado?.valor_calculado) > 0) return resultado;
   const peloFluxo = calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos);
   if (peloFluxo) return peloFluxo;
-  return cteDeLotacao(cte, contexto, mapaVinculos, porTabela) ? marcarSemDistLotacao(resultado) : resultado;
+  return cteDeLotacao(cte, contexto, mapaVinculos, porTabela, resultado) ? marcarSemDistLotacao(resultado) : resultado;
 }
 
 // CT-e de lotação (não fracionado): transportadora com tabela de lotação, que aparece no fluxo, ou canal
-// de transferência/lotação. Sem DIST na tabela nem no fluxo, quem informa a viagem é a Operação.
-function cteDeLotacao(cte, contexto, mapaVinculos, porTabela) {
-  if (porTabela) return true;
+// de lotação. Sem DIST na tabela nem no fluxo, quem informa a viagem é a Operação.
+// Fora: INTERCOMPANY (transferência não tem DIST no fluxo) e transportadora com tabela fracionada cadastrada
+// (SEM_ORIGEM/SEM_ROTA: o fracionado achou a transportadora, o problema é a rota) — ex.: Brasil Web, S3 Cargo.
+function cteDeLotacao(cte, contexto, mapaVinculos, porTabela, resultado = null) {
   const canal = canalCategoria(pick(cte, ['canal', 'canal_original']));
-  if (['INTERCOMPANY', 'LOTACAO', 'LOTAÇÃO'].includes(canal)) return true;
+  if (canal === 'INTERCOMPANY') return false;
+  if (porTabela) return true;
+  if (['SEM_ORIGEM', 'SEM_ROTA'].includes(resultado?.status_calculo)) return false;
+  if (['LOTACAO', 'LOTAÇÃO'].includes(canal)) return true;
   const nomeBruto = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);
   const nomes = [nomeBruto, aplicarVinculoTransportadora(nomeBruto, mapaVinculos)].filter(Boolean);
   return (contexto?.fluxo?.nomesTransportadoras || []).some((nome) => transportadoraDoFluxoCompativel(nome, nomes));

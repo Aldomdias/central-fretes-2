@@ -26608,12 +26608,14 @@ function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracio
   if (toNumber4(resultado?.valor_calculado) > 0) return resultado;
   const peloFluxo = calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos);
   if (peloFluxo) return peloFluxo;
-  return cteDeLotacao(cte, contexto, mapaVinculos, porTabela) ? marcarSemDistLotacao(resultado) : resultado;
+  return cteDeLotacao(cte, contexto, mapaVinculos, porTabela, resultado) ? marcarSemDistLotacao(resultado) : resultado;
 }
-function cteDeLotacao(cte, contexto, mapaVinculos, porTabela) {
-  if (porTabela) return true;
+function cteDeLotacao(cte, contexto, mapaVinculos, porTabela, resultado = null) {
   const canal2 = canalCategoria2(pick(cte, ["canal", "canal_original"]));
-  if (["INTERCOMPANY", "LOTACAO", "LOTA\xC7\xC3O"].includes(canal2)) return true;
+  if (canal2 === "INTERCOMPANY") return false;
+  if (porTabela) return true;
+  if (["SEM_ORIGEM", "SEM_ROTA"].includes(resultado?.status_calculo)) return false;
+  if (["LOTACAO", "LOTA\xC7\xC3O"].includes(canal2)) return true;
   const nomeBruto = pick(cte, ["transportadora", "nome_transportadora", "transportadora_realizada", "transportador"]);
   const nomes = [nomeBruto, aplicarVinculoTransportadora2(nomeBruto, mapaVinculos)].filter(Boolean);
   return (contexto?.fluxo?.nomesTransportadoras || []).some((nome) => transportadoraDoFluxoCompativel(nome, nomes));
