@@ -39,6 +39,7 @@ import { buscarNaFila, limparMiroDaFila, salvarNaFila } from '../../services/rob
 import { CHAVE_LOTE_NFSE, itemFilaNfse, numerosDaFila } from '../../utils/robos/filaRobo';
 import { getSupabaseAcessoPublico } from '../../lib/supabaseClient';
 import AvisoFila from './AvisoFila';
+import FilaNfseFaturas from './FilaNfseFaturas';
 import { carregarSessao } from '../../utils/authLocal';
 import ParametrosLancamentoCard from './ParametrosLancamentoCard';
 import { nfComSufixoF } from '../../utils/robos/nfsePdf';
@@ -97,6 +98,9 @@ export default function LancamentoNfseRobo() {
   const refResultado = useRef(null);
   const refPdf = useRef(null);
   const [falhasPdf, setFalhasPdf] = useState([]);
+  // Fatura escolhida na fila de NFS-e: os PDFs lidos entram com o numero (e o vencimento) dela.
+  const faturaAlvo = useRef(null);
+  const [recarregarFila, setRecarregarFila] = useState(0);
   const [ccEdit, setCcEdit] = useState({}); // texto do C.Custo sendo digitado, por linha
   const refGrade = useRef(null);
 
@@ -332,12 +336,16 @@ export default function LancamentoNfseRobo() {
         } catch (e) { falhas.push({ arquivo: arq.name, motivo: `Nao consegui abrir o PDF (${String(e?.message || e).slice(0, 60)})`, faltando: '', nf: '' }); }
       }
       const existentes = new Set(entradas.map((e) => `${e.nf}/${e.cnpjTransp}`.toUpperCase()));
+      const alvo = faturaAlvo.current;
+      faturaAlvo.current = null;
+      const vencAlvo = alvo?.data_vencimento && String(alvo.data_vencimento).slice(0, 10) >= hojeIso() ? String(alvo.data_vencimento).slice(0, 10) : '';
+      const daFatura = alvo ? { fatura: String(alvo.numero_fatura || '').trim(), ...(vencAlvo ? { vencimento: vencAlvo } : {}) } : {};
       const novas = [];
       lidas.forEach(({ dados: d, arquivo, ocr: viaOcr }) => {
         const chave = `${d.nf}/${d.cnpjTransp}`.toUpperCase();
         if (existentes.has(chave)) { falhas.push({ arquivo, motivo: 'Repetida: a nota ja esta na grade (ou em outro PDF do lote)', faltando: '', nf: d.nf }); return; }
         existentes.add(chave);
-        novas.push({ nf: d.nf, transportadora: d.transportadora, cnpjTransp: d.cnpjTransp, dataEmissao: d.dataEmissao, valor: d.valor, valorLiquido: d.valorLiquido, codImp: d.codImp, cfop: d.cfop, cnpjTomador: d.cnpjTomador, ocr: Boolean(viaOcr) });
+        novas.push({ nf: d.nf, transportadora: d.transportadora, cnpjTransp: d.cnpjTransp, dataEmissao: d.dataEmissao, valor: d.valor, valorLiquido: d.valorLiquido, codImp: d.codImp, cfop: d.cfop, cnpjTomador: d.cnpjTomador, ocr: Boolean(viaOcr), ...daFatura });
       });
       if (ocrUsado) await encerrarOcr();
       setFalhasPdf(falhas);
@@ -345,9 +353,15 @@ export default function LancamentoNfseRobo() {
       const naoLidas = falhas.filter((f) => !f.motivo.startsWith('Repetida')).length;
       const repetidas = falhas.length - naoLidas;
       if (naoLidas) setErro(`${fmt(naoLidas)} PDF(s) nao foram lidos${repetidas ? ` e ${fmt(repetidas)} eram repetidos` : ''}. Baixe o relatorio abaixo para ver quais e por que.`);
-      else if (novas.length) setFeedback(`${fmt(novas.length)} nota(s) lida(s) do PDF${repetidas ? ` (${fmt(repetidas)} repetida(s) ignorada(s))` : ''}. Preencha o EscrV (e a Fatura). Cod (IN/IQ) e CFOP (1933AA/2933AA) vieram da nota; confira.${novas.some((n) => n.ocr) ? ' As marcadas com OCR foram lidas por imagem: confira CNPJ e valor.' : ''}`);
+      else if (novas.length) setFeedback(`${alvo ? `Fatura ${daFatura.fatura}: ` : ''}${fmt(novas.length)} nota(s) lida(s) do PDF${repetidas ? ` (${fmt(repetidas)} repetida(s) ignorada(s))` : ''}. Preencha o EscrV (e a Fatura). Cod (IN/IQ) e CFOP (1933AA/2933AA) vieram da nota; confira.${novas.some((n) => n.ocr) ? ' As marcadas com OCR foram lidas por imagem: confira CNPJ e valor.' : ''}`);
     } catch (e) { setErro(e.message || 'Nao consegui ler os PDFs.'); }
     finally { if (refPdf.current) refPdf.current.value = ''; }
+  }
+
+  function lerPdfsDaFatura(fatura) {
+    if (semTabelas) { setErro('Importe as tabelas de parâmetros antes de lançar notas.'); return; }
+    faturaAlvo.current = fatura;
+    refPdf.current?.click();
   }
 
   // Relatorio dos PDFs que nao entraram na grade (nao lidos ou repetidos), para tratar na mao.
@@ -384,7 +398,8 @@ export default function LancamentoNfseRobo() {
       mudou.forEach((l) => { n[l.uid] = { ...(a[l.uid] || {}), pedido: l.pedido, miro: l.miro, ...(l.falhaSap ? { falhaSap: l.falhaSap } : {}) }; });
       return n;
     });
-    registrarHistorico(mudou.filter((l) => l.miro), true);
+    await registrarHistorico(mudou.filter((l) => l.miro), true).catch(() => null);
+    setRecarregarFila((n) => n + 1); // MIRO nova pode fechar fatura da fila de NFS-e
     return { lista: lista.map((l) => porUid.get(l.uid) || l), mudou: mudou.length };
   }
 
@@ -453,6 +468,7 @@ export default function LancamentoNfseRobo() {
       guardarNaFila(atual.map((l) => ({ ...l, falhaSap: mapa[l.uid]?.falhaSap })).filter((l) => l.pedido || l.miro || l.falhaSap));
       setErro('');
       const r = atualizadas ? await registrarHistorico(atual, true) : null;
+      if (atualizadas) setRecarregarFila((n) => n + 1);
       const aviso = ambiguas ? ` ${fmt(ambiguas)} nota(s) com NF repetida no lote ficaram de fora (o log nao traz o CNPJ).` : '';
       const textoFalhas = marcadas ? ` ${fmt(marcadas)} nota(s) falharam no SAP: veja o motivo na grade e use "Baixar pendentes do SAP".` : '';
       if (!atualizadas && !marcadas) setFeedback(`Nenhuma nota do arquivo bate com o lote atual (confira se e o resultado deste lote).${aviso}`);
@@ -507,6 +523,8 @@ export default function LancamentoNfseRobo() {
       {feedback && !erro ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}
 
       <ParametrosLancamentoCard parametros={parametros} onChange={setParametros} onErro={setErro} onFeedback={setFeedback} />
+
+      <FilaNfseFaturas onLerPdfs={lerPdfsDaFatura} recarregarEm={recarregarFila} />
 
       <div className="panel-card">
         <div style={passoStyle}>

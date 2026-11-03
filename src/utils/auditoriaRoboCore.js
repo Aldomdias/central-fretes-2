@@ -13,6 +13,8 @@ import { processarCtesPorChave } from '../services/auditoriaCteProcessamentoServ
 import { entrarCacheCalculo, sairCacheCalculo } from '../services/freteDatabaseService';
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { normalizarChaveCte } from './auditoriaFretesDomain';
+import { ehLinhaNfse, conferirNfseLancada } from './nfseFatura';
+import { normalizarNumeroFatura } from './robos/historicoLancamentos';
 import { montarCorrecoesCalculoFatura, numeroValorNfAuditoria, numeroPesoAuditoria, escolherMaiorPeso } from './correcoesCalculoFatura';
 import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas, laudoResolvidoFora, faturaPaga, faturaLancadaErp } from '../services/auditorRoboService';
 
@@ -74,9 +76,7 @@ function aplicarSaldo(item, saldos, referencia) {
 // Linha da fatura sem chave que nao casou por numero/CNPJ. Serie de NFS-e municipal (SPN, CWN, RJN, OS...) nao e
 // CT-e e nunca vai estar na base de CT-es; o resto e CT-e que ainda nao foi carregado na base. Mantem "nao localizado"
 // no texto: o painel do robo classifica por ele.
-function motivoSemChave(item = {}) {
-  const serie = String(item.serie_cte || '').trim().toUpperCase();
-  if (/^[A-Z]{2}N$/.test(serie) || serie === 'OS') return `NFS-e (serie ${serie}) nao localizado na base de CT-e: conferir manualmente`;
+function motivoSemChave() {
   return 'CT-e nao localizado na base (sem chave, nao achado por numero/CNPJ): importar o XML ou atualizar a base de CT-es';
 }
 
@@ -96,14 +96,17 @@ function resumir(lista) {
     return acc + Math.abs(Math.min(dif, 0));
   }, 0);
   const calculoAmd = lista.reduce((acc, i) => acc + Number(i.calculado_frete || 0), 0);
+  // NFS-e fica fora do motivo: e contada a parte (classificarFatura manda para o card de NFS-e quando so falta ela).
+  const semCalc = lista.filter((i) => !(Number(i.calculado_frete || 0) > 0));
+  const nfse = semCalc.filter(ehLinhaNfse).length;
   const motivos = new Map();
-  lista.filter((i) => !(Number(i.calculado_frete || 0) > 0)).forEach((i) => {
+  semCalc.filter((i) => !ehLinhaNfse(i)).forEach((i) => {
     const m = String(i.motivo_sem_calculo || '').trim()
       || (normalizarChaveCte(i.chave_cte).length !== 44 ? motivoSemChave(i) : 'sem resultado de calculo na base');
     if (m) motivos.set(m, (motivos.get(m) || 0) + 1);
   });
   const motivoSemCalculo = [...motivos.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '';
-  return { motivoSemCalculo, total, calculados, calculoAmd: Number(calculoAmd.toFixed(2)), semCalculo: total - calculados, divergentes, maior: Number(maior.toFixed(2)), menor: Number(menor.toFixed(2)) };
+  return { motivoSemCalculo, nfse, total, calculados, calculoAmd: Number(calculoAmd.toFixed(2)), semCalculo: total - calculados, divergentes, maior: Number(maior.toFixed(2)), menor: Number(menor.toFixed(2)) };
 }
 
 async function detalhesExatos(fatura) {
@@ -382,6 +385,45 @@ export async function enviarFaturaParaGestaoRobo(db, fatura, resumo, { usuario =
   return { enviada: true };
 }
 
+// Fatura so de NFS-e (ou sem documentos vinculados): confere o que o robo de Lancamento NFS-e ja lancou com o
+// numero desta fatura (robos_lancamentos).
+export async function conferirNfseLancadaRobo(db, fatura, qtdNfse) {
+  const bruto = String(fatura.numero_fatura || '').trim();
+  const numeros = [...new Set([bruto, normalizarNumeroFatura(bruto)])].filter(Boolean);
+  if (!numeros.length) return conferirNfseLancada(fatura, qtdNfse, []);
+  const { data, error } = await db.from('robos_lancamentos').select('*').eq('tipo', 'NFSE').in('fatura', numeros);
+  if (error) throw new Error(`Lancamentos de NFS-e: ${error.message}`);
+  return conferirNfseLancada(fatura, qtdNfse, data || []);
+}
+
+// NFS-e lancadas (MIRO) e a soma bate com a fatura: libera para pagamento. A MIRO ja e o lancamento no SAP, entao
+// marca o envio ao ERP (so se vazio) e a fatura segue para o boleto. So age se a fatura ainda estiver em auditoria.
+export async function liberarFaturaNfseRobo(db, fatura, conf, { usuario = 'Robo Auditor', origem = 'automatico' } = {}) {
+  const { data: atual, error: erroLeitura } = await db.from('faturas').select('id,status').eq('id', fatura.id).maybeSingle();
+  if (erroLeitura) throw new Error(`Leitura da fatura: ${erroLeitura.message}`);
+  if (!atual || !STATUS_ROBO_AUDITA.includes(atual.status)) return { liberada: false, motivo: `Fatura nao esta mais em auditoria (${atual?.status || 'inexistente'}).` };
+  const agora = new Date().toISOString();
+  const { error } = await db.from('faturas').update({
+    status: 'PRONTA_PARA_PAGAMENTO', valor_calculado: conf.valor, diferenca: conf.diferenca, valor_recuperado: 0, updated_at: agora,
+  }).eq('id', fatura.id).in('status', STATUS_ROBO_AUDITA);
+  if (error) throw new Error(`Liberar fatura de NFS-e: ${error.message}`);
+  const { error: erroErp } = await db.from('faturas').update({ data_envio_erp: agora }).eq('id', fatura.id).is('data_envio_erp', null);
+  if (erroErp) console.warn('[robo] envio ao ERP da NFS-e nao marcado:', erroErp.message);
+  const { error: erroHist } = await db.from('auditoria_fatura_historico').insert({
+    id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `robo-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    fatura_id: fatura.id,
+    created_at: agora,
+    acao: 'STATUS_ALTERADO',
+    status_anterior: atual.status,
+    status_novo: 'PRONTA_PARA_PAGAMENTO',
+    descricao: `[VIA ROBO] Liberada para pagamento pelo Robo Auditor (${origem}): fatura de NFS-e, ${conf.texto} MIRO = lancamento no SAP.`,
+    usuario_nome: usuario,
+    usuario_email: '',
+  });
+  if (erroHist) console.warn('[robo] historico nao registrado:', erroHist.message);
+  return { liberada: true };
+}
+
 // E-mail dos auditores: a fatura/carteira muitas vezes guarda so o NOME. Monta nome -> e-mail
 // pelo e-mail mais frequente entre faturas, carteiras e historico (onde o usuario assinou).
 export const normalizarNomeAuditor = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -450,9 +492,26 @@ export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = ne
     return registro;
   }
   const resumo = await apurarFaturaRobo(f, aoProgredir, { prazoFinal, calcular, recalcularTudo, bloco, limiteBlocoMs, pesoMaisProximo });
-  const c = aguardarOperacaoLotacao(classificarFatura(resumo, Boolean(f.auditoria_considerar_menor)), resumo);
+  let c = aguardarOperacaoLotacao(classificarFatura(resumo, Boolean(f.auditoria_considerar_menor)), resumo);
   let enviada = false;
   let motivo = c.motivo;
+  let modoNfse = '';
+  // Fatura so de NFS-e (ou sem documentos): segue sozinha quando o robo de Lancamento NFS-e lancou as notas
+  // (MIRO) e a soma bate com a fatura. Erro aqui nao trava: fica em revisao com o motivo.
+  const soNfse = !resumo.total || (Number(resumo.nfse || 0) > 0 && Number(resumo.nfse) >= resumo.total);
+  if (soNfse && c.decisao === DECISAO.REVISAO_AUDITOR) {
+    try {
+      const conf = await conferirNfseLancadaRobo(db, f, Number(resumo.nfse || 0));
+      if (conf.fechou) {
+        const r = await liberarFaturaNfseRobo(db, f, conf, { origem });
+        enviada = r.liberada;
+        if (r.liberada) { c = { ...c, decisao: DECISAO.ENVIAR_APROVACAO }; modoNfse = 'NFSE_LANCADA'; }
+        motivo = r.liberada ? `${conf.texto} Liberada para pagamento (via robo).` : `${c.motivo} ${conf.texto} ${r.motivo}`;
+      } else motivo = `${c.motivo} ${conf.texto}`;
+    } catch (e) {
+      motivo = `${c.motivo} Conferencia das NFS-e lancadas falhou: ${String(e?.message || e).slice(0, 140)}`;
+    }
+  }
   if (!calcular && c.decisao === DECISAO.REVISAO_AUDITOR && resumo.semCalculo > 0) {
     motivo += ' Calculo pendente: o robo online nao calcula CT-es; rode "Executar agora" na tela do robo ou abra a fatura.';
   }
@@ -462,12 +521,12 @@ export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = ne
     motivo = r.enviada ? `${c.motivo} Enviada para aprovacao da gestao (via robo).` : `${c.motivo} ${r.motivo}`;
   }
   const auditorEmail = emailDoAuditor(f, emailsAuditores);
-  const para = c.decisao === DECISAO.ENVIAR_LAUDO ? cfg.emails_transportadora
+  const para = modoNfse ? auditorEmail : c.decisao === DECISAO.ENVIAR_LAUDO ? cfg.emails_transportadora
     : c.decisao === DECISAO.ENVIAR_APROVACAO ? cfg.email_aprovacao : auditorEmail;
   const agora = new Date().toISOString();
   const registro = {
     fatura_id: String(f.id), numero_fatura: f.numero_fatura, transportadora: f.transportadora,
-    modo: enviada ? 'GESTAO' : 'SOMBRA', decisao: c.decisao, motivo,
+    modo: modoNfse || (enviada ? 'GESTAO' : 'SOMBRA'), decisao: c.decisao, motivo,
     valor_fatura: Number(f.valor_fatura || 0), valor_descontar: c.descontar,
     auditor_nome: f.auditor_nome || '', auditor_email: auditorEmail,
     destinatarios: para || '', copia: c.decisao === DECISAO.REVISAO_AUDITOR ? '' : auditorEmail,

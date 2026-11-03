@@ -60,7 +60,14 @@ export function classificarFatura(resumo, considerarMenor = false) {
   const menor = Number(resumo.menor || 0);
   const descontar = Number((considerarMenor ? Math.max(0, maior - menor) : maior).toFixed(2));
   if (resumo.calculados < resumo.total || Number(resumo.semCalculo || 0) > 0) {
-    return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Auditoria incompleta: ${resumo.semCalculo || resumo.total - resumo.calculados} de ${resumo.total} CT-e(s) sem calculo${resumo.erroCalculo ? ` (erro no calculo: ${resumo.erroCalculo})` : (resumo.motivoSemCalculo ? ` (${resumo.motivoSemCalculo})` : '')}.`, descontar };
+    // So falta NFS-e (nota de servico, nao CT-e): o robo nunca resolve; motivo proprio para o card de NFS-e.
+    const semCalc = Number(resumo.semCalculo || resumo.total - resumo.calculados);
+    const nfse = Number(resumo.nfse || 0);
+    if (nfse > 0 && nfse >= semCalc && !resumo.erroCalculo) {
+      return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `NFS-e: ${nfse} de ${resumo.total} documento(s) da fatura sao nota fiscal de servico, nao CT-e. O robo nao audita NFS-e: conferir manualmente.`, descontar };
+    }
+    const extraNfse = nfse > 0 ? ` Inclui ${nfse} NFS-e (conferir manualmente).` : '';
+    return { decisao: DECISAO.REVISAO_AUDITOR, motivo: `Auditoria incompleta: ${resumo.semCalculo || resumo.total - resumo.calculados} de ${resumo.total} CT-e(s) sem calculo${resumo.erroCalculo ? ` (erro no calculo: ${resumo.erroCalculo})` : (resumo.motivoSemCalculo ? ` (${resumo.motivoSemCalculo})` : '')}.${extraNfse}`, descontar };
   }
   if (descontar > 0) {
     const brl = (v) => `R$ ${Number(v || 0).toFixed(2).replace('.', ',')}`;

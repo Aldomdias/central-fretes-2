@@ -62,6 +62,7 @@ async function carregarExecucoes() {
 const TIPOS_REVISAO = [
   { id: 'entrega', rotulo: 'So entrega', cor: '#b45309', dica: 'Calculo ok; falta comprovar a entrega de CT-e(s).' },
   { id: 'nao_localizado', rotulo: 'Sem calculo — CT-e nao localizado', cor: '#7c3aed', dica: 'CT-e sem chave, nao encontrado na base por numero/CNPJ.' },
+  { id: 'nfse', rotulo: 'Nota fiscal de servico (NFS-e)', cor: '#0f766e', dica: 'Fatura com NFS-e (nao e CT-e): o robo nunca audita, conferir manualmente.' },
   { id: 'sem_calculo', rotulo: 'Sem calculo — outros motivos', cor: '#b91c1c', dica: 'CT-e na base mas sem resultado de calculo (tabela, rota, erro no calculo).' },
   { id: 'outros', rotulo: 'Outros', cor: '#475569', dica: 'Fatura sem CT-es vinculados ou outro motivo.' },
 ];
@@ -70,6 +71,7 @@ const TIPOS_TRATADA = [
   { id: 'divergente', rotulo: 'Valor divergente (laudo)', cor: '#b45309', dica: 'O robo tinha desconto a cobrar e a fatura seguiu por fora.' },
   { id: 'sem_calculo', rotulo: 'Sem calculo', cor: '#b91c1c', dica: 'CT-e sem resultado de calculo (tabela, rota, erro).' },
   { id: 'nao_localizado', rotulo: 'CT-e nao localizado', cor: '#7c3aed', dica: 'CT-e sem chave, nao encontrado na base.' },
+  { id: 'nfse', rotulo: 'Nota fiscal de servico (NFS-e)', cor: '#0f766e', dica: 'NFS-e: o robo nao audita, conferencia manual.' },
   { id: 'entrega', rotulo: 'So entrega', cor: '#0e7490', dica: 'Calculo ok; faltava comprovar entrega.' },
   { id: 'ok', rotulo: 'Sem divergencia', cor: '#14733b', dica: 'O robo nao tinha encontrado problema.' },
   { id: 'outros', rotulo: 'Outros', cor: '#475569', dica: 'Sem analise do robo ou outro motivo.' },
@@ -82,6 +84,8 @@ function tipoTratada(e = {}) {
 }
 function tipoRevisao(motivo) {
   const m = String(motivo || '').toLowerCase();
+  // "NFS-e: ..." (so falta NFS-e) ou motivo antigo "(NFS-e (serie X) nao localizado...)".
+  if (m.startsWith('nfs-e') || m.includes('(nfs-e')) return 'nfse';
   if (m.includes('nao localizado')) return 'nao_localizado';
   if (m.includes('sem calculo') || m.includes('auditoria incompleta')) return 'sem_calculo';
   if (m.includes('entrega')) return 'entrega';

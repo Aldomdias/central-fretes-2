@@ -126,6 +126,7 @@ import CampoCidadeIbge from '../components/CampoCidadeIbge';
 import { urlBaseApp } from '../utils/urlBaseApp';
 import { enviarLaudoPorEmail } from '../services/laudoEmailService';
 import { parseDetalhesCalculoAuditoria, numeroFlexAuditoria, numeroValorNfAuditoria, numeroPesoAuditoria, montarCorrecoesCalculoFatura, escolherMaiorPeso } from '../utils/correcoesCalculoFatura';
+import { ehLinhaNfse } from '../utils/nfseFatura';
 import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
 
 // Abre o detalhe completo de uma fatura por cima da tela atual (sem navegar): carrega a plataforma
@@ -1944,6 +1945,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     Number(item.calculado_frete || 0) > 0
     && !dentroDaToleranciaAuditoria(Number(item.diferenca || 0), toleranciaFatura));
   const semCalculo = detalhes.filter((item) => !Number(item.calculado_frete || 0));
+  const linhasNfse = detalhes.filter(ehLinhaNfse);
   const tratativas = state.tratativas.filter((item) => item.fatura_id === fatura.id || item.fatura === fatura.numero_fatura);
   const historico = state.historico.filter((item) => item.fatura_id === fatura.id);
   const faturaSubstituta = fatura.substituida_por_id
@@ -3399,6 +3401,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                       const badge = { display: 'inline-block', marginTop: 3, padding: '1px 6px', borderRadius: 6, fontSize: 11, fontWeight: 700, background: '#fef3c7', color: '#92400e', whiteSpace: 'nowrap' };
                       return (
                         <>
+                          {ehLinhaNfse(item) && <div><span style={{ ...badge, background: '#ccfbf1', color: '#115e59' }} title="Nota fiscal de servico: nao e CT-e, nao entra na base nem no calculo do robo">NFS-e</span></div>}
                           {fatura.status === 'AGUARDANDO_APROVACAO_GESTAO' && divergenteCte && <div><span style={badge} title="A fatura foi enviada para liberacao e aguarda a decisao da gestao">⏳ Aguardando gestao</span></div>}
                           {naFila.length > 0 && <div><span style={badge} title="CT-e na fila de autorizacao, aguardando decisao">⏳ Na fila: {naFila[0].canal === 'SUPRIMENTOS' ? 'Suprimentos' : naFila[0].canal}</span></div>}
                         </>
@@ -3629,6 +3632,13 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <Card label="Total a descontar" value={dinheiro(totalDescontarFatura)} color={totalDescontarFatura ? '#d97706' : '#047857'} detail={faturaConsideraMenor(fatura) ? 'Considerando cobranca a menor' : 'So cobranca a maior'} />
       </div>
       <LancamentosRoboFatura fatura={fatura} />
+      {linhasNfse.length > 0 && (
+        <div className="hint-box compact" style={{ borderColor: '#5eead4', background: '#f0fdfa', color: '#115e59' }}>
+          <strong>Nota fiscal de servico (NFS-e):</strong> {linhasNfse.length === detalhes.length ? 'todos os' : `${linhasNfse.length} de ${detalhes.length}`} documento(s) desta fatura sao NFS-e, nao CT-e
+          {' '}(serie {[...new Set(linhasNfse.map((i) => String(i.serie_cte || '').trim().toUpperCase()))].join(', ')}).
+          {' '}NFS-e nao entra na base de CT-e e o robo nao audita: conferir manualmente.
+        </div>
+      )}
       {duplicadosRemovidos > 0 && (
         <div className="hint-box compact">
           {duplicadosRemovidos} linha(s) repetida(s) do bloco foram ocultadas. A fatura esta sendo analisada com um registro por CT-e.
