@@ -86,6 +86,21 @@ export default function AuditorRobo() {
     try { await salvarRoboTransportadora({ ...r, email_automatico: automatico }); await carregar(); } catch (ex) { setErro(ex.message); await carregar(); }
   };
 
+  // Um so seletor para "como sai o laudo": manual (o auditor envia), automatico apos o OK do auditor
+  // ou direto (sem aprovacao). Ligar o direto passa pela confirmacao de alternarEnvioDireto.
+  const modoEnvio = (r) => (r.envio_direto ? 'direto' : r.email_automatico ? 'auto' : 'manual');
+  const alterarModoEnvio = async (r, modo) => {
+    if (modo === modoEnvio(r)) return;
+    if (modo === 'direto') { await alternarEnvioDireto(r); return; }
+    if (!r.envio_direto) { await alternarEmail(r, modo === 'auto'); return; }
+    if (!window.confirm(`Desligar o envio direto de ${r.transportadora}? Os proximos laudos voltam a esperar a aprovacao do auditor.`)) return;
+    try {
+      await salvarRoboTransportadora({ ...r, envio_direto: false, envio_direto_desde: null, modo: 'APROVACAO', email_automatico: modo === 'auto' });
+      setMsg(`${r.transportadora}: envio direto desligado. Os laudos voltam para a aprovacao do auditor.`);
+      await carregar();
+    } catch (ex) { setErro(ex.message); await carregar(); }
+  };
+
   // Envio direto: o laudo do robo vai para a transportadora sem passar pela aprovacao do auditor.
   // Vale so para faturas que entrarem a partir de agora; o que ja esta na fila continua pedindo o OK.
   const alternarEnvioDireto = async (r) => {
@@ -94,7 +109,7 @@ export default function AuditorRobo() {
         setErro(`Preencha os e-mails de ${r.transportadora} que recebem o laudo antes de ligar o envio direto.`);
         return;
       }
-      if (!window.confirm(`Ligar o ENVIO DIRETO para ${r.transportadora}?\n\nA partir de agora, as faturas NOVAS desta transportadora com desconto saem com o laudo direto para a transportadora, sem a aprovacao do auditor.\n\nPara: ${r.emails_transportadora}\nCopia: auditor responsavel e fatura@cantustore.com.br\n\nO que ja esta na fila continua esperando o OK do auditor.`)) return;
+      if (!window.confirm(`Ligar o ENVIO DIRETO para ${r.transportadora}?\n\nA partir de agora, as faturas NOVAS desta transportadora com desconto saem com o laudo direto para a transportadora, sem a aprovacao do auditor.\n\nPara: ${r.emails_transportadora}\nCopia: auditor responsavel, fatura@corpcantuinc.onmicrosoft.com e aldo.dias@cantu.inc\n\nO que ja esta na fila continua esperando o OK do auditor.`)) return;
     } else if (!window.confirm(`Desligar o envio direto de ${r.transportadora}? Os proximos laudos voltam a esperar a aprovacao do auditor.`)) return;
     try {
       const agora = new Date().toISOString();
@@ -599,7 +614,6 @@ export default function AuditorRobo() {
             onChange={(e) => setForm((p) => ({ ...p, transportadora: e.target.value }))} style={{ minWidth: 220 }} />
           <datalist id="robo-transportadoras">{nomesTransportadora.map((n) => <option key={n} value={n} />)}</datalist>
           <input placeholder="E-mails da transportadora que recebem o laudo" value={form.emails_transportadora} onChange={(e) => setForm((p) => ({ ...p, emails_transportadora: e.target.value }))} style={{ minWidth: 240 }} />
-          <input placeholder="E-mail de aprovacao (financeiro)" value={form.email_aprovacao} onChange={(e) => setForm((p) => ({ ...p, email_aprovacao: e.target.value }))} />
           <select value={form.email_automatico ? 'auto' : 'manual'} onChange={(e) => setForm((p) => ({ ...p, email_automatico: e.target.value === 'auto' }))}
             title="Automatico: depois que o auditor aprova o laudo, o e-mail sai sozinho para a transportadora. Manual: o auditor envia.">
             <option value="manual">Laudo: o auditor envia (manual)</option>
@@ -609,60 +623,70 @@ export default function AuditorRobo() {
         </div>
         {lista.length > 0 && (
           <div className="sim-analise-tabela-wrap">
-            <table className="sim-analise-tabela">
-              <thead><tr><th>Transportadora</th><th>Auditor</th><th>E-mails laudo</th><th>Aprovacao</th><th>Envio do laudo</th><th>Considera desde</th><th>Envio direto (sem aprovacao)</th><th>Ativo</th><th /></tr></thead>
+            <table className="sim-analise-tabela robo-transp-tabela">
+              <thead><tr><th>Transportadora</th><th>Quem recebe o laudo</th><th>Envio do laudo</th><th>Considera faturas desde</th><th>Ativo</th><th /></tr></thead>
               <tbody>
-                {lista.map((r) => (
-                  <tr
-                    key={r.id}
-                    onClick={() => { setTranspSel(normNome(transpSel) === normNome(r.transportadora) ? '' : r.transportadora); }}
-                    title="Clique para filtrar o painel e a lista por esta transportadora"
-                    style={{ opacity: r.ativo ? 1 : 0.55, cursor: 'pointer', background: normNome(transpSel) === normNome(r.transportadora) ? '#eef2ff' : undefined }}
-                  >
-                    <td>{r.transportadora}</td>
-                    <td style={{ color: '#64748b', fontSize: 12 }}>Da carteira da fatura</td>
-                    <td onClick={(ev) => ev.stopPropagation()}>
-                      {r.emails_transportadora || '-'}
-                      <button type="button" className="link-button" style={{ fontSize: 11, marginLeft: 6 }} onClick={() => editarEmails(r, 'emails_transportadora', 'E-mails que recebem o laudo')}>editar</button>
-                    </td>
-                    <td onClick={(ev) => ev.stopPropagation()}>
-                      {r.email_aprovacao || '-'}
-                      <button type="button" className="link-button" style={{ fontSize: 11, marginLeft: 6 }} onClick={() => editarEmails(r, 'email_aprovacao', 'E-mail de aprovacao')}>editar</button>
-                    </td>
-                    <td onClick={(ev) => ev.stopPropagation()}>
-                      <select value={r.email_automatico ? 'auto' : 'manual'} onChange={(e) => alternarEmail(r, e.target.value === 'auto')} style={{ fontSize: 12 }}>
-                        <option value="manual">Manual</option>
-                        <option value="auto">E-mail automatico</option>
-                      </select>
-                    </td>
-                    <td onClick={(ev) => ev.stopPropagation()} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-                      <input
-                        type="date" value={dataInicioRobo(r)} style={{ fontSize: 12, padding: '2px 4px' }}
-                        title="Faturas que entraram no sistema a partir desta data entram no robo. Padrao: um dia antes da inclusao."
-                        onChange={(e) => alterarDataInicio(r, e.target.value)}
-                      />
-                      {r.data_inicio
-                        ? <button type="button" className="link-button" style={{ fontSize: 11, marginLeft: 4 }} title="Voltar para o padrao (um dia antes da inclusao)" onClick={() => alterarDataInicio(r, null)}>padrao</button>
-                        : <span style={{ fontSize: 11, color: '#64748b', marginLeft: 4 }}>(padrao)</span>}
-                    </td>
-                    <td onClick={(ev) => ev.stopPropagation()} style={{ fontSize: 12 }}>
-                      <button
-                        type="button"
-                        className={r.envio_direto ? 'btn-primary audit-small-button' : 'btn-secondary audit-small-button'}
-                        style={r.envio_direto ? { background: '#14733b', borderColor: '#14733b' } : undefined}
-                        title={r.envio_direto ? 'Ligado: laudo vai direto para a transportadora (faturas e auditor em copia). Clique para voltar a pedir a aprovacao do auditor.' : 'Desligado: o laudo espera a aprovacao do auditor. Clique para enviar direto a transportadora a partir de agora.'}
-                        onClick={() => alternarEnvioDireto(r)}
-                      >
-                        {r.envio_direto ? 'Ligado' : 'Ativar envio direto'}
-                      </button>
-                      <div style={{ color: '#64748b', marginTop: 2 }}>
-                        {r.envio_direto ? `Faturas desde ${dataBr(r.envio_direto_desde)}` : 'Passa pela aprovacao do auditor'}
-                      </div>
-                    </td>
-                    <td onClick={(ev) => ev.stopPropagation()}><input type="checkbox" checked={r.ativo} onChange={() => alternarAtivo(r)} /></td>
-                    <td onClick={(ev) => ev.stopPropagation()}><button type="button" className="btn-secondary audit-small-button" onClick={() => remover(r)}>Remover</button></td>
-                  </tr>
-                ))}
+                {lista.map((r) => {
+                  const emails = String(r.emails_transportadora || '').split(/[;,\s]+/).filter(Boolean);
+                  const modo = modoEnvio(r);
+                  return (
+                    <tr
+                      key={r.id}
+                      onClick={() => { setTranspSel(normNome(transpSel) === normNome(r.transportadora) ? '' : r.transportadora); }}
+                      title="Clique para filtrar o painel e a lista por esta transportadora"
+                      className={normNome(transpSel) === normNome(r.transportadora) ? 'selecionada' : undefined}
+                      style={{ opacity: r.ativo ? 1 : 0.55 }}
+                    >
+                      <td>
+                        <div className="robo-transp-nome">{r.transportadora}</div>
+                        <div className="robo-transp-sub">Auditor: o da carteira da fatura</div>
+                      </td>
+                      <td onClick={(ev) => ev.stopPropagation()}>
+                        <div className="robo-transp-linha">
+                          <span className="robo-transp-rotulo">Para</span>
+                          <span className="robo-transp-emails">
+                            {emails.length ? emails.map((e) => <span key={e}>{e}</span>) : <em className="robo-transp-falta">sem e-mail cadastrado</em>}
+                          </span>
+                          <button type="button" className="robo-transp-acao" onClick={() => editarEmails(r, 'emails_transportadora', 'E-mails que recebem o laudo')}>Editar</button>
+                        </div>
+                        <div className="robo-transp-linha">
+                          <span className="robo-transp-rotulo">Cópia</span>
+                          <span className="robo-transp-sub">auditor da fatura · fatura@corpcantuinc.onmicrosoft.com · aldo.dias@cantu.inc</span>
+                        </div>
+                      </td>
+                      <td onClick={(ev) => ev.stopPropagation()}>
+                        <select className={`robo-transp-modo robo-transp-modo--${modo}`} value={modo} onChange={(e) => alterarModoEnvio(r, e.target.value)}>
+                          <option value="manual">Auditor envia (manual)</option>
+                          <option value="auto">Automático após OK do auditor</option>
+                          <option value="direto">Direto, sem aprovação</option>
+                        </select>
+                        <div className="robo-transp-sub">
+                          {modo === 'direto' ? `Faturas que entraram desde ${dataBr(r.envio_direto_desde)}`
+                            : modo === 'auto' ? 'Sai sozinho depois que o auditor aprova'
+                              : 'O auditor aprova e envia'}
+                        </div>
+                      </td>
+                      <td onClick={(ev) => ev.stopPropagation()}>
+                        <input
+                          type="date" className="robo-transp-data" value={dataInicioRobo(r)}
+                          title="Faturas que entraram no sistema a partir desta data entram no robo. Padrao: um dia antes da inclusao."
+                          onChange={(e) => alterarDataInicio(r, e.target.value)}
+                        />
+                        <div className="robo-transp-sub">
+                          {r.data_inicio
+                            ? <button type="button" className="robo-transp-acao" title="Voltar para o padrao (um dia antes da inclusao)" onClick={() => alterarDataInicio(r, null)}>Voltar ao padrão</button>
+                            : 'Padrão (dia antes da inclusão)'}
+                        </div>
+                      </td>
+                      <td onClick={(ev) => ev.stopPropagation()}>
+                        <label className="robo-transp-ativo"><input type="checkbox" checked={r.ativo} onChange={() => alternarAtivo(r)} /> {r.ativo ? 'Sim' : 'Não'}</label>
+                      </td>
+                      <td onClick={(ev) => ev.stopPropagation()}>
+                        <button type="button" className="robo-transp-acao robo-transp-acao--perigo" onClick={() => remover(r)}>Remover</button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
