@@ -3487,3 +3487,23 @@ button:disabled { opacity: 0.58; cursor: not-allowed; }
   .audit-timeline > div { grid-template-columns: 1fr; }
   .audit-mode-banner { align-items: flex-start; flex-direction: column; }
 }
+
+/* Robo auditor: tabela de transportadoras monitoradas */
+.robo-transp-tabela td { vertical-align: top; font-size: 13px; }
+.robo-transp-tabela tr { cursor: pointer; }
+.robo-transp-tabela tr.selecionada td { background: #eef2ff; }
+.robo-transp-nome { font-weight: 700; }
+.robo-transp-sub { color: #64748b; font-size: 12px; margin-top: 4px; }
+.robo-transp-linha { display: flex; gap: 8px; align-items: baseline; }
+.robo-transp-linha + .robo-transp-linha { margin-top: 6px; }
+.robo-transp-rotulo { flex: 0 0 42px; color: #64748b; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+.robo-transp-emails { display: flex; flex-direction: column; gap: 2px; word-break: break-all; }
+.robo-transp-falta { color: #b42318; font-style: normal; }
+.robo-transp-acao { background: none; border: 0; padding: 0; min-height: 0; color: var(--primary, #2563eb); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.robo-transp-acao:hover { text-decoration: underline; }
+.robo-transp-acao--perigo { color: #b42318; }
+.robo-transp-modo, .robo-transp-data { font-size: 13px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border-soft, #cbd5e1); min-width: 210px; }
+.robo-transp-data { min-width: 150px; }
+.robo-transp-modo--direto { border-color: #14733b; color: #14733b; font-weight: 700; background: #f0fdf4; }
+.robo-transp-modo--auto { border-color: #2563eb; color: #1d4ed8; }
+.robo-transp-ativo { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
