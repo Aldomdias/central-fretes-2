@@ -28592,10 +28592,11 @@ async function ctesSemVinculoNf(lista = []) {
   try {
     const db = getSupabaseClient();
     for (let k = 0; k < chaves.length; k += 200) {
-      const { data, error } = await db.from("realizado_local_ctes").select("chave_cte,chave_nfe").in("chave_cte", chaves.slice(k, k + 200));
+      const { data, error } = await db.from("realizado_local_ctes").select("chave_cte,chave_nfe,competencia").in("chave_cte", chaves.slice(k, k + 200));
       if (error) throw new Error(error.message);
       (data || []).forEach((r) => {
         const c = normalizarChaveCte(r.chave_cte);
+        if (String(r.competencia || "") < COMPETENCIA_MINIMA_SEM_NF) return;
         existe.add(c);
         if (soDigitosNf(r.chave_nfe).length === 44) comNf.add(c);
       });
@@ -29072,7 +29073,7 @@ function escolherPesoMaisProximo(registrosCte = [], registrosTracking = []) {
   const porChave = new Map(registrosTracking.map((r) => [normalizarChaveCte(r.chave_cte), r]));
   return registrosCte.map((r) => escolherMaiorPeso(r, porChave.get(normalizarChaveCte(r.chave_cte))).registro);
 }
-var TOLERANCIA, dentroDaTolerancia, soDigitosNf, JUSTIFICATIVA_CONTINGENCIA, brl2, dataBr, normalizarNomeAuditor;
+var TOLERANCIA, dentroDaTolerancia, COMPETENCIA_MINIMA_SEM_NF, soDigitosNf, JUSTIFICATIVA_CONTINGENCIA, brl2, dataBr, normalizarNomeAuditor;
 var init_auditoriaRoboCore = __esm({
   "src/utils/auditoriaRoboCore.js"() {
     init_define_import_meta_env();
@@ -29091,6 +29092,7 @@ var init_auditoriaRoboCore = __esm({
     init_auditorRoboService();
     TOLERANCIA = { acima: 1, abaixo: 5 };
     dentroDaTolerancia = (dif) => Number.isFinite(Number(dif)) && Number(dif) <= TOLERANCIA.acima && Number(dif) >= -TOLERANCIA.abaixo;
+    COMPETENCIA_MINIMA_SEM_NF = "2026-10";
     soDigitosNf = (v) => String(v || "").replace(/\D/g, "");
     JUSTIFICATIVA_CONTINGENCIA = "Liberado em contingencia";
     brl2 = (v) => `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
