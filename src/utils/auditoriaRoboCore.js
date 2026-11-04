@@ -126,6 +126,10 @@ async function checagemSemNf() {
   } catch { return { ligada: false, desde: null }; }
 }
 const SEM_NF_VAZIO = { lista: [], suspeito: false };
+// So confere CT-e EMITIDO a partir de 01/10/2026 (AAMM da chave >= 2610): antes disso a base de CT-es foi
+// importada sem a aba "Notas Fiscais" e a falta da chave da NF nao quer dizer CT-e sem nota.
+export const SEM_NF_EMISSAO_DESDE_AAMM = '2610';
+const emitidoParaConferirNf = (chave) => String(chave).slice(2, 6) >= SEM_NF_EMISSAO_DESDE_AAMM;
 async function ctesSemVinculoNf(lista = [], fatura = null) {
   const regra = await checagemSemNf();
   if (!regra.ligada) return SEM_NF_VAZIO;
@@ -134,7 +138,10 @@ async function ctesSemVinculoNf(lista = [], fatura = null) {
     const desde = dataEntradaFatura({ created_at: regra.desde });
     if (entrada && desde && entrada < desde) return SEM_NF_VAZIO;
   }
-  const candidatos = lista.filter((i) => !ehLinhaNfse(i) && normalizarChaveCte(i.chave_cte).length === 44);
+  const candidatos = lista.filter((i) => {
+    const c = normalizarChaveCte(i.chave_cte);
+    return !ehLinhaNfse(i) && c.length === 44 && emitidoParaConferirNf(c);
+  });
   if (!candidatos.length) return SEM_NF_VAZIO;
   const chaves = [...new Set(candidatos.map((i) => normalizarChaveCte(i.chave_cte)))];
   const existe = new Set();

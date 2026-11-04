@@ -28419,7 +28419,10 @@ async function ctesSemVinculoNf(lista = [], fatura = null) {
     const desde = dataEntradaFatura({ created_at: regra.desde });
     if (entrada && desde && entrada < desde) return SEM_NF_VAZIO;
   }
-  const candidatos = lista.filter((i) => !ehLinhaNfse(i) && normalizarChaveCte(i.chave_cte).length === 44);
+  const candidatos = lista.filter((i) => {
+    const c = normalizarChaveCte(i.chave_cte);
+    return !ehLinhaNfse(i) && c.length === 44 && emitidoParaConferirNf(c);
+  });
   if (!candidatos.length) return SEM_NF_VAZIO;
   const chaves = [...new Set(candidatos.map((i) => normalizarChaveCte(i.chave_cte)))];
   const existe = /* @__PURE__ */ new Set();
@@ -28910,7 +28913,7 @@ function escolherPesoMaisProximo(registrosCte = [], registrosTracking = []) {
   const porChave = new Map(registrosTracking.map((r) => [normalizarChaveCte(r.chave_cte), r]));
   return registrosCte.map((r) => escolherMaiorPeso(r, porChave.get(normalizarChaveCte(r.chave_cte))).registro);
 }
-var TOLERANCIA, dentroDaTolerancia, soDigitosNf, SEM_NF_VAZIO, JUSTIFICATIVA_CONTINGENCIA, brl2, dataBr, normalizarNomeAuditor;
+var TOLERANCIA, dentroDaTolerancia, soDigitosNf, SEM_NF_VAZIO, SEM_NF_EMISSAO_DESDE_AAMM, emitidoParaConferirNf, JUSTIFICATIVA_CONTINGENCIA, brl2, dataBr, normalizarNomeAuditor;
 var init_auditoriaRoboCore = __esm({
   "src/utils/auditoriaRoboCore.js"() {
     init_define_import_meta_env();
@@ -28931,6 +28934,8 @@ var init_auditoriaRoboCore = __esm({
     dentroDaTolerancia = (dif) => Number.isFinite(Number(dif)) && Number(dif) <= TOLERANCIA.acima && Number(dif) >= -TOLERANCIA.abaixo;
     soDigitosNf = (v) => String(v || "").replace(/\D/g, "");
     SEM_NF_VAZIO = { lista: [], suspeito: false };
+    SEM_NF_EMISSAO_DESDE_AAMM = "2610";
+    emitidoParaConferirNf = (chave) => String(chave).slice(2, 6) >= SEM_NF_EMISSAO_DESDE_AAMM;
     JUSTIFICATIVA_CONTINGENCIA = "Liberado em contingencia";
     brl2 = (v) => `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
     dataBr = (v) => {
@@ -28944,6 +28949,7 @@ init_auditoriaRoboCore();
 export {
   DECISAO,
   ROBO_DATA_INICIO,
+  SEM_NF_EMISSAO_DESDE_AAMM,
   STATUS_ROBO_AUDITA,
   analisarFaturaRobo,
   apurarFaturaRobo,

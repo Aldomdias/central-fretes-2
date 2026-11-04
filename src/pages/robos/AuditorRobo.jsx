@@ -494,7 +494,7 @@ export default function AuditorRobo() {
         <strong>O que o robo faz hoje:</strong> faturas corretas (calculadas, sem desconto e todas entregues) vao direto para a
         <strong> aprovacao da gestao, marcadas "via robo"</strong>; o auditor acompanha no Meu Painel. Faturas com desconto geram
         laudo, que sai por e-mail conforme a coluna "Envio do laudo" de cada transportadora (manual, apos o OK do auditor ou direto);
-        CT-e sem NF (regra ligada) gera laudo que sai sozinho. As duvidosas vao para a fila do auditor.
+        CT-e emitido a partir de 01/10/2026 sem NF (regra ligada) gera laudo que sai sozinho. As duvidosas vao para a fila do auditor.
         <br /><strong>Como funciona:</strong> considera, para cada transportadora, as faturas que entraram a partir de <strong>um dia antes de ela ser incluida</strong> na lista (coluna "Considera desde").
         Para cada uma, o robo calcula os CT-es (se ainda nao calculados), apura o valor a descontar e a entrega, e decide:
         com desconto → laudo; correta e toda entregue → aprovacao; qualquer duvida → fila do auditor.
@@ -534,11 +534,11 @@ export default function AuditorRobo() {
               <button
                 type="button" disabled={!podeContingencia}
                 onClick={() => {
-                  if (!cfgRobo.checar_cte_sem_nf && !window.confirm('Ligar a regra "CT-e sem vinculo de NF"?\n\nNas faturas que entrarem a partir de agora, CT-e sem a chave da NF na base de CT-es nao vai para pagamento: o laudo sai SOZINHO para a transportadora pedindo a retirada e um CT-e novo.\n\nProtecao: se metade ou mais dos CT-es da fatura estiverem sem NF na base, a fatura vai para o auditor (provavel base importada sem a aba "Notas Fiscais").')) return;
+                  if (!cfgRobo.checar_cte_sem_nf && !window.confirm('Ligar a regra "CT-e sem vinculo de NF"?\n\nNas faturas que entrarem a partir de agora, CT-e emitido a partir de 01/10/2026 sem a chave da NF na base de CT-es nao vai para pagamento: o laudo sai SOZINHO para a transportadora pedindo a retirada e um CT-e novo.\n\nProtecao: se metade ou mais dos CT-es da fatura estiverem sem NF na base, a fatura vai para o auditor (provavel base importada sem a aba "Notas Fiscais").')) return;
                   if (cfgRobo.checar_cte_sem_nf && !window.confirm('Desligar a regra "CT-e sem NF"? O robo deixa de conferir a NF e CT-e sem nota fiscal pode seguir para pagamento.')) return;
                   aplicarCfg({ ...cfgRobo, checar_cte_sem_nf: !cfgRobo.checar_cte_sem_nf, checar_cte_sem_nf_desde: cfgRobo.checar_cte_sem_nf ? null : new Date().toISOString() }, cfgRobo.checar_cte_sem_nf ? 'Regra CT-e sem NF desligada.' : 'Regra CT-e sem NF ligada: vale para as faturas que entrarem a partir de agora.');
                 }}
-                title={'Ligado: CT-e sem a chave da NF dentro dele (base de CT-es) nao vai para pagamento; o laudo pede a retirada e um CT-e novo. Desligado: o robo nao confere.' + (podeContingencia ? '' : ' Somente o administrador altera.')}
+                title={'Ligado: CT-e emitido a partir de 01/10/2026 sem a chave da NF dentro dele (base de CT-es) nao vai para pagamento; o laudo pede a retirada e um CT-e novo. Desligado: o robo nao confere.' + (podeContingencia ? '' : ' Somente o administrador altera.')}
                 style={{ padding: '3px 10px', borderRadius: 999, cursor: podeContingencia ? 'pointer' : 'not-allowed', opacity: podeContingencia ? 1 : 0.7, fontWeight: 700, fontSize: 12, border: `1px solid ${cfgRobo.checar_cte_sem_nf ? '#dc2626' : '#64748b'}`, background: cfgRobo.checar_cte_sem_nf ? '#fef2f2' : '#f8fafc', color: cfgRobo.checar_cte_sem_nf ? '#dc2626' : '#475569' }}
               >
                 {cfgRobo.checar_cte_sem_nf ? `CT-e sem NF: BLOQUEIA${cfgRobo.checar_cte_sem_nf_desde ? ` (faturas desde ${dataBr(cfgRobo.checar_cte_sem_nf_desde)})` : ''}` : 'CT-e sem NF: DESLIGADA'}
