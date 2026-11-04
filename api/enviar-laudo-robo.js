@@ -80,7 +80,8 @@ export default async function handler(req, res) {
     if (e2) throw new Error(`Lista do robo: ${e2.message}`);
     const cfg = (cfgs || []).find((c) => norm(c.transportadora) === transportadoras[0]);
     if (!cfg) return res.status(400).json({ ok: false, erro: `${nomeTransp} nao esta na lista do robo.` });
-    if (origem === 'auto' && !cfg.email_automatico && !cfg.envio_direto) return res.status(409).json({ ok: false, erro: `E-mail automatico desligado para ${nomeTransp}.` });
+    const soSemNf = [...porId.values()].every((e) => e.aprovado_auditor_por === 'Robo (CT-e sem NF)');
+    if (origem === 'auto' && !cfg.email_automatico && !cfg.envio_direto && !soSemNf) return res.status(409).json({ ok: false, erro: `E-mail automatico desligado para ${nomeTransp}.` });
     const para = emailsDe(cfg.emails_transportadora);
     if (!para.length) return res.status(400).json({ ok: false, erro: `Sem e-mail cadastrado para ${nomeTransp}: preencha em Automacao > Robo Auditor.` });
     // Junto em TODO laudo: o(s) auditor(es) responsavel(is) e o grupo padrao da auditoria (historico mesmo sem auditor).
@@ -150,7 +151,7 @@ export default async function handler(req, res) {
 
     // 7) marca como enviado e registra no historico de cada fatura
     const agora = new Date().toISOString();
-    const direto = [...porId.values()].every((e) => e.aprovado_auditor_por === 'Robo (envio direto)');
+    const direto = [...porId.values()].every((e) => ['Robo (envio direto)', 'Robo (CT-e sem NF)'].includes(e.aprovado_auditor_por));
     const { error: e3 } = await db.from('auditor_robo_execucoes')
       .update({ acao_executada: true, modo: 'EMAIL_ENVIADO', executado_por: origem === 'auto' ? (direto ? 'Robo (envio direto)' : 'Robo (e-mail automatico)') : 'Robo (e-mail manual)', executado_em: agora, destinatarios: para.join('; '), copia: copia.join('; ') })
       .in('fatura_id', ids);

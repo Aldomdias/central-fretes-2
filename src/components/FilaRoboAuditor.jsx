@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { carregarSessao } from '../utils/authLocal';
 import RoboProgressoAmd from './RoboProgressoAmd';
 import {
-  aprovarLaudosRobo, DECISAO, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, listarFilaAuditorRobo, reavaliarFaturaRobo,
+  aprovarLaudosRobo, DECISAO, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, listarFilaAuditorRobo, reavaliarFaturaRobo, ctesSemNfDe,
 } from '../services/auditorRoboService';
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -31,10 +31,12 @@ export default function FilaRoboAuditor({ faturas, onAbrirFatura, onEnviarEmail 
   const porId = useMemo(() => new Map((faturas || []).map((f) => [String(f.id), f])), [faturas]);
   // So casos cuja fatura ainda esta em auditoria e dentro do recorte do auditor.
   const itens = useMemo(() => (fila || []).map((e) => ({ e, f: porId.get(String(e.fatura_id)) })).filter((x) => x.f && STATUS_ROBO_AUDITA.includes(x.f.status)), [fila, porId]);
-  const laudos = itens.filter((x) => x.e.decisao === DECISAO.ENVIAR_LAUDO);
+  // CT-e sem vinculo de NF: o laudo sai sozinho (sem OK do auditor); aparece em "Para revisar" ate sair.
+  const semNf = (x) => x.e.decisao === DECISAO.ENVIAR_LAUDO && ctesSemNfDe(x.e).length > 0;
+  const laudos = itens.filter((x) => x.e.decisao === DECISAO.ENVIAR_LAUDO && !semNf(x));
   const aguardandoOk = laudos.filter((x) => !x.e.aprovado_auditor_em);
   const aprovados = laudos.filter((x) => x.e.aprovado_auditor_em);
-  const revisar = itens.filter((x) => x.e.decisao === DECISAO.REVISAO_AUDITOR);
+  const revisar = itens.filter((x) => x.e.decisao === DECISAO.REVISAO_AUDITOR || semNf(x));
 
   const alternar = (id) => setSel((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const aprovar = async (ids) => {

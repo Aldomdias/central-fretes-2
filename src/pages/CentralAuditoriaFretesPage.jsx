@@ -125,7 +125,7 @@ import LancamentosRoboFatura from '../components/LancamentosRoboFatura';
 import CampoCidadeIbge from '../components/CampoCidadeIbge';
 import { urlBaseApp } from '../utils/urlBaseApp';
 import { enviarLaudoPorEmail } from '../services/laudoEmailService';
-import { listarFilaAuditorRobo, listarRoboTransportadoras, normNome, ROBO_ENVIO_DIRETO_POR, STATUS_ROBO_AUDITA } from '../services/auditorRoboService';
+import { ctesSemNfDe, listarFilaAuditorRobo, listarRoboTransportadoras, normNome, ROBO_ENVIO_DIRETO_POR, ROBO_SEM_NF_POR, STATUS_ROBO_AUDITA } from '../services/auditorRoboService';
 import { parseDetalhesCalculoAuditoria, numeroFlexAuditoria, numeroValorNfAuditoria, numeroPesoAuditoria, montarCorrecoesCalculoFatura, escolherMaiorPeso } from '../utils/correcoesCalculoFatura';
 import { ehLinhaNfse } from '../utils/nfseFatura';
 import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
@@ -6160,6 +6160,17 @@ ${portaisLaudo.length ? `
       const opts = { ...opcoesLaudoTransportadorLote, transportador: laudoTransportador };
       const blocos = [];
       const detalhesExatosPorFatura = await carregarDetalhesExatosFaturas(faturasSelecionadas.map((item) => item.id));
+      // CT-es sem vinculo de NF apontados pelo Robo Auditor: entram no laudo do transportador para serem retirados da fatura.
+      const semNfPorFatura = new Map();
+      if (laudoTransportador) {
+        try {
+          const { data: execsSemNf } = await getSupabaseClient().from('auditor_robo_execucoes').select('fatura_id,ctes_sem_nf')
+            .in('fatura_id', faturasSelecionadas.map((item) => String(item.id)));
+          (execsSemNf || []).forEach((e) => { const l = ctesSemNfDe(e); if (l.length) semNfPorFatura.set(String(e.fatura_id), l); });
+        } catch { /* sem a coluna (migration) ou sem o robo: laudo sai sem o aviso */ }
+      }
+      const semNfDoBloco = (fatura) => semNfPorFatura.get(String(fatura.id)) || [];
+      const descontoSemNf = (fatura) => semNfDoBloco(fatura).reduce((a, c) => a + Number(c.valor_frete || 0) - Math.max(Number(c.diferenca_incluida || 0), 0), 0);
       // Link de confirmacao e por fatura (nao um so pro lote inteiro) — cada
       // fatura e um documento distinto que o transportador confirma sozinho.
       let estadoComLinks = state;
@@ -6213,7 +6224,7 @@ ${portaisLaudo.length ? `
           const resumoBlocoLaudo = resumirDetalhesAuditoria(aplicarMascaraLaudoTransportador(detalhesLaudo, opts, carregarToleranciaAuditoria()), carregarToleranciaAuditoria());
           await registrarNumerosLaudoConfirmacao(fatura.id, {
             calculado: resumoBlocoLaudo.calculoAmd,
-            desconto: descontoConformeEscolha(resumoBlocoLaudo.cobrancaAcima, resumoBlocoLaudo.cobrancaAbaixo, faturaConsideraMenor(faturaAtual)),
+            desconto: descontoConformeEscolha(resumoBlocoLaudo.cobrancaAcima, resumoBlocoLaudo.cobrancaAbaixo, faturaConsideraMenor(faturaAtual)) + descontoSemNf(fatura),
           });
         }
         blocos.push({ fatura: faturaAtual, detalhes: detalhesLaudo, linkConfirmacao });
@@ -6242,8 +6253,9 @@ ${portaisLaudo.length ? `
           resumoBloco.cobrancaAcima,
           resumoBloco.cobrancaAbaixo,
           faturaConsideraMenor(bloco.fatura),
-        );
+        ) + descontoSemNf(bloco.fatura);
       }, 0);
+      const semNfGeral = blocos.flatMap((bloco) => semNfDoBloco(bloco.fatura).map((c) => ({ ...c, fatura: bloco.fatura.numero_fatura })));
       const transportadoras = [...new Set(faturasSelecionadas.map((f) => f.transportadora).filter(Boolean))].join(', ');
       const cards = [
         ['Faturas', faturasSelecionadas.length],
@@ -6256,6 +6268,7 @@ ${portaisLaudo.length ? `
         ['Cobranca abaixo', dinheiro(resumoGeral.cobrancaAbaixo)],
         ['Total a descontar', dinheiro(totalDescontarGeral)],
         ['Sem entrega', semEntregaGeral.length],
+        ...(semNfGeral.length ? [['CT-e sem vinculo NF (retirar)', semNfGeral.length]] : []),
       ];
       if (laudoTransportador) {
         for (const bloco of blocos) {
@@ -6274,6 +6287,9 @@ ${portaisLaudo.length ? `
           portaisEntregaLote.push({ numero: bloco.fatura.numero_fatura, url: link, total: pend.length });
         }
       }
+      const blocoSemNfLote = semNfGeral.length
+        ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:2px solid #dc2626;border-radius:10px;color:#7f1d1d"><strong>⛔ ${semNfGeral.length} CT-e(s) sem vinculo com a nota fiscal — retirar da fatura</strong><p style="margin:6px 0 8px;font-size:13px">Estes CT-es nao trazem a chave da NF-e. O vinculo do CT-e com a nota fiscal e obrigatorio, por isso nao podemos pagar estes CT-es: retire-os da fatura e reenvie a fatura corrigida. O valor deles esta incluido no total a descontar.</p><table style="border-collapse:collapse;font-size:12px;background:#fff"><thead><tr><th style="padding:4px 8px;border:1px solid #fca5a5;text-align:left">Fatura</th><th style="padding:4px 8px;border:1px solid #fca5a5;text-align:left">CT-e</th><th style="padding:4px 8px;border:1px solid #fca5a5;text-align:left">Chave do CT-e</th><th style="padding:4px 8px;border:1px solid #fca5a5;text-align:right">Valor cobrado</th></tr></thead><tbody>${semNfGeral.map((c) => `<tr><td style="padding:4px 8px;border:1px solid #fca5a5">${escapeHtmlAuditoria(c.fatura || '')}</td><td style="padding:4px 8px;border:1px solid #fca5a5">${escapeHtmlAuditoria(c.numero_cte || '-')}</td><td style="padding:4px 8px;border:1px solid #fca5a5;font-family:monospace">${escapeHtmlAuditoria(c.chave_cte || '')}</td><td style="padding:4px 8px;border:1px solid #fca5a5;text-align:right">${dinheiro(c.valor_frete)}</td></tr>`).join('')}</tbody></table></div>`
+        : '';
       const blocoEntregaLote = semEntregaGeral.length
         ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><details><summary style="cursor:pointer;font-weight:700">⚠ ${semEntregaGeral.length} CT-e(s) sem entrega comprovada no lote — clique para ver os detalhes</summary><p style="margin:6px 0 0;font-size:13px">O pagamento so deve ser liberado com todos os CT-es entregues. CT-es: <b>${semEntregaGeral.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtesLote?.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p></details>${portaisEntregaLote.map((portal) => botaoPortalEntrega(portal.url, `Responder entregas — fatura ${portal.numero} (${portal.total} CT-e)`)).join('')}</div>`
         : (entregaCtesLote ? '' : `<div style="margin:0 0 14px;padding:14px 18px;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;color:#7c2d12"><strong>⚠ Nao foi possivel consultar o status de entrega dos CT-es deste lote.</strong></div>`);
@@ -6361,6 +6377,7 @@ ${portaisLaudo.length ? `
         </style></head><body>
         <div class="hero"><h1>Laudo consolidado de faturas</h1><p>${escapeHtmlAuditoria(transportadoras || 'Transportadora')} - ${faturasSelecionadas.length} fatura(s) - gerado em ${new Date().toLocaleString('pt-BR')}</p></div>
         <div class="wrap"><div class="cards">${cards.map(([label, value]) => `<div class="card"><span>${escapeHtmlAuditoria(label)}</span><strong>${escapeHtmlAuditoria(value)}</strong></div>`).join('')}</div>
+        ${blocoSemNfLote}
         ${blocoEntregaLote}
         <div class="note">Clique em cima de qualquer fatura para ver os CT-es; clique em cima de um CT-e para abrir os detalhes completos do calculo (taxas, ICMS, base do frete etc.).</div>
         <div class="filters">
@@ -6476,6 +6493,7 @@ ${portaisLaudo.length ? `
           totalDescontar: totalDescontarGeral,
           assinatura: sessao?.nome,
           responderTodos: enviarEmail,
+          semVinculoNf: semNfGeral,
         }, dinheiro);
         const numerosFaturas = blocos.map((bloco) => bloco.fatura.numero_fatura).filter(Boolean);
         const assuntoEmail = `Laudo de auditoria de fretes${transportadoras ? ` - ${transportadoras}` : ''} - fatura(s) ${numerosFaturas.slice(0, 5).join(', ')}${numerosFaturas.length > 5 ? '...' : ''}`;
@@ -10262,14 +10280,17 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
     (async () => {
       try {
         const [{ lista }, fila] = await Promise.all([listarRoboTransportadoras(), listarFilaAuditorRobo()]);
-        const diretas = new Map((lista || []).filter((c) => c.ativo && c.envio_direto).map((c) => [normNome(c.transportadora), c]));
-        if (!diretas.size) return;
+        // Envio direto ligado OU laudo de CT-e sem vinculo de NF (sai sempre sozinho); precisa ter e-mail cadastrado.
+        const comEmail = new Map((lista || []).filter((c) => c.ativo && String(c.emails_transportadora || '').trim()).map((c) => [normNome(c.transportadora), c]));
+        if (!comEmail.size) return;
         const porId = new Map((state.faturas || []).map((f) => [String(f.id), f]));
         const grupos = new Map();
         (fila || []).forEach((e) => {
-          if (e.decisao !== 'ENVIAR_LAUDO' || e.acao_executada || e.aprovado_auditor_por !== ROBO_ENVIO_DIRETO_POR) return;
+          if (e.decisao !== 'ENVIAR_LAUDO' || e.acao_executada || ![ROBO_ENVIO_DIRETO_POR, ROBO_SEM_NF_POR].includes(e.aprovado_auditor_por)) return;
           const f = porId.get(String(e.fatura_id));
-          if (!f || !STATUS_ROBO_AUDITA.includes(f.status) || !diretas.has(normNome(f.transportadora))) return;
+          const cfg = f && comEmail.get(normNome(f.transportadora));
+          if (!cfg || !STATUS_ROBO_AUDITA.includes(f.status)) return;
+          if (e.aprovado_auditor_por === ROBO_ENVIO_DIRETO_POR && !cfg.envio_direto) return;
           const g = grupos.get(normNome(f.transportadora)) || { transportadora: f.transportadora, ids: [] };
           if (g.ids.length < 300) g.ids.push(String(f.id));
           grupos.set(normNome(f.transportadora), g);

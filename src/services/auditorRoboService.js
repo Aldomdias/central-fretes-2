@@ -26,6 +26,21 @@ export function dataInicioRobo(cfg) {
 // Envio direto (sem OK do auditor): ligado na transportadora e a fatura ENTROU no sistema depois que foi ligado.
 // O que ja estava na fila quando ligou continua pedindo a aprovacao do auditor.
 export const ROBO_ENVIO_DIRETO_POR = 'Robo (envio direto)';
+// CT-e sem vinculo de NF: o laudo sai sozinho para a transportadora pedindo a retirada do CT-e da fatura.
+export const ROBO_SEM_NF_POR = 'Robo (CT-e sem NF)';
+export const MOTIVO_SEM_NF = 'CT-e sem vinculo de NF';
+export const ctesSemNfDe = (e) => (Array.isArray(e?.ctes_sem_nf) ? e.ctes_sem_nf : []);
+
+// Grava execucoes do robo. Sem a coluna ctes_sem_nf (migration 20261104_002 ainda nao aplicada), grava sem ela.
+export async function upsertExecucoesRobo(db, registros) {
+  const lista = Array.isArray(registros) ? registros : [registros];
+  let { error } = await db.from('auditor_robo_execucoes').upsert(lista, { onConflict: 'fatura_id' });
+  if (error && /ctes_sem_nf/i.test(error.message || '')) {
+    console.warn('[robo] aplique a migration 20261104_002_robo_cte_sem_nf.sql (coluna ctes_sem_nf).');
+    ({ error } = await db.from('auditor_robo_execucoes').upsert(lista.map(({ ctes_sem_nf: _x, ...r }) => r), { onConflict: 'fatura_id' }));
+  }
+  return { error };
+}
 export function envioDiretoVale(cfg, f) {
   if (!cfg?.envio_direto || !cfg?.envio_direto_desde) return false;
   const desde = new Date(cfg.envio_direto_desde).getTime();
@@ -69,6 +84,26 @@ export function classificarFatura(resumo, considerarMenor = false) {
   const maior = Number(resumo.maior || 0);
   const menor = Number(resumo.menor || 0);
   const descontar = Number((considerarMenor ? Math.max(0, maior - menor) : maior).toFixed(2));
+  // CT-e sem a chave da NF: nao pode ser pago (o vinculo com a nota fiscal e obrigatorio). Vale sobre o resto:
+  // a fatura nao vai para pagamento e o laudo segue para a transportadora pedindo a retirada desses CT-es
+  // (o valor deles entra no desconto, sem contar duas vezes a cobranca acima que ja tinham).
+  const semNf = Array.isArray(resumo.semNf) ? resumo.semNf : [];
+  if (semNf.length) {
+    const brl = (v) => `R$ ${Number(v || 0).toFixed(2).replace('.', ',')}`;
+    const valorSemNf = semNf.reduce((a, c) => a + Number(c.valor_frete || 0), 0);
+    const difSemNf = semNf.reduce((a, c) => a + Math.max(Number(c.diferenca_incluida || 0), 0), 0);
+    const total = Number(Math.max(0, descontar - difSemNf + valorSemNf).toFixed(2));
+    const numeros = semNf.map((c) => c.numero_cte || String(c.chave_cte || '').slice(25, 34)).filter(Boolean);
+    const extra = [
+      resumo.calculados < resumo.total ? `${resumo.total - resumo.calculados} CT-e(s) sem calculo` : '',
+      resumo.pendentes > 0 ? `${resumo.pendentes} sem entrega comprovada` : '',
+      maior - difSemNf > 0.01 ? `cobranca acima ${brl(maior - difSemNf)} nos demais` : '',
+    ].filter(Boolean);
+    return {
+      decisao: DECISAO.ENVIAR_LAUDO, semNf: true, descontar: total,
+      motivo: `${MOTIVO_SEM_NF}: ${semNf.length} de ${resumo.total} CT-e(s) sem a chave da nota fiscal (CT-e ${numeros.slice(0, 10).join(', ')}${numeros.length > 10 ? '...' : ''}) — retirar da fatura (${brl(valorSemNf)}). Laudo segue para a transportadora.${extra.length ? ` Tambem: ${extra.join(' · ')}.` : ''} A descontar ${brl(total)}.`,
+    };
+  }
   if (resumo.calculados < resumo.total || Number(resumo.semCalculo || 0) > 0) {
     // So falta NFS-e (nota de servico, nao CT-e): o robo nunca resolve; motivo proprio para o card de NFS-e.
     const semCalc = Number(resumo.semCalculo || resumo.total - resumo.calculados);
@@ -155,7 +190,7 @@ export async function listarExecucoesRobo(limite = 100000) {
 
 export async function gravarExecucoesRobo(registros) {
   for (let i = 0; i < registros.length; i += 200) {
-    const { error } = await getSupabaseClient().from('auditor_robo_execucoes').upsert(registros.slice(i, i + 200), { onConflict: 'fatura_id' });
+    const { error } = await upsertExecucoesRobo(getSupabaseClient(), registros.slice(i, i + 200));
     if (error) throw new Error(`Erro ao gravar execucoes do robo: ${error.message}`);
   }
 }
@@ -215,7 +250,7 @@ export async function reavaliarFaturaRobo(fatura, anterior, { usuario = 'auditor
     cfg, emailsAuditores, usuario, origem: `reavaliacao ${soEntrega ? 'so entrega' : 'manual'} - ${usuario}`, anterior, aoProgredir,
     calcular: !soEntrega, recalcularTudo: !soEntrega, pesoMaisProximo,
   });
-  const { error } = await db.from('auditor_robo_execucoes').upsert(registro, { onConflict: 'fatura_id' });
+  const { error } = await upsertExecucoesRobo(db, registro);
   if (error) throw new Error(`Erro ao gravar a reavaliacao: ${error.message}`);
   return registro;
 }
