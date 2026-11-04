@@ -23868,6 +23868,13 @@ function normalizeMunicipioIbgeRow(row = {}) {
     "uf_sigla",
     "sg_uf"
   ]).toUpperCase().slice(0, 2);
+  const mesorregiao = pickIbgeValue(row, [
+    "mesorregiao",
+    "nome_mesorregiao",
+    "mesorregiao_nome",
+    "meso_regiao",
+    "nm_mesorregiao"
+  ]);
   Object.entries(row || {}).forEach(([key, value]) => {
     const chave = String(key || "").toLowerCase();
     const texto = String(value ?? "").trim();
@@ -23883,7 +23890,7 @@ function normalizeMunicipioIbgeRow(row = {}) {
     }
   });
   if (!ibge || !cidade) return null;
-  return { ibge, cidade, uf };
+  return { ibge, cidade, uf, mesorregiao };
 }
 async function resolverIbgePorCepDbComCache(cep, cache) {
   const cepLimpo = normalizarCepDb(cep);
@@ -28378,6 +28385,21 @@ function dataInicioRobo(cfg) {
   brasilia.setUTCDate(brasilia.getUTCDate() - 1);
   return brasilia.toISOString().slice(0, 10);
 }
+async function upsertExecucoesRobo(db, registros) {
+  const lista = Array.isArray(registros) ? registros : [registros];
+  let { error } = await db.from("auditor_robo_execucoes").upsert(lista, { onConflict: "fatura_id" });
+  if (error && /ctes_sem_nf/i.test(error.message || "")) {
+    console.warn("[robo] aplique a migration 20261104_002_robo_cte_sem_nf.sql (coluna ctes_sem_nf).");
+    ({ error } = await db.from("auditor_robo_execucoes").upsert(lista.map(({ ctes_sem_nf: _x, ...r }) => r), { onConflict: "fatura_id" }));
+  }
+  return { error };
+}
+function envioDiretoVale(cfg, f) {
+  if (!cfg?.envio_direto || !cfg?.envio_direto_desde) return false;
+  const desde = new Date(cfg.envio_direto_desde).getTime();
+  const entrada = new Date(f?.created_at || f?.importado_em || 0).getTime();
+  return Number.isFinite(desde) && Number.isFinite(entrada) && entrada >= desde;
+}
 function laudoResolvidoFora(e = {}, f = null) {
   if (e.decisao !== DECISAO.ENVIAR_LAUDO) return false;
   if (e.modo === "TRATADA_FORA") return true;
@@ -28390,6 +28412,25 @@ function classificarFatura(resumo, considerarMenor = false) {
   const maior = Number(resumo.maior || 0);
   const menor = Number(resumo.menor || 0);
   const descontar = Number((considerarMenor ? Math.max(0, maior - menor) : maior).toFixed(2));
+  const semNf = Array.isArray(resumo.semNf) ? resumo.semNf : [];
+  if (semNf.length) {
+    const brl3 = (v) => `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
+    const valorSemNf = semNf.reduce((a, c) => a + Number(c.valor_frete || 0), 0);
+    const difSemNf = semNf.reduce((a, c) => a + Math.max(Number(c.diferenca_incluida || 0), 0), 0);
+    const total = Number(Math.max(0, descontar - difSemNf + valorSemNf).toFixed(2));
+    const numeros = semNf.map((c) => c.numero_cte || String(c.chave_cte || "").slice(25, 34)).filter(Boolean);
+    const extra = [
+      resumo.calculados < resumo.total ? `${resumo.total - resumo.calculados} CT-e(s) sem calculo` : "",
+      resumo.pendentes > 0 ? `${resumo.pendentes} sem entrega comprovada` : "",
+      maior - difSemNf > 0.01 ? `cobranca acima ${brl3(maior - difSemNf)} nos demais` : ""
+    ].filter(Boolean);
+    return {
+      decisao: DECISAO.ENVIAR_LAUDO,
+      semNf: true,
+      descontar: total,
+      motivo: `${MOTIVO_SEM_NF}: ${semNf.length} de ${resumo.total} CT-e(s) sem a chave da nota fiscal dentro do CT-e (CT-e ${numeros.slice(0, 10).join(", ")}${numeros.length > 10 ? "..." : ""}) \u2014 retirar da fatura e emitir CT-e novo com a NF vinculada (${brl3(valorSemNf)}). Laudo segue para a transportadora.${extra.length ? ` Tambem: ${extra.join(" \xB7 ")}.` : ""} A descontar ${brl3(total)}.`
+    };
+  }
   if (resumo.calculados < resumo.total || Number(resumo.semCalculo || 0) > 0) {
     const semCalc = Number(resumo.semCalculo || resumo.total - resumo.calculados);
     const nfse = Number(resumo.nfse || 0);
@@ -28424,7 +28465,7 @@ async function buscarTodasPaginas(montar, maximo = 1e5) {
   }
   return { data: linhas, error: null };
 }
-var DECISAO, ROBO_DATA_INICIO, dataEntradaFatura, STATUS_ROBO_AUDITA, STATUS_PAGAS, faturaPaga, faturaLancadaErp;
+var DECISAO, ROBO_DATA_INICIO, ROBO_ENVIO_DIRETO_POR, ROBO_SEM_NF_POR, MOTIVO_SEM_NF, dataEntradaFatura, STATUS_ROBO_AUDITA, STATUS_PAGAS, faturaPaga, faturaLancadaErp;
 var init_auditorRoboService = __esm({
   "src/services/auditorRoboService.js"() {
     "use strict";
@@ -28436,6 +28477,9 @@ var init_auditorRoboService = __esm({
       REVISAO_AUDITOR: "REVISAO_AUDITOR"
     };
     ROBO_DATA_INICIO = "2026-10-13";
+    ROBO_ENVIO_DIRETO_POR = "Robo (envio direto)";
+    ROBO_SEM_NF_POR = "Robo (CT-e sem NF)";
+    MOTIVO_SEM_NF = "CT-e sem vinculo de NF";
     dataEntradaFatura = (f) => {
       const v = f?.created_at || f?.importado_em;
       if (!v) return "";
@@ -28529,6 +28573,50 @@ function resumir(lista) {
   });
   const motivoSemCalculo = [...motivos.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
   return { motivoSemCalculo, nfse, total, calculados, calculoAmd: Number(calculoAmd.toFixed(2)), semCalculo: total - calculados, divergentes, maior: Number(maior.toFixed(2)), menor: Number(menor.toFixed(2)) };
+}
+async function checagemSemNfLigada() {
+  try {
+    const { data } = await getSupabaseClient().from("auditor_robo_config").select("checar_cte_sem_nf").eq("id", 1).maybeSingle();
+    return data?.checar_cte_sem_nf === true;
+  } catch {
+    return false;
+  }
+}
+async function ctesSemVinculoNf(lista = []) {
+  if (!await checagemSemNfLigada()) return [];
+  const candidatos = lista.filter((i) => !ehLinhaNfse(i) && normalizarChaveCte(i.chave_cte).length === 44);
+  if (!candidatos.length) return [];
+  const chaves = [...new Set(candidatos.map((i) => normalizarChaveCte(i.chave_cte)))];
+  const existe = /* @__PURE__ */ new Set();
+  const comNf = /* @__PURE__ */ new Set();
+  try {
+    const db = getSupabaseClient();
+    for (let k = 0; k < chaves.length; k += 200) {
+      const { data, error } = await db.from("realizado_local_ctes").select("chave_cte,chave_nfe").in("chave_cte", chaves.slice(k, k + 200));
+      if (error) throw new Error(error.message);
+      (data || []).forEach((r) => {
+        const c = normalizarChaveCte(r.chave_cte);
+        existe.add(c);
+        if (soDigitosNf(r.chave_nfe).length === 44) comNf.add(c);
+      });
+    }
+  } catch (e) {
+    console.warn("[robo] checagem de CT-e sem NF nao feita:", e?.message || e);
+    return [];
+  }
+  return candidatos.filter((i) => {
+    const c = normalizarChaveCte(i.chave_cte);
+    return existe.has(c) && !comNf.has(c);
+  }).map((i) => {
+    const dif = Number(i.diferenca || 0);
+    const contouNaCobrancaAcima = (i.desconto_sem_tabela || Number(i.calculado_frete || 0) > 0 && !dentroDaTolerancia(dif)) && dif > 0;
+    return {
+      chave_cte: normalizarChaveCte(i.chave_cte),
+      numero_cte: String(i.numero_cte || "").trim(),
+      valor_frete: Number(Number(i.valor_frete || 0).toFixed(2)),
+      diferenca_incluida: contouNaCobrancaAcima ? Number(dif.toFixed(2)) : 0
+    };
+  });
 }
 async function detalhesExatos(fatura) {
   let detalhes = await carregarDetalhesFaturaSupabase(fatura.id);
@@ -28756,7 +28844,8 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
   } catch {
   }
   const excedentesLotacao = await excedentesLotacaoPendentes(fatura, lista);
-  return { ...r, entregues, pendentes: pendentes2, erroCalculo, falhasCalculo, excedentesLotacao, falhaFilaLotacao };
+  const semNf = await ctesSemVinculoNf(lista);
+  return { ...r, entregues, pendentes: pendentes2, erroCalculo, falhasCalculo, excedentesLotacao, falhaFilaLotacao, semNf };
 }
 function aguardarOperacaoLotacao(c, resumo) {
   if (c.decisao === DECISAO.REVISAO_AUDITOR) return c;
@@ -28951,7 +29040,8 @@ async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = /* @__PUR
     copia: c.decisao === DECISAO.REVISAO_AUDITOR ? "" : auditorEmail,
     acao_executada: enviada,
     executado_por: usuario,
-    executado_em: agora
+    executado_em: agora,
+    ctes_sem_nf: resumo.semNf || []
   };
   if (anterior) {
     registro.reavaliado_em = agora;
@@ -28962,13 +29052,27 @@ async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = /* @__PUR
       registro.aprovado_auditor_por = null;
     }
   }
+  if (c.semNf) {
+    const manteve = anterior?.aprovado_auditor_em && registro.aprovado_auditor_em !== null;
+    if (!manteve) {
+      registro.aprovado_auditor_em = agora;
+      registro.aprovado_auditor_por = ROBO_SEM_NF_POR;
+    }
+  } else if (c.decisao === DECISAO.ENVIAR_LAUDO && envioDiretoVale(cfg, f)) {
+    const manteve = anterior?.aprovado_auditor_em && registro.aprovado_auditor_em !== null;
+    if (!manteve) {
+      registro.aprovado_auditor_em = agora;
+      registro.aprovado_auditor_por = ROBO_ENVIO_DIRETO_POR;
+    }
+    registro.motivo = `${registro.motivo} Envio direto: laudo segue para a transportadora sem aprovacao do auditor.`;
+  }
   return registro;
 }
 function escolherPesoMaisProximo(registrosCte = [], registrosTracking = []) {
   const porChave = new Map(registrosTracking.map((r) => [normalizarChaveCte(r.chave_cte), r]));
   return registrosCte.map((r) => escolherMaiorPeso(r, porChave.get(normalizarChaveCte(r.chave_cte))).registro);
 }
-var TOLERANCIA, dentroDaTolerancia, JUSTIFICATIVA_CONTINGENCIA, brl2, dataBr, normalizarNomeAuditor;
+var TOLERANCIA, dentroDaTolerancia, soDigitosNf, JUSTIFICATIVA_CONTINGENCIA, brl2, dataBr, normalizarNomeAuditor;
 var init_auditoriaRoboCore = __esm({
   "src/utils/auditoriaRoboCore.js"() {
     init_define_import_meta_env();
@@ -28987,6 +29091,7 @@ var init_auditoriaRoboCore = __esm({
     init_auditorRoboService();
     TOLERANCIA = { acima: 1, abaixo: 5 };
     dentroDaTolerancia = (dif) => Number.isFinite(Number(dif)) && Number(dif) <= TOLERANCIA.acima && Number(dif) >= -TOLERANCIA.abaixo;
+    soDigitosNf = (v) => String(v || "").replace(/\D/g, "");
     JUSTIFICATIVA_CONTINGENCIA = "Liberado em contingencia";
     brl2 = (v) => `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
     dataBr = (v) => {
@@ -29015,5 +29120,6 @@ export {
   entrarCacheCalculo as iniciarCacheCalculoRobo,
   laudoResolvidoFora,
   liberarFaturaNfseRobo,
-  normalizarNomeAuditor
+  normalizarNomeAuditor,
+  upsertExecucoesRobo
 };

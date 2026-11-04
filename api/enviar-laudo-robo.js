@@ -37,6 +37,7 @@ export default async function handler(req, res) {
   cors(res);
   if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'POST') return res.status(405).json({ ok: false, erro: 'Metodo nao permitido.' });
+  let destravar = async () => {};
   try {
     const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
     const chave = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -79,7 +80,8 @@ export default async function handler(req, res) {
     if (e2) throw new Error(`Lista do robo: ${e2.message}`);
     const cfg = (cfgs || []).find((c) => norm(c.transportadora) === transportadoras[0]);
     if (!cfg) return res.status(400).json({ ok: false, erro: `${nomeTransp} nao esta na lista do robo.` });
-    if (origem === 'auto' && !cfg.email_automatico) return res.status(409).json({ ok: false, erro: `E-mail automatico desligado para ${nomeTransp}.` });
+    const soSemNf = [...porId.values()].every((e) => e.aprovado_auditor_por === 'Robo (CT-e sem NF)');
+    if (origem === 'auto' && !cfg.email_automatico && !cfg.envio_direto && !soSemNf) return res.status(409).json({ ok: false, erro: `E-mail automatico desligado para ${nomeTransp}.` });
     const para = emailsDe(cfg.emails_transportadora);
     if (!para.length) return res.status(400).json({ ok: false, erro: `Sem e-mail cadastrado para ${nomeTransp}: preencha em Automacao > Robo Auditor.` });
     // Junto em TODO laudo: o(s) auditor(es) responsavel(is) e o grupo padrao da auditoria (historico mesmo sem auditor).
@@ -97,7 +99,24 @@ export default async function handler(req, res) {
       anexo = { filename: String(body.anexo_nome || 'laudo.html').replace(/[^\w.\- ]+/g, '_'), content: html.toString('base64') };
     }
 
-    // 5) envio
+    // 5) trava: marca as faturas como "enviando" ANTES do envio (so as que ainda nao saíram). Duas telas abertas
+    // ao mesmo tempo (envio direto dispara sozinho) nao mandam o mesmo laudo duas vezes. Falhou o envio: destrava.
+    let travadas = [];
+    if (!reenvio) {
+      const { data: trava, error: eTrava } = await db.from('auditor_robo_execucoes')
+        .update({ acao_executada: true, modo: 'ENVIANDO_EMAIL' }).in('fatura_id', ids).eq('acao_executada', false).select('fatura_id');
+      if (eTrava) throw new Error(`Trava do envio: ${eTrava.message}`);
+      travadas = (trava || []).map((t) => String(t.fatura_id));
+      if (travadas.length !== ids.length) {
+        if (travadas.length) await db.from('auditor_robo_execucoes').update({ acao_executada: false, modo: 'SOMBRA' }).in('fatura_id', travadas);
+        return res.status(409).json({ ok: false, erro: 'Laudo ja esta sendo enviado (ou ja foi enviado) por outra tela.' });
+      }
+    }
+    destravar = async () => {
+      if (travadas.length) await db.from('auditor_robo_execucoes').update({ acao_executada: false, modo: 'SOMBRA' }).in('fatura_id', travadas);
+    };
+
+    // 6) envio
     const dados = { subject: assunto, html: corpoHtml, ...(anexo ? { attachments: [anexo] } : {}) };
     let resposta;
     if (process.env.RESEND_API_KEY) {
@@ -119,22 +138,27 @@ export default async function handler(req, res) {
         body: JSON.stringify({ to: [...para, ...copia], ...dados }),
       });
     } else {
+      await destravar();
       return res.status(500).json({ ok: false, erro: 'Nenhum provedor de e-mail configurado (RESEND_API_KEY ou ALERTA_EMAIL_TOKEN).' });
     }
     if (!resposta.ok) {
+      await destravar();
       const detalhe = await resposta.text().catch(() => '');
       return res.status(502).json({ ok: false, erro: `Provedor de e-mail recusou o envio (${resposta.status}). ${detalhe.slice(0, 300)}` });
     }
 
-    // 6) marca como enviado e registra no historico de cada fatura
+    travadas = []; // enviado: dali em diante nada destrava
+
+    // 7) marca como enviado e registra no historico de cada fatura
     const agora = new Date().toISOString();
+    const direto = [...porId.values()].every((e) => ['Robo (envio direto)', 'Robo (CT-e sem NF)'].includes(e.aprovado_auditor_por));
     const { error: e3 } = await db.from('auditor_robo_execucoes')
-      .update({ acao_executada: true, modo: 'EMAIL_ENVIADO', executado_por: origem === 'auto' ? 'Robo (e-mail automatico)' : 'Robo (e-mail manual)', executado_em: agora, destinatarios: para.join('; '), copia: copia.join('; ') })
+      .update({ acao_executada: true, modo: 'EMAIL_ENVIADO', executado_por: origem === 'auto' ? (direto ? 'Robo (envio direto)' : 'Robo (e-mail automatico)') : 'Robo (e-mail manual)', executado_em: agora, destinatarios: para.join('; '), copia: copia.join('; ') })
       .in('fatura_id', ids);
     if (e3) console.warn('[enviar-laudo-robo] enviado, mas nao marcou as execucoes:', e3.message);
     const hist = ids.map((id) => ({
       id: globalThis.crypto.randomUUID(), fatura_id: id, created_at: agora, acao: 'LAUDO_ENVIADO_POR_EMAIL',
-      descricao: `Laudo ${reenvio ? 'REENVIADO' : 'enviado'} por e-mail ao transportador (${origem === 'auto' ? 'automatico apos o OK do auditor' : (reenvio ? 'reenvio manual pelo robo' : 'envio manual pelo robo')}). Para: ${para.join(', ')}${copia.length ? `. Copia/auditor: ${copia.join(', ')}` : ''}. Assunto: ${assunto}`,
+      descricao: `Laudo ${reenvio ? 'REENVIADO' : 'enviado'} por e-mail ao transportador (${origem === 'auto' ? (direto ? 'envio direto pelo robo, sem aprovacao do auditor' : 'automatico apos o OK do auditor') : (reenvio ? 'reenvio manual pelo robo' : 'envio manual pelo robo')}). Para: ${para.join(', ')}${copia.length ? `. Copia/auditor: ${copia.join(', ')}` : ''}. Assunto: ${assunto}`,
       usuario_nome: 'Robo Auditor', usuario_email: '',
     }));
     const { error: e4 } = await db.from('auditoria_fatura_historico').insert(hist);
@@ -142,6 +166,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ ok: true, faturas: ids.length, para, copia, reenvio });
   } catch (e) {
+    try { await destravar(); } catch { /* fica travada; o auditor reenvia pela tela */ }
     return res.status(500).json({ ok: false, erro: e.message || String(e) });
   }
 }

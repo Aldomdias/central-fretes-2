@@ -50,6 +50,7 @@ export function montarCorpoEmailLaudo(resumo = {}, formatarDinheiro = (v) => Str
     ['CT-es no laudo', resumo.totalCtes],
     ['CT-es com divergência de valor', resumo.divergentes],
     ['CT-es sem entrega comprovada', resumo.semEntrega],
+    ['CT-es sem vínculo com a NF (retirar da fatura)', Array.isArray(resumo.semVinculoNf) && resumo.semVinculoNf.length ? resumo.semVinculoNf.length : null],
     ['Cobrança acima da tabela', resumo.cobrancaAcima == null ? null : formatarDinheiro(resumo.cobrancaAcima)],
     ['Valor a descontar', resumo.totalDescontar == null ? null : formatarDinheiro(resumo.totalDescontar)],
   ].filter(([, v]) => v != null && v !== '');
@@ -61,8 +62,15 @@ export function montarCorpoEmailLaudo(resumo = {}, formatarDinheiro = (v) => Str
     ? `<div style="margin:0 0 16px;padding:12px 14px;background:#fef3c7;border:2px solid #d97706;border-radius:8px;color:#78350f;font-size:15px;line-height:1.5"><strong>⚠ ATENÇÃO: ao responder este e-mail, use “RESPONDER A TODOS”.</strong><br><span style="font-size:13px">O auditor responsável e o grupo de auditoria estão neste e-mail — respostas enviadas só ao remetente podem não ser recebidas.</span></div>`
     : '';
 
+  // CT-e sem a chave da NF: nao pode ser pago; a transportadora precisa retira-lo da fatura.
+  const semNf = Array.isArray(resumo.semVinculoNf) ? resumo.semVinculoNf : [];
+  const avisoSemNf = semNf.length
+    ? `<div style="margin:0 0 16px;padding:12px 14px;background:#fef2f2;border:2px solid #dc2626;border-radius:8px;color:#7f1d1d;font-size:14px;line-height:1.5"><strong>⛔ ${semNf.length} CT-e(s) sem vínculo com a nota fiscal — precisam ser retirados da fatura e reemitidos.</strong><br><span style="font-size:13px">O CT-e é obrigado a trazer a nota fiscal vinculada (chave da NF-e) dentro dele. Sem isso não podemos pagar o CT-e: retire-o da fatura, emita um CT-e novo com a NF vinculada e reenvie a fatura corrigida.</span><table style="border-collapse:collapse;margin-top:8px;font-size:12px;background:#fff">${semNf.map((c) => `<tr><td style="padding:3px 8px;border:1px solid #fca5a5">${c.fatura ? `Fatura ${esc(c.fatura)}` : ''}</td><td style="padding:3px 8px;border:1px solid #fca5a5">CT-e ${esc(c.numero_cte || '-')}</td><td style="padding:3px 8px;border:1px solid #fca5a5;font-family:monospace">${esc(c.chave_cte || '')}</td><td style="padding:3px 8px;border:1px solid #fca5a5;text-align:right">${formatarDinheiro(c.valor_frete)}</td></tr>`).join('')}</table></div>`
+    : '';
+
   return `<div style="font-family:Arial,sans-serif;color:#061a44;max-width:720px">
   ${avisoResponderTodos}
+  ${avisoSemNf}
   <p style="font-size:14px">Prezados, ${esc(nomeTransp)},</p>
   <p style="font-size:14px;line-height:1.5">Segue em anexo o <strong>laudo de auditoria</strong> das faturas abaixo, com a conferência do frete cobrado versus a tabela contratada e a situação de entrega dos CT-es. Pedimos a análise e o retorno, <strong>por fatura</strong>, para que possamos liberar o pagamento.</p>
 

@@ -394,7 +394,14 @@ export function montarLinhaTemporariaRealizado(row = {}, competencia = '', arqui
     percentual_frete: toSafeNumber(row.percentualFrete ?? row.percentual_frete),
     qtd_volumes: getVolumes(row),
     canal: cleanText(row.canal || row.canalVendas || row.canais),
-    raw: row.raw || row || {},
+    // O `raw` e a linha da aba Registros; a chave/numero da NF e o remetente podem vir da aba "Notas Fiscais"
+    // (cruzados no parser). Sem copiar aqui, a chave da NF se perdia e a base de CT-es ficava sem ela.
+    raw: {
+      ...(row.raw || row || {}),
+      ...(row.chaveNfe || row.chave_nfe ? { chaveNfe: row.chaveNfe || row.chave_nfe } : {}),
+      ...(row.notaFiscal || row.nota_fiscal ? { notaFiscal: row.notaFiscal || row.nota_fiscal } : {}),
+      ...(row.documentoRemetente || row.documento_remetente ? { documentoRemetente: row.documentoRemetente || row.documento_remetente } : {}),
+    },
   };
 }
 
