@@ -26,3 +26,7 @@ where coalesce(emails_transportadora, '') ilike '%aldomdias@gmail.com%'
 -- Lista de { chave_cte, numero_cte, valor_frete, diferenca_incluida }.
 alter table public.auditor_robo_execucoes
   add column if not exists ctes_sem_nf jsonb not null default '[]'::jsonb;
+
+-- Robo auditor: liga/desliga a regra "CT-e sem vinculo de NF" (vem DESLIGADA; ligar na tela quando a base tiver a chave).
+alter table public.auditor_robo_config
+  add column if not exists checar_cte_sem_nf boolean not null default false;

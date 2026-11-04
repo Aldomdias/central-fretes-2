@@ -114,7 +114,15 @@ function resumir(lista) {
 // NAO contam: CT-e sem a chave nao pode ser pago e precisa ser retirado da fatura e reemitido.
 // CT-e que nao esta na base de CT-es nao e marcado (nao da para ler o CT-e; vai para "sem calculo"). Falha na consulta = nao marca.
 const soDigitosNf = (v) => String(v || '').replace(/\D/g, '');
+// Regra ligada em auditor_robo_config.checar_cte_sem_nf (padrao desligada). Falha na leitura = desligada.
+async function checagemSemNfLigada() {
+  try {
+    const { data } = await getSupabaseClient().from('auditor_robo_config').select('checar_cte_sem_nf').eq('id', 1).maybeSingle();
+    return data?.checar_cte_sem_nf === true;
+  } catch { return false; }
+}
 async function ctesSemVinculoNf(lista = []) {
+  if (!(await checagemSemNfLigada())) return [];
   const candidatos = lista.filter((i) => !ehLinhaNfse(i) && normalizarChaveCte(i.chave_cte).length === 44);
   if (!candidatos.length) return [];
   const chaves = [...new Set(candidatos.map((i) => normalizarChaveCte(i.chave_cte)))];

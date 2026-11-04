@@ -327,7 +327,12 @@ function normalizeCanal(row = {}) {
 function normalizeRowObject(row = {}) {
   const normalized = {};
   Object.entries(row).forEach(([key, value]) => {
-    const mapped = HEADER_MAP[normalizeHeaderRealizado(key)] || normalizeHeaderRealizado(key).replace(/\s+([a-z0-9])/g, (_, c) => c.toUpperCase());
+    const cab = normalizeHeaderRealizado(key);
+    // Chave da NF com outro nome de coluna ("Chave de acesso da NF-e", "NF-e chave", "Chaves NF"...): qualquer
+    // cabecalho com "chave" + NF/nota que nao seja a chave do CT-e. Nao sobrescreve uma coluna ja reconhecida.
+    const pareceChaveNf = !HEADER_MAP[cab] && /\bchaves?\b/.test(cab) && /\b(nf|nfe|nf e|nota|notas)\b/.test(cab) && !/\bct\s?e\b|\bcte\b/.test(cab);
+    const mapped = HEADER_MAP[cab] || (pareceChaveNf ? 'chaveNfe' : cab.replace(/\s+([a-z0-9])/g, (_, c) => c.toUpperCase()));
+    if (mapped === 'chaveNfe' && normalized.chaveNfe && !value) return;
     normalized[mapped] = value;
   });
   return normalized;
@@ -386,7 +391,9 @@ function normalizeRegistro(row = {}, arquivoOrigem = '') {
     cnpjTomador: String(item.cnpjTomador || '').replace(/\D/g, ''),
     emissao,
     chaveCte,
-    chaveNfe: String(item.chaveNfe || '').replace(/\D/g, '') || String(item.chaveNfe || '').trim(),
+    // Coluna "Nota fiscal" trazendo a chave inteira (44 digitos) tambem vale como chave da NF.
+    chaveNfe: String(item.chaveNfe || '').replace(/\D/g, '') || String(item.chaveNfe || '').trim()
+      || (String(item.notaFiscal || '').replace(/\D/g, '').length === 44 ? String(item.notaFiscal).replace(/\D/g, '') : ''),
     notaFiscal: String(item.notaFiscal || '').trim(),
     numeroCte: String(item.numeroCte || '').trim(),
     serieCte: String(item.serieCte || '').trim(),

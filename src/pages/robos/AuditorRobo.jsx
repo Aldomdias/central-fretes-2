@@ -515,6 +515,17 @@ export default function AuditorRobo() {
               >
                 {cfgRobo.liberar_entrega_contingencia ? 'CONTINGENCIA: libera sem entrega' : 'Entrega exigida'}
               </button>
+              <button
+                type="button" disabled={!podeContingencia}
+                onClick={() => {
+                  if (!cfgRobo.checar_cte_sem_nf && !window.confirm('Ligar a regra "CT-e sem vinculo de NF"?\n\nO robo vai pedir a retirada da fatura de todo CT-e cuja chave da NF nao esteja na base de CT-es, e o laudo sai SOZINHO para a transportadora.\n\nSo ligue depois de conferir que a base de CT-es tem a chave da NF (importacao com a coluna "Chave NF" ou XML dos CT-es).')) return;
+                  aplicarCfg({ ...cfgRobo, checar_cte_sem_nf: !cfgRobo.checar_cte_sem_nf }, cfgRobo.checar_cte_sem_nf ? 'Regra CT-e sem NF desligada.' : 'Regra CT-e sem NF ligada: vale a partir da proxima analise.');
+                }}
+                title={'Ligado: CT-e sem a chave da NF dentro dele (base de CT-es) nao vai para pagamento; o laudo pede a retirada e um CT-e novo. Desligado: o robo nao confere.' + (podeContingencia ? '' : ' Somente o administrador altera.')}
+                style={{ padding: '3px 10px', borderRadius: 999, cursor: podeContingencia ? 'pointer' : 'not-allowed', opacity: podeContingencia ? 1 : 0.7, fontWeight: 700, fontSize: 12, border: `1px solid ${cfgRobo.checar_cte_sem_nf ? '#dc2626' : '#64748b'}`, background: cfgRobo.checar_cte_sem_nf ? '#fef2f2' : '#f8fafc', color: cfgRobo.checar_cte_sem_nf ? '#dc2626' : '#475569' }}
+              >
+                {cfgRobo.checar_cte_sem_nf ? 'CT-e sem NF: BLOQUEIA' : 'CT-e sem NF: nao confere'}
+              </button>
             </span>
           )}
         </div>

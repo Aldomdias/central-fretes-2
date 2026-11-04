@@ -286,7 +286,7 @@ export async function listarNomesTransportadoras() {
 // ---- Configuracao do robo (editavel na tela; lida pela API do cron) ----
 export const CONFIG_ROBO_PADRAO = {
   ativo: true, horas: [6, 12, 19], dias_semana: [0, 1, 2, 3, 4, 5, 6], calcular_nuvem: true,
-  max_faturas: 60, bloco_ctes: 10, limite_bloco_seg: 75, liberar_entrega_contingencia: false,
+  max_faturas: 60, bloco_ctes: 10, limite_bloco_seg: 75, liberar_entrega_contingencia: false, checar_cte_sem_nf: false,
 };
 
 export async function carregarConfigRobo() {
@@ -309,12 +309,12 @@ export async function salvarConfigRobo(config, usuario = '', podeContingencia = 
     max_faturas: Math.min(Math.max(Number(config.max_faturas) || 60, 1), 300),
     bloco_ctes: Math.min(Math.max(Number(config.bloco_ctes) || 10, 1), 50),
     limite_bloco_seg: Math.min(Math.max(Number(config.limite_bloco_seg) || 75, 20), 240),
-    ...(podeContingencia ? { liberar_entrega_contingencia: Boolean(config.liberar_entrega_contingencia) } : {}),
+    ...(podeContingencia ? { liberar_entrega_contingencia: Boolean(config.liberar_entrega_contingencia), checar_cte_sem_nf: Boolean(config.checar_cte_sem_nf) } : {}),
     atualizado_por: usuario || null,
     atualizado_em: new Date().toISOString(),
   };
   const { error } = await getSupabaseClient().from('auditor_robo_config').upsert(payload, { onConflict: 'id' });
-  if (error) throw new Error(tabelaAusente(error) || /liberar_entrega_contingencia/.test(error.message || '') ? 'Aplique as migrations 20261016_002 e 20261028_001 (auditor_robo_config) no Supabase para salvar a configuracao.' : `Erro ao salvar a configuracao: ${error.message}`);
+  if (error) throw new Error(tabelaAusente(error) || /liberar_entrega_contingencia|checar_cte_sem_nf/.test(error.message || '') ? 'Aplique as migrations 20261016_002, 20261028_001 e 20261104_003 (auditor_robo_config) no Supabase para salvar a configuracao.' : `Erro ao salvar a configuracao: ${error.message}`);
   return payload;
 }
 

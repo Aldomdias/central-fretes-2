@@ -28574,7 +28574,16 @@ function resumir(lista) {
   const motivoSemCalculo = [...motivos.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
   return { motivoSemCalculo, nfse, total, calculados, calculoAmd: Number(calculoAmd.toFixed(2)), semCalculo: total - calculados, divergentes, maior: Number(maior.toFixed(2)), menor: Number(menor.toFixed(2)) };
 }
+async function checagemSemNfLigada() {
+  try {
+    const { data } = await getSupabaseClient().from("auditor_robo_config").select("checar_cte_sem_nf").eq("id", 1).maybeSingle();
+    return data?.checar_cte_sem_nf === true;
+  } catch {
+    return false;
+  }
+}
 async function ctesSemVinculoNf(lista = []) {
+  if (!await checagemSemNfLigada()) return [];
   const candidatos = lista.filter((i) => !ehLinhaNfse(i) && normalizarChaveCte(i.chave_cte).length === 44);
   if (!candidatos.length) return [];
   const chaves = [...new Set(candidatos.map((i) => normalizarChaveCte(i.chave_cte)))];
