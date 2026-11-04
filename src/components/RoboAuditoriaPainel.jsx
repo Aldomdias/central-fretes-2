@@ -344,7 +344,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
   const reenviar = (c) => {
     const emails = emailsCadastrados(c.transportadora);
     if (!emails.length) { setErro(`${c.transportadora}: nenhum e-mail cadastrado na lista do robo.`); return; }
-    if (!window.confirm(`Reenviar por e-mail o laudo consolidado de ${c.transportadora} (${c.faturas.length} fatura(s))?\n\nPara: ${emails.join(', ')}\nJunto: auditor responsavel e fatura@corpcantuinc.onmicrosoft.com.`)) return;
+    if (!window.confirm(`Reenviar por e-mail o laudo consolidado de ${c.transportadora} (${c.faturas.length} fatura(s))?\n\nPara: ${emails.join(', ')}\nJunto: auditor responsavel, fatura@corpcantuinc.onmicrosoft.com e aldo.dias@cantu.inc.`)) return;
     onEnviarEmail?.([{ transportadora: c.transportadora, ids: c.faturas.map((f) => String(f.id)) }], 'manual', { reenvio: true });
   };
 
@@ -474,7 +474,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
           <div style={{ padding: '0 12px 12px' }}>
             <div className="hint-box compact" style={{ marginBottom: 8 }}>
               Laudos que ja sairam (ou so foram baixados). O reenvio gera o laudo consolidado e manda para os e-mails cadastrados da transportadora,
-              com o auditor responsavel e o grupo fatura@corpcantuinc.onmicrosoft.com sempre juntos.
+              com o auditor responsavel e o grupo fatura@corpcantuinc.onmicrosoft.com e aldo.dias@cantu.inc sempre juntos.
             </div>
             <div className="sim-analise-tabela-wrap" style={{ maxHeight: 360, overflowY: 'auto' }}>
               <table className="sim-analise-tabela">
@@ -491,7 +491,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
                         <td style={{ fontSize: 12 }}>{[...c.auditores].join(' / ')}</td>
                         <td style={{ fontSize: 12, maxWidth: 360, color: !emails.length ? '#b91c1c' : teste ? '#b45309' : undefined }}>
                           {!emails.length ? 'Sem e-mail cadastrado' : teste ? `${emails.join(', ')} (e-mail de teste)` : emails.join(', ')}
-                          {emails.length > 0 && <div style={{ color: '#64748b', marginTop: 2 }}>+ auditor e fatura@corpcantuinc.onmicrosoft.com</div>}
+                          {emails.length > 0 && <div style={{ color: '#64748b', marginTop: 2 }}>+ auditor, fatura@corpcantuinc.onmicrosoft.com e aldo.dias@cantu.inc</div>}
                         </td>
                         <td style={{ whiteSpace: 'nowrap' }}>
                           <button type="button" className="btn-primary audit-small-button" disabled={!emails.length || !onEnviarEmail} onClick={() => reenviar(c)}>

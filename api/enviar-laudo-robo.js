@@ -86,7 +86,7 @@ export default async function handler(req, res) {
     if (!para.length) return res.status(400).json({ ok: false, erro: `Sem e-mail cadastrado para ${nomeTransp}: preencha em Automacao > Robo Auditor.` });
     // Junto em TODO laudo: o(s) auditor(es) responsavel(is) e o grupo padrao da auditoria (historico mesmo sem auditor).
     // Grupo padrao: variavel LAUDO_EMAIL_COPIA_PADRAO na Vercel (aceita varios, separados por ;).
-    const copiaPadrao = emailsDe(process.env.LAUDO_EMAIL_COPIA_PADRAO || 'fatura@corpcantuinc.onmicrosoft.com');
+    const copiaPadrao = emailsDe(process.env.LAUDO_EMAIL_COPIA_PADRAO || 'fatura@corpcantuinc.onmicrosoft.com; aldo.dias@cantu.inc');
     const copia = [...new Set([
       ...emailsDe([...porId.values()].map((e) => e.auditor_email).join(';')),
       ...copiaPadrao,

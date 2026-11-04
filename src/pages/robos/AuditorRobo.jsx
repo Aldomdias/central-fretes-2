@@ -109,7 +109,7 @@ export default function AuditorRobo() {
         setErro(`Preencha os e-mails de ${r.transportadora} que recebem o laudo antes de ligar o envio direto.`);
         return;
       }
-      if (!window.confirm(`Ligar o ENVIO DIRETO para ${r.transportadora}?\n\nA partir de agora, as faturas NOVAS desta transportadora com desconto saem com o laudo direto para a transportadora, sem a aprovacao do auditor.\n\nPara: ${r.emails_transportadora}\nCopia: auditor responsavel e fatura@corpcantuinc.onmicrosoft.com\n\nO que ja esta na fila continua esperando o OK do auditor.`)) return;
+      if (!window.confirm(`Ligar o ENVIO DIRETO para ${r.transportadora}?\n\nA partir de agora, as faturas NOVAS desta transportadora com desconto saem com o laudo direto para a transportadora, sem a aprovacao do auditor.\n\nPara: ${r.emails_transportadora}\nCopia: auditor responsavel, fatura@corpcantuinc.onmicrosoft.com e aldo.dias@cantu.inc\n\nO que ja esta na fila continua esperando o OK do auditor.`)) return;
     } else if (!window.confirm(`Desligar o envio direto de ${r.transportadora}? Os proximos laudos voltam a esperar a aprovacao do auditor.`)) return;
     try {
       const agora = new Date().toISOString();
@@ -651,7 +651,7 @@ export default function AuditorRobo() {
                         </div>
                         <div className="robo-transp-linha">
                           <span className="robo-transp-rotulo">Cópia</span>
-                          <span className="robo-transp-sub">auditor da fatura · fatura@corpcantuinc.onmicrosoft.com</span>
+                          <span className="robo-transp-sub">auditor da fatura · fatura@corpcantuinc.onmicrosoft.com · aldo.dias@cantu.inc</span>
                         </div>
                       </td>
                       <td onClick={(ev) => ev.stopPropagation()}>
