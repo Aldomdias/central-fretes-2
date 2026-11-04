@@ -681,6 +681,9 @@ export function ImportarFluxoCard({ onImportado, resumo }) {
       const total = resultado.resultados.reduce((acc, item) => acc + (item.cargas?.length || 0), 0);
       const erroTexto = resultado.erros.length ? ` ${resultado.erros.length} arquivo(s) tiveram erro.` : '';
       const semFrete = resultado.resultados.flatMap((r) => r.semFrete || []);
+      const supabaseTexto = resultadoSupabase?.modo === 'supabase'
+        ? ` No Supabase: ${resultadoSupabase.inseridas || 0} carga(s) nova(s), ${resultadoSupabase.atualizadas || 0} já existente(s) atualizada(s)${resultadoSupabase.inseridas ? '' : ' — nenhum DIST novo neste arquivo'}.`
+        : '';
       const semFreteTexto = semFrete.length
         ? ` ${semFrete.length} linha(s) ignorada(s) por estarem sem FRETE CANTU/FRETE TRANSP (ex.: ${semFrete.slice(0, 3).join(', ')}).`
         : '';
@@ -689,7 +692,7 @@ export function ImportarFluxoCard({ onImportado, resumo }) {
         : '';
       setMensagem({
         tipo: erroSupabaseTexto ? 'erro' : 'ok',
-        texto: `${total} carga(s) importada(s) e salva(s).${erroTexto}${semFreteTexto}${armazenamentoTexto}${erroSupabaseTexto}`,
+        texto: `${total} carga(s) importada(s) e salva(s).${supabaseTexto}${erroTexto}${semFreteTexto}${armazenamentoTexto}${erroSupabaseTexto}`,
       });
     } catch (error) {
       setMensagem({ tipo: 'erro', texto: error.message || String(error) });
