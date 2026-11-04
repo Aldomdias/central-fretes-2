@@ -219,6 +219,78 @@ function completarModeloSerieNfse(L, U, dados) {
   }
 }
 
+// Valores com virgula ("1.095,14") ou com ponto decimal ("93.93", como sai em alguns DANFSe).
+const RE_NUM_FLEX = /\d+(?:\.\d{3})*,\d{2}(?!\d)|\d+\.\d{2}(?![\d.])/g;
+const numerosFlex = (txt) => (String(txt).match(RE_NUM_FLEX) || []).map((t) => (t.includes(',') ? paraNumero(t) : Number(t)));
+
+// "SAO JOSE DOS PINHAIS - PR" -> { municipio, uf }
+function municipioUf(txt) {
+  const m = String(txt || '').match(/([A-Za-zÀ-ÿ' .]+?)\s*-\s*([A-Za-z]{2})\s*$/);
+  return m ? { municipio: chaveMunicipio(`${m[1]}${m[2]}`), uf: m[2].toUpperCase() } : null;
+}
+
+// Modelo DANFSe V1.0 com blocos "EMITENTE DA NFS-e" / "TOMADOR DA NFS-e" e "VALOR TOTAL DA NFS-E"
+// (ex.: Translovato): data "04/09/2026 - 12:19:29", valores com ponto decimal na linha abaixo dos
+// titulos e o CNPJ do tomador sozinho na linha (sem o rotulo "Tomador do Servico"). So completa o que faltou.
+function completarModeloDanfseEmitente(L, U, dados) {
+  const iEmit = U.findIndex((l) => l.includes('EMITENTE DA NFS-E'));
+  const iTom = U.findIndex((l) => /^TOMADOR DA NFS-E/.test(l.trim()));
+  const iFimTom = U.findIndex((l, k) => k > iTom && (l.includes('INTERMEDIARIO') || l.includes('SERVICO PRESTADO')));
+  const fimTom = iFimTom > iTom ? iFimTom : Math.min(iTom + 8, L.length);
+
+  if (!dados.numeroNfse) {
+    const i = U.findIndex((l) => l.includes('NUMERO DA NFS-E') && !l.includes('DPS'));
+    const m = i >= 0 ? (L[i + 1] || '').match(/^\s*(\d+)\b/) : null;
+    if (m) { dados.numeroNfse = String(Number(m[1])); dados.nf = nfComSufixoF(dados.numeroNfse); }
+  }
+  if (!dados.dataEmissao) {
+    const d = L.join('\n').match(/(\d{2})\/(\d{2})\/(\d{4})\s*-?\s*\d{2}:\d{2}/);
+    if (d) dados.dataEmissao = `${d[3]}-${d[2]}-${d[1]}`;
+  }
+
+  // bloco: CNPJ, nome e "Endereco ¦ Municipio ¦ CEP" com os valores na linha de baixo
+  const lerBloco = (ini, fim) => {
+    const r = { cnpj: '', nome: '', mun: null };
+    for (let k = ini; k < fim; k += 1) {
+      const c = L[k].match(RE_CNPJ);
+      if (c && !r.cnpj) r.cnpj = c[1].replace(/\D/g, '');
+      if (U[k].includes('NOME / NOME EMPRESARIAL') && L[k + 1] && !r.nome) r.nome = semEmail(L[k + 1].split(SEP)[0].trim());
+      if (U[k].includes('MUNICIPIO') && U[k].includes('CEP') && L[k + 1] && !r.mun) {
+        const rot = U[k].split(SEP.toUpperCase());
+        const cel = L[k + 1].split(SEP);
+        const idx = rot.findIndex((x) => x.includes('MUNICIPIO'));
+        r.mun = (cel.length === rot.length ? municipioUf(cel[idx]) : null)
+          || cel.map(municipioUf).find(Boolean)
+          || municipioUf(L[k + 1].replace(/\s*¦?\s*\d{5}-?\d{3}\s*$/, ''));
+      }
+    }
+    return r;
+  };
+  if (iEmit >= 0) {
+    const p = lerBloco(iEmit, iTom > iEmit ? iTom : L.length);
+    if (!dados.cnpjTransp && p.cnpj) dados.cnpjTransp = p.cnpj;
+    if (!dados.transportadora && p.nome) dados.transportadora = p.nome;
+    if (p.mun && !dados.ufPrestador) { dados.municipioPrestador = p.mun.municipio; dados.ufPrestador = p.mun.uf; }
+  }
+  if (iTom >= 0) {
+    const t = lerBloco(iTom, fimTom);
+    if (dados.cnpjTomador.length !== 14 && t.cnpj) dados.cnpjTomador = t.cnpj;
+    if (t.mun && !dados.ufTomador) { dados.municipioTomador = t.mun.municipio; dados.ufTomador = t.mun.uf; }
+  }
+
+  // "VALOR TOTAL DA NFS-E": "Valor do Servico" e a 1a coluna; "Valor Liquido da NFS-e" e a ultima
+  const iTot = U.findIndex((l) => l.includes('VALOR TOTAL DA NFS-E'));
+  if (iTot >= 0) {
+    const iServ = U.findIndex((l, k) => k > iTot && l.includes('VALOR DO SERVICO'));
+    const iLiq = U.findIndex((l, k) => k > iTot && l.includes('VALOR LIQUIDO DA NFS-E'));
+    if (!(dados.valor > 0) && iServ >= 0) { const v = numerosFlex(L[iServ + 1] || ''); if (v.length) dados.valor = v[0]; }
+    if (!(dados.valorLiquido > 0) && iLiq >= 0) {
+      const v = numerosFlex(L[iLiq + 1] || '');
+      if (v.length) dados.valorLiquido = v[v.length - 1];
+    }
+  }
+}
+
 // linhas: saida de itensParaLinhas (ou o texto do PDF dividido por linha).
 export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   const L = linhas.map((l) => String(l ?? ''));
@@ -345,6 +417,7 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   dados.municipioTomador = municipioApos(iTom);
   if (!dados.municipioPrestador || !dados.municipioTomador) Object.assign(dados, municipiosPorEndereco(L, U));
   if (U.some((l) => l.includes('SERIE NFS-E')) && U.some((l) => l.includes('BASE DE CALCULO') && l.includes('ISSQN'))) completarModeloSerieNfse(L, U, dados);
+  if (U.some((l) => l.includes('EMITENTE DA NFS-E')) && U.some((l) => /^TOMADOR DA NFS-E/.test(l.trim())) && U.some((l) => l.includes('VALOR TOTAL DA NFS-E'))) completarModeloDanfseEmitente(L, U, dados);
   aplicarRegrasLancamento(dados);
   return resultado(dados);
 }
