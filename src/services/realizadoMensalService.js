@@ -39,14 +39,39 @@ function ehTimeoutDb(msg = '') {
 // Grava um lote na base oficial com upsert; se o Postgres cortar por
 // statement timeout, divide o lote pela metade e tenta de novo (recursivo),
 // até conseguir. Assim a importação não aborta — só fatia mais fino.
-async function gravarLocalComRetry(supabase, payload) {
-  if (!payload.length) return;
+// Colunas opcionais (migration 20261104_001). Se ainda nao existirem no banco,
+// a gravacao tira essas colunas e segue - a importacao nunca quebra por elas.
+const COLUNAS_OPCIONAIS_DETALHE = ['codigo_transportadora', 'cnpj_tomador', 'material', 'unidade_medida'];
+let colunasDetalheIndisponiveis = false;
+
+function erroColunaOpcionalAusente(mensagem = '') {
+  const texto = String(mensagem || '').toLowerCase();
+  return COLUNAS_OPCIONAIS_DETALHE.some((coluna) => texto.includes(`'${coluna}'`) || texto.includes(`"${coluna}"`) || texto.includes(`column ${coluna}`));
+}
+
+function semColunasOpcionais(payload = []) {
+  return payload.map((linha) => {
+    const copia = { ...linha };
+    COLUNAS_OPCIONAIS_DETALHE.forEach((coluna) => { delete copia[coluna]; });
+    return copia;
+  });
+}
+
+async function gravarLocalComRetry(supabase, payloadOriginal) {
+  if (!payloadOriginal.length) return;
+  const payload = colunasDetalheIndisponiveis ? semColunasOpcionais(payloadOriginal) : payloadOriginal;
 
   const { error } = await supabase
     .from('realizado_local_ctes')
     .upsert(payload, { onConflict: 'chave_cte', ignoreDuplicates: false });
 
   if (!error) return;
+
+  if (!colunasDetalheIndisponiveis && erroColunaOpcionalAusente(error.message)) {
+    colunasDetalheIndisponiveis = true;
+    await gravarLocalComRetry(supabase, payloadOriginal);
+    return;
+  }
 
   if (ehTimeoutDb(error.message) && payload.length > 1) {
     const meio = Math.ceil(payload.length / 2);
@@ -700,6 +725,7 @@ const COLUNAS_REALIZADO_LOCAL_CTES = [
   'nota_fiscal',
   'chave_nfe',
   'documento_remetente',
+  ...COLUNAS_OPCIONAIS_DETALHE,
 ];
 
 function montarLinhaLocalFromTmp(row = {}) {
@@ -749,6 +775,11 @@ function montarLinhaLocalFromTmp(row = {}) {
     // do DOCCOB. Vem do proprio arquivo (coluna "Documento remetente" ou
     // cruzado da aba "Notas Fiscais"), sem precisar digitar manualmente.
     documento_remetente: row.documento_remetente || row.raw?.documentoRemetente || row.raw?.documento_remetente,
+    // Detalhe da tela Origem x Destino (vem do XML ou de colunas da planilha).
+    codigo_transportadora: cleanText(row.raw?.codigoTransportadora ?? row.raw?.codigo_transportadora),
+    cnpj_tomador: cleanDigits(row.raw?.cnpjTomador ?? row.raw?.cnpj_tomador),
+    material: cleanText(row.raw?.material),
+    unidade_medida: cleanText(row.raw?.unidadeMedida ?? row.raw?.unidade_medida),
   };
 
   const payload = {};
