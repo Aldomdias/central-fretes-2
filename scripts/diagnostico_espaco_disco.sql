@@ -1,5 +1,7 @@
 -- Diagnostico de espaco em disco do projeto "Central de Fretes" (Supabase).
 -- Rodar no SQL Editor. Somente leitura: nada aqui apaga dados.
+-- O SQL Editor mostra so o resultado da ULTIMA consulta: selecione uma consulta
+-- por vez (ou abra uma aba para cada) e clique em Run.
 
 -- 1) Tamanho total do banco (o que o disco realmente guarda de dados)
 select pg_size_pretty(pg_database_size(current_database())) as tamanho_banco;
@@ -50,9 +52,8 @@ select slot_name, active,
        pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) as wal_retido
 from pg_replication_slots;
 
--- 7) Historico do pg_cron e do pg_net (costumam crescer sem limite)
-select 'cron.job_run_details' as tabela, pg_size_pretty(pg_total_relation_size('cron.job_run_details'))
-where to_regclass('cron.job_run_details') is not null
-union all
-select 'net._http_response', pg_size_pretty(pg_total_relation_size('net._http_response'))
-where to_regclass('net._http_response') is not null;
+-- 7) Historico do pg_cron e do pg_net (costumam crescer sem limite).
+--    to_regclass devolve NULL quando a extensao nao existe, sem dar erro.
+select t.nome as tabela,
+       coalesce(pg_size_pretty(pg_total_relation_size(to_regclass(t.nome))), 'nao existe') as total
+from (values ('cron.job_run_details'), ('net._http_response')) as t(nome);
