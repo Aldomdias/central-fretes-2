@@ -88,6 +88,14 @@ export function classificarFatura(resumo, considerarMenor = false) {
   // a fatura nao vai para pagamento e o laudo segue para a transportadora pedindo a retirada desses CT-es
   // (o valor deles entra no desconto, sem contar duas vezes a cobranca acima que ja tinham).
   const semNf = Array.isArray(resumo.semNf) ? resumo.semNf : [];
+  // Metade ou mais dos CT-es sem a NF na base: mais provavel a base ter sido importada sem a aba "Notas Fiscais"
+  // do que a transportadora ter emitido tudo errado. Nao manda laudo; o auditor confere (e reimporta a base).
+  if (resumo.semNfSuspeito) {
+    return {
+      decisao: DECISAO.REVISAO_AUDITOR, descontar: 0,
+      motivo: `CT-e sem NF: ${semNf.length} de ${resumo.total} CT-e(s) aparecem sem a chave da NF na base de CT-es. Pode ser a base importada sem a aba "Notas Fiscais": reimporte a competencia em CT-e com "Atualizar CT-e(s) existentes" e reavalie. Laudo nao enviado.`,
+    };
+  }
   if (semNf.length) {
     const brl = (v) => `R$ ${Number(v || 0).toFixed(2).replace('.', ',')}`;
     const valorSemNf = semNf.reduce((a, c) => a + Number(c.valor_frete || 0), 0);
@@ -286,7 +294,7 @@ export async function listarNomesTransportadoras() {
 // ---- Configuracao do robo (editavel na tela; lida pela API do cron) ----
 export const CONFIG_ROBO_PADRAO = {
   ativo: true, horas: [6, 12, 19], dias_semana: [0, 1, 2, 3, 4, 5, 6], calcular_nuvem: true,
-  max_faturas: 60, bloco_ctes: 10, limite_bloco_seg: 75, liberar_entrega_contingencia: false, checar_cte_sem_nf: false,
+  max_faturas: 60, bloco_ctes: 10, limite_bloco_seg: 75, liberar_entrega_contingencia: false, checar_cte_sem_nf: true,
 };
 
 export async function carregarConfigRobo() {
@@ -309,12 +317,17 @@ export async function salvarConfigRobo(config, usuario = '', podeContingencia = 
     max_faturas: Math.min(Math.max(Number(config.max_faturas) || 60, 1), 300),
     bloco_ctes: Math.min(Math.max(Number(config.bloco_ctes) || 10, 1), 50),
     limite_bloco_seg: Math.min(Math.max(Number(config.limite_bloco_seg) || 75, 20), 240),
-    ...(podeContingencia ? { liberar_entrega_contingencia: Boolean(config.liberar_entrega_contingencia), checar_cte_sem_nf: Boolean(config.checar_cte_sem_nf) } : {}),
+    ...(podeContingencia ? {
+      liberar_entrega_contingencia: Boolean(config.liberar_entrega_contingencia),
+      checar_cte_sem_nf: Boolean(config.checar_cte_sem_nf),
+      // Regra CT-e sem NF vale para as faturas que entraram a partir do momento em que foi ligada.
+      checar_cte_sem_nf_desde: config.checar_cte_sem_nf ? (config.checar_cte_sem_nf_desde || new Date().toISOString()) : null,
+    } : {}),
     atualizado_por: usuario || null,
     atualizado_em: new Date().toISOString(),
   };
   const { error } = await getSupabaseClient().from('auditor_robo_config').upsert(payload, { onConflict: 'id' });
-  if (error) throw new Error(tabelaAusente(error) || /liberar_entrega_contingencia|checar_cte_sem_nf/.test(error.message || '') ? 'Aplique as migrations 20261016_002, 20261028_001 e 20261104_003 (auditor_robo_config) no Supabase para salvar a configuracao.' : `Erro ao salvar a configuracao: ${error.message}`);
+  if (error) throw new Error(tabelaAusente(error) || /liberar_entrega_contingencia|checar_cte_sem_nf/.test(error.message || '') ? 'Aplique as migrations 20261016_002, 20261028_001, 20261104_003 e 20261105_001 (auditor_robo_config) no Supabase para salvar a configuracao.' : `Erro ao salvar a configuracao: ${error.message}`);
   return payload;
 }
 

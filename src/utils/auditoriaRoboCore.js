@@ -114,17 +114,35 @@ function resumir(lista) {
 // NAO contam: CT-e sem a chave nao pode ser pago e precisa ser retirado da fatura e reemitido.
 // CT-e que nao esta na base de CT-es nao e marcado (nao da para ler o CT-e; vai para "sem calculo"). Falha na consulta = nao marca.
 const soDigitosNf = (v) => String(v || '').replace(/\D/g, '');
-// Regra ligada em auditor_robo_config.checar_cte_sem_nf (padrao desligada). Falha na leitura = desligada.
-async function checagemSemNfLigada() {
+// Regra ligada em auditor_robo_config.checar_cte_sem_nf. Vale para as faturas que entraram a partir de
+// checar_cte_sem_nf_desde (sem data = todas). Falha na leitura = desligada.
+async function checagemSemNf() {
   try {
-    const { data } = await getSupabaseClient().from('auditor_robo_config').select('checar_cte_sem_nf').eq('id', 1).maybeSingle();
-    return data?.checar_cte_sem_nf === true;
-  } catch { return false; }
+    let { data, error } = await getSupabaseClient().from('auditor_robo_config').select('checar_cte_sem_nf,checar_cte_sem_nf_desde').eq('id', 1).maybeSingle();
+    if (error && /checar_cte_sem_nf_desde/.test(error.message || '')) {
+      ({ data } = await getSupabaseClient().from('auditor_robo_config').select('checar_cte_sem_nf').eq('id', 1).maybeSingle());
+    }
+    return { ligada: data?.checar_cte_sem_nf === true, desde: data?.checar_cte_sem_nf_desde || null };
+  } catch { return { ligada: false, desde: null }; }
 }
-async function ctesSemVinculoNf(lista = []) {
-  if (!(await checagemSemNfLigada())) return [];
-  const candidatos = lista.filter((i) => !ehLinhaNfse(i) && normalizarChaveCte(i.chave_cte).length === 44);
-  if (!candidatos.length) return [];
+const SEM_NF_VAZIO = { lista: [], suspeito: false };
+// So confere CT-e EMITIDO a partir de 01/10/2026 (AAMM da chave >= 2610): antes disso a base de CT-es foi
+// importada sem a aba "Notas Fiscais" e a falta da chave da NF nao quer dizer CT-e sem nota.
+export const SEM_NF_EMISSAO_DESDE_AAMM = '2610';
+const emitidoParaConferirNf = (chave) => String(chave).slice(2, 6) >= SEM_NF_EMISSAO_DESDE_AAMM;
+async function ctesSemVinculoNf(lista = [], fatura = null) {
+  const regra = await checagemSemNf();
+  if (!regra.ligada) return SEM_NF_VAZIO;
+  if (regra.desde && fatura) {
+    const entrada = dataEntradaFatura(fatura);
+    const desde = dataEntradaFatura({ created_at: regra.desde });
+    if (entrada && desde && entrada < desde) return SEM_NF_VAZIO;
+  }
+  const candidatos = lista.filter((i) => {
+    const c = normalizarChaveCte(i.chave_cte);
+    return !ehLinhaNfse(i) && c.length === 44 && emitidoParaConferirNf(c);
+  });
+  if (!candidatos.length) return SEM_NF_VAZIO;
   const chaves = [...new Set(candidatos.map((i) => normalizarChaveCte(i.chave_cte)))];
   const existe = new Set();
   const comNf = new Set();
@@ -142,9 +160,9 @@ async function ctesSemVinculoNf(lista = []) {
     }
   } catch (e) {
     console.warn('[robo] checagem de CT-e sem NF nao feita:', e?.message || e);
-    return [];
+    return SEM_NF_VAZIO;
   }
-  return candidatos
+  const semNf = candidatos
     .filter((i) => { const c = normalizarChaveCte(i.chave_cte); return existe.has(c) && !comNf.has(c); })
     .map((i) => {
       const dif = Number(i.diferenca || 0);
@@ -154,6 +172,10 @@ async function ctesSemVinculoNf(lista = []) {
         valor_frete: Number(Number(i.valor_frete || 0).toFixed(2)), diferenca_incluida: contouNaCobrancaAcima ? Number(dif.toFixed(2)) : 0,
       };
     });
+  // Metade ou mais dos CT-es (que estao na base) sem a NF: provavel base sem a aba "Notas Fiscais" -> auditor.
+  const naBase = new Set(candidatos.map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => existe.has(c))).size;
+  const qtdSemNf = new Set(semNf.map((c) => c.chave_cte)).size;
+  return { lista: semNf, suspeito: qtdSemNf >= 2 && qtdSemNf * 2 >= naBase };
 }
 
 async function detalhesExatos(fatura) {
@@ -383,8 +405,8 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
     }
   } catch { /* entrega nao verificada: classificarFatura manda para o auditor */ }
   const excedentesLotacao = await excedentesLotacaoPendentes(fatura, lista);
-  const semNf = await ctesSemVinculoNf(lista);
-  return { ...r, entregues, pendentes, erroCalculo, falhasCalculo, excedentesLotacao, falhaFilaLotacao, semNf };
+  const { lista: semNf, suspeito: semNfSuspeito } = await ctesSemVinculoNf(lista, fatura);
+  return { ...r, entregues, pendentes, erroCalculo, falhasCalculo, excedentesLotacao, falhaFilaLotacao, semNf, semNfSuspeito };
 }
 
 // Excedente de lotacao aguardando a operacao: nao manda laudo nem gestao antes da decisao.
