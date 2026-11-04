@@ -4,6 +4,7 @@
 // Para incluir outro: CNPJ (so digitos) -> codigo do fornecedor no SAP.
 export const FORNECEDOR_SAP_POR_CNPJ = {
   11048206000299: '2557609', // TRANSGP TRANSPORTE RODOVIARIO DE CARGAS LTDA (o outro cadastro e o CEN6002)
+  11048206000370: '2788415', // TRANSGP - Cabo de Santo Agostinho (o outro cadastro e o CEN6003)
 };
 
 // O que o robo digita no campo do fornecedor: o codigo cadastrado acima ou, sem regra, o proprio CNPJ.
