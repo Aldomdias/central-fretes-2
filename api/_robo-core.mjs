@@ -28428,7 +28428,7 @@ function classificarFatura(resumo, considerarMenor = false) {
       decisao: DECISAO.ENVIAR_LAUDO,
       semNf: true,
       descontar: total,
-      motivo: `${MOTIVO_SEM_NF}: ${semNf.length} de ${resumo.total} CT-e(s) sem a chave da nota fiscal (CT-e ${numeros.slice(0, 10).join(", ")}${numeros.length > 10 ? "..." : ""}) \u2014 retirar da fatura (${brl3(valorSemNf)}). Laudo segue para a transportadora.${extra.length ? ` Tambem: ${extra.join(" \xB7 ")}.` : ""} A descontar ${brl3(total)}.`
+      motivo: `${MOTIVO_SEM_NF}: ${semNf.length} de ${resumo.total} CT-e(s) sem a chave da nota fiscal dentro do CT-e (CT-e ${numeros.slice(0, 10).join(", ")}${numeros.length > 10 ? "..." : ""}) \u2014 retirar da fatura e emitir CT-e novo com a NF vinculada (${brl3(valorSemNf)}). Laudo segue para a transportadora.${extra.length ? ` Tambem: ${extra.join(" \xB7 ")}.` : ""} A descontar ${brl3(total)}.`
     };
   }
   if (resumo.calculados < resumo.total || Number(resumo.semCalculo || 0) > 0) {
@@ -28574,19 +28574,8 @@ function resumir(lista) {
   const motivoSemCalculo = [...motivos.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
   return { motivoSemCalculo, nfse, total, calculados, calculoAmd: Number(calculoAmd.toFixed(2)), semCalculo: total - calculados, divergentes, maior: Number(maior.toFixed(2)), menor: Number(menor.toFixed(2)) };
 }
-function chaveNfDoItem(i = {}) {
-  let det = i.detalhes_calculo;
-  if (typeof det === "string") {
-    try {
-      det = JSON.parse(det);
-    } catch {
-      det = null;
-    }
-  }
-  return [i.chave_nf_manual, i.chave_nfe_manual, i.chave_nfe, i.chaveNfe, i.chave_nf, det?.chave_nfe, det?.chaveNfe, det?.chave_nf].map(soDigitosNf).find((c) => c.length === 44) || "";
-}
 async function ctesSemVinculoNf(lista = []) {
-  const candidatos = lista.filter((i) => !ehLinhaNfse(i) && normalizarChaveCte(i.chave_cte).length === 44 && !chaveNfDoItem(i));
+  const candidatos = lista.filter((i) => !ehLinhaNfse(i) && normalizarChaveCte(i.chave_cte).length === 44);
   if (!candidatos.length) return [];
   const chaves = [...new Set(candidatos.map((i) => normalizarChaveCte(i.chave_cte)))];
   const existe = /* @__PURE__ */ new Set();
@@ -28594,13 +28583,9 @@ async function ctesSemVinculoNf(lista = []) {
   try {
     const db = getSupabaseClient();
     for (let k = 0; k < chaves.length; k += 200) {
-      const lote = chaves.slice(k, k + 200);
-      const [real, track] = await Promise.all([
-        db.from("realizado_local_ctes").select("chave_cte,chave_nfe").in("chave_cte", lote),
-        db.from("tracking_rows").select("chave_cte,chave_nfe").in("chave_cte", lote).limit(5e3)
-      ]);
-      if (real.error || track.error) throw new Error((real.error || track.error).message);
-      [...real.data || [], ...track.data || []].forEach((r) => {
+      const { data, error } = await db.from("realizado_local_ctes").select("chave_cte,chave_nfe").in("chave_cte", chaves.slice(k, k + 200));
+      if (error) throw new Error(error.message);
+      (data || []).forEach((r) => {
         const c = normalizarChaveCte(r.chave_cte);
         existe.add(c);
         if (soDigitosNf(r.chave_nfe).length === 44) comNf.add(c);

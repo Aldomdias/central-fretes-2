@@ -109,18 +109,13 @@ function resumir(lista) {
   return { motivoSemCalculo, nfse, total, calculados, calculoAmd: Number(calculoAmd.toFixed(2)), semCalculo: total - calculados, divergentes, maior: Number(maior.toFixed(2)), menor: Number(menor.toFixed(2)) };
 }
 
-// CT-e sem vinculo de NF: o CT-e (com chave de 44 digitos, nao NFS-e) nao tem a chave da nota fiscal na fatura
-// nem na base de CT-es (realizado) nem no tracking. So marca quando o CT-e EXISTE em alguma base e nenhuma traz a
-// chave: CT-e que nao aparece em base nenhuma e "sem dados", nao "sem vinculo". Falha na consulta = nao marca.
+// CT-e sem vinculo de NF: a chave da NF-e tem que estar DENTRO do CT-e (infNFe/chave do XML), que e o que a base de
+// CT-es (realizado_local_ctes.chave_nfe) guarda. Tracking, chave digitada na fatura ou vinda do arquivo da fatura
+// NAO contam: CT-e sem a chave nao pode ser pago e precisa ser retirado da fatura e reemitido.
+// CT-e que nao esta na base de CT-es nao e marcado (nao da para ler o CT-e; vai para "sem calculo"). Falha na consulta = nao marca.
 const soDigitosNf = (v) => String(v || '').replace(/\D/g, '');
-function chaveNfDoItem(i = {}) {
-  let det = i.detalhes_calculo;
-  if (typeof det === 'string') { try { det = JSON.parse(det); } catch { det = null; } }
-  return [i.chave_nf_manual, i.chave_nfe_manual, i.chave_nfe, i.chaveNfe, i.chave_nf, det?.chave_nfe, det?.chaveNfe, det?.chave_nf]
-    .map(soDigitosNf).find((c) => c.length === 44) || '';
-}
 async function ctesSemVinculoNf(lista = []) {
-  const candidatos = lista.filter((i) => !ehLinhaNfse(i) && normalizarChaveCte(i.chave_cte).length === 44 && !chaveNfDoItem(i));
+  const candidatos = lista.filter((i) => !ehLinhaNfse(i) && normalizarChaveCte(i.chave_cte).length === 44);
   if (!candidatos.length) return [];
   const chaves = [...new Set(candidatos.map((i) => normalizarChaveCte(i.chave_cte)))];
   const existe = new Set();
@@ -128,14 +123,10 @@ async function ctesSemVinculoNf(lista = []) {
   try {
     const db = getSupabaseClient();
     for (let k = 0; k < chaves.length; k += 200) {
-      const lote = chaves.slice(k, k + 200);
       // eslint-disable-next-line no-await-in-loop
-      const [real, track] = await Promise.all([
-        db.from('realizado_local_ctes').select('chave_cte,chave_nfe').in('chave_cte', lote),
-        db.from('tracking_rows').select('chave_cte,chave_nfe').in('chave_cte', lote).limit(5000),
-      ]);
-      if (real.error || track.error) throw new Error((real.error || track.error).message);
-      [...(real.data || []), ...(track.data || [])].forEach((r) => {
+      const { data, error } = await db.from('realizado_local_ctes').select('chave_cte,chave_nfe').in('chave_cte', chaves.slice(k, k + 200));
+      if (error) throw new Error(error.message);
+      (data || []).forEach((r) => {
         const c = normalizarChaveCte(r.chave_cte);
         existe.add(c);
         if (soDigitosNf(r.chave_nfe).length === 44) comNf.add(c);

@@ -101,7 +101,7 @@ export function classificarFatura(resumo, considerarMenor = false) {
     ].filter(Boolean);
     return {
       decisao: DECISAO.ENVIAR_LAUDO, semNf: true, descontar: total,
-      motivo: `${MOTIVO_SEM_NF}: ${semNf.length} de ${resumo.total} CT-e(s) sem a chave da nota fiscal (CT-e ${numeros.slice(0, 10).join(', ')}${numeros.length > 10 ? '...' : ''}) — retirar da fatura (${brl(valorSemNf)}). Laudo segue para a transportadora.${extra.length ? ` Tambem: ${extra.join(' · ')}.` : ''} A descontar ${brl(total)}.`,
+      motivo: `${MOTIVO_SEM_NF}: ${semNf.length} de ${resumo.total} CT-e(s) sem a chave da nota fiscal dentro do CT-e (CT-e ${numeros.slice(0, 10).join(', ')}${numeros.length > 10 ? '...' : ''}) — retirar da fatura e emitir CT-e novo com a NF vinculada (${brl(valorSemNf)}). Laudo segue para a transportadora.${extra.length ? ` Tambem: ${extra.join(' · ')}.` : ''} A descontar ${brl(total)}.`,
     };
   }
   if (resumo.calculados < resumo.total || Number(resumo.semCalculo || 0) > 0) {
