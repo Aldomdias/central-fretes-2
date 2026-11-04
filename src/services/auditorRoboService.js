@@ -23,6 +23,16 @@ export function dataInicioRobo(cfg) {
 
 // Data em que a fatura ENTROU no sistema (criacao do registro). Nao usar importado_em: reimportar uma fatura
 // existente sobrescreve essa data (em 14/10/2026 ~1.000 faturas antigas ficaram com importado_em = 14/10).
+// Envio direto (sem OK do auditor): ligado na transportadora e a fatura ENTROU no sistema depois que foi ligado.
+// O que ja estava na fila quando ligou continua pedindo a aprovacao do auditor.
+export const ROBO_ENVIO_DIRETO_POR = 'Robo (envio direto)';
+export function envioDiretoVale(cfg, f) {
+  if (!cfg?.envio_direto || !cfg?.envio_direto_desde) return false;
+  const desde = new Date(cfg.envio_direto_desde).getTime();
+  const entrada = new Date(f?.created_at || f?.importado_em || 0).getTime();
+  return Number.isFinite(desde) && Number.isFinite(entrada) && entrada >= desde;
+}
+
 export const dataEntradaFatura = (f) => {
   const v = f?.created_at || f?.importado_em;
   if (!v) return '';
@@ -101,7 +111,10 @@ export async function salvarRoboTransportadora(registro) {
   const client = getSupabaseClient();
   let { error } = await client.from('auditor_robo_transportadoras').upsert(payload, { onConflict: 'id' });
   // Colunas novas ainda sem migration: salva o resto e avisa qual migration falta.
-  const migracoes = { email_automatico: '20261016_001_robo_email_automatico.sql', data_inicio: '20261017_002_robo_data_inicio_editavel.sql' };
+  const migracoes = {
+    email_automatico: '20261016_001_robo_email_automatico.sql', data_inicio: '20261017_002_robo_data_inicio_editavel.sql',
+    envio_direto: '20261104_001_robo_envio_direto.sql', envio_direto_desde: '20261104_001_robo_envio_direto.sql',
+  };
   const faltando = Object.keys(migracoes).find((col) => error && new RegExp(col, 'i').test(error.message || '') && col in payload);
   if (faltando) {
     const { [faltando]: _ignorado, ...semColuna } = payload;

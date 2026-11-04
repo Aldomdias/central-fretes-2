@@ -64,7 +64,7 @@ export default function AuditorRobo() {
     if (!form.transportadora.trim()) { setErro('Informe a transportadora.'); return; }
     if (lista.some((r) => normNome(r.transportadora) === normNome(form.transportadora))) { setErro('Transportadora ja esta na lista.'); return; }
     try {
-      await salvarRoboTransportadora({ ...form, transportadora: form.transportadora.trim(), id: crypto.randomUUID(), ativo: true, modo: 'SOMBRA', created_by: sessao?.nome || sessao?.email || '' });
+      await salvarRoboTransportadora({ ...form, transportadora: form.transportadora.trim(), id: crypto.randomUUID(), ativo: true, modo: 'APROVACAO', envio_direto: false, created_by: sessao?.nome || sessao?.email || '' });
       setForm(vazio);
       await carregar();
     } catch (ex) { setErro(ex.message); }
@@ -80,10 +80,44 @@ export default function AuditorRobo() {
 
   const alternarEmail = async (r, automatico) => {
     if (automatico && !String(r.emails_transportadora || '').trim()) {
-      setErro('Preencha os e-mails da transportadora que recebem o laudo antes de ligar o e-mail automatico (exclua e inclua de novo com os e-mails).');
+      setErro('Preencha os e-mails da transportadora que recebem o laudo antes de ligar o e-mail automatico (botao "editar" na coluna E-mails laudo).');
       return;
     }
     try { await salvarRoboTransportadora({ ...r, email_automatico: automatico }); await carregar(); } catch (ex) { setErro(ex.message); await carregar(); }
+  };
+
+  // Envio direto: o laudo do robo vai para a transportadora sem passar pela aprovacao do auditor.
+  // Vale so para faturas que entrarem a partir de agora; o que ja esta na fila continua pedindo o OK.
+  const alternarEnvioDireto = async (r) => {
+    if (!r.envio_direto) {
+      if (!String(r.emails_transportadora || '').trim()) {
+        setErro(`Preencha os e-mails de ${r.transportadora} que recebem o laudo antes de ligar o envio direto.`);
+        return;
+      }
+      if (!window.confirm(`Ligar o ENVIO DIRETO para ${r.transportadora}?\n\nA partir de agora, as faturas NOVAS desta transportadora com desconto saem com o laudo direto para a transportadora, sem a aprovacao do auditor.\n\nPara: ${r.emails_transportadora}\nCopia: auditor responsavel e fatura@cantustore.com.br\n\nO que ja esta na fila continua esperando o OK do auditor.`)) return;
+    } else if (!window.confirm(`Desligar o envio direto de ${r.transportadora}? Os proximos laudos voltam a esperar a aprovacao do auditor.`)) return;
+    try {
+      const agora = new Date().toISOString();
+      await salvarRoboTransportadora({
+        ...r, envio_direto: !r.envio_direto, envio_direto_desde: r.envio_direto ? null : agora,
+        modo: r.envio_direto ? 'APROVACAO' : 'AUTOMATICO', email_automatico: r.envio_direto ? r.email_automatico : true,
+      });
+      setMsg(r.envio_direto
+        ? `${r.transportadora}: envio direto desligado. Os laudos voltam para a aprovacao do auditor.`
+        : `${r.transportadora}: envio direto ligado. Faturas que entrarem a partir de ${dataBr(agora)} vao direto para a transportadora (com faturas e auditor em copia).`);
+      await carregar();
+    } catch (ex) { setErro(ex.message); await carregar(); }
+  };
+
+  const editarEmails = async (r, campo, rotulo) => {
+    const novo = window.prompt(`${rotulo} de ${r.transportadora} (separe por ;):`, r[campo] || '');
+    if (novo === null) return;
+    const limpo = [...new Set(novo.split(/[;,\s]+/).map((e) => e.trim()).filter(Boolean))].join('; ');
+    if (campo === 'emails_transportadora' && !limpo && (r.envio_direto || r.email_automatico)) {
+      setErro('Sem e-mail da transportadora o laudo nao tem para onde ir: desligue o envio direto/automatico antes de apagar.');
+      return;
+    }
+    try { await salvarRoboTransportadora({ ...r, [campo]: limpo || null }); setMsg(`${r.transportadora}: ${rotulo.toLowerCase()} atualizado(s).`); await carregar(); } catch (ex) { setErro(ex.message); await carregar(); }
   };
 
   const alternarAtivo = async (r) => {
@@ -565,7 +599,7 @@ export default function AuditorRobo() {
         {lista.length > 0 && (
           <div className="sim-analise-tabela-wrap">
             <table className="sim-analise-tabela">
-              <thead><tr><th>Transportadora</th><th>Auditor</th><th>E-mails laudo</th><th>Aprovacao</th><th>Envio do laudo</th><th>Considera desde</th><th>Modo</th><th>Ativo</th><th /></tr></thead>
+              <thead><tr><th>Transportadora</th><th>Auditor</th><th>E-mails laudo</th><th>Aprovacao</th><th>Envio do laudo</th><th>Considera desde</th><th>Envio direto (sem aprovacao)</th><th>Ativo</th><th /></tr></thead>
               <tbody>
                 {lista.map((r) => (
                   <tr
@@ -576,8 +610,14 @@ export default function AuditorRobo() {
                   >
                     <td>{r.transportadora}</td>
                     <td style={{ color: '#64748b', fontSize: 12 }}>Da carteira da fatura</td>
-                    <td>{r.emails_transportadora || '-'}</td>
-                    <td>{r.email_aprovacao || '-'}</td>
+                    <td onClick={(ev) => ev.stopPropagation()}>
+                      {r.emails_transportadora || '-'}
+                      <button type="button" className="link-button" style={{ fontSize: 11, marginLeft: 6 }} onClick={() => editarEmails(r, 'emails_transportadora', 'E-mails que recebem o laudo')}>editar</button>
+                    </td>
+                    <td onClick={(ev) => ev.stopPropagation()}>
+                      {r.email_aprovacao || '-'}
+                      <button type="button" className="link-button" style={{ fontSize: 11, marginLeft: 6 }} onClick={() => editarEmails(r, 'email_aprovacao', 'E-mail de aprovacao')}>editar</button>
+                    </td>
                     <td onClick={(ev) => ev.stopPropagation()}>
                       <select value={r.email_automatico ? 'auto' : 'manual'} onChange={(e) => alternarEmail(r, e.target.value === 'auto')} style={{ fontSize: 12 }}>
                         <option value="manual">Manual</option>
@@ -594,7 +634,20 @@ export default function AuditorRobo() {
                         ? <button type="button" className="link-button" style={{ fontSize: 11, marginLeft: 4 }} title="Voltar para o padrao (um dia antes da inclusao)" onClick={() => alterarDataInicio(r, null)}>padrao</button>
                         : <span style={{ fontSize: 11, color: '#64748b', marginLeft: 4 }}>(padrao)</span>}
                     </td>
-                    <td>{r.modo}</td>
+                    <td onClick={(ev) => ev.stopPropagation()} style={{ fontSize: 12 }}>
+                      <button
+                        type="button"
+                        className={r.envio_direto ? 'btn-primary audit-small-button' : 'btn-secondary audit-small-button'}
+                        style={r.envio_direto ? { background: '#14733b', borderColor: '#14733b' } : undefined}
+                        title={r.envio_direto ? 'Ligado: laudo vai direto para a transportadora (faturas e auditor em copia). Clique para voltar a pedir a aprovacao do auditor.' : 'Desligado: o laudo espera a aprovacao do auditor. Clique para enviar direto a transportadora a partir de agora.'}
+                        onClick={() => alternarEnvioDireto(r)}
+                      >
+                        {r.envio_direto ? 'Ligado' : 'Ativar envio direto'}
+                      </button>
+                      <div style={{ color: '#64748b', marginTop: 2 }}>
+                        {r.envio_direto ? `Faturas desde ${dataBr(r.envio_direto_desde)}` : 'Passa pela aprovacao do auditor'}
+                      </div>
+                    </td>
                     <td onClick={(ev) => ev.stopPropagation()}><input type="checkbox" checked={r.ativo} onChange={() => alternarAtivo(r)} /></td>
                     <td onClick={(ev) => ev.stopPropagation()}><button type="button" className="btn-secondary audit-small-button" onClick={() => remover(r)}>Remover</button></td>
                   </tr>

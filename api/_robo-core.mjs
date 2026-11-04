@@ -23868,6 +23868,13 @@ function normalizeMunicipioIbgeRow(row = {}) {
     "uf_sigla",
     "sg_uf"
   ]).toUpperCase().slice(0, 2);
+  const mesorregiao = pickIbgeValue(row, [
+    "mesorregiao",
+    "nome_mesorregiao",
+    "mesorregiao_nome",
+    "meso_regiao",
+    "nm_mesorregiao"
+  ]);
   Object.entries(row || {}).forEach(([key, value]) => {
     const chave = String(key || "").toLowerCase();
     const texto = String(value ?? "").trim();
@@ -23883,7 +23890,7 @@ function normalizeMunicipioIbgeRow(row = {}) {
     }
   });
   if (!ibge || !cidade) return null;
-  return { ibge, cidade, uf };
+  return { ibge, cidade, uf, mesorregiao };
 }
 async function resolverIbgePorCepDbComCache(cep, cache) {
   const cepLimpo = normalizarCepDb(cep);
@@ -28378,6 +28385,12 @@ function dataInicioRobo(cfg) {
   brasilia.setUTCDate(brasilia.getUTCDate() - 1);
   return brasilia.toISOString().slice(0, 10);
 }
+function envioDiretoVale(cfg, f) {
+  if (!cfg?.envio_direto || !cfg?.envio_direto_desde) return false;
+  const desde = new Date(cfg.envio_direto_desde).getTime();
+  const entrada = new Date(f?.created_at || f?.importado_em || 0).getTime();
+  return Number.isFinite(desde) && Number.isFinite(entrada) && entrada >= desde;
+}
 function laudoResolvidoFora(e = {}, f = null) {
   if (e.decisao !== DECISAO.ENVIAR_LAUDO) return false;
   if (e.modo === "TRATADA_FORA") return true;
@@ -28424,7 +28437,7 @@ async function buscarTodasPaginas(montar, maximo = 1e5) {
   }
   return { data: linhas, error: null };
 }
-var DECISAO, ROBO_DATA_INICIO, dataEntradaFatura, STATUS_ROBO_AUDITA, STATUS_PAGAS, faturaPaga, faturaLancadaErp;
+var DECISAO, ROBO_DATA_INICIO, ROBO_ENVIO_DIRETO_POR, dataEntradaFatura, STATUS_ROBO_AUDITA, STATUS_PAGAS, faturaPaga, faturaLancadaErp;
 var init_auditorRoboService = __esm({
   "src/services/auditorRoboService.js"() {
     "use strict";
@@ -28436,6 +28449,7 @@ var init_auditorRoboService = __esm({
       REVISAO_AUDITOR: "REVISAO_AUDITOR"
     };
     ROBO_DATA_INICIO = "2026-10-13";
+    ROBO_ENVIO_DIRETO_POR = "Robo (envio direto)";
     dataEntradaFatura = (f) => {
       const v = f?.created_at || f?.importado_em;
       if (!v) return "";
@@ -28961,6 +28975,14 @@ async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = /* @__PUR
       registro.aprovado_auditor_em = null;
       registro.aprovado_auditor_por = null;
     }
+  }
+  if (c.decisao === DECISAO.ENVIAR_LAUDO && envioDiretoVale(cfg, f)) {
+    const manteve = anterior?.aprovado_auditor_em && registro.aprovado_auditor_em !== null;
+    if (!manteve) {
+      registro.aprovado_auditor_em = agora;
+      registro.aprovado_auditor_por = ROBO_ENVIO_DIRETO_POR;
+    }
+    registro.motivo = `${registro.motivo} Envio direto: laudo segue para a transportadora sem aprovacao do auditor.`;
   }
   return registro;
 }

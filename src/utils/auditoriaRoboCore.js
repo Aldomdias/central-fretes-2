@@ -16,7 +16,7 @@ import { normalizarChaveCte } from './auditoriaFretesDomain';
 import { ehLinhaNfse, conferirNfseLancada } from './nfseFatura';
 import { normalizarNumeroFatura } from './robos/historicoLancamentos';
 import { montarCorrecoesCalculoFatura, numeroValorNfAuditoria, numeroPesoAuditoria, escolherMaiorPeso } from './correcoesCalculoFatura';
-import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas, laudoResolvidoFora, faturaPaga, faturaLancadaErp } from '../services/auditorRoboService';
+import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas, laudoResolvidoFora, faturaPaga, faturaLancadaErp, envioDiretoVale, ROBO_ENVIO_DIRETO_POR } from '../services/auditorRoboService';
 
 // Escopo do cache das tabelas de frete (ver freteDatabaseService): abrir antes de um lote e fechar no finally.
 export { entrarCacheCalculo as iniciarCacheCalculoRobo, sairCacheCalculo as encerrarCacheCalculoRobo };
@@ -538,6 +538,13 @@ export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = ne
     // Laudo aprovado so vale para o mesmo valor: se mudou (ou deixou de ter desconto), volta a pedir OK.
     const mesmoValor = c.decisao === DECISAO.ENVIAR_LAUDO && Math.abs(Number(anterior.valor_descontar || 0) - c.descontar) < 0.01;
     if (!mesmoValor) { registro.aprovado_auditor_em = null; registro.aprovado_auditor_por = null; }
+  }
+  // Envio direto ligado na transportadora (e a fatura entrou depois de ligar): o laudo ja nasce aprovado pelo
+  // robo e segue por e-mail sem esperar o OK do auditor (auditor e faturas vao em copia).
+  if (c.decisao === DECISAO.ENVIAR_LAUDO && envioDiretoVale(cfg, f)) {
+    const manteve = anterior?.aprovado_auditor_em && registro.aprovado_auditor_em !== null;
+    if (!manteve) { registro.aprovado_auditor_em = agora; registro.aprovado_auditor_por = ROBO_ENVIO_DIRETO_POR; }
+    registro.motivo = `${registro.motivo} Envio direto: laudo segue para a transportadora sem aprovacao do auditor.`;
   }
   return registro;
 }

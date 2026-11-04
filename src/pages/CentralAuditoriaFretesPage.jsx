@@ -125,6 +125,7 @@ import LancamentosRoboFatura from '../components/LancamentosRoboFatura';
 import CampoCidadeIbge from '../components/CampoCidadeIbge';
 import { urlBaseApp } from '../utils/urlBaseApp';
 import { enviarLaudoPorEmail } from '../services/laudoEmailService';
+import { listarFilaAuditorRobo, listarRoboTransportadoras, normNome, ROBO_ENVIO_DIRETO_POR, STATUS_ROBO_AUDITA } from '../services/auditorRoboService';
 import { parseDetalhesCalculoAuditoria, numeroFlexAuditoria, numeroValorNfAuditoria, numeroPesoAuditoria, montarCorrecoesCalculoFatura, escolherMaiorPeso } from '../utils/correcoesCalculoFatura';
 import { ehLinhaNfse } from '../utils/nfseFatura';
 import { TIPOS_AJUSTE_TABELA } from '../components/ModalChamadoAmdTabela';
@@ -10251,6 +10252,32 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   useEffect(() => {
     if (!emailRoboEmCurso && !filaEmailRobo.length && resultadosEmailRobo.length) setTab('robo');
   }, [emailRoboEmCurso, filaEmailRobo, resultadosEmailRobo]);
+
+  // Envio direto (Automacao > Robo Auditor): laudos que o robo ja aprovou sozinho saem por e-mail assim que a
+  // Auditoria abre (o laudo e montado na tela). Uma vez por carga da pagina; o servidor trava contra envio duplo.
+  const envioDiretoVerificado = useRef(false);
+  useEffect(() => {
+    if (embedded || !state || state.modo !== 'SUPABASE' || envioDiretoVerificado.current) return;
+    envioDiretoVerificado.current = true;
+    (async () => {
+      try {
+        const [{ lista }, fila] = await Promise.all([listarRoboTransportadoras(), listarFilaAuditorRobo()]);
+        const diretas = new Map((lista || []).filter((c) => c.ativo && c.envio_direto).map((c) => [normNome(c.transportadora), c]));
+        if (!diretas.size) return;
+        const porId = new Map((state.faturas || []).map((f) => [String(f.id), f]));
+        const grupos = new Map();
+        (fila || []).forEach((e) => {
+          if (e.decisao !== 'ENVIAR_LAUDO' || e.acao_executada || e.aprovado_auditor_por !== ROBO_ENVIO_DIRETO_POR) return;
+          const f = porId.get(String(e.fatura_id));
+          if (!f || !STATUS_ROBO_AUDITA.includes(f.status) || !diretas.has(normNome(f.transportadora))) return;
+          const g = grupos.get(normNome(f.transportadora)) || { transportadora: f.transportadora, ids: [] };
+          if (g.ids.length < 300) g.ids.push(String(f.id));
+          grupos.set(normNome(f.transportadora), g);
+        });
+        if (grupos.size) enviarLaudosPorEmailRobo([...grupos.values()], 'auto');
+      } catch (ex) { console.warn('[robo] envio direto nao verificado:', ex?.message || ex); }
+    })();
+  }, [state, embedded]);
 
   // Fatura aberta por cima da aba atual (Robo / Meu Painel), sem trocar de aba.
   const [faturaOverlayId, setFaturaOverlayId] = useState(null);
