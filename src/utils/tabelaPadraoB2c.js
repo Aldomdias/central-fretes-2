@@ -131,6 +131,8 @@ export function montarTabelaPadrao(ctes, opcoes = {}) {
       b = {
         key, cd: c.cd, destinoKey: c.destinoKey, destinoLabel: c.destinoLabel, uf: c.uf,
         faixa, ctes: 0, n: 0, pagoSoma: 0, porTransp: new Map(),
+        classeVolume: c.classeVolume || 'sem_historico', volumeDestino: Number(c.volumeDestino) || 0,
+        percentualVolume: Number(c.percentualVolume) || 0, percentualAcumulado: Number(c.percentualAcumulado) || 0,
       };
       baldes.set(key, b);
     }
@@ -193,6 +195,7 @@ export function montarTabelaPadrao(ctes, opcoes = {}) {
     }));
     linhas.push({
       key: b.key, estimado: b.ctes === 0, amostraFraca: b.ctes > 0 && b.ctes < amostraMin, completo, cd: b.cd, destinoKey: b.destinoKey, destinoLabel: b.destinoLabel, uf: b.uf,
+      classeVolume: b.classeVolume, volumeDestino: b.volumeDestino, percentualVolume: b.percentualVolume, percentualAcumulado: b.percentualAcumulado,
       faixa: b.faixa, ctes: b.ctes, realizado: realizado == null ? null : arred(realizado), precoBase: arred(precoBase),
       custoRealizado: arred(b.pagoSoma), custoPadrao: arred(precoBase * b.ctes),
       podio, semVencedor: !podio.length,

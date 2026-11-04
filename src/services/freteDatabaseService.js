@@ -3210,6 +3210,14 @@ function normalizeMunicipioIbgeRow(row = {}) {
     'sg_uf',
   ]).toUpperCase().slice(0, 2);
 
+  const mesorregiao = pickIbgeValue(row, [
+    'mesorregiao',
+    'nome_mesorregiao',
+    'mesorregiao_nome',
+    'meso_regiao',
+    'nm_mesorregiao',
+  ]);
+
   // Fallback para bases IBGE com nomes de colunas diferentes.
   Object.entries(row || {}).forEach(([key, value]) => {
     const chave = String(key || '').toLowerCase();
@@ -3230,7 +3238,7 @@ function normalizeMunicipioIbgeRow(row = {}) {
   });
 
   if (!ibge || !cidade) return null;
-  return { ibge, cidade, uf };
+  return { ibge, cidade, uf, mesorregiao };
 }
 
 async function resolverIbgePorCepDbComCache(cep, cache) {

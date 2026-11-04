@@ -17,6 +17,7 @@ function normalizarLista(raw = []) {
       ibge: String(item.id || item.ibge || item.codigo_ibge || '').replace(/\D/g, '').slice(0, 7),
       cidade: String(item.nome || item.cidade || item.municipio || '').trim(),
       uf: extrairUf(item),
+      mesorregiao: String(item?.microrregiao?.mesorregiao?.nome || item?.mesorregiao || '').trim(),
     }))
     .filter((item) => item.ibge.length === 7 && item.cidade && item.uf.length === 2)
     .sort((a, b) => `${a.cidade}/${a.uf}`.localeCompare(`${b.cidade}/${b.uf}`, 'pt-BR'));
@@ -47,7 +48,7 @@ function salvarCache(data = []) {
 export async function carregarMunicipiosIbgeOficial({ usarCache = true } = {}) {
   if (usarCache) {
     const cached = lerCache();
-    if (cached.length >= 5000) return { municipios: cached, fonte: 'IBGE oficial em cache' };
+    if (cached.length >= 5000 && cached.some((m) => m.mesorregiao)) return { municipios: cached, fonte: 'IBGE oficial em cache' };
   }
 
   const response = await fetch(IBGE_API_URL, { method: 'GET' });

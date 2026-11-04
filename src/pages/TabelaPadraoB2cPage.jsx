@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import { buscarBaseSimulacaoPorRotasDb, carregarBaseFiltradaPorCidadesOrigemDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
@@ -6,13 +6,72 @@ import { normalizarTransportadoras, processarCte } from '../services/auditoriaCt
 import { categoriaCanalRealizado, montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
 import { filtrarCpComercialCte } from '../services/cteBasePolicy';
 import { resolverPesoCteRealizado } from '../utils/pesoRealizadoSimulador';
+import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
 import { exportarExcelFormatado } from '../utils/exportarExcelFormatado';
+import { montarXlsxVerum } from '../utils/verumXlsx';
 import { zipSync } from 'fflate';
 import {
   CDS_B2C, FAIXAS_PADRAO_TEXTO, cdDaCidade, faixaDoPeso, montarTabelaPadrao, normTexto, parseFaixas, tabelaPorTransportadora,
 } from '../utils/tabelaPadraoB2c';
 
 const LIMITE_MAX_CT = 200000;
+const CHAVES_CDS_BLACK = new Set(['ITAJAI', 'ITUPEVA', 'DUQUE DE CAXIAS', 'JABOATAO', 'SERRA', 'CONTAGEM']);
+const CDS_BLACK = CDS_B2C.filter((cd) => CHAVES_CDS_BLACK.has(cd.chave));
+const CHECKPOINT_DB = 'central-fretes-tabela-black';
+const CHECKPOINT_VERSION = 1;
+
+function abrirCheckpointDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(CHECKPOINT_DB, CHECKPOINT_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('execucoes')) db.createObjectStore('execucoes', { keyPath: 'chave' });
+      if (!db.objectStoreNames.contains('lotes')) {
+        const store = db.createObjectStore('lotes', { keyPath: 'id' });
+        store.createIndex('porExecucao', 'chave', { unique: false });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function idbReq(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function carregarCheckpoint(chave, configuracao) {
+  if (!('indexedDB' in window)) return null;
+  const db = await abrirCheckpointDb();
+  try {
+    const meta = await idbReq(db.transaction('execucoes').objectStore('execucoes').get(chave));
+    if (!meta || meta.configuracao !== configuracao) return null;
+    const tx = db.transaction('lotes');
+    const lotes = await idbReq(tx.objectStore('lotes').index('porExecucao').getAll(chave));
+    lotes.sort((a, b) => a.indice - b.indice);
+    return { meta, lotes };
+  } finally { db.close(); }
+}
+
+async function salvarCheckpoint(chave, configuracao, indice, ctes, totais) {
+  if (!('indexedDB' in window)) return;
+  const db = await abrirCheckpointDb();
+  try {
+    const tx = db.transaction(['execucoes', 'lotes'], 'readwrite');
+    tx.objectStore('lotes').put({ id: `${chave}:${indice}`, chave, indice, ctes });
+    tx.objectStore('execucoes').put({ chave, configuracao, ultimoIndice: indice, atualizadoEm: Date.now(), ...totais });
+    await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error); });
+  } finally { db.close(); }
+}
+
+function chaveCheckpoint(configuracao) {
+  let hash = 2166136261;
+  for (let i = 0; i < configuracao.length; i++) { hash ^= configuracao.charCodeAt(i); hash = Math.imul(hash, 16777619); }
+  return `black-b2c-${(hash >>> 0).toString(16)}`;
+}
 
 function safeNum(v) { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; }
 function fmt(v) { return safeNum(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
@@ -116,6 +175,36 @@ function baseUnitaria(transp, base) {
   return porNome.get(transp.nome) || [transp];
 }
 
+// Municípios diferentes frequentemente apontam para a mesma cotação/regra tarifária.
+// Esta assinatura remove apenas identificadores geográficos/técnicos e preserva tudo
+// que pode alterar preço ou prazo, permitindo calcular uma vez e replicar com segurança.
+function assinaturaTarifariaDestino(destinoIbge, ufDestino, candidatas, base, cd) {
+  // Nome da rota/cotação e IDs servem para localizar a regra, mas não alteram o
+  // resultado depois que as linhas tarifárias correspondentes já foram reunidas.
+  const omitir = /(^id$|_id$|Id$|created|updated|ibgeDestino|ibge_destino|cidadeDestino|cidade_destino|cepInicial|cepFinal|cep_inicial|cep_final|^cotacao$|^nomeRota$|^rota$|^nome$|^chave)/i;
+  const limpar = (valor) => {
+    if (Array.isArray(valor)) return valor.map(limpar);
+    if (!valor || typeof valor !== 'object') return valor;
+    return Object.fromEntries(Object.keys(valor).sort().filter((k) => !omitir.test(k)).map((k) => [k, limpar(valor[k])]));
+  };
+  const partes = candidatas.map((candidata) => {
+    const tabelas = [];
+    for (const transp of baseUnitaria(candidata, base)) {
+      for (const origem of (transp.origens || [])) {
+        if (!cdDaCidade(origem.cidade, [cd])) continue;
+        const rotas = (origem.rotas || []).filter((r) => dig7(r.ibgeDestino) === destinoIbge);
+        if (!rotas.length) continue;
+        const nomesRota = new Set(rotas.flatMap((r) => [r.cotacao, r.nomeRota, r.rota].filter(Boolean).map(normTexto)));
+        const cotacoes = (origem.cotacoes || []).filter((c) => nomesRota.has(normTexto(c.rota || c.nomeRota || c.cotacao)));
+        const taxas = (origem.taxasEspeciais || []).filter((t) => dig7(t.ibgeDestino) === destinoIbge);
+        tabelas.push({ rotas: limpar(rotas), cotacoes: limpar(cotacoes), taxas: limpar(taxas) });
+      }
+    }
+    return [candidata.nome, tabelas];
+  });
+  return JSON.stringify([ufDestino, partes]);
+}
+
 // Preço de TODAS as tabelas que cobrem a rota do CT-e (nenhuma excluída), mais barato primeiro.
 function simularTodas(cte, base, candidatas, ibgeOrigem, ibgeDestino, cidadeOrigem) {
   const canalReal = canalRealDe(cte);
@@ -140,6 +229,44 @@ function simularTodas(cte, base, candidatas, ibgeOrigem, ibgeDestino, cidadeOrig
   }
   resultados.sort((a, b) => a.total - b.total);
   return resultados;
+}
+
+function montarEspelhoRotasPorTransportadora(base, cd) {
+  const porTransportadora = {};
+  const vistos = new Map();
+  for (const transportadora of base) {
+    if (!porTransportadora[transportadora.nome]) porTransportadora[transportadora.nome] = [];
+    if (!vistos.has(transportadora.nome)) vistos.set(transportadora.nome, new Set());
+    const vistosTransp = vistos.get(transportadora.nome);
+    for (const origem of (transportadora.origens || [])) {
+      if (!cdDaCidade(origem.cidade, [cd])) continue;
+      for (const rota of (origem.rotas || [])) {
+        const ibgeDestino = dig7(rota.ibgeDestino);
+        if (!ibgeDestino) continue;
+        const canalBruto = normTexto(rota.canal || origem.canal || '');
+        const item = {
+          ibgeOrigem: dig7(rota.ibgeOrigem),
+          ibgeDestino,
+          cepInicial: String(rota.cepInicial || '').replace(/\D/g, '').slice(0, 8),
+          cepFinal: String(rota.cepFinal || '').replace(/\D/g, '').slice(0, 8),
+          prazo: safeNum(rota.prazoEntregaDias),
+          metodoEnvio: rota.metodoEnvio || 'Normal',
+          codigoUnidade: rota.codigoUnidade || '0001 - B2C',
+          _canalB2c: !canalBruto || canalBruto.includes('AMBOS') || categoriaCanalRealizado(canalBruto) === 'B2C',
+        };
+        const chave = [item.ibgeOrigem, item.ibgeDestino, item.cepInicial, item.cepFinal, item.prazo, item.metodoEnvio, item.codigoUnidade, canalBruto].join('|');
+        if (vistosTransp.has(chave)) continue;
+        vistosTransp.add(chave);
+        porTransportadora[transportadora.nome].push(item);
+      }
+    }
+  }
+  for (const nome of Object.keys(porTransportadora)) {
+    const todas = porTransportadora[nome];
+    const b2c = todas.filter((r) => r._canalB2c);
+    porTransportadora[nome] = (b2c.length ? b2c : todas).map(({ _canalB2c, ...rota }) => rota);
+  }
+  return porTransportadora;
 }
 
 async function carregarCtes({ competencia, dataInicio, dataFim, ufOrigem, limite, onProgress }) {
@@ -180,17 +307,18 @@ export default function TabelaPadraoB2cPage() {
   const [limiteInput, setLimiteInput] = useState('8000');
   const [cdEscolhido, setCdEscolhido] = useState('ITUPEVA');
   const [faixasTexto, setFaixasTexto] = useState(FAIXAS_PADRAO_TEXTO);
-  const [granularidade, setGranularidade] = useState('cidade');
+  const granularidade = 'cidade';
   const [baseFirst, setBaseFirst] = useState('ponderado');
   const [posicoes, setPosicoes] = useState([{ peso: '60', acr: '0' }, { peso: '20', acr: '1' }, { peso: '10', acr: '2' }, { peso: '10', acr: '3' }]);
   const [passoExtra, setPassoExtra] = useState('1');
   const [maxPos, setMaxPos] = useState('10');
-  const [coberturaMin, setCoberturaMin] = useState('60');
+  const [volumePrioritario, setVolumePrioritario] = useState('80');
   const [amostraMin, setAmostraMin] = useState('3');
 
   const [status, setStatus] = useState('idle');
   const [progresso, setProgresso] = useState('');
   const [erro, setErro] = useState('');
+  const interromperRef = useRef(false);
   const [simulados, setSimulados] = useState(null); // { ctes, semIbge, totalLidos }
   const [filtroCd, setFiltroCd] = useState('');
   const [filtroTransp, setFiltroTransp] = useState('');
@@ -202,20 +330,27 @@ export default function TabelaPadraoB2cPage() {
 
   async function gerar() {
     if (!faixas.length) { setErro('Faixas de peso inválidas. Use o formato "0-2, 2-5, 100+".'); return; }
+    interromperRef.current = false;
     setStatus('carregando'); setErro(''); setSimulados(null);
     try {
       setProgresso('Carregando planilha de IBGE...');
-      const municipios = await carregarMunicipiosIbgeDb().catch(() => []);
+      let municipios = await carregarMunicipiosIbgeDb().catch(() => []);
+      if (!municipios.some((m) => m.mesorregiao)) {
+        setProgresso('Carregando mesorregiões do IBGE...');
+        const oficial = await carregarMunicipiosIbgeOficial().catch(() => ({ municipios: [] }));
+        const mesoPorIbge = new Map((oficial.municipios || []).map((m) => [dig7(m.ibge), m.mesorregiao || '']));
+        municipios = municipios.map((m) => ({ ...m, mesorregiao: mesoPorIbge.get(dig7(m.ibge)) || '' }));
+      }
       const mapasIbge = montarMapasIbge(municipios);
       const municipioPorCidade = montarMunicipioPorCidade(municipios);
 
       setProgresso('Carregando CT-es B2C...');
       const todos = await carregarCtes({
         competencia, dataInicio: dataInicio || undefined, dataFim: dataFim || undefined,
-        ufOrigem: CDS_B2C.find((c) => c.chave === cdEscolhido)?.uf,
+        ufOrigem: CDS_BLACK.find((c) => c.chave === cdEscolhido)?.uf,
         limite: Number(limiteInput) || 8000, onProgress: (n) => setProgresso(`Carregando CT-es B2C... ${n}`),
       });
-      const cds = CDS_B2C.filter((c) => c.chave === cdEscolhido);
+      const cds = CDS_BLACK.filter((c) => c.chave === cdEscolhido);
       const doCd = [];
       let semIbge = 0;
       for (const cte of todos) {
@@ -260,6 +395,7 @@ export default function TabelaPadraoB2cPage() {
         await carregarBaseFiltradaPorCidadesOrigemDb(cds[0].cidades, (e) => setProgresso(`Carregando malha do CD... ${fmtN(e?.rotas || 0)} rotas · ${fmtN(e?.cotacoes || 0)} cotações`)),
       );
       if (!baseFrete.length) throw new Error('Nenhuma tabela de frete B2C encontrada para o CD.');
+      const rotasAtuaisPorTransportadora = montarEspelhoRotasPorTransportadora(baseFrete, cds[0]);
       const idx = indexarBase(baseFrete);
       const mapBaseByNome = new Map(baseFrete.map((t) => [t.nome, t]));
       const origemCache = new Map();
@@ -269,43 +405,88 @@ export default function TabelaPadraoB2cPage() {
       const molde = porNf[Math.floor(porNf.length / 2)];
       const setOrigemMolde = nomesPorOrigem(idx, dig7(molde.ibgeOrigem), normTexto(molde.cidadeOrigem), origemCache);
 
-      // 3) Todos os destinos que as tabelas atendem a partir do CD.
+      // 3) Malha nacional: todos os municípios do IBGE. O histórico serve para priorizar
+      // os destinos que acumulam o percentual de volume escolhido, nunca para cortar a saída.
       const infoIbge = new Map();
       for (const m of municipios) { const k = dig7(m.ibge || m.codigo_ibge || m.codigo); if (k) infoIbge.set(k, m); }
-      const destinosTabela = new Set();
-      for (const t of baseFrete) for (const o of (t.origens || [])) {
-        if (!cdDaCidade(o.cidade, [cds[0]])) continue;
-        for (const rota of (o.rotas || [])) { const d = dig7(rota.ibgeDestino); if (d) destinosTabela.add(d); }
-      }
       const volumePorDestino = new Map();
       for (const x of doCd) volumePorDestino.set(dig7(x.ibgeDestino), (volumePorDestino.get(dig7(x.ibgeDestino)) || 0) + 1);
 
+      const volumeTotal = Array.from(volumePorDestino.values()).reduce((s, n) => s + n, 0);
+      const limiteVolume = Math.max(0, Math.min(100, safeNum(volumePrioritario))) / 100;
+      let acumuladoVolume = 0;
+      const perfilVolume = new Map();
+      for (const [ibge, volume] of [...volumePorDestino.entries()].sort((a, b) => b[1] - a[1])) {
+        const percentual = volumeTotal ? volume / volumeTotal : 0;
+        acumuladoVolume += percentual;
+        perfilVolume.set(ibge, {
+          volume, percentual, acumulado: acumuladoVolume,
+          classe: acumuladoVolume - percentual < limiteVolume ? 'nucleo_80' : 'cauda_20',
+        });
+      }
+
       const destinos = [];
-      const repPorUf = new Map();
-      for (const d of destinosTabela) {
-        const info = infoIbge.get(d);
+      for (const [d, info] of infoIbge.entries()) {
         if (!info) continue;
         const ufD = String(info.uf || '').toUpperCase();
-        if (granularidade === 'uf') {
-          const atual = repPorUf.get(ufD);
-          if (!atual || (volumePorDestino.get(d) || 0) > (volumePorDestino.get(atual.d) || 0)) repPorUf.set(ufD, { d, info, ufD });
-        } else {
-          destinos.push({ d, info, ufD, key: d, label: `${info.cidade}/${ufD}` });
-        }
+        const pv = perfilVolume.get(d) || { volume: 0, percentual: 0, acumulado: 0, classe: 'sem_historico' };
+        destinos.push({ d, info, ufD, key: d, label: `${info.cidade}/${ufD}`, ...pv });
       }
-      if (granularidade === 'uf') for (const { d, info, ufD } of repPorUf.values()) destinos.push({ d, info, ufD, key: ufD, label: ufD });
+      destinos.sort((a, b) => {
+        const ordem = { nucleo_80: 0, cauda_20: 1, sem_historico: 2 };
+        return ordem[a.classe] - ordem[b.classe] || b.volume - a.volume || a.ufD.localeCompare(b.ufD) || a.label.localeCompare(b.label, 'pt-BR');
+      });
       if (!destinos.length) throw new Error('Nenhum destino das tabelas foi encontrado na planilha de IBGE.');
+      const mesorregiaoPorIbge = Object.fromEntries(destinos.map((x) => [x.d, x.info.mesorregiao || `${x.ufD} - sem mesorregião`]));
 
-      // 4) Uma simulação por destino x faixa, com o perfil médio da faixa, em todas as transportadoras que atendem o destino.
-      const ctes = [];
-      const t0 = Date.now();
-      let semTabela = 0;
-      for (let k = 0; k < destinos.length; k++) {
-        const { d, info, ufD, key, label } = destinos[k];
-        const setDestino = idx.porDestinoIbge.get(d);
+      setProgresso('Agrupando municípios por combinação tarifária...');
+      const destinosPreparados = destinos.map((destino) => {
+        const setDestino = idx.porDestinoIbge.get(destino.d);
         const candidatas = [];
         if (setDestino) for (const nome of setOrigemMolde) if (setDestino.has(nome)) { const t = mapBaseByNome.get(nome); if (t) candidatas.push(t); }
-        if (!candidatas.length) { semTabela += 1; continue; }
+        return {
+          ...destino,
+          candidatas,
+          assinatura: candidatas.length ? assinaturaTarifariaDestino(destino.d, destino.ufD, candidatas, baseFrete, cds[0]) : '',
+        };
+      });
+      const gruposTarifarios = new Set(destinosPreparados.filter((x) => x.assinatura).map((x) => x.assinatura)).size;
+
+      // 4) Uma simulação por combinação tarifária x faixa. Municípios equivalentes
+      // reutilizam o resultado, mas permanecem como linhas IBGE individuais na saída.
+      const ctes = [];
+      const resultadosPorGrupo = new Map();
+      const configuracaoCheckpoint = JSON.stringify({
+        versao: 1, cdEscolhido, competencia, dataInicio, dataFim, limiteInput,
+        faixas: faixas.map((f) => [f.min, Number.isFinite(f.max) ? f.max : 'inf']),
+        volumePrioritario, baseFrete: baseFrete.length, municipios: destinosPreparados.length,
+      });
+      const chaveExecucao = chaveCheckpoint(configuracaoCheckpoint);
+      let indiceInicial = 0;
+      const checkpoint = await carregarCheckpoint(chaveExecucao, configuracaoCheckpoint).catch(() => null);
+      if (checkpoint?.lotes?.length) {
+        for (const lote of checkpoint.lotes) {
+          ctes.push(...lote.ctes);
+          for (const item of lote.ctes) {
+            if (item._chaveGrupo && !resultadosPorGrupo.has(item._chaveGrupo)) resultadosPorGrupo.set(item._chaveGrupo, item.resultados);
+          }
+        }
+        indiceInicial = Math.min(destinosPreparados.length, checkpoint.meta.ultimoIndice + 1);
+        setProgresso(`Retomando progresso salvo no município ${fmtN(indiceInicial + 1)} de ${fmtN(destinosPreparados.length)}...`);
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      const t0 = Date.now();
+      let ultimoYield = t0;
+      let ultimaAtualizacao = t0;
+      const semTabela = destinosPreparados.filter((x) => !x.candidatas.length).length;
+      for (let k = indiceInicial; k < destinosPreparados.length; k++) {
+        if (interromperRef.current) {
+          setStatus('idle');
+          setProgresso(`Interrompido com segurança em ${fmtN(k)}/${fmtN(destinosPreparados.length)}. Clique em “Continuar geração” para retomar.`);
+          return;
+        }
+        const { d, info, ufD, key, label, classe, volume, percentual, acumulado, candidatas, assinatura } = destinosPreparados[k];
+        const ctesDoMunicipio = [];
         for (const faixa of faixas) {
           const pf = perfilDaFaixa(faixa);
           const cteRef = {
@@ -315,14 +496,37 @@ export default function TabelaPadraoB2cPage() {
           };
           for (const campo of Object.keys(cteRef)) if (/cubag|cubado/i.test(campo)) cteRef[campo] = 0;
           if (pf.cub > 0) { cteRef.cubagem = pf.cub; cteRef.cubagem_total = pf.cub; }
-          const resultados = simularTodas(cteRef, baseFrete, candidatas, molde.ibgeOrigem, d, molde.cidadeOrigem);
-          if (!resultados.length) continue;
-          ctes.push({ cd: molde.cd, uf: ufD, peso: pf.peso, destinoKey: key, destinoLabel: label, valorPago: 0, resultados, sintetico: true });
+          const chaveGrupo = assinatura ? chaveCheckpoint(`${assinatura}|${faixa.min}`) : '';
+          let resultados = chaveGrupo ? resultadosPorGrupo.get(chaveGrupo) : null;
+          if (!resultados) {
+            resultados = candidatas.length ? simularTodas(cteRef, baseFrete, candidatas, molde.ibgeOrigem, d, molde.cidadeOrigem) : [];
+            if (chaveGrupo) resultadosPorGrupo.set(chaveGrupo, resultados);
+          }
+          const itemSimulado = {
+            cd: molde.cd, uf: ufD, peso: pf.peso, destinoKey: key, destinoLabel: label, valorPago: 0, resultados, sintetico: true,
+            classeVolume: classe, volumeDestino: volume, percentualVolume: percentual, percentualAcumulado: acumulado,
+            _chaveGrupo: chaveGrupo,
+          };
+          ctes.push(itemSimulado);
+          ctesDoMunicipio.push(itemSimulado);
+          // O motor de frete é síncrono. Em uma malha nacional, devolver o controle
+          // periodicamente evita bloquear rolagem, pintura e eventos do navegador.
+          const agora = Date.now();
+          if (agora - ultimaAtualizacao >= 250) {
+            setProgresso(`Simulando municípios... ${fmtN(k + 1)}/${fmtN(destinosPreparados.length)} · ${fmtN(resultadosPorGrupo.size)}/${fmtN(gruposTarifarios * faixas.length)} combinações tarifárias · faixa ${faixa.label} · ${((agora - t0) / 1000).toFixed(0)}s`);
+            ultimaAtualizacao = agora;
+          }
+          if (agora - ultimoYield >= 40) {
+            await new Promise((r) => setTimeout(r, 0));
+            ultimoYield = Date.now();
+          }
         }
-        if (k % 20 === 0 || k === destinos.length - 1) {
-          setProgresso(`Simulando destinos... ${fmtN(k + 1)}/${fmtN(destinos.length)} · ${((Date.now() - t0) / 1000).toFixed(0)}s`);
-          await new Promise((r) => setTimeout(r, 0));
+        if (k % 20 === 0 || k === destinosPreparados.length - 1) {
+          setProgresso(`Simulando municípios... ${fmtN(k + 1)}/${fmtN(destinosPreparados.length)} · ${fmtN(resultadosPorGrupo.size)}/${fmtN(gruposTarifarios * faixas.length)} combinações tarifárias · ${((Date.now() - t0) / 1000).toFixed(0)}s`);
         }
+        await salvarCheckpoint(chaveExecucao, configuracaoCheckpoint, k, ctesDoMunicipio, {
+          totalMunicipios: destinosPreparados.length, combinacoesConcluidas: resultadosPorGrupo.size,
+        }).catch((e) => console.warn('[TabelaPadraoB2C] checkpoint não salvo', e));
       }
 
       // 5) CT-es reais entram só como volume e custo realizado (sem recalcular frete).
@@ -338,9 +542,14 @@ export default function TabelaPadraoB2cPage() {
           resultados: [], apenasVolume: true,
         });
       }
-      const destinosSemVolume = destinos.filter((x) => !volumePorDestino.has(x.d)).length;
+      const destinosSemVolume = destinos.filter((x) => x.classe === 'sem_historico').length;
+      const destinosNucleo = destinos.filter((x) => x.classe === 'nucleo_80').length;
       const faixasSemAmostra = faixas.filter((f) => !acum.get(f.min)?.n).length;
-      setSimulados({ ctes, semIbge, totalLidos: todos.length, estimadas: faixasSemAmostra, destinosSemVolume, destinos: destinos.length, semTabela });
+      setSimulados({
+        ctes, semIbge, totalLidos: todos.length, estimadas: faixasSemAmostra, destinosSemVolume, destinosNucleo,
+        destinos: destinos.length, semTabela, ibgeOrigem: molde.ibgeOrigem, rotasAtuaisPorTransportadora,
+        mesorregiaoPorIbge,
+      });
       setStatus('concluido'); setProgresso('');
     } catch (e) {
       console.error('[TabelaPadraoB2C]', e);
@@ -356,10 +565,10 @@ export default function TabelaPadraoB2cPage() {
       faixas, base: baseFirst,
       pesos: posicoes.map((p) => safeNum(p.peso)), difs: posicoes.map((p) => safeNum(p.acr)),
       passoExtra: safeNum(passoExtra), maxPos: Math.max(1, Math.floor(safeNum(maxPos)) || 1),
-      coberturaMin: Math.max(0, Math.min(100, safeNum(coberturaMin))) / 100,
+      coberturaMin: 0,
       amostraMin: Math.max(1, safeNum(amostraMin)),
     });
-  }, [simulados, faixas, baseFirst, posicoes, passoExtra, maxPos, coberturaMin, amostraMin]);
+  }, [simulados, faixas, baseFirst, posicoes, passoExtra, maxPos, amostraMin]);
 
   // Só materializa (transportadora x rota x faixa) quando a visão por transportadora está aberta: com malha completa são milhões de linhas.
   const porTransp = useMemo(() => (tabela && visao === 'transportadora' ? tabelaPorTransportadora(tabela.linhas) : []), [tabela, visao]);
@@ -410,28 +619,75 @@ export default function TabelaPadraoB2cPage() {
     return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
   }
 
-  async function arquivoDaTransportadora(nome) {
+  function arquivosVerumDaTransportadora(nome) {
     const linhas = tabelaPorTransportadora(tabela.linhas, nome);
-    const bytes = await exportarExcelFormatado({
-      nomeArquivo: '', aba: 'Tabela de frete', retornarBytes: true,
-      resumo: [
-        ['Transportadora', nome], ['CD origem', cdEscolhido], ['Preço base', baseFirst === 'ponderado' ? 'Média ponderada (tabela)' : baseFirst === 'simulado' ? 'Simulado do vencedor' : 'Média realizada'],
-        ['Pesos por posição (%)', posicoes.map((p) => p.peso).join(' / ')], ['Acréscimo por posição (R$)', posicoes.map((p) => p.acr).join(' / ')],
-        ['Passo após a última posição (R$)', passoExtra], ['Gerado em', new Date().toLocaleString('pt-BR')],
-      ],
-      colunas: [
-        { titulo: 'CD origem' }, { titulo: 'UF destino', tipo: 'centro' }, { titulo: 'Destino' }, { titulo: 'IBGE destino', tipo: 'centro' },
-        { titulo: 'Peso inicial (kg)', tipo: 'numero' }, { titulo: 'Peso final (kg)', tipo: 'numero' }, { titulo: 'Faixa de peso' },
-        { titulo: 'Valor do frete', tipo: 'moeda' }, { titulo: 'Posição na rota', tipo: 'inteiro' }, { titulo: 'Prazo (dias)', tipo: 'numero' },
-        { titulo: 'Valor na tabela real', tipo: 'moeda' }, { titulo: 'Observação' },
-      ],
-      linhas: linhas.map((p) => [
-        p.cd, p.uf, p.destino, granularidade === 'uf' ? '' : p.destinoKey, p.faixaMin, Number.isFinite(p.faixaMax) ? p.faixaMax : '', p.faixa,
-        p.precoTabela, p.posicao, p.prazo ?? '', p.simulado,
-        [p.estimado ? 'sem volume no histórico (estimado: CT-e de referência com o peso médio da faixa)' : '', p.cobertura < 1 ? `tabela cobre ${(p.cobertura * 100).toFixed(0)}% dos CT-es` : ''].filter(Boolean).join('; '),
-      ]),
-    });
-    return { nome: `tabela-b2c-${nomeSeguro(cdEscolhido)}-${nomeSeguro(nome)}.xlsx`, bytes: new Uint8Array(bytes) };
+    const porDestino = new Map();
+    for (const p of linhas) {
+      const lista = porDestino.get(p.destinoKey) || [];
+      lista.push(p);
+      porDestino.set(p.destinoKey, lista);
+    }
+    for (const lista of porDestino.values()) lista.sort((a, b) => a.faixaMin - b.faixaMin);
+
+    // Uma região tarifária pode atender muitos IBGEs. Ela é definida pelo vetor
+    // completo de preços por faixa; as linhas de cobertura continuam sendo o
+    // espelho exato das rotas atuais da transportadora.
+    const espelho = simulados.rotasAtuaisPorTransportadora?.[nome] || [];
+    const grupos = new Map();
+    const rotas = [];
+    const rotasVistas = new Set();
+    for (const rotaAtual of espelho) {
+      const precos = porDestino.get(rotaAtual.ibgeDestino);
+      if (!precos?.length) continue;
+      const mesorregiao = simulados.mesorregiaoPorIbge?.[rotaAtual.ibgeDestino] || `${precos[0]?.uf || ''} SEM MESORREGIAO`;
+      const mesoNome = String(mesorregiao).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9]+/g, ' ').trim().toUpperCase().slice(0, 28);
+      const assinaturaPreco = precos.map((p) => [p.faixaMin, Number.isFinite(p.faixaMax) ? p.faixaMax : 'inf', Number(p.precoTabela).toFixed(2)]);
+      const chaveGrupo = JSON.stringify([rotaAtual.codigoUnidade, mesorregiao, assinaturaPreco]);
+      let grupo = grupos.get(chaveGrupo);
+      if (!grupo) {
+        const numero = String(grupos.size + 1).padStart(4, '0');
+        grupo = { nome: `BLACK ${cdEscolhido} ${mesoNome} ${numero}`, unidade: rotaAtual.codigoUnidade, precos };
+        grupos.set(chaveGrupo, grupo);
+      }
+      const chaveRota = [grupo.nome, rotaAtual.ibgeOrigem, rotaAtual.ibgeDestino, rotaAtual.cepInicial, rotaAtual.cepFinal, rotaAtual.prazo, rotaAtual.metodoEnvio, rotaAtual.codigoUnidade].join('|');
+      if (rotasVistas.has(chaveRota)) continue;
+      rotasVistas.add(chaveRota);
+      rotas.push({
+        'Código da unidade': rotaAtual.codigoUnidade,
+        Cotação: grupo.nome,
+        'Código IBGE Origem': rotaAtual.ibgeOrigem || simulados.ibgeOrigem,
+        'Código IBGE Destino': rotaAtual.ibgeDestino,
+        'CEP inicial': rotaAtual.cepInicial,
+        'CEP final': rotaAtual.cepFinal,
+        'Método de envio': rotaAtual.metodoEnvio,
+        'Prazo de entrega': rotaAtual.prazo > 0 ? rotaAtual.prazo : '',
+        'Início da vigência': '', 'Término da vigência': '',
+      });
+    }
+    if (!rotas.length) throw new Error(`${nome}: nenhuma rota atual B2C pôde ser associada aos preços calculados.`);
+
+    const fretes = [];
+    for (const grupo of grupos.values()) {
+      for (const p of grupo.precos) fretes.push({
+        'Nome da transportadora': nome,
+        'Código da unidade': grupo.unidade,
+        'Regra de cálculo': 'Sem regra',
+        'Rota do frete': grupo.nome,
+        'Peso mínimo': p.faixaMin > 0 ? Number((p.faixaMin + 0.01).toFixed(2)) : 0,
+        'Peso limite': Number.isFinite(p.faixaMax) ? p.faixaMax : 999999999,
+        'Excesso de peso': Number.isFinite(p.faixaMax) ? 0 : Number((p.precoTabela / 100).toFixed(4)),
+        'Taxa aplicada': p.precoTabela,
+        'Frete percentual': 0,
+        'Frete mínimo': 0,
+        'Início da vigência': '',
+        'Fim da vigência': '',
+      });
+    }
+    const base = `tabela-black-b2c-${nomeSeguro(cdEscolhido)}-${nomeSeguro(nome)}`;
+    return [
+      { nome: `${base}-fretes-verum.xlsx`, bytes: montarXlsxVerum('cotacoes', fretes) },
+      { nome: `${base}-rotas-verum.xlsx`, bytes: montarXlsxVerum('rotas', rotas) },
+    ];
   }
 
   function baixarBlob(bytes, nome, tipo) {
@@ -444,18 +700,12 @@ export default function TabelaPadraoB2cPage() {
   async function baixarArquivos(nomes) {
     setGerandoArquivos(true);
     try {
-      if (nomes.length === 1) {
-        const f = await arquivoDaTransportadora(nomes[0]);
-        baixarBlob(f.bytes, f.nome, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      } else {
-        const arquivos = {};
-        for (const n of nomes) {
-          const f = await arquivoDaTransportadora(n);
-          arquivos[f.nome] = f.bytes;
-          await new Promise((res) => setTimeout(res, 0));
-        }
-        baixarBlob(zipSync(arquivos), `tabelas-b2c-${nomeSeguro(cdEscolhido)}-${new Date().toISOString().slice(0, 10)}.zip`, 'application/zip');
+      const arquivos = {};
+      for (const n of nomes) {
+        for (const f of arquivosVerumDaTransportadora(n)) arquivos[f.nome] = f.bytes;
+        await new Promise((res) => setTimeout(res, 0));
       }
+      baixarBlob(zipSync(arquivos), `tabelas-black-b2c-verum-${nomeSeguro(cdEscolhido)}-${new Date().toISOString().slice(0, 10)}.zip`, 'application/zip');
     } catch (e) {
       setErro(`Falha ao gerar arquivos: ${e.message || e}`);
     } finally {
@@ -470,7 +720,7 @@ export default function TabelaPadraoB2cPage() {
       ['Faixas', faixasTexto], ['Granularidade', granularidade === 'uf' ? 'UF de destino' : 'Cidade de destino'],
       ['Preço base', baseFirst === 'ponderado' ? 'Média ponderada (tabela)' : baseFirst === 'simulado' ? 'Simulado do vencedor' : 'Média realizada'],
       ['Pesos por posição (%)', posicoes.map((p) => p.peso).join(' / ')], ['Acréscimo por posição (R$)', posicoes.map((p) => p.acr).join(' / ')],
-      ['Passo após a última posição (R$)', passoExtra], ['Máx. posições', maxPos], ['Cobertura mínima %', coberturaMin], ['Amostra mínima (CT-es)', amostraMin],
+        ['Passo após a última posição (R$)', passoExtra], ['Máx. posições', maxPos], ['Núcleo prioritário do volume %', volumePrioritario], ['Amostra mínima (CT-es)', amostraMin],
       ['CD', cdEscolhido], ['CT-es simulados', simulados.ctes.length],
     ];
     await exportarExcelFormatado({
@@ -512,7 +762,7 @@ export default function TabelaPadraoB2cPage() {
       <div className="simulador-header compact-top">
         <div className="simulador-subtitulo">Central Fretes • Análise</div>
         <h1>Tabela Padrão B2C</h1>
-        <p>Simula todas as tabelas B2C sobre o histórico dos CDs e, para cada origem, destino e faixa de peso, define quem vence — mantendo 2º e 3º colocados — e o preço padrão ponderado pelos valores de tabela.</p>
+        <p>Gera a tabela Black B2C all-in para toda a malha nacional. Ranqueia as transportadoras por CD, município IBGE e faixa de peso, calcula o preço ponderado e entrega os arquivos prontos no formato Verum.</p>
         <BaseCtesStatus />
       </div>
 
@@ -531,7 +781,7 @@ export default function TabelaPadraoB2cPage() {
         <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end', marginBottom: 12 }}>
           <label>CD de origem (um por vez)
             <select value={cdEscolhido} onChange={(e) => setCdEscolhido(e.target.value)} style={{ width: '100%' }}>
-              {CDS_B2C.map((cd) => <option key={cd.chave} value={cd.chave}>{cd.label}/{cd.uf} ({cd.codigos.join(', ')})</option>)}
+              {CDS_BLACK.map((cd) => <option key={cd.chave} value={cd.chave}>{cd.label}/{cd.uf} ({cd.codigos.join(', ')})</option>)}
             </select>
           </label>
         </div>
@@ -540,13 +790,10 @@ export default function TabelaPadraoB2cPage() {
           <label>Faixas de peso (kg)
             <input value={faixasTexto} onChange={(e) => setFaixasTexto(e.target.value)} style={{ borderColor: faixas.length ? undefined : '#9b1111' }} />
           </label>
-          <label>Destino agrupado por
-            <select value={granularidade} onChange={(e) => setGranularidade(e.target.value)} style={{ width: '100%' }}>
-              <option value="cidade">Cidade (mais detalhado)</option>
-              <option value="uf">UF (mais amostra por linha)</option>
-            </select>
+          <label>Malha de destinos
+            <input value="Todos os municípios do IBGE" readOnly />
           </label>
-          <label>Preço do 1º lugar
+          <label>Formação do preço-base all-in
             <select value={baseFirst} onChange={(e) => setBaseFirst(e.target.value)} style={{ width: '100%' }}>
               <option value="ponderado">Média ponderada pelos pesos (tabela)</option>
               <option value="simulado">Simulado do vencedor (tabela)</option>
@@ -555,13 +802,18 @@ export default function TabelaPadraoB2cPage() {
           </label>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
             <button className="primary" type="button" onClick={gerar} disabled={status === 'carregando'}>
-              {status === 'carregando' ? 'Simulando...' : 'Gerar tabela padrão'}
+              {status === 'carregando' ? 'Simulando...' : progresso.startsWith('Interrompido') ? 'Continuar geração' : 'Gerar tabela padrão'}
             </button>
+            {status === 'carregando' && (
+              <button type="button" className="sim-tab" onClick={() => { interromperRef.current = true; setProgresso('Finalizando o município atual e salvando o progresso...'); }}>
+                Interromper e salvar
+              </button>
+            )}
           </div>
         </div>
 
         <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
-          <label>Cobertura mínima (%)<input type="number" min={0} max={100} value={coberturaMin} onChange={(e) => setCoberturaMin(e.target.value)} /></label>
+          <label>Núcleo prioritário do volume (%)<input type="number" min={0} max={100} value={volumePrioritario} onChange={(e) => setVolumePrioritario(e.target.value)} /></label>
           <label>Amostra mínima (CT-es/linha)<input type="number" min={1} value={amostraMin} onChange={(e) => setAmostraMin(e.target.value)} /></label>
         </div>
         <div style={{ marginTop: 14, border: '1px solid #e2e8f0', borderRadius: 10, padding: 12 }}>
@@ -614,19 +866,23 @@ export default function TabelaPadraoB2cPage() {
           </div>
         </div>
         <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: 6 }}>
-          Preço, acréscimos, cobertura e amostra recalculam na hora; só mudar o CD, período, faixas ou agrupamento exige gerar de novo.
+          Preço e acréscimos recalculam na hora. Mudanças de CD, período, faixas ou núcleo prioritário exigem gerar novamente.
         </div>
 
         {progresso && (
           <div style={{ marginTop: 12, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 14px', fontSize: '0.85rem', color: '#1d4ed8' }}>{progresso}</div>
         )}
+        <div style={{ marginTop: 6, fontSize: '0.72rem', color: '#64748b' }}>
+          O progresso é salvo automaticamente neste navegador ao fim de cada município. Para retomar, mantenha os mesmos filtros e clique em “Continuar geração”.
+        </div>
       </section>
 
       {tabela && (
         <>
           <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 16px', margin: '1rem 0', fontSize: '0.84rem', color: '#1d4ed8' }}>
-            {fmtN(simulados.ctes.length)} CT-es B2C simulados contra todas as tabelas · {fmtN(tabela.linhas.length)} linhas (CD × destino × faixa).
+            {fmtN(simulados.destinos)} municípios IBGE processados · {fmtN(simulados.destinosNucleo)} no núcleo prioritário de {volumePrioritario}% do volume · {fmtN(tabela.linhas.length)} linhas (CD × destino × faixa).
             {simulados.semIbge > 0 && ` ${fmtN(simulados.semIbge)} sem IBGE foram ignorados.`}
+            {simulados.semTabela > 0 && ` ${fmtN(simulados.semTabela)} município(s) não tiveram nenhuma tabela B2C calculável e ficaram sinalizados sem vencedor.`}
             {tabela.foraDasFaixas > 0 && ` ${fmtN(tabela.foraDasFaixas)} fora das faixas.`}
             {' '}Do 2º colocado em diante o preço é o padrão + acréscimo da posição; capacidade e SLA de cada transportadora são avaliação da operação.
           </div>
@@ -645,11 +901,11 @@ export default function TabelaPadraoB2cPage() {
           <section className="sim-card" style={{ marginBottom: '1rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
               <div>
-                <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>Arquivos por transportadora (valor do frete)</div>
+                <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>Arquivos Verum por transportadora (frete all-in + rotas)</div>
                 <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>
-                  Cada arquivo traz todas as rotas (destino × faixa) que a transportadora atende, com o valor da posição dela no ranking da rota.
+                  Cada pacote contém os dois arquivos oficiais do Verum: fretes all-in por faixa e rotas nacionais atendidas, com o valor da posição da transportadora no ranking.
                   {simulados.estimadas > 0 && ` ${fmtN(simulados.estimadas)} faixa(s) de peso sem CT-e no período usaram o peso médio da faixa e a NF média geral.`}
-                  {simulados.destinosSemVolume > 0 && ` ${fmtN(simulados.destinosSemVolume)} destinos sem nenhum CT-e no histórico entraram pela malha das tabelas.`}
+                  {simulados.destinosSemVolume > 0 && ` ${fmtN(simulados.destinosSemVolume)} municípios sem CT-e no histórico entraram pela malha nacional do IBGE.`}
                 </div>
               </div>
               <button className="primary" type="button" disabled={gerandoArquivos || !coberturaTransp.length}
