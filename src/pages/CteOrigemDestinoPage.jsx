@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { normalizarCanalOperacional } from '../utils/canalTransportadora';
+import { formatarCnpj } from '../utils/cnpj';
 
 const TABELA = 'realizado_local_ctes';
 const BATCH_SIZE = 1000;
 const CANAIS_FRACIONADO = ['ATACADO'];
+const CANAIS_TRANSFERENCIA = ['INTERCOMPANY'];
 
 function monthNow() {
   const date = new Date();
@@ -103,38 +105,59 @@ function getValorNf(row) {
   return safeNumber(campo(row, 'valor_nf', 'valorNF', 'nf_venda', 'valor_nota'));
 }
 
+const COLUNAS_BASE = [
+  'cidade_origem', 'uf_origem', 'cidade_destino', 'uf_destino', 'canal', 'canal_original', 'valor_cte', 'valor_nf', 'data_emissao',
+  'transportadora', 'cnpj_transportadora', 'peso', 'cubagem', 'qtd_volumes', 'created_at', 'documento_remetente',
+];
+// Criadas pela migration 20261104_001; se o banco ainda nao tiver, a tela segue sem elas.
+const COLUNAS_OPCIONAIS = ['codigo_transportadora', 'cnpj_tomador', 'material', 'unidade_medida'];
+
+async function lerPaginas(supabase, colunas, inicio, fim, onProgress) {
+  const acumulado = [];
+  for (let offset = 0; ; offset += BATCH_SIZE) {
+    const { data, error } = await supabase
+      .from(TABELA)
+      .select(colunas.join(', '))
+      .gte('data_emissao', inicio)
+      .lte('data_emissao', fim)
+      .range(offset, offset + BATCH_SIZE - 1);
+
+    if (error) return { erro: error, dados: acumulado };
+
+    const lote = data || [];
+    acumulado.push(...lote);
+    onProgress?.({ carregados: acumulado.length });
+    if (lote.length < BATCH_SIZE) break;
+  }
+  return { erro: null, dados: acumulado };
+}
+
 async function buscarCtesDaCompetencia(competencia, onProgress) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado. Verifique o .env.');
   const { inicio, fim } = competenciaParaIntervalo(competencia);
   if (!inicio || !fim) return [];
 
   const supabase = getSupabaseClient();
-  const acumulado = [];
+  const completo = await lerPaginas(supabase, [...COLUNAS_BASE, ...COLUNAS_OPCIONAIS], inicio, fim, onProgress);
+  if (!completo.erro) return completo.dados;
 
-  for (let offset = 0; ; offset += BATCH_SIZE) {
-    const rangeFim = offset + BATCH_SIZE - 1;
-    const { data, error } = await supabase
-      .from(TABELA)
-      .select('cidade_origem, uf_origem, cidade_destino, uf_destino, canal, canal_original, valor_cte, valor_nf, data_emissao')
-      .gte('data_emissao', inicio)
-      .lte('data_emissao', fim)
-      .range(offset, rangeFim);
-
-    if (error) throw new Error(`Erro Supabase (${TABELA}): ${error.message}`);
-
-    const lote = data || [];
-    acumulado.push(...lote);
-    onProgress?.({ carregados: acumulado.length });
-
-    if (lote.length < BATCH_SIZE) break;
-  }
-
-  return acumulado;
+  // Coluna opcional ainda nao existe no banco: le so as colunas base.
+  const base = await lerPaginas(supabase, COLUNAS_BASE, inicio, fim, onProgress);
+  if (base.erro) throw new Error(`Erro Supabase (${TABELA}): ${base.erro.message}`);
+  return base.dados;
 }
+
+const GRUPOS = [
+  { key: 'fracionado', label: 'Fracionado (Atacado)' },
+  { key: 'transferencia', label: 'Transferencias entre filiais (Intercompany)' },
+  { key: 'lotacao', label: 'Lotacao (demais canais)' },
+];
 
 function classificarGrupo(row) {
   const canal = getCanalNormalizado(row);
-  return CANAIS_FRACIONADO.includes(canal) ? 'fracionado' : 'lotacao';
+  if (CANAIS_FRACIONADO.includes(canal)) return 'fracionado';
+  if (CANAIS_TRANSFERENCIA.includes(canal)) return 'transferencia';
+  return 'lotacao';
 }
 
 function canaisDoGrupo(rows = [], groupFn) {
@@ -143,6 +166,103 @@ function canaisDoGrupo(rows = [], groupFn) {
     if (groupFn(row)) set.add(getCanalNormalizado(row) || '(sem canal)');
   });
   return [...set].sort();
+}
+
+function dataIso(v) {
+  const texto = String(v || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(texto) ? texto : '';
+}
+
+function fmtData(iso) {
+  if (!iso) return '';
+  const [a, m, d] = iso.split('-');
+  return `${d}/${m}/${a}`;
+}
+
+function fmtIntervaloDatas(min, max) {
+  if (!min) return '-';
+  if (!max || min === max) return fmtData(min);
+  return `${fmtData(min)} a ${fmtData(max)}`;
+}
+
+function textoCnpj(v) {
+  const digitos = String(v || '').replace(/\D/g, '');
+  return digitos ? formatarCnpj(digitos) : '';
+}
+
+function novoAgregado(extra = {}) {
+  return {
+    ...extra,
+    ctes: 0,
+    quantidade: 0,
+    peso: 0,
+    cubagem: 0,
+    valorCte: 0,
+    valorNf: 0,
+    materiais: new Set(),
+    unidades: new Set(),
+    codigos: new Set(),
+    cnpjsEmissor: new Set(),
+    cnpjsTomador: new Set(),
+    emissaoMin: '',
+    emissaoMax: '',
+    lancamentoMin: '',
+    lancamentoMax: '',
+  };
+}
+
+function somarNoAgregado(alvo, row) {
+  alvo.ctes += 1;
+  alvo.quantidade += safeNumber(campo(row, 'qtd_volumes'));
+  alvo.peso += safeNumber(campo(row, 'peso'));
+  alvo.cubagem += safeNumber(campo(row, 'cubagem'));
+  alvo.valorCte += getValorCte(row);
+  alvo.valorNf += getValorNf(row);
+
+  const material = String(campo(row, 'material') || '').trim();
+  if (material) alvo.materiais.add(material.toUpperCase());
+  String(campo(row, 'unidade_medida') || '').split(/[/,;]/).map((u) => u.trim().toUpperCase()).filter(Boolean).forEach((u) => alvo.unidades.add(u));
+  const codigo = String(campo(row, 'codigo_transportadora') || '').trim();
+  if (codigo) alvo.codigos.add(codigo);
+  const emissor = textoCnpj(campo(row, 'cnpj_transportadora'));
+  if (emissor) alvo.cnpjsEmissor.add(emissor);
+  const tomador = textoCnpj(campo(row, 'cnpj_tomador'));
+  if (tomador) alvo.cnpjsTomador.add(tomador);
+
+  const emissao = dataIso(campo(row, 'data_emissao'));
+  if (emissao) {
+    if (!alvo.emissaoMin || emissao < alvo.emissaoMin) alvo.emissaoMin = emissao;
+    if (!alvo.emissaoMax || emissao > alvo.emissaoMax) alvo.emissaoMax = emissao;
+  }
+  const lancamento = dataIso(campo(row, 'created_at'));
+  if (lancamento) {
+    if (!alvo.lancamentoMin || lancamento < alvo.lancamentoMin) alvo.lancamentoMin = lancamento;
+    if (!alvo.lancamentoMax || lancamento > alvo.lancamentoMax) alvo.lancamentoMax = lancamento;
+  }
+}
+
+function unidadesDoAgregado(item) {
+  const set = new Set(item.unidades);
+  if (!set.size) {
+    if (item.peso > 0) set.add('KG');
+    if (item.cubagem > 0) set.add('M3');
+    if (item.quantidade > 0) set.add('UN');
+  }
+  return [...set].sort();
+}
+
+function finalizarAgregado(item) {
+  return {
+    ...item,
+    freteMedio: item.ctes > 0 ? item.valorCte / item.ctes : 0,
+    percentualNf: item.valorNf > 0 ? (item.valorCte / item.valorNf) * 100 : 0,
+    fretePorKg: item.peso > 0 ? item.valorCte / item.peso : 0,
+    materiaisLista: [...item.materiais].sort(),
+    unidadesLista: unidadesDoAgregado(item),
+    codigosLista: [...item.codigos].sort(),
+    cnpjsEmissorLista: [...item.cnpjsEmissor].sort(),
+    cnpjsTomadorLista: [...item.cnpjsTomador].sort(),
+  };
 }
 
 function montarAnaliseOrigemDestino(rows = []) {
@@ -155,40 +275,58 @@ function montarAnaliseOrigemDestino(rows = []) {
     const ufDestino = getDestinoUf(row);
     const key = `${origem}|${ufOrigem}|${destino}|${ufDestino}`;
 
-    const atual = mapa.get(key) || {
-      key,
-      origem,
-      ufOrigem,
-      destino,
-      ufDestino,
-      ctes: 0,
-      valorCte: 0,
-      valorNf: 0,
-    };
+    let rota = mapa.get(key);
+    if (!rota) {
+      rota = novoAgregado({ key, origem, ufOrigem, destino, ufDestino, transportadorasMap: new Map() });
+      mapa.set(key, rota);
+    }
+    somarNoAgregado(rota, row);
 
-    atual.ctes += 1;
-    atual.valorCte += getValorCte(row);
-    atual.valorNf += getValorNf(row);
-    mapa.set(key, atual);
+    const nomeTransp = String(campo(row, 'transportadora') || '').trim().toUpperCase() || 'NAO INFORMADA';
+    const cnpjTransp = String(campo(row, 'cnpj_transportadora') || '').replace(/\D/g, '');
+    const keyTransp = cnpjTransp || nomeTransp;
+    let transp = rota.transportadorasMap.get(keyTransp);
+    if (!transp) {
+      transp = novoAgregado({ key: `${key}|${keyTransp}`, transportadora: nomeTransp, cnpjTransportadora: cnpjTransp });
+      rota.transportadorasMap.set(keyTransp, transp);
+    }
+    somarNoAgregado(transp, row);
   });
 
-  const linhas = [...mapa.values()].map((item) => ({
-    ...item,
-    freteMedio: item.ctes > 0 ? item.valorCte / item.ctes : 0,
-    percentualNf: item.valorNf > 0 ? (item.valorCte / item.valorNf) * 100 : 0,
-  }));
+  const linhas = [...mapa.values()].map((rota) => {
+    const transportadoras = [...rota.transportadorasMap.values()]
+      .map(finalizarAgregado)
+      .sort((a, b) => b.valorCte - a.valorCte);
+    const { transportadorasMap, ...resto } = rota;
+    return {
+      ...finalizarAgregado(resto),
+      transportadoras,
+      qtdTransportadoras: transportadoras.length,
+      nomesTransportadoras: transportadoras.map((t) => t.transportadora).join(' '),
+    };
+  });
 
   const totais = linhas.reduce((acc, item) => {
     acc.ctes += item.ctes;
     acc.valorCte += item.valorCte;
     acc.valorNf += item.valorNf;
+    acc.peso += item.peso;
+    acc.cubagem += item.cubagem;
+    acc.quantidade += item.quantidade;
     return acc;
-  }, { ctes: 0, valorCte: 0, valorNf: 0 });
+  }, { ctes: 0, valorCte: 0, valorNf: 0, peso: 0, cubagem: 0, quantidade: 0 });
+
+  const transportadorasUnicas = new Set();
+  linhas.forEach((l) => l.transportadoras.forEach((t) => transportadorasUnicas.add(t.cnpjTransportadora || t.transportadora)));
 
   return {
     linhas,
     totalRotas: linhas.length,
+    totalTransportadoras: transportadorasUnicas.size,
     totalCtes: totais.ctes,
+    totalPeso: totais.peso,
+    totalCubagem: totais.cubagem,
+    totalQuantidade: totais.quantidade,
     valorTotalCte: totais.valorCte,
     valorTotalNf: totais.valorNf,
     freteMedio: totais.ctes > 0 ? totais.valorCte / totais.ctes : 0,
@@ -206,15 +344,81 @@ function SummaryCard({ title, value, subtitle }) {
   );
 }
 
+// Mostra o 1o valor e "+N" quando houver varios (lista completa no tooltip).
+function ListaCurta({ itens = [], vazio = '-' }) {
+  if (!itens.length) return <span style={{ color: '#aaa' }}>{vazio}</span>;
+  if (itens.length === 1) return <span>{itens[0]}</span>;
+  return (
+    <span title={itens.join('\n')}>
+      {itens[0]} <span style={{ color: '#1f6feb', fontSize: 11 }}>+{itens.length - 1}</span>
+    </span>
+  );
+}
+
+// Medidas no formato de cada item: kg para peso, m3 para cubagem, un para quantidade.
+function Medidas({ item }) {
+  const partes = [];
+  if (item.peso > 0) partes.push(`${fmtN(item.peso, 2)} kg`);
+  if (item.cubagem > 0) partes.push(`${fmtN(item.cubagem, 3)} m³`);
+  if (!partes.length) return <span style={{ color: '#aaa' }}>-</span>;
+  return <span style={{ whiteSpace: 'nowrap' }}>{partes.join(' | ')}</span>;
+}
+
 const COLUNAS = [
   { key: 'origem', label: 'Origem', align: 'left' },
   { key: 'destino', label: 'Destino', align: 'left' },
+  { key: 'qtdTransportadoras', label: 'Transp.', align: 'right' },
   { key: 'ctes', label: 'CT-es', align: 'right' },
+  { key: 'quantidade', label: 'Quantidade', align: 'right' },
+  { key: 'peso', label: 'Peso (kg)', align: 'right' },
+  { key: 'cubagem', label: 'Cubagem (m³)', align: 'right' },
   { key: 'valorCte', label: 'Valor total gasto', align: 'right' },
   { key: 'freteMedio', label: 'Frete medio', align: 'right' },
   { key: 'valorNf', label: 'Valor de NF total', align: 'right' },
   { key: 'percentualNf', label: '% NF', align: 'right' },
 ];
+
+const COLUNAS_TRANSP = [
+  'Codigo', 'Transportadora', 'CT-es', 'Quantidade', 'Material', 'Peso / m³', 'Unidade', 'Data emissao', 'Data lancamento',
+  'CNPJ emissor', 'CNPJ tomador', 'Valor total', 'Frete medio', 'Valor NF', '% NF',
+];
+
+const tdSub = { padding: '6px 10px', borderBottom: '1px solid #eef1f6', verticalAlign: 'top' };
+
+function TabelaTransportadoras({ transportadoras }) {
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, background: '#fff' }}>
+      <thead>
+        <tr style={{ background: '#eef3fb' }}>
+          {COLUNAS_TRANSP.map((c, i) => (
+            <th key={c} style={{ ...tdSub, textAlign: i >= 2 && ![4, 6, 7, 8, 9, 10].includes(i) ? 'right' : 'left', whiteSpace: 'nowrap', fontWeight: 600 }}>{c}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {transportadoras.map((t) => (
+          <tr key={t.key}>
+            <td style={tdSub}><ListaCurta itens={t.codigosLista.length ? t.codigosLista : [textoCnpj(t.cnpjTransportadora)].filter(Boolean)} /></td>
+            <td style={{ ...tdSub, fontWeight: 600 }}>{t.transportadora}</td>
+            <td style={{ ...tdSub, textAlign: 'right' }}>{fmtN(t.ctes)}</td>
+            <td style={{ ...tdSub, textAlign: 'right' }}>{t.quantidade > 0 ? fmtN(t.quantidade) : '-'}</td>
+            <td style={tdSub}><ListaCurta itens={t.materiaisLista} /></td>
+            <td style={{ ...tdSub, textAlign: 'right' }}><Medidas item={t} /></td>
+            <td style={tdSub}>{t.unidadesLista.join(' / ') || '-'}</td>
+            <td style={{ ...tdSub, whiteSpace: 'nowrap' }}>{fmtIntervaloDatas(t.emissaoMin, t.emissaoMax)}</td>
+            <td style={{ ...tdSub, whiteSpace: 'nowrap' }}>{fmtIntervaloDatas(t.lancamentoMin, t.lancamentoMax)}</td>
+            <td style={{ ...tdSub, whiteSpace: 'nowrap' }}><ListaCurta itens={t.cnpjsEmissorLista} /></td>
+            <td style={{ ...tdSub, whiteSpace: 'nowrap' }}><ListaCurta itens={t.cnpjsTomadorLista} /></td>
+            <td style={{ ...tdSub, textAlign: 'right' }}>{fmt(t.valorCte)}</td>
+            <td style={{ ...tdSub, textAlign: 'right' }}>{fmt(t.freteMedio)}</td>
+            <td style={{ ...tdSub, textAlign: 'right' }}>{fmt(t.valorNf)}</td>
+            <td style={{ ...tdSub, textAlign: 'right' }}>{fmtPct(t.percentualNf)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
 
 export default function CteOrigemDestinoPage() {
   const [competencia, setCompetencia] = useState(monthNow());
@@ -228,6 +432,8 @@ export default function CteOrigemDestinoPage() {
   const [filtroDestino, setFiltroDestino] = useState('');
   const [ordenacao, setOrdenacao] = useState({ campo: 'valorCte', direcao: 'desc' });
   const [canaisSelecionados, setCanaisSelecionados] = useState(null);
+  const [filtroTransportadora, setFiltroTransportadora] = useState('');
+  const [expandidas, setExpandidas] = useState(() => new Set());
 
   useEffect(() => {
     let cancelado = false;
@@ -251,12 +457,11 @@ export default function CteOrigemDestinoPage() {
     return () => { cancelado = true; };
   }, [competencia]);
 
-  const canaisDisponiveisPorGrupo = useMemo(() => ({
-    fracionado: canaisDoGrupo(rows, (row) => classificarGrupo(row) === 'fracionado'),
-    lotacao: canaisDoGrupo(rows, (row) => classificarGrupo(row) === 'lotacao'),
-  }), [rows]);
+  const canaisDisponiveisPorGrupo = useMemo(() => Object.fromEntries(
+    GRUPOS.map((g) => [g.key, canaisDoGrupo(rows, (row) => classificarGrupo(row) === g.key)]),
+  ), [rows]);
 
-  const canaisDisponiveis = canaisDisponiveisPorGrupo[grupo];
+  const canaisDisponiveis = canaisDisponiveisPorGrupo[grupo] || [];
 
   useEffect(() => {
     setCanaisSelecionados(null);
@@ -266,8 +471,8 @@ export default function CteOrigemDestinoPage() {
 
   const rowsDoGrupoFiltradas = useMemo(() => {
     const setCanais = new Set(canaisEfetivos);
-    return rows.filter((row) => setCanais.has(getCanalNormalizado(row) || '(sem canal)'));
-  }, [rows, canaisEfetivos]);
+    return rows.filter((row) => classificarGrupo(row) === grupo && setCanais.has(getCanalNormalizado(row) || '(sem canal)'));
+  }, [rows, canaisEfetivos, grupo]);
 
   const analiseAtiva = useMemo(() => montarAnaliseOrigemDestino(rowsDoGrupoFiltradas), [rowsDoGrupoFiltradas]);
 
@@ -281,10 +486,27 @@ export default function CteOrigemDestinoPage() {
     return [...set].sort();
   }, [analiseAtiva.linhas]);
 
+  const transportadorasDisponiveis = useMemo(() => {
+    const set = new Set();
+    analiseAtiva.linhas.forEach((l) => l.transportadoras.forEach((t) => set.add(t.transportadora)));
+    return [...set].sort();
+  }, [analiseAtiva.linhas]);
+
   useEffect(() => {
     setFiltroOrigem('');
     setFiltroDestino('');
+    setFiltroTransportadora('');
+    setExpandidas(new Set());
   }, [grupo, competencia]);
+
+  function toggleExpandida(key) {
+    setExpandidas((atual) => {
+      const proximo = new Set(atual);
+      if (proximo.has(key)) proximo.delete(key);
+      else proximo.add(key);
+      return proximo;
+    });
+  }
 
   function toggleCanal(canal) {
     setCanaisSelecionados((atual) => {
@@ -299,13 +521,29 @@ export default function CteOrigemDestinoPage() {
     const termo = busca.trim().toUpperCase();
     let linhas = analiseAtiva.linhas;
     if (termo) {
-      linhas = linhas.filter((item) => `${item.origem} ${item.ufOrigem} ${item.destino} ${item.ufDestino}`.toUpperCase().includes(termo));
+      linhas = linhas.filter((item) => `${item.origem} ${item.ufOrigem} ${item.destino} ${item.ufDestino} ${item.nomesTransportadoras}`.toUpperCase().includes(termo));
     }
     if (filtroOrigem) {
       linhas = linhas.filter((item) => `${item.origem} - ${item.ufOrigem}` === filtroOrigem);
     }
     if (filtroDestino) {
       linhas = linhas.filter((item) => `${item.destino} - ${item.ufDestino}` === filtroDestino);
+    }
+    if (filtroTransportadora) {
+      // Mantem so a transportadora escolhida dentro de cada rota e recalcula os totais da rota.
+      linhas = linhas
+        .map((item) => {
+          const transportadoras = item.transportadoras.filter((t) => t.transportadora === filtroTransportadora);
+          if (!transportadoras.length) return null;
+          const t = transportadoras[0];
+          return {
+            ...item,
+            ...['ctes', 'quantidade', 'peso', 'cubagem', 'valorCte', 'valorNf', 'freteMedio', 'percentualNf'].reduce((acc, k) => ({ ...acc, [k]: t[k] }), {}),
+            transportadoras,
+            qtdTransportadoras: 1,
+          };
+        })
+        .filter(Boolean);
     }
     const { campo: campoOrd, direcao } = ordenacao;
     const sinal = direcao === 'asc' ? 1 : -1;
@@ -315,7 +553,7 @@ export default function CteOrigemDestinoPage() {
       if (typeof va === 'string') return sinal * va.localeCompare(vb);
       return sinal * ((va || 0) - (vb || 0));
     });
-  }, [analiseAtiva.linhas, busca, ordenacao]);
+  }, [analiseAtiva.linhas, busca, filtroOrigem, filtroDestino, filtroTransportadora, ordenacao]);
 
   function toggleOrdenacao(campoOrd) {
     setOrdenacao((atual) => ({
@@ -325,21 +563,54 @@ export default function CteOrigemDestinoPage() {
   }
 
   function exportarExcel() {
-    const dadosExport = linhasFiltradas.map((item) => ({
+    const juntar = (lista) => lista.join(' / ');
+    const dadosRotas = linhasFiltradas.map((item) => ({
       Origem: item.origem,
       'UF Origem': item.ufOrigem,
       Destino: item.destino,
       'UF Destino': item.ufDestino,
+      Transportadoras: item.qtdTransportadoras,
       'CT-es': item.ctes,
+      Quantidade: item.quantidade,
+      'Peso (kg)': Number(item.peso.toFixed(3)),
+      'Cubagem (m3)': Number(item.cubagem.toFixed(3)),
       'Valor total gasto': item.valorCte,
       'Frete medio': item.freteMedio,
       'Valor de NF total': item.valorNf,
       '% NF': Number(item.percentualNf.toFixed(2)),
     }));
 
+    const dadosTransp = [];
+    linhasFiltradas.forEach((item) => {
+      item.transportadoras.forEach((t) => {
+        dadosTransp.push({
+          Origem: item.origem,
+          'UF Origem': item.ufOrigem,
+          Destino: item.destino,
+          'UF Destino': item.ufDestino,
+          'Codigo transportadora': juntar(t.codigosLista),
+          Transportadora: t.transportadora,
+          'CT-es': t.ctes,
+          Quantidade: t.quantidade,
+          Material: juntar(t.materiaisLista),
+          'Peso (kg)': Number(t.peso.toFixed(3)),
+          'Cubagem (m3)': Number(t.cubagem.toFixed(3)),
+          'Unidade de medida': juntar(t.unidadesLista),
+          'Data emissao': fmtIntervaloDatas(t.emissaoMin, t.emissaoMax),
+          'Data lancamento': fmtIntervaloDatas(t.lancamentoMin, t.lancamentoMax),
+          'CNPJ emissor': juntar(t.cnpjsEmissorLista),
+          'CNPJ tomador': juntar(t.cnpjsTomadorLista),
+          'Valor total gasto': t.valorCte,
+          'Frete medio': t.freteMedio,
+          'Valor de NF total': t.valorNf,
+          '% NF': Number(t.percentualNf.toFixed(2)),
+        });
+      });
+    });
+
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(dadosExport);
-    XLSX.utils.book_append_sheet(wb, ws, grupo === 'fracionado' ? 'Fracionado' : 'Lotacao');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(dadosRotas), 'Rotas');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(dadosTransp), 'Rota x Transportadora');
     XLSX.writeFile(wb, `cte-origem-destino-${grupo}-${competencia}-${canaisEfetivos.join('_') || 'sem-canal'}.xlsx`);
   }
 
@@ -357,37 +628,25 @@ export default function CteOrigemDestinoPage() {
         </button>
       </div>
 
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button
-          type="button"
-          onClick={() => setGrupo('fracionado')}
-          style={{
-            padding: '8px 16px',
-            borderRadius: 8,
-            border: '1px solid #ccc',
-            background: grupo === 'fracionado' ? '#1f6feb' : '#fff',
-            color: grupo === 'fracionado' ? '#fff' : '#333',
-            fontWeight: 600,
-            cursor: 'pointer',
-          }}
-        >
-          Fracionado (Atacado)
-        </button>
-        <button
-          type="button"
-          onClick={() => setGrupo('lotacao')}
-          style={{
-            padding: '8px 16px',
-            borderRadius: 8,
-            border: '1px solid #ccc',
-            background: grupo === 'lotacao' ? '#1f6feb' : '#fff',
-            color: grupo === 'lotacao' ? '#fff' : '#333',
-            fontWeight: 600,
-            cursor: 'pointer',
-          }}
-        >
-          Lotacao (demais canais)
-        </button>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {GRUPOS.map((g) => (
+          <button
+            key={g.key}
+            type="button"
+            onClick={() => setGrupo(g.key)}
+            style={{
+              padding: '8px 16px',
+              borderRadius: 8,
+              border: '1px solid #ccc',
+              background: grupo === g.key ? '#1f6feb' : '#fff',
+              color: grupo === g.key ? '#fff' : '#333',
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            {g.label}
+          </button>
+        ))}
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', fontSize: 13 }}>
@@ -415,7 +674,10 @@ export default function CteOrigemDestinoPage() {
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <SummaryCard title="Rotas (origem x destino)" value={fmtN(analiseAtiva.totalRotas)} />
+        <SummaryCard title="Transportadoras" value={fmtN(analiseAtiva.totalTransportadoras)} />
         <SummaryCard title="CT-es" value={fmtN(analiseAtiva.totalCtes)} />
+        <SummaryCard title="Quantidade" value={fmtN(analiseAtiva.totalQuantidade)} subtitle="volumes" />
+        <SummaryCard title="Peso total" value={`${fmtN(analiseAtiva.totalPeso, 0)} kg`} subtitle={analiseAtiva.totalCubagem > 0 ? `${fmtN(analiseAtiva.totalCubagem, 2)} m³` : undefined} />
         <SummaryCard title="Valor total gasto" value={fmt(analiseAtiva.valorTotalCte)} />
         <SummaryCard title="Frete medio" value={fmt(analiseAtiva.freteMedio)} subtitle="valor CT-e / CT-es" />
         <SummaryCard title="Valor de NF total" value={fmt(analiseAtiva.valorTotalNf)} />
@@ -425,7 +687,7 @@ export default function CteOrigemDestinoPage() {
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         <input
           type="text"
-          placeholder="Buscar por origem ou destino..."
+          placeholder="Buscar por origem, destino ou transportadora..."
           value={busca}
           onChange={(e) => setBusca(e.target.value)}
           style={{ padding: 8, borderRadius: 8, border: '1px solid #ccc', minWidth: 260 }}
@@ -446,17 +708,32 @@ export default function CteOrigemDestinoPage() {
           <option value="">Todos os destinos</option>
           {destinosDisponiveis.map((destino) => <option key={destino} value={destino}>{destino}</option>)}
         </select>
-        {(filtroOrigem || filtroDestino) ? (
-          <button type="button" onClick={() => { setFiltroOrigem(''); setFiltroDestino(''); }} style={{ fontSize: 12 }}>
-            Limpar filtros de origem/destino
+        <select
+          value={filtroTransportadora}
+          onChange={(e) => setFiltroTransportadora(e.target.value)}
+          style={{ padding: 8, borderRadius: 8, border: '1px solid #ccc', minWidth: 220 }}
+        >
+          <option value="">Todas as transportadoras</option>
+          {transportadorasDisponiveis.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        {(filtroOrigem || filtroDestino || filtroTransportadora) ? (
+          <button type="button" onClick={() => { setFiltroOrigem(''); setFiltroDestino(''); setFiltroTransportadora(''); }} style={{ fontSize: 12 }}>
+            Limpar filtros
           </button>
         ) : null}
+        <button type="button" onClick={() => setExpandidas(new Set(linhasFiltradas.map((l) => l.key)))} style={{ fontSize: 12 }} disabled={!linhasFiltradas.length}>
+          Abrir todas as transportadoras
+        </button>
+        <button type="button" onClick={() => setExpandidas(new Set())} style={{ fontSize: 12 }} disabled={!expandidas.size}>
+          Fechar todas
+        </button>
       </div>
 
       <div style={{ overflowX: 'auto', border: '1px solid #e2e2e2', borderRadius: 10 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ background: '#f7f7f7' }}>
+              <th style={{ width: 28, borderBottom: '1px solid #e2e2e2' }} />
               {COLUNAS.map((coluna) => (
                 <th
                   key={coluna.key}
@@ -477,20 +754,43 @@ export default function CteOrigemDestinoPage() {
             </tr>
           </thead>
           <tbody>
-            {linhasFiltradas.map((item) => (
-              <tr key={item.key} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                <td style={{ padding: '8px 12px' }}>{item.origem} - {item.ufOrigem}</td>
-                <td style={{ padding: '8px 12px' }}>{item.destino} - {item.ufDestino}</td>
-                <td style={{ padding: '8px 12px', textAlign: 'right' }}>{fmtN(item.ctes)}</td>
-                <td style={{ padding: '8px 12px', textAlign: 'right' }}>{fmt(item.valorCte)}</td>
-                <td style={{ padding: '8px 12px', textAlign: 'right' }}>{fmt(item.freteMedio)}</td>
-                <td style={{ padding: '8px 12px', textAlign: 'right' }}>{fmt(item.valorNf)}</td>
-                <td style={{ padding: '8px 12px', textAlign: 'right' }}>{fmtPct(item.percentualNf)}</td>
-              </tr>
-            ))}
+            {linhasFiltradas.map((item) => {
+              const aberta = expandidas.has(item.key);
+              return (
+                <Fragment key={item.key}>
+                  <tr
+                    onClick={() => toggleExpandida(item.key)}
+                    style={{ borderBottom: '1px solid #f0f0f0', cursor: 'pointer', background: aberta ? '#f5f8fe' : undefined }}
+                    title="Clique para ver as transportadoras desta rota"
+                  >
+                    <td style={{ padding: '8px 6px', textAlign: 'center', color: '#1f6feb' }}>{aberta ? '▾' : '▸'}</td>
+                    <td style={{ padding: '8px 12px' }}>{item.origem} - {item.ufOrigem}</td>
+                    <td style={{ padding: '8px 12px' }}>{item.destino} - {item.ufDestino}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>{fmtN(item.qtdTransportadoras)}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>{fmtN(item.ctes)}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>{item.quantidade > 0 ? fmtN(item.quantidade) : '-'}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>{item.peso > 0 ? fmtN(item.peso, 2) : '-'}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>{item.cubagem > 0 ? fmtN(item.cubagem, 3) : '-'}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>{fmt(item.valorCte)}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>{fmt(item.freteMedio)}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>{fmt(item.valorNf)}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>{fmtPct(item.percentualNf)}</td>
+                  </tr>
+                  {aberta ? (
+                    <tr>
+                      <td colSpan={COLUNAS.length + 1} style={{ padding: '6px 12px 14px 34px', background: '#f5f8fe', borderBottom: '1px solid #e2e2e2' }}>
+                        <div style={{ overflowX: 'auto' }}>
+                          <TabelaTransportadoras transportadoras={item.transportadoras} />
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              );
+            })}
             {!linhasFiltradas.length && !carregando ? (
               <tr>
-                <td colSpan={COLUNAS.length} style={{ padding: 20, textAlign: 'center', color: '#888' }}>
+                <td colSpan={COLUNAS.length + 1} style={{ padding: 20, textAlign: 'center', color: '#888' }}>
                   Nenhum registro encontrado para essa competencia.
                 </td>
               </tr>
