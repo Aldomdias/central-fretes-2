@@ -680,12 +680,16 @@ export function ImportarFluxoCard({ onImportado, resumo }) {
       setArquivos([]);
       const total = resultado.resultados.reduce((acc, item) => acc + (item.cargas?.length || 0), 0);
       const erroTexto = resultado.erros.length ? ` ${resultado.erros.length} arquivo(s) tiveram erro.` : '';
+      const semFrete = resultado.resultados.flatMap((r) => r.semFrete || []);
+      const semFreteTexto = semFrete.length
+        ? ` ${semFrete.length} linha(s) ignorada(s) por estarem sem FRETE CANTU/FRETE TRANSP (ex.: ${semFrete.slice(0, 3).join(', ')}).`
+        : '';
       const armazenamentoTexto = salvamento.armazenamento === 'indexedDB'
         ? ' Base grande salva no armazenamento local ampliado do navegador.'
         : '';
       setMensagem({
         tipo: erroSupabaseTexto ? 'erro' : 'ok',
-        texto: `${total} carga(s) importada(s) e salva(s).${erroTexto}${armazenamentoTexto}${erroSupabaseTexto}`,
+        texto: `${total} carga(s) importada(s) e salva(s).${erroTexto}${semFreteTexto}${armazenamentoTexto}${erroSupabaseTexto}`,
       });
     } catch (error) {
       setMensagem({ tipo: 'erro', texto: error.message || String(error) });

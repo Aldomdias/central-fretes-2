@@ -302,6 +302,14 @@ function dataParaIso(valor) {
   }
   const texto = limparTexto(valor);
   if (!texto) return '';
+  // Texto no padrao BR (dd/mm/aaaa [hh:mm]) tem que ser lido antes do
+  // new Date(): o JS le "03/11/2026" como 11 de marco (formato americano).
+  const br = texto.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (br) {
+    const ano = br[3].length === 2 ? 2000 + Number(br[3]) : Number(br[3]);
+    const data = new Date(Date.UTC(ano, Number(br[2]) - 1, Number(br[1]), Number(br[4] || 0), Number(br[5] || 0), Number(br[6] || 0)));
+    if (!Number.isNaN(data.getTime()) && data.getUTCDate() === Number(br[1])) return data.toISOString();
+  }
   const tentativa = new Date(texto);
   if (!Number.isNaN(tentativa.getTime())) return tentativa.toISOString();
   return texto;
@@ -384,7 +392,7 @@ function montarCarga(row, col, sheetName, excelRow, fileName, aliquotaIcmsPadrao
   const pedagio = valorCelula(row, col.pedagio);
   const seguro = textoCelula(row, col.seguro);
   const calc = calcularFreteLiquido({ freteCantu, freteTransp, pedagio, seguro }, aliquotaIcmsPadrao);
-  if (calc.valorComparacao === null) return null;
+  if (calc.valorComparacao === null) return { semFrete: true, dist };
 
   const cteRaw = textoCelula(row, col.cte);
   const ctes = separarCtes(cteRaw);
@@ -445,6 +453,7 @@ function parseWorkbook(workbook, fileName, options = {}) {
   const cargas = [];
   const abas = [];
   const ignoradas = [];
+  const semFrete = [];
 
   workbook.SheetNames.forEach((sheetName) => {
     const sheet = workbook.Sheets[sheetName];
@@ -460,6 +469,10 @@ function parseWorkbook(workbook, fileName, options = {}) {
     rows.slice(headerInfo.position + 1).forEach(({ rowIndex, values }) => {
       if (!linhaTemValor(values)) return;
       const item = montarCarga(values, headerInfo.col, sheetName, rowIndex + 1, fileName, aliquotaIcmsPadrao);
+      if (item?.semFrete) {
+        semFrete.push(item.dist);
+        return;
+      }
       if (item) {
         cargas.push(item);
         totalAba += 1;
@@ -470,7 +483,7 @@ function parseWorkbook(workbook, fileName, options = {}) {
     else ignoradas.push({ nome: sheetName, motivo: 'Sem cargas válidas com frete' });
   });
 
-  return { cargas, abas, ignoradas };
+  return { cargas, abas, ignoradas, semFrete };
 }
 
 export async function importarFluxoCargasLotacao(file, options = {}) {

@@ -521,6 +521,13 @@ function parseDateSafe(valor) {
   }
   const s = String(valor).trim();
   if (!s) return null;
+  // Formato BR primeiro: new Date("03/11/2026") le como 11/03 (americano).
+  const br = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?!\d)/);
+  if (br) {
+    const anoBr = br[3].length === 2 ? '20' + br[3] : br[3];
+    const dBr = new Date(`${anoBr}-${br[2].padStart(2,'0')}-${br[1].padStart(2,'0')}`);
+    if (!isNaN(dBr.getTime()) && anoPlausivel(dBr)) return dBr.toISOString();
+  }
   // Tenta parse direto
   const d = new Date(s);
   if (!isNaN(d.getTime()) && anoPlausivel(d)) return d.toISOString();
@@ -570,6 +577,9 @@ function cargaParaDb(carga = {}, arquivoOrigem = '') {
     finalizado:        Boolean(carga.finalizado),
     ocorrencia:        String(carga.ocorrencia        || '').slice(0, 500),
     arquivo_origem:    String(arquivoOrigem || '').slice(0, 200),
+    // Sem isso, reimportar um DIST que ja existe (update) mantinha a data da
+    // primeira importacao e o selo "ultima importacao" nunca andava.
+    importado_em:      new Date().toISOString(),
     ...camposAlocacaoParaDb(carga),
   };
 }

@@ -7,24 +7,35 @@ let cacheTimestamp = 0;
 
 const DIAS_ALERTA_IMPORTACAO = 7;
 
+const EVENTO_ATUALIZADO = 'base-lotacao-status-invalidado';
+
 export function invalidarStatusBaseLotacao() {
   cachePromise = null;
   cacheTimestamp = 0;
+  // Avisa os selos ja montados na tela para consultarem de novo; antes o selo
+  // so recarregava ao remontar e ficava mostrando a data antiga apos o upload.
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(EVENTO_ATUALIZADO));
 }
 
 async function consultarStatusBaseLotacao() {
   const supabase = getSupabaseClient();
   if (!supabase || !isSupabaseConfigured()) return null;
 
-  const [operacionalRes, importacaoRes] = await Promise.all([
-    supabase
-      .from('lotacao_cargas')
-      .select('coleta_realizada, coleta_planejada, importado_em')
-      .or('coleta_realizada.not.is.null,coleta_planejada.not.is.null,importado_em.not.is.null')
-      .order('coleta_realizada', { ascending: false, nullsFirst: false })
-      .order('coleta_planejada', { ascending: false, nullsFirst: false })
-      .order('importado_em', { ascending: false, nullsFirst: false })
-      .limit(20),
+  // Maior data de cada coluna em consulta separada: ordenar por
+  // coleta_realizada e olhar so as 20 primeiras escondia cargas novas que ainda
+  // so tem coleta planejada. Datas futuras (planejamento) nao contam.
+  const agoraIso = new Date().toISOString();
+  const maiorData = (coluna) => supabase
+    .from('lotacao_cargas')
+    .select(coluna)
+    .not(coluna, 'is', null)
+    .lte(coluna, agoraIso)
+    .order(coluna, { ascending: false })
+    .limit(1);
+
+  const [realizadaRes, planejadaRes, importacaoRes] = await Promise.all([
+    maiorData('coleta_realizada'),
+    maiorData('coleta_planejada'),
     supabase
       .from('lotacao_cargas')
       .select('importado_em')
@@ -33,11 +44,11 @@ async function consultarStatusBaseLotacao() {
       .limit(1),
   ]);
 
-  if (operacionalRes.error) throw operacionalRes.error;
+  if (realizadaRes.error) throw realizadaRes.error;
+  if (planejadaRes.error) throw planejadaRes.error;
   if (importacaoRes.error) throw importacaoRes.error;
 
-  const datasOperacionais = (operacionalRes.data || [])
-    .flatMap((row) => [row.coleta_realizada, row.coleta_planejada])
+  const datasOperacionais = [realizadaRes.data?.[0]?.coleta_realizada, planejadaRes.data?.[0]?.coleta_planejada]
     .map((valor) => new Date(valor).getTime())
     .filter((valor) => Number.isFinite(valor) && valor > 0);
 
@@ -86,10 +97,17 @@ export default function BaseLotacaoStatus({ style }) {
 
   useEffect(() => {
     let ativo = true;
-    obterStatusBaseLotacao()
-      .then((res) => { if (ativo) setStatus(res); })
-      .catch(() => { if (ativo) setErro(true); });
-    return () => { ativo = false; };
+    const consultar = () => {
+      obterStatusBaseLotacao()
+        .then((res) => { if (ativo) { setStatus(res); setErro(false); } })
+        .catch(() => { if (ativo) setErro(true); });
+    };
+    consultar();
+    window.addEventListener(EVENTO_ATUALIZADO, consultar);
+    return () => {
+      ativo = false;
+      window.removeEventListener(EVENTO_ATUALIZADO, consultar);
+    };
   }, []);
 
   if (erro) {
