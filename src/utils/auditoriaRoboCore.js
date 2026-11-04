@@ -113,6 +113,7 @@ function resumir(lista) {
 // CT-es (realizado_local_ctes.chave_nfe) guarda. Tracking, chave digitada na fatura ou vinda do arquivo da fatura
 // NAO contam: CT-e sem a chave nao pode ser pago e precisa ser retirado da fatura e reemitido.
 // CT-e que nao esta na base de CT-es nao e marcado (nao da para ler o CT-e; vai para "sem calculo"). Falha na consulta = nao marca.
+const COMPETENCIA_MINIMA_SEM_NF = '2026-10';
 const soDigitosNf = (v) => String(v || '').replace(/\D/g, '');
 // Regra ligada em auditor_robo_config.checar_cte_sem_nf (padrao desligada). Falha na leitura = desligada.
 async function checagemSemNfLigada() {
@@ -132,10 +133,13 @@ async function ctesSemVinculoNf(lista = []) {
     const db = getSupabaseClient();
     for (let k = 0; k < chaves.length; k += 200) {
       // eslint-disable-next-line no-await-in-loop
-      const { data, error } = await db.from('realizado_local_ctes').select('chave_cte,chave_nfe').in('chave_cte', chaves.slice(k, k + 200));
+      const { data, error } = await db.from('realizado_local_ctes').select('chave_cte,chave_nfe,competencia').in('chave_cte', chaves.slice(k, k + 200));
       if (error) throw new Error(error.message);
       (data || []).forEach((r) => {
         const c = normalizarChaveCte(r.chave_cte);
+        // Antes de outubro/2026 a base ficou sem a chave da NF (bug da importacao, completada so em parte):
+        // CT-e de competencia anterior nao e cobrado, para nao pedir a retirada de CT-e que tem nota.
+        if (String(r.competencia || '') < COMPETENCIA_MINIMA_SEM_NF) return;
         existe.add(c);
         if (soDigitosNf(r.chave_nfe).length === 44) comNf.add(c);
       });
