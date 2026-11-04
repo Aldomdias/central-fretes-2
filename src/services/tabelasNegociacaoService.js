@@ -1832,10 +1832,20 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
       const [ano, mes, dia] = inicioVigencia.split('-');
       const grupo = `Reajuste ${dia}/${mes}/${ano}`;
       const marcarGrupo = (lista) => (lista || []).map((item) => ({ ...item, grupoTabelaAlternativa: grupo }));
+      // A origem oficial é localizada sem acento e, se o canal diferir mas só
+      // houver uma origem na cidade, por cidade. O salvarSecaoDb casa origens
+      // só por cidade+canal exatos e, no modo somenteAlternativas, não grava a
+      // origem — então sem fixar o id/cidade/canal da origem oficial aqui as
+      // linhas iam com um origem_id novo e o banco recusava
+      // (generalidades_origem_id_fkey).
+      const existentePorChave = new Map(existentes.map((item) => [item.chave, item]));
       const baseReajuste = [{
         ...baseOficial[0],
         origens: origensReajuste.map((origem) => ({
           ...origem,
+          id: existentePorChave.get(chaveOrigem(origem))?.id || origem.id,
+          cidade: existentePorChave.get(chaveOrigem(origem))?.cidade || origem.cidade,
+          canal: existentePorChave.get(chaveOrigem(origem))?.canal || origem.canal,
           rotas: marcarGrupo(origem.rotas),
           cotacoes: marcarGrupo(origem.cotacoes),
           taxasEspeciais: marcarGrupo(origem.taxasEspeciais),
