@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import * as XLSX from 'xlsx';
+import { exportarExcelMultiAbas } from '../utils/exportarExcelFormatado';
 import {
   buscarCtesNaBase, carregarCtesCompetencia, carregarFaturasLancadasDosCtes, carregarLancamentosPorCnpj, carregarSnapshotProvisao,
   carregarTrackingCompetencia, excluirSnapshotProvisao, listarSnapshotsProvisao, salvarSnapshotProvisao,
@@ -29,7 +29,7 @@ const CORES = { NO_MES: '#15803d', FATURA: '#0f766e', APOS_MES: '#c2410c', FATUR
 const SITUACOES_SALVAS = new Set(['APOS_MES', 'FATURA_APOS', 'NAO_LANCADO', 'PROVISAO']);
 
 // Campos do CT-e guardados no snapshot (so os que entram na provisao).
-const CAMPOS_CTE = ['chave_cte', 'numero_cte', 'transportadora', 'cnpj_transportadora', 'cnpj_tomador', 'empresa', 'data_emissao', 'valor_cte', 'canal',
+const CAMPOS_CTE = ['chave_cte', 'numero_cte', 'transportadora', 'cnpj_transportadora', 'cnpj_tomador', 'tomador_servico', 'empresa', 'data_emissao', 'valor_cte', 'canal',
   'cidade_origem', 'uf_origem', 'cidade_destino', 'uf_destino', 'situacao', 'provisao', 'estornado', 'data_lancamento', 'lancamento_contabil', 'numero_fatura'];
 const CAMPOS_NF = ['chave_nfe', 'nota_fiscal', 'data', 'transportadora', 'canal', 'pedido', 'origem', 'destino', 'valor_nf', 'chaves_cte', 'cte_numero',
   'situacao', 'pct_frete', 'frete_estimado', 'empresa'];
@@ -47,39 +47,42 @@ const cartao = (ativo, cor) => ({
   border: `1px solid ${ativo ? cor : '#e2e8f0'}`, background: ativo ? cor : '#fff', color: ativo ? '#fff' : '#0f172a',
 });
 
-function linhasCteExcel(lista, centros) {
-  return lista.map((c) => ({
-    Empresa: c.empresa || '', CC: centros[c.empresa] || '',
-    'Chave CT-e': c.chave_cte, 'Número CT-e': numeroSerie(c), Transportadora: c.transportadora, CNPJ: c.cnpj_transportadora, 'CNPJ tomador': c.cnpj_tomador || '',
-    Emissão: String(c.data_emissao || '').slice(0, 10), 'Valor CT-e': Number(c.valor_cte || 0), Canal: c.canal || '',
-    Origem: `${c.cidade_origem || ''}${c.uf_origem ? `/${c.uf_origem}` : ''}`, Destino: `${c.cidade_destino || ''}${c.uf_destino ? `/${c.uf_destino}` : ''}`,
-    Situação: SITUACOES_PROVISAO[c.situacao], 'Entra na provisão': c.provisao ? 'Sim' : 'Não',
-    'Data lançamento': c.data_lancamento || '', 'Lançamento contábil': c.lancamento_contabil || '', Fatura: c.numero_fatura || '',
-    'Teve estorno sem relançar': c.estornado ? 'Sim' : '',
-  }));
+const COLS_CTE = [
+  { titulo: 'Empresa', largura: 10, tipo: 'centro' }, { titulo: 'CC', largura: 13, tipo: 'centro' },
+  { titulo: 'Número CT-e', largura: 14 }, { titulo: 'Transportadora', largura: 38 }, { titulo: 'CNPJ transportadora', largura: 18 },
+  { titulo: 'Tomador', largura: 30 }, { titulo: 'Emissão', largura: 11, tipo: 'data' }, { titulo: 'Valor CT-e', largura: 15, tipo: 'moeda' },
+  { titulo: 'Canal', largura: 11, tipo: 'centro' }, { titulo: 'Origem', largura: 24 }, { titulo: 'Destino', largura: 24 },
+  { titulo: 'Situação', largura: 22 }, { titulo: 'Data lançamento', largura: 13, tipo: 'data' }, { titulo: 'Lançamento contábil', largura: 16 },
+  { titulo: 'Fatura', largura: 14 }, { titulo: 'Estorno sem relançar', largura: 11, tipo: 'centro' }, { titulo: 'Chave CT-e', largura: 48 },
+];
+function linhasCte(lista, centros) {
+  return lista.map((c) => [
+    c.empresa || '', centros[c.empresa] || '', numeroSerie(c), c.transportadora || '', c.cnpj_transportadora || '', c.tomador_servico || '',
+    c.data_emissao || '', Number(c.valor_cte || 0), c.canal || '',
+    `${c.cidade_origem || ''}${c.uf_origem ? `/${c.uf_origem}` : ''}`, `${c.cidade_destino || ''}${c.uf_destino ? `/${c.uf_destino}` : ''}`,
+    SITUACOES_PROVISAO[c.situacao] || '', c.data_lancamento || '', c.lancamento_contabil || '', c.numero_fatura || '', c.estornado ? 'Sim' : '', c.chave_cte || '',
+  ]);
 }
 
-function linhasNfExcel(lista, centros) {
-  return lista.map((n) => ({
-    Empresa: n.empresa || '', CC: centros[n.empresa] || '',
-    'Chave NF': n.chave_nfe, 'Nota fiscal': n.nota_fiscal, 'Data NF': n.data, Transportadora: n.transportadora, Canal: n.canal, Pedido: n.pedido,
-    Origem: n.origem, Destino: n.destino, 'Valor NF': r2(n.valor_nf), Situação: SITUACOES_TRACKING[n.situacao],
-    'Chave CT-e no tracking': (n.chaves_cte || []).join(' / '), 'Nº CT-e no tracking': n.cte_numero || '',
-    '% frete usado': Number(((n.pct_frete || 0) * 100).toFixed(2)), 'Frete estimado': r2(n.frete_estimado),
-  }));
+const COLS_NF = [
+  { titulo: 'Empresa', largura: 10, tipo: 'centro' }, { titulo: 'CC', largura: 13, tipo: 'centro' },
+  { titulo: 'Nota fiscal', largura: 12, tipo: 'centro' }, { titulo: 'Data NF', largura: 11, tipo: 'data' }, { titulo: 'Transportadora', largura: 34 },
+  { titulo: 'Canal', largura: 11, tipo: 'centro' }, { titulo: 'Pedido', largura: 14 }, { titulo: 'Origem', largura: 22 }, { titulo: 'Destino', largura: 22 },
+  { titulo: 'Valor NF', largura: 15, tipo: 'moeda' }, { titulo: 'Situação', largura: 20 }, { titulo: '% frete usado', largura: 11, tipo: 'percentual' },
+  { titulo: 'Frete estimado', largura: 15, tipo: 'moeda' }, { titulo: 'Nº CT-e no tracking', largura: 14 }, { titulo: 'Chave CT-e no tracking', largura: 48 },
+  { titulo: 'Chave NF', largura: 48 },
+];
+function linhasNf(lista, centros) {
+  return lista.map((n) => [
+    n.empresa || '', centros[n.empresa] || '', n.nota_fiscal || '', n.data || '', n.transportadora || '', n.canal || '', n.pedido || '',
+    n.origem || '', n.destino || '', r2(n.valor_nf), SITUACOES_TRACKING[n.situacao] || '', Number(((n.pct_frete || 0) * 100).toFixed(2)),
+    r2(n.frete_estimado), n.cte_numero || '', (n.chaves_cte || []).join(' / '), n.chave_nfe || '',
+  ]);
 }
-
-function abaPorEmpresa(porEmpresa, comTracking) {
-  const linhas = porEmpresa.map((e) => ({
-    Empresa: e.empresa, 'Valor CTE': r2(e.valor), CC: e.cc, 'Qtd CT-es': e.qtd,
-    ...(comTracking ? { 'NFs sem CT-e (qtd)': e.qtd_nf, 'NFs sem CT-e (frete estimado)': r2(e.estimado_nf) } : {}),
-  }));
-  const tot = porEmpresa.reduce((a, e) => ({ v: a.v + e.valor, q: a.q + e.qtd, qn: a.qn + e.qtd_nf, en: a.en + e.estimado_nf }), { v: 0, q: 0, qn: 0, en: 0 });
-  linhas.push({ Empresa: 'Total Geral', 'Valor CTE': r2(tot.v), CC: '', 'Qtd CT-es': tot.q, ...(comTracking ? { 'NFs sem CT-e (qtd)': tot.qn, 'NFs sem CT-e (frete estimado)': r2(tot.en) } : {}) });
-  const ws = XLSX.utils.json_to_sheet(linhas);
-  ws['!cols'] = [{ wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 10 }, { wch: 18 }, { wch: 26 }];
-  return ws;
-}
+const somaCol = (linhas, i) => linhas.reduce((a, l) => a + Number(l[i] || 0), 0);
+const pctDe = (q, t) => (t ? (q / t) * 100 : 0);
+// Linha de total alinhada as colunas: { indiceColuna: valor }, rotulo na 1a.
+const linhaTotal = (colunas, valores) => colunas.map((_, i) => (i === 0 ? 'Total' : valores[i] ?? ''));
 
 export default function ProvisaoCtesPainel() {
   const [aberto, setAberto] = useState(true);
@@ -271,62 +274,132 @@ export default function ProvisaoCtesPainel() {
     }
   };
 
-  const exportar = () => {
+  const exportar = async () => {
     if (!itens || !resumo) return;
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, abaPorEmpresa(porEmpresa, Boolean(resumoTracking)), 'Por empresa');
-    const linhasResumo = resumo.porTransportadora.map((t) => ({
-      Transportadora: t.nome,
-      'CT-es emitidos': t.geral.qtd, 'Valor emitido': r2(t.geral.valor),
-      ...Object.fromEntries(Object.entries(SITUACOES_PROVISAO).flatMap(([k, rot]) => [[`${rot} (qtd)`, t[k].qtd], [`${rot} (valor)`, r2(t[k].valor)]])),
-      'Provisão (qtd)': t.provisao.qtd, 'Provisão (valor)': r2(t.provisao.valor),
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhasResumo), 'Resumo');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhasCteExcel(itens.filter((c) => c.provisao), centrosAtivos)), 'Provisão');
-    if (!snapshot) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhasCteExcel(itens, centrosAtivos)), 'Todos os CT-es');
-    if (nfsPendentes.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhasNfExcel(nfsPendentes, centrosAtivos)), 'Tracking NF sem CT-e');
-    if (foraTomador?.qtd) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(foraTomador.porTomador.map((t) => ({ 'Tomador (fora da provisão)': t.nome, 'CT-es': t.qtd, Valor: r2(t.valor) }))), 'Fora do grupo (tomador)');
-    XLSX.writeFile(wb, `PROVISAO_CTES_${calculadaPara}${snapshot ? `_SALVA_${String(snapshot.criado_em).slice(0, 10)}` : ''}.xlsx`);
+    const t = resumo.total;
+    const comTracking = Boolean(resumoTracking);
+    const blocos = [{
+      titulo: 'Situação dos CT-es emitidos na competência',
+      colunas: [{ titulo: 'Situação', largura: 46 }, { titulo: 'CT-es', largura: 14, tipo: 'inteiro' }, { titulo: '% dos CT-es', largura: 14, tipo: 'percentual' }, { titulo: 'Valor', largura: 20, tipo: 'moeda' }],
+      linhas: [
+        ['Emitidos na competência', t.geral.qtd, 100, t.geral.valor],
+        ...Object.entries(SITUACOES_PROVISAO).map(([k, rot]) => [rot, t[k].qtd, pctDe(t[k].qtd, t.geral.qtd), t[k].valor]),
+      ],
+      totais: ['PROVISÃO (após o mês + não lançado)', t.provisao.qtd, pctDe(t.provisao.qtd, t.geral.qtd), t.provisao.valor],
+    }];
+    const empLinhas = porEmpresa.map((e) => [e.empresa, e.cc || 'sem CC', e.qtd, e.valor, ...(comTracking ? [e.qtd_nf, e.estimado_nf, e.valor + e.estimado_nf] : [])]);
+    blocos.push({
+      titulo: 'Provisão por empresa / centro de custo',
+      colunas: [{ titulo: 'Empresa', tipo: 'centro' }, { titulo: 'CC', tipo: 'centro' }, { titulo: 'CT-es', tipo: 'inteiro' }, { titulo: 'Valor CTE', tipo: 'moeda' },
+        ...(comTracking ? [{ titulo: 'NFs sem CT-e', tipo: 'inteiro' }, { titulo: 'Frete estimado NFs', largura: 20, tipo: 'moeda' }, { titulo: 'Total a provisionar', largura: 20, tipo: 'moeda' }] : [])],
+      linhas: empLinhas,
+      totais: ['Total Geral', '', somaCol(empLinhas, 2), somaCol(empLinhas, 3), ...(comTracking ? [somaCol(empLinhas, 4), somaCol(empLinhas, 5), somaCol(empLinhas, 6)] : [])],
+    });
+    if (comTracking) {
+      const tt = resumoTracking.total;
+      blocos.push({
+        titulo: 'Tracking do mês x CT-e',
+        colunas: [{ titulo: 'Indicador' }, { titulo: 'NFs', tipo: 'inteiro' }, { titulo: '% das NFs', tipo: 'percentual' }, { titulo: 'Valor NF', tipo: 'moeda' }, { titulo: 'Frete estimado', tipo: 'moeda' }],
+        linhas: [
+          ['NFs no tracking (sem canceladas)', tt.geral.qtd, 100, tt.geral.valor_nf, ''],
+          ...Object.entries(SITUACOES_TRACKING).map(([k, rot]) => [rot, tt[k].qtd, pctDe(tt[k].qtd, tt.geral.qtd), tt[k].valor_nf, k === 'COM_CTE' ? '' : tt[k].estimado]),
+        ],
+        totais: ['A provisionar (sem CT-e + fora da base)', tt.pendente.qtd, pctDe(tt.pendente.qtd, tt.geral.qtd), tt.pendente.valor_nf, tt.pendente.estimado],
+      });
+    }
+    if (foraTomador?.qtd) {
+      blocos.push({
+        titulo: 'CT-es fora da provisão (tomador fora do grupo)',
+        colunas: [{ titulo: 'Tomador' }, { titulo: 'CT-es', tipo: 'inteiro' }, { titulo: 'Valor', tipo: 'moeda' }],
+        linhas: foraTomador.porTomador.map((x) => [x.nome, x.qtd, x.valor]),
+        totais: ['Total', foraTomador.qtd, foraTomador.valor],
+      });
+    }
+    const transpLinhas = resumo.porTransportadora.map((x) => [x.nome, x.geral.qtd, x.geral.valor, x.NO_MES.qtd, x.FATURA.qtd, x.APOS_MES.qtd + x.FATURA_APOS.qtd, x.NAO_LANCADO.qtd, x.provisao.qtd, x.provisao.valor]);
+    const colsTransp = [{ titulo: 'Transportadora', largura: 44 }, { titulo: 'Emitidos', tipo: 'inteiro', largura: 11 }, { titulo: 'Valor emitido', tipo: 'moeda', largura: 18 },
+      { titulo: 'Lançado no mês', tipo: 'inteiro', largura: 12 }, { titulo: 'Via fatura', tipo: 'inteiro', largura: 11 }, { titulo: 'Após o mês', tipo: 'inteiro', largura: 11 },
+      { titulo: 'Não lançado', tipo: 'inteiro', largura: 11 }, { titulo: 'CT-es provisão', tipo: 'inteiro', largura: 12 }, { titulo: 'Valor provisão', tipo: 'moeda', largura: 18 }];
+    const provisao = itens.filter((c) => c.provisao);
+    const linhasNfPend = linhasNf(nfsPendentes, centrosAtivos);
+    const abas = [
+      {
+        nome: 'Resumo',
+        titulo: `Provisão de CT-es — competência ${competenciaBr(calculadaPara)}`,
+        informacoes: [
+          `Gerado em ${new Date().toLocaleString('pt-BR')}${snapshot ? ` · provisão salva em ${dataHoraBr(snapshot.criado_em)}${snapshot.descricao ? ` (${snapshot.descricao})` : ''}` : ' · cálculo com os dados de hoje'}`,
+          'Competência = data de emissão do CT-e. Provisão = CT-es lançados no SAP depois do mês + não lançados.',
+          'Só CT-es com tomador do grupo (CPX, ITR, GP Pneus, GRIP, Cantu).',
+        ],
+        blocos,
+      },
+      { nome: 'Por transportadora', colunas: colsTransp, linhas: transpLinhas, totais: linhaTotal(colsTransp, Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8].map((i) => [i, somaCol(transpLinhas, i)]))) },
+      { nome: 'CT-es da provisão', colunas: COLS_CTE, linhas: linhasCte(provisao, centrosAtivos), totais: linhaTotal(COLS_CTE, { 2: `${num(provisao.length)} CT-es`, 7: t.provisao.valor }) },
+    ];
+    if (nfsPendentes.length) {
+      abas.push({ nome: 'Tracking NF sem CT-e', colunas: COLS_NF, linhas: linhasNfPend, totais: linhaTotal(COLS_NF, { 2: `${num(nfsPendentes.length)} NFs`, 9: somaCol(linhasNfPend, 9), 12: somaCol(linhasNfPend, 12) }) });
+    }
+    if (!snapshot) abas.push({ nome: 'Todos os CT-es', colunas: COLS_CTE, linhas: linhasCte(itens, centrosAtivos), simples: true });
+    setProgresso('Gerando Excel...');
+    try {
+      await exportarExcelMultiAbas({ nomeArquivo: `PROVISAO_CTES_${calculadaPara}${snapshot ? `_SALVA_${String(snapshot.criado_em).slice(0, 10)}` : ''}.xlsx`, abas });
+    } catch (e) {
+      setErro(e.message || String(e));
+    } finally {
+      setProgresso('');
+    }
   };
 
-  const exportarLaudoTracking = () => {
+  const exportarLaudoTracking = async () => {
     if (!resumoTracking) return;
-    const t = resumoTracking.total;
-    const pct = (q) => (t.geral.qtd ? `${((q / t.geral.qtd) * 100).toFixed(1)}%` : '-');
-    const wb = XLSX.utils.book_new();
-    const capa = [
-      ['LAUDO — TRACKING x CT-e (NFs sem CT-e vinculado)'],
-      [`Competência: ${competenciaBr(calculadaPara)}`],
-      [`Gerado em: ${new Date().toLocaleString('pt-BR')}${snapshot ? ` · a partir da provisão salva em ${dataHoraBr(snapshot.criado_em)}` : ''}`],
-      [],
-      ['Indicador', 'Qtd NFs', '% das NFs', 'Valor NF', 'Frete estimado'],
-      ['NFs no tracking (sem canceladas/devolvidas)', t.geral.qtd, '100%', r2(t.geral.valor_nf), ''],
-      ['Com CT-e na base', t.COM_CTE.qtd, pct(t.COM_CTE.qtd), r2(t.COM_CTE.valor_nf), ''],
-      ['Sem CT-e vinculado no tracking', t.SEM_CTE.qtd, pct(t.SEM_CTE.qtd), r2(t.SEM_CTE.valor_nf), r2(t.SEM_CTE.estimado)],
-      ['CT-e no tracking, mas fora da base (não veio da Sefaz)', t.CTE_FORA_BASE.qtd, pct(t.CTE_FORA_BASE.qtd), r2(t.CTE_FORA_BASE.valor_nf), r2(t.CTE_FORA_BASE.estimado)],
-      ['Total a verificar / provisionar', t.pendente.qtd, pct(t.pendente.qtd), r2(t.pendente.valor_nf), r2(t.pendente.estimado)],
-      ['NFs canceladas/devolvidas (desconsideradas)', resumoTracking.canceladas || 0, '', '', ''],
-      [],
-      ['Critérios'],
-      ['NF = linha do tracking com data dentro da competência, agrupada pela chave da NF.'],
-      ['"Com CT-e na base": a chave do CT-e informada no tracking existe na base de CT-es (XML recebido da Sefaz).'],
-      ['"Fora da base": o tracking tem a chave do CT-e, mas o documento não está na base — pode não ter vindo da Sefaz.'],
-      ['Frete estimado = valor da NF x % frete/valor NF das NFs da mesma transportadora com CT-e no mês (sem histórico, usa o % geral).'],
+    const tt = resumoTracking.total;
+    const transp = resumoTracking.porTransportadora.map((x) => [x.nome, x.geral.qtd, x.COM_CTE.qtd, x.SEM_CTE.qtd, x.CTE_FORA_BASE.qtd, pctDe(x.pendente.qtd, x.geral.qtd), x.pendente.valor_nf, Number(((x.pct_frete || 0) * 100).toFixed(2)), x.pendente.estimado]);
+    const emp = porEmpresa.filter((e) => e.qtd_nf).map((e) => [e.empresa, e.cc || 'sem CC', e.qtd_nf, e.estimado_nf]);
+    const blocos = [{
+      titulo: 'Indicadores',
+      colunas: [{ titulo: 'Indicador', largura: 52 }, { titulo: 'NFs', tipo: 'inteiro', largura: 12 }, { titulo: '% das NFs', tipo: 'percentual', largura: 12 }, { titulo: 'Valor NF', tipo: 'moeda', largura: 20 }, { titulo: 'Frete estimado', tipo: 'moeda', largura: 18 }],
+      linhas: [
+        ['NFs no tracking (sem canceladas/devolvidas)', tt.geral.qtd, 100, tt.geral.valor_nf, ''],
+        ['Com CT-e na base', tt.COM_CTE.qtd, pctDe(tt.COM_CTE.qtd, tt.geral.qtd), tt.COM_CTE.valor_nf, ''],
+        ['Sem CT-e vinculado no tracking', tt.SEM_CTE.qtd, pctDe(tt.SEM_CTE.qtd, tt.geral.qtd), tt.SEM_CTE.valor_nf, tt.SEM_CTE.estimado],
+        ['CT-e no tracking, mas fora da base (não veio da Sefaz)', tt.CTE_FORA_BASE.qtd, pctDe(tt.CTE_FORA_BASE.qtd, tt.geral.qtd), tt.CTE_FORA_BASE.valor_nf, tt.CTE_FORA_BASE.estimado],
+      ],
+      totais: ['TOTAL A VERIFICAR / PROVISIONAR', tt.pendente.qtd, pctDe(tt.pendente.qtd, tt.geral.qtd), tt.pendente.valor_nf, tt.pendente.estimado],
+    }];
+    if (emp.length) {
+      blocos.push({ titulo: 'Por empresa / centro de custo', colunas: [{ titulo: 'Empresa', tipo: 'centro' }, { titulo: 'CC', tipo: 'centro' }, { titulo: 'NFs sem CT-e', tipo: 'inteiro' }, { titulo: 'Frete estimado', tipo: 'moeda' }], linhas: emp, totais: ['Total Geral', '', somaCol(emp, 2), somaCol(emp, 3)] });
+    }
+    blocos.push({
+      titulo: 'Top 15 transportadoras com NFs pendentes',
+      colunas: [{ titulo: 'Transportadora' }, { titulo: 'NFs', tipo: 'inteiro' }, { titulo: 'Pendentes', tipo: 'inteiro' }, { titulo: '% pendente', tipo: 'percentual' }, { titulo: 'Frete estimado', tipo: 'moeda' }],
+      linhas: transp.filter((x) => x[3] + x[4] > 0).slice(0, 15).map((x) => [x[0], x[1], x[3] + x[4], x[5], x[8]]),
+    });
+    const sem = nfsPendentes.filter((n) => n.situacao === 'SEM_CTE');
+    const fora = nfsPendentes.filter((n) => n.situacao === 'CTE_FORA_BASE');
+    const colsTransp = [{ titulo: 'Transportadora (tracking)', largura: 40 }, { titulo: 'NFs', tipo: 'inteiro', largura: 10 }, { titulo: 'Com CT-e', tipo: 'inteiro', largura: 10 }, { titulo: 'Sem CT-e', tipo: 'inteiro', largura: 10 },
+      { titulo: 'Fora da base', tipo: 'inteiro', largura: 10 }, { titulo: '% pendente', tipo: 'percentual', largura: 11 }, { titulo: 'Valor NF pendente', tipo: 'moeda', largura: 18 },
+      { titulo: '% frete usado', tipo: 'percentual', largura: 11 }, { titulo: 'Frete estimado', tipo: 'moeda', largura: 18 }];
+    const abas = [
+      {
+        nome: 'Laudo',
+        titulo: `Laudo — Tracking x CT-e · competência ${competenciaBr(calculadaPara)}`,
+        informacoes: [
+          `Gerado em ${new Date().toLocaleString('pt-BR')}${snapshot ? ` · a partir da provisão salva em ${dataHoraBr(snapshot.criado_em)}` : ''}`,
+          `NFs canceladas/devolvidas desconsideradas: ${num(resumoTracking.canceladas || 0)}`,
+          'NF = linha do tracking com data na competência, agrupada pela chave da NF.',
+          '"Fora da base" = o tracking tem a chave do CT-e, mas o documento não está na base de CT-es (pode não ter vindo da Sefaz).',
+          'Frete estimado = valor da NF x % frete/valor NF das NFs da mesma transportadora com CT-e no mês (sem histórico, % geral).',
+        ],
+        blocos,
+      },
+      { nome: 'Por transportadora', colunas: colsTransp, linhas: transp, totais: linhaTotal(colsTransp, { 1: somaCol(transp, 1), 2: somaCol(transp, 2), 3: somaCol(transp, 3), 4: somaCol(transp, 4), 5: pctDe(tt.pendente.qtd, tt.geral.qtd), 6: somaCol(transp, 6), 8: somaCol(transp, 8) }) },
+      { nome: 'NFs sem CT-e', colunas: COLS_NF, linhas: linhasNf(sem, centrosAtivos), totais: linhaTotal(COLS_NF, { 2: `${num(sem.length)} NFs`, 9: tt.SEM_CTE.valor_nf, 12: tt.SEM_CTE.estimado }) },
+      { nome: 'CT-e fora da base', colunas: COLS_NF, linhas: linhasNf(fora, centrosAtivos), totais: linhaTotal(COLS_NF, { 2: `${num(fora.length)} NFs`, 9: tt.CTE_FORA_BASE.valor_nf, 12: tt.CTE_FORA_BASE.estimado }) },
     ];
-    const wsCapa = XLSX.utils.aoa_to_sheet(capa);
-    wsCapa['!cols'] = [{ wch: 58 }, { wch: 12 }, { wch: 12 }, { wch: 16 }, { wch: 16 }];
-    XLSX.utils.book_append_sheet(wb, wsCapa, 'Laudo');
-    const porT = resumoTracking.porTransportadora.map((x) => ({
-      Transportadora: x.nome, 'NFs no tracking': x.geral.qtd, 'Com CT-e': x.COM_CTE.qtd, 'Sem CT-e': x.SEM_CTE.qtd, 'CT-e fora da base': x.CTE_FORA_BASE.qtd,
-      '% sem CT-e': x.geral.qtd ? Number(((x.pendente.qtd / x.geral.qtd) * 100).toFixed(1)) : 0,
-      'Valor NF pendente': r2(x.pendente.valor_nf), '% frete usado': Number(((x.pct_frete || 0) * 100).toFixed(2)), 'Frete estimado': r2(x.pendente.estimado),
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(porT), 'Por transportadora');
-    const empresas = porEmpresa.filter((e) => e.qtd_nf).map((e) => ({ Empresa: e.empresa, CC: e.cc, 'NFs sem CT-e': e.qtd_nf, 'Frete estimado': r2(e.estimado_nf) }));
-    if (empresas.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(empresas), 'Por empresa');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhasNfExcel(nfsPendentes.filter((n) => n.situacao === 'SEM_CTE'), centrosAtivos)), 'NFs sem CT-e');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhasNfExcel(nfsPendentes.filter((n) => n.situacao === 'CTE_FORA_BASE'), centrosAtivos)), 'CT-e fora da base');
-    XLSX.writeFile(wb, `LAUDO_TRACKING_NF_SEM_CTE_${calculadaPara}.xlsx`);
+    try {
+      await exportarExcelMultiAbas({ nomeArquivo: `LAUDO_TRACKING_NF_SEM_CTE_${calculadaPara}.xlsx`, abas });
+    } catch (e) {
+      setErro(e.message || String(e));
+    }
   };
 
   const valorLista = lista.reduce((acc, c) => acc + Number(c.valor_cte || 0), 0);
