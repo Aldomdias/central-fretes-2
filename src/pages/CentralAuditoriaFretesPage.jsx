@@ -2861,7 +2861,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         semEntrega: semEntrega.length,
         cobrancaAcima: resumo.cobrancaAcima,
         totalDescontar: totalDescontarLaudo,
-        assinatura: sessao?.nome,
+        // Assinatura do e-mail e sempre "Auditoria de Fretes" (sem o nome de quem gerou o laudo).
       }, dinheiro);
       const eml = montarEml({
         assunto: `Laudo de auditoria de fretes${fatura.transportadora ? ` - ${fatura.transportadora}` : ''} - fatura ${fatura.numero_fatura}`,
@@ -5837,7 +5837,7 @@ ${portaisLaudo.length ? `
         faturas: portaisLaudo.map((portal) => ({ url: portal.url })),
         totalCtes: total,
         divergentes,
-        assinatura: carregarSessao()?.nome,
+        // Assinatura do e-mail e sempre "Auditoria de Fretes" (sem o nome de quem gerou o laudo).
       }, dinheiro);
       const eml = montarEml({
         assunto: `Laudo de auditoria de fretes${transportadoraGrupo ? ` - ${transportadoraGrupo}` : ''}`,
@@ -6527,7 +6527,7 @@ ${portaisLaudo.length ? `
           semEntrega: semEntregaGeral.length,
           cobrancaAcima: resumoGeral.cobrancaAcima,
           totalDescontar: totalDescontarGeral,
-          assinatura: sessao?.nome,
+          // Assinatura do e-mail e sempre "Auditoria de Fretes" (sem o nome de quem gerou o laudo).
           responderTodos: enviarEmail,
           semVinculoNf: semNfGeral,
         }, dinheiro);

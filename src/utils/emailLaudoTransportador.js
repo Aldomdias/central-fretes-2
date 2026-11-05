@@ -41,7 +41,7 @@ function passo(numero, titulo, texto) {
 }
 
 // resumo: { transportadora, faturas: [{numero, url}], totalCtes, divergentes,
-// semCalculo, semEntrega, cobrancaAcima, totalDescontar, geradoEm, assinatura, responderTodos }
+// semCalculo, semEntrega, cobrancaAcima, totalDescontar, geradoEm, responderTodos }
 export function montarCorpoEmailLaudo(resumo = {}, formatarDinheiro = (v) => String(v)) {
   const faturas = Array.isArray(resumo.faturas) ? resumo.faturas : [];
   const nomeTransp = resumo.transportadora || 'Transportadora';
@@ -95,7 +95,7 @@ export function montarCorpoEmailLaudo(resumo = {}, formatarDinheiro = (v) => Str
   </div>
 
   <p style="font-size:14px">${resumo.responderTodos ? 'Em caso de dúvida, responda este e-mail usando <strong>“Responder a todos”</strong>.' : 'Em caso de dúvida, é só responder este e-mail.'}</p>
-  <p style="font-size:14px;margin-top:18px">Atenciosamente,<br>${esc(resumo.assinatura || 'Equipe de Auditoria de Fretes')}</p>
+  <p style="font-size:14px;margin-top:18px">Atenciosamente,<br>Auditoria de Fretes</p>
   <p style="font-size:11px;color:#94a3b8;margin-top:18px">Laudo gerado em ${esc(resumo.geradoEm || new Date().toLocaleString('pt-BR'))}.</p>
 </div>`;
 }
