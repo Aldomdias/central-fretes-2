@@ -53,19 +53,23 @@ export default function GestaoListaNegociacoes({
               const estSim = getEstadoSimulacaoNegociacao(t);
               return (
               <tr key={t.id} style={t.id === selecionadaId ? { background: '#eff6ff' } : undefined}>
-                <td><strong>{t.nome_negociacao}</strong></td>
+                <td>
+                  <strong>{t.nome_negociacao}</strong>
+                  {t.variante_tabela || t.tabela_alternativa_de ? (
+                    <div style={{ marginTop: 4 }}>
+                      <span
+                        title={t.tabela_alternativa_de ? 'Tabela alternativa (mesma transportadora+origem)' : 'Tabela principal'}
+                        style={{ display: 'inline-block', fontSize: 11, fontWeight: 800, padding: '2px 8px', borderRadius: 999, background: t.tabela_alternativa_de ? '#ede9fe' : '#e0f2fe', color: t.tabela_alternativa_de ? '#5b21b6' : '#0369a1' }}
+                      >
+                        {t.tabela_alternativa_de ? 'Alternativa' : 'Principal'}{t.variante_tabela ? `: ${t.variante_tabela}` : ''}
+                      </span>
+                    </div>
+                  ) : null}
+                </td>
                 <td>{t.transportadora}</td>
                 <td>{t.is_reajuste ? 'Reajuste' : t.tipo_negociacao_norm === 'TABELA_LOTACAO' ? 'Lotação' : 'Nova'}</td>
                 <td>
                   <span style={gestaoStyles.badgeStatus(t.status_gestao_cor)}>{t.status_gestao_label}</span>
-                  {t.tabela_alternativa_de ? (
-                    <span
-                      title="Tabela alternativa de outra tabela principal (mesma transportadora+origem)"
-                      style={{ display: 'inline-block', marginLeft: 6, marginTop: 4, fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 999, background: '#ede9fe', color: '#5b21b6' }}
-                    >
-                      Alternativa{t.variante_tabela ? `: ${t.variante_tabela}` : ''}
-                    </span>
-                  ) : null}
                 </td>
                 <td>{t.negociador_display}</td>
                 <td>{t.criado_por_display}</td>
