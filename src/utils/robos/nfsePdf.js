@@ -316,6 +316,63 @@ function completarModeloDanfseEmitente(L, U, dados) {
   }
 }
 
+// Modelo municipal "NFSe - Prestador" (ex.: Prefeitura de Campo Grande/MS): blocos "EMITENTE PRESTADOR DO SERVICO"
+// e "TOMADOR DO SERVICO" com "Nome / Nome Empresarial ¦ E-mail" e "Endereco ¦ Municipio ¦ CEP" (municipio
+// "CAMPO GRANDE / MS BRASIL"); valores em "CALCULO DO ISSQN" ("Valor total da NFSe") e "VALOR TOTAL"
+// ("Valor Liquido da NFSe"), sempre na linha abaixo dos titulos. So completa/corrige o que o leitor geral nao pegou.
+function completarModeloEmitentePrestador(L, U, dados) {
+  const iEmit = U.findIndex((l) => l.includes('EMITENTE PRESTADOR DO SERVICO'));
+  const iTom = U.findIndex((l, k) => k > iEmit && /^TOMADOR DO SERVICO/.test(l.trim()));
+  const iFimTom = U.findIndex((l, k) => k > iTom && (l.includes('SERVICO PRESTADO') || l.includes('INTERMEDIARIO')));
+  const munUf = (txt) => {
+    const m = String(txt || '').match(/([A-Za-zÀ-ÿ' .]+?)\s*\/\s*([A-Za-z]{2})\b/);
+    return m ? { municipio: chaveMunicipio(`${m[1]}${m[2]}`), uf: m[2].toUpperCase() } : null;
+  };
+  const lerBloco = (ini, fim) => {
+    const r = { cnpj: '', nome: '', mun: null };
+    for (let k = ini; k < fim; k += 1) {
+      const c = L[k].match(RE_CNPJ);
+      if (c && !r.cnpj) r.cnpj = c[1].replace(/\D/g, '');
+      if (U[k].includes('NOME / NOME EMPRESARIAL') && L[k + 1] && !r.nome) r.nome = semEmail(L[k + 1].split(SEP)[0].trim());
+      if (U[k].includes('MUNICIPIO') && U[k].includes('CEP') && L[k + 1] && !r.mun) {
+        const rot = U[k].split(SEP);
+        const cel = L[k + 1].split(SEP);
+        const idx = rot.findIndex((x) => x.includes('MUNICIPIO'));
+        r.mun = (cel.length === rot.length ? munUf(cel[idx]) : null) || cel.slice(1).map(munUf).find(Boolean) || null;
+      }
+    }
+    return r;
+  };
+  if (iEmit >= 0) {
+    const p = lerBloco(iEmit, iTom > iEmit ? iTom : L.length);
+    if (dados.cnpjTransp.length !== 14 && p.cnpj) dados.cnpjTransp = p.cnpj;
+    if (!dados.transportadora && p.nome) dados.transportadora = p.nome;
+    if (p.mun) { dados.municipioPrestador = p.mun.municipio; dados.ufPrestador = p.mun.uf; }
+  }
+  if (iTom >= 0) {
+    const t = lerBloco(iTom, iFimTom > iTom ? iFimTom : Math.min(iTom + 8, L.length));
+    if (dados.cnpjTomador.length !== 14 && t.cnpj) dados.cnpjTomador = t.cnpj;
+    if (t.mun) { dados.municipioTomador = t.mun.municipio; dados.ufTomador = t.mun.uf; }
+  }
+  // celula da linha de baixo alinhada ao titulo (mesmo numero de colunas); senao a 1a/ultima
+  const celulaAbaixo = (i, re, ultima) => {
+    if (i < 0 || !L[i + 1]) return null;
+    const rot = U[i].split(SEP);
+    const cel = L[i + 1].split(SEP);
+    const idx = rot.findIndex((x) => re.test(x));
+    const alvo = cel.length === rot.length && idx >= 0 ? numerosFlex(cel[idx]) : [];
+    if (alvo.length) return alvo[0];
+    const todos = numerosFlex(L[i + 1]);
+    return todos.length ? todos[ultima ? todos.length - 1 : 0] : null;
+  };
+  const iTot = U.findIndex((l) => l.includes('VALOR TOTAL DA NFSE'));
+  const vTot = celulaAbaixo(iTot, /VALOR TOTAL DA NFSE/, false);
+  if (!(dados.valor > 0) && vTot > 0) dados.valor = vTot;
+  const iLiq = U.findIndex((l) => l.includes('VALOR LIQUIDO DA NFSE'));
+  const vLiq = celulaAbaixo(iLiq, /VALOR LIQUIDO DA NFSE/, true);
+  if (vLiq !== null) dados.valorLiquido = vLiq;
+}
+
 // linhas: saida de itensParaLinhas (ou o texto do PDF dividido por linha).
 export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   const L = linhas.map((l) => String(l ?? ''));
@@ -443,6 +500,7 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   if (!dados.municipioPrestador || !dados.municipioTomador) Object.assign(dados, municipiosPorEndereco(L, U));
   if (U.some((l) => l.includes('SERIE NFS-E')) && U.some((l) => l.includes('BASE DE CALCULO') && l.includes('ISSQN'))) completarModeloSerieNfse(L, U, dados);
   if (U.some((l) => l.includes('EMITENTE DA NFS-E')) && U.some((l) => /^TOMADOR DA NFS-E/.test(l.trim())) && U.some((l) => l.includes('VALOR TOTAL DA NFS-E'))) completarModeloDanfseEmitente(L, U, dados);
+  if (U.some((l) => l.includes('EMITENTE PRESTADOR DO SERVICO')) && U.some((l) => l.includes('VALOR TOTAL DA NFSE'))) completarModeloEmitentePrestador(L, U, dados);
   aplicarRegrasLancamento(dados);
   return resultado(dados);
 }
