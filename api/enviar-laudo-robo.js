@@ -2,7 +2,7 @@
  * Envio por e-mail do laudo de auditoria ao transportador (Robo Auditor).
  *
  * POST /api/enviar-laudo-robo
- * body: { fatura_ids: string[], assunto, corpo_html, anexo_nome, anexo_gzip_base64, origem?: 'auto'|'manual' }
+ * body: { fatura_ids: string[], assunto, corpo_html, anexo_nome, anexo_gzip_base64, anexos_extras?: [{ nome, gzip_base64 }], origem?: 'auto'|'manual' }
  *
  * O laudo (HTML) e o corpo do e-mail sao gerados no navegador (mesmo laudo consolidado da tela de
  * Faturas); aqui so se valida e envia. Seguranca: destinatarios NAO vem do cliente — saem da lista do
@@ -117,7 +117,16 @@ export default async function handler(req, res) {
     };
 
     // 6) envio
-    const dados = { subject: assunto, html: corpoHtml, ...(anexo ? { attachments: [anexo] } : {}) };
+    // Anexos extras (ex.: Excel do laudo, que a pre-visualizacao do Outlook nao deixa exportar do HTML).
+    const extras = (Array.isArray(body.anexos_extras) ? body.anexos_extras : []).slice(0, 3).flatMap((x) => {
+      if (!x?.gzip_base64) return [];
+      try {
+        const conteudo = gunzipSync(Buffer.from(String(x.gzip_base64), 'base64'));
+        return [{ filename: String(x.nome || 'anexo').replace(/[^\w.\- ]+/g, '_'), content: conteudo.toString('base64') }];
+      } catch { return []; }
+    });
+    const anexos = [...(anexo ? [anexo] : []), ...extras];
+    const dados = { subject: assunto, html: corpoHtml, ...(anexos.length ? { attachments: anexos } : {}) };
     let resposta;
     if (process.env.RESEND_API_KEY) {
       resposta = await fetch('https://api.resend.com/emails', {

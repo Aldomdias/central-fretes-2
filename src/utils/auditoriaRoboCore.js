@@ -162,8 +162,21 @@ async function ctesSemVinculoNf(lista = [], fatura = null) {
     console.warn('[robo] checagem de CT-e sem NF nao feita:', e?.message || e);
     return SEM_NF_VAZIO;
   }
+  // Justificativa da transportadora ACEITA (ex.: CT-e complementar com o CT-e original informado no portal):
+  // o CT-e deixa de ser apontado. Falha na consulta = nenhuma justificativa (segue marcando).
+  const aceitos = new Set();
+  try {
+    const db = getSupabaseClient();
+    const semNfChaves = chaves.filter((c) => existe.has(c) && !comNf.has(c));
+    for (let k = 0; k < semNfChaves.length; k += 200) {
+      // eslint-disable-next-line no-await-in-loop
+      const { data, error } = await db.from('fatura_cte_sem_nf_respostas').select('chave_cte').eq('status_validacao', 'ACEITO').in('chave_cte', semNfChaves.slice(k, k + 200));
+      if (error) throw new Error(error.message);
+      (data || []).forEach((r) => aceitos.add(normalizarChaveCte(r.chave_cte)));
+    }
+  } catch { /* sem a tabela (migration 20261105_002): ninguem justificado */ }
   const semNf = candidatos
-    .filter((i) => { const c = normalizarChaveCte(i.chave_cte); return existe.has(c) && !comNf.has(c); })
+    .filter((i) => { const c = normalizarChaveCte(i.chave_cte); return existe.has(c) && !comNf.has(c) && !aceitos.has(c); })
     .map((i) => {
       const dif = Number(i.diferenca || 0);
       const contouNaCobrancaAcima = (i.desconto_sem_tabela || (Number(i.calculado_frete || 0) > 0 && !dentroDaTolerancia(dif))) && dif > 0;
