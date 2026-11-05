@@ -494,7 +494,7 @@ export default function AuditorRobo() {
         <strong>O que o robo faz hoje:</strong> faturas corretas (calculadas, sem desconto e todas entregues) vao direto para a
         <strong> aprovacao da gestao, marcadas "via robo"</strong>; o auditor acompanha no Meu Painel. Faturas com desconto geram
         laudo, que sai por e-mail conforme a coluna "Envio do laudo" de cada transportadora (manual, apos o OK do auditor ou direto);
-        CT-e emitido a partir de 01/10/2026 sem NF (regra ligada) gera laudo que sai sozinho. As duvidosas vao para a fila do auditor.
+        CT-e emitido a partir de 01/10/2026 sem NF (regra ligada) gera laudo ja aprovado: sai sozinho nas transportadoras em e-mail automatico ou envio direto; nas manuais o auditor envia. As duvidosas vao para a fila do auditor.
         <br /><strong>Como funciona:</strong> considera, para cada transportadora, as faturas que entraram a partir de <strong>um dia antes de ela ser incluida</strong> na lista (coluna "Considera desde").
         Para cada uma, o robo calcula os CT-es (se ainda nao calculados), apura o valor a descontar e a entrega, e decide:
         com desconto → laudo; correta e toda entregue → aprovacao; qualquer duvida → fila do auditor.
@@ -534,7 +534,7 @@ export default function AuditorRobo() {
               <button
                 type="button" disabled={!podeContingencia}
                 onClick={() => {
-                  if (!cfgRobo.checar_cte_sem_nf && !window.confirm('Ligar a regra "CT-e sem vinculo de NF"?\n\nNas faturas que entrarem a partir de agora, CT-e emitido a partir de 01/10/2026 sem a chave da NF na base de CT-es nao vai para pagamento: o laudo sai SOZINHO para a transportadora pedindo a retirada e um CT-e novo.\n\nProtecao: se metade ou mais dos CT-es da fatura estiverem sem NF na base, a fatura vai para o auditor (provavel base importada sem a aba "Notas Fiscais").')) return;
+                  if (!cfgRobo.checar_cte_sem_nf && !window.confirm('Ligar a regra "CT-e sem vinculo de NF"?\n\nNas faturas que entrarem a partir de agora, CT-e emitido a partir de 01/10/2026 sem a chave da NF na base de CT-es nao vai para pagamento: o laudo pedindo a retirada e um CT-e novo ja nasce aprovado e sai SOZINHO nas transportadoras em e-mail automatico ou envio direto (nas manuais, o auditor envia).\n\nProtecao: se metade ou mais dos CT-es da fatura estiverem sem NF na base, a fatura vai para o auditor (provavel base importada sem a aba "Notas Fiscais").')) return;
                   if (cfgRobo.checar_cte_sem_nf && !window.confirm('Desligar a regra "CT-e sem NF"? O robo deixa de conferir a NF e CT-e sem nota fiscal pode seguir para pagamento.')) return;
                   aplicarCfg({ ...cfgRobo, checar_cte_sem_nf: !cfgRobo.checar_cte_sem_nf, checar_cte_sem_nf_desde: cfgRobo.checar_cte_sem_nf ? null : new Date().toISOString() }, cfgRobo.checar_cte_sem_nf ? 'Regra CT-e sem NF desligada.' : 'Regra CT-e sem NF ligada: vale para as faturas que entrarem a partir de agora.');
                 }}

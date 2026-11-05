@@ -10325,7 +10325,9 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
     (async () => {
       try {
         const [{ lista }, fila] = await Promise.all([listarRoboTransportadoras(), listarFilaAuditorRobo()]);
-        // Envio direto ligado OU laudo de CT-e sem vinculo de NF (sai sempre sozinho); precisa ter e-mail cadastrado.
+        // Envio direto ligado OU laudo de CT-e sem vinculo de NF; precisa ter e-mail cadastrado.
+        // CT-e sem NF so sai sozinho se a transportadora estiver em e-mail automatico ou envio direto:
+        // em "Auditor envia (manual)" o laudo fica aprovado na fila e o auditor envia.
         const comEmail = new Map((lista || []).filter((c) => c.ativo && String(c.emails_transportadora || '').trim()).map((c) => [normNome(c.transportadora), c]));
         if (!comEmail.size) return;
         const porId = new Map((state.faturas || []).map((f) => [String(f.id), f]));
@@ -10336,6 +10338,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
           const cfg = f && comEmail.get(normNome(f.transportadora));
           if (!cfg || !STATUS_ROBO_AUDITA.includes(f.status)) return;
           if (e.aprovado_auditor_por === ROBO_ENVIO_DIRETO_POR && !cfg.envio_direto) return;
+          if (e.aprovado_auditor_por === ROBO_SEM_NF_POR && !cfg.envio_direto && !cfg.email_automatico) return;
           const g = grupos.get(normNome(f.transportadora)) || { transportadora: f.transportadora, ids: [] };
           if (g.ids.length < 300) g.ids.push(String(f.id));
           grupos.set(normNome(f.transportadora), g);
