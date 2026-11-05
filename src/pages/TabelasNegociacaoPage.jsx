@@ -3694,7 +3694,7 @@ export default function TabelasNegociacaoPage() {
                             onClick={function() { abrirTabela(t, { telaNegociacao: emTelaNegociacao, sincronizarUrl: emTelaNegociacao }); }}
                             style={estiloChip}
                           >
-                            {chipLabel}{rotuloVarianteTabela(t) ? ' · ' + rotuloVarianteTabela(t) : ''} · R{getRodadaAtualTabela(t)}{publicada ? ' · Publicada' : ''}
+                            {chipLabel}{rotuloVarianteTabela(t) ? ' · ' + rotuloVarianteTabela(t) : (negociacoesMesmaTransportadora.filter(function(o) { return o.id !== t.id && origemTabelaChipLabel(o) === chipLabel && !rotuloVarianteTabela(o); }).length ? ' · criada ' + formatDateBR(t.criado_em) + ' ' + (new Date(t.criado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })) : '')} · R{getRodadaAtualTabela(t)}{publicada ? ' · Publicada' : ''}
                           </button>
                           {!ativo && usuarioEhGestor(sessao) && (
                             <button
