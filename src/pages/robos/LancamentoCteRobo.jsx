@@ -301,7 +301,7 @@ export default function LancamentoCteRobo() {
                 <div style={{ overflowX: 'auto', marginTop: 10, maxHeight: 440, overflowY: 'auto' }}>
                   <table style={{ borderCollapse: 'collapse', width: '100%' }}>
                     <thead>
-                      <tr>{['Emp', 'CT-e', 'Transportadora', 'Bruto', 'Líquido', 'ICMS', 'Imp.', 'Centro', 'C.Custo', 'Fatura', 'Pedido', 'MIRO', ''].map((c) => <th key={c} style={th}>{c}</th>)}</tr>
+                      <tr>{['Emp', 'CT-e', 'Transportadora', 'Bruto', 'Líquido', 'ICMS', 'Imp.', 'Centro', 'C.Custo', 'Fatura', 'Pedido', 'MIRO', 'Chave NF de venda', ''].map((c) => <th key={c} style={th}>{c}</th>)}</tr>
                     </thead>
                     <tbody>
                       {linhasVisiveis.map((l) => (
@@ -318,6 +318,14 @@ export default function LancamentoCteRobo() {
                           <td style={td}><input style={{ width: 70 }} value={l.fatura} onChange={(e) => editar(l.id, 'fatura', e.target.value)} placeholder="fatura" /></td>
                           <td style={td}><input style={{ width: 96 }} value={l.pedido} onChange={(e) => editar(l.id, 'pedido', e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="pedido" /></td>
                           <td style={td}><input style={{ width: 96 }} value={l.miro} onChange={(e) => editar(l.id, 'miro', e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="MIRO" /></td>
+                          <td style={td} title="Só para consulta (não entra no lançamento)">
+                            {l.danfe ? (
+                              <>
+                                <span style={{ fontFamily: 'monospace', fontSize: 11, userSelect: 'all' }}>{l.danfe}</span>
+                                <button type="button" className="btn-link" style={{ marginLeft: 6 }} onClick={() => { navigator.clipboard?.writeText(l.danfe).then(() => setFeedback(`Chave da NF do CT-e ${l.cte} copiada.`)).catch(() => null); }}>copiar</button>
+                              </>
+                            ) : <span style={{ color: '#94a3b8' }}>—</span>}
+                          </td>
                           <td style={td}>
                             {l.erros.length ? <span style={{ color: podeIrParaRobo(l) ? '#b45309' : '#b91c1c', marginRight: 8 }}>{l.erros[0]}</span> : l.avisos.length ? <span style={{ color: '#b45309', marginRight: 8 }}>{l.avisos[0]}</span> : null}
                             <button type="button" className="btn-link" onClick={() => setRemovidos((a) => [...a, l.id])}>remover</button>
