@@ -149,9 +149,44 @@ export async function listarRoboTransportadoras() {
   return { lista: data || [], semTabela: false };
 }
 
-export async function salvarRoboTransportadora(registro) {
+// Campos acompanhados no registro de alteracoes (auditor_robo_transportadoras_log, migration 20261105_003).
+const CAMPOS_LOG_ROBO = {
+  ativo: 'Ativo',
+  email_automatico: 'E-mail automatico',
+  envio_direto: 'Envio direto',
+  emails_transportadora: 'E-mails da transportadora',
+  email_aprovacao: 'E-mail de aprovacao',
+  data_inicio: 'Data de inicio',
+};
+export const modoEnvioRobo = (r) => (r?.envio_direto ? 'Envio direto (sem aprovacao)' : r?.email_automatico ? 'E-mail automatico (apos o OK do auditor)' : 'Auditor envia (manual)');
+const valorLog = (v) => (v === true ? 'Sim' : v === false ? 'Nao' : v == null || v === '' ? '(vazio)' : String(v));
+const usuarioLogRobo = (usuario) => String(usuario || '').trim() || 'usuario nao identificado';
+async function gravarLogRobo(linhas) {
+  if (!linhas.length) return;
+  const { error } = await getSupabaseClient().from('auditor_robo_transportadoras_log').insert(linhas);
+  if (error) console.warn('[robo] registro de alteracao nao gravado (migration 20261105_003 aplicada?):', error.message);
+}
+
+export async function listarLogRoboTransportadoras(limite = 100) {
+  try {
+    const { data, error } = await getSupabaseClient().from('auditor_robo_transportadoras_log')
+      .select('*').order('created_at', { ascending: false }).limit(limite);
+    if (error) throw error;
+    return { lista: data || [], semTabela: false };
+  } catch { return { lista: [], semTabela: true }; }
+}
+
+// usuario: quem fez a alteracao (vai para o registro de alteracoes).
+export async function salvarRoboTransportadora(registro, { usuario = '' } = {}) {
   const payload = { ...registro, updated_at: new Date().toISOString() };
   const client = getSupabaseClient();
+  let anterior = null;
+  if (registro.id) {
+    try {
+      const { data } = await client.from('auditor_robo_transportadoras').select('*').eq('id', registro.id).maybeSingle();
+      anterior = data || null;
+    } catch { anterior = null; }
+  }
   let { error } = await client.from('auditor_robo_transportadoras').upsert(payload, { onConflict: 'id' });
   // Colunas novas ainda sem migration: salva o resto e avisa qual migration falta.
   const migracoes = {
@@ -165,11 +200,34 @@ export async function salvarRoboTransportadora(registro) {
     if (!error) throw new Error(`Salvo sem "${faltando}": aplique a migration ${migracoes[faltando]} no Supabase para essa opcao funcionar.`);
   }
   if (error) throw new Error(`Erro ao salvar transportadora do robo: ${error.message}`);
+  const quem = usuarioLogRobo(usuario);
+  const base = { transportadora_id: String(registro.id || ''), transportadora: registro.transportadora || anterior?.transportadora || '', usuario: quem };
+  if (!anterior) {
+    await gravarLogRobo([{ ...base, acao: 'INCLUIDA', descricao: `Incluida no robo. Modo de envio: ${modoEnvioRobo(registro)}.` }]);
+    return;
+  }
+  const linhas = [];
+  const modoAntes = modoEnvioRobo(anterior);
+  const modoDepois = modoEnvioRobo({ ...anterior, ...registro });
+  if (modoAntes !== modoDepois) linhas.push({ ...base, acao: 'ALTERADA', campo: 'Modo de envio', valor_anterior: modoAntes, valor_novo: modoDepois, descricao: `Modo de envio: ${modoAntes} -> ${modoDepois}.` });
+  Object.entries(CAMPOS_LOG_ROBO).forEach(([campo, rotulo]) => {
+    if (!(campo in registro) || ['email_automatico', 'envio_direto'].includes(campo)) return;
+    const antes = valorLog(anterior[campo]);
+    const depois = valorLog(registro[campo]);
+    if (antes !== depois) linhas.push({ ...base, acao: 'ALTERADA', campo: rotulo, valor_anterior: antes, valor_novo: depois, descricao: `${rotulo}: ${antes} -> ${depois}.` });
+  });
+  await gravarLogRobo(linhas);
 }
 
-export async function removerRoboTransportadora(id) {
+export async function removerRoboTransportadora(id, { usuario = '' } = {}) {
+  let anterior = null;
+  try {
+    const { data } = await getSupabaseClient().from('auditor_robo_transportadoras').select('*').eq('id', id).maybeSingle();
+    anterior = data || null;
+  } catch { anterior = null; }
   const { error } = await getSupabaseClient().from('auditor_robo_transportadoras').delete().eq('id', id);
   if (error) throw new Error(`Erro ao remover: ${error.message}`);
+  await gravarLogRobo([{ transportadora_id: String(id), transportadora: anterior?.transportadora || '', acao: 'REMOVIDA', descricao: `Removida do robo (estava em: ${modoEnvioRobo(anterior)}).`, usuario: usuarioLogRobo(usuario) }]);
 }
 
 // O Supabase devolve no maximo 1000 linhas por consulta (um .limit maior e ignorado): busca pagina a pagina.
