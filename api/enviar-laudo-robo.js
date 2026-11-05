@@ -80,8 +80,9 @@ export default async function handler(req, res) {
     if (e2) throw new Error(`Lista do robo: ${e2.message}`);
     const cfg = (cfgs || []).find((c) => norm(c.transportadora) === transportadoras[0]);
     if (!cfg) return res.status(400).json({ ok: false, erro: `${nomeTransp} nao esta na lista do robo.` });
-    const soSemNf = [...porId.values()].every((e) => e.aprovado_auditor_por === 'Robo (CT-e sem NF)');
-    if (origem === 'auto' && !cfg.email_automatico && !cfg.envio_direto && !soSemNf) return res.status(409).json({ ok: false, erro: `E-mail automatico desligado para ${nomeTransp}.` });
+    // Envio automatico so para transportadora em e-mail automatico ou envio direto (CT-e sem NF inclusive):
+    // em "Auditor envia (manual)" o laudo so sai pelo envio manual do auditor.
+    if (origem === 'auto' && !cfg.email_automatico && !cfg.envio_direto) return res.status(409).json({ ok: false, erro: `E-mail automatico desligado para ${nomeTransp}.` });
     const para = emailsDe(cfg.emails_transportadora);
     if (!para.length) return res.status(400).json({ ok: false, erro: `Sem e-mail cadastrado para ${nomeTransp}: preencha em Automacao > Robo Auditor.` });
     // Junto em TODO laudo: o(s) auditor(es) responsavel(is) e o grupo padrao da auditoria (historico mesmo sem auditor).
