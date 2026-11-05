@@ -210,8 +210,60 @@ export function labelTabelaNegociacaoSimulador(tabela = {}) {
   // sempre a primeira encontrada.
   const variante = texto(tabela.variante_tabela || tabela.varianteTabela);
   const ehAlternativa = Boolean(texto(tabela.tabela_alternativa_de || tabela.tabelaAlternativaDe));
-  const sufixoVariante = variante ? ` · ${variante}` : ehAlternativa ? ' · Alternativa' : '';
+  // Sem rótulo, mas com outra tabela igual na lista: marcarDesambiguacao…
+  // grava a data de criação em rotulo_desambiguacao para separar as duas.
+  const desambiguacao = texto(tabela.rotulo_desambiguacao);
+  const sufixoVariante = variante
+    ? ` · ${variante}`
+    : `${ehAlternativa ? ' · Alternativa' : ''}${desambiguacao ? ` · ${desambiguacao}` : ''}`;
   return `${nome}${origem ? ` — ${origem}` : ''}${sufixoVariante} (${tag}R${rodada})`;
+}
+
+function rotuloCriacaoNegociacao(tabela = {}) {
+  const data = new Date(tabela.criado_em || tabela.criadoEm || '');
+  if (Number.isNaN(data.getTime())) return `id ${String(tabela.id || '').slice(0, 6)}`;
+  return `criada ${data.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`;
+}
+
+// Quando duas negociações geram o mesmo rótulo no simulador (mesma
+// transportadora+origem+rodada, sem variante definida), o simulador não sabe
+// qual escolher — ele localiza a tabela pelo rótulo. Marca essas tabelas com a
+// data de criação (rotulo_desambiguacao) para que cada uma tenha rótulo único.
+// Tabelas sem colisão ficam sem marca (rótulo inalterado).
+export function marcarDesambiguacaoNegociacoesSimulador(tabelas = []) {
+  const lista = Array.isArray(tabelas) ? tabelas : [];
+  const semMarca = (tabela) => labelTabelaNegociacaoSimulador({ ...tabela, rotulo_desambiguacao: '' });
+  const grupos = new Map();
+  lista.forEach((tabela) => {
+    if (!tabela) return;
+    const chave = semMarca(tabela);
+    grupos.set(chave, (grupos.get(chave) || 0) + 1);
+  });
+
+  const desejado = new Map();
+  lista.forEach((tabela) => {
+    if (!tabela || texto(tabela.variante_tabela || tabela.varianteTabela)) return;
+    if ((grupos.get(semMarca(tabela)) || 0) > 1) desejado.set(tabela, rotuloCriacaoNegociacao(tabela));
+  });
+  // Criadas no mesmo minuto: completa com o início do id.
+  const contagem = new Map();
+  desejado.forEach((rotulo, tabela) => {
+    const chave = `${semMarca(tabela)}|${rotulo}`;
+    contagem.set(chave, (contagem.get(chave) || 0) + 1);
+  });
+  desejado.forEach((rotulo, tabela) => {
+    if (contagem.get(`${semMarca(tabela)}|${rotulo}`) > 1) desejado.set(tabela, `${rotulo} · id ${String(tabela.id || '').slice(0, 6)}`);
+  });
+
+  let mudou = false;
+  const saida = lista.map((tabela) => {
+    if (!tabela) return tabela;
+    const alvo = desejado.get(tabela) || '';
+    if (texto(tabela.rotulo_desambiguacao) === alvo) return tabela;
+    mudou = true;
+    return { ...tabela, rotulo_desambiguacao: alvo };
+  });
+  return mudou ? saida : lista;
 }
 
 function montarGeneralidades(generalidades = {}) {
