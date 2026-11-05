@@ -9,6 +9,9 @@ import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import ModalEnviarProtocoloFinanceiro from '../components/ModalEnviarProtocoloFinanceiro';
 import DadosBancariosTransportadoras from '../components/DadosBancariosTransportadoras';
 import VincularPagamentosSap from '../components/VincularPagamentosSap';
+import ProvisaoCtesPainel from '../components/ProvisaoCtesPainel';
+import { salvarLancamentosCteSap } from '../services/lancamentosCteSapService';
+import { extrairLancamentosCteSap } from '../utils/lancamentosCteSap';
 import DesfazerVinculosSap from '../components/DesfazerVinculosSap';
 import BaixaEntregaFatura, { BaixaEntregaAprovacaoGestao } from '../components/BaixaEntregaFatura';
 import { listarRetiradasDaFatura, MOTIVOS_RETIRADA_CTE, registrarAguardandoNovaFatura, registrarRetiradaCtes } from '../services/baixaEntregaService';
@@ -9821,6 +9824,14 @@ function Financeiro({ state, onState }) {
         || (item.resultado === 'NAO_LOCALIZADO' && valoresEmAberto.has(Math.round(Number(item.valor_pago || 0) * 100)))
       ));
       const guardadas = await salvarSapSemVinculo(paraVincular);
+      // Lancamentos de CT-e (MIRO "numero-serie") do mesmo relatorio: base da provisao por competencia.
+      const lancamentosCte = extrairLancamentosCteSap(rows, file.name);
+      let resultadoCtes = { enviadas: 0 };
+      try {
+        resultadoCtes = await salvarLancamentosCteSap(lancamentosCte, (progresso) => setProgressoPagamentos({ etapa: `salvando_lancamentos_cte (${file.name})`, ...progresso }));
+      } catch (error) {
+        resultadoCtes = { enviadas: 0, erro: error.message || String(error) };
+      }
 
       const salvos = await salvarPagamentosFinanceirosEmLote(matched, (progresso) => setProgressoPagamentos({ etapa: `salvando_pagamentos (${file.name})`, ...progresso }));
       // Baixa/lancamento a partir do historico consolidado das faturas tocadas
@@ -9851,6 +9862,7 @@ function Financeiro({ state, onState }) {
         resumo: {
           totalLinhas: conciliados.length, pagas: compensados.length, partidasLancadas: partidas.length,
           lancadasFinanceiro: lancadasFinanceiro.length, naoLocalizados, ambiguos, cnpjDivergente, paraVincular: guardadas.salvas || 0,
+          lancamentosCte: resultadoCtes.enviadas || 0, erroLancamentosCte: resultadoCtes.erro || '',
         },
       };
     }
@@ -9899,6 +9911,8 @@ function Financeiro({ state, onState }) {
     ambiguos: (a?.ambiguos || 0) + b.ambiguos,
     cnpjDivergente: (a?.cnpjDivergente || 0) + b.cnpjDivergente,
     paraVincular: (a?.paraVincular || 0) + (b.paraVincular || 0),
+    lancamentosCte: (a?.lancamentosCte || 0) + (b.lancamentosCte || 0),
+    erroLancamentosCte: a?.erroLancamentosCte || b.erroLancamentosCte || '',
   });
 
   // Recarrega faturas e pagamentos do banco (a tela so carrega uma vez) e reaplica
@@ -10192,9 +10206,12 @@ function Financeiro({ state, onState }) {
                 {resumoPagamentosSap.cnpjDivergente ? ` · ${resumoPagamentosSap.cnpjDivergente} com numero de fatura batendo mas CNPJ da transportadora divergente (nao casado por seguranca)` : ''}
                 {resumoPagamentosSap.ambiguos ? ` · ${resumoPagamentosSap.ambiguos} ambiguo(s) (numero de fatura repetido para o mesmo CNPJ)` : ''}.
                 {resumoPagamentosSap.paraVincular ? <> <strong>{resumoPagamentosSap.paraVincular}</strong> linha(s) do SAP guardada(s) para vincular a mao no painel abaixo.</> : null}
+                {resumoPagamentosSap.lancamentosCte ? <> <strong>{resumoPagamentosSap.lancamentosCte.toLocaleString('pt-BR')}</strong> linha(s) de lancamento de CT-e gravada(s) para a provisao.</> : null}
+                {resumoPagamentosSap.erroLancamentosCte ? <> <span className="error-text">Lancamentos de CT-e nao gravados: {resumoPagamentosSap.erroLancamentosCte}</span></> : null}
               </div>
             )}
           </div>
+          <ProvisaoCtesPainel />
           <VincularPagamentosSap state={state} onState={onState} sessao={sessao} />
           <DesfazerVinculosSap state={state} onState={onState} sessao={sessao} />
           <SimpleTable
