@@ -7,6 +7,7 @@ import {
 import { carregarParametrosRemotos } from '../services/robosParametrosService';
 import { carregarParametros, criarIndices } from '../utils/robos/lancamentoComum';
 import { carregarSessao } from '../utils/authLocal';
+import { avaliarCteParaBase } from '../services/cteBasePolicy';
 import { classificarProvisao, cnpj14, resumirProvisao, serieDaChave, SITUACOES_PROVISAO } from '../utils/lancamentosCteSap';
 import {
   agruparNfsTracking, carregarCentrosCusto, classificarNfsTracking, CORES_TRACKING, guardarCentrosCusto, resumirPorEmpresa,
@@ -86,6 +87,7 @@ export default function ProvisaoCtesPainel() {
   const [itens, setItens] = useState(null);
   const [nfs, setNfs] = useState(null);
   const [trackingCanceladas, setTrackingCanceladas] = useState(0);
+  const [foraTomador, setForaTomador] = useState(null); // CT-es com tomador fora do grupo (nao entram)
   const [snapshot, setSnapshot] = useState(null); // cabecalho do snapshot aberto (null = calculo ao vivo)
   const [calculadaPara, setCalculadaPara] = useState('');
   const [progresso, setProgresso] = useState('');
@@ -122,10 +124,22 @@ export default function ProvisaoCtesPainel() {
   const calcular = async () => {
     if (!/^\d{4}-\d{2}$/.test(competencia)) return;
     setErro(''); setAviso('');
-    setItens(null); setNfs(null); setSnapshot(null);
+    setItens(null); setNfs(null); setSnapshot(null); setForaTomador(null);
     try {
       const filiais = await filiaisPorCnpj();
-      const ctes = await carregarCtesCompetencia(competencia, setProgresso);
+      const todosCtes = await carregarCtesCompetencia(competencia, setProgresso);
+      // So CT-es com tomador do grupo (CPX, ITR, GP Pneus, GRIP, Cantu) — mesma regra da base de CT-es.
+      const opcoesTomador = { ocultarEbazar: false, incluirCpsLog: true, incluirCpComercial: false };
+      const ctes = [];
+      const fora = { qtd: 0, valor: 0, porTomador: new Map() };
+      todosCtes.forEach((c) => {
+        if (avaliarCteParaBase(c, opcoesTomador).aceito) { ctes.push(c); return; }
+        fora.qtd += 1; fora.valor += Number(c.valor_cte || 0);
+        const nome = String(c.tomador_servico || '').trim() || '(tomador vazio)';
+        const t = fora.porTomador.get(nome) || { nome, qtd: 0, valor: 0 };
+        t.qtd += 1; t.valor += Number(c.valor_cte || 0);
+        fora.porTomador.set(nome, t);
+      });
       const lancamentos = await carregarLancamentosPorCnpj(ctes.map((c) => c.cnpj_transportadora), competencia, setProgresso);
       const parcial = classificarProvisao(ctes, lancamentos, new Map(), competencia);
       const semLancamento = parcial.filter((c) => c.situacao === 'NAO_LANCADO').map((c) => c.chave_cte);
@@ -144,6 +158,7 @@ export default function ProvisaoCtesPainel() {
         setTrackingCanceladas(canceladas);
       }
       setItens(classificados);
+      setForaTomador({ qtd: fora.qtd, valor: fora.valor, porTomador: [...fora.porTomador.values()].sort((a, b) => b.valor - a.valor) });
       setCalculadaPara(competencia);
       setTransportadora('');
       setVisiveis(PAGINA); setVisiveisNf(PAGINA);
@@ -161,6 +176,7 @@ export default function ProvisaoCtesPainel() {
       setProgresso('Abrindo provisão salva...');
       const { cabecalho, itens: linhas } = await carregarSnapshotProvisao(id, setProgresso);
       setSnapshot(cabecalho);
+      setForaTomador(cabecalho.resumo?.foraTomador || null);
       setItens(linhas.filter((l) => l.tipo === 'CTE').map((l, i) => ({ id: `s${i}`, ...l.dados })));
       const linhasNf = linhas.filter((l) => l.tipo !== 'CTE').map((l) => l.dados);
       setNfs(cabecalho.tracking_resumo ? linhasNf : null);
@@ -237,7 +253,7 @@ export default function ProvisaoCtesPainel() {
       await salvarSnapshotProvisao({
         competencia: calculadaPara,
         descricao: descricao.trim() || null,
-        resumo: { total: resumo.total, porTransportadora: resumo.porTransportadora },
+        resumo: { total: resumo.total, porTransportadora: resumo.porTransportadora, foraTomador },
         tracking_resumo: resumoTracking || null,
         centros_custo: centros,
         qtd_provisao: resumo.total.provisao.qtd,
@@ -269,6 +285,7 @@ export default function ProvisaoCtesPainel() {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhasCteExcel(itens.filter((c) => c.provisao), centrosAtivos)), 'Provisão');
     if (!snapshot) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhasCteExcel(itens, centrosAtivos)), 'Todos os CT-es');
     if (nfsPendentes.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhasNfExcel(nfsPendentes, centrosAtivos)), 'Tracking NF sem CT-e');
+    if (foraTomador?.qtd) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(foraTomador.porTomador.map((t) => ({ 'Tomador (fora da provisão)': t.nome, 'CT-es': t.qtd, Valor: r2(t.valor) }))), 'Fora do grupo (tomador)');
     XLSX.writeFile(wb, `PROVISAO_CTES_${calculadaPara}${snapshot ? `_SALVA_${String(snapshot.criado_em).slice(0, 10)}` : ''}.xlsx`);
   };
 
@@ -336,7 +353,7 @@ export default function ProvisaoCtesPainel() {
           <p style={{ margin: '6px 0 10px', fontSize: 13, color: '#64748b' }}>
             Cruza os CT-es emitidos no mês (base de CT-es) com os lançamentos de CT-e do relatório SAP importado acima
             (CNPJ do emitente + número + série). CT-e sem lançamento próprio conta como lançado pela data de lançamento da fatura em que está.
-            Para ver o que foi lançado depois da virada, importe também o relatório SAP do mês seguinte. Empresa pelo CNPJ do tomador (Filiais dos Robôs) ou pela empresa do lançamento SAP.
+            Para ver o que foi lançado depois da virada, importe também o relatório SAP do mês seguinte. Só entram CT-es com tomador do grupo (CPX, ITR, GP Pneus, GRIP, Cantu). Empresa pelo CNPJ do tomador (Filiais dos Robôs) ou pela empresa do lançamento SAP.
           </p>
           <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 10 }}>
             <label className="field" style={{ width: 180 }}>Competência (emissão)
@@ -420,6 +437,16 @@ export default function ProvisaoCtesPainel() {
             </div>
           )}
 
+          {resumo && foraTomador?.qtd > 0 && (
+            <details className="hint-box compact" style={{ marginBottom: 8 }}>
+              <summary style={{ cursor: 'pointer' }}>
+                {num(foraTomador.qtd)} CT-e(s) · {dinheiro(foraTomador.valor)} ficaram fora da provisão: tomador fora do grupo (só CPX, ITR, GP Pneus, GRIP e Cantu) ou vazio.
+              </summary>
+              <div style={{ marginTop: 6, fontSize: 12 }}>
+                {foraTomador.porTomador.slice(0, 30).map((t) => <div key={t.nome}>{t.nome}: {num(t.qtd)} · {dinheiro(t.valor)}</div>)}
+              </div>
+            </details>
+          )}
           {resumo && (
             <>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
