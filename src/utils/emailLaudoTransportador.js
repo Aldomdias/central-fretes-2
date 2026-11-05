@@ -41,7 +41,7 @@ function passo(numero, titulo, texto) {
 }
 
 // resumo: { transportadora, faturas: [{numero, url}], totalCtes, divergentes,
-// semCalculo, semEntrega, cobrancaAcima, totalDescontar, geradoEm, assinatura, responderTodos }
+// semCalculo, semEntrega, cobrancaAcima, totalDescontar, geradoEm, responderTodos }
 export function montarCorpoEmailLaudo(resumo = {}, formatarDinheiro = (v) => String(v)) {
   const faturas = Array.isArray(resumo.faturas) ? resumo.faturas : [];
   const nomeTransp = resumo.transportadora || 'Transportadora';
@@ -65,7 +65,7 @@ export function montarCorpoEmailLaudo(resumo = {}, formatarDinheiro = (v) => Str
   // CT-e sem a chave da NF: nao pode ser pago; a transportadora precisa retira-lo da fatura.
   const semNf = Array.isArray(resumo.semVinculoNf) ? resumo.semVinculoNf : [];
   const avisoSemNf = semNf.length
-    ? `<div style="margin:0 0 16px;padding:12px 14px;background:#fef2f2;border:2px solid #dc2626;border-radius:8px;color:#7f1d1d;font-size:14px;line-height:1.5"><strong>⛔ ${semNf.length} CT-e(s) sem vínculo com a nota fiscal — precisam ser retirados da fatura e reemitidos.</strong><br><span style="font-size:13px">O CT-e é obrigado a trazer a nota fiscal vinculada (chave da NF-e) dentro dele. Sem isso não podemos pagar o CT-e: retire-o da fatura, emita um CT-e novo com a NF vinculada e reenvie a fatura corrigida.</span><table style="border-collapse:collapse;margin-top:8px;font-size:12px;background:#fff">${semNf.map((c) => `<tr><td style="padding:3px 8px;border:1px solid #fca5a5">${c.fatura ? `Fatura ${esc(c.fatura)}` : ''}</td><td style="padding:3px 8px;border:1px solid #fca5a5">CT-e ${esc(c.numero_cte || '-')}</td><td style="padding:3px 8px;border:1px solid #fca5a5;font-family:monospace">${esc(c.chave_cte || '')}</td><td style="padding:3px 8px;border:1px solid #fca5a5;text-align:right">${formatarDinheiro(c.valor_frete)}</td></tr>`).join('')}</table></div>`
+    ? `<div style="margin:0 0 16px;padding:12px 14px;background:#fef2f2;border:2px solid #dc2626;border-radius:8px;color:#7f1d1d;font-size:14px;line-height:1.5"><strong>⛔ ${semNf.length} CT-e(s) sem vínculo com a nota fiscal — precisam ser retirados da fatura e reemitidos.</strong><br><span style="font-size:13px">O CT-e é obrigado a trazer a nota fiscal vinculada (chave da NF-e) dentro dele. Sem isso não podemos pagar o CT-e: retire-o da fatura, emita um CT-e novo com a NF vinculada e reenvie a fatura corrigida.</span><br><span style="font-size:13px">Clique em <b>Responder</b> no CT-e para <b>autorizar a retirada</b> (a fatura é atualizada na hora sem o CT-e; informe se vai emitir novo boleto ou se a cobrança é por Pix/depósito) ou, se for um <b>CT-e complementar</b>, informar a chave do CT-e original.</span><table style="border-collapse:collapse;margin-top:8px;font-size:12px;background:#fff">${semNf.map((c) => `<tr><td style="padding:3px 8px;border:1px solid #fca5a5">${c.fatura ? `Fatura ${esc(c.fatura)}` : ''}</td><td style="padding:3px 8px;border:1px solid #fca5a5">CT-e ${esc(c.numero_cte || '-')}</td><td style="padding:3px 8px;border:1px solid #fca5a5;font-family:monospace">${esc(c.chave_cte || '')}</td><td style="padding:3px 8px;border:1px solid #fca5a5;text-align:right">${formatarDinheiro(c.valor_frete)}</td><td style="padding:3px 8px;border:1px solid #fca5a5">${c.url ? `<a href="${esc(c.url)}" style="display:inline-block;background:#b91c1c;color:#fff;font-weight:700;padding:5px 10px;border-radius:6px;text-decoration:none;white-space:nowrap">Responder</a>` : ''}</td></tr>`).join('')}</table></div>`
     : '';
 
   return `<div style="font-family:Arial,sans-serif;color:#061a44;max-width:720px">
@@ -80,7 +80,7 @@ export function montarCorpoEmailLaudo(resumo = {}, formatarDinheiro = (v) => Str
 
   <h3 style="font-size:16px;margin:22px 0 6px;color:#071d49">Como analisar o laudo — passo a passo</h3>
   <table style="border-collapse:collapse;width:100%">
-    ${passo(1, 'Abra o anexo', 'Salve o arquivo <b>.html</b> anexo e abra no seu navegador (Chrome, Edge). Ele funciona normalmente, sem instalar nada.')}
+    ${passo(1, 'Abra o anexo', 'Salve (baixe) o arquivo <b>.html</b> anexo e abra no seu navegador (Chrome, Edge). Ele funciona normalmente, sem instalar nada. <b>Na pré-visualização do Outlook os botões do laudo não funcionam</b> — lá os CT-es aparecem todos abertos, só para leitura. O arquivo <b>.xls</b> anexo traz os mesmos CT-es e cálculos em Excel.')}
     ${passo(2, 'Veja o resumo no topo', 'Os cartões mostram quantos CT-es estão divergentes, o valor cobrado acima e o total a descontar. Se houver um aviso em vermelho, são CT-es <b>sem entrega comprovada</b>.')}
     ${passo(3, 'Clique na fatura', 'Clicando em cima da linha da fatura, abre a lista de todos os CT-es dela.')}
     ${passo(4, 'Clique no CT-e para ver o detalhe', 'Clicando em um CT-e abre o <b>cálculo completo</b>: tabela aplicada, peso, base do frete, taxas (GRIS, pedágio, etc.), ICMS e a diferença para o que foi cobrado. É aí que você confere onde está a divergência.')}
@@ -95,12 +95,12 @@ export function montarCorpoEmailLaudo(resumo = {}, formatarDinheiro = (v) => Str
   </div>
 
   <p style="font-size:14px">${resumo.responderTodos ? 'Em caso de dúvida, responda este e-mail usando <strong>“Responder a todos”</strong>.' : 'Em caso de dúvida, é só responder este e-mail.'}</p>
-  <p style="font-size:14px;margin-top:18px">Atenciosamente,<br>${esc(resumo.assinatura || 'Equipe de Auditoria de Fretes')}</p>
+  <p style="font-size:14px;margin-top:18px">Atenciosamente,<br>Auditoria de Fretes</p>
   <p style="font-size:11px;color:#94a3b8;margin-top:18px">Laudo gerado em ${esc(resumo.geradoEm || new Date().toLocaleString('pt-BR'))}.</p>
 </div>`;
 }
 
-export function montarEml({ assunto, corpoHtml, anexoHtml, anexoNome }) {
+export function montarEml({ assunto, corpoHtml, anexoHtml, anexoNome, anexosExtras = [] }) {
   const limite = `----=_Laudo_${Date.now().toString(36)}`;
   const partes = [
     'X-Unsent: 1',
@@ -124,6 +124,16 @@ export function montarEml({ assunto, corpoHtml, anexoHtml, anexoNome }) {
       quebrarLinhas(base64Utf8(anexoHtml)),
     );
   }
+  (anexosExtras || []).filter((x) => x?.conteudo).forEach((x) => {
+    partes.push(
+      `--${limite}`,
+      `Content-Type: application/vnd.ms-excel; charset="UTF-8"; name="${x.nome}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${x.nome}"`,
+      '',
+      quebrarLinhas(base64Utf8(x.conteudo)),
+    );
+  });
   partes.push(`--${limite}--`, '');
   return partes.join('\r\n');
 }

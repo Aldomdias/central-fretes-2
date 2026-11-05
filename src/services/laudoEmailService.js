@@ -20,7 +20,13 @@ async function gzipBase64(texto) {
 
 // Envia o laudo consolidado por e-mail (api/enviar-laudo-robo): destinatarios vem da lista do robo
 // no servidor; so sai laudo aprovado pelo auditor e ainda nao enviado.
-export async function enviarLaudoPorEmail({ faturaIds, assunto, corpoHtml, anexoHtml, anexoNome, origem = 'manual', reenvio = false }) {
+// anexosExtras: [{ nome, conteudo }] (ex.: o Excel do laudo), tambem compactados.
+export async function enviarLaudoPorEmail({ faturaIds, assunto, corpoHtml, anexoHtml, anexoNome, anexosExtras = [], origem = 'manual', reenvio = false }) {
+  const extras = [];
+  for (const extra of anexosExtras || []) {
+    if (!extra?.conteudo) continue;
+    extras.push({ nome: extra.nome, gzip_base64: await gzipBase64(extra.conteudo) });
+  }
   const resposta = await fetch(`${urlBaseApp()}/api/enviar-laudo-robo`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -30,6 +36,7 @@ export async function enviarLaudoPorEmail({ faturaIds, assunto, corpoHtml, anexo
       corpo_html: corpoHtml,
       anexo_nome: anexoNome,
       anexo_gzip_base64: await gzipBase64(anexoHtml),
+      anexos_extras: extras,
       origem,
       reenvio,
     }),

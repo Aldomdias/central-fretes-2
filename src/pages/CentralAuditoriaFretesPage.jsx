@@ -15,6 +15,7 @@ import { extrairLancamentosCteSap } from '../utils/lancamentosCteSap';
 import DesfazerVinculosSap from '../components/DesfazerVinculosSap';
 import BaixaEntregaFatura, { BaixaEntregaAprovacaoGestao } from '../components/BaixaEntregaFatura';
 import { listarRetiradasDaFatura, MOTIVOS_RETIRADA_CTE, registrarAguardandoNovaFatura, registrarRetiradaCtes } from '../services/baixaEntregaService';
+import RespostasCteSemNfFatura from '../components/RespostasCteSemNfFatura';
 import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
 import { montarCorpoEmailLaudo, montarEml, slugArquivoEmail } from '../utils/emailLaudoTransportador';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
@@ -294,8 +295,8 @@ const SCRIPT_EXCEL_LAUDO = `
       if(/^-?\\d+(\\.\\d{3})*,\\d+$/.test(t)){var d=t.replace(/\\./g,'').replace(',','.');return '<td x:num="'+d+'" style="mso-number-format:\\'#,##0.00\\'">'+escXls(t)+'</td>'}
       return '<td>'+escXls(t)+'</td>';
     }
-    function gerarXlsLaudo(fixas,registros,nomeArquivo){
-      var grupos=[];var colunas=[];
+    function montarXlsLaudo(fixas,registros){
+      var colunas=[];
       registros.forEach(function(r){Object.keys(r.mapa).forEach(function(k){
         if(colunas.indexOf(k)<0){colunas.push(k)}
       })});
@@ -329,7 +330,10 @@ const SCRIPT_EXCEL_LAUDO = `
       var cab='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8">'
         +'<!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Laudo</x:Name><x:WorksheetOptions><x:FreezePanes/><x:FrozenNoSplit/><x:SplitHorizontal>2</x:SplitHorizontal><x:TopRowBottomPane>2</x:TopRowBottomPane><x:ActivePane>2</x:ActivePane></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->'
         +'<style>table{border-collapse:collapse;font-family:Calibri,Arial;font-size:11px}td{border:1px solid #cbd5e1;padding:3px 6px;mso-number-format:General}</style></head><body>';
-      var html=cab+'<table>'+l1+l2+corpo+'</table></body></html>';
+      return cab+'<table>'+l1+l2+corpo+'</table></body></html>';
+    }
+    function gerarXlsLaudo(fixas,registros,nomeArquivo){
+      var html=montarXlsLaudo(fixas,registros);
       var blob=new Blob(['\\ufeff',html],{type:'application/vnd.ms-excel;charset=utf-8'});
       var url=URL.createObjectURL(blob);
       var link=document.createElement('a');
@@ -338,6 +342,29 @@ const SCRIPT_EXCEL_LAUDO = `
       setTimeout(function(){URL.revokeObjectURL(url)},1000);
     }
 `;
+
+// Mesmo Excel do botao "Exportar Excel" do laudo consolidado, gerado aqui no app a partir do HTML do laudo.
+// Vai anexado no e-mail: a pre-visualizacao do Outlook nao roda o script do laudo, entao o botao nao funciona la.
+const FIXAS_EXCEL_CONSOLIDADO = ['Fatura', 'Transportadora', 'CT-e', 'Chave', 'Rota', 'Canal', 'Peso', 'Frete pago', 'Calculo AMD', 'Diferenca', 'Status', 'Entrega'];
+function gerarXlsDoLaudoConsolidado(htmlLaudo) {
+  if (typeof DOMParser === 'undefined') return '';
+  // eslint-disable-next-line no-new-func
+  const { mapaDetalheLaudo, montarXlsLaudo } = new Function(`${SCRIPT_EXCEL_LAUDO}; return { mapaDetalheLaudo: mapaDetalheLaudo, montarXlsLaudo: montarXlsLaudo };`)();
+  const doc = new DOMParser().parseFromString(htmlLaudo, 'text/html');
+  const corpo = doc.getElementById('tabela-faturas-body');
+  if (!corpo) return '';
+  const regs = [];
+  [...corpo.children].filter((tr) => tr.classList.contains('main-row')).forEach((fat) => {
+    const grupo = fat.nextElementSibling;
+    if (!grupo || !grupo.classList.contains('detail-row')) return;
+    grupo.querySelectorAll('tbody .main-row').forEach((cte) => {
+      const base = [fat.cells[0].textContent.trim(), fat.cells[1].textContent.trim()];
+      for (let j = 0; j < cte.cells.length; j += 1) base.push(cte.cells[j].textContent.trim());
+      regs.push({ base, mapa: mapaDetalheLaudo(cte.nextElementSibling) });
+    });
+  });
+  return `\ufeff${montarXlsLaudo(FIXAS_EXCEL_CONSOLIDADO, regs)}`;
+}
 
 function detalhesCalculoHtmlFatura(item = {}, opts = {}) {
   const { masked = false, calculadoPublico, diffPublico } = opts;
@@ -2837,7 +2864,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         semEntrega: semEntrega.length,
         cobrancaAcima: resumo.cobrancaAcima,
         totalDescontar: totalDescontarLaudo,
-        assinatura: sessao?.nome,
+        // Assinatura do e-mail e sempre "Auditoria de Fretes" (sem o nome de quem gerou o laudo).
       }, dinheiro);
       const eml = montarEml({
         assunto: `Laudo de auditoria de fretes${fatura.transportadora ? ` - ${fatura.transportadora}` : ''} - fatura ${fatura.numero_fatura}`,
@@ -3261,6 +3288,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
           })).then(setEntregaCtes).catch((error) => setEntregaErroFatura(error.message || String(error)));
         }}
       />
+      <RespostasCteSemNfFatura faturaId={fatura.id} usuarioNome={sessao?.nome || sessao?.email || 'Auditor'} />
       {retiradas.length > 0 && (
         <div className="hint-box compact" style={{ marginBottom: 10 }}>
           <strong>CT-es retirados desta fatura ({retiradas.length})</strong>
@@ -5812,7 +5840,7 @@ ${portaisLaudo.length ? `
         faturas: portaisLaudo.map((portal) => ({ url: portal.url })),
         totalCtes: total,
         divergentes,
-        assinatura: carregarSessao()?.nome,
+        // Assinatura do e-mail e sempre "Auditoria de Fretes" (sem o nome de quem gerou o laudo).
       }, dinheiro);
       const eml = montarEml({
         assunto: `Laudo de auditoria de fretes${transportadoraGrupo ? ` - ${transportadoraGrupo}` : ''}`,
@@ -6258,7 +6286,7 @@ ${portaisLaudo.length ? `
           faturaConsideraMenor(bloco.fatura),
         ) + descontoSemNf(bloco.fatura);
       }, 0);
-      const semNfGeral = blocos.flatMap((bloco) => semNfDoBloco(bloco.fatura).map((c) => ({ ...c, fatura: bloco.fatura.numero_fatura })));
+      const semNfGeral = blocos.flatMap((bloco) => semNfDoBloco(bloco.fatura).map((c) => ({ ...c, fatura: bloco.fatura.numero_fatura, url: bloco.linkConfirmacao ? `${bloco.linkConfirmacao}#sem-nf` : '' })));
       const transportadoras = [...new Set(faturasSelecionadas.map((f) => f.transportadora).filter(Boolean))].join(', ');
       const cards = [
         ['Faturas', faturasSelecionadas.length],
@@ -6291,7 +6319,7 @@ ${portaisLaudo.length ? `
         }
       }
       const blocoSemNfLote = semNfGeral.length
-        ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:2px solid #dc2626;border-radius:10px;color:#7f1d1d"><strong>⛔ ${semNfGeral.length} CT-e(s) sem vinculo com a nota fiscal — retirar da fatura</strong><p style="margin:6px 0 8px;font-size:13px">Estes CT-es nao trazem a chave da NF-e dentro do CT-e. O vinculo do CT-e com a nota fiscal e obrigatorio, por isso nao podemos pagar estes CT-es: retire-os da fatura, emita um CT-e novo com a nota fiscal vinculada e reenvie a fatura corrigida. O valor deles esta incluido no total a descontar.</p><table style="border-collapse:collapse;font-size:12px;background:#fff"><thead><tr><th style="padding:4px 8px;border:1px solid #fca5a5;text-align:left">Fatura</th><th style="padding:4px 8px;border:1px solid #fca5a5;text-align:left">CT-e</th><th style="padding:4px 8px;border:1px solid #fca5a5;text-align:left">Chave do CT-e</th><th style="padding:4px 8px;border:1px solid #fca5a5;text-align:right">Valor cobrado</th></tr></thead><tbody>${semNfGeral.map((c) => `<tr><td style="padding:4px 8px;border:1px solid #fca5a5">${escapeHtmlAuditoria(c.fatura || '')}</td><td style="padding:4px 8px;border:1px solid #fca5a5">${escapeHtmlAuditoria(c.numero_cte || '-')}</td><td style="padding:4px 8px;border:1px solid #fca5a5;font-family:monospace">${escapeHtmlAuditoria(c.chave_cte || '')}</td><td style="padding:4px 8px;border:1px solid #fca5a5;text-align:right">${dinheiro(c.valor_frete)}</td></tr>`).join('')}</tbody></table></div>`
+        ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:2px solid #dc2626;border-radius:10px;color:#7f1d1d"><strong>⛔ ${semNfGeral.length} CT-e(s) sem vinculo com a nota fiscal — retirar da fatura ou justificar</strong><p style="margin:6px 0 8px;font-size:13px">Estes CT-es nao trazem a chave da NF-e dentro do CT-e. O vinculo do CT-e com a nota fiscal e obrigatorio, por isso nao podemos pagar estes CT-es: retire-os da fatura, emita um CT-e novo com a nota fiscal vinculada e reenvie a fatura corrigida. O valor deles esta incluido no total a descontar.</p><p style="margin:0 0 8px;font-size:13px">Clique em <b>Responder</b> para: <b>autorizar a retirada</b> (a fatura e atualizada na hora, sem o CT-e, e voce informa se vai emitir novo boleto ou se a cobranca e por Pix/deposito) ou, se for <b>CT-e complementar</b>, informar a chave do CT-e original.</p><table style="border-collapse:collapse;font-size:12px;background:#fff"><thead><tr><th style="padding:4px 8px;border:1px solid #fca5a5;text-align:left">Fatura</th><th style="padding:4px 8px;border:1px solid #fca5a5;text-align:left">CT-e</th><th style="padding:4px 8px;border:1px solid #fca5a5;text-align:left">Chave do CT-e</th><th style="padding:4px 8px;border:1px solid #fca5a5;text-align:right">Valor cobrado</th><th style="padding:4px 8px;border:1px solid #fca5a5"></th></tr></thead><tbody>${semNfGeral.map((c) => `<tr><td style="padding:4px 8px;border:1px solid #fca5a5">${escapeHtmlAuditoria(c.fatura || '')}</td><td style="padding:4px 8px;border:1px solid #fca5a5">${escapeHtmlAuditoria(c.numero_cte || '-')}</td><td style="padding:4px 8px;border:1px solid #fca5a5;font-family:monospace">${escapeHtmlAuditoria(c.chave_cte || '')}</td><td style="padding:4px 8px;border:1px solid #fca5a5;text-align:right">${dinheiro(c.valor_frete)}</td><td style="padding:4px 8px;border:1px solid #fca5a5">${c.url ? `<a href="${escapeHtmlAuditoria(c.url)}" target="_blank" rel="noopener" style="background:#b91c1c;color:#fff;font-weight:700;padding:5px 10px;border-radius:6px;text-decoration:none;white-space:nowrap">Responder: retirar ou justificar</a>` : ''}</td></tr>`).join('')}</tbody></table></div>`
         : '';
       const blocoEntregaLote = semEntregaGeral.length
         ? `<div style="margin:0 0 14px;padding:14px 18px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;color:#7f1d1d"><details><summary style="cursor:pointer;font-weight:700">⚠ ${semEntregaGeral.length} CT-e(s) sem entrega comprovada no lote — clique para ver os detalhes</summary><p style="margin:6px 0 0;font-size:13px">O pagamento so deve ser liberado com todos os CT-es entregues. CT-es: <b>${semEntregaGeral.map((item) => `${escapeHtmlAuditoria(item.numero_cte || item.chave_cte || '-')}${entregaCtesLote?.get(chaveEntregaRegistro(item))?.status === STATUS_ENTREGA.NAO_ENTREGUE ? ' (não entregue)' : ' (sem rastreamento)'}`).join(' · ')}</b></p></details>${portaisEntregaLote.map((portal) => botaoPortalEntrega(portal.url, `Responder entregas — fatura ${portal.numero} (${portal.total} CT-e)`)).join('')}</div>`
@@ -6357,12 +6385,15 @@ ${portaisLaudo.length ? `
       }).join('');
       const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8" />
         <title>Laudo consolidado de faturas</title>
+        <script>document.documentElement.className+=' js';</script>
         <style>
           body{font-family:Arial,sans-serif;color:#061a44;margin:0;background:#f4f7fb}
           .hero{background:#071d49;color:white;padding:26px 34px}.wrap{padding:24px 34px}
           .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:18px 0}
           .card{border:1px solid #d6e0ef;border-radius:12px;background:white;padding:14px}.card span{display:block;color:#64748b;font-size:12px;font-weight:700}.card strong{display:block;font-size:22px;margin-top:6px}
-          table{width:100%;border-collapse:collapse;background:white;border:1px solid #d6e0ef;border-radius:12px;overflow:hidden}th,td{border-bottom:1px solid #e5ebf5;padding:9px 10px;text-align:left;font-size:12px}th{background:#eef4ff}.main-row{cursor:pointer}.main-row:hover{background:#f8fbff}.detail-row{display:none;background:#fbfdff}.detail-row.open{display:table-row}.detail-row>td{padding:14px}.calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.calc-box{border:1px solid #dbe3ef;border-radius:10px;background:white;padding:12px}.calc-box h4{margin:0 0 8px}.calc-line{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #e5ebf5;padding:4px 0}.calc-line span{color:#64748b}.calc-line strong{text-align:right}.calc-empty{color:#64748b}.note{padding:12px 14px;border-radius:8px;background:#eff6ff;color:#1e3a8a;margin:16px 0;font-size:13px;font-weight:600}
+          table{width:100%;border-collapse:collapse;background:white;border:1px solid #d6e0ef;border-radius:12px;overflow:hidden}th,td{border-bottom:1px solid #e5ebf5;padding:9px 10px;text-align:left;font-size:12px}th{background:#eef4ff}.main-row{cursor:pointer}.main-row:hover{background:#f8fbff}.detail-row{background:#fbfdff}.js .detail-row{display:none}.js .detail-row.open{display:table-row}.detail-row>td{padding:14px}.calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.calc-box{border:1px solid #dbe3ef;border-radius:10px;background:white;padding:12px}.calc-box h4{margin:0 0 8px}.calc-line{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #e5ebf5;padding:4px 0}.calc-line span{color:#64748b}.calc-line strong{text-align:right}.calc-empty{color:#64748b}.note{padding:12px 14px;border-radius:8px;background:#eff6ff;color:#1e3a8a;margin:16px 0;font-size:13px;font-weight:600}
+          .aviso-sem-js{padding:14px 16px;border-radius:10px;background:#fff7ed;border:2px solid #f59e0b;color:#7c2d12;margin:16px 0;font-size:14px;line-height:1.5}.js .aviso-sem-js{display:none}
+          html:not(.js) .filters,html:not(.js) .report-actions,html:not(.js) .note{display:none}
           .report-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:16px 0}
           .export-button{border:0;border-radius:8px;background:#0f6b3e;color:#fff;font-weight:700;padding:11px 16px;cursor:pointer;white-space:nowrap}
           .filters{display:grid;grid-template-columns:minmax(240px,2fr) minmax(170px,1fr) auto auto;align-items:end;gap:10px;padding:12px;margin:0 0 12px;background:#f8fafc;border:1px solid #d6e0ef;border-radius:9px}
@@ -6382,6 +6413,7 @@ ${portaisLaudo.length ? `
         <div class="wrap"><div class="cards">${cards.map(([label, value]) => `<div class="card"><span>${escapeHtmlAuditoria(label)}</span><strong>${escapeHtmlAuditoria(value)}</strong></div>`).join('')}</div>
         ${blocoSemNfLote}
         ${blocoEntregaLote}
+        <div class="aviso-sem-js"><strong>Voce esta vendo a pre-visualizacao do anexo.</strong> Aqui todos os CT-es e calculos ja aparecem abertos, mas filtros, "Exportar Excel" e "Confirmar todas" so funcionam com o arquivo aberto no navegador: <b>baixe o anexo (.html) e abra no Chrome ou Edge</b>. O Excel com todos os CT-es tambem segue anexado no e-mail (.xls). Para confirmar ou contestar use os botoes "OK, confirmar" / "Contestar" de cada fatura.</div>
         <div class="note">Clique em cima de qualquer fatura para ver os CT-es; clique em cima de um CT-e para abrir os detalhes completos do calculo (taxas, ICMS, base do frete etc.).</div>
         <div class="filters">
           <label>Buscar<input id="filtro-busca" type="search" placeholder="Fatura, transportadora ou origem" oninput="aplicarFiltros()"></label>
@@ -6464,12 +6496,16 @@ ${portaisLaudo.length ? `
               body:JSON.stringify({tokens:tokens,respondido_por:nome}),
             }).then(function(r){return r.json().then(function(data){return {ok:r.ok,data:data}})}).then(function(res){
               if(!res.ok){resultado.style.color='#b91c1c';resultado.textContent='Erro: '+(res.data&&res.data.erro||'nao foi possivel confirmar.');botao.disabled=false;return}
+              var confirmados=Array.isArray(res.data.tokens_confirmados)?res.data.tokens_confirmados:tokens;
               celulas.forEach(function(el){
+                if(confirmados.indexOf(el.getAttribute('data-token'))<0)return;
                 el.setAttribute('data-confirmada','1');
                 el.innerHTML='<span style="color:#166534;font-weight:700">✓ Confirmada</span>';
               });
-              resultado.style.color='#166534';
-              resultado.textContent=res.data.confirmadas+' fatura(s) confirmada(s) com sucesso.';
+              var bloq=res.data.bloqueadas_sem_nf||[];
+              resultado.style.color=bloq.length?'#b45309':'#166534';
+              resultado.textContent=res.data.confirmadas+' fatura(s) confirmada(s) com sucesso.'+(bloq.length?' Fatura(s) '+bloq.join(', ')+' nao confirmada(s): responda antes os CT-es sem NF (botao "Responder: retirar ou justificar").':'');
+              botao.disabled=false;
             }).catch(function(erro){
               resultado.style.color='#b91c1c';
               resultado.textContent='Erro de conexao: '+erro.message;
@@ -6494,10 +6530,18 @@ ${portaisLaudo.length ? `
           semEntrega: semEntregaGeral.length,
           cobrancaAcima: resumoGeral.cobrancaAcima,
           totalDescontar: totalDescontarGeral,
-          assinatura: sessao?.nome,
+          // Assinatura do e-mail e sempre "Auditoria de Fretes" (sem o nome de quem gerou o laudo).
           responderTodos: enviarEmail,
           semVinculoNf: semNfGeral,
         }, dinheiro);
+        // Excel do laudo vai anexado junto: na pre-visualizacao do Outlook o botao "Exportar Excel" do HTML nao roda.
+        let anexosExtrasLaudo = [];
+        try {
+          const xls = gerarXlsDoLaudoConsolidado(html);
+          if (xls) anexosExtrasLaudo = [{ nome: nomeLaudoConsolidado.replace(/\.html$/, '.xls'), conteudo: xls }];
+        } catch (erroXls) {
+          console.warn('[laudo] Excel do anexo nao gerado:', erroXls?.message || erroXls);
+        }
         const numerosFaturas = blocos.map((bloco) => bloco.fatura.numero_fatura).filter(Boolean);
         const assuntoEmail = `Laudo de auditoria de fretes${transportadoras ? ` - ${transportadoras}` : ''} - fatura(s) ${numerosFaturas.slice(0, 5).join(', ')}${numerosFaturas.length > 5 ? '...' : ''}`;
         if (enviarEmail) {
@@ -6508,13 +6552,14 @@ ${portaisLaudo.length ? `
             corpoHtml: corpoEmail,
             anexoHtml: html,
             anexoNome: nomeLaudoConsolidado,
+            anexosExtras: anexosExtrasLaudo,
             origem: opcoesEnvio.origem || 'manual',
             reenvio: Boolean(opcoesEnvio.reenvio),
           });
           setMensagemImportacao(`Laudo de ${transportadoras || 'transportadora'} enviado por e-mail (${faturasSelecionadas.length} fatura(s)) para ${(r.para || []).join(', ')}${(r.copia || []).length ? ` — auditor em copia: ${r.copia.join(', ')}` : ''}.`);
           opcoesEnvio.aoConcluir?.({ ok: true, faturas: faturasSelecionadas.length, para: r.para, copia: r.copia });
         } else {
-          const eml = montarEml({ assunto: assuntoEmail, corpoHtml: corpoEmail, anexoHtml: html, anexoNome: nomeLaudoConsolidado });
+          const eml = montarEml({ assunto: assuntoEmail, corpoHtml: corpoEmail, anexoHtml: html, anexoNome: nomeLaudoConsolidado, anexosExtras: anexosExtrasLaudo });
           const nomeEmlConsolidado = `email-laudo-${slugArquivoEmail(transportadoras) || 'transportadora'}-${new Date().toISOString().slice(0, 10)}.eml`;
           setEmlLaudoPendente({ conteudo: eml, nome: nomeEmlConsolidado });
           setTimeout(() => {
@@ -10297,7 +10342,9 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
     (async () => {
       try {
         const [{ lista }, fila] = await Promise.all([listarRoboTransportadoras(), listarFilaAuditorRobo()]);
-        // Envio direto ligado OU laudo de CT-e sem vinculo de NF (sai sempre sozinho); precisa ter e-mail cadastrado.
+        // Envio direto ligado OU laudo de CT-e sem vinculo de NF; precisa ter e-mail cadastrado.
+        // CT-e sem NF so sai sozinho se a transportadora estiver em e-mail automatico ou envio direto:
+        // em "Auditor envia (manual)" o laudo fica aprovado na fila e o auditor envia.
         const comEmail = new Map((lista || []).filter((c) => c.ativo && String(c.emails_transportadora || '').trim()).map((c) => [normNome(c.transportadora), c]));
         if (!comEmail.size) return;
         const porId = new Map((state.faturas || []).map((f) => [String(f.id), f]));
@@ -10308,6 +10355,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
           const cfg = f && comEmail.get(normNome(f.transportadora));
           if (!cfg || !STATUS_ROBO_AUDITA.includes(f.status)) return;
           if (e.aprovado_auditor_por === ROBO_ENVIO_DIRETO_POR && !cfg.envio_direto) return;
+          if (e.aprovado_auditor_por === ROBO_SEM_NF_POR && !cfg.envio_direto && !cfg.email_automatico) return;
           const g = grupos.get(normNome(f.transportadora)) || { transportadora: f.transportadora, ids: [] };
           if (g.ids.length < 300) g.ids.push(String(f.id));
           grupos.set(normNome(f.transportadora), g);

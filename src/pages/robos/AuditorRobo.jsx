@@ -6,7 +6,7 @@ import HistoricoRodadasRobo from '../../components/HistoricoRodadasRobo';
 import StatusServidorRobo from '../../components/StatusServidorRobo';
 import {
   classificarFatura, DECISAO, STATUS_ROBO_AUDITA, gravarExecucoesRobo, limparSimulacoesRobo, listarExecucoesRobo, listarFaturasEmAuditoria, dataInicioRobo, dataEntradaFatura,
-  carregarConfigRobo, salvarConfigRobo, listarNomesTransportadoras, listarRoboTransportadoras, registrarRodadaRobo, normNome, removerRoboTransportadora, salvarRoboTransportadora, laudoResolvidoFora,
+  carregarConfigRobo, salvarConfigRobo, listarNomesTransportadoras, listarRoboTransportadoras, registrarRodadaRobo, normNome, removerRoboTransportadora, salvarRoboTransportadora, laudoResolvidoFora, listarLogRoboTransportadoras,
 } from '../../services/auditorRoboService';
 
 const FaturaDetalheModal = lazy(() => import('../CentralAuditoriaFretesPage').then((m) => ({ default: m.FaturaDetalheModal })));
@@ -36,6 +36,7 @@ const vazio = { transportadora: '', emails_transportadora: '', email_aprovacao: 
 export default function AuditorRobo() {
   const sessao = carregarSessao();
   const podeContingencia = usuarioPodeAdministrarUsuarios(sessao);
+  const quemAltera = sessao?.nome || sessao?.email || '';
   const [lista, setLista] = useState([]);
   const [semTabela, setSemTabela] = useState(false);
   const [faturas, setFaturas] = useState([]);
@@ -45,11 +46,19 @@ export default function AuditorRobo() {
   const [erro, setErro] = useState('');
   const [msg, setMsg] = useState('');
   const [rodando, setRodando] = useState(false);
+  // Registro de alteracoes das transportadoras (quem mudou modo de envio, ativo, e-mails...).
+  const [logAlteracoes, setLogAlteracoes] = useState({ lista: [], semTabela: false });
+  const [verLog, setVerLog] = useState(false);
+  const ultimaAlteracao = useMemo(() => {
+    const mapa = new Map();
+    logAlteracoes.lista.forEach((l) => { if (!mapa.has(String(l.transportadora_id))) mapa.set(String(l.transportadora_id), l); });
+    return mapa;
+  }, [logAlteracoes]);
 
   const carregar = async () => {
     try {
-      const [{ lista: l, semTabela: s }, f, e] = await Promise.all([listarRoboTransportadoras(), listarFaturasEmAuditoria(), listarExecucoesRobo()]);
-      setLista(l); setSemTabela(s); setFaturas(f); setExecucoes(e); setErro('');
+      const [{ lista: l, semTabela: s }, f, e, log] = await Promise.all([listarRoboTransportadoras(), listarFaturasEmAuditoria(), listarExecucoesRobo(), listarLogRoboTransportadoras(200)]);
+      setLista(l); setSemTabela(s); setFaturas(f); setExecucoes(e); setLogAlteracoes(log); setErro('');
     } catch (ex) { setErro(ex.message); }
   };
   useEffect(() => { carregar(); listarNomesTransportadoras().then(setNomesCadastro).catch(() => {}); }, []);
@@ -64,7 +73,7 @@ export default function AuditorRobo() {
     if (!form.transportadora.trim()) { setErro('Informe a transportadora.'); return; }
     if (lista.some((r) => normNome(r.transportadora) === normNome(form.transportadora))) { setErro('Transportadora ja esta na lista.'); return; }
     try {
-      await salvarRoboTransportadora({ ...form, transportadora: form.transportadora.trim(), id: crypto.randomUUID(), ativo: true, modo: 'APROVACAO', envio_direto: false, created_by: sessao?.nome || sessao?.email || '' });
+      await salvarRoboTransportadora({ ...form, transportadora: form.transportadora.trim(), id: crypto.randomUUID(), ativo: true, modo: 'APROVACAO', envio_direto: false, created_by: sessao?.nome || sessao?.email || '' }, { usuario: quemAltera });
       setForm(vazio);
       await carregar();
     } catch (ex) { setErro(ex.message); }
@@ -72,7 +81,7 @@ export default function AuditorRobo() {
 
   const alterarDataInicio = async (r, data) => {
     try {
-      await salvarRoboTransportadora({ ...r, data_inicio: data || null });
+      await salvarRoboTransportadora({ ...r, data_inicio: data || null }, { usuario: quemAltera });
       setMsg(data ? `${r.transportadora}: o robo considera faturas que entraram no sistema desde ${data.split('-').reverse().join('/')}.` : `${r.transportadora}: data de inicio voltou ao padrao (um dia antes da inclusao).`);
       await carregar();
     } catch (ex) { setErro(ex.message); await carregar(); }
@@ -83,7 +92,7 @@ export default function AuditorRobo() {
       setErro('Preencha os e-mails da transportadora que recebem o laudo antes de ligar o e-mail automatico (botao "editar" na coluna E-mails laudo).');
       return;
     }
-    try { await salvarRoboTransportadora({ ...r, email_automatico: automatico }); await carregar(); } catch (ex) { setErro(ex.message); await carregar(); }
+    try { await salvarRoboTransportadora({ ...r, email_automatico: automatico }, { usuario: quemAltera }); await carregar(); } catch (ex) { setErro(ex.message); await carregar(); }
   };
 
   // Um so seletor para "como sai o laudo": manual (o auditor envia), automatico apos o OK do auditor
@@ -95,7 +104,7 @@ export default function AuditorRobo() {
     if (!r.envio_direto) { await alternarEmail(r, modo === 'auto'); return; }
     if (!window.confirm(`Desligar o envio direto de ${r.transportadora}? Os proximos laudos voltam a esperar a aprovacao do auditor.`)) return;
     try {
-      await salvarRoboTransportadora({ ...r, envio_direto: false, envio_direto_desde: null, modo: 'APROVACAO', email_automatico: modo === 'auto' });
+      await salvarRoboTransportadora({ ...r, envio_direto: false, envio_direto_desde: null, modo: 'APROVACAO', email_automatico: modo === 'auto' }, { usuario: quemAltera });
       setMsg(`${r.transportadora}: envio direto desligado. Os laudos voltam para a aprovacao do auditor.`);
       await carregar();
     } catch (ex) { setErro(ex.message); await carregar(); }
@@ -116,7 +125,7 @@ export default function AuditorRobo() {
       await salvarRoboTransportadora({
         ...r, envio_direto: !r.envio_direto, envio_direto_desde: r.envio_direto ? null : agora,
         modo: r.envio_direto ? 'APROVACAO' : 'AUTOMATICO', email_automatico: r.envio_direto ? r.email_automatico : true,
-      });
+      }, { usuario: quemAltera });
       setMsg(r.envio_direto
         ? `${r.transportadora}: envio direto desligado. Os laudos voltam para a aprovacao do auditor.`
         : `${r.transportadora}: envio direto ligado. Faturas que entrarem a partir de ${dataBr(agora)} vao direto para a transportadora (com faturas e auditor em copia).`);
@@ -132,15 +141,15 @@ export default function AuditorRobo() {
       setErro('Sem e-mail da transportadora o laudo nao tem para onde ir: desligue o envio direto/automatico antes de apagar.');
       return;
     }
-    try { await salvarRoboTransportadora({ ...r, [campo]: limpo || null }); setMsg(`${r.transportadora}: ${rotulo.toLowerCase()} atualizado(s).`); await carregar(); } catch (ex) { setErro(ex.message); await carregar(); }
+    try { await salvarRoboTransportadora({ ...r, [campo]: limpo || null }, { usuario: quemAltera }); setMsg(`${r.transportadora}: ${rotulo.toLowerCase()} atualizado(s).`); await carregar(); } catch (ex) { setErro(ex.message); await carregar(); }
   };
 
   const alternarAtivo = async (r) => {
-    try { await salvarRoboTransportadora({ ...r, ativo: !r.ativo }); await carregar(); } catch (ex) { setErro(ex.message); }
+    try { await salvarRoboTransportadora({ ...r, ativo: !r.ativo }, { usuario: quemAltera }); await carregar(); } catch (ex) { setErro(ex.message); }
   };
   const remover = async (r) => {
     if (!window.confirm(`Tirar ${r.transportadora} da lista do robo?`)) return;
-    try { await removerRoboTransportadora(r.id); await carregar(); } catch (ex) { setErro(ex.message); }
+    try { await removerRoboTransportadora(r.id, { usuario: quemAltera }); await carregar(); } catch (ex) { setErro(ex.message); }
   };
 
   const jaProcessadas = useMemo(() => new Set(execucoes.map((e) => String(e.fatura_id))), [execucoes]);
@@ -494,7 +503,7 @@ export default function AuditorRobo() {
         <strong>O que o robo faz hoje:</strong> faturas corretas (calculadas, sem desconto e todas entregues) vao direto para a
         <strong> aprovacao da gestao, marcadas "via robo"</strong>; o auditor acompanha no Meu Painel. Faturas com desconto geram
         laudo, que sai por e-mail conforme a coluna "Envio do laudo" de cada transportadora (manual, apos o OK do auditor ou direto);
-        CT-e emitido a partir de 01/10/2026 sem NF (regra ligada) gera laudo que sai sozinho. As duvidosas vao para a fila do auditor.
+        CT-e emitido a partir de 01/10/2026 sem NF (regra ligada) gera laudo ja aprovado: sai sozinho nas transportadoras em e-mail automatico ou envio direto; nas manuais o auditor envia. As duvidosas vao para a fila do auditor.
         <br /><strong>Como funciona:</strong> considera, para cada transportadora, as faturas que entraram a partir de <strong>um dia antes de ela ser incluida</strong> na lista (coluna "Considera desde").
         Para cada uma, o robo calcula os CT-es (se ainda nao calculados), apura o valor a descontar e a entrega, e decide:
         com desconto → laudo; correta e toda entregue → aprovacao; qualquer duvida → fila do auditor.
@@ -534,7 +543,7 @@ export default function AuditorRobo() {
               <button
                 type="button" disabled={!podeContingencia}
                 onClick={() => {
-                  if (!cfgRobo.checar_cte_sem_nf && !window.confirm('Ligar a regra "CT-e sem vinculo de NF"?\n\nNas faturas que entrarem a partir de agora, CT-e emitido a partir de 01/10/2026 sem a chave da NF na base de CT-es nao vai para pagamento: o laudo sai SOZINHO para a transportadora pedindo a retirada e um CT-e novo.\n\nProtecao: se metade ou mais dos CT-es da fatura estiverem sem NF na base, a fatura vai para o auditor (provavel base importada sem a aba "Notas Fiscais").')) return;
+                  if (!cfgRobo.checar_cte_sem_nf && !window.confirm('Ligar a regra "CT-e sem vinculo de NF"?\n\nNas faturas que entrarem a partir de agora, CT-e emitido a partir de 01/10/2026 sem a chave da NF na base de CT-es nao vai para pagamento: o laudo pedindo a retirada e um CT-e novo ja nasce aprovado e sai SOZINHO nas transportadoras em e-mail automatico ou envio direto (nas manuais, o auditor envia).\n\nProtecao: se metade ou mais dos CT-es da fatura estiverem sem NF na base, a fatura vai para o auditor (provavel base importada sem a aba "Notas Fiscais").')) return;
                   if (cfgRobo.checar_cte_sem_nf && !window.confirm('Desligar a regra "CT-e sem NF"? O robo deixa de conferir a NF e CT-e sem nota fiscal pode seguir para pagamento.')) return;
                   aplicarCfg({ ...cfgRobo, checar_cte_sem_nf: !cfgRobo.checar_cte_sem_nf, checar_cte_sem_nf_desde: cfgRobo.checar_cte_sem_nf ? null : new Date().toISOString() }, cfgRobo.checar_cte_sem_nf ? 'Regra CT-e sem NF desligada.' : 'Regra CT-e sem NF ligada: vale para as faturas que entrarem a partir de agora.');
                 }}
@@ -667,6 +676,11 @@ export default function AuditorRobo() {
                             : modo === 'auto' ? 'Sai sozinho depois que o auditor aprova'
                               : 'O auditor aprova e envia'}
                         </div>
+                        {ultimaAlteracao.get(String(r.id)) ? (
+                          <div className="robo-transp-sub" title={ultimaAlteracao.get(String(r.id)).descricao || ''}>
+                            Alterado por <b>{ultimaAlteracao.get(String(r.id)).usuario || '-'}</b> em {new Date(ultimaAlteracao.get(String(r.id)).created_at).toLocaleString('pt-BR')}
+                          </div>
+                        ) : null}
                       </td>
                       <td onClick={(ev) => ev.stopPropagation()}>
                         <input
@@ -693,6 +707,34 @@ export default function AuditorRobo() {
             </table>
           </div>
         )}
+        <div style={{ marginTop: 10 }}>
+          <button type="button" className="robo-transp-acao" onClick={() => setVerLog((v) => !v)}>
+            {verLog ? 'Ocultar' : 'Ver'} historico de alteracoes das transportadoras{logAlteracoes.lista.length ? ` (${logAlteracoes.lista.length})` : ''}
+          </button>
+          {verLog ? (
+            logAlteracoes.semTabela ? (
+              <div className="robo-transp-sub" style={{ marginTop: 6 }}>Aplique a migration 20261105_003_robo_transportadoras_log.sql no Supabase para registrar as alteracoes.</div>
+            ) : !logAlteracoes.lista.length ? (
+              <div className="robo-transp-sub" style={{ marginTop: 6 }}>Nenhuma alteracao registrada ainda (o registro comecou em 05/11/2026).</div>
+            ) : (
+              <div style={{ maxHeight: 320, overflow: 'auto', marginTop: 6, border: '1px solid #e2e8f0', borderRadius: 8 }}>
+                <table className="sim-analise-tabela">
+                  <thead><tr><th>Quando</th><th>Transportadora</th><th>O que mudou</th><th>Quem</th></tr></thead>
+                  <tbody>
+                    {logAlteracoes.lista.map((l) => (
+                      <tr key={l.id}>
+                        <td style={{ whiteSpace: 'nowrap', fontSize: 12 }}>{new Date(l.created_at).toLocaleString('pt-BR')}</td>
+                        <td style={{ fontSize: 12 }}>{l.transportadora || '-'}</td>
+                        <td style={{ fontSize: 12 }}>{l.descricao || `${l.campo || l.acao}: ${l.valor_anterior || ''} -> ${l.valor_novo || ''}`}</td>
+                        <td style={{ fontSize: 12, fontWeight: 700 }}>{l.usuario || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          ) : null}
+        </div>
       </div>
 
       <div className="table-card">

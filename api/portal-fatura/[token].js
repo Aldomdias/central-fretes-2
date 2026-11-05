@@ -44,6 +44,262 @@ async function carregarDivergencias(supabase, faturaId) {
   } catch { return []; }
 }
 
+const soDigitos = (v) => String(v || '').replace(/\D/g, '');
+
+const FORMAS_COBRANCA = {
+  BOLETO: 'Boleto — vou emitir um NOVO BOLETO com o valor atualizado da fatura',
+  PIX: 'Pix ou depósito (sem boleto) — a cobrança segue pelo valor atualizado da fatura',
+};
+
+// CT-es sem vinculo de NF apontados pelo Robo Auditor (auditor_robo_execucoes.ctes_sem_nf) + respostas ja dadas.
+async function carregarSemNf(supabase, faturaId) {
+  let lista = [];
+  let respostas = [];
+  let retiradas = [];
+  try {
+    const { data } = await supabase.from('auditor_robo_execucoes').select('ctes_sem_nf').eq('fatura_id', String(faturaId)).maybeSingle();
+    lista = Array.isArray(data?.ctes_sem_nf) ? data.ctes_sem_nf : [];
+  } catch { lista = []; }
+  try {
+    const { data } = await supabase.from('fatura_cte_sem_nf_respostas').select('*').eq('fatura_id', String(faturaId));
+    respostas = data || [];
+  } catch { respostas = []; }
+  try {
+    const { data } = await supabase.from('fatura_cte_retiradas').select('chave, chave_cte, numero_cte, valor_cte, motivo, justificativa, retirado_por, retirado_em')
+      .eq('fatura_id', String(faturaId)).is('restaurado_em', null).order('retirado_em', { ascending: false });
+    retiradas = data || [];
+  } catch { retiradas = []; }
+  const porChave = new Map(respostas.map((r) => [soDigitos(r.chave_cte), r]));
+  const itens = lista
+    .map((c) => ({ ...c, chave_cte: soDigitos(c.chave_cte), resposta: porChave.get(soDigitos(c.chave_cte)) || null }))
+    .filter((c) => c.chave_cte);
+  // Justificativas ja resolvidas (sairam da lista do robo) continuam aparecendo como "resposta registrada".
+  const naLista = new Set(itens.map((c) => c.chave_cte));
+  respostas.filter((r) => r.resposta !== 'RETIRAR' && !naLista.has(soDigitos(r.chave_cte))).forEach((r) => {
+    itens.push({ chave_cte: soDigitos(r.chave_cte), numero_cte: r.numero_cte, valor_frete: r.valor_cte, resposta: r });
+  });
+  // Sem resposta ou com resposta rejeitada pela auditoria: a transportadora ainda precisa responder.
+  const pendentes = itens.filter((c) => !c.resposta || c.resposta.status_validacao === 'REJEITADO');
+  return { itens, pendentes, respostas, retiradas };
+}
+
+function blocoRetiradas(retiradas, fatura) {
+  if (!retiradas.length) return '';
+  const total = retiradas.reduce((a, r) => a + Number(r.valor_cte || 0), 0);
+  return `<div class="inativos" id="ctes-inativados"><strong>🚫 ${retiradas.length} CT-e(s) INATIVADO(S) — retirado(s) desta fatura</strong>
+    <p>A fatura passou a valer <b>${dinheiro(fatura.valor_fatura)}</b> (retirado ${dinheiro(total)}). Os CT-es abaixo não serão pagos nesta fatura: emita um CT-e novo com a nota fiscal vinculada e cobre em outra fatura.</p>
+    <div class="tw"><table class="ctes"><thead><tr><th>CT-e</th><th>Valor</th><th>Motivo</th><th>Quem / quando</th></tr></thead><tbody>${retiradas.map((r) => `<tr>
+      <td><s>${esc(r.numero_cte || String(r.chave || '').slice(-9))}</s> <span class="tag-inativo">INATIVADO</span><div class="ch">${esc(r.chave_cte || r.chave || '')}</div></td>
+      <td><s>${dinheiro(r.valor_cte)}</s></td>
+      <td>${esc(r.motivo || '-')}<div class="ch">${esc(r.justificativa || '')}</div></td>
+      <td>${esc(r.retirado_por || '-')}<div class="ch">${esc(dataBr(r.retirado_em))}</div></td></tr>`).join('')}</tbody></table></div></div>`;
+}
+
+function rotuloRespostaSemNf(r) {
+  if (!r) return '';
+  const st = { APLICADO: 'retirado da fatura', ACEITO: 'justificativa aceita', PENDENTE: 'em análise pela auditoria', REJEITADO: 'justificativa rejeitada pela auditoria' }[r.status_validacao] || r.status_validacao;
+  const tipo = { RETIRAR: 'Autorizou retirar', COMPLEMENTAR: `CT-e complementar (original ${r.chave_cte_original || '-'})`, OUTRO: 'Outra justificativa' }[r.resposta] || r.resposta;
+  return `${tipo} — ${st}${r.observacao_validacao ? `: ${r.observacao_validacao}` : ''}`;
+}
+
+function formSemNf(fatura, semNf) {
+  const { itens, pendentes } = semNf;
+  if (!itens.length) return '';
+  const respondidos = itens.filter((c) => c.resposta && c.resposta.status_validacao !== 'REJEITADO');
+  const linhasRespondidas = respondidos.map((c) => `<tr><td><strong>${esc(c.numero_cte || c.chave_cte.slice(-9))}</strong><div class="ch">${esc(c.chave_cte)}</div></td><td>${dinheiro(c.valor_frete)}</td><td>${esc(rotuloRespostaSemNf(c.resposta))}</td></tr>`).join('');
+  const linhas = pendentes.map((c, i) => `<tr>
+      <td><strong>${esc(c.numero_cte || c.chave_cte.slice(-9))}</strong><div class="ch">${esc(c.chave_cte)}</div>
+        <input type="hidden" name="snf_chave_${i}" value="${esc(c.chave_cte)}">
+        ${c.resposta?.status_validacao === 'REJEITADO' ? `<div class="rej">Justificativa anterior rejeitada pela auditoria${c.resposta.observacao_validacao ? ': ' + esc(c.resposta.observacao_validacao) : ''}. Responda novamente.</div>` : ''}</td>
+      <td>${dinheiro(c.valor_frete)}</td>
+      <td>
+        <label class="op"><input type="radio" name="snf_resp_${i}" value="RETIRAR" data-valor="${Number(c.valor_frete || 0).toFixed(2)}" onchange="atualizarSnf()"> <b>Retirar da fatura</b> — autorizo inativar este CT-e e vou reemitir com a NF vinculada</label>
+        <label class="op"><input type="radio" name="snf_resp_${i}" value="COMPLEMENTAR" onchange="atualizarSnf()"> <b>É CT-e complementar</b> — não tem NF própria; informo a chave do CT-e original:</label>
+        <input type="text" class="campo" name="snf_orig_${i}" id="snf_orig_${i}" maxlength="60" inputmode="numeric" placeholder="Chave (44 dígitos) do CT-e original/normal que este CT-e complementa">
+        <label class="op"><input type="radio" name="snf_resp_${i}" value="OUTRO" onchange="atualizarSnf()"> <b>Outro motivo</b> — justifico abaixo (ex.: chave da NF-e que consta no CT-e)</label>
+        <input type="text" class="campo" name="snf_nfe_${i}" maxlength="60" inputmode="numeric" placeholder="Chave da NF-e vinculada (se houver)">
+        <input type="text" class="campo" name="snf_just_${i}" id="snf_just_${i}" maxlength="1000" placeholder="Justificativa (obrigatória em “Outro motivo”)">
+      </td></tr>`).join('');
+  const valorAtual = Number(fatura.valor_fatura || 0);
+  return `<section class="semnf" id="sem-nf">
+    <h2>⛔ CT-e(s) sem vínculo com a nota fiscal</h2>
+    <p>O CT-e precisa trazer a chave da NF-e dentro dele. Sem isso não podemos pagá-lo. Para cada CT-e abaixo escolha: <b>retirar da fatura</b> ou, se for um <b>CT-e complementar</b>, informe a chave do CT-e original.</p>
+    ${linhasRespondidas ? `<div class="tw"><table class="ctes"><thead><tr><th>CT-e</th><th>Valor</th><th>Resposta registrada</th></tr></thead><tbody>${linhasRespondidas}</tbody></table></div>` : ''}
+    ${pendentes.length ? `<form method="POST" id="frmSemNf" action="#sem-nf">
+      <div class="quem">
+        <label for="snf_respondido_por">Quem está respondendo (nome e e-mail)</label>
+        <input type="text" id="snf_respondido_por" name="respondido_por" placeholder="Nome — email@transportadora.com.br">
+      </div>
+      <div class="tw"><table class="ctes"><thead><tr><th>CT-e</th><th>Valor</th><th>Sua resposta</th></tr></thead><tbody>${linhas}</tbody></table></div>
+      <div class="cobranca" id="snf_cobranca">
+        <strong>Se você autorizar retirar algum CT-e, a fatura muda de valor.</strong>
+        <p>Valor atual da fatura: <b>${dinheiro(valorAtual)}</b> · Valor após retirar: <b id="snf_valor_novo" data-atual="${valorAtual.toFixed(2)}">${dinheiro(valorAtual)}</b></p>
+        <p>Como esta fatura é cobrada?</p>
+        <label class="op"><input type="radio" name="forma_cobranca" value="BOLETO"> ${esc(FORMAS_COBRANCA.BOLETO)}</label>
+        <label class="op"><input type="radio" name="forma_cobranca" value="PIX"> ${esc(FORMAS_COBRANCA.PIX)}</label>
+        <label class="op ciente"><input type="checkbox" name="ciente" value="1"> Estou ciente de que o(s) CT-e(s) retirado(s) ficam <b>inativados</b> e não serão pagos nesta fatura, que a fatura passa a valer o valor atualizado acima e que, se a cobrança for por boleto, <b>devo emitir um novo boleto</b> (o boleto anterior não será pago).</label>
+      </div>
+      <input type="hidden" name="acao" value="responder_sem_nf">
+      <input type="hidden" name="snf_total" value="${pendentes.length}">
+      <button type="submit" onclick="return validarSnf()">Enviar respostas dos CT-es sem NF</button>
+    </form>
+    <script>
+    function fmtBrl(v){return v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}
+    function atualizarSnf(){var el=document.getElementById('snf_valor_novo');var atual=Number(el.getAttribute('data-atual'));var sai=0;
+      document.querySelectorAll('#frmSemNf input[value=RETIRAR]:checked').forEach(function(r){sai+=Number(r.getAttribute('data-valor'))});
+      el.textContent=fmtBrl(Math.max(atual-sai,0));document.getElementById('snf_cobranca').className='cobranca'+(sai>0?' ativa':'');}
+    function validarSnf(){var q=document.getElementById('snf_respondido_por');if(!q.value.trim()){q.focus();alert('Informe quem está respondendo.');return false}
+      var n=Number(document.querySelector('input[name=snf_total]').value);var retirar=false;
+      for(var i=0;i<n;i++){var r=document.querySelector('input[name=snf_resp_'+i+']:checked');
+        if(!r){alert('Responda todos os CT-es sem NF (falta a linha '+(i+1)+').');return false}
+        if(r.value==='RETIRAR')retirar=true;
+        if(r.value==='COMPLEMENTAR'&&String(document.getElementById('snf_orig_'+i).value).replace(/\\D/g,'').length!==44){document.getElementById('snf_orig_'+i).focus();alert('Informe a chave (44 dígitos) do CT-e original da linha '+(i+1)+'.');return false}
+        if(r.value==='OUTRO'&&!document.getElementById('snf_just_'+i).value.trim()){document.getElementById('snf_just_'+i).focus();alert('Informe a justificativa da linha '+(i+1)+'.');return false}}
+      if(retirar){if(!document.querySelector('input[name=forma_cobranca]:checked')){alert('Informe como a fatura é cobrada (boleto ou Pix/depósito).');return false}
+        if(!document.querySelector('input[name=ciente]:checked')){alert('Marque a ciência sobre a retirada e o novo boleto.');return false}
+        if(!confirm('Confirma a retirada do(s) CT-e(s) marcado(s)? Eles serão inativados nesta fatura.'))return false}
+      return true}
+    </script>` : '<p class="dica">Todos os CT-es sem NF já foram respondidos.</p>'}
+  </section>`;
+}
+
+// Retira (inativa) da fatura os CT-es que a transportadora autorizou. Mesma logica da tela da auditoria
+// (fatura_cte_retiradas guarda a linha completa para restaurar; fatura_detalhes perde as linhas do CT-e).
+async function retirarCtesSemNf(supabase, fatura, itens, { respondidoPor, formaCobranca }) {
+  const chaves = new Set(itens.map((c) => c.chave_cte));
+  const { data: linhas, error } = await supabase.from('fatura_detalhes').select('*').eq('fatura_id', fatura.id);
+  if (error) throw error;
+  const saem = (linhas || []).filter((l) => chaves.has(soDigitos(l.chave_cte)));
+  const agora = new Date().toISOString();
+  const justificativa = `Retirada autorizada pela transportadora no portal da fatura${respondidoPor ? ` (${respondidoPor})` : ''}. Cobrança: ${formaCobranca === 'BOLETO' ? 'novo boleto com o valor atualizado' : 'Pix/depósito pelo valor atualizado'}.`;
+  const registros = itens.map((c) => {
+    const snap = saem.find((l) => soDigitos(l.chave_cte) === c.chave_cte) || null;
+    return {
+      fatura_id: String(fatura.id), numero_fatura: fatura.numero_fatura || null, transportadora: fatura.transportadora || null,
+      chave: c.chave_cte, chave_cte: c.chave_cte, numero_cte: c.numero_cte || snap?.numero_cte || null,
+      valor_cte: Number(c.valor_frete || snap?.valor_frete || 0), motivo: 'CT-e sem vinculo com a NF (retirado pela transportadora)',
+      justificativa, snapshot: snap, retirado_por: respondidoPor || 'Portal do transportador', retirado_em: agora,
+    };
+  });
+  // 1) registro primeiro: se falhar, a fatura nao e alterada.
+  const { error: eReg } = await supabase.from('fatura_cte_retiradas').insert(registros);
+  if (eReg) throw new Error(`Nao foi possivel registrar a retirada: ${eReg.message}`);
+  const ids = saem.map((l) => l.id);
+  for (let i = 0; i < ids.length; i += 100) {
+    const { error: eDel } = await supabase.from('fatura_detalhes').delete().in('id', ids.slice(i, i + 100));
+    if (eDel) throw new Error(`Erro ao retirar CT-es da fatura: ${eDel.message}`);
+  }
+  // 2) numeros da fatura sem os CT-es retirados (calculado = maior calculo das linhas do CT-e, que pode vir duplicado).
+  const valorSaida = registros.reduce((a, r) => a + Number(r.valor_cte || 0), 0);
+  const calcSaida = [...chaves].reduce((a, ch) => a + Math.max(0, ...saem.filter((l) => soDigitos(l.chave_cte) === ch).map((l) => Number(l.calculado_frete || 0))), 0);
+  const descontoSaida = itens.reduce((a, c) => a + Number(c.valor_frete || 0) - Math.max(Number(c.diferenca_incluida || 0), 0), 0);
+  const { data: atual } = await supabase.from('faturas').select('*').eq('id', fatura.id).maybeSingle();
+  const r2 = (v) => Number(Number(v || 0).toFixed(2));
+  const valorNovo = r2(Math.max(Number(atual?.valor_fatura ?? fatura.valor_fatura ?? 0) - valorSaida, 0));
+  const calcNovo = r2(Math.max(Number(atual?.valor_calculado || 0) - calcSaida, 0));
+  const upd = { valor_fatura: valorNovo, valor_calculado: calcNovo, diferenca: r2(valorNovo - calcNovo), updated_at: agora };
+  if (atual && 'ctes_totais' in atual && atual.ctes_totais != null) upd.ctes_totais = Math.max(Number(atual.ctes_totais) - chaves.size, 0);
+  if (atual && 'ctes_vinculados' in atual && atual.ctes_vinculados != null) upd.ctes_vinculados = Math.max(Number(atual.ctes_vinculados) - chaves.size, 0);
+  if (atual && atual.confirmacao_laudo_calculado != null) upd.confirmacao_laudo_calculado = r2(Math.max(Number(atual.confirmacao_laudo_calculado) - calcSaida, 0));
+  if (atual && atual.confirmacao_laudo_desconto != null) upd.confirmacao_laudo_desconto = r2(Math.max(Number(atual.confirmacao_laudo_desconto) - descontoSaida, 0));
+  const { error: eFat } = await supabase.from('faturas').update(upd).eq('id', fatura.id);
+  if (eFat) throw eFat;
+  // 3) divergencias de valor do CT-e retirado nao precisam mais de resposta.
+  try {
+    const { data: divs } = await supabase.from('fatura_cte_divergencias').select('id, chave').eq('fatura_id', fatura.id);
+    const idsDiv = (divs || []).filter((d) => chaves.has(soDigitos(d.chave))).map((d) => d.id);
+    if (idsDiv.length) await supabase.from('fatura_cte_divergencias').delete().in('id', idsDiv);
+  } catch { /* sem a tabela */ }
+  await supabase.from('auditoria_fatura_historico').insert({
+    fatura_id: fatura.id, created_at: agora, acao: 'CTE_RETIRADO_DA_FATURA',
+    descricao: `${registros.length} CT-e(s) sem vinculo com a NF retirado(s) da fatura pela transportadora no portal${respondidoPor ? ` (${respondidoPor})` : ''}: ${registros.map((r) => `${r.numero_cte || r.chave_cte} (${dinheiro(r.valor_cte)})`).join(', ')}. Valor da fatura: ${dinheiro(atual?.valor_fatura ?? fatura.valor_fatura)} -> ${dinheiro(valorNovo)}. Cobrança: ${formaCobranca === 'BOLETO' ? 'transportadora vai emitir NOVO BOLETO' : 'Pix/depósito pelo valor atualizado'} (ciente).`,
+    metadata: { valor_fatura_original: Number(atual?.valor_fatura ?? fatura.valor_fatura ?? 0), valor_fatura_novo: valorNovo, forma_cobranca: formaCobranca, retirados: registros.map((r) => r.numero_cte || r.chave_cte), origem: 'portal_transportador' },
+    usuario_nome: respondidoPor || 'Portal do transportador',
+  });
+  return valorNovo;
+}
+
+// Tira da lista do robo os CT-es ja resolvidos (retirados ou com justificativa aceita): o laudo e o desconto
+// deixam de cobrar a retirada deles.
+async function tirarDaListaSemNf(supabase, faturaId, chaves) {
+  if (!chaves.length) return;
+  const { data } = await supabase.from('auditor_robo_execucoes').select('ctes_sem_nf').eq('fatura_id', String(faturaId)).maybeSingle();
+  const lista = Array.isArray(data?.ctes_sem_nf) ? data.ctes_sem_nf : [];
+  const fora = new Set(chaves);
+  const resto = lista.filter((c) => !fora.has(soDigitos(c.chave_cte)));
+  if (resto.length !== lista.length) await supabase.from('auditor_robo_execucoes').update({ ctes_sem_nf: resto }).eq('fatura_id', String(faturaId));
+}
+
+// CT-e complementar: aceito sozinho quando o CT-e original esta na base de CT-es com a chave da NF e foi emitido
+// pela mesma transportadora (mesma raiz de CNPJ na chave). Senao fica para o auditor validar.
+async function validarComplementarAuto(supabase, chaveComplementar, chaveOriginal) {
+  if (chaveOriginal.length !== 44 || chaveOriginal === chaveComplementar) return false;
+  if (chaveOriginal.slice(6, 14) !== chaveComplementar.slice(6, 14)) return false;
+  try {
+    const { data } = await supabase.from('realizado_local_ctes').select('chave_cte, chave_nfe').eq('chave_cte', chaveOriginal).limit(1);
+    return Boolean((data || []).find((r) => soDigitos(r.chave_nfe).length === 44));
+  } catch { return false; }
+}
+
+async function responderSemNf(supabase, fatura, corpo, respondidoPor) {
+  const semNf = await carregarSemNf(supabase, fatura.id);
+  const porChave = new Map(semNf.pendentes.map((c) => [c.chave_cte, c]));
+  const total = Math.min(Number(corpo.snf_total) || 0, semNf.pendentes.length);
+  const respostas = [];
+  for (let i = 0; i < total; i += 1) {
+    const c = porChave.get(soDigitos(corpo[`snf_chave_${i}`]));
+    const resposta = corpo[`snf_resp_${i}`];
+    if (!c || !['RETIRAR', 'COMPLEMENTAR', 'OUTRO'].includes(resposta)) continue;
+    const original = soDigitos(corpo[`snf_orig_${i}`]);
+    const nfe = soDigitos(corpo[`snf_nfe_${i}`]);
+    const justificativa = String(corpo[`snf_just_${i}`] || '').trim().slice(0, 1000);
+    if (resposta === 'COMPLEMENTAR' && original.length !== 44) return { erro: `Informe a chave (44 dígitos) do CT-e original do CT-e ${c.numero_cte || c.chave_cte}.` };
+    if (resposta === 'OUTRO' && !justificativa) return { erro: `Informe a justificativa do CT-e ${c.numero_cte || c.chave_cte}.` };
+    respostas.push({ c, resposta, original, nfe, justificativa });
+  }
+  if (!respostas.length || respostas.length < semNf.pendentes.length) return { erro: 'Responda todos os CT-es sem NF e volte para tentar novamente.' };
+  const retirar = respostas.filter((r) => r.resposta === 'RETIRAR');
+  const formaCobranca = ['BOLETO', 'PIX'].includes(corpo.forma_cobranca) ? corpo.forma_cobranca : null;
+  if (retirar.length && (!formaCobranca || !corpo.ciente)) return { erro: 'Para retirar CT-e da fatura, informe como a fatura é cobrada (boleto ou Pix/depósito) e marque a ciência do novo boleto.' };
+  if (fatura.confirmacao_transportador_status === 'APROVADO' && retirar.length) return { erro: 'Esta fatura já foi confirmada. Fale com o time de auditoria para retirar CT-e.' };
+
+  const agora = new Date().toISOString();
+  let valorNovo = null;
+  if (retirar.length) valorNovo = await retirarCtesSemNf(supabase, fatura, retirar.map((r) => r.c), { respondidoPor, formaCobranca });
+  const resolvidos = retirar.map((r) => r.c.chave_cte);
+  const linhas = [];
+  for (const r of respostas) {
+    let status = r.resposta === 'RETIRAR' ? 'APLICADO' : 'PENDENTE';
+    let validadoPor = null;
+    if (r.resposta === 'COMPLEMENTAR' && await validarComplementarAuto(supabase, r.c.chave_cte, r.original)) {
+      status = 'ACEITO';
+      validadoPor = 'Automatico (CT-e original com NF na base)';
+      resolvidos.push(r.c.chave_cte);
+    }
+    linhas.push({
+      fatura_id: String(fatura.id), numero_fatura: fatura.numero_fatura || null, transportadora: fatura.transportadora || null,
+      chave_cte: r.c.chave_cte, numero_cte: r.c.numero_cte || null, valor_cte: Number(r.c.valor_frete || 0),
+      resposta: r.resposta, chave_cte_original: r.original || null, chave_nfe: r.nfe || null, justificativa: r.justificativa || null,
+      forma_cobranca: r.resposta === 'RETIRAR' ? formaCobranca : null, ciente_nova_cobranca: r.resposta === 'RETIRAR',
+      valor_fatura_atualizado: r.resposta === 'RETIRAR' ? valorNovo : null,
+      respondido_por: respondidoPor, respondido_em: agora, status_validacao: status,
+      validado_por: validadoPor, validado_em: validadoPor ? agora : null, observacao_validacao: null,
+    });
+  }
+  const { error } = await supabase.from('fatura_cte_sem_nf_respostas').upsert(linhas, { onConflict: 'fatura_id,chave_cte' });
+  if (error) throw new Error(`Nao foi possivel gravar as respostas (migration 20261105_002 aplicada?): ${error.message}`);
+  await tirarDaListaSemNf(supabase, fatura.id, resolvidos);
+  const justificados = linhas.filter((l) => l.resposta !== 'RETIRAR');
+  if (justificados.length) {
+    await supabase.from('auditoria_fatura_historico').insert({
+      fatura_id: fatura.id, created_at: agora, acao: 'JUSTIFICATIVA_CTE_SEM_NF_PORTAL',
+      descricao: `Transportador justificou ${justificados.length} CT-e(s) sem vinculo com a NF pelo portal${respondidoPor ? ` (${respondidoPor})` : ''}: ${justificados.map((l) => `${l.numero_cte || l.chave_cte} — ${l.resposta === 'COMPLEMENTAR' ? `CT-e complementar do CT-e ${l.chave_cte_original}` : l.justificativa}${l.status_validacao === 'ACEITO' ? ' (aceito automaticamente: CT-e original com NF na base)' : ' (aguardando validacao do auditor)'}`).join(' | ')}.`,
+      usuario_nome: respondidoPor || 'Portal do transportador',
+    });
+  }
+  return { ok: true };
+}
+
 function paginaErro(titulo, detalhe) {
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -110,7 +366,7 @@ function formCtes(divergencias) {
   </script>`;
 }
 
-function paginaPortalFatura({ fatura, enviado, acaoEnviada, divergencias = [] }) {
+function paginaPortalFatura({ fatura, enviado, acaoEnviada, divergencias = [], semNf = { itens: [], pendentes: [], retiradas: [] } }) {
   // Com CT-es divergentes listados, o desconto e a soma deles (o que a
   // transportadora vai responder); a diferenca da fatura inteira inclui CT-es
   // sem calculo/abaixo e nao bate com a lista.
@@ -125,11 +381,15 @@ function paginaPortalFatura({ fatura, enviado, acaoEnviada, divergencias = [] })
       : Math.max(Number(fatura.diferenca || 0), 0);
   const calculadoExibido = temNumerosLaudo ? fatura.confirmacao_laudo_calculado : fatura.valor_calculado;
   const jaAprovada = fatura.confirmacao_transportador_status === 'APROVADO';
+  // CT-e sem NF sem resposta: a fatura so pode ser confirmada depois de retirar ou justificar cada um.
+  const semNfPendente = !jaAprovada && semNf.pendentes.length > 0;
   const contestada = fatura.confirmacao_transportador_status === 'CONTESTADO';
   const avisoContestacao = contestada
     ? `<div class="contest">⚠ ${enviado && acaoEnviada === 'contestar' ? 'Contestação recebida. O time de auditoria vai analisar sua observação e as evidências e retornar.' : `Esta fatura foi contestada em ${esc(dataBr(fatura.confirmacao_transportador_em))}${fatura.confirmacao_transportador_por ? ` por ${esc(fatura.confirmacao_transportador_por)}` : ''}. Você pode enviar uma nova contestação ou confirmar a fatura abaixo.`}<small><b>Observação:</b> ${esc(fatura.confirmacao_transportador_observacao || '-')}${fatura.confirmacao_transportador_evidencias ? `\n<b>Evidências:</b> ${esc(fatura.confirmacao_transportador_evidencias)}` : ''}</small></div>`
     : '';
-  const aviso = contestada ? avisoContestacao : enviado
+  const aviso = acaoEnviada === 'responder_sem_nf'
+    ? `<div class="ok">✅ Respostas dos CT-es sem NF recebidas.${semNf.retiradas.length ? ` A fatura foi atualizada: agora vale ${esc(dinheiro(fatura.valor_fatura))}.` : ''}${semNfPendente ? '' : ' Agora você já pode confirmar a fatura abaixo.'}</div>`
+    : contestada ? avisoContestacao : enviado
     ?`<div class="ok">✅ Confirmação recebida. Obrigado! O time de auditoria já foi notificado e vai seguir com o pagamento.</div>`
     : (jaAprovada
       ? `<div class="ok">✅ Esta fatura já foi confirmada em ${esc(dataBr(fatura.confirmacao_transportador_em))}${fatura.confirmacao_transportador_por ? ` por ${esc(fatura.confirmacao_transportador_por)}` : ''}. Não é necessário confirmar de novo.</div>`
@@ -160,6 +420,11 @@ form{padding:0 30px 26px}
 button{border:0;border-radius:9px;background:#0f6b3e;color:#fff;font-weight:700;padding:14px 22px;cursor:pointer;font-size:15px;width:100%}
 button:hover{background:#0c5732}
 button:disabled{background:#94a3b8;cursor:not-allowed}
+.semnf{margin:0 30px 18px;padding:16px;border:2px solid #dc2626;border-radius:10px;background:#fef2f2}.semnf h2{margin:0 0 6px;font-size:17px;color:#7f1d1d}.semnf>p{font-size:13px;color:#7f1d1d;line-height:1.5}.semnf form{padding:0}.semnf .ctes{background:#fff}
+.campo{box-sizing:border-box;width:100%;padding:7px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px;margin:2px 0 8px}
+.cobranca{margin:12px 0;padding:12px;border:1px solid #fcd34d;border-radius:9px;background:#fffbeb;font-size:13px;color:#78350f}.cobranca.ativa{border:2px solid #d97706}.cobranca p{margin:6px 0}.ciente{margin-top:10px!important;font-size:13px}
+.inativos{margin:0 30px 16px;padding:14px;background:#f8fafc;border:1px solid #94a3b8;border-radius:9px;color:#334155;font-size:13px}.inativos .ctes{background:#fff}.tag-inativo{display:inline-block;padding:1px 6px;border-radius:5px;background:#e2e8f0;color:#475569;font-size:10px;font-weight:700}
+.bloqueio{margin:0 30px 20px;padding:12px 14px;background:#fff7ed;border:1px solid #fdba74;border-radius:9px;color:#9a3412;font-weight:700;font-size:13px}
 footer{padding:16px 30px;color:#64748b;font-size:12px;border-top:1px solid #e2e8f0}
 </style></head><body>
 <main class="page">
@@ -175,13 +440,16 @@ footer{padding:16px 30px;color:#64748b;font-size:12px;border-top:1px solid #e2e8
     <div class="card"><small>Status atual</small><strong>${esc((fatura.status || '').replaceAll('_', ' '))}</strong></div>
   </div>
   ${aviso}
+  ${blocoRetiradas(semNf.retiradas, fatura)}
+  ${formSemNf(fatura, semNf)}
   <div class="intro">
     <p>${saldo > 0
       ? `Identificamos cobrança a maior de <b>${dinheiro(saldo)}</b> nesta fatura em relação ao valor calculado pela auditoria. Ao confirmar, você concorda que esse desconto seja aplicado no pagamento.`
       : 'Esta fatura já foi auditada e o valor calculado bate com o valor cobrado. Ao confirmar, você reconhece a fatura para seguirmos com o pagamento.'}</p>
   </div>
-  ${!jaAprovada && divergencias.length ? formCtes(divergencias) : ''}
-  ${!jaAprovada && !divergencias.length ? `<form method="POST">
+  ${semNfPendente ? '<div class="bloqueio">Responda primeiro os CT-es sem vínculo com a NF (acima). Depois disso a confirmação da fatura fica disponível aqui.</div>' : ''}
+  ${!jaAprovada && !semNfPendente && divergencias.length ? formCtes(divergencias) : ''}
+  ${!jaAprovada && !semNfPendente && !divergencias.length ? `<form method="POST">
     <div class="quem">
       <label for="respondido_por">Quem está respondendo (nome e e-mail)</label>
       <input type="text" id="respondido_por" name="respondido_por" placeholder="Nome — email@transportadora.com.br">
@@ -241,16 +509,25 @@ export default async function handler(req, res) {
 
     if (req.method === 'GET') {
       res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8');
-      return res.send(paginaPortalFatura({ fatura: contexto.fatura, enviado: false, divergencias: await carregarDivergencias(supabase, contexto.fatura.id) }));
+      return res.send(paginaPortalFatura({ fatura: contexto.fatura, enviado: false, divergencias: await carregarDivergencias(supabase, contexto.fatura.id), semNf: await carregarSemNf(supabase, contexto.fatura.id) }));
     }
 
     if (req.method === 'POST') {
       const { fatura } = contexto;
       const corpo = lerCorpo(req);
-      const acao = ['contestar', 'responder_ctes'].includes(corpo.acao) ? corpo.acao : 'confirmar';
+      const acao = ['contestar', 'responder_ctes', 'responder_sem_nf'].includes(corpo.acao) ? corpo.acao : 'confirmar';
       const respondidoPor = String(corpo.respondido_por || '').slice(0, 200) || null;
       const agora = new Date().toISOString();
-      if (fatura.confirmacao_transportador_status !== 'APROVADO') {
+      if (acao === 'responder_sem_nf') {
+        const r = await responderSemNf(supabase, fatura, corpo, respondidoPor);
+        if (r.erro) {
+          res.status(400).setHeader('Content-Type', 'text/html; charset=utf-8');
+          return res.send(paginaErro('Respostas incompletas', r.erro));
+        }
+      } else if (fatura.confirmacao_transportador_status !== 'APROVADO' && (await carregarSemNf(supabase, fatura.id)).pendentes.length) {
+        res.status(400).setHeader('Content-Type', 'text/html; charset=utf-8');
+        return res.send(paginaErro('CT-e sem NF pendente', 'Responda primeiro os CT-es sem vínculo com a NF (retirar da fatura ou justificar) e volte para confirmar a fatura.'));
+      } else if (fatura.confirmacao_transportador_status !== 'APROVADO') {
         if (acao === 'responder_ctes') {
           const divergencias = await carregarDivergencias(supabase, fatura.id);
           const porId = new Map(divergencias.map((d) => [String(d.id), d]));
@@ -346,7 +623,7 @@ export default async function handler(req, res) {
 
       const atualizado = await carregarFatura(supabase, token);
       res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8');
-      return res.send(paginaPortalFatura({ fatura: atualizado.fatura, enviado: true, acaoEnviada: acao === 'responder_ctes' && atualizado.fatura.confirmacao_transportador_status === 'CONTESTADO' ? 'contestar' : acao, divergencias: await carregarDivergencias(supabase, fatura.id) }));
+      return res.send(paginaPortalFatura({ fatura: atualizado.fatura, enviado: true, acaoEnviada: acao === 'responder_ctes' && atualizado.fatura.confirmacao_transportador_status === 'CONTESTADO' ? 'contestar' : acao, divergencias: await carregarDivergencias(supabase, fatura.id), semNf: await carregarSemNf(supabase, fatura.id) }));
     }
 
     res.status(405).setHeader('Content-Type', 'text/html; charset=utf-8');

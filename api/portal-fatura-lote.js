@@ -77,7 +77,28 @@ export default async function handler(req, res) {
     if (erroBusca) throw erroBusca;
 
     const encontrados = new Set((faturas || []).map((item) => item.confirmacao_transportador_token));
-    const pendentes = (faturas || []).filter((item) => item.confirmacao_transportador_status !== 'APROVADO');
+    const naoConfirmadas = (faturas || []).filter((item) => item.confirmacao_transportador_status !== 'APROVADO');
+    // CT-e sem vinculo de NF ainda sem resposta (retirar ou justificar no portal da fatura): essa fatura fica de fora.
+    const bloqueadasSemNf = new Set();
+    if (naoConfirmadas.length) {
+      try {
+        const ids = naoConfirmadas.map((item) => String(item.id));
+        const { data: execs } = await supabase.from('auditor_robo_execucoes').select('fatura_id, ctes_sem_nf').in('fatura_id', ids);
+        const comSemNf = (execs || []).filter((e) => Array.isArray(e.ctes_sem_nf) && e.ctes_sem_nf.length);
+        if (comSemNf.length) {
+          let resp = [];
+          try {
+            const { data } = await supabase.from('fatura_cte_sem_nf_respostas').select('fatura_id, chave_cte, status_validacao').in('fatura_id', comSemNf.map((e) => String(e.fatura_id)));
+            resp = data || [];
+          } catch { resp = []; }
+          const ok = new Set(resp.filter((r) => r.status_validacao !== 'REJEITADO').map((r) => `${r.fatura_id}|${String(r.chave_cte || '').replace(/\D/g, '')}`));
+          comSemNf.forEach((e) => {
+            if (e.ctes_sem_nf.some((c) => !ok.has(`${e.fatura_id}|${String(c.chave_cte || '').replace(/\D/g, '')}`))) bloqueadasSemNf.add(String(e.fatura_id));
+          });
+        }
+      } catch { /* sem a coluna/tabela: segue sem a trava */ }
+    }
+    const pendentes = naoConfirmadas.filter((item) => !bloqueadasSemNf.has(String(item.id)));
     const jaConfirmadas = (faturas || []).length - pendentes.length;
     const invalidos = tokens.filter((token) => !encontrados.has(token)).length;
 
@@ -106,6 +127,8 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       confirmadas: pendentes.length,
+      bloqueadas_sem_nf: (faturas || []).filter((item) => bloqueadasSemNf.has(String(item.id))).map((item) => item.numero_fatura),
+      tokens_confirmados: pendentes.map((item) => item.confirmacao_transportador_token),
       ja_confirmadas: jaConfirmadas,
       invalidos,
       total_recebido: tokens.length,

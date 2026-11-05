@@ -2,7 +2,7 @@
  * Envio por e-mail do laudo de auditoria ao transportador (Robo Auditor).
  *
  * POST /api/enviar-laudo-robo
- * body: { fatura_ids: string[], assunto, corpo_html, anexo_nome, anexo_gzip_base64, origem?: 'auto'|'manual' }
+ * body: { fatura_ids: string[], assunto, corpo_html, anexo_nome, anexo_gzip_base64, anexos_extras?: [{ nome, gzip_base64 }], origem?: 'auto'|'manual' }
  *
  * O laudo (HTML) e o corpo do e-mail sao gerados no navegador (mesmo laudo consolidado da tela de
  * Faturas); aqui so se valida e envia. Seguranca: destinatarios NAO vem do cliente — saem da lista do
@@ -80,8 +80,9 @@ export default async function handler(req, res) {
     if (e2) throw new Error(`Lista do robo: ${e2.message}`);
     const cfg = (cfgs || []).find((c) => norm(c.transportadora) === transportadoras[0]);
     if (!cfg) return res.status(400).json({ ok: false, erro: `${nomeTransp} nao esta na lista do robo.` });
-    const soSemNf = [...porId.values()].every((e) => e.aprovado_auditor_por === 'Robo (CT-e sem NF)');
-    if (origem === 'auto' && !cfg.email_automatico && !cfg.envio_direto && !soSemNf) return res.status(409).json({ ok: false, erro: `E-mail automatico desligado para ${nomeTransp}.` });
+    // Envio automatico so para transportadora em e-mail automatico ou envio direto (CT-e sem NF inclusive):
+    // em "Auditor envia (manual)" o laudo so sai pelo envio manual do auditor.
+    if (origem === 'auto' && !cfg.email_automatico && !cfg.envio_direto) return res.status(409).json({ ok: false, erro: `E-mail automatico desligado para ${nomeTransp}.` });
     const para = emailsDe(cfg.emails_transportadora);
     if (!para.length) return res.status(400).json({ ok: false, erro: `Sem e-mail cadastrado para ${nomeTransp}: preencha em Automacao > Robo Auditor.` });
     // Junto em TODO laudo: o(s) auditor(es) responsavel(is) e o grupo padrao da auditoria (historico mesmo sem auditor).
@@ -117,7 +118,16 @@ export default async function handler(req, res) {
     };
 
     // 6) envio
-    const dados = { subject: assunto, html: corpoHtml, ...(anexo ? { attachments: [anexo] } : {}) };
+    // Anexos extras (ex.: Excel do laudo, que a pre-visualizacao do Outlook nao deixa exportar do HTML).
+    const extras = (Array.isArray(body.anexos_extras) ? body.anexos_extras : []).slice(0, 3).flatMap((x) => {
+      if (!x?.gzip_base64) return [];
+      try {
+        const conteudo = gunzipSync(Buffer.from(String(x.gzip_base64), 'base64'));
+        return [{ filename: String(x.nome || 'anexo').replace(/[^\w.\- ]+/g, '_'), content: conteudo.toString('base64') }];
+      } catch { return []; }
+    });
+    const anexos = [...(anexo ? [anexo] : []), ...extras];
+    const dados = { subject: assunto, html: corpoHtml, ...(anexos.length ? { attachments: anexos } : {}) };
     let resposta;
     if (process.env.RESEND_API_KEY) {
       resposta = await fetch('https://api.resend.com/emails', {
