@@ -21,6 +21,11 @@ export default function GestaoListaNegociacoes({
 }) {
   const podeExcluir = usuarioEhGestor(sessao);
   const lista = filtrarTabelasGestao(tabelas, filtros, sessao);
+  // Mesma transportadora+origem+canal com mais de uma tabela: sem rótulo, não
+  // dá para saber qual é qual (aqui e no Simulador Realizado).
+  const chaveGrupo = (t) => [t.transportadora, t.origem_label, t.canal].map((v) => String(v || '').trim().toUpperCase()).join('|');
+  const qtdPorGrupo = new Map();
+  lista.forEach((t) => { const k = chaveGrupo(t); qtdPorGrupo.set(k, (qtdPorGrupo.get(k) || 0) + 1); });
 
   return (
     <section className="sim-card">
@@ -62,6 +67,15 @@ export default function GestaoListaNegociacoes({
                         style={{ display: 'inline-block', fontSize: 11, fontWeight: 800, padding: '2px 8px', borderRadius: 999, background: t.tabela_alternativa_de ? '#ede9fe' : '#e0f2fe', color: t.tabela_alternativa_de ? '#5b21b6' : '#0369a1' }}
                       >
                         {t.tabela_alternativa_de ? 'Alternativa' : 'Principal'}{t.variante_tabela ? `: ${t.variante_tabela}` : ''}
+                      </span>
+                    </div>
+                  ) : (qtdPorGrupo.get(chaveGrupo(t)) || 0) > 1 ? (
+                    <div style={{ marginTop: 4 }}>
+                      <span
+                        title='Há mais de uma tabela desta transportadora nesta origem. Clique em "Abrir" e preencha "Identificação da tabela" (ex.: Agrícola / Normal) para diferenciá-las aqui e no Simulador Realizado.'
+                        style={{ display: 'inline-block', fontSize: 11, fontWeight: 800, padding: '2px 8px', borderRadius: 999, background: '#fef3c7', color: '#92400e' }}
+                      >
+                        {qtdPorGrupo.get(chaveGrupo(t))} tabelas nesta origem · sem rótulo
                       </span>
                     </div>
                   ) : null}

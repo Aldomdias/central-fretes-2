@@ -53,6 +53,7 @@ import {
   converterTabelasNegociacaoParaSimulador,
   nomesTabelasNegociacaoSimulador,
   labelTabelaNegociacaoSimulador,
+  marcarDesambiguacaoNegociacoesSimulador,
 } from '../utils/tabelasNegociacaoSimuladorAdapter';
 import { LaudoNegociacaoTemplate } from '../components/laudos';
 import amdLogo from '../assets/amd-log.png';
@@ -4558,7 +4559,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
     atualizadoEm: '',
   });
   const [carregandoOpcoes, setCarregandoOpcoes] = useState(false);
-  const [negociacoesSimulador, setNegociacoesSimulador] = useState([]);
+  const [negociacoesSimuladorBase, setNegociacoesSimulador] = useState([]);
+  // Duas negociações sem rótulo com a mesma transportadora+origem+rodada
+  // ganham a data de criação no rótulo, para o simulador separar uma da outra.
+  const negociacoesSimulador = useMemo(
+    () => marcarDesambiguacaoNegociacoesSimulador(negociacoesSimuladorBase),
+    [negociacoesSimuladorBase]
+  );
   const [carregandoNegociacoesSimulador, setCarregandoNegociacoesSimulador] = useState(false);
   const [erroNegociacoesSimulador, setErroNegociacoesSimulador] = useState('');
   const [negociacoesAtualizadasEm, setNegociacoesAtualizadasEm] = useState('');
@@ -5085,7 +5092,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     setEtapaNegociacoesSimulador('lista');
 
     try {
-      const capas = await listarCapasNegociacaoParaSimulacao({ tipoTabela: 'FRACIONADO' });
+      const capas = marcarDesambiguacaoNegociacoesSimulador(await listarCapasNegociacaoParaSimulacao({ tipoTabela: 'FRACIONADO' }));
 
       // Preserva os detalhes já hidratados (itens/taxas) ao recarregar a lista,
       // para não perder o que já foi buscado da negociação selecionada.
