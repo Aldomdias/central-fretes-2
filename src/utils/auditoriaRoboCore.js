@@ -16,11 +16,11 @@ import { normalizarChaveCte } from './auditoriaFretesDomain';
 import { ehLinhaNfse, conferirNfseLancada } from './nfseFatura';
 import { normalizarNumeroFatura } from './robos/historicoLancamentos';
 import { montarCorrecoesCalculoFatura, numeroValorNfAuditoria, numeroPesoAuditoria, escolherMaiorPeso } from './correcoesCalculoFatura';
-import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas, laudoResolvidoFora, faturaPaga, faturaLancadaErp } from '../services/auditorRoboService';
+import { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas, laudoResolvidoFora, faturaPaga, faturaLancadaErp, envioDiretoVale, ROBO_ENVIO_DIRETO_POR, ROBO_SEM_NF_POR, upsertExecucoesRobo } from '../services/auditorRoboService';
 
 // Escopo do cache das tabelas de frete (ver freteDatabaseService): abrir antes de um lote e fechar no finally.
 export { entrarCacheCalculo as iniciarCacheCalculoRobo, sairCacheCalculo as encerrarCacheCalculoRobo };
-export { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas, laudoResolvidoFora };
+export { classificarFatura, DECISAO, STATUS_ROBO_AUDITA, ROBO_DATA_INICIO, dataInicioRobo, dataEntradaFatura, buscarTodasPaginas, laudoResolvidoFora, upsertExecucoesRobo };
 
 // Mesma tolerancia padrao da tela (a tela deixa ajustar por navegador; na nuvem vale o padrao).
 const TOLERANCIA = { acima: 1, abaixo: 5 };
@@ -107,6 +107,75 @@ function resumir(lista) {
   });
   const motivoSemCalculo = [...motivos.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '';
   return { motivoSemCalculo, nfse, total, calculados, calculoAmd: Number(calculoAmd.toFixed(2)), semCalculo: total - calculados, divergentes, maior: Number(maior.toFixed(2)), menor: Number(menor.toFixed(2)) };
+}
+
+// CT-e sem vinculo de NF: a chave da NF-e tem que estar DENTRO do CT-e (infNFe/chave do XML), que e o que a base de
+// CT-es (realizado_local_ctes.chave_nfe) guarda. Tracking, chave digitada na fatura ou vinda do arquivo da fatura
+// NAO contam: CT-e sem a chave nao pode ser pago e precisa ser retirado da fatura e reemitido.
+// CT-e que nao esta na base de CT-es nao e marcado (nao da para ler o CT-e; vai para "sem calculo"). Falha na consulta = nao marca.
+const soDigitosNf = (v) => String(v || '').replace(/\D/g, '');
+// Regra ligada em auditor_robo_config.checar_cte_sem_nf. Vale para as faturas que entraram a partir de
+// checar_cte_sem_nf_desde (sem data = todas). Falha na leitura = desligada.
+async function checagemSemNf() {
+  try {
+    let { data, error } = await getSupabaseClient().from('auditor_robo_config').select('checar_cte_sem_nf,checar_cte_sem_nf_desde').eq('id', 1).maybeSingle();
+    if (error && /checar_cte_sem_nf_desde/.test(error.message || '')) {
+      ({ data } = await getSupabaseClient().from('auditor_robo_config').select('checar_cte_sem_nf').eq('id', 1).maybeSingle());
+    }
+    return { ligada: data?.checar_cte_sem_nf === true, desde: data?.checar_cte_sem_nf_desde || null };
+  } catch { return { ligada: false, desde: null }; }
+}
+const SEM_NF_VAZIO = { lista: [], suspeito: false };
+// So confere CT-e EMITIDO a partir de 01/10/2026 (AAMM da chave >= 2610): antes disso a base de CT-es foi
+// importada sem a aba "Notas Fiscais" e a falta da chave da NF nao quer dizer CT-e sem nota.
+export const SEM_NF_EMISSAO_DESDE_AAMM = '2610';
+const emitidoParaConferirNf = (chave) => String(chave).slice(2, 6) >= SEM_NF_EMISSAO_DESDE_AAMM;
+async function ctesSemVinculoNf(lista = [], fatura = null) {
+  const regra = await checagemSemNf();
+  if (!regra.ligada) return SEM_NF_VAZIO;
+  if (regra.desde && fatura) {
+    const entrada = dataEntradaFatura(fatura);
+    const desde = dataEntradaFatura({ created_at: regra.desde });
+    if (entrada && desde && entrada < desde) return SEM_NF_VAZIO;
+  }
+  const candidatos = lista.filter((i) => {
+    const c = normalizarChaveCte(i.chave_cte);
+    return !ehLinhaNfse(i) && c.length === 44 && emitidoParaConferirNf(c);
+  });
+  if (!candidatos.length) return SEM_NF_VAZIO;
+  const chaves = [...new Set(candidatos.map((i) => normalizarChaveCte(i.chave_cte)))];
+  const existe = new Set();
+  const comNf = new Set();
+  try {
+    const db = getSupabaseClient();
+    for (let k = 0; k < chaves.length; k += 200) {
+      // eslint-disable-next-line no-await-in-loop
+      const { data, error } = await db.from('realizado_local_ctes').select('chave_cte,chave_nfe').in('chave_cte', chaves.slice(k, k + 200));
+      if (error) throw new Error(error.message);
+      (data || []).forEach((r) => {
+        const c = normalizarChaveCte(r.chave_cte);
+        existe.add(c);
+        if (soDigitosNf(r.chave_nfe).length === 44) comNf.add(c);
+      });
+    }
+  } catch (e) {
+    console.warn('[robo] checagem de CT-e sem NF nao feita:', e?.message || e);
+    return SEM_NF_VAZIO;
+  }
+  const semNf = candidatos
+    .filter((i) => { const c = normalizarChaveCte(i.chave_cte); return existe.has(c) && !comNf.has(c); })
+    .map((i) => {
+      const dif = Number(i.diferenca || 0);
+      const contouNaCobrancaAcima = (i.desconto_sem_tabela || (Number(i.calculado_frete || 0) > 0 && !dentroDaTolerancia(dif))) && dif > 0;
+      return {
+        chave_cte: normalizarChaveCte(i.chave_cte), numero_cte: String(i.numero_cte || '').trim(),
+        valor_frete: Number(Number(i.valor_frete || 0).toFixed(2)), diferenca_incluida: contouNaCobrancaAcima ? Number(dif.toFixed(2)) : 0,
+      };
+    });
+  // Metade ou mais dos CT-es (que estao na base) sem a NF: provavel base sem a aba "Notas Fiscais" -> auditor.
+  const naBase = new Set(candidatos.map((i) => normalizarChaveCte(i.chave_cte)).filter((c) => existe.has(c))).size;
+  const qtdSemNf = new Set(semNf.map((c) => c.chave_cte)).size;
+  return { lista: semNf, suspeito: qtdSemNf >= 2 && qtdSemNf * 2 >= naBase };
 }
 
 async function detalhesExatos(fatura) {
@@ -336,7 +405,8 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
     }
   } catch { /* entrega nao verificada: classificarFatura manda para o auditor */ }
   const excedentesLotacao = await excedentesLotacaoPendentes(fatura, lista);
-  return { ...r, entregues, pendentes, erroCalculo, falhasCalculo, excedentesLotacao, falhaFilaLotacao };
+  const { lista: semNf, suspeito: semNfSuspeito } = await ctesSemVinculoNf(lista, fatura);
+  return { ...r, entregues, pendentes, erroCalculo, falhasCalculo, excedentesLotacao, falhaFilaLotacao, semNf, semNfSuspeito };
 }
 
 // Excedente de lotacao aguardando a operacao: nao manda laudo nem gestao antes da decisao.
@@ -531,6 +601,7 @@ export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = ne
     auditor_nome: f.auditor_nome || '', auditor_email: auditorEmail,
     destinatarios: para || '', copia: c.decisao === DECISAO.REVISAO_AUDITOR ? '' : auditorEmail,
     acao_executada: enviada, executado_por: usuario, executado_em: agora,
+    ctes_sem_nf: resumo.semNf || [],
   };
   if (anterior) {
     registro.reavaliado_em = agora;
@@ -538,6 +609,17 @@ export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = ne
     // Laudo aprovado so vale para o mesmo valor: se mudou (ou deixou de ter desconto), volta a pedir OK.
     const mesmoValor = c.decisao === DECISAO.ENVIAR_LAUDO && Math.abs(Number(anterior.valor_descontar || 0) - c.descontar) < 0.01;
     if (!mesmoValor) { registro.aprovado_auditor_em = null; registro.aprovado_auditor_por = null; }
+  }
+  // Envio direto ligado na transportadora (e a fatura entrou depois de ligar): o laudo ja nasce aprovado pelo
+  // robo e segue por e-mail sem esperar o OK do auditor (auditor e faturas vao em copia).
+  // CT-e sem vinculo de NF: nao precisa do OK do auditor, o laudo sai sozinho pedindo a retirada do CT-e.
+  if (c.semNf) {
+    const manteve = anterior?.aprovado_auditor_em && registro.aprovado_auditor_em !== null;
+    if (!manteve) { registro.aprovado_auditor_em = agora; registro.aprovado_auditor_por = ROBO_SEM_NF_POR; }
+  } else if (c.decisao === DECISAO.ENVIAR_LAUDO && envioDiretoVale(cfg, f)) {
+    const manteve = anterior?.aprovado_auditor_em && registro.aprovado_auditor_em !== null;
+    if (!manteve) { registro.aprovado_auditor_em = agora; registro.aprovado_auditor_por = ROBO_ENVIO_DIRETO_POR; }
+    registro.motivo = `${registro.motivo} Envio direto: laudo segue para a transportadora sem aprovacao do auditor.`;
   }
   return registro;
 }

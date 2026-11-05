@@ -152,7 +152,7 @@ export default async function handler(req, res) {
           }),
           limite,
         ]);
-        const { error } = await db.from('auditor_robo_execucoes').upsert(registro, { onConflict: 'fatura_id' });
+        const { error } = await core.upsertExecucoesRobo(db, registro);
         if (error) throw new Error(error.message);
         if (anterior) reavaliadas += 1; else analisadas += 1;
         if (registro.acao_executada) enviadasGestao += 1;

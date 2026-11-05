@@ -35,11 +35,14 @@ export function lerCteXml(xmlTexto, nomeArquivo = '') {
 
   // Medidas da carga: cada <infQ> traz tpMed (rótulo), qCarga e cUnid (00=m3, 01=kg, 03=un).
   let pesoBruto = 0; let pesoCubado = 0; let pesoBase = 0; let cubagem = 0; let volumes = 0; let pesoOutro = 0;
+  const unidades = new Set();
+  const NOME_UNIDADE = { '00': 'M3', '01': 'KG', '02': 'TON', '03': 'UN', '04': 'LT', '05': 'MMBTU' };
   if (infCarga) {
     for (const q of Array.from(infCarga.getElementsByTagNameNS('*', 'infQ'))) {
       const tp = texto(q, 'tpMed').toUpperCase();
       const valor = numero(texto(q, 'qCarga'));
       const un = texto(q, 'cUnid');
+      if (valor > 0 && NOME_UNIDADE[un]) unidades.add(NOME_UNIDADE[un]);
       if (/CUBAG|M3|M³/.test(tp) || un === '00') cubagem = Math.max(cubagem, valor);
       else if (/VOLUME|UNIDADE|QTD/.test(tp) || un === '03') volumes = Math.max(volumes, valor);
       else if (/CUBADO/.test(tp)) pesoCubado = Math.max(pesoCubado, valor);
@@ -55,6 +58,13 @@ export function lerCteXml(xmlTexto, nomeArquivo = '') {
   const chavesNfe = Array.from(infCte.getElementsByTagNameNS('*', 'infNFe')).map((n) => soDigitos(texto(n, 'chave'))).filter((c) => c.length === 44);
   const chaveNfe = chavesNfe[0] || '';
   const notaFiscal = chaveNfe ? String(Number(chaveNfe.slice(25, 34))) : (texto(no(infCte, 'infNF'), 'nDoc') || '');
+
+  // Tomador: toma3/toma (0=remetente, 1=expedidor, 2=recebedor, 3=destinatario) ou toma4 (outros, com CNPJ proprio).
+  const toma4 = no(ide, 'toma4');
+  const codToma = texto(ide, 'toma');
+  const partePorToma = { 0: rem, 1: no(infCte, 'exped'), 2: no(infCte, 'receb'), 3: dest };
+  const parteToma = toma4 || partePorToma[codToma] || null;
+  const cnpjTomador = parteToma ? soDigitos(texto(parteToma, 'CNPJ') || texto(parteToma, 'CPF')) : '';
 
   const emissaoBruta = texto(ide, 'dhEmi') || texto(ide, 'dEmi');
   const emissao = emissaoBruta ? emissaoBruta.slice(0, 10) : '';
@@ -88,5 +98,8 @@ export function lerCteXml(xmlTexto, nomeArquivo = '') {
     chave_rota_ibge: ibgeOrigem && ibgeDestino ? `${ibgeOrigem}-${ibgeDestino}` : '',
     chave_nfe: chaveNfe,
     nota_fiscal: notaFiscal,
+    cnpj_tomador: cnpjTomador,
+    material: texto(infCarga, 'proPred'),
+    unidade_medida: [...unidades].join('/'),
   };
 }

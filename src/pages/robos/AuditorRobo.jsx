@@ -64,7 +64,7 @@ export default function AuditorRobo() {
     if (!form.transportadora.trim()) { setErro('Informe a transportadora.'); return; }
     if (lista.some((r) => normNome(r.transportadora) === normNome(form.transportadora))) { setErro('Transportadora ja esta na lista.'); return; }
     try {
-      await salvarRoboTransportadora({ ...form, transportadora: form.transportadora.trim(), id: crypto.randomUUID(), ativo: true, modo: 'SOMBRA', created_by: sessao?.nome || sessao?.email || '' });
+      await salvarRoboTransportadora({ ...form, transportadora: form.transportadora.trim(), id: crypto.randomUUID(), ativo: true, modo: 'APROVACAO', envio_direto: false, created_by: sessao?.nome || sessao?.email || '' });
       setForm(vazio);
       await carregar();
     } catch (ex) { setErro(ex.message); }
@@ -80,10 +80,59 @@ export default function AuditorRobo() {
 
   const alternarEmail = async (r, automatico) => {
     if (automatico && !String(r.emails_transportadora || '').trim()) {
-      setErro('Preencha os e-mails da transportadora que recebem o laudo antes de ligar o e-mail automatico (exclua e inclua de novo com os e-mails).');
+      setErro('Preencha os e-mails da transportadora que recebem o laudo antes de ligar o e-mail automatico (botao "editar" na coluna E-mails laudo).');
       return;
     }
     try { await salvarRoboTransportadora({ ...r, email_automatico: automatico }); await carregar(); } catch (ex) { setErro(ex.message); await carregar(); }
+  };
+
+  // Um so seletor para "como sai o laudo": manual (o auditor envia), automatico apos o OK do auditor
+  // ou direto (sem aprovacao). Ligar o direto passa pela confirmacao de alternarEnvioDireto.
+  const modoEnvio = (r) => (r.envio_direto ? 'direto' : r.email_automatico ? 'auto' : 'manual');
+  const alterarModoEnvio = async (r, modo) => {
+    if (modo === modoEnvio(r)) return;
+    if (modo === 'direto') { await alternarEnvioDireto(r); return; }
+    if (!r.envio_direto) { await alternarEmail(r, modo === 'auto'); return; }
+    if (!window.confirm(`Desligar o envio direto de ${r.transportadora}? Os proximos laudos voltam a esperar a aprovacao do auditor.`)) return;
+    try {
+      await salvarRoboTransportadora({ ...r, envio_direto: false, envio_direto_desde: null, modo: 'APROVACAO', email_automatico: modo === 'auto' });
+      setMsg(`${r.transportadora}: envio direto desligado. Os laudos voltam para a aprovacao do auditor.`);
+      await carregar();
+    } catch (ex) { setErro(ex.message); await carregar(); }
+  };
+
+  // Envio direto: o laudo do robo vai para a transportadora sem passar pela aprovacao do auditor.
+  // Vale so para faturas que entrarem a partir de agora; o que ja esta na fila continua pedindo o OK.
+  const alternarEnvioDireto = async (r) => {
+    if (!r.envio_direto) {
+      if (!String(r.emails_transportadora || '').trim()) {
+        setErro(`Preencha os e-mails de ${r.transportadora} que recebem o laudo antes de ligar o envio direto.`);
+        return;
+      }
+      if (!window.confirm(`Ligar o ENVIO DIRETO para ${r.transportadora}?\n\nA partir de agora, as faturas NOVAS desta transportadora com desconto saem com o laudo direto para a transportadora, sem a aprovacao do auditor.\n\nPara: ${r.emails_transportadora}\nCopia: auditor responsavel, fatura@corpcantuinc.onmicrosoft.com e aldo.dias@cantu.inc\n\nO que ja esta na fila continua esperando o OK do auditor.`)) return;
+    } else if (!window.confirm(`Desligar o envio direto de ${r.transportadora}? Os proximos laudos voltam a esperar a aprovacao do auditor.`)) return;
+    try {
+      const agora = new Date().toISOString();
+      await salvarRoboTransportadora({
+        ...r, envio_direto: !r.envio_direto, envio_direto_desde: r.envio_direto ? null : agora,
+        modo: r.envio_direto ? 'APROVACAO' : 'AUTOMATICO', email_automatico: r.envio_direto ? r.email_automatico : true,
+      });
+      setMsg(r.envio_direto
+        ? `${r.transportadora}: envio direto desligado. Os laudos voltam para a aprovacao do auditor.`
+        : `${r.transportadora}: envio direto ligado. Faturas que entrarem a partir de ${dataBr(agora)} vao direto para a transportadora (com faturas e auditor em copia).`);
+      await carregar();
+    } catch (ex) { setErro(ex.message); await carregar(); }
+  };
+
+  const editarEmails = async (r, campo, rotulo) => {
+    const novo = window.prompt(`${rotulo} de ${r.transportadora} (separe por ;):`, r[campo] || '');
+    if (novo === null) return;
+    const limpo = [...new Set(novo.split(/[;,\s]+/).map((e) => e.trim()).filter(Boolean))].join('; ');
+    if (campo === 'emails_transportadora' && !limpo && (r.envio_direto || r.email_automatico)) {
+      setErro('Sem e-mail da transportadora o laudo nao tem para onde ir: desligue o envio direto/automatico antes de apagar.');
+      return;
+    }
+    try { await salvarRoboTransportadora({ ...r, [campo]: limpo || null }); setMsg(`${r.transportadora}: ${rotulo.toLowerCase()} atualizado(s).`); await carregar(); } catch (ex) { setErro(ex.message); await carregar(); }
   };
 
   const alternarAtivo = async (r) => {
@@ -443,8 +492,9 @@ export default function AuditorRobo() {
 
       <div className="hint-box compact">
         <strong>O que o robo faz hoje:</strong> faturas corretas (calculadas, sem desconto e todas entregues) vao direto para a
-        <strong> aprovacao da gestao, marcadas "via robo"</strong>; o auditor acompanha no Meu Painel. Faturas com desconto ficam
-        registradas como "enviaria laudo" e as duvidosas vao para a fila do auditor. <strong>Nenhum e-mail e enviado ainda</strong>.
+        <strong> aprovacao da gestao, marcadas "via robo"</strong>; o auditor acompanha no Meu Painel. Faturas com desconto geram
+        laudo, que sai por e-mail conforme a coluna "Envio do laudo" de cada transportadora (manual, apos o OK do auditor ou direto);
+        CT-e emitido a partir de 01/10/2026 sem NF (regra ligada) gera laudo que sai sozinho. As duvidosas vao para a fila do auditor.
         <br /><strong>Como funciona:</strong> considera, para cada transportadora, as faturas que entraram a partir de <strong>um dia antes de ela ser incluida</strong> na lista (coluna "Considera desde").
         Para cada uma, o robo calcula os CT-es (se ainda nao calculados), apura o valor a descontar e a entrega, e decide:
         com desconto → laudo; correta e toda entregue → aprovacao; qualquer duvida → fila do auditor.
@@ -480,6 +530,18 @@ export default function AuditorRobo() {
                 style={{ padding: '3px 10px', borderRadius: 999, cursor: podeContingencia ? 'pointer' : 'not-allowed', opacity: podeContingencia ? 1 : 0.7, fontWeight: 700, fontSize: 12, border: `1px solid ${cfgRobo.liberar_entrega_contingencia ? '#b91c1c' : '#64748b'}`, background: cfgRobo.liberar_entrega_contingencia ? '#fef2f2' : '#f8fafc', color: cfgRobo.liberar_entrega_contingencia ? '#b91c1c' : '#475569' }}
               >
                 {cfgRobo.liberar_entrega_contingencia ? 'CONTINGENCIA: libera sem entrega' : 'Entrega exigida'}
+              </button>
+              <button
+                type="button" disabled={!podeContingencia}
+                onClick={() => {
+                  if (!cfgRobo.checar_cte_sem_nf && !window.confirm('Ligar a regra "CT-e sem vinculo de NF"?\n\nNas faturas que entrarem a partir de agora, CT-e emitido a partir de 01/10/2026 sem a chave da NF na base de CT-es nao vai para pagamento: o laudo sai SOZINHO para a transportadora pedindo a retirada e um CT-e novo.\n\nProtecao: se metade ou mais dos CT-es da fatura estiverem sem NF na base, a fatura vai para o auditor (provavel base importada sem a aba "Notas Fiscais").')) return;
+                  if (cfgRobo.checar_cte_sem_nf && !window.confirm('Desligar a regra "CT-e sem NF"? O robo deixa de conferir a NF e CT-e sem nota fiscal pode seguir para pagamento.')) return;
+                  aplicarCfg({ ...cfgRobo, checar_cte_sem_nf: !cfgRobo.checar_cte_sem_nf, checar_cte_sem_nf_desde: cfgRobo.checar_cte_sem_nf ? null : new Date().toISOString() }, cfgRobo.checar_cte_sem_nf ? 'Regra CT-e sem NF desligada.' : 'Regra CT-e sem NF ligada: vale para as faturas que entrarem a partir de agora.');
+                }}
+                title={'Ligado: CT-e emitido a partir de 01/10/2026 sem a chave da NF dentro dele (base de CT-es) nao vai para pagamento; o laudo pede a retirada e um CT-e novo. Desligado: o robo nao confere.' + (podeContingencia ? '' : ' Somente o administrador altera.')}
+                style={{ padding: '3px 10px', borderRadius: 999, cursor: podeContingencia ? 'pointer' : 'not-allowed', opacity: podeContingencia ? 1 : 0.7, fontWeight: 700, fontSize: 12, border: `1px solid ${cfgRobo.checar_cte_sem_nf ? '#dc2626' : '#64748b'}`, background: cfgRobo.checar_cte_sem_nf ? '#fef2f2' : '#f8fafc', color: cfgRobo.checar_cte_sem_nf ? '#dc2626' : '#475569' }}
+              >
+                {cfgRobo.checar_cte_sem_nf ? `CT-e sem NF: BLOQUEIA${cfgRobo.checar_cte_sem_nf_desde ? ` (faturas desde ${dataBr(cfgRobo.checar_cte_sem_nf_desde)})` : ''}` : 'CT-e sem NF: DESLIGADA'}
               </button>
             </span>
           )}
@@ -554,7 +616,6 @@ export default function AuditorRobo() {
             onChange={(e) => setForm((p) => ({ ...p, transportadora: e.target.value }))} style={{ minWidth: 220 }} />
           <datalist id="robo-transportadoras">{nomesTransportadora.map((n) => <option key={n} value={n} />)}</datalist>
           <input placeholder="E-mails da transportadora que recebem o laudo" value={form.emails_transportadora} onChange={(e) => setForm((p) => ({ ...p, emails_transportadora: e.target.value }))} style={{ minWidth: 240 }} />
-          <input placeholder="E-mail de aprovacao (financeiro)" value={form.email_aprovacao} onChange={(e) => setForm((p) => ({ ...p, email_aprovacao: e.target.value }))} />
           <select value={form.email_automatico ? 'auto' : 'manual'} onChange={(e) => setForm((p) => ({ ...p, email_automatico: e.target.value === 'auto' }))}
             title="Automatico: depois que o auditor aprova o laudo, o e-mail sai sozinho para a transportadora. Manual: o auditor envia.">
             <option value="manual">Laudo: o auditor envia (manual)</option>
@@ -564,41 +625,70 @@ export default function AuditorRobo() {
         </div>
         {lista.length > 0 && (
           <div className="sim-analise-tabela-wrap">
-            <table className="sim-analise-tabela">
-              <thead><tr><th>Transportadora</th><th>Auditor</th><th>E-mails laudo</th><th>Aprovacao</th><th>Envio do laudo</th><th>Considera desde</th><th>Modo</th><th>Ativo</th><th /></tr></thead>
+            <table className="sim-analise-tabela robo-transp-tabela">
+              <thead><tr><th>Transportadora</th><th>Quem recebe o laudo</th><th>Envio do laudo</th><th>Considera faturas desde</th><th>Ativo</th><th /></tr></thead>
               <tbody>
-                {lista.map((r) => (
-                  <tr
-                    key={r.id}
-                    onClick={() => { setTranspSel(normNome(transpSel) === normNome(r.transportadora) ? '' : r.transportadora); }}
-                    title="Clique para filtrar o painel e a lista por esta transportadora"
-                    style={{ opacity: r.ativo ? 1 : 0.55, cursor: 'pointer', background: normNome(transpSel) === normNome(r.transportadora) ? '#eef2ff' : undefined }}
-                  >
-                    <td>{r.transportadora}</td>
-                    <td style={{ color: '#64748b', fontSize: 12 }}>Da carteira da fatura</td>
-                    <td>{r.emails_transportadora || '-'}</td>
-                    <td>{r.email_aprovacao || '-'}</td>
-                    <td onClick={(ev) => ev.stopPropagation()}>
-                      <select value={r.email_automatico ? 'auto' : 'manual'} onChange={(e) => alternarEmail(r, e.target.value === 'auto')} style={{ fontSize: 12 }}>
-                        <option value="manual">Manual</option>
-                        <option value="auto">E-mail automatico</option>
-                      </select>
-                    </td>
-                    <td onClick={(ev) => ev.stopPropagation()} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-                      <input
-                        type="date" value={dataInicioRobo(r)} style={{ fontSize: 12, padding: '2px 4px' }}
-                        title="Faturas que entraram no sistema a partir desta data entram no robo. Padrao: um dia antes da inclusao."
-                        onChange={(e) => alterarDataInicio(r, e.target.value)}
-                      />
-                      {r.data_inicio
-                        ? <button type="button" className="link-button" style={{ fontSize: 11, marginLeft: 4 }} title="Voltar para o padrao (um dia antes da inclusao)" onClick={() => alterarDataInicio(r, null)}>padrao</button>
-                        : <span style={{ fontSize: 11, color: '#64748b', marginLeft: 4 }}>(padrao)</span>}
-                    </td>
-                    <td>{r.modo}</td>
-                    <td onClick={(ev) => ev.stopPropagation()}><input type="checkbox" checked={r.ativo} onChange={() => alternarAtivo(r)} /></td>
-                    <td onClick={(ev) => ev.stopPropagation()}><button type="button" className="btn-secondary audit-small-button" onClick={() => remover(r)}>Remover</button></td>
-                  </tr>
-                ))}
+                {lista.map((r) => {
+                  const emails = String(r.emails_transportadora || '').split(/[;,\s]+/).filter(Boolean);
+                  const modo = modoEnvio(r);
+                  return (
+                    <tr
+                      key={r.id}
+                      onClick={() => { setTranspSel(normNome(transpSel) === normNome(r.transportadora) ? '' : r.transportadora); }}
+                      title="Clique para filtrar o painel e a lista por esta transportadora"
+                      className={normNome(transpSel) === normNome(r.transportadora) ? 'selecionada' : undefined}
+                      style={{ opacity: r.ativo ? 1 : 0.55 }}
+                    >
+                      <td>
+                        <div className="robo-transp-nome">{r.transportadora}</div>
+                        <div className="robo-transp-sub">Auditor: o da carteira da fatura</div>
+                      </td>
+                      <td onClick={(ev) => ev.stopPropagation()}>
+                        <div className="robo-transp-linha">
+                          <span className="robo-transp-rotulo">Para</span>
+                          <span className="robo-transp-emails">
+                            {emails.length ? emails.map((e) => <span key={e}>{e}</span>) : <em className="robo-transp-falta">sem e-mail cadastrado</em>}
+                          </span>
+                          <button type="button" className="robo-transp-acao" onClick={() => editarEmails(r, 'emails_transportadora', 'E-mails que recebem o laudo')}>Editar</button>
+                        </div>
+                        <div className="robo-transp-linha">
+                          <span className="robo-transp-rotulo">Cópia</span>
+                          <span className="robo-transp-sub">auditor da fatura · fatura@corpcantuinc.onmicrosoft.com · aldo.dias@cantu.inc</span>
+                        </div>
+                      </td>
+                      <td onClick={(ev) => ev.stopPropagation()}>
+                        <select className={`robo-transp-modo robo-transp-modo--${modo}`} value={modo} onChange={(e) => alterarModoEnvio(r, e.target.value)}>
+                          <option value="manual">Auditor envia (manual)</option>
+                          <option value="auto">Automático após OK do auditor</option>
+                          <option value="direto">Direto, sem aprovação</option>
+                        </select>
+                        <div className="robo-transp-sub">
+                          {modo === 'direto' ? `Faturas que entraram desde ${dataBr(r.envio_direto_desde)}`
+                            : modo === 'auto' ? 'Sai sozinho depois que o auditor aprova'
+                              : 'O auditor aprova e envia'}
+                        </div>
+                      </td>
+                      <td onClick={(ev) => ev.stopPropagation()}>
+                        <input
+                          type="date" className="robo-transp-data" value={dataInicioRobo(r)}
+                          title="Faturas que entraram no sistema a partir desta data entram no robo. Padrao: um dia antes da inclusao."
+                          onChange={(e) => alterarDataInicio(r, e.target.value)}
+                        />
+                        <div className="robo-transp-sub">
+                          {r.data_inicio
+                            ? <button type="button" className="robo-transp-acao" title="Voltar para o padrao (um dia antes da inclusao)" onClick={() => alterarDataInicio(r, null)}>Voltar ao padrão</button>
+                            : 'Padrão (dia antes da inclusão)'}
+                        </div>
+                      </td>
+                      <td onClick={(ev) => ev.stopPropagation()}>
+                        <label className="robo-transp-ativo"><input type="checkbox" checked={r.ativo} onChange={() => alternarAtivo(r)} /> {r.ativo ? 'Sim' : 'Não'}</label>
+                      </td>
+                      <td onClick={(ev) => ev.stopPropagation()}>
+                        <button type="button" className="robo-transp-acao robo-transp-acao--perigo" onClick={() => remover(r)}>Remover</button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

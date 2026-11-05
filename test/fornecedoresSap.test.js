@@ -5,6 +5,8 @@ import { fornecedorParaSap } from '../src/utils/robos/fornecedoresSap.js';
 test('fornecedor com dois cadastros usa o codigo do SAP', () => {
   assert.equal(fornecedorParaSap('11048206000299'), '2557609');
   assert.equal(fornecedorParaSap('11.048.206/0002-99'), '2557609');
+  assert.equal(fornecedorParaSap('11.048.206/0003-70'), '2788415');
+  assert.equal(fornecedorParaSap('11.048.206/0005-31'), '2881571');
 });
 
 test('sem regra, o robo continua digitando o CNPJ', () => {

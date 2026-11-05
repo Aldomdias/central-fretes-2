@@ -4,7 +4,7 @@ import RoboProgressoAmd from './RoboProgressoAmd';
 import { exportarExcelFormatado } from '../utils/exportarExcelFormatado';
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { listarControleBoletos } from '../services/boletoControleService';
-import { aprovarLaudosRobo, DECISAO, gravarPreferenciaPesoMaisProximo, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo, buscarTodasPaginas, laudoResolvidoFora, faturaPaga, faturaEmAntecipacao } from '../services/auditorRoboService';
+import { aprovarLaudosRobo, DECISAO, gravarPreferenciaPesoMaisProximo, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo, buscarTodasPaginas, laudoResolvidoFora, faturaPaga, faturaEmAntecipacao, ctesSemNfDe, MOTIVO_SEM_NF } from '../services/auditorRoboService';
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
@@ -46,6 +46,8 @@ function etapaDe(e, f, boletoIds) {
   }
   if (e.decisao === DECISAO.ENVIAR_LAUDO && f.status === 'AGUARDANDO_TRANSPORTADORA') return 'transportadora';
   if (!STATUS_ROBO_AUDITA.includes(f.status)) return 'tratada';
+  // CT-e sem vinculo de NF: fica no "Para revisar" (card proprio) enquanto o laudo nao sai para a transportadora.
+  if (e.decisao === DECISAO.ENVIAR_LAUDO && ctesSemNfDe(e).length) return 'revisar';
   if (e.decisao === DECISAO.ENVIAR_LAUDO) return e.aprovado_auditor_em ? 'laudo_aprovado' : 'laudo_ok';
   if (e.decisao === DECISAO.REVISAO_AUDITOR) return 'revisar';
   return null;
@@ -60,6 +62,7 @@ async function carregarExecucoes() {
 
 // Tipo de problema de uma fatura "Para revisar", lido do motivo gravado pelo robo (auditorRoboService.classificarFatura).
 const TIPOS_REVISAO = [
+  { id: 'sem_nf', rotulo: 'CT-e sem vinculo de NF', cor: '#dc2626', dica: 'CT-e sem a chave da NF dentro dele (base de CT-es/XML; tracking nao vale): nao pode ser pago. O laudo sai sozinho pedindo a retirada da fatura e um CT-e novo.' },
   { id: 'entrega', rotulo: 'So entrega', cor: '#b45309', dica: 'Calculo ok; falta comprovar a entrega de CT-e(s).' },
   { id: 'nao_localizado', rotulo: 'Sem calculo — CT-e nao localizado', cor: '#7c3aed', dica: 'CT-e sem chave, nao encontrado na base por numero/CNPJ.' },
   { id: 'nfse', rotulo: 'Nota fiscal de servico (NFS-e)', cor: '#0f766e', dica: 'Fatura com NFS-e (nao e CT-e): o robo nunca audita, conferir manualmente.' },
@@ -68,6 +71,7 @@ const TIPOS_REVISAO = [
 ];
 // "Tratadas fora do robo": o que o robo tinha encontrado antes de a fatura seguir por fora (para medir o que escapa).
 const TIPOS_TRATADA = [
+  { id: 'sem_nf', rotulo: 'CT-e sem vinculo de NF', cor: '#dc2626', dica: 'O robo tinha CT-e sem chave da NF (nao pode ser pago) e a fatura seguiu por fora.' },
   { id: 'divergente', rotulo: 'Valor divergente (laudo)', cor: '#b45309', dica: 'O robo tinha desconto a cobrar e a fatura seguiu por fora.' },
   { id: 'sem_calculo', rotulo: 'Sem calculo', cor: '#b91c1c', dica: 'CT-e sem resultado de calculo (tabela, rota, erro).' },
   { id: 'nao_localizado', rotulo: 'CT-e nao localizado', cor: '#7c3aed', dica: 'CT-e sem chave, nao encontrado na base.' },
@@ -77,6 +81,7 @@ const TIPOS_TRATADA = [
   { id: 'outros', rotulo: 'Outros', cor: '#475569', dica: 'Sem analise do robo ou outro motivo.' },
 ];
 function tipoTratada(e = {}) {
+  if (ctesSemNfDe(e).length || String(e.motivo || '').includes(MOTIVO_SEM_NF)) return 'sem_nf';
   if (e.decisao === DECISAO.ENVIAR_LAUDO || Number(e.valor_descontar || 0) > 0.01) return 'divergente';
   if (e.decisao === DECISAO.ENVIAR_APROVACAO) return 'ok';
   const t = tipoRevisao(e.motivo);
@@ -84,6 +89,7 @@ function tipoTratada(e = {}) {
 }
 function tipoRevisao(motivo) {
   const m = String(motivo || '').toLowerCase();
+  if (m.includes(MOTIVO_SEM_NF.toLowerCase())) return 'sem_nf';
   // "NFS-e: ..." (so falta NFS-e) ou motivo antigo "(NFS-e (serie X) nao localizado...)".
   if (m.startsWith('nfs-e') || m.includes('(nfs-e')) return 'nfse';
   if (m.includes('nao localizado')) return 'nao_localizado';
@@ -338,7 +344,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
   const reenviar = (c) => {
     const emails = emailsCadastrados(c.transportadora);
     if (!emails.length) { setErro(`${c.transportadora}: nenhum e-mail cadastrado na lista do robo.`); return; }
-    if (!window.confirm(`Reenviar por e-mail o laudo consolidado de ${c.transportadora} (${c.faturas.length} fatura(s))?\n\nPara: ${emails.join(', ')}\nJunto: auditor responsavel e fatura@cantustore.com.br.`)) return;
+    if (!window.confirm(`Reenviar por e-mail o laudo consolidado de ${c.transportadora} (${c.faturas.length} fatura(s))?\n\nPara: ${emails.join(', ')}\nJunto: auditor responsavel, fatura@corpcantuinc.onmicrosoft.com e aldo.dias@cantu.inc.`)) return;
     onEnviarEmail?.([{ transportadora: c.transportadora, ids: c.faturas.map((f) => String(f.id)) }], 'manual', { reenvio: true });
   };
 
@@ -468,7 +474,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
           <div style={{ padding: '0 12px 12px' }}>
             <div className="hint-box compact" style={{ marginBottom: 8 }}>
               Laudos que ja sairam (ou so foram baixados). O reenvio gera o laudo consolidado e manda para os e-mails cadastrados da transportadora,
-              com o auditor responsavel e o grupo fatura@cantustore.com.br sempre juntos.
+              com o auditor responsavel e o grupo fatura@corpcantuinc.onmicrosoft.com e aldo.dias@cantu.inc sempre juntos.
             </div>
             <div className="sim-analise-tabela-wrap" style={{ maxHeight: 360, overflowY: 'auto' }}>
               <table className="sim-analise-tabela">
@@ -485,7 +491,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
                         <td style={{ fontSize: 12 }}>{[...c.auditores].join(' / ')}</td>
                         <td style={{ fontSize: 12, maxWidth: 360, color: !emails.length ? '#b91c1c' : teste ? '#b45309' : undefined }}>
                           {!emails.length ? 'Sem e-mail cadastrado' : teste ? `${emails.join(', ')} (e-mail de teste)` : emails.join(', ')}
-                          {emails.length > 0 && <div style={{ color: '#64748b', marginTop: 2 }}>+ auditor e fatura@cantustore.com.br</div>}
+                          {emails.length > 0 && <div style={{ color: '#64748b', marginTop: 2 }}>+ auditor, fatura@corpcantuinc.onmicrosoft.com e aldo.dias@cantu.inc</div>}
                         </td>
                         <td style={{ whiteSpace: 'nowrap' }}>
                           <button type="button" className="btn-primary audit-small-button" disabled={!emails.length || !onEnviarEmail} onClick={() => reenviar(c)}>
