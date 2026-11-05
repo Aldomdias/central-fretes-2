@@ -132,13 +132,15 @@ export default function ProvisaoCtesPainel() {
       const filiais = await filiaisPorCnpj();
       const todosCtes = await carregarCtesCompetencia(competencia, setProgresso);
       // So CT-es com tomador do grupo (CPX, ITR, GP Pneus, GRIP, Cantu) — mesma regra da base de CT-es.
-      const opcoesTomador = { ocultarEbazar: false, incluirCpsLog: true, incluirCpComercial: false };
+      const opcoesTomador = { ocultarEbazar: true };
       const ctes = [];
       const fora = { qtd: 0, valor: 0, porTomador: new Map() };
       todosCtes.forEach((c) => {
-        if (avaliarCteParaBase(c, opcoesTomador).aceito) { ctes.push(c); return; }
+        const avaliacao = avaliarCteParaBase(c, opcoesTomador);
+        if (avaliacao.aceito) { ctes.push(c); return; }
         fora.qtd += 1; fora.valor += Number(c.valor_cte || 0);
-        const nome = String(c.tomador_servico || '').trim() || '(tomador vazio)';
+        const nome = avaliacao.codigo === 'ebazar' ? 'EBAZAR (excluído)' : avaliacao.codigo === 'cps_log' ? 'CPS LOG (excluído)'
+          : String(c.tomador_servico || '').trim() || '(tomador vazio)';
         const t = fora.porTomador.get(nome) || { nome, qtd: 0, valor: 0 };
         t.qtd += 1; t.valor += Number(c.valor_cte || 0);
         fora.porTomador.set(nome, t);
@@ -152,7 +154,7 @@ export default function ProvisaoCtesPainel() {
       }));
       if (incluirTracking) {
         const linhas = await carregarTrackingCompetencia(competencia, setProgresso);
-        const { nfs: agrupadas, canceladas } = agruparNfsTracking(linhas);
+        const { nfs: agrupadas, canceladas } = agruparNfsTracking(linhas.filter((l) => !/EBAZAR/i.test(String(l.transportadora || ''))));
         const valorPorChave = new Map(ctes.map((c) => [String(c.chave_cte || '').replace(/\D/g, ''), Number(c.valor_cte || 0)]));
         const foraDoMes = agrupadas.flatMap((n) => [...n.chaves_cte]).filter((c) => !valorPorChave.has(c));
         const extra = await buscarCtesNaBase(foraDoMes, setProgresso);
@@ -309,7 +311,7 @@ export default function ProvisaoCtesPainel() {
     }
     if (foraTomador?.qtd) {
       blocos.push({
-        titulo: 'CT-es fora da provisão (tomador fora do grupo)',
+        titulo: 'CT-es fora da provisão (EBAZAR / tomador fora do grupo)',
         colunas: [{ titulo: 'Tomador' }, { titulo: 'CT-es', tipo: 'inteiro' }, { titulo: 'Valor', tipo: 'moeda' }],
         linhas: foraTomador.porTomador.map((x) => [x.nome, x.qtd, x.valor]),
         totais: ['Total', foraTomador.qtd, foraTomador.valor],
@@ -328,7 +330,7 @@ export default function ProvisaoCtesPainel() {
         informacoes: [
           `Gerado em ${new Date().toLocaleString('pt-BR')}${snapshot ? ` · provisão salva em ${dataHoraBr(snapshot.criado_em)}${snapshot.descricao ? ` (${snapshot.descricao})` : ''}` : ' · cálculo com os dados de hoje'}`,
           'Competência = data de emissão do CT-e. Provisão = CT-es lançados no SAP depois do mês + não lançados.',
-          'Só CT-es com tomador do grupo (CPX, ITR, GP Pneus, GRIP, Cantu).',
+          'Só CT-es com tomador do grupo (CPX, ITR, GP Pneus, GRIP, Cantu); EBAZAR fora (provisão e tracking).',
         ],
         blocos,
       },
@@ -426,7 +428,7 @@ export default function ProvisaoCtesPainel() {
           <p style={{ margin: '6px 0 10px', fontSize: 13, color: '#64748b' }}>
             Cruza os CT-es emitidos no mês (base de CT-es) com os lançamentos de CT-e do relatório SAP importado acima
             (CNPJ do emitente + número + série). CT-e sem lançamento próprio conta como lançado pela data de lançamento da fatura em que está.
-            Para ver o que foi lançado depois da virada, importe também o relatório SAP do mês seguinte. Só entram CT-es com tomador do grupo (CPX, ITR, GP Pneus, GRIP, Cantu). Empresa pelo CNPJ do tomador (Filiais dos Robôs) ou pela empresa do lançamento SAP.
+            Para ver o que foi lançado depois da virada, importe também o relatório SAP do mês seguinte. Só entram CT-es com tomador do grupo (CPX, ITR, GP Pneus, GRIP, Cantu); EBAZAR fica fora (CT-es e tracking). Empresa pelo CNPJ do tomador (Filiais dos Robôs) ou pela empresa do lançamento SAP.
           </p>
           <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 10 }}>
             <label className="field" style={{ width: 180 }}>Competência (emissão)
@@ -513,7 +515,7 @@ export default function ProvisaoCtesPainel() {
           {resumo && foraTomador?.qtd > 0 && (
             <details className="hint-box compact" style={{ marginBottom: 8 }}>
               <summary style={{ cursor: 'pointer' }}>
-                {num(foraTomador.qtd)} CT-e(s) · {dinheiro(foraTomador.valor)} ficaram fora da provisão: tomador fora do grupo (só CPX, ITR, GP Pneus, GRIP e Cantu) ou vazio.
+                {num(foraTomador.qtd)} CT-e(s) · {dinheiro(foraTomador.valor)} ficaram fora da provisão: EBAZAR, tomador fora do grupo (só CPX, ITR, GP Pneus, GRIP e Cantu) ou vazio.
               </summary>
               <div style={{ marginTop: 6, fontSize: 12 }}>
                 {foraTomador.porTomador.slice(0, 30).map((t) => <div key={t.nome}>{t.nome}: {num(t.qtd)} · {dinheiro(t.valor)}</div>)}
