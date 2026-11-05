@@ -86,6 +86,44 @@ export default function LancamentoCteRobo() {
   const ccPeloRobo = prontas.filter((l) => l.erros.length).length;
   // chaves das NFs de venda para a consulta do centro de custo (planilha do robo)
 
+  // Filtro "manter só estes": cola os números de CT-e (qualquer separador) e remove o resto do lote.
+  // Aceita "1234" (casa qualquer série) ou "1234-1" (número-série); zeros à esquerda não importam.
+  const [filtroNumeros, setFiltroNumeros] = useState('');
+  const [busca, setBusca] = useState('');
+  const semZeros = (s) => String(s ?? '').replace(/^0+(?=\d)/, '');
+  function chavesCte(l) {
+    const [n, s] = String(l.cte || '').split('-');
+    return { numero: semZeros(n), completo: `${semZeros(n)}-${semZeros(s)}` };
+  }
+  function manterSoEstes() {
+    const pedidos = String(filtroNumeros).split(/[\s,;]+/).map((t) => t.trim()).filter(Boolean).map((t) => {
+      const [n, s] = t.replace(/[^\d-]/g, '').split('-');
+      return s !== undefined && s !== '' ? `${semZeros(n)}-${semZeros(s)}` : semZeros(n);
+    }).filter(Boolean);
+    if (!pedidos.length) { setErro('Cole pelo menos um número de CT-e para manter.'); return; }
+    const pedidosSet = new Set(pedidos);
+    const todos = montarLancamentoCte(cts, indices, partidas, { vencimento });
+    const achados = new Set();
+    const manter = new Set();
+    todos.forEach((l) => {
+      const k = chavesCte(l);
+      if (pedidosSet.has(k.numero)) { manter.add(l.id); achados.add(k.numero); }
+      if (pedidosSet.has(k.completo)) { manter.add(l.id); achados.add(k.completo); }
+    });
+    const naoAchados = pedidos.filter((p) => !achados.has(p));
+    if (!manter.size) { setErro(`Nenhum dos números informados está no lote (${pedidos.join(', ')}).`); return; }
+    setRemovidos(todos.filter((l) => !manter.has(l.id)).map((l) => l.id));
+    setErro(''); setBusca('');
+    setFeedback(`Mantidos ${fmt(manter.size)} de ${fmt(todos.length)} CT-e; o resto saiu do lote.${naoAchados.length ? ` Não encontrados no lote: ${naoAchados.join(', ')}.` : ''}`);
+  }
+  function restaurarTodos() {
+    setRemovidos([]); setFeedback('Todos os CT-e do lote voltaram para a lista.'); setErro('');
+  }
+  const termoBusca = busca.trim().toLowerCase();
+  const linhasVisiveis = termoBusca
+    ? linhas.filter((l) => [l.cte, l.transportadora, l.fatura, l.danfe, l.centro, l.cc].some((v) => String(v ?? '').toLowerCase().includes(termoBusca)))
+    : linhas;
+
   function editar(id, campo, valor) {
     setManuais((a) => ({ ...a, [id]: { ...(a[id] || {}), [campo]: valor } }));
   }
@@ -246,13 +284,27 @@ export default function LancamentoCteRobo() {
                   <label>Vencimento (todos os CT-e)</label>
                   <input type="date" min={hojeIso()} value={vencimento} onChange={(e) => setVencimento(naoAntesDeHoje(e.target.value))} title="Nunca antes de hoje" />
                 </div>
+                <div style={{ marginTop: 10, padding: 10, border: '1px solid #e2e8f0', borderRadius: 8, background: '#f8fafc' }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>Lançar só alguns CT-e do pacote</div>
+                  <div style={{ fontSize: 12, color: '#64748b', margin: '2px 0 6px' }}>Cole os números dos CT-e que quer lançar (separados por espaço, vírgula ou um por linha; pode ser <code>1234</code> ou <code>1234-1</code> com a série). O resto sai do lote.</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                    <textarea rows={2} style={{ flex: '1 1 280px', minWidth: 240, fontFamily: 'inherit', fontSize: 13 }} value={filtroNumeros} onChange={(e) => setFiltroNumeros(e.target.value)} placeholder="Ex.: 45871, 45903" />
+                    <button type="button" className="btn-primary" onClick={manterSoEstes} disabled={!filtroNumeros.trim()}>Manter só estes</button>
+                    {removidos.length ? <button type="button" className="btn-secondary" onClick={restaurarTodos}>Restaurar todos ({fmt(removidos.length)} fora)</button> : null}
+                  </div>
+                  <div className="field" style={{ marginTop: 8, maxWidth: 320 }}>
+                    <label>Buscar na lista (só mostra, não remove)</label>
+                    <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="número, transportadora, fatura, NF…" />
+                  </div>
+                  {termoBusca ? <div style={{ fontSize: 12, color: '#64748b' }}>Mostrando {fmt(linhasVisiveis.length)} de {fmt(linhas.length)} CT-e. O lançamento continua com os {fmt(linhas.length)} do lote.</div> : null}
+                </div>
                 <div style={{ overflowX: 'auto', marginTop: 10, maxHeight: 440, overflowY: 'auto' }}>
                   <table style={{ borderCollapse: 'collapse', width: '100%' }}>
                     <thead>
                       <tr>{['Emp', 'CT-e', 'Transportadora', 'Bruto', 'Líquido', 'ICMS', 'Imp.', 'Centro', 'C.Custo', 'Fatura', 'Pedido', 'MIRO', ''].map((c) => <th key={c} style={th}>{c}</th>)}</tr>
                     </thead>
                     <tbody>
-                      {linhas.map((l) => (
+                      {linhasVisiveis.map((l) => (
                         <tr key={l.id} style={{ background: !podeIrParaRobo(l) ? '#fef2f2' : l.erros.length ? '#fff7ed' : undefined }} title={[...l.erros, ...l.avisos].join('; ')}>
                           <td style={td}>{l.emp || '—'}</td>
                           <td style={td}>{l.cte}</td>
