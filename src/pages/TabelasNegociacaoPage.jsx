@@ -348,6 +348,14 @@ function origemTabelaChipLabel(tabela) {
   return '';
 }
 
+// Identifica a tabela quando a mesma transportadora+origem tem mais de uma
+// (ex.: "Agrícola" x "Normal"). Retorna '' para tabela principal sem rótulo.
+function rotuloVarianteTabela(tabela) {
+  var variante = normalizarTexto(tabela && tabela.variante_tabela);
+  if (variante) return variante;
+  return normalizarTexto(tabela && tabela.tabela_alternativa_de) ? 'Alternativa' : '';
+}
+
 function negociacaoTemOrigemIdentificavel(tabela) {
   return Boolean(origemTabelaChipLabel(tabela));
 }
@@ -988,6 +996,10 @@ export default function TabelasNegociacaoPage() {
   const [tabelasPrincipaisDisponiveis, setTabelasPrincipaisDisponiveis] = useState([]);
   const [carregandoTabelasPrincipais, setCarregandoTabelasPrincipais] = useState(false);
   const [criandoSolicitacaoAmd, setCriandoSolicitacaoAmd] = useState(false);
+  // Identificação da tabela já existente (variante + principal), editável no
+  // painel de detalhe da negociação.
+  const [identificacaoTabela, setIdentificacaoTabela] = useState({ variante: '', principalId: '' });
+  const [salvandoIdentificacao, setSalvandoIdentificacao] = useState(false);
   const inputTaxasDestinoRef = useRef(null);
 
   const [tipoImportacao, setTipoImportacao] = useState('VERUM_ROTAS_FRETES');
@@ -1094,6 +1106,25 @@ export default function TabelasNegociacaoPage() {
         return origemA.localeCompare(origemB, 'pt-BR') || getRodadaAtualTabela(b) - getRodadaAtualTabela(a);
       });
   }, [tabelas, selecionada]);
+
+  // Candidatas a tabela principal da selecionada: mesma transportadora e mesma
+  // origem, que não sejam elas próprias alternativas.
+  const candidatasTabelaPrincipal = useMemo(function() {
+    if (!selecionada) return [];
+    var origemSel = normalizarTexto(origemTabelaChipLabel(selecionada)).toUpperCase();
+    return negociacoesMesmaTransportadora.filter(function(t) {
+      if (t.id === selecionada.id) return false;
+      if (normalizarTexto(t.tabela_alternativa_de)) return false;
+      return !origemSel || normalizarTexto(origemTabelaChipLabel(t)).toUpperCase() === origemSel;
+    });
+  }, [negociacoesMesmaTransportadora, selecionada]);
+
+  var selecionadaIdIdentificacao = selecionada ? selecionada.id : '';
+  var selecionadaVariante = selecionada ? (selecionada.variante_tabela || '') : '';
+  var selecionadaPrincipalId = selecionada ? (selecionada.tabela_alternativa_de || '') : '';
+  useEffect(function() {
+    setIdentificacaoTabela({ variante: selecionadaVariante, principalId: selecionadaPrincipalId });
+  }, [selecionadaIdIdentificacao, selecionadaVariante, selecionadaPrincipalId]);
 
   const resumo = useMemo(() => ({
     total: tabelas.length,
@@ -1839,6 +1870,33 @@ export default function TabelasNegociacaoPage() {
     if (!atualizada?.id) return;
     setTabelas(function(p) { return p.map(function(i) { return i.id === atualizada.id ? Object.assign({}, i, atualizada) : i; }); });
     if (selecionada && selecionada.id === atualizada.id) setSelecionada(function(s) { return Object.assign({}, s, atualizada); });
+  }
+
+  async function salvarIdentificacaoTabelaSelecionada() {
+    if (!selecionada?.id) return;
+    var variante = normalizarTexto(identificacaoTabela.variante);
+    var principalId = normalizarTexto(identificacaoTabela.principalId);
+    if (principalId && principalId === selecionada.id) return setErro('A tabela não pode ser alternativa dela mesma.');
+    if (principalId && !variante) return setErro('Informe o rótulo da tabela alternativa (ex.: "Agrícola") para diferenciá-la da principal.');
+
+    setSalvandoIdentificacao(true); setErro(''); setSucesso('');
+    try {
+      var atualizada = await atualizarTabelaNegociacao(selecionada.id, {
+        variante_tabela: variante,
+        tabela_alternativa_de: principalId,
+      });
+      if (principalId && atualizada && !normalizarTexto(atualizada.tabela_alternativa_de)) {
+        throw new Error('A base ainda não tem as colunas de tabela alternativa (migration 20260909120000 pendente).');
+      }
+      atualizarTabelaNaLista(atualizada);
+      setSucesso(principalId
+        ? 'Tabela marcada como alternativa "' + variante + '". No Simulador Realizado ela aparece com esse rótulo.'
+        : 'Identificação salva' + (variante ? ': "' + variante + '"' : '') + ' (tabela principal).');
+    } catch (e) {
+      setErro(e.message || 'Erro ao salvar identificação da tabela.');
+    } finally {
+      setSalvandoIdentificacao(false);
+    }
   }
 
   async function buscarVinculoAmdSelecionada() {
@@ -3267,6 +3325,15 @@ export default function TabelasNegociacaoPage() {
               <h2 style={{ margin: 0 }}>
                 {selecionada.transportadora}
                 <BadgeImportacao tipo={selecionada.origem_importacao} />
+                {rotuloVarianteTabela(selecionada) || candidatasTabelaPrincipal.length ? (
+                  <span
+                    title={selecionada.tabela_alternativa_de ? 'Tabela alternativa (mesma transportadora+origem)' : 'Tabela principal'}
+                    style={{ display: 'inline-block', marginLeft: 10, verticalAlign: 'middle', fontSize: 12, fontWeight: 800, padding: '3px 10px', borderRadius: 999, background: selecionada.tabela_alternativa_de ? '#ede9fe' : '#e0f2fe', color: selecionada.tabela_alternativa_de ? '#5b21b6' : '#0369a1' }}
+                  >
+                    {selecionada.tabela_alternativa_de ? 'Alternativa' : 'Principal'}
+                    {normalizarTexto(selecionada.variante_tabela) ? ': ' + normalizarTexto(selecionada.variante_tabela) : ''}
+                  </span>
+                ) : null}
               </h2>
               <p>{selecionada.tipo_tabela} · {selecionada.canal} · {selecionada.status} · Rodada {getRodadaAtualTabela(selecionada)}ª</p>
               <p style={{ marginTop: 4, color: '#475569' }}>{origemTabelaLabel(selecionada)}{selecionada.descricao ? ' · ' + selecionada.descricao : ''}</p>
@@ -3359,6 +3426,63 @@ export default function TabelasNegociacaoPage() {
               <button className="sim-tab" type="button" onClick={function() { abrirModalAprovacao(selecionada); }}>
                 {podePublicarOficial(selecionada) && usuarioEhGestor(sessao) ? 'Publicar' : 'Enviar p/ gestor'}
               </button>
+            </div>
+          </div>
+
+          <div className="sim-parametros-box" style={{ marginTop: 14, marginBottom: 12 }}>
+            <div className="sim-parametros-header">
+              <div>
+                <strong>Identificação da tabela</strong>
+                <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 12 }}>
+                  Quando a transportadora tem mais de uma tabela na mesma origem (ex.: Agrícola e Normal), dê um rótulo a cada uma e marque qual é a alternativa. O rótulo aparece na lista, nas origens e no Simulador Realizado.
+                </p>
+              </div>
+            </div>
+            <div className="sim-form-grid sim-grid-3" style={{ marginTop: 12 }}>
+              <label>Rótulo da tabela
+                <input
+                  value={identificacaoTabela.variante}
+                  onChange={function(e) {
+                    var valor = e.target.value;
+                    setIdentificacaoTabela(function(p) { return Object.assign({}, p, { variante: valor }); });
+                  }}
+                  placeholder='Ex: "Agrícola", "Normal"'
+                />
+              </label>
+              <label>Esta tabela é
+                <select
+                  value={identificacaoTabela.principalId}
+                  onChange={function(e) {
+                    var valor = e.target.value;
+                    setIdentificacaoTabela(function(p) { return Object.assign({}, p, { principalId: valor }); });
+                  }}
+                >
+                  <option value="">Principal</option>
+                  {candidatasTabelaPrincipal.map(function(t) {
+                    var rotulo = rotuloVarianteTabela(t);
+                    return (
+                      <option key={t.id} value={t.id}>
+                        Alternativa de: {origemTabelaChipLabel(t)}{rotulo ? ' · ' + rotulo : ''} · R{getRodadaAtualTabela(t)} (criada {formatDateBR(t.criado_em)})
+                      </option>
+                    );
+                  })}
+                  {identificacaoTabela.principalId && !candidatasTabelaPrincipal.some(function(t) { return t.id === identificacaoTabela.principalId; }) ? (
+                    <option value={identificacaoTabela.principalId}>Alternativa de outra tabela ({identificacaoTabela.principalId.slice(0, 8)})</option>
+                  ) : null}
+                </select>
+              </label>
+              <div style={{ display: 'flex', alignItems: 'end', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  className="primary"
+                  type="button"
+                  onClick={salvarIdentificacaoTabelaSelecionada}
+                  disabled={salvandoIdentificacao
+                    || (normalizarTexto(identificacaoTabela.variante) === normalizarTexto(selecionada.variante_tabela)
+                      && normalizarTexto(identificacaoTabela.principalId) === normalizarTexto(selecionada.tabela_alternativa_de))}
+                >
+                  {salvandoIdentificacao ? 'Salvando...' : 'Salvar identificação'}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -3570,7 +3694,7 @@ export default function TabelasNegociacaoPage() {
                             onClick={function() { abrirTabela(t, { telaNegociacao: emTelaNegociacao, sincronizarUrl: emTelaNegociacao }); }}
                             style={estiloChip}
                           >
-                            {chipLabel} · R{getRodadaAtualTabela(t)}{publicada ? ' · Publicada' : ''}
+                            {chipLabel}{rotuloVarianteTabela(t) ? ' · ' + rotuloVarianteTabela(t) : ''} · R{getRodadaAtualTabela(t)}{publicada ? ' · Publicada' : ''}
                           </button>
                           {!ativo && usuarioEhGestor(sessao) && (
                             <button

@@ -204,7 +204,14 @@ export function labelTabelaNegociacaoSimulador(tabela = {}) {
   // Só marca o tipo quando não é o caso comum (negociação padrão) — o rótulo
   // ficava comprido demais repetindo "NEGOCIACAO" em toda tabela em rodada.
   const tag = tipo === 'REAJUSTE_TABELA_EXISTENTE' ? 'REAJUSTE ' : tipo === 'TABELA_LOTACAO' ? 'LOTACAO ' : '';
-  return `${nome}${origem ? ` — ${origem}` : ''} (${tag}R${rodada})`;
+  // Variante (ex.: "Agrícola", "Normal") entra no rótulo: o simulador localiza
+  // a negociação pelo rótulo, então duas tabelas da mesma transportadora+origem
+  // (principal + alternativa) precisam de rótulos distintos — senão ele pegava
+  // sempre a primeira encontrada.
+  const variante = texto(tabela.variante_tabela || tabela.varianteTabela);
+  const ehAlternativa = Boolean(texto(tabela.tabela_alternativa_de || tabela.tabelaAlternativaDe));
+  const sufixoVariante = variante ? ` · ${variante}` : ehAlternativa ? ' · Alternativa' : '';
+  return `${nome}${origem ? ` — ${origem}` : ''}${sufixoVariante} (${tag}R${rodada})`;
 }
 
 function montarGeneralidades(generalidades = {}) {

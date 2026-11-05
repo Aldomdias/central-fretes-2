@@ -1,11 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import BaseCtesStatus from '../components/BaseCtesStatus';
-import { buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
+import { buscarBaseSimulacaoPorRotasDb, carregarCadastroCnpjTransportadorasDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
 import { categoriaCanalRealizado, montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
 import { filtrarCpComercialCte } from '../services/cteBasePolicy';
-import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
+import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
+import { aplicarVinculoTransportadora as aplicarVinculoPuro } from '../services/vinculosTransportadorasPuro';
+import { unificarTransportadorasCtes } from '../utils/unificarTransportadorasCte';
+import { abrirLaudoSaida, exportarExcelLaudoSaida } from '../utils/laudoSaidaTransportadora';
 
 const LIMITE_MAX_CT = 200000;
 const TOLERANCIA = 0.5; // R$ — diferença abaixo disto é ruído
@@ -131,7 +134,9 @@ function nomesPorOrigem(idx, ibgeOrigem7, cidadeCteNorm, cache) {
 }
 
 // Igual ao motor da Oportunidade Transportadora, mas SEM a transportadora que está saindo.
-function simularSubstitutas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigemReal, nomeExcluir) {
+// nomesExcluir: Set com norm() de todos os nomes da transportadora que está saindo
+// (nome unificado, variações do CT-e e nomes de tabela com a mesma raiz de CNPJ).
+function simularSubstitutas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigemReal, nomesExcluir) {
   const canalReal = canalRealDe(cte);
   const cteBase = {
     ...cte,
@@ -145,7 +150,7 @@ function simularSubstitutas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, 
   const origemRealCmp = normCmp(cidadeOrigemReal);
   const resultados = [];
   for (const transp of candidatas) {
-    if (norm(transp.nome) === norm(nomeExcluir)) continue;
+    if (nomesExcluir.has(norm(transp.nome))) continue;
     const teste = { ...cteBase, transportadora: transp.nome, nome_transportadora: transp.nome };
     let r;
     try { r = processarCte(teste, base); } catch { continue; }
@@ -468,6 +473,38 @@ export default function SimularSaidaTransportadoraPage() {
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'pt-BR'));
   }, [simulacao]);
 
+  const [exportando, setExportando] = useState('');
+
+  function contextoLaudo() {
+    const r = simulacao?.recorte || {};
+    const periodo = (r.dataInicio || r.dataFim)
+      ? `${r.dataInicio ? fmtData(`${r.dataInicio}T12:00:00`) : '…'} a ${r.dataFim ? fmtData(`${r.dataFim}T12:00:00`) : '…'}`
+      : (r.competencia ? `Competência ${r.competencia.slice(5, 7)}/${r.competencia.slice(0, 4)}` : 'Últimos CT-es carregados (sem filtro de período)');
+    return {
+      transportadora: simulacao?.transportadora || transportadora,
+      variantes: simulacao?.variantes || [],
+      periodo,
+      canal: r.canal || '',
+      reajustePct: reajustePct,
+      exclusoes: opcoesExcluir.filter((n) => exclusoes.has(norm(n))),
+      geradoEm: new Date().toISOString(),
+    };
+  }
+
+  async function exportarLaudo(tipo) {
+    if (!resultado) return;
+    setExportando(tipo); setErro('');
+    try {
+      if (tipo === 'pdf') abrirLaudoSaida(resultado, contextoLaudo());
+      else await exportarExcelLaudoSaida(resultado, contextoLaudo());
+    } catch (e) {
+      console.error('[SimularSaidaTransportadora] exportar laudo', e);
+      setErro(e?.message || 'Falha ao gerar o laudo.');
+    } finally {
+      setExportando('');
+    }
+  }
+
   async function carregar() {
     setStatusCarga('carregando'); setErro(''); setBase(null); setSimulacao(null); setExclusoes(new Set()); setTransportadora('');
     try {
@@ -479,6 +516,8 @@ export default function SimularSaidaTransportadoraPage() {
       // vínculos: unificam o nome da transportadora executada (ex.: 3 "Brasil Web" viram 1)
       const vinculos = await carregarVinculosTransportadoras().catch(() => []);
       const mapaVinculos = criarMapaVinculosTransportadoras(vinculos);
+      // cadastro com raízes de CNPJ: une nomes diferentes da mesma empresa no CT-e
+      const cadastro = await carregarCadastroCnpjTransportadorasDb().catch((e) => { console.warn('[SimularSaidaTransportadora] cadastro CNPJ indisponível', e); return []; });
 
       setProgresso('Carregando CT-es...');
       const ctes = await carregarCtes({
@@ -495,7 +534,8 @@ export default function SimularSaidaTransportadoraPage() {
       // avaliar for escolhida — aí sim buscamos só as rotas dela (ver
       // simularSaida), em vez de carregar a base inteira (rotas tem ~1,3M
       // linhas e isso deixava a tela lenta/travando com timeout).
-      setBase({ ctes, municipioPorCidade, mapasIbge, mapaVinculos });
+      const unificacao = unificarTransportadorasCtes(ctes, { aplicarVinculo: (n) => aplicarVinculoPuro(n, mapaVinculos), cadastro });
+      setBase({ ctes, municipioPorCidade, mapasIbge, mapaVinculos, unificacao });
       setStatusCarga('concluido'); setProgresso('');
     } catch (e) {
       console.error('[SimularSaidaTransportadora]', e);
@@ -504,25 +544,25 @@ export default function SimularSaidaTransportadoraPage() {
     }
   }
 
-  const transportadoras = useMemo(() => {
-    if (!base) return [];
-    const set = new Set();
-    for (const c of base.ctes) {
-      const bruto = (c.transportadora || c.nome_transportadora || '').trim();
-      if (!bruto) continue;
-      // nome unificado pelos vínculos (ex.: "BRASIL WEB GP" -> "BRASIL WEB")
-      set.add(aplicarVinculoTransportadora(bruto, base.mapaVinculos) || bruto);
-    }
-    return Array.from(set).sort((a, b) => a.localeCompare(b, 'pt-BR'));
-  }, [base]);
+  // Uma entrada por empresa: nomes do CT-e unificados pela raiz do CNPJ (cadastro
+  // da tabela + chave do CT-e) e pelos vínculos (ex.: "LTSL BAHIA ..." + "LTSL ENCOMENDAS").
+  const transportadoras = useMemo(() => (base?.unificacao?.grupos || []), [base]);
+  const grupoSelecionado = useMemo(
+    () => transportadoras.find((g) => g.nome === transportadora) || null,
+    [transportadoras, transportadora],
+  );
 
   async function simularSaida() {
     if (!base || !transportadora) return;
     setStatusSim('carregando'); setErro(''); setSimulacao(null); setExclusoes(new Set()); setRotasAbertas(new Set());
     try {
-      const { ctes, municipioPorCidade, mapasIbge, mapaVinculos } = base;
-      // compara pelo nome unificado: pega todos os CT-es das variações vinculadas à transportadora escolhida
-      const ctesDaTransp = ctes.filter((c) => norm(aplicarVinculoTransportadora(c.transportadora || c.nome_transportadora, mapaVinculos)) === norm(transportadora));
+      const { ctes, municipioPorCidade, mapasIbge, mapaVinculos, unificacao } = base;
+      // compara pelo nome unificado: pega todos os CT-es das variações (CNPJ/vínculo) da transportadora escolhida
+      const ctesDaTransp = ctes.filter((c) => norm(unificacao.nomeDoCte(c)) === norm(transportadora));
+      const grupo = unificacao.grupos.find((g) => g.nome === transportadora);
+      const nomesProprios = [transportadora, ...(grupo?.nomesTabela || []), ...(grupo?.variantes || [])];
+      const nomesExcluir = new Set(nomesProprios.flatMap((n) => [norm(n), norm(aplicarVinculoPuro(n, mapaVinculos))]));
+      const nomesTabelaProprios = [...new Set([transportadora, ...(grupo?.nomesTabela || [])])];
       if (!ctesDaTransp.length) throw new Error('Nenhum CT-e desta transportadora no recorte carregado.');
 
       // Busca só as tabelas de frete das rotas que ESTA transportadora roda —
@@ -555,9 +595,13 @@ export default function SimularSaidaTransportadoraPage() {
         const rotaKey = `${norm(cidadeOrigem)}|${ufOrigem}=>${norm(cidadeDestino)}|${ufDestino}`;
 
         // prazo/tabela da própria transportadora atual (referência para auditar)
-        const atual = (ibgeDestino && ibgeOrigemReal)
-          ? calcComTransportadora(cte, baseFrete, transportadora, ibgeOrigemReal, ibgeDestino, cidadeOrigem)
-          : null;
+        let atual = null;
+        if (ibgeDestino && ibgeOrigemReal) {
+          for (const nomeTab of nomesTabelaProprios) {
+            atual = calcComTransportadora(cte, baseFrete, nomeTab, ibgeOrigemReal, ibgeDestino, cidadeOrigem);
+            if (atual) break;
+          }
+        }
 
         let resultados = [];
         if (!ibgeDestino || !ibgeOrigemReal) {
@@ -567,7 +611,7 @@ export default function SimularSaidaTransportadoraPage() {
           const setDestino = idx.porDestinoIbge.get(dig7(ibgeDestino));
           const candidatas = [];
           if (setDestino) for (const nome of setOrigem) if (setDestino.has(nome)) { const t = mapBaseByNome.get(nome); if (t) candidatas.push(t); }
-          resultados = simularSubstitutas(cte, baseFrete, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigem, transportadora);
+          resultados = simularSubstitutas(cte, baseFrete, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigem, nomesExcluir);
         }
 
         ctesSimulados.push({
@@ -590,7 +634,7 @@ export default function SimularSaidaTransportadoraPage() {
         }
       }
 
-      setSimulacao({ transportadora, ctesSimulados, semIbge });
+      setSimulacao({ transportadora, variantes: grupo?.variantes || [], ctesSimulados, semIbge, recorte: { competencia, dataInicio, dataFim, canal } });
       setStatusSim('concluido'); setProgresso('');
     } catch (e) {
       console.error('[SimularSaidaTransportadora]', e);
@@ -651,8 +695,17 @@ export default function SimularSaidaTransportadoraPage() {
             <label>Transportadora a avaliar
               <select value={transportadora} onChange={(e) => setTransportadora(e.target.value)} style={{ width: '100%' }}>
                 <option value="">Selecione...</option>
-                {transportadoras.map((t) => <option key={t} value={t}>{t}</option>)}
+                {transportadoras.map((g) => (
+                  <option key={g.nome} value={g.nome}>
+                    {g.nome}{g.variantes.length > 1 ? ` (${g.variantes.length} nomes no CT-e)` : ''}
+                  </option>
+                ))}
               </select>
+              {grupoSelecionado && grupoSelecionado.variantes.length > 1 && (
+                <span style={{ display: 'block', fontWeight: 400, fontSize: '0.72rem', color: '#64748b', marginTop: 4 }}>
+                  Unificado (CNPJ/vínculo): {grupoSelecionado.variantes.join(' · ')}
+                </span>
+              )}
             </label>
             <label>Reajuste proposto
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -687,6 +740,18 @@ export default function SimularSaidaTransportadoraPage() {
                 : (delta < 0 ? `${fmtDias(-delta)} mais rápido` : `${fmtDias(delta)} mais lento`);
               return <Card label="Prazo médio (atual → subst.)" valor={`${fmtDias(pa)} → ${fmtDias(ps)}`} sub={sub} cor={corPrazo} />;
             })()}
+          </div>
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: '1rem' }}>
+            <button type="button" className="primary" onClick={() => exportarLaudo('pdf')} disabled={!!exportando || !resultado.linhas.length}>
+              {exportando === 'pdf' ? 'Gerando laudo...' : 'Laudo completo (PDF)'}
+            </button>
+            <button type="button" className="sim-tab" onClick={() => exportarLaudo('excel')} disabled={!!exportando || !resultado.linhas.length}>
+              {exportando === 'excel' ? 'Gerando Excel...' : 'Exportar Excel detalhado'}
+            </button>
+            <span style={{ fontSize: '0.76rem', color: '#64748b' }}>
+              Parecer, cenários (reajuste × saída total × híbrido), rotas críticas, impacto de prazo, substitutas e detalhe por rota/CT-e — respeita reajuste e exclusões atuais.
+            </span>
           </div>
 
           {resultado.semIbge > 0 && (
