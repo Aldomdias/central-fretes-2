@@ -4,29 +4,31 @@
 // colunas: [{ titulo, largura?, tipo?: 'texto' | 'moeda' | 'numero' | 'inteiro' | 'data' | 'datahora' | 'centro' }]
 // linhas:  arrays na mesma ordem das colunas (datas podem vir como Date ou string ISO)
 // resumo:  opcional, [[rotulo, valor], ...] -> aba "Filtros" com o que foi aplicado na tela
-export async function exportarExcelFormatado({ nomeArquivo, aba = 'Dados', colunas = [], linhas = [], resumo = null, retornarBytes = false }) {
-  const { default: XS } = await import('xlsx-js-style');
-  const paraData = (v) => {
-    if (!v) return '';
-    if (v instanceof Date) return v;
-    const texto = String(v);
-    const d = texto.includes('T') ? new Date(texto) : new Date(`${texto.slice(0, 10)}T12:00:00`);
-    return Number.isNaN(d.getTime()) ? texto : d;
-  };
+function paraData(v) {
+  if (!v) return '';
+  if (v instanceof Date) return v;
+  const texto = String(v);
+  const d = texto.includes('T') ? new Date(texto) : new Date(`${texto.slice(0, 10)}T12:00:00`);
+  return Number.isNaN(d.getTime()) ? texto : d;
+}
+
+const CONTAB = '_-"R$"\\ * #,##0.00_-;\\-"R$"\\ * #,##0.00_-;_-"R$"\\ * "-"??_-;_-@_-';
+const fonte = (extra = {}) => ({ name: 'Calibri', sz: 11, color: { rgb: 'FF1F2937' }, ...extra });
+const preenche = (rgb) => ({ patternType: 'solid', fgColor: { rgb }, bgColor: { rgb } });
+const borda = { style: 'thin', color: { rgb: 'FFD1D5DB' } };
+const bordas = { top: borda, bottom: borda, left: borda, right: borda };
+
+// Monta uma aba formatada (cabeçalho azul, zebrado, R$ contábil, filtro e cabeçalho congelado).
+// tipos extras: 'percentual' (valor já em %, ex.: 12.5) e 'texto_longo' (quebra linha).
+function montarAbaFormatada(XS, colunas = [], linhas = []) {
   const corpo = linhas.map((linha) => linha.map((valor, i) => {
     const tipo = colunas[i]?.tipo;
     if (tipo === 'data' || tipo === 'datahora') return paraData(valor);
-    if (['moeda', 'numero', 'inteiro'].includes(tipo)) return valor === '' || valor == null ? '' : Number(valor || 0);
+    if (['moeda', 'numero', 'inteiro', 'percentual'].includes(tipo)) return valor === '' || valor == null ? '' : Number(valor || 0);
     return valor == null ? '' : valor;
   }));
   const cabecalho = colunas.map((c) => c.titulo);
   const ws = XS.utils.aoa_to_sheet([cabecalho, ...corpo], { cellDates: true });
-
-  const CONTAB = '_-"R$"\\ * #,##0.00_-;\\-"R$"\\ * #,##0.00_-;_-"R$"\\ * "-"??_-;_-@_-';
-  const fonte = (extra = {}) => ({ name: 'Calibri', sz: 11, color: { rgb: 'FF1F2937' }, ...extra });
-  const preenche = (rgb) => ({ patternType: 'solid', fgColor: { rgb }, bgColor: { rgb } });
-  const borda = { style: 'thin', color: { rgb: 'FFD1D5DB' } };
-  const bordas = { top: borda, bottom: borda, left: borda, right: borda };
   const total = colunas.length;
 
   for (let col = 0; col < total; col += 1) {
@@ -39,11 +41,12 @@ export async function exportarExcelFormatado({ nomeArquivo, aba = 'Dados', colun
       const ref = XS.utils.encode_cell({ r: i + 1, c: col });
       if (!ws[ref]) ws[ref] = { t: 's', v: '' };
       const tipo = colunas[col]?.tipo || 'texto';
-      const horizontal = tipo === 'moeda' || tipo === 'numero' ? 'right'
+      const horizontal = ['moeda', 'numero', 'percentual'].includes(tipo) ? 'right'
         : ['inteiro', 'data', 'datahora', 'centro'].includes(tipo) ? 'center' : 'left';
       ws[ref].s = { font: fonte(), fill: fundo, border: bordas, alignment: { vertical: 'center', horizontal, wrapText: tipo === 'texto_longo' } };
       if (tipo === 'moeda' && ws[ref].t === 'n') ws[ref].z = CONTAB;
       if (tipo === 'numero' && ws[ref].t === 'n') ws[ref].z = '#,##0.00';
+      if (tipo === 'percentual' && ws[ref].t === 'n') ws[ref].z = '0.0"%"';
       if (tipo === 'data' && ws[ref].t === 'd') ws[ref].z = 'dd/mm/yyyy';
       if (tipo === 'datahora' && ws[ref].t === 'd') ws[ref].z = 'dd/mm/yyyy hh:mm';
     }
@@ -55,6 +58,28 @@ export async function exportarExcelFormatado({ nomeArquivo, aba = 'Dados', colun
   ws['!autofilter'] = { ref: `A1:${ultimaCol}${ultima}` };
   ws['!views'] = [{ state: 'frozen', ySplit: 1 }];
   ws['!ref'] = `A1:${ultimaCol}${ultima}`;
+  return ws;
+}
+
+// Várias abas no mesmo arquivo: abas = [{ nome, colunas, linhas }]
+export async function exportarExcelMultiAbas({ nomeArquivo, abas = [], retornarBytes = false }) {
+  const { default: XS } = await import('xlsx-js-style');
+  const wb = XS.utils.book_new();
+  const usados = new Set();
+  for (const aba of abas) {
+    let nome = String(aba.nome || 'Aba').replace(/[\\/?*[\]:]/g, ' ').slice(0, 31);
+    while (usados.has(nome)) nome = `${nome.slice(0, 28)}_${usados.size}`;
+    usados.add(nome);
+    XS.utils.book_append_sheet(wb, montarAbaFormatada(XS, aba.colunas || [], aba.linhas || []), nome);
+  }
+  if (retornarBytes) return XS.write(wb, { type: 'array', bookType: 'xlsx', cellDates: true });
+  XS.writeFile(wb, nomeArquivo, { cellDates: true });
+  return null;
+}
+
+export async function exportarExcelFormatado({ nomeArquivo, aba = 'Dados', colunas = [], linhas = [], resumo = null, retornarBytes = false }) {
+  const { default: XS } = await import('xlsx-js-style');
+  const ws = montarAbaFormatada(XS, colunas, linhas);
 
   const wb = XS.utils.book_new();
   XS.utils.book_append_sheet(wb, ws, String(aba).slice(0, 31));

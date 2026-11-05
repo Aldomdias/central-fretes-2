@@ -105,6 +105,31 @@ async function carregarTransportadorasResumoCompat(supabase) {
     .order('nome', { ascending: true });
 }
 
+// Cadastro mínimo para identificar a MESMA transportadora por trás de nomes
+// diferentes no CT-e (razão social x nome fantasia): nome oficial + todas as
+// raízes de CNPJ conhecidas (cadastro, origens e CNPJs adicionais).
+export async function carregarCadastroCnpjTransportadorasDb() {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = ensureClient();
+  const [transp, origens, adicionais] = await Promise.all([
+    carregarTransportadorasResumoCompat(supabase),
+    supabase.from('origens').select('transportadora_id, cnpj, cnpj_raiz'),
+    supabase.from('transportadora_cnpjs').select('transportadora_id, cnpj_raiz').eq('ativo', true),
+  ]);
+  if (transp.error) throw transp.error;
+  const raizesPorId = new Map();
+  const add = (id, valor) => {
+    const raiz = onlyDigitsDb(valor).slice(0, 8);
+    if (!id || raiz.length !== 8) return;
+    if (!raizesPorId.has(id)) raizesPorId.set(id, new Set());
+    raizesPorId.get(id).add(raiz);
+  };
+  (transp.data || []).forEach((t) => add(t.id, t.cnpj_raiz || t.cnpj));
+  if (!origens.error) (origens.data || []).forEach((o) => add(o.transportadora_id, o.cnpj_raiz || o.cnpj));
+  if (!adicionais.error) (adicionais.data || []).forEach((a) => add(a.transportadora_id, a.cnpj_raiz));
+  return (transp.data || []).map((t) => ({ id: t.id, nome: t.nome, raizes: Array.from(raizesPorId.get(t.id) || []) }));
+}
+
 function pickFirstDb(...values) {
   for (const value of values) {
     if (value !== undefined && value !== null && String(value).trim() !== '') return value;
