@@ -8871,6 +8871,7 @@ function AprovacaoGestao({ state, onState }) {
   const [filtroTransportadora, setFiltroTransportadora] = useState('');
   const [filtroSolicitante, setFiltroSolicitante] = useState('');
   const [filtroBusca, setFiltroBusca] = useState('');
+  const [filtroOrigem, setFiltroOrigem] = useState('');
 
   const pendentesTodas = useMemo(() => (
     (state.faturas || [])
@@ -8878,19 +8879,62 @@ function AprovacaoGestao({ state, onState }) {
       .sort((a, b) => (a.data_vencimento || '').localeCompare(b.data_vencimento || ''))
   ), [state.faturas]);
 
+  // O historico carregado na tela tem so os 1000 eventos mais recentes; os envios
+  // antigos caem fora e a resposta do auditor sumia. Busca direto os envios das pendentes.
+  const [enviosGestao, setEnviosGestao] = useState({});
+  const chavePendentes = pendentesTodas.map((item) => item.id).join(',');
+  useEffect(() => {
+    const ids = chavePendentes ? chavePendentes.split(',') : [];
+    if (!ids.length) return undefined;
+    let cancelado = false;
+    (async () => {
+      try {
+        const client = getSupabaseClient();
+        const mapa = {};
+        for (let i = 0; i < ids.length; i += 100) {
+          const { data } = await client.from('auditoria_fatura_historico')
+            .select('fatura_id, descricao, usuario_nome, created_at')
+            .eq('status_novo', 'AGUARDANDO_APROVACAO_GESTAO')
+            .in('fatura_id', ids.slice(i, i + 100))
+            .order('created_at', { ascending: false });
+          (data || []).forEach((h) => { if (!mapa[h.fatura_id]) mapa[h.fatura_id] = h; });
+        }
+        if (!cancelado) setEnviosGestao(mapa);
+      } catch {
+        // Sem a consulta direta, cai no historico ja carregado em state.
+      }
+    })();
+    return () => { cancelado = true; };
+  }, [chavePendentes]);
+
+  const respostaAuditor = (fatura) => {
+    // A coluna observacao_aprovacao nao existe na tabela faturas (o upsert a descarta),
+    // entao a resposta do auditor tambem e lida do evento de envio no historico.
+    const envio = enviosGestao[fatura.id] || (state.historico || []).find((h) => h.fatura_id === fatura.id && h.status_novo === 'AGUARDANDO_APROVACAO_GESTAO');
+    const doHistorico = envio ? String(envio.descricao || '').replace(/^.*?(?:cobranca a maior|valor a descontar) de R\$[\s ]*[\d.]+,\d{2}\.\s*/i, '') : '';
+    const texto = fatura.observacao_aprovacao || doHistorico;
+    const sim = texto.includes('[DESCONTO: SIM]');
+    const nao = texto.includes('[DESCONTO: NAO]');
+    const robo = /\[VIA ROBO\]/.test(String(envio?.descricao || '')) || /\[VIA ROBO\]/.test(texto);
+    return { sim, nao, robo, texto: texto.replace(/\[DESCONTO: (SIM|NAO)\]\s*/, ''), quem: envio?.usuario_nome || '' };
+  };
+
   const nomeSolicitante = (item) => item.auditor_nome || 'SEM AUDITOR';
   const opcoesTransportadora = useMemo(() => [...new Set(pendentesTodas.map((item) => item.transportadora).filter(Boolean))].sort((a, b) => a.localeCompare(b)), [pendentesTodas]);
   const opcoesSolicitante = useMemo(() => [...new Set(pendentesTodas.map(nomeSolicitante))].sort((a, b) => a.localeCompare(b)), [pendentesTodas]);
 
-  // Filtros dinamicos: transportadora, solicitante (auditor) e busca livre por fatura.
+  // Filtros dinamicos: transportadora, solicitante (auditor), origem do envio (robo/auditor) e busca livre.
   const pendentes = useMemo(() => {
     const busca = filtroBusca.trim().toLowerCase();
     return pendentesTodas.filter((item) => (
       (!filtroTransportadora || item.transportadora === filtroTransportadora)
       && (!filtroSolicitante || nomeSolicitante(item) === filtroSolicitante)
+      && (!filtroOrigem || (filtroOrigem === 'ROBO') === respostaAuditor(item).robo)
       && (!busca || [item.numero_fatura, item.transportadora, item.auditor_nome].some((v) => String(v || '').toLowerCase().includes(busca)))
     ));
-  }, [pendentesTodas, filtroTransportadora, filtroSolicitante, filtroBusca]);
+    // respostaAuditor le enviosGestao e state.historico.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendentesTodas, filtroTransportadora, filtroSolicitante, filtroBusca, filtroOrigem, enviosGestao, state.historico]);
 
   const diferencaAtual = (item) => {
     const ctes = ctesPorFatura[item.id]?.lista;
@@ -8904,6 +8948,7 @@ function AprovacaoGestao({ state, onState }) {
     return proposto > 0 && proposto <= diferenca + 0.01 ? proposto : diferenca;
   };
   const escolhidas = pendentes.filter((item) => selecionadas.includes(item.id));
+  const qtdRobo = pendentesTodas.filter((item) => respostaAuditor(item).robo).length;
   const todasMarcadas = pendentes.length > 0 && escolhidas.length === pendentes.length;
 
   const carregarCtes = async (fatura) => {
@@ -9173,46 +9218,6 @@ function AprovacaoGestao({ state, onState }) {
     else setDecisao(null);
   };
 
-  // O historico carregado na tela tem so os 1000 eventos mais recentes; os envios
-  // antigos caem fora e a resposta do auditor sumia. Busca direto os envios das pendentes.
-  const [enviosGestao, setEnviosGestao] = useState({});
-  const chavePendentes = pendentesTodas.map((item) => item.id).join(',');
-  useEffect(() => {
-    const ids = chavePendentes ? chavePendentes.split(',') : [];
-    if (!ids.length) return undefined;
-    let cancelado = false;
-    (async () => {
-      try {
-        const client = getSupabaseClient();
-        const mapa = {};
-        for (let i = 0; i < ids.length; i += 100) {
-          const { data } = await client.from('auditoria_fatura_historico')
-            .select('fatura_id, descricao, usuario_nome, created_at')
-            .eq('status_novo', 'AGUARDANDO_APROVACAO_GESTAO')
-            .in('fatura_id', ids.slice(i, i + 100))
-            .order('created_at', { ascending: false });
-          (data || []).forEach((h) => { if (!mapa[h.fatura_id]) mapa[h.fatura_id] = h; });
-        }
-        if (!cancelado) setEnviosGestao(mapa);
-      } catch {
-        // Sem a consulta direta, cai no historico ja carregado em state.
-      }
-    })();
-    return () => { cancelado = true; };
-  }, [chavePendentes]);
-
-  const respostaAuditor = (fatura) => {
-    // A coluna observacao_aprovacao nao existe na tabela faturas (o upsert a descarta),
-    // entao a resposta do auditor tambem e lida do evento de envio no historico.
-    const envio = enviosGestao[fatura.id] || (state.historico || []).find((h) => h.fatura_id === fatura.id && h.status_novo === 'AGUARDANDO_APROVACAO_GESTAO');
-    const doHistorico = envio ? String(envio.descricao || '').replace(/^.*?(?:cobranca a maior|valor a descontar) de R\$[\s ]*[\d.]+,\d{2}\.\s*/i, '') : '';
-    const texto = fatura.observacao_aprovacao || doHistorico;
-    const sim = texto.includes('[DESCONTO: SIM]');
-    const nao = texto.includes('[DESCONTO: NAO]');
-    const robo = /\[VIA ROBO\]/.test(String(envio?.descricao || '')) || /\[VIA ROBO\]/.test(texto);
-    return { sim, nao, robo, texto: texto.replace(/\[DESCONTO: (SIM|NAO)\]\s*/, ''), quem: envio?.usuario_nome || '' };
-  };
-
   const totalEscolhido = escolhidas.reduce((acc, item) => acc + valorPendente(item), 0);
   const botao = (tipo, rotulo, classe = 'btn-secondary') => (
     <button type="button" className={classe} disabled={!escolhidas.length || processando} onClick={() => abrirDecisao(tipo)}>{rotulo} ({escolhidas.length})</button>
@@ -9249,11 +9254,18 @@ function AprovacaoGestao({ state, onState }) {
             {opcoesSolicitante.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
           </select>
         </label>
+        <label className="field" style={{ minWidth: 200 }}>Enviada por
+          <select value={filtroOrigem} onChange={(e) => setFiltroOrigem(e.target.value)}>
+            <option value="">Todas</option>
+            <option value="ROBO">So Robo Auditor ({qtdRobo})</option>
+            <option value="MANUAL">So auditores ({pendentesTodas.length - qtdRobo})</option>
+          </select>
+        </label>
         <label className="field" style={{ minWidth: 220 }}>Buscar
           <input value={filtroBusca} onChange={(e) => setFiltroBusca(e.target.value)} placeholder="Fatura, transportadora ou auditor" />
         </label>
-        {(filtroTransportadora || filtroSolicitante || filtroBusca) && (
-          <button type="button" className="btn-secondary" onClick={() => { setFiltroTransportadora(''); setFiltroSolicitante(''); setFiltroBusca(''); }}>Limpar filtros</button>
+        {(filtroTransportadora || filtroSolicitante || filtroBusca || filtroOrigem) && (
+          <button type="button" className="btn-secondary" onClick={() => { setFiltroTransportadora(''); setFiltroSolicitante(''); setFiltroBusca(''); setFiltroOrigem(''); }}>Limpar filtros</button>
         )}
       </div>
       {ehGestor && (
