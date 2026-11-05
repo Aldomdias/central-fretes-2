@@ -50,3 +50,37 @@ test('arquivo so com RPS avisa que nao ha NFS-e', () => {
   assert.equal(notas.length, 1);
   assert.match(notas[0].faltando[0], /so tem RPS/);
 });
+
+// NFS-e de Brusque/SC (OGGI): sem chave nacional; numero abaixo de "Numero da NFS-e" e "Identificador" NFS + digitos.
+const brusque = [
+  'OGGI TRANSPORTES DE CARGAS E ARMAZENS GERAIS LTDA',
+  'CNPJ: 08.325.365/0001-06 ¦ Número da NFS-e ¦ Situação',
+  'RODOVIA ANTONIO HEIL, KM 23, 5991 ¦ 839 ¦ Emitida',
+  'CEP: 88352-502 - Bairro: LIMOEIRO',
+  'Município: BRUSQUE - SANTA CATARINA',
+  'Nota Fiscal de Serviço Eletrônica - Série NFS-e',
+  'NFS420290922083253650001060000000000839261074587947 Identificador',
+  'SECRETARIA MUNICIPAL DE ADMINISTRAÇÃO E FAZENDA ¦ Data do fato gerador ¦ Data/Hora Emissão',
+  '30/10/2026 ¦ 30/10/2026 13:04:11',
+  'TOMADOR DO SERVIÇO',
+  'Nome/Razão Social ¦ CPF/CNPJ',
+  'CPX DISTRIBUIDORA S/A ¦ 10.158.356/0001-01',
+  'Bairro ¦ CEP ¦ Cidade - Estado',
+  'Rio do Meio ¦ 88316-001 ¦ ITAJAI - SC',
+  'Valor Total ¦ Desc. Incondicional ¦ Dedução ¦ Base de Cálculo ¦ ISSQN',
+  '7.991,74 ¦ 0,00 ¦ 0,00 ¦ 7.991,74 ¦ 239,75',
+  'PIS ¦ Outras Retenções ¦ Total Trib. Federais ¦ Desc. Condicional ¦ Valor Líquido',
+  '0,00 ¦ 0,00 ¦ 0,00 ¦ 0,00 ¦ 7.991,74',
+];
+
+test('NFS-e de Brusque (OGGI) sem chave nacional', () => {
+  const { dados, faltando } = lerPaginas([brusque])[0];
+  assert.deepEqual(faltando, []);
+  assert.equal(dados.nf, '839-F');
+  assert.equal(dados.cnpjTransp, '08325365000106');
+  assert.equal(dados.cnpjTomador, '10158356000101');
+  assert.equal(dados.dataEmissao, '2026-10-30');
+  assert.equal(dados.valor, 7991.74);
+  assert.equal(dados.codImp, 'IQ');
+  assert.equal(dados.cfop, '1933AA');
+});

@@ -204,7 +204,32 @@ function extrairModeloIssNet(L, U) {
 
 // Modelo municipal "Nota Fiscal de Servico Eletronica - Serie NFS-e" (ex.: Pouso Alegre): titulos numa linha e
 // valores na de baixo ("Valor Total ... Base de Calculo ISSQN"); prestador no cabecalho, tomador em "Cidade".
+// Variante sem chave nacional (ex.: Brusque/SC): "Identificador" NFS + IBGE 7 + ... + CNPJ 14 + numero 13; o numero
+// tambem vem na celula abaixo de "Numero da NFS-e" e o CNPJ do prestador no cabecalho, antes do TOMADOR.
 function completarModeloSerieNfse(L, U, dados) {
+  const ident = L.join('\n').match(/NFS(\d{7})\d{2}(\d{14})(\d{13})\d*/);
+  if (ident && !dados.chave) {
+    if (dados.cnpjTransp.length !== 14) dados.cnpjTransp = ident[2];
+    if (!dados.numeroNfse) dados.numeroNfse = String(Number(ident[3]));
+    if (!dados.municipioPrestador) dados.municipioPrestador = `IBGE${ident[1]}`;
+  }
+  if (!dados.numeroNfse) {
+    const i = U.findIndex((l) => l.includes('NUMERO DA NFS-E'));
+    if (i >= 0 && L[i + 1]) {
+      const rot = U[i].split(SEP);
+      const val = L[i + 1].split(SEP);
+      const idx = rot.findIndex((c) => c.includes('NUMERO DA NFS-E'));
+      const cel = val.length === rot.length ? val[idx] : val.find((c) => /^\s*\d{1,9}\s*$/.test(c));
+      const m = String(cel || '').trim().match(/^(\d{1,9})$/);
+      if (m) dados.numeroNfse = String(Number(m[1]));
+    }
+  }
+  dados.nf = nfComSufixoF(dados.numeroNfse);
+  if (dados.cnpjTransp.length !== 14) {
+    const iTom = U.findIndex((l) => /^TOMADOR D[EO] SERVICO/.test(l.trim()));
+    const cab = L.slice(0, iTom >= 0 ? iTom : 10).map((l) => l.match(RE_CNPJ)).find(Boolean);
+    if (cab) dados.cnpjTransp = cab[1].replace(/\D/g, '');
+  }
   if (!(dados.valor > 0)) {
     const i = U.findIndex((l) => l.includes('VALOR TOTAL') && l.includes('BASE DE CALCULO'));
     const v = i >= 0 ? numeros(L[i + 1] || '') : [];
