@@ -1,7 +1,10 @@
 import { useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { carregarCtesCompetencia, carregarFaturasLancadasDosCtes, carregarLancamentosPorCnpj } from '../services/lancamentosCteSapService';
-import { classificarProvisao, resumirProvisao, SITUACOES_PROVISAO } from '../utils/lancamentosCteSap';
+import { classificarProvisao, resumirProvisao, serieDaChave, SITUACOES_PROVISAO } from '../utils/lancamentosCteSap';
+
+// Numero do CT-e com a serie (da chave de acesso), ex.: 18484198-30.
+const numeroSerie = (c) => { const serie = serieDaChave(c.chave_cte); return serie ? `${c.numero_cte}-${serie}` : String(c.numero_cte || ''); };
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
@@ -75,7 +78,7 @@ export default function ProvisaoCtesPainel() {
     }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhasResumo), 'Resumo');
     const detalhe = (filtroFn) => itens.filter(filtroFn).map((c) => ({
-      'Chave CT-e': c.chave_cte, 'Número CT-e': c.numero_cte, Transportadora: c.transportadora, CNPJ: c.cnpj_transportadora,
+      'Chave CT-e': c.chave_cte, 'Número CT-e': numeroSerie(c), Transportadora: c.transportadora, CNPJ: c.cnpj_transportadora,
       Emissão: String(c.data_emissao || '').slice(0, 10), 'Valor CT-e': Number(c.valor_cte || 0), Canal: c.canal || '',
       Origem: `${c.cidade_origem || ''}${c.uf_origem ? `/${c.uf_origem}` : ''}`, Destino: `${c.cidade_destino || ''}${c.uf_destino ? `/${c.uf_destino}` : ''}`,
       Situação: SITUACOES_PROVISAO[c.situacao], 'Entra na provisão': c.provisao ? 'Sim' : 'Não',
@@ -160,7 +163,7 @@ export default function ProvisaoCtesPainel() {
                     {!lista.length && <tr><td colSpan={7}>Nenhum CT-e nesse recorte.</td></tr>}
                     {lista.slice(0, visiveis).map((c) => (
                       <tr key={c.id}>
-                        <td style={{ fontSize: 12 }}>{c.numero_cte}</td>
+                        <td style={{ fontSize: 12 }}>{numeroSerie(c)}</td>
                         <td>{c.transportadora}</td>
                         <td>{dataBr(c.data_emissao)}</td>
                         <td>{dinheiro(c.valor_cte)}</td>
