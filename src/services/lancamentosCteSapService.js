@@ -46,19 +46,23 @@ async function paginarPorId(montar) {
   return todos;
 }
 
-// CT-es emitidos na competencia (base realizado_local_ctes).
+// CT-es emitidos na competencia (base realizado_local_ctes). cnpj_tomador (empresa
+// SAP) e' coluna opcional: sem a migration 20261104_001 le sem ela.
+const COLUNAS_CTE = 'id,chave_cte,numero_cte,cnpj_transportadora,transportadora,valor_cte,data_emissao,canal,uf_origem,cidade_origem,uf_destino,cidade_destino';
 export async function carregarCtesCompetencia(competencia, onProgress) {
   const client = getSupabaseClient();
   const { inicio, fim } = intervaloCompetencia(competencia);
+  let colunas = `${COLUNAS_CTE},cnpj_tomador`;
   const todos = [];
   let ultimo = null;
   for (;;) {
     let q = client.from('realizado_local_ctes')
-      .select('id,chave_cte,numero_cte,cnpj_transportadora,transportadora,valor_cte,data_emissao,canal,uf_origem,cidade_origem,uf_destino,cidade_destino')
+      .select(colunas)
       .gte('data_emissao', inicio).lt('data_emissao', fim)
       .order('id').limit(PAGINA);
     if (ultimo) q = q.gt('id', ultimo);
     const { data, error } = await q;
+    if (error && colunas !== COLUNAS_CTE && /cnpj_tomador/i.test(error.message)) { colunas = COLUNAS_CTE; continue; }
     if (error) throw new Error(`Erro ao ler CT-es da competencia: ${error.message}`);
     todos.push(...(data || []));
     onProgress?.(`Lendo CT-es emitidos: ${todos.length.toLocaleString('pt-BR')}`);
@@ -66,6 +70,50 @@ export async function carregarCtesCompetencia(competencia, onProgress) {
     ultimo = data[data.length - 1].id;
   }
   return todos;
+}
+
+// Linhas do tracking com data (da NF) dentro da competencia. Le dia a dia (indice data,id).
+const COLUNAS_TRACKING = 'id,data,nota_fiscal,chave_nfe,chave_cte,cte_numero,pedido,canal,transportadora,cidade_origem,uf_origem,cidade_destino,uf_destino,valor_nf';
+export async function carregarTrackingCompetencia(competencia, onProgress) {
+  const client = getSupabaseClient();
+  const { inicio, fim } = intervaloCompetencia(competencia);
+  let colunas = `${COLUNAS_TRACKING},status_pedido`;
+  const todos = [];
+  const dia = new Date(`${inicio}T00:00:00`);
+  while (true) {
+    const atual = `${dia.getFullYear()}-${String(dia.getMonth() + 1).padStart(2, '0')}-${String(dia.getDate()).padStart(2, '0')}`;
+    if (atual >= fim) break;
+    dia.setDate(dia.getDate() + 1);
+    const proximo = `${dia.getFullYear()}-${String(dia.getMonth() + 1).padStart(2, '0')}-${String(dia.getDate()).padStart(2, '0')}`;
+    let ultimo = null;
+    for (;;) {
+      let q = client.from('tracking_rows').select(colunas).gte('data', atual).lt('data', proximo).order('id').limit(PAGINA);
+      if (ultimo !== null) q = q.gt('id', ultimo);
+      const { data, error } = await q;
+      if (error && colunas !== COLUNAS_TRACKING && /status_pedido/i.test(error.message)) { colunas = COLUNAS_TRACKING; continue; }
+      if (error) throw new Error(`Erro ao ler tracking (${atual}): ${error.message}`);
+      todos.push(...(data || []));
+      onProgress?.(`Lendo tracking do mes: ${todos.length.toLocaleString('pt-BR')} linhas (dia ${atual.slice(8, 10)})`);
+      if ((data || []).length < PAGINA) break;
+      ultimo = data[data.length - 1].id;
+    }
+  }
+  return todos;
+}
+
+// Das chaves informadas, quais CT-es existem na base (qualquer mes). Map(chave -> valor_cte).
+export async function buscarCtesNaBase(chaves = [], onProgress) {
+  const client = getSupabaseClient();
+  const unicas = [...new Set(chaves.map((c) => String(c || '').replace(/\D/g, '')).filter((c) => c.length === 44))];
+  const mapa = new Map();
+  const LOTE = 150;
+  for (let i = 0; i < unicas.length; i += LOTE) {
+    const { data, error } = await client.from('realizado_local_ctes').select('chave_cte,valor_cte').in('chave_cte', unicas.slice(i, i + LOTE));
+    if (error) throw new Error(`Erro ao conferir CT-es do tracking na base: ${error.message}`);
+    (data || []).forEach((d) => mapa.set(String(d.chave_cte).replace(/\D/g, ''), Number(d.valor_cte || 0)));
+    onProgress?.(`Conferindo CT-es do tracking fora do mes na base: ${Math.min(i + LOTE, unicas.length).toLocaleString('pt-BR')}/${unicas.length.toLocaleString('pt-BR')}`);
+  }
+  return mapa;
 }
 
 // Linhas SAP dos emitentes informados lancadas a partir do inicio da competencia
@@ -82,7 +130,7 @@ export async function carregarLancamentosPorCnpj(cnpjs = [], competencia, onProg
     let linhas;
     try {
       linhas = await paginarPorId(() => client.from(TABELA)
-        .select('id,cnpj_emitente,numero_cte,serie_cte,lancamento_contabil,data_lancamento,montante')
+        .select('id,cnpj_emitente,numero_cte,serie_cte,lancamento_contabil,data_lancamento,montante,empresa')
         .in('cnpj_emitente', chunk).gte('data_lancamento', inicio));
     } catch (error) {
       if (tabelaAusente(error.message)) throw new Error(AVISO_MIGRATION);
@@ -136,4 +184,60 @@ export async function carregarFaturasLancadasDosCtes(chavesCte = [], onProgress)
     resultado.set(chave, { numero_fatura: d.numero_fatura, ...(lancamentoDaFatura.get(d.fatura_id) || {}) });
   }
   return resultado;
+}
+
+// ---------------------------------------------------------------- snapshots (historico)
+const SNAP = 'provisao_ctes_snapshots';
+const SNAP_ITENS = 'provisao_ctes_snapshot_itens';
+const AVISO_SNAP = 'Tabela provisao_ctes_snapshots nao existe: aplique a migration supabase/migrations/20261105_004_provisao_ctes_snapshots.sql.';
+
+function erroSnap(error, acao) {
+  if (tabelaAusente(error?.message)) return new Error(AVISO_SNAP);
+  return new Error(`Erro ao ${acao}: ${error?.message || error}`);
+}
+
+export async function salvarSnapshotProvisao(cabecalho, itens = [], onProgress) {
+  const client = getSupabaseClient();
+  const { data, error } = await client.from(SNAP).insert(cabecalho).select('id').single();
+  if (error) throw erroSnap(error, 'salvar a provisao');
+  const id = data.id;
+  try {
+    for (let i = 0; i < itens.length; i += PAGINA) {
+      const lote = itens.slice(i, i + PAGINA).map((it) => ({ snapshot_id: id, tipo: it.tipo, dados: it.dados }));
+      const { error: e } = await client.from(SNAP_ITENS).insert(lote);
+      if (e) throw e;
+      onProgress?.(`Salvando provisao: ${Math.min(i + PAGINA, itens.length).toLocaleString('pt-BR')}/${itens.length.toLocaleString('pt-BR')} linhas`);
+    }
+  } catch (e) {
+    await client.from(SNAP).delete().eq('id', id);
+    throw erroSnap(e, 'salvar as linhas da provisao');
+  }
+  return id;
+}
+
+export async function listarSnapshotsProvisao() {
+  const client = getSupabaseClient();
+  const { data, error } = await client.from(SNAP)
+    .select('id,competencia,descricao,qtd_provisao,valor_provisao,qtd_nf_sem_cte,valor_estimado_nf_sem_cte,criado_por,criado_em')
+    .order('competencia', { ascending: false }).order('criado_em', { ascending: false }).limit(200);
+  if (error) {
+    if (tabelaAusente(error.message)) return { lista: [], aviso: AVISO_SNAP };
+    throw erroSnap(error, 'listar provisoes salvas');
+  }
+  return { lista: data || [] };
+}
+
+export async function carregarSnapshotProvisao(id, onProgress) {
+  const client = getSupabaseClient();
+  const { data: cab, error } = await client.from(SNAP).select('*').eq('id', id).single();
+  if (error) throw erroSnap(error, 'abrir a provisao salva');
+  const itens = await paginarPorId(() => client.from(SNAP_ITENS).select('id,tipo,dados').eq('snapshot_id', id));
+  onProgress?.(`Provisao salva: ${itens.length.toLocaleString('pt-BR')} linhas`);
+  return { cabecalho: cab, itens };
+}
+
+export async function excluirSnapshotProvisao(id) {
+  const client = getSupabaseClient();
+  const { error } = await client.from(SNAP).delete().eq('id', id);
+  if (error) throw erroSnap(error, 'excluir a provisao salva');
 }

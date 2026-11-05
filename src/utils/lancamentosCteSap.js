@@ -101,7 +101,8 @@ export const SITUACOES_PROVISAO = {
 export function classificarProvisao(ctes = [], lancamentosPorChave = new Map(), faturaPorChaveCte = new Map(), competencia = '') {
   const fimMes = `${competencia}-31`;
   return ctes.map((cte) => {
-    const sit = situacaoLancamentoCte(lancamentosPorChave.get(chaveCasamentoDoCte(cte)) || []);
+    const linhasSap = lancamentosPorChave.get(chaveCasamentoDoCte(cte)) || [];
+    const sit = situacaoLancamentoCte(linhasSap);
     let situacao;
     let dataLancamento = sit.data_lancamento;
     let documento = sit.lancamento_contabil;
@@ -127,6 +128,7 @@ export function classificarProvisao(ctes = [], lancamentosPorChave = new Map(), 
       lancamento_contabil: documento || null,
       valor_lancado: sit.valor_lancado,
       numero_fatura: fatura?.numero_fatura || null,
+      empresa_sap: linhasSap.find((l) => l.empresa)?.empresa || null,
     };
   });
 }
