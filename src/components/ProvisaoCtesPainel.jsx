@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { exportarExcelMultiAbas } from '../utils/exportarExcelFormatado';
 import {
-  buscarCtesNaBase, carregarCtesCompetencia, carregarFaturasLancadasDosCtes, carregarLancamentosPorCnpj, carregarSnapshotProvisao,
+  buscarCtesNaBase, carregarCtesCompetencia, carregarLancamentosPorCnpj, carregarSnapshotProvisao,
   carregarTrackingCompetencia, excluirSnapshotProvisao, listarSnapshotsProvisao, salvarSnapshotProvisao,
 } from '../services/lancamentosCteSapService';
 import { carregarParametrosRemotos } from '../services/robosParametrosService';
@@ -25,8 +25,8 @@ const r2 = (v) => Number(Number(v || 0).toFixed(2));
 const competenciaBr = (c) => (c ? `${c.slice(5, 7)}/${c.slice(0, 4)}` : '');
 const PAGINA = 200;
 
-const CORES = { NO_MES: '#15803d', FATURA: '#0f766e', APOS_MES: '#c2410c', FATURA_APOS: '#b45309', NAO_LANCADO: '#b91c1c' };
-const SITUACOES_SALVAS = new Set(['APOS_MES', 'FATURA_APOS', 'NAO_LANCADO', 'PROVISAO']);
+const CORES = { NO_MES: '#15803d', APOS_MES: '#c2410c', FATURA_APOS: '#c2410c', NAO_LANCADO: '#b91c1c' };
+const SITUACOES_SALVAS = new Set(['APOS_MES', 'NAO_LANCADO', 'PROVISAO']);
 
 // Campos do CT-e guardados no snapshot (so os que entram na provisao).
 const CAMPOS_CTE = ['chave_cte', 'numero_cte', 'transportadora', 'cnpj_transportadora', 'cnpj_tomador', 'tomador_servico', 'empresa', 'data_emissao', 'valor_cte', 'canal',
@@ -53,14 +53,14 @@ const COLS_CTE = [
   { titulo: 'Tomador', largura: 30 }, { titulo: 'Emissão', largura: 11, tipo: 'data' }, { titulo: 'Valor CT-e', largura: 15, tipo: 'moeda' },
   { titulo: 'Canal', largura: 11, tipo: 'centro' }, { titulo: 'Origem', largura: 24 }, { titulo: 'Destino', largura: 24 },
   { titulo: 'Situação', largura: 22 }, { titulo: 'Data lançamento', largura: 13, tipo: 'data' }, { titulo: 'Lançamento contábil', largura: 16 },
-  { titulo: 'Fatura', largura: 14 }, { titulo: 'Estorno sem relançar', largura: 11, tipo: 'centro' }, { titulo: 'Chave CT-e', largura: 48 },
+  { titulo: 'Estorno sem relançar', largura: 11, tipo: 'centro' }, { titulo: 'Chave CT-e', largura: 48 },
 ];
 function linhasCte(lista, centros) {
   return lista.map((c) => [
     c.empresa || '', centros[c.empresa] || '', numeroSerie(c), c.transportadora || '', c.cnpj_transportadora || '', c.tomador_servico || '',
     c.data_emissao || '', Number(c.valor_cte || 0), c.canal || '',
     `${c.cidade_origem || ''}${c.uf_origem ? `/${c.uf_origem}` : ''}`, `${c.cidade_destino || ''}${c.uf_destino ? `/${c.uf_destino}` : ''}`,
-    SITUACOES_PROVISAO[c.situacao] || '', c.data_lancamento || '', c.lancamento_contabil || '', c.numero_fatura || '', c.estornado ? 'Sim' : '', c.chave_cte || '',
+    SITUACOES_PROVISAO[c.situacao] || 'Lançado após o mês', c.data_lancamento || '', c.lancamento_contabil || '', c.estornado ? 'Sim' : '', c.chave_cte || '',
   ]);
 }
 
@@ -146,9 +146,6 @@ export default function ProvisaoCtesPainel() {
         fora.porTomador.set(nome, t);
       });
       const lancamentos = await carregarLancamentosPorCnpj(ctes.map((c) => c.cnpj_transportadora), competencia, setProgresso);
-      const parcial = classificarProvisao(ctes, lancamentos, new Map(), competencia);
-      const semLancamento = parcial.filter((c) => c.situacao === 'NAO_LANCADO').map((c) => c.chave_cte);
-      const faturas = await carregarFaturasLancadasDosCtes(semLancamento, setProgresso);
       // Empresa: 1) CNPJ do tomador nas Filiais; 2) empresa do lancamento SAP; 3) emitente da NF do CT-e
       // (chave da NF na base ou no tracking) nas Filiais.
       let nfDoCte = new Map();
@@ -157,7 +154,7 @@ export default function ProvisaoCtesPainel() {
         linhas = await carregarTrackingCompetencia(competencia, setProgresso);
         linhas.forEach((l) => { const k = String(l.chave_cte || '').replace(/\D/g, ''); if (k.length === 44 && l.chave_nfe && !nfDoCte.has(k)) nfDoCte.set(k, l.chave_nfe); });
       }
-      const classificados = classificarProvisao(ctes, lancamentos, faturas, competencia).map((c) => ({
+      const classificados = classificarProvisao(ctes, lancamentos, competencia).map((c) => ({
         ...c,
         empresa: filiais.get(cnpj14(c.cnpj_tomador))?.emp || c.empresa_sap
           || empresaDaChaveNfe(c.chave_nfe, filiais) || empresaDaChaveNfe(nfDoCte.get(String(c.chave_cte || '').replace(/\D/g, '')), filiais) || '',
@@ -166,6 +163,10 @@ export default function ProvisaoCtesPainel() {
       if (incluirTracking) {
         const { nfs: agrupadas, canceladas } = agruparNfsTracking(linhas.filter((l) => !/EBAZAR/i.test(String(l.transportadora || ''))));
         const valorPorChave = new Map(ctes.map((c) => [String(c.chave_cte || '').replace(/\D/g, ''), Number(c.valor_cte || 0)]));
+        // Tracking sem chave do CT-e: procura o CT-e do mes pela chave da NF (base de CT-es).
+        const ctePorNfe = new Map();
+        ctes.forEach((c) => { const nfe = String(c.chave_nfe || '').replace(/\D/g, ''); if (nfe.length === 44 && !ctePorNfe.has(nfe)) ctePorNfe.set(nfe, String(c.chave_cte || '').replace(/\D/g, '')); });
+        agrupadas.forEach((n) => { if (!n.chaves_cte.size && n.chave_nfe && ctePorNfe.has(n.chave_nfe)) { n.chaves_cte.add(ctePorNfe.get(n.chave_nfe)); n.casado_pela_nf = true; } });
         const foraDoMes = agrupadas.flatMap((n) => [...n.chaves_cte]).filter((c) => !valorPorChave.has(c));
         const extra = await buscarCtesNaBase(foraDoMes, setProgresso);
         extra.forEach((v, k) => valorPorChave.set(k, v));
@@ -327,9 +328,9 @@ export default function ProvisaoCtesPainel() {
         totais: ['Total', foraTomador.qtd, foraTomador.valor],
       });
     }
-    const transpLinhas = resumo.porTransportadora.map((x) => [x.nome, x.geral.qtd, x.geral.valor, x.NO_MES.qtd, x.FATURA.qtd, x.APOS_MES.qtd + x.FATURA_APOS.qtd, x.NAO_LANCADO.qtd, x.provisao.qtd, x.provisao.valor]);
+    const transpLinhas = resumo.porTransportadora.map((x) => [x.nome, x.geral.qtd, x.geral.valor, x.NO_MES.qtd, x.APOS_MES.qtd, x.NAO_LANCADO.qtd, x.provisao.qtd, x.provisao.valor]);
     const colsTransp = [{ titulo: 'Transportadora', largura: 44 }, { titulo: 'Emitidos', tipo: 'inteiro', largura: 11 }, { titulo: 'Valor emitido', tipo: 'moeda', largura: 18 },
-      { titulo: 'Lançado no mês', tipo: 'inteiro', largura: 12 }, { titulo: 'Via fatura', tipo: 'inteiro', largura: 11 }, { titulo: 'Após o mês', tipo: 'inteiro', largura: 11 },
+      { titulo: 'Lançado no mês', tipo: 'inteiro', largura: 12 }, { titulo: 'Após o mês', tipo: 'inteiro', largura: 11 },
       { titulo: 'Não lançado', tipo: 'inteiro', largura: 11 }, { titulo: 'CT-es provisão', tipo: 'inteiro', largura: 12 }, { titulo: 'Valor provisão', tipo: 'moeda', largura: 18 }];
     const provisao = itens.filter((c) => c.provisao);
     const linhasNfPend = linhasNf(nfsPendentes, centrosAtivos);
@@ -344,7 +345,7 @@ export default function ProvisaoCtesPainel() {
         ],
         blocos,
       },
-      { nome: 'Por transportadora', colunas: colsTransp, linhas: transpLinhas, totais: linhaTotal(colsTransp, Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8].map((i) => [i, somaCol(transpLinhas, i)]))) },
+      { nome: 'Por transportadora', colunas: colsTransp, linhas: transpLinhas, totais: linhaTotal(colsTransp, Object.fromEntries([1, 2, 3, 4, 5, 6, 7].map((i) => [i, somaCol(transpLinhas, i)]))) },
       { nome: 'CT-es da provisão', colunas: COLS_CTE, linhas: linhasCte(provisao, centrosAtivos), totais: linhaTotal(COLS_CTE, { 2: `${num(provisao.length)} CT-es`, 7: t.provisao.valor }) },
     ];
     if (nfsPendentes.length) {
@@ -437,7 +438,7 @@ export default function ProvisaoCtesPainel() {
         <>
           <p style={{ margin: '6px 0 10px', fontSize: 13, color: '#64748b' }}>
             Cruza os CT-es emitidos no mês (base de CT-es) com os lançamentos de CT-e do relatório SAP importado acima
-            (CNPJ do emitente + número + série). CT-e sem lançamento próprio conta como lançado pela data de lançamento da fatura em que está.
+            (CNPJ do emitente + número + série). Lançado = CT-e com partida própria no SAP; sem partida, é não lançado.
             Para ver o que foi lançado depois da virada, importe também o relatório SAP do mês seguinte. Só entram CT-es com tomador do grupo (CPX, ITR, GP Pneus, GRIP, Cantu); EBAZAR fica fora (CT-es e tracking). Empresa pelo CNPJ do tomador (Filiais dos Robôs) ou pela empresa do lançamento SAP.
           </p>
           <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 10 }}>
@@ -572,7 +573,7 @@ export default function ProvisaoCtesPainel() {
               <div className="sim-analise-tabela-wrap" style={{ maxHeight: 300, overflow: 'auto', marginBottom: 12 }}>
                 <table className="sim-analise-tabela">
                   <thead>
-                    <tr><th>Transportadora</th><th>Emitidos</th><th>Lançado no mês</th><th>Via fatura</th><th>Após o mês</th><th>Não lançado</th><th>Provisão (valor)</th></tr>
+                    <tr><th>Transportadora</th><th>Emitidos</th><th>Lançado no mês</th><th>Após o mês</th><th>Não lançado</th><th>Provisão (valor)</th></tr>
                   </thead>
                   <tbody>
                     {resumo.porTransportadora.map((t) => (
@@ -580,8 +581,7 @@ export default function ProvisaoCtesPainel() {
                         <td><button type="button" className="btn-secondary" style={{ padding: '2px 8px' }} onClick={() => { setTransportadora(transportadora === t.nome ? '' : t.nome); setVisiveis(PAGINA); }}>{t.nome}</button></td>
                         <td>{num(t.geral.qtd)}</td>
                         <td>{num(t.NO_MES.qtd)}</td>
-                        <td>{num(t.FATURA.qtd)}</td>
-                        <td>{num(t.APOS_MES.qtd + t.FATURA_APOS.qtd)}</td>
+                        <td>{num(t.APOS_MES?.qtd)}</td>
                         <td style={{ color: t.NAO_LANCADO.qtd ? '#b91c1c' : undefined, fontWeight: t.NAO_LANCADO.qtd ? 700 : 400 }}>{num(t.NAO_LANCADO.qtd)}</td>
                         <td><strong>{dinheiro(t.provisao.valor)}</strong></td>
                       </tr>
@@ -595,7 +595,7 @@ export default function ProvisaoCtesPainel() {
               </div>
               <div className="sim-analise-tabela-wrap" style={{ maxHeight: 420, overflow: 'auto' }}>
                 <table className="sim-analise-tabela">
-                  <thead><tr><th>CT-e</th><th>Transportadora</th><th>Empresa</th><th>Emissão</th><th>Valor CT-e</th><th>Situação</th><th>Data lançamento</th><th>Lançamento / fatura</th></tr></thead>
+                  <thead><tr><th>CT-e</th><th>Transportadora</th><th>Empresa</th><th>Emissão</th><th>Valor CT-e</th><th>Situação</th><th>Data lançamento</th><th>Lançamento contábil</th></tr></thead>
                   <tbody>
                     {!lista.length && <tr><td colSpan={8}>{snapshot && !SITUACOES_SALVAS.has(filtro) ? 'A provisão salva guarda só os CT-es que entraram na provisão. Gere novamente para ver este recorte.' : 'Nenhum CT-e nesse recorte.'}</td></tr>}
                     {lista.slice(0, visiveis).map((c) => (
@@ -605,9 +605,9 @@ export default function ProvisaoCtesPainel() {
                         <td style={{ fontSize: 12 }}>{c.empresa || '-'}</td>
                         <td>{dataBr(c.data_emissao)}</td>
                         <td>{dinheiro(c.valor_cte)}</td>
-                        <td style={{ color: CORES[c.situacao], fontWeight: 700 }}>{SITUACOES_PROVISAO[c.situacao]}{c.estornado ? ' (estornado)' : ''}</td>
+                        <td style={{ color: CORES[c.situacao], fontWeight: 700 }}>{SITUACOES_PROVISAO[c.situacao] || 'Lançado após o mês'}{c.estornado ? ' (estornado)' : ''}</td>
                         <td>{dataBr(c.data_lancamento)}</td>
-                        <td style={{ fontSize: 12 }}>{[c.lancamento_contabil, c.numero_fatura ? `Fatura ${c.numero_fatura}` : ''].filter(Boolean).join(' · ') || '-'}</td>
+                        <td style={{ fontSize: 12 }}>{c.lancamento_contabil || '-'}</td>
                       </tr>
                     ))}
                   </tbody>

@@ -91,43 +91,26 @@ export function situacaoLancamentoCte(linhas = []) {
 export const SITUACOES_PROVISAO = {
   NO_MES: 'Lançado no mês',
   APOS_MES: 'Lançado após o mês',
-  FATURA: 'Lançado via fatura',
-  FATURA_APOS: 'Fatura lançada após o mês',
   NAO_LANCADO: 'Não lançado',
 };
 
-// Classifica cada CT-e da competencia (AAAA-MM). Entra na provisao o que nao
-// foi lancado dentro do mes: lancado depois da virada + nao lancado.
-export function classificarProvisao(ctes = [], lancamentosPorChave = new Map(), faturaPorChaveCte = new Map(), competencia = '') {
+// Classifica cada CT-e da competencia (AAAA-MM). Lancado = tem partida propria no SAP
+// (CNPJ emitente + numero + serie). Entra na provisao: lancado depois da virada + nao lancado.
+export function classificarProvisao(ctes = [], lancamentosPorChave = new Map(), competencia = '') {
   const fimMes = `${competencia}-31`;
   return ctes.map((cte) => {
     const linhasSap = lancamentosPorChave.get(chaveCasamentoDoCte(cte)) || [];
     const sit = situacaoLancamentoCte(linhasSap);
-    let situacao;
-    let dataLancamento = sit.data_lancamento;
-    let documento = sit.lancamento_contabil;
-    let fatura = null;
-    if (sit.lancado) {
-      situacao = String(dataLancamento || '') <= fimMes ? 'NO_MES' : 'APOS_MES';
-    } else {
-      fatura = faturaPorChaveCte.get(digitos(cte.chave_cte)) || null;
-      if (fatura?.data_lancamento) {
-        dataLancamento = fatura.data_lancamento;
-        documento = fatura.lancamento_contabil || null;
-        situacao = String(dataLancamento) <= fimMes ? 'FATURA' : 'FATURA_APOS';
-      } else {
-        situacao = 'NAO_LANCADO';
-      }
-    }
+    const situacao = sit.lancado ? (String(sit.data_lancamento || '') <= fimMes ? 'NO_MES' : 'APOS_MES') : 'NAO_LANCADO';
     return {
       ...cte,
       situacao,
-      provisao: situacao === 'APOS_MES' || situacao === 'FATURA_APOS' || situacao === 'NAO_LANCADO',
+      provisao: situacao !== 'NO_MES',
       estornado: sit.estornado,
-      data_lancamento: dataLancamento || null,
-      lancamento_contabil: documento || null,
+      data_lancamento: sit.data_lancamento || null,
+      lancamento_contabil: sit.lancamento_contabil || null,
       valor_lancado: sit.valor_lancado,
-      numero_fatura: fatura?.numero_fatura || null,
+      numero_fatura: null,
       empresa_sap: linhasSap.find((l) => l.empresa)?.empresa || null,
     };
   });
@@ -141,7 +124,7 @@ export function resumirProvisao(itens = []) {
   for (const it of itens) {
     const v = Number(it.valor_cte || 0);
     const somar = (alvo) => { alvo.qtd += 1; alvo.valor += v; };
-    somar(total.geral); somar(total[it.situacao]);
+    somar(total.geral); if (total[it.situacao]) somar(total[it.situacao]);
     if (it.provisao) somar(total.provisao);
     const nome = it.transportadora || '(sem nome)';
     if (!porTransp.has(nome)) {
@@ -150,7 +133,7 @@ export function resumirProvisao(itens = []) {
       porTransp.set(nome, t);
     }
     const t = porTransp.get(nome);
-    somar(t.geral); somar(t[it.situacao]);
+    somar(t.geral); if (t[it.situacao]) somar(t[it.situacao]);
     if (it.provisao) somar(t.provisao);
   }
   return { total, porTransportadora: [...porTransp.values()].sort((a, b) => b.provisao.valor - a.provisao.valor) };
