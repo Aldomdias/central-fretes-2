@@ -7,6 +7,8 @@ import {
 import { carregarParametrosRemotos } from '../services/robosParametrosService';
 import { carregarParametros, criarIndices } from '../utils/robos/lancamentoComum';
 import { carregarSessao } from '../utils/authLocal';
+import { montarEml } from '../utils/emailLaudoTransportador';
+import { assuntoEmailProvisao, corpoEmailProvisao, gerarLaudoProvisaoHtml, nomeLaudoProvisao } from '../utils/laudoProvisaoHtml';
 import { avaliarCteParaBase } from '../services/cteBasePolicy';
 import { classificarProvisao, cnpj14, resumirProvisao, serieDaChave, SITUACOES_PROVISAO } from '../utils/lancamentosCteSap';
 import {
@@ -366,6 +368,39 @@ export default function ProvisaoCtesPainel() {
     }
   };
 
+  const dadosLaudo = () => ({
+    competencia: calculadaPara,
+    geradoEm: new Date().toLocaleString('pt-BR'),
+    origem: snapshot ? `provisão salva em ${dataHoraBr(snapshot.criado_em)}${snapshot.descricao ? ` (${snapshot.descricao})` : ''}` : 'cálculo com os dados de hoje',
+    total: resumo.total,
+    porEmpresa,
+    porTransportadora: resumo.porTransportadora,
+    tracking: resumoTracking,
+    foraTomador,
+  });
+
+  const baixar = (conteudo, nome, tipo) => {
+    const url = URL.createObjectURL(new Blob([conteudo], { type: tipo }));
+    const a = document.createElement('a');
+    a.href = url; a.download = nome;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
+
+  const baixarLaudoHtml = () => {
+    if (!resumo) return;
+    baixar(gerarLaudoProvisaoHtml(dadosLaudo()), nomeLaudoProvisao(calculadaPara), 'text/html;charset=utf-8');
+  };
+
+  // Rascunho do Outlook (.eml) com o resumo no corpo e o laudo HTML anexo: so preencher os destinatarios.
+  const baixarEmail = () => {
+    if (!resumo) return;
+    const d = dadosLaudo();
+    const eml = montarEml({ assunto: assuntoEmailProvisao(calculadaPara), corpoHtml: corpoEmailProvisao(d), anexoHtml: gerarLaudoProvisaoHtml(d), anexoNome: nomeLaudoProvisao(calculadaPara) });
+    baixar(eml, `email-provisao-fretes-${calculadaPara}.eml`, 'message/rfc822');
+    setAviso('E-mail baixado: abra o arquivo .eml no Outlook, coloque os destinatários e envie.');
+  };
+
   const exportarLaudoTracking = async () => {
     if (!resumoTracking) return;
     const tt = resumoTracking.total;
@@ -461,6 +496,8 @@ export default function ProvisaoCtesPainel() {
             {itens && !snapshot && <button type="button" className="btn-secondary" disabled={Boolean(progresso)} onClick={salvar}>Salvar provisão (histórico)</button>}
             {itens && <button type="button" className="btn-secondary" onClick={exportar}>Exportar (Excel)</button>}
             {resumoTracking && <button type="button" className="btn-secondary" onClick={exportarLaudoTracking}>Laudo tracking (Excel)</button>}
+            {resumo && <button type="button" className="btn-secondary" onClick={baixarLaudoHtml}>Laudo (HTML)</button>}
+            {resumo && <button type="button" className="btn-primary" onClick={baixarEmail}>E-mail pronto (.eml)</button>}
             <button type="button" className="btn-secondary" onClick={() => setEditarCc((v) => !v)}>Centros de custo</button>
           </div>
 
