@@ -385,7 +385,7 @@ export default function ProvisaoCtesPainel() {
     if (nfsPendentes.length) {
       abas.push({ nome: 'Tracking NF sem CT-e', colunas: COLS_NF, linhas: linhasNfPend, totais: linhaTotal(COLS_NF, { 2: `${num(nfsPendentes.length)} NFs`, 9: somaCol(linhasNfPend, 9), 12: somaCol(linhasNfPend, 12) }) });
     }
-    if (nfsNfse.length) abas.push({ nome: 'Tracking frete NFS-e', colunas: COLS_NF, linhas: linhasNf(nfsNfse, centrosAtivos) });
+    if (comTodos && nfsNfse.length) abas.push({ nome: 'Tracking frete NFS-e', colunas: COLS_NF, linhas: linhasNf(nfsNfse, centrosAtivos) });
     if (comTodos && !snapshot) abas.push({ nome: 'Todos os CT-es', colunas: COLS_CTE, linhas: linhasCte(itens, centrosAtivos), simples: true });
     return abas;
   };

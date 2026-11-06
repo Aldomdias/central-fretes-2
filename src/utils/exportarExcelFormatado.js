@@ -157,8 +157,8 @@ export async function exportarExcelMultiAbas({ nomeArquivo, abas = [], retornarB
     const ws = aba.blocos ? montarAbaBlocos(XS, aba) : montarAbaFormatada(XS, aba.colunas || [], aba.linhas || [], aba.totais || null, aba.simples === true);
     XS.utils.book_append_sheet(wb, ws, nome);
   }
-  if (retornarBytes) return XS.write(wb, { type: 'array', bookType: 'xlsx', cellDates: true });
-  XS.writeFile(wb, nomeArquivo, { cellDates: true });
+  if (retornarBytes) return XS.write(wb, { type: 'array', bookType: 'xlsx', cellDates: true, compression: true });
+  XS.writeFile(wb, nomeArquivo, { cellDates: true, compression: true });
   return null;
 }
 
@@ -180,7 +180,7 @@ export async function exportarExcelFormatado({ nomeArquivo, aba = 'Dados', colun
     XS.utils.book_append_sheet(wb, wr, 'Filtros');
   }
 
-  if (retornarBytes) return XS.write(wb, { type: 'array', bookType: 'xlsx', cellDates: true });
-  XS.writeFile(wb, nomeArquivo, { cellDates: true });
+  if (retornarBytes) return XS.write(wb, { type: 'array', bookType: 'xlsx', cellDates: true, compression: true });
+  XS.writeFile(wb, nomeArquivo, { cellDates: true, compression: true });
   return null;
 }
