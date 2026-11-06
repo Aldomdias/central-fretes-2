@@ -78,7 +78,7 @@ export async function carregarTrackingCompetencia(competencia, onProgress) {
   const client = getSupabaseClient();
   const { inicio, fim } = intervaloCompetencia(competencia);
   // Do raw: frete calculado pelo tracking e "Cte Numero-Serie" (marca NFS-e). Sem eles, le o basico.
-  const EXTRAS = 'frete_calculado:raw->>"Vlr. Calculado Frete",cte_numero_serie:raw->>"Cte Numero-Serie"';
+  const EXTRAS = 'frete_calculado:raw->>"Vlr. Calculado Frete",cte_numero_serie:raw->>"Cte Numero-Serie",tipo_nf:raw->>"Tipo NF",situacao_tracking:raw->>"Situacao"';
   let colunas = `${COLUNAS_TRACKING},status_pedido,${EXTRAS}`;
   const todos = [];
   const dia = new Date(`${inicio}T00:00:00`);

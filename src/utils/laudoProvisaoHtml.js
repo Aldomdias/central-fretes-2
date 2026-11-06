@@ -66,6 +66,7 @@ export function gerarLaudoProvisaoHtml(d) {
         lin('<b style="color:#b91c1c">Sem CT-e vinculado</b>', tt.SEM_CTE || z),
         lin('<b style="color:#c2410c">CT-e fora da base (não veio da Sefaz)</b>', tt.CTE_FORA_BASE || z),
         lin('Frete por NFS-e (informativo)', tt.NFSE || z),
+        lin('Cliente retira (sem frete, informativo)', tt.RETIRA || z, false),
         lin('CT-e emitido após o mês (competência seguinte, informativo)', tt.CTE_MES_SEGUINTE || z, false),
         lin('Transportadora não cadastrada no SAP (informativo)', tt.SEM_TRANSPORTADORA || z, false),
       ], ['A PROVISIONAR (sem CT-e + fora da base)', int(tt.pendente.qtd), pct(tt.pendente.qtd, tt.geral.qtd), brl(tt.pendente.valor_nf), brl(tt.pendente.estimado)])}
@@ -130,7 +131,7 @@ export function gerarLaudoProvisaoHtml(d) {
       • Provisão = CT-es lançados depois do mês + CT-es não lançados, pelo valor do CT-e.<br>
       • Só CT-es com tomador do grupo (CPX, ITR, GP Pneus, GRIP, Cantu); EBAZAR fica fora.<br>
       • Empresa pelo CNPJ do tomador, pela empresa do lançamento SAP, pelo nome do tomador ou pela filial emitente da NF; centro de custo conforme a empresa.<br>
-      ${d.tracking ? '• Tracking: NF sem CT-e = sem chave de CT-e e não achada pela chave da NF na base; NFS-e e “transportadora não cadastrada no SAP” ficam fora do total.<br>' : ''}
+      ${d.tracking ? '• Tracking: NF sem CT-e = sem chave de CT-e e não achada pela chave da NF na base; NFS-e, cliente retira (Tipo NF = Retira), CT-e do mês seguinte e “transportadora não cadastrada no SAP” ficam fora do total.<br>' : ''}
     </div>
     <div class="rodape">Central de Fretes · Auditoria de Fretes</div>
   </div>
