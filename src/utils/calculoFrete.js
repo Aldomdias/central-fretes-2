@@ -545,15 +545,15 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
   };
 }
 
-export function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal, ignorarCubagem = false, documentoDestinatario = '', inverterIcms = false, destinoCep = '', incluirCustoTransferencia = true }) {
+export function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal, ignorarCubagem = false, documentoDestinatario = '', inverterIcms = false, destinoCep = '', incluirCustoTransferencia = true, fatorCubagemPadrao = 0, cubagemSomenteInformada = false }) {
   const gradeLinha = getLinhaGradeMaisProxima(gradeCanal, peso);
   const fatoresCubagem = [
     origem?.generalidades?.cubagem,
     origem?.generalidades?.fatorCubagem,
     origem?.generalidades?.fator_cubagem,
   ].map(toNumber);
-  const fatorCubagem = fatoresCubagem.find((valor) => valor > 0) || 0;
-  const pesosAplicados = calcularPesosComCubagem({ pesoInformado: peso, cubagemInformada: cubagem, gradeLinha, fatorCubagem, ignorarCubagem });
+  const fatorCubagem = fatoresCubagem.find((valor) => valor > 0) || toNumber(fatorCubagemPadrao);
+  const pesosAplicados = calcularPesosComCubagem({ pesoInformado: peso, cubagemInformada: cubagem, gradeLinha: cubagemSomenteInformada ? null : gradeLinha, fatorCubagem, ignorarCubagem });
   const cotacao = getCotacaoPorRota(origem, rota.nomeRota, pesosAplicados.pesoConsiderado, destinoCep);
   if (!cotacao) return null;
 
@@ -674,7 +674,7 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indic
       .filter(({ origem }) => canalCompativel(origem.canal, filtros.canal))
       .filter(({ origem }) => origemCompativel(origem.cidade, filtros.origem))
       .map(({ transportadora, origem, rota }) => {
-        const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem, inverterIcms: filtros.inverterIcms, destinoCep: filtros.destinoCep });
+        const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem, inverterIcms: filtros.inverterIcms, fatorCubagemPadrao: filtros.fatorCubagemPadrao, cubagemSomenteInformada: filtros.cubagemSomenteInformada, destinoCep: filtros.destinoCep });
         return itemComCanalSimulado(item, filtros.canal);
       })
       .filter(Boolean);
@@ -692,7 +692,7 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indic
             return String(rota.ibgeDestino) === filtros.destinoCodigo || cidade === destinoNormalizado;
           })
           .map((rota) => {
-            const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem, inverterIcms: filtros.inverterIcms, destinoCep: filtros.destinoCep });
+            const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem, inverterIcms: filtros.inverterIcms, fatorCubagemPadrao: filtros.fatorCubagemPadrao, cubagemSomenteInformada: filtros.cubagemSomenteInformada, destinoCep: filtros.destinoCep });
             return itemComCanalSimulado(item, filtros.canal);
           })
           .filter(Boolean),
@@ -700,8 +700,8 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indic
   );
 }
 
-export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, destinoCep = '', cidadePorIbge, gradeCanal = [], indicePorDestino, ignorarCubagem = false, inverterIcms = false, usarPrazo = true }) {
-  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, destinoCep, gradeCanal, ignorarCubagem, inverterIcms }, cidadePorIbge, indicePorDestino);
+export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, destinoCep = '', cidadePorIbge, gradeCanal = [], indicePorDestino, ignorarCubagem = false, inverterIcms = false, usarPrazo = true, fatorCubagemPadrao = 0, cubagemSomenteInformada = false }) {
+  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, destinoCep, gradeCanal, ignorarCubagem, inverterIcms, fatorCubagemPadrao, cubagemSomenteInformada }, cidadePorIbge, indicePorDestino);
   return rankearPorChave(resultados)
     .filter((item) => origemCompativel(item.origem, origem) && String(item.ibgeDestino) === String(destinoCodigo))
     .sort((a, b) => a.total - b.total || (usarPrazo ? a.prazo - b.prazo : 0));

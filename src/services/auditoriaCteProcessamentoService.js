@@ -1,3 +1,4 @@
+import { cubagemTrackingParaCalculo } from '../utils/trackingCubagem.js';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarAguardandoNovaFatura } from './baixaEntregaService';
 import { carregarRaizesAdicionaisPorId } from './transportadoraCnpjsService';
@@ -3198,8 +3199,7 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
       // CUBAGEM DA TABELA da transportadora (ex.: TRANSLOVATO Serra = 200: 0,188 m3 -> 37,6 kg). Antes usava 300 fixo
       // (0,188 -> 56,4 kg), que nao bate com a tabela. O fator vem do proprio calculo da tabela (sonda com o peso fisico);
       // sem fator cadastrado, mantem 300. "Tracking, peso original" continua sem cubagem.
-      const cubagemTracking = (toNumber(cteParaMotor.peso_cubado_tracking_300) / 300)
-        || toNumber(cteParaMotor.cubagemTotal || cteParaMotor.cubagem_total || cteParaMotor.cubagem);
+      const cubagemTracking = cubagemTrackingParaCalculo(cteParaMotor);
       let pesoModo = pesoTracking;
       if (modoPeso === 'tracking' && cubagemTracking > 0) {
         const sonda = processarCteComMotorSimulador(

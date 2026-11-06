@@ -19,7 +19,10 @@ export function resolverPesoCteRealizado(row = {}, filtros = {}) {
   const pesoCte = numeroPeso(row.peso);
   const pesoDeclarado = numeroPeso(row.pesoDeclarado ?? row.peso_declarado);
   const base = pesoCte > 0 ? pesoCte : pesoDeclarado;
-  if (!filtros.ignorarCubagem) return base;
+  if (!filtros.ignorarCubagem) {
+    const pesoTracking = row.trackingMatch ? numeroPeso(row.pesoTracking ?? row.peso_tracking) : 0;
+    return pesoTracking > 0 ? pesoTracking : base;
+  }
   const percentual = Number(filtros.percentualContingenciaPeso) || 0;
   return base * (1 + percentual / 100);
 }

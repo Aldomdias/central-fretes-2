@@ -366,3 +366,24 @@ export function agregarCubagemLinhasTracking(linhas = [], fatorCubagem = 300) {
     corrigiuTotalUnitario: false,
   });
 }
+
+// Mantem a cubagem final da fonte separada do agregado normalizado.
+// Auditoria e Simulador usam o mesmo mapa, sem reaplicar volumes ao total.
+export function adicionarTrackingNoMapa(mapa, chave, item, cubagemBruta = 0) {
+  if (!chave) return;
+  const atual = mapa.get(chave);
+  const somado = somarTrackingAgregado(atual, item);
+  const mesmaNf = atual && apenasDigitosCubagem(atual.chave_nfe)
+    && apenasDigitosCubagem(atual.chave_nfe) === apenasDigitosCubagem(item.chave_nfe);
+  const anterior = numero(atual?.cubagem_bruta_tracking);
+  somado.cubagem_bruta_tracking = !atual ? cubagemBruta
+    : mesmaNf ? Math.max(anterior, cubagemBruta) : anterior + cubagemBruta;
+  mapa.set(chave, somado);
+}
+
+// O campo x300 e apenas uma representacao intermediaria da auditoria.
+// Retornamos m3; o motor aplica o fator da tabela selecionada depois.
+export function cubagemTrackingParaCalculo(row = {}) {
+  const original = numero(row.pesoCubadoTracking300 ?? row.peso_cubado_tracking_300) / 300;
+  return original || numero(row.cubagemTotal || row.cubagem_total || row.cubagem);
+}
