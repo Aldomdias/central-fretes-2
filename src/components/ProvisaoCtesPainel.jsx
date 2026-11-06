@@ -321,8 +321,8 @@ export default function ProvisaoCtesPainel() {
     }
   };
 
-  const exportar = async () => {
-    if (!itens || !resumo) return;
+  // Abas do Excel da provisao. comTodos = inclui a aba com todos os CT-es (fica de fora no anexo do e-mail).
+  const montarAbasProvisao = (comTodos = true) => {
     const t = resumo.total;
     const comTracking = Boolean(resumoTracking);
     const blocos = [{
@@ -386,10 +386,17 @@ export default function ProvisaoCtesPainel() {
       abas.push({ nome: 'Tracking NF sem CT-e', colunas: COLS_NF, linhas: linhasNfPend, totais: linhaTotal(COLS_NF, { 2: `${num(nfsPendentes.length)} NFs`, 9: somaCol(linhasNfPend, 9), 12: somaCol(linhasNfPend, 12) }) });
     }
     if (nfsNfse.length) abas.push({ nome: 'Tracking frete NFS-e', colunas: COLS_NF, linhas: linhasNf(nfsNfse, centrosAtivos) });
-    if (!snapshot) abas.push({ nome: 'Todos os CT-es', colunas: COLS_CTE, linhas: linhasCte(itens, centrosAtivos), simples: true });
+    if (comTodos && !snapshot) abas.push({ nome: 'Todos os CT-es', colunas: COLS_CTE, linhas: linhasCte(itens, centrosAtivos), simples: true });
+    return abas;
+  };
+
+  const nomeExcelProvisao = () => `PROVISAO_CTES_${calculadaPara}${snapshot ? `_SALVA_${String(snapshot.criado_em).slice(0, 10)}` : ''}.xlsx`;
+
+  const exportar = async () => {
+    if (!itens || !resumo) return;
     setProgresso('Gerando Excel...');
     try {
-      await exportarExcelMultiAbas({ nomeArquivo: `PROVISAO_CTES_${calculadaPara}${snapshot ? `_SALVA_${String(snapshot.criado_em).slice(0, 10)}` : ''}.xlsx`, abas });
+      await exportarExcelMultiAbas({ nomeArquivo: nomeExcelProvisao(), abas: montarAbasProvisao(true) });
     } catch (e) {
       setErro(e.message || String(e));
     } finally {
@@ -421,13 +428,27 @@ export default function ProvisaoCtesPainel() {
     baixar(gerarLaudoProvisaoHtml(dadosLaudo()), nomeLaudoProvisao(calculadaPara), 'text/html;charset=utf-8');
   };
 
-  // Rascunho do Outlook (.eml) com o resumo no corpo e o laudo HTML anexo: so preencher os destinatarios.
-  const baixarEmail = () => {
-    if (!resumo) return;
-    const d = dadosLaudo();
-    const eml = montarEml({ assunto: assuntoEmailProvisao(calculadaPara), corpoHtml: corpoEmailProvisao(d), anexoHtml: gerarLaudoProvisaoHtml(d), anexoNome: nomeLaudoProvisao(calculadaPara) });
-    baixar(eml, `email-provisao-fretes-${calculadaPara}.eml`, 'message/rfc822');
-    setAviso('E-mail baixado: abra o arquivo .eml no Outlook, coloque os destinatários e envie.');
+  // Rascunho do Outlook (.eml): resumo no corpo; anexos = laudo HTML + Excel com os detalhes
+  // (sem a aba "Todos os CT-es", que deixaria o e-mail pesado). So preencher os destinatarios.
+  const baixarEmail = async () => {
+    if (!resumo || !itens) return;
+    setErro('');
+    setProgresso('Montando e-mail com o laudo e o Excel...');
+    try {
+      const d = dadosLaudo();
+      const excel = await exportarExcelMultiAbas({ abas: montarAbasProvisao(false), retornarBytes: true });
+      const eml = montarEml({
+        assunto: assuntoEmailProvisao(calculadaPara), corpoHtml: corpoEmailProvisao(d),
+        anexoHtml: gerarLaudoProvisaoHtml(d), anexoNome: nomeLaudoProvisao(calculadaPara),
+        anexosExtras: [{ nome: nomeExcelProvisao(), conteudo: excel }],
+      });
+      baixar(eml, `email-provisao-fretes-${calculadaPara}.eml`, 'message/rfc822');
+      setAviso('E-mail baixado com o laudo (HTML) e o Excel anexos: abra o .eml no Outlook, coloque os destinatários e envie.');
+    } catch (e) {
+      setErro(e.message || String(e));
+    } finally {
+      setProgresso('');
+    }
   };
 
   const exportarLaudoTracking = async () => {

@@ -10,7 +10,11 @@ function esc(valor) {
 }
 
 function base64Utf8(texto) {
-  const bytes = new TextEncoder().encode(String(texto ?? ''));
+  return base64Bytes(new TextEncoder().encode(String(texto ?? '')));
+}
+
+function base64Bytes(dados) {
+  const bytes = dados instanceof Uint8Array ? dados : new Uint8Array(dados.buffer ? dados.buffer : dados);
   let binario = '';
   const passo = 0x8000;
   for (let i = 0; i < bytes.length; i += passo) {
@@ -125,13 +129,17 @@ export function montarEml({ assunto, corpoHtml, anexoHtml, anexoNome, anexosExtr
     );
   }
   (anexosExtras || []).filter((x) => x?.conteudo).forEach((x) => {
+    // Binario (ex.: .xlsx gerado com retornarBytes) vai como bytes; texto continua como .xls em UTF-8.
+    const binario = x.conteudo instanceof ArrayBuffer || ArrayBuffer.isView(x.conteudo);
     partes.push(
       `--${limite}`,
-      `Content-Type: application/vnd.ms-excel; charset="UTF-8"; name="${x.nome}"`,
+      binario
+        ? `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet; name="${x.nome}"`
+        : `Content-Type: application/vnd.ms-excel; charset="UTF-8"; name="${x.nome}"`,
       'Content-Transfer-Encoding: base64',
       `Content-Disposition: attachment; filename="${x.nome}"`,
       '',
-      quebrarLinhas(base64Utf8(x.conteudo)),
+      quebrarLinhas(binario ? base64Bytes(x.conteudo) : base64Utf8(x.conteudo)),
     );
   });
   partes.push(`--${limite}--`, '');
