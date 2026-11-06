@@ -48,7 +48,7 @@ async function paginarPorId(montar) {
 
 // CT-es emitidos na competencia (base realizado_local_ctes). cnpj_tomador (empresa
 // SAP) e' coluna opcional: sem a migration 20261104_001 le sem ela.
-const COLUNAS_CTE = 'id,chave_cte,chave_nfe,numero_cte,cnpj_transportadora,transportadora,tomador_servico,valor_cte,data_emissao,canal,uf_origem,cidade_origem,uf_destino,cidade_destino';
+const COLUNAS_CTE = 'id,chave_cte,chave_nfe,numero_cte,cnpj_transportadora,transportadora,tomador_servico,valor_cte,data_emissao,canal,uf_origem,cidade_origem,uf_destino,cidade_destino,created_at';
 export async function carregarCtesCompetencia(competencia, onProgress) {
   const client = getSupabaseClient();
   const { inicio, fim } = intervaloCompetencia(competencia);

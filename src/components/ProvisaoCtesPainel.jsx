@@ -8,6 +8,7 @@ import { carregarParametrosRemotos } from '../services/robosParametrosService';
 import { carregarParametros, criarIndices } from '../utils/robos/lancamentoComum';
 import { carregarSessao } from '../utils/authLocal';
 import { montarEml } from '../utils/emailLaudoTransportador';
+import { calcularMetaLancamento, gerarLaudoMetaHtml, ultimoDiaCompetencia } from '../utils/metaLancamentoCte';
 import { assuntoEmailProvisao, corpoEmailProvisao, gerarLaudoProvisaoHtml, nomeLaudoProvisao } from '../utils/laudoProvisaoHtml';
 import { avaliarCteParaBase } from '../services/cteBasePolicy';
 import { classificarProvisao, cnpj14, resumirProvisao, serieDaChave, SITUACOES_PROVISAO } from '../utils/lancamentosCteSap';
@@ -32,7 +33,7 @@ const SITUACOES_SALVAS = new Set(['APOS_MES', 'NAO_LANCADO', 'PROVISAO']);
 
 // Campos do CT-e guardados no snapshot (so os que entram na provisao).
 const CAMPOS_CTE = ['chave_cte', 'numero_cte', 'transportadora', 'cnpj_transportadora', 'cnpj_tomador', 'tomador_servico', 'empresa', 'data_emissao', 'valor_cte', 'canal',
-  'cidade_origem', 'uf_origem', 'cidade_destino', 'uf_destino', 'situacao', 'provisao', 'estornado', 'data_lancamento', 'lancamento_contabil', 'numero_fatura'];
+  'cidade_origem', 'uf_origem', 'cidade_destino', 'uf_destino', 'situacao', 'provisao', 'estornado', 'created_at', 'data_lancamento', 'lancamento_contabil', 'numero_fatura'];
 const CAMPOS_NF = ['chave_nfe', 'nota_fiscal', 'data', 'transportadora', 'canal', 'pedido', 'origem', 'destino', 'valor_nf', 'chaves_cte', 'cte_numero',
   'situacao', 'pct_frete', 'frete_estimado', 'origem_estimativa', 'frete_tracking', 'empresa'];
 const pegar = (obj, campos) => Object.fromEntries(campos.map((k) => [k, obj[k] ?? null]));
@@ -109,6 +110,8 @@ export default function ProvisaoCtesPainel() {
   const [avisoHistorico, setAvisoHistorico] = useState('');
   const [centros, setCentros] = useState(carregarCentrosCusto);
   const [editarCc, setEditarCc] = useState(false);
+  const [metaPct, setMetaPct] = useState(95);
+  const [corteMeta, setCorteMeta] = useState('');
 
   const atualizarHistorico = async () => {
     try {
@@ -204,6 +207,7 @@ export default function ProvisaoCtesPainel() {
       setItens(classificados);
       setForaTomador({ qtd: fora.qtd, valor: fora.valor, porTomador: [...fora.porTomador.values()].sort((a, b) => b.valor - a.valor) });
       setCalculadaPara(competencia);
+      setCorteMeta('');
       setTransportadora('');
       setVisiveis(PAGINA); setVisiveisNf(PAGINA);
       atualizarHistorico();
@@ -269,6 +273,14 @@ export default function ProvisaoCtesPainel() {
 
   const porEmpresa = useMemo(() => (itens ? resumirPorEmpresa(itens.filter((c) => c.provisao), nfsPendentes, centrosAtivos) : []), [itens, nfsPendentes, centrosAtivos]);
 
+  // Meta de lancamento: no calculo usa todos os CT-es; na provisao salva usa a meta guardada no salvamento.
+  const corteEfetivo = corteMeta || (calculadaPara ? ultimoDiaCompetencia(calculadaPara) : '');
+  const metaLancamento = useMemo(() => {
+    if (!itens || !calculadaPara) return null;
+    if (snapshot) return snapshot.resumo?.meta || null;
+    return calcularMetaLancamento(itens, calculadaPara, corteEfetivo, Number(metaPct) || 95);
+  }, [itens, calculadaPara, snapshot, corteEfetivo, metaPct]);
+
   // Ultimo snapshot da mesma competencia, para comparar com o recalculo.
   const ultimoSalvo = useMemo(() => (!snapshot && calculadaPara ? historico.find((h) => h.competencia === calculadaPara) : null), [historico, snapshot, calculadaPara]);
 
@@ -303,7 +315,7 @@ export default function ProvisaoCtesPainel() {
       await salvarSnapshotProvisao({
         competencia: calculadaPara,
         descricao: descricao.trim() || null,
-        resumo: { total: resumo.total, porTransportadora: resumo.porTransportadora, foraTomador },
+        resumo: { total: resumo.total, porTransportadora: resumo.porTransportadora, foraTomador, meta: metaLancamento },
         tracking_resumo: resumoTrackingCarregado || null,
         centros_custo: centros,
         qtd_provisao: resumo.total.provisao.qtd,
@@ -451,6 +463,12 @@ export default function ProvisaoCtesPainel() {
     }
   };
 
+  const baixarLaudoMeta = () => {
+    if (!metaLancamento) return;
+    const origem = snapshot ? `provisão salva em ${dataHoraBr(snapshot.criado_em)}` : 'cálculo com os dados de hoje';
+    baixar(gerarLaudoMetaHtml(metaLancamento, { origem }), `laudo-meta-lancamento-cte-${calculadaPara}.html`, 'text/html;charset=utf-8');
+  };
+
   const exportarLaudoTracking = async () => {
     if (!resumoTracking) return;
     const tt = resumoTracking.total;
@@ -568,6 +586,28 @@ export default function ProvisaoCtesPainel() {
                 }}>+ Empresa</button>
               </div>
             </div>
+          )}
+
+          {itens && (
+            <details style={{ marginBottom: 10 }}>
+              <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>Meta de lançamento (laudo separado)</summary>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginTop: 8 }}>
+                <label className="field" style={{ width: 110 }}>Meta (%)
+                  <input type="number" min="0" max="100" step="0.5" value={metaPct} disabled={Boolean(snapshot)} onChange={(e) => setMetaPct(e.target.value)} />
+                </label>
+                <label className="field" style={{ width: 170 }}>Corte (CT-es na base até)
+                  <input type="date" value={corteEfetivo} disabled={Boolean(snapshot)} onChange={(e) => setCorteMeta(e.target.value)} />
+                </label>
+                <button type="button" className="btn-secondary" disabled={!metaLancamento} onClick={baixarLaudoMeta}>Laudo meta (HTML)</button>
+                {metaLancamento && (
+                  <span style={{ fontSize: 13 }}>
+                    Disponíveis até {dataBr(metaLancamento.corte)}: <strong style={{ color: metaLancamento.atingiu ? '#15803d' : '#b91c1c' }}>{metaLancamento.pctMeta.toFixed(1)}%</strong> lançados no mês
+                    {' '}· bruto {metaLancamento.pctBruto.toFixed(1)}% · {num(metaLancamento.chegaramDepois.qtd)} CT-es chegaram depois do corte
+                  </span>
+                )}
+                {snapshot && !metaLancamento && <span style={{ fontSize: 12, color: '#64748b' }}>Provisão salva antes da meta existir: use “Gerar novamente” para calcular.</span>}
+              </div>
+            </details>
           )}
 
           {(historico.length > 0 || avisoHistorico) && (
