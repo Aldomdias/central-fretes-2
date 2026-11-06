@@ -189,7 +189,7 @@ export default function ProvisaoCtesPainel() {
       const resolver = criarResolvedorEmpresa(filiais);
       let nfDoCte = new Map();
       let linhas = [];
-      if (incluirTracking) {
+      { // busca sempre o tracking; a flag "Considerar tracking" so mostra/esconde no resultado
         linhas = await carregarTrackingCompetencia(competencia, setProgresso);
         linhas.forEach((l) => { const k = String(l.chave_cte || '').replace(/\D/g, ''); if (k.length === 44 && l.chave_nfe && !nfDoCte.has(k)) nfDoCte.set(k, l.chave_nfe); });
       }
@@ -200,7 +200,7 @@ export default function ProvisaoCtesPainel() {
       }));
       nfDoCte = null;
       baseCalculo.current = { ctes, filiais, competencia };
-      if (incluirTracking) await processarTracking(linhas, ctes, filiais);
+      await processarTracking(linhas, ctes, filiais);
       setItens(classificados);
       setForaTomador({ qtd: fora.qtd, valor: fora.valor, porTomador: [...fora.porTomador.values()].sort((a, b) => b.valor - a.valor) });
       setCalculadaPara(competencia);
@@ -520,7 +520,7 @@ export default function ProvisaoCtesPainel() {
             </label>
             <button type="button" className="btn-primary" disabled={Boolean(progresso)} onClick={calcular}>{progresso ? 'Processando...' : (itens ? 'Gerar novamente' : 'Calcular provisão')}</button>
             <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
-              <input type="checkbox" checked={incluirTracking} disabled={Boolean(progresso)} onChange={(e) => alternarTracking(e.target.checked)} /> Considerar tracking (NFs sem CT-e)
+              <input type="checkbox" checked={incluirTracking} disabled={Boolean(progresso)} onChange={(e) => alternarTracking(e.target.checked)} /> Considerar tracking no resultado (NFs sem CT-e)
             </label>
             {itens && !snapshot && <button type="button" className="btn-secondary" disabled={Boolean(progresso)} onClick={salvar}>Salvar provisão (histórico)</button>}
             {itens && <button type="button" className="btn-secondary" onClick={exportar}>Exportar (Excel)</button>}
