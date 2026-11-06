@@ -4,6 +4,7 @@
 //  - CTE_FORA_BASE: tracking traz a chave do CT-e, mas o CT-e nao esta na base
 //  - NFSE: frete cobrado por nota fiscal de servico (tracking marca "Nota fiscal de servico")
 //  - RETIRA: "Tipo NF" = Retira (cliente retira a mercadoria, nao tem frete) (informativo)
+//  - NAO_EXPEDIDA: sem CT-e e Status Pedido PEC/PGC/NFE/ESP/SEP (ainda nao saiu do CD) (informativo)
 //  - SEM_TRANSPORTADORA: sem documento e "Transportadora nao cadastrada no SAP" (informativo)
 //  - CTE_MES_SEGUINTE: CT-e (pela chave) emitido depois da competencia: e' do mes seguinte (informativo)
 //  - SEM_CTE: tracking nao traz nenhum documento de frete
@@ -18,11 +19,12 @@ export const SITUACOES_TRACKING = {
   SEM_CTE: 'Sem CT-e vinculado',
   NFSE: 'Frete por NFS-e',
   RETIRA: 'Cliente retira',
+  NAO_EXPEDIDA: 'Ainda não expedida',
   SEM_TRANSPORTADORA: 'Transportadora não cadastrada',
   CTE_MES_SEGUINTE: 'CT-e emitido após o mês',
 };
 
-export const CORES_TRACKING = { COM_CTE: '#15803d', CTE_FORA_BASE: '#c2410c', SEM_CTE: '#b91c1c', NFSE: '#0369a1', RETIRA: '#7c2d12', SEM_TRANSPORTADORA: '#64748b', CTE_MES_SEGUINTE: '#0f766e' };
+export const CORES_TRACKING = { COM_CTE: '#15803d', CTE_FORA_BASE: '#c2410c', SEM_CTE: '#b91c1c', NFSE: '#0369a1', RETIRA: '#7c2d12', NAO_EXPEDIDA: '#a16207', SEM_TRANSPORTADORA: '#64748b', CTE_MES_SEGUINTE: '#0f766e' };
 
 // Entram no "a provisionar".
 export const SITUACOES_PENDENTES = new Set(['CTE_FORA_BASE', 'SEM_CTE']);
@@ -41,6 +43,8 @@ const numeroBr = (v) => {
   return Number.isFinite(n) ? n : 0;
 };
 
+// Status do pedido antes da expedicao: sem frete no mes (o CT-e sai quando expedir).
+const NAO_EXPEDIDOS = new Set(['PEC', 'PGC', 'NFE', 'ESP', 'SEP']);
 const ehNfse = (v) => /servi/i.test(String(v || ''));
 // Tracking sem transportadora definida no SAP (ex.: retira/frota): nao e' frete a provisionar.
 const SEM_TRANSP = /n[aã]o cadastrada|sem transportadora/i;
@@ -58,7 +62,7 @@ export function agruparNfsTracking(linhas = []) {
         id, chave_nfe: chaveNfe.length === 44 ? chaveNfe : '', nota_fiscal: l.nota_fiscal || '', data: String(l.data || '').slice(0, 10),
         transportadora: String(l.transportadora || '').trim() || '(sem transportadora)', canal: l.canal || '', pedido: l.pedido || '',
         origem: `${l.cidade_origem || ''}${l.uf_origem ? `/${l.uf_origem}` : ''}`, destino: `${l.cidade_destino || ''}${l.uf_destino ? `/${l.uf_destino}` : ''}`,
-        valor_nf: 0, frete_tracking: 0, chaves_cte: new Set(), cte_numero: '', nfse: false, retira: false,
+        valor_nf: 0, frete_tracking: 0, chaves_cte: new Set(), cte_numero: '', nfse: false, retira: false, status: '',
       });
     }
     const nf = porNf.get(id);
@@ -67,6 +71,7 @@ export function agruparNfsTracking(linhas = []) {
     const cte = digitos(l.chave_cte);
     if (cte.length === 44) nf.chaves_cte.add(cte);
     if (ehNfse(l.cte_numero) || ehNfse(l.cte_numero_serie)) nf.nfse = true;
+    if (l.status_pedido) nf.status = String(l.status_pedido).trim().toUpperCase().slice(0, 3);
     if (/retira/i.test(String(l.tipo_nf || ''))) nf.retira = true; // "Tipo NF" = Retira: cliente retira, sem frete
     const num = [l.cte_numero, l.cte_numero_serie].find((v) => v && !ehNfse(v) && /\d/.test(String(v)));
     if (!nf.cte_numero && num) nf.cte_numero = String(num).trim();
@@ -127,6 +132,7 @@ export function classificarNfsTracking(nfs = [], valorCtePorChave = new Map(), f
     let situacao;
     if (naBase.length) situacao = 'COM_CTE';
     else if (nf.retira) situacao = 'RETIRA';
+    else if (!chaves.length && NAO_EXPEDIDOS.has(nf.status)) situacao = 'NAO_EXPEDIDA';
     else if (chaves.length && aamm && chaves.every((c) => c.slice(2, 6) > aamm)) situacao = 'CTE_MES_SEGUINTE';
     else if (chaves.length) situacao = 'CTE_FORA_BASE';
     else if (nf.nfse) situacao = 'NFSE';
