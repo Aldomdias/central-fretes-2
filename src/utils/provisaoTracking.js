@@ -4,9 +4,10 @@
 //  - CTE_FORA_BASE: tracking traz a chave do CT-e, mas o CT-e nao esta na base
 //  - NFSE: frete cobrado por nota fiscal de servico (tracking marca "Nota fiscal de servico")
 //  - SEM_TRANSPORTADORA: sem documento e "Transportadora nao cadastrada no SAP" (informativo)
+//  - CTE_MES_SEGUINTE: CT-e (pela chave) emitido depois da competencia: e' do mes seguinte (informativo)
 //  - SEM_CTE: tracking nao traz nenhum documento de frete
-// CTE_FORA_BASE + SEM_CTE sao candidatos a provisao. Frete estimado = "Vlr. Calculado Frete"
-// do proprio tracking; sem ele, % frete/valor NF da transportadora (CT-es contados uma vez).
+// CTE_FORA_BASE + SEM_CTE sao candidatos a provisao. Frete estimado = % frete real da transportadora
+// (CT-es da base contados uma vez / valor NF); sem historico, frete do tracking (se plausivel) ou % geral.
 
 const digitos = (v) => String(v ?? '').replace(/\D/g, '');
 
@@ -16,9 +17,10 @@ export const SITUACOES_TRACKING = {
   SEM_CTE: 'Sem CT-e vinculado',
   NFSE: 'Frete por NFS-e',
   SEM_TRANSPORTADORA: 'Transportadora não cadastrada',
+  CTE_MES_SEGUINTE: 'CT-e emitido após o mês',
 };
 
-export const CORES_TRACKING = { COM_CTE: '#15803d', CTE_FORA_BASE: '#c2410c', SEM_CTE: '#b91c1c', NFSE: '#0369a1', SEM_TRANSPORTADORA: '#64748b' };
+export const CORES_TRACKING = { COM_CTE: '#15803d', CTE_FORA_BASE: '#c2410c', SEM_CTE: '#b91c1c', NFSE: '#0369a1', SEM_TRANSPORTADORA: '#64748b', CTE_MES_SEGUINTE: '#0f766e' };
 
 // Entram no "a provisionar".
 export const SITUACOES_PENDENTES = new Set(['CTE_FORA_BASE', 'SEM_CTE']);
@@ -86,7 +88,7 @@ export function criarResolvedorEmpresa(filiaisPorCnpj = new Map()) {
     return filiaisPorCnpj.get(c)?.emp || raizUnica(c.slice(0, 8));
   };
   // Nome do tomador (base sem CNPJ do tomador): grupo pelo nome -> raiz -> empresa.
-  const NOMES = [[/\bCPX\b/, '10158356'], [/\bITR\b/, '15426874'], [/\bGP\s+PNEUS\b/, '46378127'], [/\bGRIP\b/, '08265644'], [/\bAFB\b/, '43362585'], [/\bCP\s+COMERCIAL\b/, '08888040']];
+  const NOMES = [[/\bCPX\b/, '10158356'], [/\bITR\b/, '15426874'], [/\bGP\s+PNEUS\b/, '46378127'], [/\bGRIP/, '08265644'], [/\bAFB\b/, '43362585'], [/\bCP\s+COMERCIAL\b/, '08888040']];
   const porNome = (nome) => {
     const t = String(nome || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
     const achou = NOMES.find(([re]) => re.test(t));
@@ -105,7 +107,9 @@ export function empresaDaChaveNfe(chaveNfe, filiaisPorCnpj = new Map()) {
  * nfs: saida de agruparNfsTracking. valorCtePorChave: Map(chave_cte -> valor) dos CT-es na base.
  * Devolve as NFs classificadas, com frete estimado nas que nao tem CT-e na base.
  */
-export function classificarNfsTracking(nfs = [], valorCtePorChave = new Map(), filiaisPorCnpj = new Map()) {
+export function classificarNfsTracking(nfs = [], valorCtePorChave = new Map(), filiaisPorCnpj = new Map(), competencia = '') {
+  // AAMM da competencia, para reconhecer CT-e emitido depois do mes pela chave (pos. 3-6).
+  const aamm = competencia ? `${competencia.slice(2, 4)}${competencia.slice(5, 7)}` : '';
   const resolver = criarResolvedorEmpresa(filiaisPorCnpj);
   // % frete/valor NF por transportadora: cada CT-e entra uma vez (um CT-e pode ter varias NFs).
   const razao = new Map();
@@ -117,6 +121,7 @@ export function classificarNfsTracking(nfs = [], valorCtePorChave = new Map(), f
     const naBase = chaves.filter((c) => valorCtePorChave.has(c));
     let situacao;
     if (naBase.length) situacao = 'COM_CTE';
+    else if (chaves.length && aamm && chaves.every((c) => c.slice(2, 6) > aamm)) situacao = 'CTE_MES_SEGUINTE';
     else if (chaves.length) situacao = 'CTE_FORA_BASE';
     else if (nf.nfse) situacao = 'NFSE';
     else if (SEM_TRANSP.test(nf.transportadora)) situacao = 'SEM_TRANSPORTADORA';
@@ -135,11 +140,14 @@ export function classificarNfsTracking(nfs = [], valorCtePorChave = new Map(), f
   return base.map((nf) => {
     const r = razao.get(nf.transportadora);
     const pct = r && r.nf > 0 && r.frete > 0 ? r.frete / r.nf : pctGeral;
+    // Estimativa: % frete real da transportadora (CT-es da base / valor das NFs). O "Vlr. Calculado
+    // Frete" do tracking so' entra sem historico da transportadora e se for plausivel (ate 30% da NF).
     let estimado = 0;
     let origemEstimativa = '';
-    if (nf.situacao !== 'COM_CTE' && nf.situacao !== 'SEM_TRANSPORTADORA') {
-      if (nf.frete_tracking > 0) { estimado = nf.frete_tracking; origemEstimativa = 'Frete calculado no tracking'; }
-      else { estimado = nf.valor_nf * pct; origemEstimativa = '% frete da transportadora'; }
+    if (SITUACOES_PENDENTES.has(nf.situacao)) {
+      if (r && r.nf > 0 && r.frete > 0) { estimado = nf.valor_nf * pct; origemEstimativa = '% frete real da transportadora'; }
+      else if (nf.frete_tracking > 0 && nf.frete_tracking <= nf.valor_nf * 0.3) { estimado = nf.frete_tracking; origemEstimativa = 'Frete calculado no tracking'; }
+      else { estimado = nf.valor_nf * pctGeral; origemEstimativa = '% frete geral do mês'; }
     }
     return {
       ...nf, pct_frete: pct, frete_estimado: Math.round(estimado * 100) / 100, origem_estimativa: origemEstimativa,

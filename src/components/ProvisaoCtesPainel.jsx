@@ -128,7 +128,7 @@ export default function ProvisaoCtesPainel() {
   };
 
   // Classifica as NFs do tracking contra os CT-es do calculo.
-  const processarTracking = async (linhas, ctes, filiais) => {
+  const processarTracking = async (linhas, ctes, filiais, competenciaCalc) => {
     const { nfs: agrupadas, canceladas } = agruparNfsTracking(linhas.filter((l) => !/EBAZAR/i.test(String(l.transportadora || ''))));
     const valorPorChave = new Map(ctes.map((c) => [String(c.chave_cte || '').replace(/\D/g, ''), Number(c.valor_cte || 0)]));
     // Tracking sem chave do CT-e: procura o CT-e do mes pela chave da NF (base de CT-es).
@@ -138,7 +138,7 @@ export default function ProvisaoCtesPainel() {
     const foraDoMes = agrupadas.flatMap((n) => [...n.chaves_cte]).filter((c) => !valorPorChave.has(c));
     const extra = await buscarCtesNaBase(foraDoMes, setProgresso);
     extra.forEach((v, k) => valorPorChave.set(k, v));
-    setNfs(classificarNfsTracking(agrupadas, valorPorChave, filiais));
+    setNfs(classificarNfsTracking(agrupadas, valorPorChave, filiais, competenciaCalc));
     setTrackingCanceladas(canceladas);
   };
 
@@ -149,7 +149,7 @@ export default function ProvisaoCtesPainel() {
     setErro('');
     try {
       const linhas = await carregarTrackingCompetencia(base.competencia, setProgresso);
-      await processarTracking(linhas, base.ctes, base.filiais);
+      await processarTracking(linhas, base.ctes, base.filiais, base.competencia);
     } catch (e) {
       setErro(e.message || String(e));
     } finally {
@@ -200,7 +200,7 @@ export default function ProvisaoCtesPainel() {
       }));
       nfDoCte = null;
       baseCalculo.current = { ctes, filiais, competencia };
-      await processarTracking(linhas, ctes, filiais);
+      await processarTracking(linhas, ctes, filiais, competencia);
       setItens(classificados);
       setForaTomador({ qtd: fora.qtd, valor: fora.valor, porTomador: [...fora.porTomador.values()].sort((a, b) => b.valor - a.valor) });
       setCalculadaPara(competencia);
@@ -444,6 +444,7 @@ export default function ProvisaoCtesPainel() {
         ['Sem CT-e vinculado no tracking', tt.SEM_CTE.qtd, pctDe(tt.SEM_CTE.qtd, tt.geral.qtd), tt.SEM_CTE.valor_nf, tt.SEM_CTE.estimado],
         ['CT-e no tracking, mas fora da base (não veio da Sefaz)', tt.CTE_FORA_BASE.qtd, pctDe(tt.CTE_FORA_BASE.qtd, tt.geral.qtd), tt.CTE_FORA_BASE.valor_nf, tt.CTE_FORA_BASE.estimado],
         ['Frete por NFS-e (informativo, fora do total)', tt.NFSE?.qtd || 0, pctDe(tt.NFSE?.qtd || 0, tt.geral.qtd), tt.NFSE?.valor_nf || 0, tt.NFSE?.estimado || 0],
+        ['CT-e emitido após o mês (é da competência seguinte; informativo, fora do total)', tt.CTE_MES_SEGUINTE?.qtd || 0, pctDe(tt.CTE_MES_SEGUINTE?.qtd || 0, tt.geral.qtd), tt.CTE_MES_SEGUINTE?.valor_nf || 0, ''],
         ['Transportadora não cadastrada no SAP, sem documento (informativo, fora do total)', tt.SEM_TRANSPORTADORA?.qtd || 0, pctDe(tt.SEM_TRANSPORTADORA?.qtd || 0, tt.geral.qtd), tt.SEM_TRANSPORTADORA?.valor_nf || 0, ''],
       ],
       totais: ['TOTAL A VERIFICAR / PROVISIONAR', tt.pendente.qtd, pctDe(tt.pendente.qtd, tt.geral.qtd), tt.pendente.valor_nf, tt.pendente.estimado],
@@ -470,7 +471,8 @@ export default function ProvisaoCtesPainel() {
           `NFs canceladas/devolvidas desconsideradas: ${num(resumoTracking.canceladas || 0)}`,
           'NF = linha do tracking com data na competência, agrupada pela chave da NF.',
           '"Fora da base" = o tracking tem a chave do CT-e, mas o documento não está na base de CT-es (pode não ter vindo da Sefaz).',
-          'Frete estimado = "Vlr. Calculado Frete" do próprio tracking; sem ele, valor da NF x % frete/valor NF da transportadora no mês (cada CT-e contado uma vez).',
+          'Frete estimado = valor da NF x % frete real da transportadora no mês (CT-es da base / valor das NFs, cada CT-e uma vez); sem histórico, frete do tracking (até 30% da NF) ou % geral.',
+          'CT-e do tracking emitido depois do mês é da competência seguinte: fica fora do total.',
           'NFS-e = tracking marca "Nota fiscal de servico": frete cobrado por nota de serviço, fica fora do total a provisionar.',
           '"Transportadora nao cadastrada no SAP" sem documento de frete fica fora do total (informativo).',
         ],
@@ -699,7 +701,7 @@ export default function ProvisaoCtesPainel() {
               <div style={{ fontWeight: 700, fontSize: 14, margin: '18px 0 6px' }}>Tracking do mês x CT-e — NFs sem CT-e vinculado</div>
               <p style={{ margin: '0 0 8px', fontSize: 12, color: '#64748b' }}>
                 NFs do tracking com data em {competenciaBr(calculadaPara)} (sem canceladas/devolvidas: {num(resumoTracking.canceladas)}). “Fora da base” = o tracking tem a chave do CT-e,
-                mas o documento não está na base (pode não ter vindo da Sefaz). Frete estimado pelo “Vlr. Calculado Frete” do tracking (sem ele, % frete/NF da transportadora). NFS-e = frete por nota de serviço, fora do total.
+                mas o documento não está na base (pode não ter vindo da Sefaz). Frete estimado pelo % frete real da transportadora (CT-es da base / valor das NFs); sem histórico, frete do tracking ou % geral. CT-e emitido no mês seguinte fica fora. NFS-e = frete por nota de serviço, fora do total.
               </p>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
                 {cardsNf.map((c) => (

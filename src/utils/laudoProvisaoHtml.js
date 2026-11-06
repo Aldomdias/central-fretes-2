@@ -59,13 +59,14 @@ export function gerarLaudoProvisaoHtml(d) {
     const lin = (rot, o, est = true) => [rot, int(o.qtd), pct(o.qtd, tt.geral.qtd), brl(o.valor_nf), est ? brl(o.estimado) : '-'];
     tracking = `
       <h2>Tracking do mês x CT-e</h2>
-      <p class="nota">NFs do tracking com data na competência (canceladas/devolvidas desconsideradas: ${int(d.tracking.canceladas)}). Frete estimado pelo valor calculado no próprio tracking; sem ele, pelo % de frete da transportadora.</p>
+      <p class="nota">NFs do tracking com data na competência (canceladas/devolvidas desconsideradas: ${int(d.tracking.canceladas)}). Frete estimado pelo % de frete real da transportadora no mês (CT-es da base sobre o valor das NFs).</p>
       ${tabela([{ t: 'Indicador' }, { t: 'NFs', dir: 1 }, { t: '% das NFs', dir: 1 }, { t: 'Valor NF', dir: 1 }, { t: 'Frete estimado', dir: 1 }], [
         lin('NFs no tracking', tt.geral, false),
         lin('Com CT-e na base', tt.COM_CTE || z, false),
         lin('<b style="color:#b91c1c">Sem CT-e vinculado</b>', tt.SEM_CTE || z),
         lin('<b style="color:#c2410c">CT-e fora da base (não veio da Sefaz)</b>', tt.CTE_FORA_BASE || z),
         lin('Frete por NFS-e (informativo)', tt.NFSE || z),
+        lin('CT-e emitido após o mês (competência seguinte, informativo)', tt.CTE_MES_SEGUINTE || z, false),
         lin('Transportadora não cadastrada no SAP (informativo)', tt.SEM_TRANSPORTADORA || z, false),
       ], ['A PROVISIONAR (sem CT-e + fora da base)', int(tt.pendente.qtd), pct(tt.pendente.qtd, tt.geral.qtd), brl(tt.pendente.valor_nf), brl(tt.pendente.estimado)])}
       <h3>Transportadoras com mais NFs pendentes</h3>
