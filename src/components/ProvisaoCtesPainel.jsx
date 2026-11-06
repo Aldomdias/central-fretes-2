@@ -10,7 +10,7 @@ import { carregarSessao } from '../utils/authLocal';
 import { avaliarCteParaBase } from '../services/cteBasePolicy';
 import { classificarProvisao, cnpj14, resumirProvisao, serieDaChave, SITUACOES_PROVISAO } from '../utils/lancamentosCteSap';
 import {
-  agruparNfsTracking, carregarCentrosCusto, classificarNfsTracking, CORES_TRACKING, guardarCentrosCusto, resumirPorEmpresa,
+  agruparNfsTracking, carregarCentrosCusto, empresaDaChaveNfe, classificarNfsTracking, CORES_TRACKING, guardarCentrosCusto, resumirPorEmpresa,
   resumirTracking, SITUACOES_TRACKING,
 } from '../utils/provisaoTracking';
 
@@ -149,11 +149,21 @@ export default function ProvisaoCtesPainel() {
       const parcial = classificarProvisao(ctes, lancamentos, new Map(), competencia);
       const semLancamento = parcial.filter((c) => c.situacao === 'NAO_LANCADO').map((c) => c.chave_cte);
       const faturas = await carregarFaturasLancadasDosCtes(semLancamento, setProgresso);
-      const classificados = classificarProvisao(ctes, lancamentos, faturas, competencia).map((c) => ({
-        ...c, empresa: filiais.get(cnpj14(c.cnpj_tomador))?.emp || c.empresa_sap || '',
-      }));
+      // Empresa: 1) CNPJ do tomador nas Filiais; 2) empresa do lancamento SAP; 3) emitente da NF do CT-e
+      // (chave da NF na base ou no tracking) nas Filiais.
+      let nfDoCte = new Map();
+      let linhas = [];
       if (incluirTracking) {
-        const linhas = await carregarTrackingCompetencia(competencia, setProgresso);
+        linhas = await carregarTrackingCompetencia(competencia, setProgresso);
+        linhas.forEach((l) => { const k = String(l.chave_cte || '').replace(/\D/g, ''); if (k.length === 44 && l.chave_nfe && !nfDoCte.has(k)) nfDoCte.set(k, l.chave_nfe); });
+      }
+      const classificados = classificarProvisao(ctes, lancamentos, faturas, competencia).map((c) => ({
+        ...c,
+        empresa: filiais.get(cnpj14(c.cnpj_tomador))?.emp || c.empresa_sap
+          || empresaDaChaveNfe(c.chave_nfe, filiais) || empresaDaChaveNfe(nfDoCte.get(String(c.chave_cte || '').replace(/\D/g, '')), filiais) || '',
+      }));
+      nfDoCte = null;
+      if (incluirTracking) {
         const { nfs: agrupadas, canceladas } = agruparNfsTracking(linhas.filter((l) => !/EBAZAR/i.test(String(l.transportadora || ''))));
         const valorPorChave = new Map(ctes.map((c) => [String(c.chave_cte || '').replace(/\D/g, ''), Number(c.valor_cte || 0)]));
         const foraDoMes = agrupadas.flatMap((n) => [...n.chaves_cte]).filter((c) => !valorPorChave.has(c));
