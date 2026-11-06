@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { exportarExcelMultiAbas } from '../utils/exportarExcelFormatado';
 import {
   buscarCtesNaBase, carregarCtesCompetencia, carregarLancamentosPorCnpj, carregarSnapshotProvisao,
@@ -103,7 +103,8 @@ export default function ProvisaoCtesPainel() {
   const [transportadora, setTransportadora] = useState('');
   const [visiveis, setVisiveis] = useState(PAGINA);
   const [visiveisNf, setVisiveisNf] = useState(PAGINA);
-  const [incluirTracking, setIncluirTracking] = useState(true);
+  const [incluirTracking, setIncluirTracking] = useState(true); // considerar tracking (liga/desliga sem recalcular)
+  const baseCalculo = useRef(null); // CT-es do ultimo calculo, para buscar o tracking depois sem recalcular
   const [historico, setHistorico] = useState([]);
   const [avisoHistorico, setAvisoHistorico] = useState('');
   const [centros, setCentros] = useState(carregarCentrosCusto);
@@ -126,10 +127,45 @@ export default function ProvisaoCtesPainel() {
     return criarIndices(parametros).filiais;
   };
 
+  // Classifica as NFs do tracking contra os CT-es do calculo.
+  const processarTracking = async (linhas, ctes, filiais) => {
+    const { nfs: agrupadas, canceladas } = agruparNfsTracking(linhas.filter((l) => !/EBAZAR/i.test(String(l.transportadora || ''))));
+    const valorPorChave = new Map(ctes.map((c) => [String(c.chave_cte || '').replace(/\D/g, ''), Number(c.valor_cte || 0)]));
+    // Tracking sem chave do CT-e: procura o CT-e do mes pela chave da NF (base de CT-es).
+    const ctePorNfe = new Map();
+    ctes.forEach((c) => { const nfe = String(c.chave_nfe || '').replace(/\D/g, ''); if (nfe.length === 44 && !ctePorNfe.has(nfe)) ctePorNfe.set(nfe, String(c.chave_cte || '').replace(/\D/g, '')); });
+    agrupadas.forEach((n) => { if (!n.chaves_cte.size && n.chave_nfe && ctePorNfe.has(n.chave_nfe)) { n.chaves_cte.add(ctePorNfe.get(n.chave_nfe)); n.casado_pela_nf = true; } });
+    const foraDoMes = agrupadas.flatMap((n) => [...n.chaves_cte]).filter((c) => !valorPorChave.has(c));
+    const extra = await buscarCtesNaBase(foraDoMes, setProgresso);
+    extra.forEach((v, k) => valorPorChave.set(k, v));
+    setNfs(classificarNfsTracking(agrupadas, valorPorChave, filiais));
+    setTrackingCanceladas(canceladas);
+  };
+
+  // Liga o tracking depois do calculo: busca so o tracking (nao refaz a provisao).
+  const buscarTrackingDepois = async () => {
+    const base = baseCalculo.current;
+    if (!base || snapshot || nfs) return;
+    setErro('');
+    try {
+      const linhas = await carregarTrackingCompetencia(base.competencia, setProgresso);
+      await processarTracking(linhas, base.ctes, base.filiais);
+    } catch (e) {
+      setErro(e.message || String(e));
+    } finally {
+      setProgresso('');
+    }
+  };
+
+  const alternarTracking = (ligado) => {
+    setIncluirTracking(ligado);
+    if (ligado && itens && !nfs && !snapshot && baseCalculo.current?.competencia === calculadaPara) buscarTrackingDepois();
+  };
+
   const calcular = async () => {
     if (!/^\d{4}-\d{2}$/.test(competencia)) return;
     setErro(''); setAviso('');
-    setItens(null); setNfs(null); setSnapshot(null); setForaTomador(null);
+    setItens(null); setNfs(null); setSnapshot(null); setForaTomador(null); baseCalculo.current = null;
     try {
       const filiais = await filiaisPorCnpj();
       const todosCtes = await carregarCtesCompetencia(competencia, setProgresso);
@@ -163,19 +199,8 @@ export default function ProvisaoCtesPainel() {
           || resolver.porChaveNfe(c.chave_nfe) || resolver.porChaveNfe(nfDoCte.get(String(c.chave_cte || '').replace(/\D/g, ''))) || '',
       }));
       nfDoCte = null;
-      if (incluirTracking) {
-        const { nfs: agrupadas, canceladas } = agruparNfsTracking(linhas.filter((l) => !/EBAZAR/i.test(String(l.transportadora || ''))));
-        const valorPorChave = new Map(ctes.map((c) => [String(c.chave_cte || '').replace(/\D/g, ''), Number(c.valor_cte || 0)]));
-        // Tracking sem chave do CT-e: procura o CT-e do mes pela chave da NF (base de CT-es).
-        const ctePorNfe = new Map();
-        ctes.forEach((c) => { const nfe = String(c.chave_nfe || '').replace(/\D/g, ''); if (nfe.length === 44 && !ctePorNfe.has(nfe)) ctePorNfe.set(nfe, String(c.chave_cte || '').replace(/\D/g, '')); });
-        agrupadas.forEach((n) => { if (!n.chaves_cte.size && n.chave_nfe && ctePorNfe.has(n.chave_nfe)) { n.chaves_cte.add(ctePorNfe.get(n.chave_nfe)); n.casado_pela_nf = true; } });
-        const foraDoMes = agrupadas.flatMap((n) => [...n.chaves_cte]).filter((c) => !valorPorChave.has(c));
-        const extra = await buscarCtesNaBase(foraDoMes, setProgresso);
-        extra.forEach((v, k) => valorPorChave.set(k, v));
-        setNfs(classificarNfsTracking(agrupadas, valorPorChave, filiais));
-        setTrackingCanceladas(canceladas);
-      }
+      baseCalculo.current = { ctes, filiais, competencia };
+      if (incluirTracking) await processarTracking(linhas, ctes, filiais);
       setItens(classificados);
       setForaTomador({ qtd: fora.qtd, valor: fora.valor, porTomador: [...fora.porTomador.values()].sort((a, b) => b.valor - a.valor) });
       setCalculadaPara(competencia);
@@ -195,6 +220,7 @@ export default function ProvisaoCtesPainel() {
       setProgresso('Abrindo provisão salva...');
       const { cabecalho, itens: linhas } = await carregarSnapshotProvisao(id, setProgresso);
       setSnapshot(cabecalho);
+      baseCalculo.current = null;
       setForaTomador(cabecalho.resumo?.foraTomador || null);
       setItens(linhas.filter((l) => l.tipo === 'CTE').map((l, i) => ({ id: `s${i}`, ...l.dados })));
       const linhasNf = linhas.filter((l) => l.tipo !== 'CTE').map((l) => l.dados);
@@ -230,13 +256,16 @@ export default function ProvisaoCtesPainel() {
     return snapshot?.resumo?.total ? snapshot.resumo : resumirProvisao(itens);
   }, [itens, snapshot]);
 
-  const resumoTracking = useMemo(() => {
+  // Tracking carregado (vai no snapshot mesmo desligado) x tracking considerado (tela, laudo, e-mail, Excel).
+  const resumoTrackingCarregado = useMemo(() => {
     if (!nfs) return null;
     return snapshot?.tracking_resumo ? snapshot.tracking_resumo : resumirTracking(nfs, trackingCanceladas);
   }, [nfs, snapshot, trackingCanceladas]);
-
-  const nfsPendentes = useMemo(() => (nfs || []).filter((n) => SITUACOES_PENDENTES.has(n.situacao)), [nfs]);
-  const nfsNfse = useMemo(() => (nfs || []).filter((n) => n.situacao === 'NFSE'), [nfs]);
+  const nfsPendentesCarregadas = useMemo(() => (nfs || []).filter((n) => SITUACOES_PENDENTES.has(n.situacao)), [nfs]);
+  const nfsNfseCarregadas = useMemo(() => (nfs || []).filter((n) => n.situacao === 'NFSE'), [nfs]);
+  const resumoTracking = incluirTracking ? resumoTrackingCarregado : null;
+  const nfsPendentes = incluirTracking ? nfsPendentesCarregadas : [];
+  const nfsNfse = incluirTracking ? nfsNfseCarregadas : [];
 
   const porEmpresa = useMemo(() => (itens ? resumirPorEmpresa(itens.filter((c) => c.provisao), nfsPendentes, centrosAtivos) : []), [itens, nfsPendentes, centrosAtivos]);
 
@@ -267,20 +296,20 @@ export default function ProvisaoCtesPainel() {
       const provisao = itens.filter((c) => c.provisao);
       const linhas = [
         ...provisao.map((c) => ({ tipo: 'CTE', dados: pegar(c, CAMPOS_CTE) })),
-        ...nfsPendentes.map((n) => ({ tipo: n.situacao === 'SEM_CTE' ? 'NF_SEM_CTE' : 'CTE_FORA_BASE', dados: pegar(n, CAMPOS_NF) })),
-        ...nfsNfse.map((n) => ({ tipo: 'NFSE', dados: pegar(n, CAMPOS_NF) })),
+        ...nfsPendentesCarregadas.map((n) => ({ tipo: n.situacao === 'SEM_CTE' ? 'NF_SEM_CTE' : 'CTE_FORA_BASE', dados: pegar(n, CAMPOS_NF) })),
+        ...nfsNfseCarregadas.map((n) => ({ tipo: 'NFSE', dados: pegar(n, CAMPOS_NF) })),
       ];
       const sessao = carregarSessao?.() || {};
       await salvarSnapshotProvisao({
         competencia: calculadaPara,
         descricao: descricao.trim() || null,
         resumo: { total: resumo.total, porTransportadora: resumo.porTransportadora, foraTomador },
-        tracking_resumo: resumoTracking || null,
+        tracking_resumo: resumoTrackingCarregado || null,
         centros_custo: centros,
         qtd_provisao: resumo.total.provisao.qtd,
         valor_provisao: r2(resumo.total.provisao.valor),
-        qtd_nf_sem_cte: resumoTracking?.total.pendente.qtd || 0,
-        valor_estimado_nf_sem_cte: r2(resumoTracking?.total.pendente.estimado || 0),
+        qtd_nf_sem_cte: resumoTrackingCarregado?.total.pendente.qtd || 0,
+        valor_estimado_nf_sem_cte: r2(resumoTrackingCarregado?.total.pendente.estimado || 0),
         criado_por: sessao.usuario?.email || sessao.email || sessao.nome || null,
       }, linhas, setProgresso);
       setAviso(`Provisão de ${competenciaBr(calculadaPara)} salva no histórico (${num(linhas.length)} linhas).`);
@@ -491,7 +520,7 @@ export default function ProvisaoCtesPainel() {
             </label>
             <button type="button" className="btn-primary" disabled={Boolean(progresso)} onClick={calcular}>{progresso ? 'Processando...' : (itens ? 'Gerar novamente' : 'Calcular provisão')}</button>
             <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
-              <input type="checkbox" checked={incluirTracking} onChange={(e) => setIncluirTracking(e.target.checked)} /> Incluir tracking do mês (NFs sem CT-e)
+              <input type="checkbox" checked={incluirTracking} disabled={Boolean(progresso)} onChange={(e) => alternarTracking(e.target.checked)} /> Considerar tracking (NFs sem CT-e)
             </label>
             {itens && !snapshot && <button type="button" className="btn-secondary" disabled={Boolean(progresso)} onClick={salvar}>Salvar provisão (histórico)</button>}
             {itens && <button type="button" className="btn-secondary" onClick={exportar}>Exportar (Excel)</button>}
