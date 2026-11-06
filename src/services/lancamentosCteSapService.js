@@ -77,7 +77,9 @@ const COLUNAS_TRACKING = 'id,data,nota_fiscal,chave_nfe,chave_cte,cte_numero,ped
 export async function carregarTrackingCompetencia(competencia, onProgress) {
   const client = getSupabaseClient();
   const { inicio, fim } = intervaloCompetencia(competencia);
-  let colunas = `${COLUNAS_TRACKING},status_pedido`;
+  // Do raw: frete calculado pelo tracking e "Cte Numero-Serie" (marca NFS-e). Sem eles, le o basico.
+  const EXTRAS = 'frete_calculado:raw->>"Vlr. Calculado Frete",cte_numero_serie:raw->>"Cte Numero-Serie"';
+  let colunas = `${COLUNAS_TRACKING},status_pedido,${EXTRAS}`;
   const todos = [];
   const dia = new Date(`${inicio}T00:00:00`);
   while (true) {
@@ -90,6 +92,7 @@ export async function carregarTrackingCompetencia(competencia, onProgress) {
       let q = client.from('tracking_rows').select(colunas).gte('data', atual).lt('data', proximo).order('id').limit(PAGINA);
       if (ultimo !== null) q = q.gt('id', ultimo);
       const { data, error } = await q;
+      if (error && colunas.includes('raw->>')) { colunas = `${COLUNAS_TRACKING},status_pedido`; continue; }
       if (error && colunas !== COLUNAS_TRACKING && /status_pedido/i.test(error.message)) { colunas = COLUNAS_TRACKING; continue; }
       if (error) throw new Error(`Erro ao ler tracking (${atual}): ${error.message}`);
       todos.push(...(data || []));

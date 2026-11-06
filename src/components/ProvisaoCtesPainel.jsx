@@ -10,7 +10,7 @@ import { carregarSessao } from '../utils/authLocal';
 import { avaliarCteParaBase } from '../services/cteBasePolicy';
 import { classificarProvisao, cnpj14, resumirProvisao, serieDaChave, SITUACOES_PROVISAO } from '../utils/lancamentosCteSap';
 import {
-  agruparNfsTracking, carregarCentrosCusto, empresaDaChaveNfe, classificarNfsTracking, CORES_TRACKING, guardarCentrosCusto, resumirPorEmpresa,
+  agruparNfsTracking, carregarCentrosCusto, criarResolvedorEmpresa, SITUACOES_PENDENTES, classificarNfsTracking, CORES_TRACKING, guardarCentrosCusto, resumirPorEmpresa,
   resumirTracking, SITUACOES_TRACKING,
 } from '../utils/provisaoTracking';
 
@@ -32,7 +32,7 @@ const SITUACOES_SALVAS = new Set(['APOS_MES', 'NAO_LANCADO', 'PROVISAO']);
 const CAMPOS_CTE = ['chave_cte', 'numero_cte', 'transportadora', 'cnpj_transportadora', 'cnpj_tomador', 'tomador_servico', 'empresa', 'data_emissao', 'valor_cte', 'canal',
   'cidade_origem', 'uf_origem', 'cidade_destino', 'uf_destino', 'situacao', 'provisao', 'estornado', 'data_lancamento', 'lancamento_contabil', 'numero_fatura'];
 const CAMPOS_NF = ['chave_nfe', 'nota_fiscal', 'data', 'transportadora', 'canal', 'pedido', 'origem', 'destino', 'valor_nf', 'chaves_cte', 'cte_numero',
-  'situacao', 'pct_frete', 'frete_estimado', 'empresa'];
+  'situacao', 'pct_frete', 'frete_estimado', 'origem_estimativa', 'frete_tracking', 'empresa'];
 const pegar = (obj, campos) => Object.fromEntries(campos.map((k) => [k, obj[k] ?? null]));
 
 function competenciaAnterior() {
@@ -69,14 +69,14 @@ const COLS_NF = [
   { titulo: 'Nota fiscal', largura: 12, tipo: 'centro' }, { titulo: 'Data NF', largura: 11, tipo: 'data' }, { titulo: 'Transportadora', largura: 34 },
   { titulo: 'Canal', largura: 11, tipo: 'centro' }, { titulo: 'Pedido', largura: 14 }, { titulo: 'Origem', largura: 22 }, { titulo: 'Destino', largura: 22 },
   { titulo: 'Valor NF', largura: 15, tipo: 'moeda' }, { titulo: 'Situação', largura: 20 }, { titulo: '% frete usado', largura: 11, tipo: 'percentual' },
-  { titulo: 'Frete estimado', largura: 15, tipo: 'moeda' }, { titulo: 'Nº CT-e no tracking', largura: 14 }, { titulo: 'Chave CT-e no tracking', largura: 48 },
+  { titulo: 'Frete estimado', largura: 15, tipo: 'moeda' }, { titulo: 'Base da estimativa', largura: 24 }, { titulo: 'Nº CT-e no tracking', largura: 14 }, { titulo: 'Chave CT-e no tracking', largura: 48 },
   { titulo: 'Chave NF', largura: 48 },
 ];
 function linhasNf(lista, centros) {
   return lista.map((n) => [
     n.empresa || '', centros[n.empresa] || '', n.nota_fiscal || '', n.data || '', n.transportadora || '', n.canal || '', n.pedido || '',
     n.origem || '', n.destino || '', r2(n.valor_nf), SITUACOES_TRACKING[n.situacao] || '', Number(((n.pct_frete || 0) * 100).toFixed(2)),
-    r2(n.frete_estimado), n.cte_numero || '', (n.chaves_cte || []).join(' / '), n.chave_nfe || '',
+    r2(n.frete_estimado), n.origem_estimativa || '', n.cte_numero || '', (n.chaves_cte || []).join(' / '), n.chave_nfe || '',
   ]);
 }
 const somaCol = (linhas, i) => linhas.reduce((a, l) => a + Number(l[i] || 0), 0);
@@ -146,8 +146,9 @@ export default function ProvisaoCtesPainel() {
         fora.porTomador.set(nome, t);
       });
       const lancamentos = await carregarLancamentosPorCnpj(ctes.map((c) => c.cnpj_transportadora), competencia, setProgresso);
-      // Empresa: 1) CNPJ do tomador nas Filiais; 2) empresa do lancamento SAP; 3) emitente da NF do CT-e
-      // (chave da NF na base ou no tracking) nas Filiais.
+      // Empresa: 1) CNPJ do tomador (exato ou raiz) nas Filiais; 2) empresa do lancamento SAP; 3) nome do
+      // tomador (CPX, ITR, GP Pneus...); 4) emitente da NF do CT-e (base ou tracking).
+      const resolver = criarResolvedorEmpresa(filiais);
       let nfDoCte = new Map();
       let linhas = [];
       if (incluirTracking) {
@@ -156,8 +157,8 @@ export default function ProvisaoCtesPainel() {
       }
       const classificados = classificarProvisao(ctes, lancamentos, competencia).map((c) => ({
         ...c,
-        empresa: filiais.get(cnpj14(c.cnpj_tomador))?.emp || c.empresa_sap
-          || empresaDaChaveNfe(c.chave_nfe, filiais) || empresaDaChaveNfe(nfDoCte.get(String(c.chave_cte || '').replace(/\D/g, '')), filiais) || '',
+        empresa: resolver.porCnpj(c.cnpj_tomador) || c.empresa_sap || resolver.porNome(c.tomador_servico)
+          || resolver.porChaveNfe(c.chave_nfe) || resolver.porChaveNfe(nfDoCte.get(String(c.chave_cte || '').replace(/\D/g, ''))) || '',
       }));
       nfDoCte = null;
       if (incluirTracking) {
@@ -232,7 +233,8 @@ export default function ProvisaoCtesPainel() {
     return snapshot?.tracking_resumo ? snapshot.tracking_resumo : resumirTracking(nfs, trackingCanceladas);
   }, [nfs, snapshot, trackingCanceladas]);
 
-  const nfsPendentes = useMemo(() => (nfs || []).filter((n) => n.situacao !== 'COM_CTE'), [nfs]);
+  const nfsPendentes = useMemo(() => (nfs || []).filter((n) => SITUACOES_PENDENTES.has(n.situacao)), [nfs]);
+  const nfsNfse = useMemo(() => (nfs || []).filter((n) => n.situacao === 'NFSE'), [nfs]);
 
   const porEmpresa = useMemo(() => (itens ? resumirPorEmpresa(itens.filter((c) => c.provisao), nfsPendentes, centrosAtivos) : []), [itens, nfsPendentes, centrosAtivos]);
 
@@ -250,7 +252,7 @@ export default function ProvisaoCtesPainel() {
   const listaNf = useMemo(() => {
     if (!nfs) return [];
     return nfs
-      .filter((n) => (filtroNf === 'PENDENTE' ? n.situacao !== 'COM_CTE' : filtroNf === 'TODAS' ? true : n.situacao === filtroNf))
+      .filter((n) => (filtroNf === 'PENDENTE' ? SITUACOES_PENDENTES.has(n.situacao) : filtroNf === 'TODAS' ? true : n.situacao === filtroNf))
       .sort((a, b) => b.frete_estimado - a.frete_estimado);
   }, [nfs, filtroNf]);
 
@@ -264,6 +266,7 @@ export default function ProvisaoCtesPainel() {
       const linhas = [
         ...provisao.map((c) => ({ tipo: 'CTE', dados: pegar(c, CAMPOS_CTE) })),
         ...nfsPendentes.map((n) => ({ tipo: n.situacao === 'SEM_CTE' ? 'NF_SEM_CTE' : 'CTE_FORA_BASE', dados: pegar(n, CAMPOS_NF) })),
+        ...nfsNfse.map((n) => ({ tipo: 'NFSE', dados: pegar(n, CAMPOS_NF) })),
       ];
       const sessao = carregarSessao?.() || {};
       await salvarSnapshotProvisao({
@@ -351,6 +354,7 @@ export default function ProvisaoCtesPainel() {
     if (nfsPendentes.length) {
       abas.push({ nome: 'Tracking NF sem CT-e', colunas: COLS_NF, linhas: linhasNfPend, totais: linhaTotal(COLS_NF, { 2: `${num(nfsPendentes.length)} NFs`, 9: somaCol(linhasNfPend, 9), 12: somaCol(linhasNfPend, 12) }) });
     }
+    if (nfsNfse.length) abas.push({ nome: 'Tracking frete NFS-e', colunas: COLS_NF, linhas: linhasNf(nfsNfse, centrosAtivos) });
     if (!snapshot) abas.push({ nome: 'Todos os CT-es', colunas: COLS_CTE, linhas: linhasCte(itens, centrosAtivos), simples: true });
     setProgresso('Gerando Excel...');
     try {
@@ -375,6 +379,8 @@ export default function ProvisaoCtesPainel() {
         ['Com CT-e na base', tt.COM_CTE.qtd, pctDe(tt.COM_CTE.qtd, tt.geral.qtd), tt.COM_CTE.valor_nf, ''],
         ['Sem CT-e vinculado no tracking', tt.SEM_CTE.qtd, pctDe(tt.SEM_CTE.qtd, tt.geral.qtd), tt.SEM_CTE.valor_nf, tt.SEM_CTE.estimado],
         ['CT-e no tracking, mas fora da base (não veio da Sefaz)', tt.CTE_FORA_BASE.qtd, pctDe(tt.CTE_FORA_BASE.qtd, tt.geral.qtd), tt.CTE_FORA_BASE.valor_nf, tt.CTE_FORA_BASE.estimado],
+        ['Frete por NFS-e (informativo, fora do total)', tt.NFSE?.qtd || 0, pctDe(tt.NFSE?.qtd || 0, tt.geral.qtd), tt.NFSE?.valor_nf || 0, tt.NFSE?.estimado || 0],
+        ['Transportadora não cadastrada no SAP, sem documento (informativo, fora do total)', tt.SEM_TRANSPORTADORA?.qtd || 0, pctDe(tt.SEM_TRANSPORTADORA?.qtd || 0, tt.geral.qtd), tt.SEM_TRANSPORTADORA?.valor_nf || 0, ''],
       ],
       totais: ['TOTAL A VERIFICAR / PROVISIONAR', tt.pendente.qtd, pctDe(tt.pendente.qtd, tt.geral.qtd), tt.pendente.valor_nf, tt.pendente.estimado],
     }];
@@ -400,13 +406,16 @@ export default function ProvisaoCtesPainel() {
           `NFs canceladas/devolvidas desconsideradas: ${num(resumoTracking.canceladas || 0)}`,
           'NF = linha do tracking com data na competência, agrupada pela chave da NF.',
           '"Fora da base" = o tracking tem a chave do CT-e, mas o documento não está na base de CT-es (pode não ter vindo da Sefaz).',
-          'Frete estimado = valor da NF x % frete/valor NF das NFs da mesma transportadora com CT-e no mês (sem histórico, % geral).',
+          'Frete estimado = "Vlr. Calculado Frete" do próprio tracking; sem ele, valor da NF x % frete/valor NF da transportadora no mês (cada CT-e contado uma vez).',
+          'NFS-e = tracking marca "Nota fiscal de servico": frete cobrado por nota de serviço, fica fora do total a provisionar.',
+          '"Transportadora nao cadastrada no SAP" sem documento de frete fica fora do total (informativo).',
         ],
         blocos,
       },
       { nome: 'Por transportadora', colunas: colsTransp, linhas: transp, totais: linhaTotal(colsTransp, { 1: somaCol(transp, 1), 2: somaCol(transp, 2), 3: somaCol(transp, 3), 4: somaCol(transp, 4), 5: pctDe(tt.pendente.qtd, tt.geral.qtd), 6: somaCol(transp, 6), 8: somaCol(transp, 8) }) },
       { nome: 'NFs sem CT-e', colunas: COLS_NF, linhas: linhasNf(sem, centrosAtivos), totais: linhaTotal(COLS_NF, { 2: `${num(sem.length)} NFs`, 9: tt.SEM_CTE.valor_nf, 12: tt.SEM_CTE.estimado }) },
       { nome: 'CT-e fora da base', colunas: COLS_NF, linhas: linhasNf(fora, centrosAtivos), totais: linhaTotal(COLS_NF, { 2: `${num(fora.length)} NFs`, 9: tt.CTE_FORA_BASE.valor_nf, 12: tt.CTE_FORA_BASE.estimado }) },
+      { nome: 'Frete por NFS-e', colunas: COLS_NF, linhas: linhasNf(nfsNfse, centrosAtivos), totais: linhaTotal(COLS_NF, { 2: `${num(nfsNfse.length)} NFs`, 9: tt.NFSE?.valor_nf || 0, 12: tt.NFSE?.estimado || 0 }) },
     ];
     try {
       await exportarExcelMultiAbas({ nomeArquivo: `LAUDO_TRACKING_NF_SEM_CTE_${calculadaPara}.xlsx`, abas });
@@ -423,7 +432,7 @@ export default function ProvisaoCtesPainel() {
   ] : [];
   const cardsNf = resumoTracking ? [
     { id: 'TODAS', rotulo: 'NFs no tracking do mês', cor: '#1e3a8a', dado: resumoTracking.total.geral },
-    ...Object.entries(SITUACOES_TRACKING).map(([id, rotulo]) => ({ id, rotulo, cor: CORES_TRACKING[id], dado: resumoTracking.total[id] })),
+    ...Object.entries(SITUACOES_TRACKING).map(([id, rotulo]) => ({ id, rotulo, cor: CORES_TRACKING[id], dado: resumoTracking.total[id] || { qtd: 0, valor_nf: 0, estimado: 0 } })),
     { id: 'PENDENTE', rotulo: 'A provisionar (sem CT-e + fora da base)', cor: '#7c3aed', dado: resumoTracking.total.pendente },
   ] : [];
   const empresasConhecidas = [...new Set([...Object.keys(centros), ...porEmpresa.map((e) => e.empresa).filter((e) => e !== '(sem empresa)')])].sort();
@@ -624,7 +633,7 @@ export default function ProvisaoCtesPainel() {
               <div style={{ fontWeight: 700, fontSize: 14, margin: '18px 0 6px' }}>Tracking do mês x CT-e — NFs sem CT-e vinculado</div>
               <p style={{ margin: '0 0 8px', fontSize: 12, color: '#64748b' }}>
                 NFs do tracking com data em {competenciaBr(calculadaPara)} (sem canceladas/devolvidas: {num(resumoTracking.canceladas)}). “Fora da base” = o tracking tem a chave do CT-e,
-                mas o documento não está na base (pode não ter vindo da Sefaz). Frete estimado pelo % frete/valor NF da própria transportadora no mês.
+                mas o documento não está na base (pode não ter vindo da Sefaz). Frete estimado pelo “Vlr. Calculado Frete” do tracking (sem ele, % frete/NF da transportadora). NFS-e = frete por nota de serviço, fora do total.
               </p>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
                 {cardsNf.map((c) => (
