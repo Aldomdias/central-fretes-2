@@ -373,6 +373,58 @@ function completarModeloEmitentePrestador(L, U, dados) {
   if (vLiq !== null) dados.valorLiquido = vLiq;
 }
 
+// Modelo municipal com blocos "PRESTADOR" / "TOMADOR" sozinhos na linha (ex.: Vitoria da Conquista/BA):
+// "Razao Social: X", "Cidade - UF - CEP: ..." na linha abaixo do endereco, "... - CPF/CNPJ: 00.000.000/0000-00" no fim
+// do bloco; "No da Nota Fiscal" com ano na frente (202600000000004 = nota 4); "VALOR SERVICO (R$)" na 1a coluna da
+// linha de baixo e o "VALOR LIQUIDO (R$)" como ultimo numero da linha dos tributos federais. So completa/corrige.
+function completarModeloPrestadorTomador(L, U, dados) {
+  const iPrest = U.findIndex((l) => l.trim() === 'PRESTADOR');
+  const iTom = U.findIndex((l, k) => k > iPrest && l.trim() === 'TOMADOR');
+  const iFimTom = U.findIndex((l, k) => k > iTom && /^SERVICO|^DISCRIMINACAO/.test(l.trim()));
+  const lerBloco = (ini, fim) => {
+    const r = { cnpj: '', nome: '', mun: null };
+    for (let k = ini + 1; k < fim; k += 1) {
+      const c = L[k].match(/CNPJ:\s*(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/i) || L[k].match(RE_CNPJ);
+      if (c && !r.cnpj) r.cnpj = c[1].replace(/\D/g, '');
+      const n = L[k].match(/Raz[ãa]o Social:\s*(.+)$/i);
+      if (n && !r.nome) r.nome = n[1].split(SEP).join(' ').trim();
+      const m = L[k].match(/^\s*([A-Za-zÀ-ÿ' .]+?)\s*-\s*([A-Za-z]{2})\s*-\s*CEP/i);
+      if (m && !r.mun) r.mun = { municipio: chaveMunicipio(`${m[1]}${m[2]}`), uf: m[2].toUpperCase() };
+    }
+    return r;
+  };
+  if (iPrest >= 0) {
+    const p = lerBloco(iPrest, iTom > iPrest ? iTom : Math.min(iPrest + 8, L.length));
+    if (dados.cnpjTransp.length !== 14 && p.cnpj) dados.cnpjTransp = p.cnpj;
+    if (p.nome) dados.transportadora = p.nome;
+    if (p.mun) { dados.municipioPrestador = p.mun.municipio; dados.ufPrestador = p.mun.uf; }
+  }
+  if (iTom >= 0) {
+    const t = lerBloco(iTom, iFimTom > iTom ? iFimTom : Math.min(iTom + 8, L.length));
+    if (t.cnpj) dados.cnpjTomador = t.cnpj;
+    if (t.mun) { dados.municipioTomador = t.mun.municipio; dados.ufTomador = t.mun.uf; }
+  }
+  // numero da nota: "No da Nota Fiscal" (15 digitos com o ano na frente); a chave aqui leva so 2 digitos do ano
+  const iNum = U.findIndex((l) => /N[º°O.]?\s*DA NOTA FISCAL/.test(l));
+  if (iNum >= 0) {
+    for (let k = iNum; k < Math.min(iNum + 3, L.length); k += 1) {
+      const m = L[k].match(/\b(20\d{2})(\d{11})\b/);
+      if (m) { dados.numeroNfse = String(Number(m[2])); dados.nf = nfComSufixoF(dados.numeroNfse); break; }
+    }
+  }
+  const e = L.join('\n').match(/Emitido em\s*(\d{2})\/(\d{2})\/(\d{4})/i);
+  if (e) dados.dataEmissao = `${e[3]}-${e[2]}-${e[1]}`;
+  const iServ = U.findIndex((l) => l.includes('VALOR SERVICO (R$)'));
+  if (iServ >= 0) { const v = numerosFlex((L[iServ + 1] || '').split(SEP)[0]); if (v.length) dados.valor = v[0]; }
+  const iLiq = U.findIndex((l, k) => k > iServ && l.includes('VALOR LIQUIDO (R$)'));
+  if (iLiq >= 0) {
+    for (let k = iLiq + 1; k < Math.min(iLiq + 5, L.length); k += 1) {
+      const v = numeros(L[k]);
+      if (v.length >= 3) { dados.valorLiquido = v[v.length - 1]; break; }
+    }
+  }
+}
+
 // linhas: saida de itensParaLinhas (ou o texto do PDF dividido por linha).
 export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   const L = linhas.map((l) => String(l ?? ''));
@@ -501,6 +553,7 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   if (U.some((l) => l.includes('SERIE NFS-E')) && U.some((l) => l.includes('BASE DE CALCULO') && l.includes('ISSQN'))) completarModeloSerieNfse(L, U, dados);
   if (U.some((l) => l.includes('EMITENTE DA NFS-E')) && U.some((l) => /^TOMADOR DA NFS-E/.test(l.trim())) && U.some((l) => l.includes('VALOR TOTAL DA NFS-E'))) completarModeloDanfseEmitente(L, U, dados);
   if (U.some((l) => l.includes('EMITENTE PRESTADOR DO SERVICO')) && U.some((l) => l.includes('VALOR TOTAL DA NFSE'))) completarModeloEmitentePrestador(L, U, dados);
+  if (U.some((l) => l.trim() === 'PRESTADOR') && U.some((l) => l.trim() === 'TOMADOR') && U.some((l) => l.includes('VALOR SERVICO (R$)'))) completarModeloPrestadorTomador(L, U, dados);
   aplicarRegrasLancamento(dados);
   return resultado(dados);
 }
