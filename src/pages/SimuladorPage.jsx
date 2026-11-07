@@ -71,11 +71,12 @@ import {
   TOMADORES_CTE_PADRAO,
 } from '../services/cteBasePolicy';
 import {
-  resolverCubagemTracking,
   validarCubagemOperacional,
   criarTrackingAgregado,
-  somarTrackingAgregado,
+  adicionarTrackingNoMapa,
+  cubagemTrackingParaCalculo,
 } from '../utils/trackingCubagem';
+import { enriquecerRealizadoComTracking } from '../services/realizadoTrackingEnrichment';
 import { resolverPesoCteRealizado } from '../utils/pesoRealizadoSimulador';
 import { cederThread, esperarLeve } from '../utils/cederThread';
 
@@ -1216,14 +1217,7 @@ function cubagemRealizado(row = {}, filtros = {}) {
   // O CT-e pode trazer cubagem divergente, então não usamos cubagem do CT-e como fallback.
   if (!row.trackingMatch) return 0;
 
-  const total = numeroRealizado(row.cubagemTotal || row.cubagem_total);
-  if (total > 0) return total;
-
-  const unitaria = numeroRealizado(row.cubagemUnitaria || row.cubagem_unitaria);
-  const volumes = volumeRealizado(row);
-
-  if (unitaria > 0 && volumes > 0) return unitaria * volumes;
-  return 0;
+  return cubagemTrackingParaCalculo(row);
 }
 
 
@@ -1279,12 +1273,6 @@ function validarCubagemTracking({ cubagemTotal = 0, qtdVolumes = 0, peso = 0 }) 
 
 // criarTrackingAgregado/somarTrackingAgregado agora vivem em utils/trackingCubagem.js
 // (compartilhados com a Gestão Base e testados em test/freteCalcEngine.test.js).
-
-function adicionarTrackingNoMapa(mapa, chave, item) {
-  if (!chave) return;
-  const atual = mapa.get(chave);
-  mapa.set(chave, somarTrackingAgregado(atual, item));
-}
 
 async function buscarTrackingParaRealizado(rows = [], onProgresso = null) {
   const vazio = { mapaChaveCte: new Map(), mapaChaveNfe: new Map(), mapaNota: new Map(), mapaNumeroCte: new Map(), total: 0, erro: '' };
@@ -1359,10 +1347,11 @@ async function buscarTrackingParaRealizado(rows = [], onProgresso = null) {
 
       (data || []).forEach((item) => {
         totalEncontrado += 1;
-        if (tipo === 'CHAVE_CTE') adicionarTrackingNoMapa(mapaChaveCte, normalizarChaveLongaTracking(item.chave_cte), criarTrackingAgregado(item, 'RAW_CHAVE_CTE'));
-        if (tipo === 'CHAVE_NFE') adicionarTrackingNoMapa(mapaChaveNfe, normalizarChaveLongaTracking(item.chave_nfe), criarTrackingAgregado(item, 'RAW_CHAVE_NFE'));
-        if (tipo === 'NOTA') adicionarTrackingNoMapa(mapaNota, apenasDigitosTracking(item.nota_fiscal), criarTrackingAgregado(item, 'RAW_NOTA_FISCAL'));
-        if (tipo === 'NUMERO_CTE') adicionarTrackingNoMapa(mapaNumeroCte, apenasDigitosTracking(item.cte_numero), criarTrackingAgregado(item, 'RAW_NUMERO_CTE'));
+        const bruta = numeroRealizado(item.cubagem_final) || numeroRealizado(item.cubagem_total);
+        if (tipo === 'CHAVE_CTE') adicionarTrackingNoMapa(mapaChaveCte, normalizarChaveLongaTracking(item.chave_cte), criarTrackingAgregado(item, 'RAW_CHAVE_CTE'), bruta);
+        if (tipo === 'CHAVE_NFE') adicionarTrackingNoMapa(mapaChaveNfe, normalizarChaveLongaTracking(item.chave_nfe), criarTrackingAgregado(item, 'RAW_CHAVE_NFE'), bruta);
+        if (tipo === 'NOTA') adicionarTrackingNoMapa(mapaNota, apenasDigitosTracking(item.nota_fiscal), criarTrackingAgregado(item, 'RAW_NOTA_FISCAL'), bruta);
+        if (tipo === 'NUMERO_CTE') adicionarTrackingNoMapa(mapaNumeroCte, apenasDigitosTracking(item.cte_numero), criarTrackingAgregado(item, 'RAW_NUMERO_CTE'), bruta);
       });
     }
   }
@@ -1404,151 +1393,6 @@ async function buscarTrackingParaRealizado(rows = [], onProgresso = null) {
     total: totalEncontrado,
     erro: '',
     aviso: erroView ? `View agregada indisponível, usado fallback raw: ${erroView}` : '',
-  };
-}
-
-function obterTrackingDaLinha(row = {}, mapas) {
-  if (!mapas) return null;
-  const chaveCte = normalizarChaveLongaTracking(row.chaveCte);
-  const chaveNfe = normalizarChaveLongaTracking(row.chaveNfe);
-  const nota = apenasDigitosTracking(row.notaFiscal);
-  const numeroCte = apenasDigitosTracking(row.numeroCte);
-
-  const porChaveCte = chaveCte ? mapas.mapaChaveCte?.get(chaveCte) : null;
-  const porChaveNfe = chaveNfe ? mapas.mapaChaveNfe?.get(chaveNfe) : null;
-  const porNota = nota ? mapas.mapaNota?.get(nota) : null;
-  const porNumeroCte = numeroCte ? mapas.mapaNumeroCte?.get(numeroCte) : null;
-
-  const origemCte = String(porChaveCte?.origem_vinculo_tracking || '');
-  const rawPreferencial = [porChaveNfe, porNota, porNumeroCte].find((item) => item && !String(item.origem_vinculo_tracking || '').startsWith('VIEW_'));
-  if (rawPreferencial && (!porChaveCte || origemCte.startsWith('VIEW_'))) return rawPreferencial;
-
-  if (porChaveCte) return porChaveCte;
-  if (porChaveNfe) return porChaveNfe;
-  if (porNota) return porNota;
-  if (porNumeroCte) return porNumeroCte;
-
-  return null;
-}
-
-function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
-  let vinculados = 0;
-  let semTracking = 0;
-  let volumesTracking = 0;
-  let cubagemTracking = 0;
-  let cubagemOutliers = 0;
-
-  const linhas = (rows || []).map((row) => {
-    const tracking = obterTrackingDaLinha(row, mapasTracking);
-
-    // Regra do realizado:
-    // cubagem e volumes devem vir obrigatoriamente do Tracking.
-    // Se não houver vínculo, zera esses campos para não contaminar cálculo e capacidade.
-    if (!tracking) {
-      semTracking += 1;
-      return {
-        ...row,
-        trackingMatch: false,
-        trackingPendente: true,
-        qtdVolumes: 0,
-        cubagemUnitaria: 0,
-        cubagemTotal: 0,
-        pesoCubado: 0,
-      };
-    }
-
-    vinculados += 1;
-
-    const qtdVolumesTracking = numeroRealizado(tracking.qtd_volumes);
-    const cubagemUnitariaTracking = numeroRealizado(tracking.cubagem_unitaria);
-    const cubagemTotalDiretaTracking = numeroRealizado(tracking.cubagem_total);
-    const cubagemTotalTracking = cubagemTotalDiretaTracking > 0
-      ? cubagemTotalDiretaTracking
-      : cubagemUnitariaTracking > 0 && qtdVolumesTracking > 0
-        ? cubagemUnitariaTracking * qtdVolumesTracking
-        : 0;
-
-    const pesoFisico = numeroRealizado(row.peso)
-      || numeroRealizado(tracking.peso)
-      || numeroRealizado(row.pesoDeclarado)
-      || numeroRealizado(tracking.peso_declarado);
-    const cubagemResolvida = resolverCubagemTracking({
-      cubagemUnitaria: cubagemUnitariaTracking,
-      cubagemTotal: cubagemTotalTracking,
-      pesoCubadoOriginal: numeroRealizado(tracking.peso_cubado),
-      volumes: qtdVolumesTracking,
-      pesoFisico,
-    });
-    const cubagemFoiMultiplicadaPorVolumes = cubagemResolvida.totalFoiMultiplicadoPorVolumes;
-    const cubagemCandidata = cubagemResolvida.cubagemAplicada;
-    const cubagemValidada = validarCubagemOperacional({
-      cubagemTotal: cubagemCandidata,
-      qtdVolumes: qtdVolumesTracking,
-      peso: pesoFisico,
-    });
-    const cubagemUnitariaComoTotal = cubagemValidada.outlier
-      && cubagemUnitariaTracking > 0
-      && cubagemUnitariaTracking <= cubagemValidada.limiteCubagem
-      ? cubagemUnitariaTracking
-      : 0;
-    const cubagemTotalAplicada = cubagemUnitariaComoTotal || cubagemValidada.cubagemTotal;
-    const pesoCubadoTracking = cubagemValidada.outlier ? 0 : cubagemTotalAplicada * 300;
-
-    if (cubagemValidada.outlier) cubagemOutliers += 1;
-    if (qtdVolumesTracking > 0) volumesTracking += qtdVolumesTracking;
-    if (cubagemTotalAplicada > 0) cubagemTracking += cubagemTotalAplicada;
-
-    return {
-      ...row,
-      trackingMatch: true,
-      trackingPendente: false,
-      trackingTransportadora: tracking.transportadora || '',
-      trackingLinhas: Number(tracking.linhas_tracking || 1),
-      trackingOrigemVinculo: tracking.origem_vinculo_tracking || '',
-
-      chaveCte: row.chaveCte || tracking.chave_cte || '',
-      chaveNfe: row.chaveNfe || tracking.chave_nfe || '',
-      notaFiscal: row.notaFiscal || tracking.nota_fiscal || '',
-      numeroCte: row.numeroCte || tracking.cte_numero || '',
-
-      // Campos de capacidade e cubagem: sempre do Tracking.
-      // Se a cubagem do Tracking vier fora de escala, ela é zerada para o cálculo usar peso real.
-      qtdVolumes: qtdVolumesTracking,
-      cubagemUnitaria: cubagemUnitariaTracking,
-      cubagemTotal: cubagemTotalAplicada,
-      cubagemTotalOriginalTracking: cubagemValidada.cubagemOriginal,
-      cubagemOutlierTracking: cubagemValidada.outlier,
-      cubagemCorrigidaTracking: Boolean(cubagemFoiMultiplicadaPorVolumes || cubagemUnitariaComoTotal),
-      cubagemTotalArmazenadaTracking: cubagemTotalTracking,
-      limiteCubagemTracking: cubagemValidada.limiteCubagem,
-      pesoCubado: pesoCubadoTracking,
-
-      // O peso físico do CT-e prevalece. O Tracking apenas complementa quando o CT-e não informa peso.
-      // Isso impede reutilizar peso cubado do Tracking depois que sua cubagem foi rejeitada como outlier.
-      pesoDeclarado: pesoFisico,
-
-      // Valor NF continua priorizando o CT-e por enquanto para não misturar regras nesta entrega.
-      valorNF: numeroRealizado(row.valorNF) || numeroRealizado(tracking.valor_nf),
-
-      canal: row.canal || tracking.canal || '',
-      ibgeOrigem: row.ibgeOrigem || String(tracking.ibge_origem || '').replace(/\D/g, '').slice(0, 7),
-      ibgeDestino: row.ibgeDestino || String(tracking.ibge_destino || '').replace(/\D/g, '').slice(0, 7),
-      cidadeOrigem: row.cidadeOrigem || tracking.cidade_origem || '',
-      ufOrigem: row.ufOrigem || String(tracking.uf_origem || '').toUpperCase(),
-      cidadeDestino: row.cidadeDestino || tracking.cidade_destino || '',
-      ufDestino: row.ufDestino || String(tracking.uf_destino || '').toUpperCase(),
-    };
-  });
-
-  return {
-    linhas,
-    vinculados,
-    semTracking,
-    volumesTracking,
-    cubagemTracking,
-    cubagemOutliers,
-    erroTracking: mapasTracking?.erro || '',
-    avisoTracking: mapasTracking?.aviso || '',
   };
 }
 
@@ -2158,6 +2002,8 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
       valorNF: nf,
       cubagem: cubagemLinha,
       ignorarCubagem: filtros.ignorarCubagem,
+      fatorCubagemPadrao: 300,
+      cubagemSomenteInformada: true,
       destinoCodigo: destino,
       cidadePorIbge,
       gradeCanal,
@@ -2546,6 +2392,8 @@ function simularLinhaRealizadoComFallback({ baseOnline = [], row = {}, canal = '
       valorNF: nf,
       cubagem: cubagemRealizado(row, filtros),
       ignorarCubagem: filtros.ignorarCubagem,
+      fatorCubagemPadrao: 300,
+      cubagemSomenteInformada: true,
       destinoCodigo: destino,
       cidadePorIbge,
       gradeCanal,
@@ -2564,6 +2412,8 @@ function simularLinhaRealizadoComFallback({ baseOnline = [], row = {}, canal = '
     valorNF: nf,
     cubagem: cubagemRealizado(row, filtros),
     ignorarCubagem: filtros.ignorarCubagem,
+    fatorCubagemPadrao: 300,
+    cubagemSomenteInformada: true,
     destinoCodigo: destino,
     cidadePorIbge,
     gradeCanal,
@@ -10040,7 +9890,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               Usar peso do CT-e (ignora cubagem)
             </label>
             <div style={{ color: '#64748b', fontSize: '0.78rem', marginTop: -2 }}>
-              Padrão: enquanto a cubagem do Tracking não está validada, o cálculo usa só o peso real do CT-e. Desmarque para voltar a calcular pelo maior entre peso e peso cubado.
+              Marcado: usa o peso do CT-e. Desmarcado: usa a mesma regra da auditoria, o maior entre peso físico do Tracking e cubagem final do Tracking × fator da tabela.
             </div>
 
             {isReajusteRealizadoSelecionado && (

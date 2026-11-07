@@ -1,5 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient.js';
-import { resolverCubagemTracking, validarCubagemOperacional, criarTrackingAgregado, somarTrackingAgregado } from '../utils/trackingCubagem.js';
+import { resolverCubagemTracking, validarCubagemOperacional, criarTrackingAgregado, adicionarTrackingNoMapa } from '../utils/trackingCubagem.js';
 
 function numero(value) {
   const n = Number(value || 0);
@@ -52,20 +52,6 @@ const validarCubagemTracking = validarCubagemOperacional;
 
 // criarTrackingAgregado/somarTrackingAgregado agora vivem em utils/trackingCubagem.js
 // (compartilhados com o SimuladorPage e testados em test/freteCalcEngine.test.js).
-
-function adicionarTrackingNoMapa(mapa, chave, item, cubagemBruta = 0) {
-  if (!chave) return;
-  const atual = mapa.get(chave);
-  const somado = somarTrackingAgregado(atual, item);
-  // Cubagem exatamente como gravada no Tracking (cubagem_final, senao
-  // cubagem_total), sem as correcoes de multiplicacao por volumes: o agregado
-  // passa por criarTrackingAgregado duas vezes e pode inflar (1,008 -> 4,032).
-  // Mesma NF repetida em varias linhas conta uma vez; NFs distintas somam.
-  const mesmaNf = atual && apenasDigitosTracking(atual.chave_nfe) && apenasDigitosTracking(atual.chave_nfe) === apenasDigitosTracking(item.chave_nfe);
-  const anterior = numero(atual?.cubagem_bruta_tracking);
-  somado.cubagem_bruta_tracking = !atual ? cubagemBruta : (mesmaNf ? Math.max(anterior, cubagemBruta) : anterior + cubagemBruta);
-  mapa.set(chave, somado);
-}
 
 export async function buscarTrackingParaRealizado(rows = []) {
   const vazio = {
