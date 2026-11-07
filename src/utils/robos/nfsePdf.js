@@ -88,6 +88,7 @@ function municipiosPorEndereco(L, U) {
 // Primeiro digito do CFOP: o SAP compara a UF (1 = mesma UF, 2 = outra UF), nao o municipio.
 // Com as duas UFs conhecidas manda a UF; sem elas, cai na comparacao de municipio.
 const UF_IBGE = { 11: 'RO', 12: 'AC', 13: 'AM', 14: 'RR', 15: 'PA', 16: 'AP', 17: 'TO', 21: 'MA', 22: 'PI', 23: 'CE', 24: 'RN', 25: 'PB', 26: 'PE', 27: 'AL', 28: 'SE', 29: 'BA', 31: 'MG', 32: 'ES', 33: 'RJ', 35: 'SP', 41: 'PR', 42: 'SC', 43: 'RS', 50: 'MS', 51: 'MT', 52: 'GO', 53: 'DF' };
+const UF_POR_NOME = { ACRE: 'AC', ALAGOAS: 'AL', AMAPA: 'AP', AMAZONAS: 'AM', BAHIA: 'BA', CEARA: 'CE', DISTRITOFEDERAL: 'DF', ESPIRITOSANTO: 'ES', GOIAS: 'GO', MARANHAO: 'MA', MATOGROSSO: 'MT', MATOGROSSODOSUL: 'MS', MINASGERAIS: 'MG', PARA: 'PA', PARAIBA: 'PB', PARANA: 'PR', PERNAMBUCO: 'PE', PIAUI: 'PI', RIODEJANEIRO: 'RJ', RIOGRANDEDONORTE: 'RN', RIOGRANDEDOSUL: 'RS', RONDONIA: 'RO', RORAIMA: 'RR', SANTACATARINA: 'SC', SAOPAULO: 'SP', SERGIPE: 'SE', TOCANTINS: 'TO' };
 const ufDeChave = (chave) => { const m = String(chave || '').match(/^IBGE(\d{2})/); return m ? UF_IBGE[m[1]] || '' : ''; };
 function aplicarRegrasLancamento(dados) {
   if (!(dados.valorLiquido > 0)) dados.valorLiquido = dados.valor;
@@ -225,15 +226,46 @@ function completarModeloSerieNfse(L, U, dados) {
     }
   }
   dados.nf = nfComSufixoF(dados.numeroNfse);
+  const iTom = U.findIndex((l) => /^TOMADOR D[EO] SERVICO/.test(l.trim()));
+  // CNPJ com ou sem pontuacao ("CNPJ: 89823918002007", como sai na Translovato de Pouso Alegre)
+  const cnpjDe = (txt) => {
+    const m = String(txt || '').match(RE_CNPJ) || String(txt || '').match(/(?:^|[^\d])(\d{14})(?!\d)/);
+    return m ? m[1].replace(/\D/g, '') : '';
+  };
   if (dados.cnpjTransp.length !== 14) {
-    const iTom = U.findIndex((l) => /^TOMADOR D[EO] SERVICO/.test(l.trim()));
-    const cab = L.slice(0, iTom >= 0 ? iTom : 10).map((l) => l.match(RE_CNPJ)).find(Boolean);
-    if (cab) dados.cnpjTransp = cab[1].replace(/\D/g, '');
+    const cab = L.slice(0, iTom >= 0 ? iTom : 10).map((l) => (/CNPJ/i.test(l) ? cnpjDe(l) : '')).find(Boolean);
+    if (cab) dados.cnpjTransp = cab;
   }
-  if (!(dados.valor > 0)) {
-    const i = U.findIndex((l) => l.includes('VALOR TOTAL') && l.includes('BASE DE CALCULO'));
-    const v = i >= 0 ? numeros(L[i + 1] || '') : [];
+  if (dados.cnpjTomador.length !== 14 && iTom >= 0) {
+    const i = U.findIndex((l, k) => k > iTom && k < iTom + 6 && l.includes('CPF/CNPJ'));
+    if (i >= 0) {
+      const rot = U[i].split(SEP);
+      const cel = (L[i + 1] || '').split(SEP);
+      const idx = rot.findIndex((c) => c.includes('CPF/CNPJ'));
+      const c = (cel.length === rot.length ? cnpjDe(cel[idx]) : '') || cnpjDe(L[i + 1]);
+      if (c) dados.cnpjTomador = c;
+    }
+  }
+  if (!dados.dataEmissao) {
+    const d = L.join('\n').match(/(\d{2})\/(\d{2})\/(\d{4})\s*[-,]?\s*\d{2}:\d{2}/);
+    if (d) dados.dataEmissao = `${d[3]}-${d[2]}-${d[1]}`;
+  }
+  // valores com virgula ("192,73") ou ponto decimal ("58.99"); "Valor Total" e a 1a coluna, "Valor Liquido" a ultima
+  const iTot = U.findIndex((l) => l.includes('VALOR TOTAL') && l.includes('BASE DE CALCULO'));
+  if (iTot >= 0 && !(dados.valor > 0)) {
+    const v = numerosFlex(L[iTot + 1] || '');
     if (v.length) dados.valor = v[0];
+  }
+  const iLiq = U.findIndex((l, k) => k > iTot && iTot >= 0 && l.includes('VALOR LIQUIDO'));
+  if (iLiq >= 0) {
+    const v = numerosFlex(L[iLiq + 1] || '');
+    if (v.length) dados.valorLiquido = v[v.length - 1];
+  }
+  // "Municipio: Pouso Alegre - Minas Gerais" (UF por extenso) no cabecalho do prestador
+  if (!dados.ufPrestador) {
+    const m = L.slice(0, iTom >= 0 ? iTom : 10).map((l) => l.match(/Munic[ií]pio:\s*(?:¦\s*)?([^¦]+?)\s*-\s*([A-Za-zÀ-ÿ ]+?)\s*(?:¦|$)/i)).find(Boolean);
+    const uf = m ? (m[2].trim().length === 2 ? m[2].trim().toUpperCase() : UF_POR_NOME[chaveMunicipio(m[2])]) : '';
+    if (uf) { dados.municipioPrestador = chaveMunicipio(`${m[1]}${uf}`); dados.ufPrestador = uf; }
   }
   if (!dados.transportadora && L[0]) dados.transportadora = semEmail(L[0].split(SEP)[0].split(' - ')[0].trim());
   if (!dados.municipioPrestador && dados.chave) dados.municipioPrestador = `IBGE${dados.chave.slice(0, 7)}`;
