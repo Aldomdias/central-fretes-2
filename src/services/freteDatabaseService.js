@@ -1173,7 +1173,9 @@ export async function carregarBaseFiltradaPorOrigemEDestinosDb(filtroCidades = [
     .filter((t) => t.origens.length);
 }
 
-export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [], onProgress = null) {
+// opcoes.soTransportadoras (opcional): lista de nomes; carrega só as origens dessas
+// transportadoras (ex.: refazer a tabela padrão de uma transportadora só).
+export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [], onProgress = null, opcoes = {}) {
   if (!isSupabaseConfigured() || !filtroCidades.length) return [];
   const supabase = ensureClient();
 
@@ -1185,12 +1187,22 @@ export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [],
   const nomesNorm = filtroCidades.map((nome) => normalizarCidadeFiltroDb(nome));
   const { data: todasOrigens, error: erroOrigens } = await supabase.from('origens').select('*');
   if (erroOrigens) throw erroOrigens;
-  const origens = (todasOrigens || []).filter((o) => {
+  let origens = (todasOrigens || []).filter((o) => {
     if (!statusOrigemAtivoDb(o.status)) return false;
     const cidadeNorm = normalizarCidadeFiltroDb(o.cidade);
     return nomesNorm.some((nome) => cidadeNorm.includes(nome));
   });
   if (!origens.length) return [];
+
+  const soTransportadoras = (opcoes?.soTransportadoras || []).map((n) => normalizarCidadeFiltroDb(n)).filter(Boolean);
+  if (soTransportadoras.length) {
+    const idsCd = [...new Set(origens.map((o) => o.transportadora_id))];
+    const { data: transpCd, error: erroTranspCd } = await supabase.from('transportadoras').select('id,nome').in('id', idsCd);
+    if (erroTranspCd) throw erroTranspCd;
+    const idsAlvo = new Set((transpCd || []).filter((t) => soTransportadoras.includes(normalizarCidadeFiltroDb(t.nome))).map((t) => String(t.id)));
+    origens = origens.filter((o) => idsAlvo.has(String(o.transportadora_id)));
+    if (!origens.length) return [];
+  }
 
   onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: origens.length, total: null });
 

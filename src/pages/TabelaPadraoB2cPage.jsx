@@ -67,6 +67,40 @@ async function salvarCheckpoint(chave, configuracao, indice, ctes, totais) {
   } finally { db.close(); }
 }
 
+// Última geração COMPLETA do CD salva neste navegador (mesmas faixas). É a base para refazer só uma transportadora.
+async function ultimaExecucaoCompleta(cdChave, faixas) {
+  if (!('indexedDB' in window)) return null;
+  const faixasCfg = JSON.stringify(faixas.map((f) => [f.min, Number.isFinite(f.max) ? f.max : 'inf']));
+  const db = await abrirCheckpointDb();
+  try {
+    const metas = await idbReq(db.transaction('execucoes').objectStore('execucoes').getAll());
+    const candidatas = (metas || []).map((m) => {
+      let cfg = null;
+      try { cfg = JSON.parse(m.configuracao); } catch { return null; }
+      if (!cfg || cfg.cdEscolhido !== cdChave || JSON.stringify(cfg.faixas) !== faixasCfg) return null;
+      if (!(m.totalMunicipios > 0) || m.ultimoIndice + 1 < m.totalMunicipios) return null;
+      return { meta: m, cfg };
+    }).filter(Boolean).sort((a, b) => (b.meta.atualizadoEm || 0) - (a.meta.atualizadoEm || 0));
+    const escolhida = candidatas[0];
+    if (!escolhida) return null;
+    const lotes = await idbReq(db.transaction('lotes').objectStore('lotes').index('porExecucao').getAll(escolhida.meta.chave));
+    lotes.sort((a, b) => a.indice - b.indice);
+    return { ...escolhida, lotes };
+  } finally { db.close(); }
+}
+
+// Regrava os lotes de uma execução (depois de refazer uma transportadora), mantendo a mesma chave.
+async function regravarExecucao(meta, lotes, extras = {}) {
+  const db = await abrirCheckpointDb();
+  try {
+    const tx = db.transaction(['execucoes', 'lotes'], 'readwrite');
+    const store = tx.objectStore('lotes');
+    for (const lote of lotes) store.put(lote);
+    tx.objectStore('execucoes').put({ ...meta, ...extras, atualizadoEm: Date.now() });
+    await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error); });
+  } finally { db.close(); }
+}
+
 function chaveCheckpoint(configuracao) {
   let hash = 2166136261;
   for (let i = 0; i < configuracao.length; i++) { hash ^= configuracao.charCodeAt(i); hash = Math.imul(hash, 16777619); }
@@ -297,6 +331,132 @@ async function carregarCtes({ competencia, dataInicio, dataFim, ufOrigem, limite
   return filtrarCpComercialCte(acumulado).slice(0, teto);
 }
 
+// Passo comum à geração completa e ao refazer de uma transportadora: IBGE, CT-es do CD,
+// perfil médio por faixa, CT-e-molde e a malha nacional de destinos com a prioridade de volume.
+async function carregarContextoCd({ competencia, dataInicio, dataFim, limiteInput, cdEscolhido, faixas, volumePrioritario, onProgresso }) {
+  onProgresso('Carregando planilha de IBGE...');
+  let municipios = await carregarMunicipiosIbgeDb().catch(() => []);
+  if (!municipios.some((m) => m.mesorregiao)) {
+    onProgresso('Carregando mesorregiões do IBGE...');
+    const oficial = await carregarMunicipiosIbgeOficial().catch(() => ({ municipios: [] }));
+    const mesoPorIbge = new Map((oficial.municipios || []).map((m) => [dig7(m.ibge), m.mesorregiao || '']));
+    municipios = municipios.map((m) => ({ ...m, mesorregiao: mesoPorIbge.get(dig7(m.ibge)) || '' }));
+  }
+  const mapasIbge = montarMapasIbge(municipios);
+  const municipioPorCidade = montarMunicipioPorCidade(municipios);
+
+  onProgresso('Carregando CT-es B2C...');
+  const todos = await carregarCtes({
+    competencia, dataInicio: dataInicio || undefined, dataFim: dataFim || undefined,
+    ufOrigem: CDS_BLACK.find((c) => c.chave === cdEscolhido)?.uf,
+    limite: Number(limiteInput) || 8000, onProgress: (n) => onProgresso(`Carregando CT-es B2C... ${n}`),
+  });
+  const cds = CDS_BLACK.filter((c) => c.chave === cdEscolhido);
+  const doCd = [];
+  let semIbge = 0;
+  for (const cte of todos) {
+    const cidadeOrigem = cte.cidade_origem || cte.origem || '';
+    const cd = cdDaCidade(cidadeOrigem, cds);
+    if (!cd) continue;
+    const ibgeOrigem = ibgeDoCte(cte, 'origem', municipioPorCidade, mapasIbge);
+    const ibgeDestino = ibgeDoCte(cte, 'destino', municipioPorCidade, mapasIbge);
+    if (!ibgeOrigem || !ibgeDestino) { semIbge += 1; continue; }
+    const peso = safeNum(resolverPesoCteRealizado(cte));
+    if (peso <= 0) continue;
+    doCd.push({ cte, cd: cd.label, cidadeOrigem, ibgeOrigem, ibgeDestino, peso });
+  }
+  if (!doCd.length) throw new Error('Nenhum CT-e B2C do CD selecionado no recorte carregado.');
+
+  // 1) Perfil médio por faixa de peso, tirado do realizado do CD: nota fiscal, peso e cubagem.
+  onProgresso('Montando o perfil médio por faixa de peso...');
+  const acum = new Map();
+  let nfSoma = 0; let nfN = 0;
+  for (const x of doCd) {
+    const nf = safeNum(x.cte.valor_nf || x.cte.nf_venda);
+    if (nf > 0) { nfSoma += nf; nfN += 1; }
+    const f = faixaDoPeso(x.peso, faixas);
+    if (!f) continue;
+    const a = acum.get(f.min) || { n: 0, peso: 0, nf: 0, nfN: 0, cub: 0, cubN: 0 };
+    a.n += 1; a.peso += x.peso;
+    if (nf > 0) { a.nf += nf; a.nfN += 1; }
+    const cub = cubagemDe(x.cte);
+    if (cub > 0) { a.cub += cub; a.cubN += 1; }
+    acum.set(f.min, a);
+  }
+  const nfGeral = nfN ? nfSoma / nfN : 0;
+  const perfilDaFaixa = (faixa) => {
+    const a = acum.get(faixa.min);
+    if (a && a.n) return { peso: a.peso / a.n, nf: a.nfN ? a.nf / a.nfN : nfGeral, cub: a.cubN ? a.cub / a.cubN : 0 };
+    return { peso: Number.isFinite(faixa.max) ? (faixa.min + faixa.max) / 2 : faixa.min * 1.25, nf: nfGeral, cub: 0 };
+  };
+
+  // CT-e-molde do CD (o de NF mediana): fornece os demais campos; peso, NF e cubagem vêm do perfil da faixa.
+  const porNf = [...doCd].sort((a, b) => safeNum(a.cte.valor_nf || a.cte.nf_venda) - safeNum(b.cte.valor_nf || b.cte.nf_venda));
+  const molde = porNf[Math.floor(porNf.length / 2)];
+
+  // 3) Malha nacional: todos os municípios do IBGE. O histórico serve para priorizar
+  // os destinos que acumulam o percentual de volume escolhido, nunca para cortar a saída.
+  const infoIbge = new Map();
+  for (const m of municipios) { const k = dig7(m.ibge || m.codigo_ibge || m.codigo); if (k) infoIbge.set(k, m); }
+  const volumePorDestino = new Map();
+  for (const x of doCd) volumePorDestino.set(dig7(x.ibgeDestino), (volumePorDestino.get(dig7(x.ibgeDestino)) || 0) + 1);
+
+  const volumeTotal = Array.from(volumePorDestino.values()).reduce((s, n) => s + n, 0);
+  const limiteVolume = Math.max(0, Math.min(100, safeNum(volumePrioritario))) / 100;
+  let acumuladoVolume = 0;
+  const perfilVolume = new Map();
+  for (const [ibge, volume] of [...volumePorDestino.entries()].sort((a, b) => b[1] - a[1])) {
+    const percentual = volumeTotal ? volume / volumeTotal : 0;
+    acumuladoVolume += percentual;
+    perfilVolume.set(ibge, {
+      volume, percentual, acumulado: acumuladoVolume,
+      classe: acumuladoVolume - percentual < limiteVolume ? 'nucleo_80' : 'cauda_20',
+    });
+  }
+
+  const destinos = [];
+  for (const [d, info] of infoIbge.entries()) {
+    if (!info) continue;
+    const ufD = String(info.uf || '').toUpperCase();
+    const pv = perfilVolume.get(d) || { volume: 0, percentual: 0, acumulado: 0, classe: 'sem_historico' };
+    destinos.push({ d, info, ufD, key: d, label: `${info.cidade}/${ufD}`, ...pv });
+  }
+  destinos.sort((a, b) => {
+    const ordem = { nucleo_80: 0, cauda_20: 1, sem_historico: 2 };
+    return ordem[a.classe] - ordem[b.classe] || b.volume - a.volume || a.ufD.localeCompare(b.ufD) || a.label.localeCompare(b.label, 'pt-BR');
+  });
+  if (!destinos.length) throw new Error('Nenhum destino das tabelas foi encontrado na planilha de IBGE.');
+  const mesorregiaoPorIbge = Object.fromEntries(destinos.map((x) => [x.d, x.info.mesorregiao || `${x.ufD} - sem mesorregião`]));
+  return {
+    municipios, cds, todos, doCd, semIbge, acum, perfilDaFaixa, molde, destinos, mesorregiaoPorIbge,
+  };
+}
+
+// CT-e sintético de um destino x faixa: campos do molde, peso/NF/cubagem do perfil da faixa.
+function montarCteRef(molde, info, d, ufD, pf) {
+  const cteRef = {
+    ...molde.cte, cidade_destino: info.cidade, destino: info.cidade, uf_destino: ufD,
+    ibge_destino: d, ibge_corrigido_destino: d, ibgeDestino: d,
+    peso: pf.peso, peso_declarado: pf.peso, valor_nf: pf.nf, nf_venda: pf.nf,
+  };
+  for (const campo of Object.keys(cteRef)) if (/cubag|cubado/i.test(campo)) cteRef[campo] = 0;
+  if (pf.cub > 0) { cteRef.cubagem = pf.cub; cteRef.cubagem_total = pf.cub; }
+  return cteRef;
+}
+
+// CT-es reais entram só como volume e custo realizado (sem recalcular frete).
+function ctesDeVolume(doCd) {
+  return doCd.map((x) => {
+    const ufD = String(x.cte.uf_destino || '').toUpperCase();
+    const cidadeDestino = x.cte.cidade_destino || x.cte.destino || '';
+    return {
+      cd: x.cd, uf: ufD, peso: x.peso, destinoKey: dig7(x.ibgeDestino), destinoLabel: `${cidadeDestino}/${ufD}`,
+      valorPago: safeNum(x.cte.valor_cte || x.cte.frete_pago || x.cte.valor_frete),
+      resultados: [], apenasVolume: true,
+    };
+  });
+}
+
 const th = { textAlign: 'left', padding: '6px 8px', fontSize: '0.72rem', color: '#64748b', borderBottom: '1px solid #e2e8f0', whiteSpace: 'nowrap' };
 const td = { padding: '5px 8px', fontSize: '0.8rem', borderBottom: '1px solid #f1f5f9', whiteSpace: 'nowrap' };
 
@@ -325,6 +485,7 @@ export default function TabelaPadraoB2cPage() {
   const [filtroDestino, setFiltroDestino] = useState('');
   const [visao, setVisao] = useState('ranking');
   const [gerandoArquivos, setGerandoArquivos] = useState(false);
+  const [transpRefazer, setTranspRefazer] = useState('');
 
   const faixas = useMemo(() => parseFaixas(faixasTexto), [faixasTexto]);
 
@@ -333,61 +494,10 @@ export default function TabelaPadraoB2cPage() {
     interromperRef.current = false;
     setStatus('carregando'); setErro(''); setSimulados(null);
     try {
-      setProgresso('Carregando planilha de IBGE...');
-      let municipios = await carregarMunicipiosIbgeDb().catch(() => []);
-      if (!municipios.some((m) => m.mesorregiao)) {
-        setProgresso('Carregando mesorregiões do IBGE...');
-        const oficial = await carregarMunicipiosIbgeOficial().catch(() => ({ municipios: [] }));
-        const mesoPorIbge = new Map((oficial.municipios || []).map((m) => [dig7(m.ibge), m.mesorregiao || '']));
-        municipios = municipios.map((m) => ({ ...m, mesorregiao: mesoPorIbge.get(dig7(m.ibge)) || '' }));
-      }
-      const mapasIbge = montarMapasIbge(municipios);
-      const municipioPorCidade = montarMunicipioPorCidade(municipios);
-
-      setProgresso('Carregando CT-es B2C...');
-      const todos = await carregarCtes({
-        competencia, dataInicio: dataInicio || undefined, dataFim: dataFim || undefined,
-        ufOrigem: CDS_BLACK.find((c) => c.chave === cdEscolhido)?.uf,
-        limite: Number(limiteInput) || 8000, onProgress: (n) => setProgresso(`Carregando CT-es B2C... ${n}`),
+      const ctx = await carregarContextoCd({
+        competencia, dataInicio, dataFim, limiteInput, cdEscolhido, faixas, volumePrioritario, onProgresso: setProgresso,
       });
-      const cds = CDS_BLACK.filter((c) => c.chave === cdEscolhido);
-      const doCd = [];
-      let semIbge = 0;
-      for (const cte of todos) {
-        const cidadeOrigem = cte.cidade_origem || cte.origem || '';
-        const cd = cdDaCidade(cidadeOrigem, cds);
-        if (!cd) continue;
-        const ibgeOrigem = ibgeDoCte(cte, 'origem', municipioPorCidade, mapasIbge);
-        const ibgeDestino = ibgeDoCte(cte, 'destino', municipioPorCidade, mapasIbge);
-        if (!ibgeOrigem || !ibgeDestino) { semIbge += 1; continue; }
-        const peso = safeNum(resolverPesoCteRealizado(cte));
-        if (peso <= 0) continue;
-        doCd.push({ cte, cd: cd.label, cidadeOrigem, ibgeOrigem, ibgeDestino, peso });
-      }
-      if (!doCd.length) throw new Error('Nenhum CT-e B2C do CD selecionado no recorte carregado.');
-
-      // 1) Perfil médio por faixa de peso, tirado do realizado do CD: nota fiscal, peso e cubagem.
-      setProgresso('Montando o perfil médio por faixa de peso...');
-      const acum = new Map();
-      let nfSoma = 0; let nfN = 0;
-      for (const x of doCd) {
-        const nf = safeNum(x.cte.valor_nf || x.cte.nf_venda);
-        if (nf > 0) { nfSoma += nf; nfN += 1; }
-        const f = faixaDoPeso(x.peso, faixas);
-        if (!f) continue;
-        const a = acum.get(f.min) || { n: 0, peso: 0, nf: 0, nfN: 0, cub: 0, cubN: 0 };
-        a.n += 1; a.peso += x.peso;
-        if (nf > 0) { a.nf += nf; a.nfN += 1; }
-        const cub = cubagemDe(x.cte);
-        if (cub > 0) { a.cub += cub; a.cubN += 1; }
-        acum.set(f.min, a);
-      }
-      const nfGeral = nfN ? nfSoma / nfN : 0;
-      const perfilDaFaixa = (faixa) => {
-        const a = acum.get(faixa.min);
-        if (a && a.n) return { peso: a.peso / a.n, nf: a.nfN ? a.nf / a.nfN : nfGeral, cub: a.cubN ? a.cub / a.cubN : 0 };
-        return { peso: Number.isFinite(faixa.max) ? (faixa.min + faixa.max) / 2 : faixa.min * 1.25, nf: nfGeral, cub: 0 };
-      };
+      const { cds, todos, doCd, semIbge, acum, perfilDaFaixa, molde, destinos, mesorregiaoPorIbge } = ctx;
 
       // 2) Malha completa das tabelas que saem do CD (todos os destinos atendidos).
       setProgresso('Carregando a malha completa das tabelas que saem do CD (pode demorar)...');
@@ -399,45 +509,7 @@ export default function TabelaPadraoB2cPage() {
       const idx = indexarBase(baseFrete);
       const mapBaseByNome = new Map(baseFrete.map((t) => [t.nome, t]));
       const origemCache = new Map();
-
-      // CT-e-molde do CD (o de NF mediana): fornece os demais campos; peso, NF e cubagem vêm do perfil da faixa.
-      const porNf = [...doCd].sort((a, b) => safeNum(a.cte.valor_nf || a.cte.nf_venda) - safeNum(b.cte.valor_nf || b.cte.nf_venda));
-      const molde = porNf[Math.floor(porNf.length / 2)];
       const setOrigemMolde = nomesPorOrigem(idx, dig7(molde.ibgeOrigem), normTexto(molde.cidadeOrigem), origemCache);
-
-      // 3) Malha nacional: todos os municípios do IBGE. O histórico serve para priorizar
-      // os destinos que acumulam o percentual de volume escolhido, nunca para cortar a saída.
-      const infoIbge = new Map();
-      for (const m of municipios) { const k = dig7(m.ibge || m.codigo_ibge || m.codigo); if (k) infoIbge.set(k, m); }
-      const volumePorDestino = new Map();
-      for (const x of doCd) volumePorDestino.set(dig7(x.ibgeDestino), (volumePorDestino.get(dig7(x.ibgeDestino)) || 0) + 1);
-
-      const volumeTotal = Array.from(volumePorDestino.values()).reduce((s, n) => s + n, 0);
-      const limiteVolume = Math.max(0, Math.min(100, safeNum(volumePrioritario))) / 100;
-      let acumuladoVolume = 0;
-      const perfilVolume = new Map();
-      for (const [ibge, volume] of [...volumePorDestino.entries()].sort((a, b) => b[1] - a[1])) {
-        const percentual = volumeTotal ? volume / volumeTotal : 0;
-        acumuladoVolume += percentual;
-        perfilVolume.set(ibge, {
-          volume, percentual, acumulado: acumuladoVolume,
-          classe: acumuladoVolume - percentual < limiteVolume ? 'nucleo_80' : 'cauda_20',
-        });
-      }
-
-      const destinos = [];
-      for (const [d, info] of infoIbge.entries()) {
-        if (!info) continue;
-        const ufD = String(info.uf || '').toUpperCase();
-        const pv = perfilVolume.get(d) || { volume: 0, percentual: 0, acumulado: 0, classe: 'sem_historico' };
-        destinos.push({ d, info, ufD, key: d, label: `${info.cidade}/${ufD}`, ...pv });
-      }
-      destinos.sort((a, b) => {
-        const ordem = { nucleo_80: 0, cauda_20: 1, sem_historico: 2 };
-        return ordem[a.classe] - ordem[b.classe] || b.volume - a.volume || a.ufD.localeCompare(b.ufD) || a.label.localeCompare(b.label, 'pt-BR');
-      });
-      if (!destinos.length) throw new Error('Nenhum destino das tabelas foi encontrado na planilha de IBGE.');
-      const mesorregiaoPorIbge = Object.fromEntries(destinos.map((x) => [x.d, x.info.mesorregiao || `${x.ufD} - sem mesorregião`]));
 
       setProgresso('Agrupando municípios por combinação tarifária...');
       const destinosPreparados = destinos.map((destino) => {
@@ -489,13 +561,7 @@ export default function TabelaPadraoB2cPage() {
         const ctesDoMunicipio = [];
         for (const faixa of faixas) {
           const pf = perfilDaFaixa(faixa);
-          const cteRef = {
-            ...molde.cte, cidade_destino: info.cidade, destino: info.cidade, uf_destino: ufD,
-            ibge_destino: d, ibge_corrigido_destino: d, ibgeDestino: d,
-            peso: pf.peso, peso_declarado: pf.peso, valor_nf: pf.nf, nf_venda: pf.nf,
-          };
-          for (const campo of Object.keys(cteRef)) if (/cubag|cubado/i.test(campo)) cteRef[campo] = 0;
-          if (pf.cub > 0) { cteRef.cubagem = pf.cub; cteRef.cubagem_total = pf.cub; }
+          const cteRef = montarCteRef(molde, info, d, ufD, pf);
           const chaveGrupo = assinatura ? chaveCheckpoint(`${assinatura}|${faixa.min}`) : '';
           let resultados = chaveGrupo ? resultadosPorGrupo.get(chaveGrupo) : null;
           if (!resultados) {
@@ -530,18 +596,7 @@ export default function TabelaPadraoB2cPage() {
       }
 
       // 5) CT-es reais entram só como volume e custo realizado (sem recalcular frete).
-      for (const x of doCd) {
-        const ufD = String(x.cte.uf_destino || '').toUpperCase();
-        const dest = dig7(x.ibgeDestino);
-        const cidadeDestino = x.cte.cidade_destino || x.cte.destino || '';
-        ctes.push({
-          cd: x.cd, uf: ufD, peso: x.peso,
-          destinoKey: granularidade === 'uf' ? ufD : dest,
-          destinoLabel: granularidade === 'uf' ? ufD : `${cidadeDestino}/${ufD}`,
-          valorPago: safeNum(x.cte.valor_cte || x.cte.frete_pago || x.cte.valor_frete),
-          resultados: [], apenasVolume: true,
-        });
-      }
+      ctes.push(...ctesDeVolume(doCd));
       const destinosSemVolume = destinos.filter((x) => x.classe === 'sem_historico').length;
       const destinosNucleo = destinos.filter((x) => x.classe === 'nucleo_80').length;
       const faixasSemAmostra = faixas.filter((f) => !acum.get(f.min)?.n).length;
@@ -553,6 +608,132 @@ export default function TabelaPadraoB2cPage() {
       setStatus('concluido'); setProgresso('');
     } catch (e) {
       console.error('[TabelaPadraoB2C]', e);
+      setErro(`${e.message || e}`);
+      setStatus('erro'); setProgresso('');
+    }
+  }
+
+  // Refaz só uma transportadora em cima da última geração completa do CD salva neste navegador:
+  // tira os valores antigos dela de cada município x faixa, simula de novo só a tabela dela
+  // (rotas novas entram, rotas retiradas saem, prazo/preço atualizam) e reordena o ranking.
+  // As demais transportadoras não são recalculadas: mantêm o valor simulado da geração salva.
+  async function refazerTransportadora() {
+    const alvo = transpRefazer.trim();
+    if (!alvo) { setErro('Informe a transportadora que será refeita.'); return; }
+    if (!faixas.length) { setErro('Faixas de peso inválidas. Use o formato "0-2, 2-5, 100+".'); return; }
+    interromperRef.current = false;
+    setStatus('carregando'); setErro(''); setSimulados(null);
+    try {
+      const cdInfo = CDS_BLACK.find((c) => c.chave === cdEscolhido);
+      setProgresso('Procurando a última geração completa salva deste CD...');
+      const exec = await ultimaExecucaoCompleta(cdEscolhido, faixas);
+      if (!exec) {
+        throw new Error(`Não há geração completa de ${cdInfo?.label || cdEscolhido} salva neste navegador com essas faixas de peso. `
+          + 'O refazer parte da última geração completa: gere a tabela inteira uma vez neste navegador e depois refaça só a transportadora.');
+      }
+      const { cfg } = exec;
+      // Usa o mesmo recorte de CT-es da geração salva, para o perfil por faixa ficar igual ao das demais.
+      setCompetencia(cfg.competencia || ''); setDataInicio(cfg.dataInicio || ''); setDataFim(cfg.dataFim || '');
+      setLimiteInput(cfg.limiteInput || '8000'); setVolumePrioritario(cfg.volumePrioritario || '80');
+      const ctx = await carregarContextoCd({
+        competencia: cfg.competencia, dataInicio: cfg.dataInicio, dataFim: cfg.dataFim, limiteInput: cfg.limiteInput,
+        cdEscolhido, faixas, volumePrioritario: cfg.volumePrioritario, onProgresso: setProgresso,
+      });
+      const { cds, todos, doCd, semIbge, acum, perfilDaFaixa, molde, destinos, mesorregiaoPorIbge } = ctx;
+
+      setProgresso(`Carregando só a tabela de ${alvo} saindo de ${cds[0].label}...`);
+      const nomeAlvoNorm = normTexto(alvo);
+      const baseAlvo = normalizarTransportadoras(await carregarBaseFiltradaPorCidadesOrigemDb(
+        cds[0].cidades,
+        (e) => setProgresso(`Carregando tabela de ${alvo}... ${fmtN(e?.rotas || 0)} rotas · ${fmtN(e?.cotacoes || 0)} cotações`),
+        { soTransportadoras: [alvo] },
+      )).filter((t) => normTexto(t.nome) === nomeAlvoNorm);
+      if (!baseAlvo.length) {
+        const nomes = new Set();
+        for (const lote of exec.lotes) for (const item of lote.ctes) for (const r of item.resultados || []) nomes.add(r.transportadora);
+        throw new Error(`"${alvo}" não tem tabela ativa saindo de ${cds[0].label}. Transportadoras da última geração: ${[...nomes].sort((a, b) => a.localeCompare(b, 'pt-BR')).join(', ')}.`);
+      }
+      const transp = baseAlvo[0];
+      const idx = indexarBase(baseAlvo);
+      const saiDoCd = nomesPorOrigem(idx, dig7(molde.ibgeOrigem), normTexto(molde.cidadeOrigem), new Map()).has(transp.nome);
+      const destinoPorIbge = new Map(destinos.map((x) => [x.d, x]));
+      const cacheSim = new Map();
+      const assinaturaCache = new Map();
+      const cont = { antes: 0, depois: 0, entrou: 0, saiu: 0 };
+      const t0 = Date.now();
+      let ultimoYield = t0;
+      const totalLotes = exec.lotes.length;
+
+      for (let k = 0; k < totalLotes; k++) {
+        if (interromperRef.current) {
+          setStatus('idle');
+          setProgresso('Refazer interrompido. Nada foi gravado: a geração salva continua como estava.');
+          return;
+        }
+        for (const item of exec.lotes[k].ctes) {
+          const antigos = item.resultados || [];
+          const outros = antigos.filter((r) => normTexto(r.transportadora) !== nomeAlvoNorm);
+          const tinha = outros.length !== antigos.length;
+          const d = item.destinoKey;
+          const destino = destinoPorIbge.get(d);
+          const faixa = faixaDoPeso(item.peso, faixas);
+          let novos = [];
+          if (saiDoCd && destino && faixa && idx.porDestinoIbge.get(d)?.has(transp.nome)) {
+            let assinatura = assinaturaCache.get(d);
+            if (assinatura == null) {
+              assinatura = assinaturaTarifariaDestino(d, destino.ufD, [transp], baseAlvo, cds[0]);
+              assinaturaCache.set(d, assinatura);
+            }
+            const chave = `${assinatura}|${faixa.min}`;
+            novos = cacheSim.get(chave);
+            if (!novos) {
+              const cteRef = montarCteRef(molde, destino.info, d, destino.ufD, perfilDaFaixa(faixa));
+              novos = simularTodas(cteRef, baseAlvo, [transp], molde.ibgeOrigem, d, molde.cidadeOrigem);
+              cacheSim.set(chave, novos);
+            }
+          }
+          if (tinha) cont.antes += 1;
+          if (novos.length) cont.depois += 1;
+          if (!tinha && novos.length) cont.entrou += 1;
+          if (tinha && !novos.length) cont.saiu += 1;
+          item.resultados = [...outros, ...novos].sort((a, b) => a.total - b.total);
+          item._chaveGrupo = '';
+        }
+        const agora = Date.now();
+        if (agora - ultimoYield >= 40) {
+          setProgresso(`Refazendo ${transp.nome}... município ${fmtN(k + 1)}/${fmtN(totalLotes)} · ${fmtN(cacheSim.size)} combinações simuladas · ${((agora - t0) / 1000).toFixed(0)}s`);
+          await new Promise((r) => setTimeout(r, 0));
+          ultimoYield = Date.now();
+        }
+      }
+
+      setProgresso('Gravando a geração atualizada neste navegador...');
+      await regravarExecucao(exec.meta, exec.lotes, {
+        refeitas: [...(exec.meta.refeitas || []), { transportadora: transp.nome, em: Date.now() }],
+      });
+
+      const ctes = exec.lotes.flatMap((l) => l.ctes);
+      const comValor = new Set();
+      const todosDestinos = new Set();
+      for (const item of ctes) { todosDestinos.add(item.destinoKey); if (item.resultados.length) comValor.add(item.destinoKey); }
+      ctes.push(...ctesDeVolume(doCd));
+      setSimulados({
+        ctes, semIbge, totalLidos: todos.length,
+        estimadas: faixas.filter((f) => !acum.get(f.min)?.n).length,
+        destinosSemVolume: destinos.filter((x) => x.classe === 'sem_historico').length,
+        destinosNucleo: destinos.filter((x) => x.classe === 'nucleo_80').length,
+        destinos: todosDestinos.size, semTabela: todosDestinos.size - comValor.size, ibgeOrigem: molde.ibgeOrigem,
+        rotasAtuaisPorTransportadora: montarEspelhoRotasPorTransportadora(baseAlvo, cds[0]),
+        mesorregiaoPorIbge,
+        refeita: {
+          transportadora: transp.nome, ...cont,
+          periodo: cfg.dataInicio || cfg.dataFim ? `${cfg.dataInicio || '…'} a ${cfg.dataFim || '…'}` : (cfg.competencia || `últimos ${cfg.limiteInput} CT-es`),
+          segundos: Math.round((Date.now() - t0) / 1000),
+        },
+      });
+      setStatus('concluido'); setProgresso('');
+    } catch (e) {
+      console.error('[TabelaPadraoB2C] refazer', e);
       setErro(`${e.message || e}`);
       setStatus('erro'); setProgresso('');
     }
@@ -812,6 +993,28 @@ export default function TabelaPadraoB2cPage() {
           </div>
         </div>
 
+        <div style={{ margin: '4px 0 14px', border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 10, padding: 12 }}>
+          <div style={{ fontWeight: 700, fontSize: '0.85rem', marginBottom: 2 }}>Refazer só uma transportadora</div>
+          <div style={{ fontSize: '0.72rem', color: '#92400e', marginBottom: 8 }}>
+            Para quando uma transportadora mudou a tabela (rotas novas, prazo, preço) e as demais continuam iguais. Parte da última geração completa
+            deste CD salva neste navegador (mesmo período e faixas), simula de novo só a transportadora informada e regrava o resultado.
+            As outras mantêm o valor simulado da geração salva — mas a posição e o preço padrão delas podem mudar nas rotas onde essa entrou ou mudou.
+          </div>
+          <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
+            <label>Transportadora (nome igual ao cadastro)
+              <input value={transpRefazer} onChange={(e) => setTranspRefazer(e.target.value)} placeholder="ex.: TAM" list="tabela-b2c-transportadoras" />
+              <datalist id="tabela-b2c-transportadoras">
+                {coberturaTransp.map((c) => <option key={c.transportadora} value={c.transportadora} />)}
+              </datalist>
+            </label>
+            <div>
+              <button type="button" className="primary" onClick={refazerTransportadora} disabled={status === 'carregando' || !transpRefazer.trim()}>
+                Refazer só esta transportadora
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
           <label>Núcleo prioritário do volume (%)<input type="number" min={0} max={100} value={volumePrioritario} onChange={(e) => setVolumePrioritario(e.target.value)} /></label>
           <label>Amostra mínima (CT-es/linha)<input type="number" min={1} value={amostraMin} onChange={(e) => setAmostraMin(e.target.value)} /></label>
@@ -879,6 +1082,15 @@ export default function TabelaPadraoB2cPage() {
 
       {tabela && (
         <>
+          {simulados.refeita && (
+            <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, padding: '10px 16px', margin: '1rem 0 0', fontSize: '0.84rem', color: '#065f46' }}>
+              <b>{simulados.refeita.transportadora}</b> refeita em {fmtN(simulados.refeita.segundos)}s sobre a geração salva de {cdEscolhido} ({simulados.refeita.periodo}).
+              {' '}Linhas (município × faixa) com valor: {fmtN(simulados.refeita.antes)} antes → {fmtN(simulados.refeita.depois)} agora
+              {' '}({fmtN(simulados.refeita.entrou)} novas, {fmtN(simulados.refeita.saiu)} que saíram). O resultado já ficou gravado neste navegador.
+              {' '}Só os arquivos Verum dela podem ser baixados aqui; para baixar os das outras (cujo preço pode ter mudado nas rotas em comum),
+              {' '}clique em “Gerar tabela padrão” com os mesmos filtros — ele reaproveita a geração salva sem simular de novo.
+            </div>
+          )}
           <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 16px', margin: '1rem 0', fontSize: '0.84rem', color: '#1d4ed8' }}>
             {fmtN(simulados.destinos)} municípios IBGE processados · {fmtN(simulados.destinosNucleo)} no núcleo prioritário de {volumePrioritario}% do volume · {fmtN(tabela.linhas.length)} linhas (CD × destino × faixa).
             {simulados.semIbge > 0 && ` ${fmtN(simulados.semIbge)} sem IBGE foram ignorados.`}
@@ -908,7 +1120,7 @@ export default function TabelaPadraoB2cPage() {
                   {simulados.destinosSemVolume > 0 && ` ${fmtN(simulados.destinosSemVolume)} municípios sem CT-e no histórico entraram pela malha nacional do IBGE.`}
                 </div>
               </div>
-              <button className="primary" type="button" disabled={gerandoArquivos || !coberturaTransp.length}
+              <button className="primary" type="button" disabled={gerandoArquivos || !coberturaTransp.length || !!simulados.refeita}
                 onClick={() => baixarArquivos(coberturaTransp.map((c) => c.transportadora))}>
                 {gerandoArquivos ? 'Gerando...' : `Baixar todos (${coberturaTransp.length}) em ZIP`}
               </button>
@@ -930,7 +1142,7 @@ export default function TabelaPadraoB2cPage() {
                       <td style={{ ...td, textAlign: 'right' }}>{fmtN(c.linhas)}</td>
                       <td style={{ ...td, textAlign: 'right' }}>{fmtN(c.estimadas)}</td>
                       <td style={{ ...td, textAlign: 'right', color: c.faltando ? '#9b1111' : '#047857', fontWeight: 700 }}>{c.faltando ? fmtN(c.faltando) : 'nenhuma'}</td>
-                      <td style={td}><button type="button" className="sim-tab" style={{ padding: '1px 10px' }} disabled={gerandoArquivos} onClick={() => baixarArquivos([c.transportadora])}>baixar</button></td>
+                      <td style={td}><button type="button" className="sim-tab" style={{ padding: '1px 10px' }} disabled={gerandoArquivos || (simulados.refeita && c.transportadora !== simulados.refeita.transportadora)} onClick={() => baixarArquivos([c.transportadora])}>baixar</button></td>
                     </tr>
                   ))}
                 </tbody>
