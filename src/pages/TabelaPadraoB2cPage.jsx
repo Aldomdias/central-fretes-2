@@ -1,7 +1,7 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import BaseCtesStatus from '../components/BaseCtesStatus';
-import { buscarBaseSimulacaoPorRotasDb, carregarBaseFiltradaPorCidadesOrigemDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
+import { buscarBaseSimulacaoPorRotasDb, carregarBaseFiltradaPorCidadesOrigemDb, carregarMunicipiosIbgeDb, listarTransportadorasPorCidadesOrigemDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
 import { categoriaCanalRealizado, montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
 import { filtrarCpComercialCte } from '../services/cteBasePolicy';
@@ -486,6 +486,20 @@ export default function TabelaPadraoB2cPage() {
   const [visao, setVisao] = useState('ranking');
   const [gerandoArquivos, setGerandoArquivos] = useState(false);
   const [transpRefazer, setTranspRefazer] = useState('');
+  const [transpsDoCd, setTranspsDoCd] = useState({ status: 'idle', nomes: [] });
+
+  // Nomes das transportadoras com origem no CD, para escolher na lista (sem digitar).
+  useEffect(() => {
+    const cd = CDS_BLACK.find((c) => c.chave === cdEscolhido);
+    if (!cd) return undefined;
+    let ativo = true;
+    setTranspsDoCd({ status: 'carregando', nomes: [] });
+    setTranspRefazer('');
+    listarTransportadorasPorCidadesOrigemDb(cd.cidades)
+      .then((nomes) => { if (ativo) setTranspsDoCd({ status: 'ok', nomes }); })
+      .catch(() => { if (ativo) setTranspsDoCd({ status: 'erro', nomes: [] }); });
+    return () => { ativo = false; };
+  }, [cdEscolhido]);
 
   const faixas = useMemo(() => parseFaixas(faixasTexto), [faixasTexto]);
 
@@ -1001,11 +1015,15 @@ export default function TabelaPadraoB2cPage() {
             As outras mantêm o valor simulado da geração salva — mas a posição e o preço padrão delas podem mudar nas rotas onde essa entrou ou mudou.
           </div>
           <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
-            <label>Transportadora (nome igual ao cadastro)
-              <input value={transpRefazer} onChange={(e) => setTranspRefazer(e.target.value)} placeholder="ex.: TAM" list="tabela-b2c-transportadoras" />
-              <datalist id="tabela-b2c-transportadoras">
-                {coberturaTransp.map((c) => <option key={c.transportadora} value={c.transportadora} />)}
-              </datalist>
+            <label>Transportadora com tabela saindo deste CD
+              {transpsDoCd.status === 'erro' ? (
+                <input value={transpRefazer} onChange={(e) => setTranspRefazer(e.target.value)} placeholder="Não carregou a lista: digite o nome do cadastro" />
+              ) : (
+                <select value={transpRefazer} onChange={(e) => setTranspRefazer(e.target.value)} style={{ width: '100%' }} disabled={transpsDoCd.status === 'carregando'}>
+                  <option value="">{transpsDoCd.status === 'carregando' ? 'Carregando transportadoras...' : `Escolha (${transpsDoCd.nomes.length})`}</option>
+                  {transpsDoCd.nomes.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+              )}
             </label>
             <div>
               <button type="button" className="primary" onClick={refazerTransportadora} disabled={status === 'carregando' || !transpRefazer.trim()}>

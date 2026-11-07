@@ -1173,6 +1173,22 @@ export async function carregarBaseFiltradaPorOrigemEDestinosDb(filtroCidades = [
     .filter((t) => t.origens.length);
 }
 
+// Nomes das transportadoras com origem ativa nas cidades informadas (leve: só origens + nomes).
+export async function listarTransportadorasPorCidadesOrigemDb(filtroCidades = []) {
+  if (!isSupabaseConfigured() || !filtroCidades.length) return [];
+  const supabase = ensureClient();
+  const nomesNorm = filtroCidades.map((nome) => normalizarCidadeFiltroDb(nome));
+  const { data: origens, error } = await supabase.from('origens').select('transportadora_id,cidade,status');
+  if (error) throw error;
+  const ids = [...new Set((origens || [])
+    .filter((o) => statusOrigemAtivoDb(o.status) && nomesNorm.some((nome) => normalizarCidadeFiltroDb(o.cidade).includes(nome)))
+    .map((o) => o.transportadora_id))];
+  if (!ids.length) return [];
+  const { data: transps, error: erroT } = await supabase.from('transportadoras').select('id,nome').in('id', ids);
+  if (erroT) throw erroT;
+  return [...new Set((transps || []).map((t) => t.nome).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
 // opcoes.soTransportadoras (opcional): lista de nomes; carrega só as origens dessas
 // transportadoras (ex.: refazer a tabela padrão de uma transportadora só).
 export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [], onProgress = null, opcoes = {}) {
