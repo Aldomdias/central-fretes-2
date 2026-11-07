@@ -487,6 +487,7 @@ export default function TabelaPadraoB2cPage() {
   const [gerandoArquivos, setGerandoArquivos] = useState(false);
   const [transpRefazer, setTranspRefazer] = useState('');
   const [transpsDoCd, setTranspsDoCd] = useState({ status: 'idle', nomes: [] });
+  const [ultimaAcao, setUltimaAcao] = useState('');
 
   // Nomes das transportadoras com origem no CD, para escolher na lista (sem digitar).
   useEffect(() => {
@@ -504,6 +505,7 @@ export default function TabelaPadraoB2cPage() {
   const faixas = useMemo(() => parseFaixas(faixasTexto), [faixasTexto]);
 
   async function gerar() {
+    setUltimaAcao('gerar');
     if (!faixas.length) { setErro('Faixas de peso inválidas. Use o formato "0-2, 2-5, 100+".'); return; }
     interromperRef.current = false;
     setStatus('carregando'); setErro(''); setSimulados(null);
@@ -633,6 +635,7 @@ export default function TabelaPadraoB2cPage() {
   // As demais transportadoras não são recalculadas: mantêm o valor simulado da geração salva.
   async function refazerTransportadora() {
     const alvo = transpRefazer.trim();
+    setUltimaAcao('refazer');
     if (!alvo) { setErro('Informe a transportadora que será refeita.'); return; }
     if (!faixas.length) { setErro('Faixas de peso inválidas. Use o formato "0-2, 2-5, 100+".'); return; }
     interromperRef.current = false;
@@ -1027,10 +1030,24 @@ export default function TabelaPadraoB2cPage() {
             </label>
             <div>
               <button type="button" className="primary" onClick={refazerTransportadora} disabled={status === 'carregando' || !transpRefazer.trim()}>
-                Refazer só esta transportadora
+                {status === 'carregando' && ultimaAcao === 'refazer' ? 'Refazendo...' : 'Refazer só esta transportadora'}
               </button>
             </div>
           </div>
+          {ultimaAcao === 'refazer' && progresso && (
+            <div style={{ marginTop: 10, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '8px 12px', fontSize: '0.82rem', color: '#1d4ed8' }}>{progresso}</div>
+          )}
+          {ultimaAcao === 'refazer' && erro && (
+            <div className="sim-alert error" style={{ marginTop: 10 }}>{erro}</div>
+          )}
+          {simulados?.refeita && tabela && (
+            <div style={{ marginTop: 10, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: '0.82rem', color: '#065f46' }}>
+              <span><b>{simulados.refeita.transportadora}</b> refeita: {fmtN(simulados.refeita.depois)} linhas com valor ({fmtN(simulados.refeita.entrou)} novas, {fmtN(simulados.refeita.saiu)} saíram).</span>
+              <button type="button" className="primary" disabled={gerandoArquivos} onClick={() => baixarArquivos([simulados.refeita.transportadora])}>
+                {gerandoArquivos ? 'Gerando...' : `Baixar arquivos Verum de ${simulados.refeita.transportadora}`}
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
@@ -1107,6 +1124,11 @@ export default function TabelaPadraoB2cPage() {
               {' '}({fmtN(simulados.refeita.entrou)} novas, {fmtN(simulados.refeita.saiu)} que saíram). O resultado já ficou gravado neste navegador.
               {' '}Só os arquivos Verum dela podem ser baixados aqui; para baixar os das outras (cujo preço pode ter mudado nas rotas em comum),
               {' '}clique em “Gerar tabela padrão” com os mesmos filtros — ele reaproveita a geração salva sem simular de novo.
+              <div style={{ marginTop: 8 }}>
+                <button type="button" className="primary" disabled={gerandoArquivos} onClick={() => baixarArquivos([simulados.refeita.transportadora])}>
+                  {gerandoArquivos ? 'Gerando...' : `Baixar arquivos Verum de ${simulados.refeita.transportadora}`}
+                </button>
+              </div>
             </div>
           )}
           <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 16px', margin: '1rem 0', fontSize: '0.84rem', color: '#1d4ed8' }}>
