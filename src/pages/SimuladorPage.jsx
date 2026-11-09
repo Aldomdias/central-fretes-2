@@ -9590,23 +9590,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 </label>
               )}
             </div>
-            <button className="sim-tab" type="button" onClick={exportarSimuladorRealizado} disabled={!resultadoRealizado?.rotas?.length}>
-              Exportar laudo
-            </button>
-            <button className="sim-tab" type="button"
-              onClick={exportarRelatorioTransportadora}
-              disabled={!resultadoRealizado?.ctesAnalisados}
-              title="Relatório sem saving — para enviar à transportadora"
-              style={{ background: '#dbeafe', color: '#1d4ed8', border: '1px solid #93c5fd' }}>
-              📄 Relatório Transportadora
-            </button>
-            <button className="sim-tab" type="button"
-              onClick={exportarRelatorioFornecedorVsRealizado}
-              disabled={!resultadoRealizado?.ctesDetalhes?.length}
-              title="Comparativo tabela × realizado — sem concorrentes, foco no que foi pago vs tabela"
-              style={{ background: '#f3e8ff', color: '#7c3aed', border: '1px solid #c4b5fd' }}>
-              📋 Fornecedor × Realizado
-            </button>
             <button className="sim-tab" type="button"
               onClick={() => exportarLaudoAjusteRotaFaixaTransportador({ incluirSavingGerencial: false })}
               disabled={!resultadoRealizado?.rotasCotacao?.length}
