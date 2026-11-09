@@ -4,6 +4,11 @@
  * GET /api/transgp-auditoria            — cron da Vercel (de hora em hora): ultimos 120 dias de coleta
  * GET /api/transgp-auditoria?dias=400   — janela maior (max. 400, limite da API deles)
  *
+ * Tambem grava as cargas (uma por DIST) no fluxo de lotacao (lotacao_cargas), no lugar da planilha:
+ * DIST que ja existe e atualizada so nos campos que a API traz (tipo de veiculo, placas, frete Cantu,
+ * valor sem ICMS etc. continuam como estao; transportadora so e preenchida se estiver vazia, porque a
+ * alocacao da Operacao manda); DIST nova entra com origem_registro = 'api_transgp'. Nunca apaga.
+ *
  * Fonte: GET https://painel-transgp.vercel.app/api/v1/auditoria/fretes?de=&ate=&pagina=&por_pagina=500
  * (Authorization: Bearer TRANSGP_API_KEY). Uma linha por CT-e de cada DIST, chave = chave do CT-e.
  * Variaveis no Vercel: TRANSGP_API_KEY, SUPABASE_URL (ou VITE_SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY;
@@ -17,6 +22,78 @@ const API_PADRAO = 'https://painel-transgp.vercel.app/api/v1/auditoria/fretes';
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 const digitos = (v) => String(v ?? '').replace(/\D+/g, '');
 const dataIso = (d) => d.toISOString().slice(0, 10);
+
+// "ITAJAÍ/SC" -> { cidade: 'ITAJAÍ', uf: 'SC' }
+function cidadeUf(texto) {
+  const t = String(texto || '').trim();
+  const m = t.match(/^(.*?)[\s]*[/\-][\s]*([A-Za-z]{2})$/);
+  return m ? { cidade: m[1].trim(), uf: m[2].toUpperCase() } : { cidade: t, uf: '' };
+}
+const normDist = (v) => String(v ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toUpperCase();
+
+// Campos do fluxo que a API da TransGP traz (null = a API nao mandou; nao sobrescreve).
+function cargaDaDist(item) {
+  const origem = cidadeUf(item.origem);
+  const destinos = (Array.isArray(item.destinos) ? item.destinos : [item.destinos]).filter(Boolean);
+  const destino = cidadeUf(destinos[0]);
+  const numeros = [...new Set((Array.isArray(item.ctes) ? item.ctes : []).map((c) => digitos(c.numero)).filter(Boolean).map((n) => String(Number(n))))];
+  const ctes = numeros.length ? numeros : String(item.cte_numeros || '').split(/[^0-9]+/).filter(Boolean).map((n) => String(Number(n)));
+  const status = String(item.status_carga || '').trim();
+  return {
+    dist: String(item.dist ?? '').trim().slice(0, 200),
+    operacao: item.operacao ? String(item.operacao).slice(0, 100) : null,
+    transportadora: item.transportadora ? String(item.transportadora).slice(0, 200) : null,
+    origem: origem.cidade ? origem.cidade.slice(0, 200) : null,
+    uf_origem: origem.uf || null,
+    destino: destino.cidade ? destino.cidade.slice(0, 200) : null,
+    uf_destino: destino.uf || null,
+    status: status ? status.slice(0, 100) : null,
+    coleta_planejada: item.coleta_planejada || null,
+    frete_transp: num(item.frete?.contratado),
+    pedagio: num(item.frete?.pedagio),
+    cte: ctes.length ? ctes.join(';').slice(0, 500) : null,
+    finalizado: /FINALIZ/i.test(status) ? true : null,
+  };
+}
+
+async function gravarCargasNoFluxo(db, itens) {
+  const porDist = new Map();
+  itens.forEach((item) => { const c = cargaDaDist(item); if (c.dist) porDist.set(normDist(c.dist), c); });
+  const dists = [...new Set([...porDist.values()].map((c) => c.dist))];
+  const existentes = new Map();
+  for (let i = 0; i < dists.length; i += 200) {
+    const { data, error } = await db.from('lotacao_cargas').select('id,dist,transportadora').in('dist', dists.slice(i, i + 200));
+    if (error) throw new Error(`Fluxo (ler): ${error.message}`);
+    (data || []).forEach((row) => { const k = normDist(row.dist); if (!existentes.has(k)) existentes.set(k, row); });
+  }
+  let atualizadas = 0; let inseridas = 0; const falhas = [];
+  const novas = [];
+  const atualizacoes = [];
+  porDist.forEach((carga, k) => {
+    const atual = existentes.get(k);
+    const campos = Object.fromEntries(Object.entries(carga).filter(([, v]) => v !== null && v !== ''));
+    if (!atual) { novas.push({ ...campos, arquivo_origem: 'API TransGP', origem_registro: 'api_transgp', importado_em: new Date().toISOString() }); return; }
+    delete campos.dist;
+    if (String(atual.transportadora || '').trim()) delete campos.transportadora; // alocacao da Operacao manda
+    atualizacoes.push({ id: atual.id, campos });
+  });
+  for (let i = 0; i < atualizacoes.length; i += 20) {
+    await Promise.all(atualizacoes.slice(i, i + 20).map(async ({ id, campos }) => {
+      const { error } = await db.from('lotacao_cargas').update(campos).eq('id', id);
+      if (error) falhas.push(error.message); else atualizadas += 1;
+    }));
+  }
+  for (let i = 0; i < novas.length; i += 500) {
+    let lote = novas.slice(i, i + 500);
+    let { error } = await db.from('lotacao_cargas').insert(lote);
+    if (error && /origem_registro/i.test(error.message)) {
+      lote = lote.map(({ origem_registro, ...resto }) => resto); // migration da Fase 1 ainda nao aplicada
+      ({ error } = await db.from('lotacao_cargas').insert(lote));
+    }
+    if (error) falhas.push(error.message); else inseridas += lote.length;
+  }
+  return { atualizadas, inseridas, falhas: falhas.slice(0, 5) };
+}
 
 function linhasDaDist(item, agora) {
   const ctes = Array.isArray(item.ctes) ? item.ctes : [];
@@ -68,6 +145,7 @@ export default async function handler(req, res) {
   const agora = new Date().toISOString();
   let dists = 0;
   let linhas = 0;
+  const todasDists = [];
   try {
     for (let pagina = 1; pagina <= 200; pagina += 1) {
       const qs = new URLSearchParams({ de: dataIso(de), ate: dataIso(ate), pagina: String(pagina), por_pagina: '500' });
@@ -76,6 +154,7 @@ export default async function handler(req, res) {
       if (!resp.ok || corpo.ok === false) throw new Error(`API TransGP ${resp.status}: ${corpo.erro || corpo.error || corpo.message || 'resposta invalida'}`);
       const dados = Array.isArray(corpo.dados) ? corpo.dados : [];
       dists += dados.length;
+      todasDists.push(...dados);
       const porChave = new Map();
       dados.flatMap((item) => linhasDaDist(item, agora)).forEach((l) => porChave.set(l.chave_cte, l));
       const lote = [...porChave.values()];
@@ -86,8 +165,10 @@ export default async function handler(req, res) {
       linhas += lote.length;
       if (!dados.length || pagina >= (Number(corpo.paginas) || 1)) break;
     }
-    await db.from('transgp_auditoria_sync_log').insert({ periodo_de: dataIso(de), periodo_ate: dataIso(ate), dists, ctes: linhas, ok: true });
-    return res.status(200).json({ ok: true, de: dataIso(de), ate: dataIso(ate), dists, ctes: linhas });
+    const fluxo = await gravarCargasNoFluxo(db, todasDists);
+    const avisoFluxo = fluxo.falhas.length ? `Fluxo: ${fluxo.falhas.length} falha(s): ${fluxo.falhas.join(' | ')}`.slice(0, 500) : null;
+    await db.from('transgp_auditoria_sync_log').insert({ periodo_de: dataIso(de), periodo_ate: dataIso(ate), dists, ctes: linhas, ok: !avisoFluxo, erro: avisoFluxo });
+    return res.status(200).json({ ok: true, de: dataIso(de), ate: dataIso(ate), dists, ctes: linhas, fluxo });
   } catch (error) {
     await db.from('transgp_auditoria_sync_log').insert({ periodo_de: dataIso(de), periodo_ate: dataIso(ate), dists, ctes: linhas, ok: false, erro: String(error.message || error).slice(0, 500) });
     return res.status(502).json({ ok: false, erro: error.message, dists, ctes: linhas });
