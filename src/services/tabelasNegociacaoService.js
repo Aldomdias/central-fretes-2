@@ -2583,6 +2583,10 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     tipoNegociacao: impacto.tipoNegociacao,
     filtros: resultado.filtros || {},
     canal: canalAnalise,
+    // Cópia integral da simulação (tabela simulacao_realizado_mensal): permite
+    // reabrir a análise no Simulador com CT-es, rotas e laudos como foi gerada.
+    analise_completa_id: resultado.analiseCompletaId || '',
+    analise_completa_nome: resultado.analiseCompletaNome || '',
 
     ctesAnalisados: resultado.ctesAnalisados || 0,
     ctesSimulados: resultado.ctesSimulados || 0,
@@ -3696,4 +3700,37 @@ export async function marcarAprovadaNegociador(id, dados = {}) {
     status_aprovacao: 'APROVADA_NEGOCIADOR',
     ...dados,
   });
+}
+
+// Localiza uma simulação salva na negociação para reabrir no Simulador.
+// registroId vazio = simulação mais recente salva na negociação.
+export async function carregarSimulacaoSalvaDaNegociacao(negociacaoId, registroId = '') {
+  const supabase = supabaseOrThrow();
+  if (!negociacaoId) throw new Error('Negociação não informada para abrir a simulação.');
+
+  const { data: tabela, error } = await supabase
+    .from('tabelas_negociacao')
+    .select('*')
+    .eq('id', negociacaoId)
+    .single();
+  if (error) throw new Error(error.message || 'Erro ao buscar a negociação.');
+
+  const resumo = getResumoSimulacaoSeguro(tabela);
+  const simulacoes = getHistoricoRodadas(tabela)
+    .concat(Object.values(resumo.simulacoes_por_canal || {}))
+    .filter((item) => item && String(item.tipo_registro || 'SIMULACAO').toUpperCase() === 'SIMULACAO' && item.resumo);
+
+  let registro = registroId ? simulacoes.find((item) => item.id === registroId) : null;
+  if (!registro && !registroId) {
+    registro = simulacoes
+      .slice()
+      .sort((a, b) => String(b.criado_em || '').localeCompare(String(a.criado_em || '')))[0] || null;
+  }
+  if (!registro && !registroId && (resumo.ctesAnalisados || resumo.salvo_em)) {
+    // Negociações antigas guardavam apenas o resumo na raiz.
+    registro = { id: '', rodada: resumo.rodada || resumo.rodada_atual || 1, canal: resumo.canal || '', criado_em: resumo.salvo_em || '', resumo };
+  }
+  if (!registro) throw new Error('Não encontrei essa simulação salva na negociação. Ela pode ter sido substituída por uma simulação mais nova.');
+
+  return { tabela, registro };
 }
