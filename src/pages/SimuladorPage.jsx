@@ -9625,17 +9625,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
               style={{ background: '#fff7ed', color: '#c2410c', border: '1px solid #fdba74' }}>
               Gerar laudo projetado + tabela
             </button>
-            <button className="sim-tab" type="button" onClick={salvarLaudosVisuaisNegociacao} disabled={!negociacaoSelecionadaRealizado?.id || salvandoLaudosVisuais}>
-              {salvandoLaudosVisuais ? 'Salvando laudos...' : 'Salvar laudos na negociação'}
-            </button>
             <button className="sim-tab" type="button"
               onClick={salvarResultadoNegociacaoRealizado}
               disabled={!resultadoRealizado?.ctesAnalisados || !resultadoRealizado?.negociacaoId || salvandoResultadoNegociacao}
               title={resultadoRealizado?.negociacaoLabel
-                ? `Salva o resultado em ${resultadoRealizado.negociacaoLabel}`
+                ? `Salva tudo em ${resultadoRealizado.negociacaoLabel}: resultado, laudos e a simulação completa (CT-es e rotas)`
                 : 'O resultado precisa ser gerado a partir de uma tabela em negociação'}
               style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d' }}>
-              {salvandoResultadoNegociacao ? 'Salvando...' : '💾 Salvar resultado na negociação'}
+              {salvandoResultadoNegociacao ? 'Salvando...' : '💾 Salvar na negociação'}
             </button>
             {!resultadoRealizado?.negociacaoId ? (
               <button className="sim-tab" type="button"
