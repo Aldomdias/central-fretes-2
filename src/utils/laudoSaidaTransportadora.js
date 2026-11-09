@@ -216,35 +216,23 @@ export function gerarHtmlLaudoSaida(resultado, contexto = {}) {
   const titulo = `Laudo de Saída de Transportadora — ${c.transportadora || ''}`;
   const emitido = c.geradoEm ? new Date(c.geradoEm) : new Date();
 
-  const linhaCenario = (nome, custo, obs) => `<tr><td><strong>${esc(nome)}</strong></td><td class="r">${moeda(custo)}</td><td class="r ${corDif(custo - t.custoAtual)}">${sinal(custo - t.custoAtual)}</td><td class="r ${corDif(custo - t.custoReajuste)}">${sinal(custo - t.custoReajuste)}</td><td>${esc(obs)}</td></tr>`;
-
-  const tabCriticas = L.criticas.map((r) => `<tr><td>${esc(r.origem)}</td><td>${esc(r.destino)}</td><td class="c">${inteiro(r.ctes)}</td><td class="c">${inteiro(r.ctesDescobertos)}</td><td class="r">${moeda(r.custoAtual)}</td><td class="r">${moeda(r.valorDescoberto)}</td><td>${r.qtdSubstitutos ? esc(r.substitutos.map((s) => s.transportadora).join(', ')) : '<span class="neg">nenhuma</span>'}</td><td>${esc(r.decisao)}</td></tr>`).join('');
-
-  const tabPrazo = L.impactoPrazo.map((r) => `<tr><td>${esc(r.origem)}</td><td>${esc(r.destino)}</td><td class="c">${inteiro(r.ctes)}</td><td class="c">${dias(r.prazoAtual)}</td><td class="c">${dias(r.prazoSub)}</td><td class="c neg"><strong>${diasDelta(r.deltaPrazo)}</strong></td><td>${esc(r.substitutoPrincipal || '—')}</td><td>${r.alternativaSemPiora ? `${esc(r.alternativaSemPiora.transportadora)} · ${dias(r.alternativaSemPiora.prazoMedio)} · ${moeda(r.alternativaSemPiora.custoMedio)}/CT-e` : '<span class="muted">não há</span>'}</td><td class="r ${corDif(r.diferencaVsReajuste)}">${sinal(r.diferencaVsReajuste)}</td></tr>`).join('');
-
-  const tabUnica = L.unicaOpcao.map((r) => `<tr><td>${esc(r.origem)}</td><td>${esc(r.destino)}</td><td class="c">${inteiro(r.ctes)}</td><td class="r">${moeda(r.custoAtual)}</td><td>${esc(r.substitutos[0]?.transportadora || '—')}</td><td class="r">${moeda(r.custoSubstituta)}</td><td class="c">${dias(r.prazoAtual)} → ${dias(r.prazoSub)}</td><td>${esc(r.decisao)}</td></tr>`).join('');
-
-  const tabSubs = L.substitutas.map((s, i) => `<tr><td class="c">${i + 1}</td><td><strong>${esc(s.transportadora)}</strong></td><td class="c">${inteiro(s.ctesAssumidos)}</td><td class="c">${pct(s.pctVolume)}</td><td class="c">${inteiro(s.rotasAssumidas)}</td><td class="c">${inteiro(s.rotasOpcao)}</td><td class="c">${s.rotasUnica ? `<span class="aten-t">${inteiro(s.rotasUnica)}</span>` : '0'}</td><td class="r">${moeda(s.pagoAtualNosCtes)}</td><td class="r">${moeda(s.valorAssumido)}</td><td class="r ${corDif(s.variacao)}">${sinal(s.variacao)} (${pct(s.variacaoPct)})</td><td class="c">${dias(s.prazoAtual)} → ${dias(s.prazoSub)}</td></tr>`).join('');
-
-  const tabRotas = L.rotas.map((r) => `<tr class="lv-${COR_NIVEL[r.nivel]}"><td>${badge(r.nivel)}</td><td>${esc(r.origem)}</td><td>${esc(r.destino)}</td><td class="c">${inteiro(r.ctes)}</td><td class="r">${moeda(r.custoAtual)}</td><td class="r">${moeda(r.custoReajuste)}</td><td class="r">${moeda(r.custoSubstituta)}</td><td class="r ${corDif(r.diferenca)}">${sinal(r.diferenca)}</td><td class="c">${dias(r.prazoAtual)} → ${dias(r.prazoSub)}</td><td>${esc(r.substitutoPrincipal || '—')}</td><td class="c">${inteiro(r.qtdSubstitutos)}</td><td><strong>${esc(r.decisao)}</strong></td><td class="small">${esc(r.alertas.join(' · ') || '—')}</td></tr>`).join('');
-
-  const tabOpcoes = L.rotas.filter((r) => r.qtdSubstitutos).map((r) => {
-    const mediaAtual = r.ctes ? r.custoAtual / r.ctes : 0;
-    return r.substitutos.map((s, i) => `<tr${i === 0 ? ' class="grp"' : ''}><td>${i === 0 ? `${esc(r.origem)} → ${esc(r.destino)}` : ''}</td><td>${esc(s.transportadora)}${s.transportadora === r.substitutoPrincipal ? ' <span class="star">★ principal</span>' : ''}</td><td class="c ${s.ctesCobertos >= r.ctes ? 'pos' : 'aten-t'}">${inteiro(s.ctesCobertos)}/${inteiro(r.ctes)}</td><td class="r">${moeda(mediaAtual)}</td><td class="r">${moeda(s.custoMedio)}</td><td class="r ${corDif(s.custoMedio - mediaAtual)}">${pct(mediaAtual ? (s.custoMedio - mediaAtual) / mediaAtual * 100 : 0)}</td><td class="c">${dias(r.prazoAtual)}</td><td class="c">${dias(s.prazoMedio)}</td></tr>`).join('');
-  }).join('');
-
-  const tabNivel = L.porNivel.map((n) => `<tr><td>${badge(n.nivel)}</td><td class="c">${inteiro(n.rotas)}</td><td class="c">${inteiro(n.ctes)}</td><td class="r">${moeda(n.custo)}</td><td class="c">${pct(n.pctCusto)}</td></tr>`).join('');
-  const tabDecisao = L.porDecisao.map((d) => `<tr><td><strong>${esc(d.decisao)}</strong></td><td class="c">${inteiro(d.rotas)}</td><td class="c">${inteiro(d.ctes)}</td><td class="r">${moeda(d.custoAtual)}</td><td class="r">${moeda(d.custoCenario)}</td></tr>`).join('');
-
+  // Laudo enxuto: resposta + números principais, só as rotas que pedem
+  // atenção e quem assumiria o volume. O detalhamento completo fica no Excel.
+  const MAX_ATENCAO = 25;
+  const MAX_SUBS = 10;
+  const atencao = L.rotas
+    .filter((r) => r.nivel !== NIVEL.OK)
+    .sort((a, b) => ((a.nivel === NIVEL.CRITICA ? 0 : 1) - (b.nivel === NIVEL.CRITICA ? 0 : 1)) || (b.custoAtual - a.custoAtual));
+  const tabAtencao = atencao.slice(0, MAX_ATENCAO).map((r) => `<tr><td>${badge(r.nivel)}</td><td>${esc(r.origem)} → ${esc(r.destino)}</td><td class="c">${inteiro(r.ctes)}</td><td class="r">${moeda(r.custoAtual)}</td><td class="r">${r.qtdSubstitutos ? moeda(r.custoSubstituta) : '—'}</td><td>${esc(r.substitutoPrincipal || '—')}</td><td class="small">${esc(r.alertas.join(' · '))}</td></tr>`).join('');
+  const subsComVolume = L.substitutas.filter((x) => x.ctesAssumidos > 0);
+  const tabSubs = subsComVolume.slice(0, MAX_SUBS).map((s) => `<tr><td><strong>${esc(s.transportadora)}</strong></td><td class="c">${inteiro(s.ctesAssumidos)}</td><td class="c">${pct(s.pctVolume)}</td><td class="r">${moeda(s.pagoAtualNosCtes)}</td><td class="r">${moeda(s.valorAssumido)}</td><td class="r ${corDif(s.variacao)}">${sinal(s.variacao)}</td></tr>`).join('');
+  const pontos = L.pontos.slice(3); // os 3 primeiros repetem os cartões
   const vazio = (cols, txt) => `<tr><td colspan="${cols}" class="muted">${txt}</td></tr>`;
-  const filtros = [
-    ['Transportadora avaliada', c.transportadora],
-    ['Nomes unificados no CT-e', (c.variantes || []).join(' · ')],
-    ['Período', c.periodo],
-    ['Canal', c.canal || 'Todos'],
-    ['Reajuste proposto', pct(c.pctReajuste)],
-    ['Substitutas excluídas', (c.exclusoes || []).join(', ') || 'nenhuma'],
-  ].filter(([, v]) => v);
+  const resumoFiltros = [
+    c.filtroRotas ? `Filtro: ${c.filtroRotas}` : '',
+    c.variantes?.length > 1 ? `Nomes no CT-e: ${c.variantes.join(' · ')}` : '',
+    c.exclusoes?.length ? `Substitutas excluídas: ${c.exclusoes.join(', ')}` : '',
+  ].filter(Boolean).join(' • ');
 
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${esc(titulo)}</title><style>
 :root{--navy:#071b49;--blue:#1d4ed8;--red:#b91c1c;--amber:#b45309;--green:#047857;--muted:#64748b;--line:#dbe3ef;--soft:#f5f8fc}
@@ -274,65 +262,31 @@ tr.grp td{border-top:2px solid var(--line)}
 </style></head><body>
 <button class="print" onclick="window.print()">Imprimir / Salvar PDF</button><button id="baixarHtml" class="print" style="display:none;top:62px;background:var(--navy)">Baixar HTML</button>
 <main class="page">
-<nav class="nav"><a href="#resumo">Resumo</a><a href="#parecer">Parecer</a><a href="#cenarios">Cenários</a><a href="#risco">Mapa de risco</a><a href="#criticas">Rotas críticas</a><a href="#prazo">Impacto de prazo</a><a href="#unica">Substituta única</a><a href="#substitutas">Substitutas</a><a href="#rotas">Todas as rotas</a><a href="#opcoes">Opções por rota</a><a href="#metodologia">Metodologia</a></nav>
-<div class="header" id="resumo"><div><div class="eyebrow">Central Fretes • Parecer de continuidade de transportadora</div><h1>${esc(titulo)}</h1><div>${esc(c.periodo || 'Período não informado')} • Canal: ${esc(c.canal || 'Todos')} • Reajuste proposto: ${pct(c.pctReajuste)}</div></div>
+<div class="header" id="resumo"><div><div class="eyebrow">Central Fretes • Saída de transportadora</div><h1>${esc(titulo)}</h1><div>${esc(c.periodo || 'Período não informado')} • Canal: ${esc(c.canal || 'Todos')} • Reajuste proposto: ${pct(c.pctReajuste)}</div>${resumoFiltros ? `<div class="small" style="margin-top:4px">${esc(resumoFiltros)}</div>` : ''}</div>
 <div class="meta">Emitido em ${esc(emitido.toLocaleString('pt-BR'))}<br>${inteiro(t.ctes)} CT-es • ${inteiro(t.rotas)} rotas${c.geradoPor ? `<br>Responsável: ${esc(c.geradoPor)}` : ''}</div></div>
 
+<div class="parecer ${L.tom}"><div class="rec">${esc(L.recomendacao)}</div>${pontos.length ? `<ul>${pontos.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}</div>
+
 <div class="cards">
-<div class="card"><span>Custo atual (pago)</span><strong>${moeda(t.custoAtual)}</strong><small>${inteiro(t.ctes)} CT-es no recorte</small></div>
-<div class="card danger"><span>Custo c/ reajuste (+${pct(c.pctReajuste)})</span><strong>${moeda(t.custoReajuste)}</strong><small>${sinal(t.custoReajuste - t.custoAtual)} vs. atual</small></div>
-<div class="card ${t.economiaSaidaTotal >= 0 ? 'good' : 'danger'}"><span>Custo saída total (substitutas)</span><strong>${moeda(t.custoSaidaTotal)}</strong><small>${t.economiaSaidaTotal >= 0 ? 'economia' : 'custo extra'} de ${moeda(Math.abs(t.economiaSaidaTotal))} vs. reajuste</small></div>
-<div class="card ${t.economiaHibrido >= 0 ? 'good' : 'danger'}"><span>Custo cenário híbrido</span><strong>${moeda(t.custoHibrido)}</strong><small>${t.economiaHibrido >= 0 ? 'economia' : 'custo extra'} de ${moeda(Math.abs(t.economiaHibrido))} vs. reajuste</small></div>
-<div class="card ${t.rotasCriticas ? 'danger' : 'good'}"><span>Rotas críticas (sem cobertura)</span><strong>${inteiro(t.rotasCriticas)}</strong><small>${moeda(t.valorDescoberto)} · ${pct(t.pctDescoberto)} do custo</small></div>
-<div class="card ${t.rotasPrazo ? 'warn' : 'good'}"><span>Rotas com piora de prazo</span><strong>${inteiro(t.rotasPrazo)}</strong><small>${inteiro(t.ctesPrazoPiora)} CT-es afetados</small></div>
-<div class="card ${t.rotasUnica ? 'warn' : ''}"><span>Rotas com substituta única</span><strong>${inteiro(t.rotasUnica)}</strong><small>dependência de 1 transportadora</small></div>
-<div class="card"><span>Prazo médio (atual → subst.)</span><strong>${dias(t.prazoAtual)} → ${dias(t.prazoSub)}</strong><small>prazo de tabela</small></div>
+<div class="card"><span>Hoje (valor pago)</span><strong>${moeda(t.custoAtual)}</strong><small>${inteiro(t.ctes)} CT-es</small></div>
+<div class="card danger"><span>Aceitando o reajuste (+${pct(c.pctReajuste)})</span><strong>${moeda(t.custoReajuste)}</strong><small>${sinal(t.custoReajuste - t.custoAtual)} vs. hoje</small></div>
+<div class="card ${t.economiaSaidaTotal >= 0 ? 'good' : 'danger'}"><span>Trocando tudo pelas substitutas</span><strong>${moeda(t.custoSaidaTotal)}</strong><small>${t.economiaSaidaTotal >= 0 ? 'economia' : 'custo extra'} de ${moeda(Math.abs(t.economiaSaidaTotal))} vs. reajuste</small></div>
+<div class="card ${t.economiaHibrido >= 0 ? 'good' : 'danger'}"><span>Trocando só onde compensa</span><strong>${moeda(t.custoHibrido)}</strong><small>${inteiro(t.rotasMigrar)} rota(s) trocam · ${inteiro(t.rotasManter)} ficam</small></div>
 </div>
 
-<h2 id="parecer">Parecer e recomendação</h2>
-<div class="parecer ${L.tom}"><div class="rec">${esc(L.recomendacao)}</div><ul>${L.pontos.map((p) => `<li>${esc(p)}</li>`).join('')}</ul></div>
+<h2 id="atencao">Rotas que pedem atenção (${inteiro(atencao.length)} de ${inteiro(t.rotas)})</h2>
+<table><thead><tr><th>Nível</th><th>Rota</th><th class="c">CT-es</th><th class="r">Pago hoje</th><th class="r">Com substituta</th><th>Substituta principal</th><th>Motivo</th></tr></thead><tbody>${tabAtencao || vazio(7, 'Nenhuma — todas as rotas têm substituta sem ressalvas.')}</tbody></table>
+${atencao.length > MAX_ATENCAO ? `<p class="small">Mostrando as ${MAX_ATENCAO} de maior custo. A lista completa está no Excel (aba Rotas).</p>` : ''}
 
-<h2 id="cenarios">Cenários comparados</h2>
-<table><thead><tr><th>Cenário</th><th class="r">Custo no recorte</th><th class="r">vs. custo atual</th><th class="r">vs. aceitar reajuste</th><th>Observação</th></tr></thead><tbody>
-${linhaCenario('Manter com reajuste', t.custoReajuste, `Todas as rotas seguem com ${c.transportadora || 'a transportadora'} reajustada em ${pct(c.pctReajuste)}.`)}
-${linhaCenario('Saída total', t.custoSaidaTotal, t.valorDescoberto > TOL ? `${moeda(t.valorDescoberto)} sem substituta estão no valor pago atual — precisam de cotação spot / nova tabela.` : 'Todas as rotas têm substituta.')}
-${linhaCenario('Híbrido (recomendado p/ decisão por rota)', t.custoHibrido, `Migra ${inteiro(t.rotasMigrar)} rota(s) onde a substituta é mais barata que o reajuste; mantém ${inteiro(t.rotasManter)} com a atual (reajustada).`)}
-</tbody></table>
+<h2 id="substitutas">Quem assumiria o volume</h2>
+<table><thead><tr><th>Transportadora</th><th class="c">CT-es</th><th class="c">% do volume</th><th class="r">Pago hoje nesses CT-es</th><th class="r">Custo pela substituta</th><th class="r">Diferença</th></tr></thead><tbody>${tabSubs || vazio(6, 'Nenhuma substituta encontrada.')}</tbody></table>
+${subsComVolume.length > MAX_SUBS ? `<p class="small">Mais ${inteiro(subsComVolume.length - MAX_SUBS)} transportadora(s) com volume menor no Excel (aba Substitutas).</p>` : ''}
 
-<div class="grid2" id="risco"><div><h2>Mapa de risco das rotas</h2><table><thead><tr><th>Nível</th><th class="c">Rotas</th><th class="c">CT-es</th><th class="r">Custo atual</th><th class="c">% do custo</th></tr></thead><tbody>${tabNivel}</tbody></table>
-<p class="small"><strong>Crítica:</strong> sem substituta ou com CT-es sem cobertura. <strong>Atenção:</strong> substituta única, piora de prazo ou substituta mais cara que o reajuste. <strong>Sem preocupação:</strong> há alternativa sem nenhum desses pontos.</p></div>
-<div><h2>Decisão sugerida por rota</h2><table><thead><tr><th>Decisão</th><th class="c">Rotas</th><th class="c">CT-es</th><th class="r">Custo atual</th><th class="r">Custo no cenário</th></tr></thead><tbody>${tabDecisao}</tbody></table></div></div>
-
-<h2 id="criticas">Rotas críticas — precisam de atenção antes de qualquer saída (${inteiro(L.criticas.length)})</h2>
-<table><thead><tr><th>Origem</th><th>Destino</th><th class="c">CT-es</th><th class="c">Sem cobertura</th><th class="r">Custo atual</th><th class="r">Valor descoberto</th><th>Substitutas existentes</th><th>Decisão sugerida</th></tr></thead><tbody>${tabCriticas || vazio(8, 'Nenhuma rota crítica — todas as rotas têm cobertura completa.')}</tbody></table>
-
-<h2 id="prazo">Linhas com impacto de prazo (${inteiro(L.impactoPrazo.length)})</h2>
-<table><thead><tr><th>Origem</th><th>Destino</th><th class="c">CT-es</th><th class="c">Prazo atual</th><th class="c">Prazo substituta</th><th class="c">Variação</th><th>Substituta principal</th><th>Alternativa sem piora (prazo · custo médio)</th><th class="r">Migrar vs. reajuste</th></tr></thead><tbody>${tabPrazo || vazio(9, 'Nenhuma rota piora o prazo com a substituta principal.')}</tbody></table>
-
-<h2 id="unica">Rotas com substituta única (${inteiro(L.unicaOpcao.length)})</h2>
-<table><thead><tr><th>Origem</th><th>Destino</th><th class="c">CT-es</th><th class="r">Custo atual</th><th>Única substituta</th><th class="r">Custo c/ substituta</th><th class="c">Prazo (at. → sub.)</th><th>Decisão sugerida</th></tr></thead><tbody>${tabUnica || vazio(8, 'Nenhuma rota depende de uma única substituta.')}</tbody></table>
-
-<h2 id="substitutas">Transportadoras substitutas (${inteiro(L.substitutas.length)})</h2>
-<table><thead><tr><th class="c">#</th><th>Transportadora</th><th class="c">CT-es assumidos</th><th class="c">% volume</th><th class="c">Rotas assumidas</th><th class="c">Rotas em que é opção</th><th class="c">Única opção em</th><th class="r">Pago hoje nesses CT-es</th><th class="r">Custo pela substituta</th><th class="r">Variação</th><th class="c">Prazo (at. → sub.)</th></tr></thead><tbody>${tabSubs || vazio(11, 'Nenhuma substituta encontrada.')}</tbody></table>
-<p class="small">“Assumidos” = CT-es em que ela é a opção mais barata. “Rotas em que é opção” = rotas em que tem tabela, mesmo não sendo a mais barata.</p>
-
-<h2 id="rotas">Detalhamento completo por rota (${inteiro(L.rotas.length)})</h2>
-<table><thead><tr><th>Nível</th><th>Origem</th><th>Destino</th><th class="c">CT-es</th><th class="r">Custo atual</th><th class="r">C/ reajuste</th><th class="r">C/ substituta</th><th class="r">Diferença</th><th class="c">Prazo (at. → sub.)</th><th>Substituta principal</th><th class="c">Opções</th><th>Decisão</th><th>Pontos de atenção</th></tr></thead><tbody>${tabRotas || vazio(13, 'Sem rotas.')}</tbody></table>
-
-<h2 id="opcoes">Opções de substituta por rota</h2>
-<table><thead><tr><th>Rota</th><th>Transportadora</th><th class="c">Cobertura</th><th class="r">Custo médio atual/CT-e</th><th class="r">Custo médio subst./CT-e</th><th class="r">Variação</th><th class="c">Prazo atual</th><th class="c">Prazo subst.</th></tr></thead><tbody>${tabOpcoes || vazio(8, 'Sem opções de substituta.')}</tbody></table>
-
-<h2 id="metodologia">Parâmetros, metodologia e ressalvas</h2>
-<table class="filtros"><tbody>${filtros.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</tbody></table>
-<div class="note">
-<p><strong>Base:</strong> CT-es realizados da transportadora no recorte. Nomes diferentes da mesma empresa no CT-e (razão social, filiais, nome fantasia) são unificados pela raiz do CNPJ e pelos vínculos de transportadora. Custo atual = frete efetivamente pago.</p>
-<p><strong>Substitutas:</strong> cada CT-e é recalculado nas tabelas de frete cadastradas das demais transportadoras que atendem a mesma origem e destino (IBGE), com o mesmo peso/valor de NF. A substituta de cada CT-e é a de menor custo; a principal da rota é a que mais vezes foi a melhor.</p>
-<p><strong>Cenários:</strong> “Saída total” usa a melhor substituta em cada CT-e e mantém o valor pago atual onde não há cobertura. “Híbrido” compara, rota a rota, migrar (CT-es cobertos na substituta + sem cobertura com a atual reajustada) contra manter tudo com o reajuste, e fica com o menor.</p>
-<p><strong>Prazo:</strong> prazo de tabela (dias) da rota, da atual e da substituta — não é o lead time realizado.</p>
-<p><strong>Ressalvas:</strong> valores de substituta são preço de tabela; capacidade, SLA, aceite de volume e qualidade de quem assumiria são avaliação da operação de Transporte. ${t.semIbge ? `${inteiro(t.semIbge)} CT-e(s) sem IBGE resolvido entraram só no custo atual.` : ''}</p>
+<div class="note" style="margin-top:18px">
+<p><strong>Como ler:</strong> cada CT-e que a transportadora levou no período foi recalculado na tabela mais barata das outras transportadoras da mesma rota, com o mesmo peso e valor de NF. Onde não há substituta, fica o valor pago hoje. <strong>Crítica</strong> = rota sem substituta (precisa de cotação). <strong>Atenção</strong> = substituta única, impacto de prazo ou substituta mais cara que o reajuste.</p>
+<p><strong>Ressalvas:</strong> valores das substitutas são preço de tabela; capacidade e qualidade de quem assumiria devem ser validadas pela operação. Prazo = prazo de tabela.${t.semIbge ? ` ${inteiro(t.semIbge)} CT-e(s) sem IBGE entraram só no custo de hoje.` : ''} Detalhe por rota, opções e CT-es: Excel.</p>
 </div>
 <div class="assin"><div>Elaborado por (Fretes)</div><div>Transporte</div><div>Aprovação</div></div>
-<div class="footer">Documento gerado pela Central Fretes — Simular Saída de Transportadora. Resultado sujeito à qualidade da base de CT-es, do IBGE e à vigência das tabelas cadastradas.</div>
 </main></body></html>`;
 }
 
@@ -376,6 +330,7 @@ export function montarAbasExcelLaudoSaida(resultado, contexto = {}) {
       ['Nomes unificados no CT-e', (c.variantes || []).join(' · ')],
       ['Período', c.periodo || ''], ['Canal', c.canal || 'Todos'], ['Reajuste proposto', pct(c.pctReajuste)],
       ['Substitutas excluídas', (c.exclusoes || []).join(', ') || 'nenhuma'],
+      ['Filtro de origem/destino', c.filtroRotas || 'nenhum'],
       ['RECOMENDAÇÃO', L.recomendacao],
       ...L.pontos.map((p, i) => [`Ponto ${i + 1}`, p]),
       ['Rotas', inteiro(t.rotas)], ['CT-es', inteiro(t.ctes)],

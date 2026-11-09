@@ -4,7 +4,7 @@ import BaseCtesStatus from '../components/BaseCtesStatus';
 import { buscarBaseSimulacaoPorRotasDb, carregarCadastroCnpjTransportadorasDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
 import { categoriaCanalRealizado, montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
-import { aplicarPoliticaBaseCte } from '../services/cteBasePolicy';
+import { aplicarPoliticaBaseCte, isCpsLogCte, isEbazarCte } from '../services/cteBasePolicy';
 import { intervaloEmissao, janelasEmissao, pesoComoSimuladorRealizado } from '../utils/saidaTransportadoraRecorte';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { aplicarVinculoTransportadora as aplicarVinculoPuro } from '../services/vinculosTransportadorasPuro';
@@ -204,6 +204,16 @@ const LIMITES_PADRAO = '6000';
 // tomadores aceitos, sem EBAZAR, sem CPS LOG e sem CP COMERCIAL.
 const OPCOES_POLITICA_BASE = { ocultarEbazar: true, incluirCpsLog: false, incluirCpComercial: false, incluirTodosTomadores: false };
 
+// Segunda barreira, como no Simulador do realizado: depois do vínculo/unificação
+// o nome pode virar CPS LOG (ou EBAZAR) — esses saem da base.
+function nomeExcluidoDaBase(nome) {
+  const row = { transportadora: nome };
+  return isCpsLogCte(row) || isEbazarCte(row);
+}
+function aplicarSegundaBarreira(rows, aplicarVinculo) {
+  return rows.filter((r) => !nomeExcluidoDaBase(aplicarVinculo(String(r.transportadora || '').trim())));
+}
+
 // Busca paginada em realizado_local_ctes por janelas de data de emissão.
 // `nomes`: quando informado, só os CT-es com esses nomes de transportadora
 // (exatamente como gravados no banco).
@@ -286,9 +296,79 @@ function funcaoResumoAusente(error) {
   return /PGRST202|42883|saida_transportadora_resumo|could not find the function/i.test(txt);
 }
 
+// Lista de transportadoras com busca por nome e ordenação (valor, CT-es, A-Z).
+function SeletorTransportadora({ grupos, totais, valor, onChange }) {
+  const [busca, setBusca] = useState('');
+  const [ordem, setOrdem] = useState('valor');
+  const linhas = useMemo(() => {
+    const termo = normCmp(busca);
+    const lista = grupos
+      .filter((g) => !termo || normCmp(g.nome).includes(termo) || g.variantes.some((v) => normCmp(v).includes(termo)))
+      .map((g) => ({ ...g, total: totais?.get(g.nome) || { ctes: g.ctes || 0, valor: 0 } }));
+    if (ordem === 'valor') lista.sort((a, b) => (b.total.valor - a.total.valor) || a.nome.localeCompare(b.nome, 'pt-BR'));
+    else if (ordem === 'ctes') lista.sort((a, b) => (b.total.ctes - a.total.ctes) || a.nome.localeCompare(b.nome, 'pt-BR'));
+    else lista.sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+    return lista;
+  }, [grupos, totais, busca, ordem]);
+  const thS = { textAlign: 'left', padding: '6px 10px', fontSize: '0.72rem', color: '#64748b', borderBottom: '1px solid #e2e8f0', position: 'sticky', top: 0, background: '#f8fafc' };
+  const tdS = { padding: '6px 10px', fontSize: '0.82rem', borderBottom: '1px solid #f1f5f9' };
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
+        <input
+          type="search"
+          placeholder="Buscar transportadora (nome ou nome no CT-e)..."
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          style={{ flex: '1 1 280px', minWidth: 220 }}
+        />
+        <select value={ordem} onChange={(e) => setOrdem(e.target.value)} style={{ width: 'auto' }}>
+          <option value="valor">Maior valor pago</option>
+          <option value="ctes">Mais CT-es</option>
+          <option value="nome">Nome (A-Z)</option>
+        </select>
+        <span style={{ fontSize: '0.75rem', color: '#64748b' }}>{fmtN(linhas.length)} de {fmtN(grupos.length)}</span>
+      </div>
+      <div style={{ maxHeight: 300, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th style={thS}>Transportadora</th>
+              <th style={{ ...thS, textAlign: 'right' }}>CT-es</th>
+              <th style={{ ...thS, textAlign: 'right' }}>Valor pago</th>
+            </tr>
+          </thead>
+          <tbody>
+            {linhas.map((g) => {
+              const sel = g.nome === valor;
+              return (
+                <tr
+                  key={g.nome}
+                  onClick={() => onChange(g.nome)}
+                  style={{ cursor: 'pointer', background: sel ? '#e0f2fe' : undefined }}
+                >
+                  <td style={{ ...tdS, fontWeight: sel ? 700 : 400 }}>
+                    {g.nome}
+                    {g.variantes.length > 1 && <span style={{ marginLeft: 6, fontSize: '0.7rem', color: '#94a3b8' }}>{g.variantes.length} nomes no CT-e</span>}
+                  </td>
+                  <td style={{ ...tdS, textAlign: 'right' }}>{fmtN(g.total.ctes)}</td>
+                  <td style={{ ...tdS, textAlign: 'right' }}>{fmt(g.total.valor)}</td>
+                </tr>
+              );
+            })}
+            {!linhas.length && (
+              <tr><td colSpan={3} style={{ ...tdS, color: '#94a3b8' }}>Nenhuma transportadora encontrada.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function Card({ label, valor, sub, cor, destaque }) {
   return (
-    <div style={{ background: '#fff', border: `1px solid ${destaque ? cor : '#e2e8f0'}`, borderLeft: `4px solid ${cor}`, borderRadius: 10, padding: '12px 18px', minWidth: 170 }}>
+    <div style={{ background: '#fff', border: `1px solid ${destaque ? cor : '#e2e8f0'}`, borderLeft: `4px solid ${cor}`, borderRadius: 10, padding: '12px 18px', minWidth: 0 }}>
       <div style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600, marginBottom: 2 }}>{label}</div>
       <div style={{ fontSize: '1.45rem', fontWeight: 800, color: destaque ? cor : '#1e293b' }}>{valor}</div>
       {sub && <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: 2 }}>{sub}</div>}
@@ -527,14 +607,44 @@ export default function SimularSaidaTransportadoraPage() {
     });
   }
 
+  // Filtros de origem/destino sobre o resultado: cards, rotas e laudo seguem o recorte.
+  const [filtroRota, setFiltroRota] = useState({ ufOrigem: '', origem: '', ufDestino: '', destino: '' });
+  const filtroAtivo = Boolean(filtroRota.ufOrigem || filtroRota.origem || filtroRota.ufDestino || filtroRota.destino);
+  const opcoesFiltroRota = useMemo(() => {
+    const ufO = new Set(); const ufD = new Set(); const cidO = new Map(); const cidD = new Map();
+    for (const c of simulacao?.ctesSimulados || []) {
+      if (c.ufOrigem) ufO.add(c.ufOrigem);
+      if (c.ufDestino) ufD.add(c.ufDestino);
+      if (!filtroRota.ufOrigem || c.ufOrigem === filtroRota.ufOrigem) cidO.set(`${c.cidadeOrigem}/${c.ufOrigem}`, true);
+      if (!filtroRota.ufDestino || c.ufDestino === filtroRota.ufDestino) cidD.set(`${c.cidadeDestino}/${c.ufDestino}`, true);
+    }
+    const ord = (arr) => [...arr].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    return { ufOrigem: ord(ufO), ufDestino: ord(ufD), origem: ord(cidO.keys()), destino: ord(cidD.keys()) };
+  }, [simulacao, filtroRota.ufOrigem, filtroRota.ufDestino]);
+  const ctesFiltrados = useMemo(() => {
+    const lista = simulacao?.ctesSimulados || [];
+    if (!filtroAtivo) return lista;
+    return lista.filter((c) => (
+      (!filtroRota.ufOrigem || c.ufOrigem === filtroRota.ufOrigem)
+      && (!filtroRota.origem || `${c.cidadeOrigem}/${c.ufOrigem}` === filtroRota.origem)
+      && (!filtroRota.ufDestino || c.ufDestino === filtroRota.ufDestino)
+      && (!filtroRota.destino || `${c.cidadeDestino}/${c.ufDestino}` === filtroRota.destino)
+    ));
+  }, [simulacao, filtroRota, filtroAtivo]);
+  const descricaoFiltroRota = [
+    filtroRota.origem ? `Origem ${filtroRota.origem}` : (filtroRota.ufOrigem ? `Origem UF ${filtroRota.ufOrigem}` : ''),
+    filtroRota.destino ? `Destino ${filtroRota.destino}` : (filtroRota.ufDestino ? `Destino UF ${filtroRota.ufDestino}` : ''),
+  ].filter(Boolean).join(' • ');
+
   const resultado = useMemo(() => {
     if (!simulacao) return null;
     return {
-      ...agregarRotas(simulacao.ctesSimulados, exclusoes, reajustePct),
-      totalCtes: simulacao.ctesSimulados.length,
+      ...agregarRotas(ctesFiltrados, exclusoes, reajustePct),
+      totalCtes: ctesFiltrados.length,
+      totalCtesSemFiltro: simulacao.ctesSimulados.length,
       semIbge: simulacao.semIbge,
     };
-  }, [simulacao, exclusoes, reajustePct]);
+  }, [simulacao, ctesFiltrados, exclusoes, reajustePct]);
 
   const opcoesExcluir = useMemo(() => {
     if (!simulacao) return [];
@@ -557,6 +667,7 @@ export default function SimularSaidaTransportadoraPage() {
       canal: r.canal || '',
       reajustePct: reajustePct,
       exclusoes: opcoesExcluir.filter((n) => exclusoes.has(norm(n))),
+      filtroRotas: descricaoFiltroRota,
       geradoEm: new Date().toISOString(),
     };
   }
@@ -603,7 +714,9 @@ export default function SimularSaidaTransportadoraPage() {
           onProgress: ({ linhas }) => setProgresso(`Listando transportadoras do período... ${fmtN(linhas)} grupo(s)`),
         });
         if (resumoBruto) {
-          const resumo = aplicarPoliticaBaseCte(resumoBruto, OPCOES_POLITICA_BASE);
+          const resumoPolitica = aplicarSegundaBarreira(aplicarPoliticaBaseCte(resumoBruto, OPCOES_POLITICA_BASE), aplicarVinculo);
+          const unificacaoPolitica = unificarTransportadorasCtes(resumoPolitica, { aplicarVinculo, cadastro });
+          const resumo = resumoPolitica.filter((r) => !nomeExcluidoDaBase(unificacaoPolitica.nomeDoCte(r)));
           if (!resumo.length) throw new Error('Nenhum CT-e encontrado para este recorte.');
           const unificacao = unificarTransportadorasCtes(resumo, { aplicarVinculo, cadastro });
           // nomes exatamente como estão no banco, por transportadora unificada —
@@ -640,7 +753,9 @@ export default function SimularSaidaTransportadoraPage() {
         limite: Number(limiteInput) || 6000,
         onProgress: ({ carregados }) => setProgresso(`Carregando CT-es... ${fmtN(carregados)}`),
       });
-      const { ctes } = carga;
+      const ctesPolitica = aplicarSegundaBarreira(carga.ctes, aplicarVinculo);
+      const unificacaoPolitica = unificarTransportadorasCtes(ctesPolitica, { aplicarVinculo, cadastro });
+      const ctes = ctesPolitica.filter((c) => !nomeExcluidoDaBase(unificacaoPolitica.nomeDoCte(c)));
       if (!ctes.length) throw new Error('Nenhum CT-e encontrado para este recorte.');
 
       // A tabela de frete só é buscada depois, quando a transportadora a
@@ -675,6 +790,7 @@ export default function SimularSaidaTransportadoraPage() {
   async function simularSaida() {
     if (!base || !transportadora) return;
     setStatusSim('carregando'); setErro(''); setSimulacao(null); setExclusoes(new Set()); setRotasAbertas(new Set());
+    setFiltroRota({ ufOrigem: '', origem: '', ufDestino: '', destino: '' });
     try {
       const { municipioPorCidade, mapasIbge, mapaVinculos, unificacao } = base;
       let ctesDaTransp;
@@ -689,7 +805,7 @@ export default function SimularSaidaTransportadoraPage() {
           onProgress: ({ carregados }) => setProgresso(`Carregando CT-es de ${transportadora}... ${fmtN(carregados)}`),
         });
         if (truncado) console.warn('[SimularSaidaTransportadora] teto de CT-es atingido para', transportadora);
-        ctesDaTransp = aplicarPoliticaBaseCte(linhas, OPCOES_POLITICA_BASE);
+        ctesDaTransp = aplicarSegundaBarreira(aplicarPoliticaBaseCte(linhas, OPCOES_POLITICA_BASE), (n) => aplicarVinculoPuro(n, mapaVinculos));
       } else {
         // compara pelo nome unificado: pega todos os CT-es das variações (CNPJ/vínculo) da transportadora escolhida
         ctesDaTransp = base.ctes.filter((c) => norm(unificacao.nomeDoCte(c)) === norm(transportadora));
@@ -836,23 +952,20 @@ export default function SimularSaidaTransportadoraPage() {
             </div>
           )}
           <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
-            <label>Transportadora a avaliar
-              <select value={transportadora} onChange={(e) => setTransportadora(e.target.value)} style={{ width: '100%' }}>
-                <option value="">Selecione...</option>
-                {transportadoras.map((g) => (
-                  <option key={g.nome} value={g.nome}>
-                    {g.nome}
-                    {base.totaisPorGrupo?.get(g.nome) ? ` — ${fmtN(base.totaisPorGrupo.get(g.nome).ctes)} CT-es · ${fmt(base.totaisPorGrupo.get(g.nome).valor)}` : ''}
-                    {g.variantes.length > 1 ? ` (${g.variantes.length} nomes no CT-e)` : ''}
-                  </option>
-                ))}
-              </select>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Transportadora a avaliar</div>
+              <SeletorTransportadora
+                grupos={transportadoras}
+                totais={base.totaisPorGrupo}
+                valor={transportadora}
+                onChange={setTransportadora}
+              />
               {grupoSelecionado && grupoSelecionado.variantes.length > 1 && (
                 <span style={{ display: 'block', fontWeight: 400, fontSize: '0.72rem', color: '#64748b', marginTop: 4 }}>
                   Unificado (CNPJ/vínculo): {grupoSelecionado.variantes.join(' · ')}
                 </span>
               )}
-            </label>
+            </div>
             <label>Reajuste proposto
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input type="number" value={reajustePct} onChange={(e) => setReajustePct(e.target.value)} style={{ width: 80 }} step={0.5} />
@@ -870,7 +983,32 @@ export default function SimularSaidaTransportadoraPage() {
 
       {resultado && (
         <>
-          <div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', margin: '1rem 0' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: 10, margin: '1rem 0 0.5rem' }}>
+            {[
+              ['ufOrigem', 'UF origem', opcoesFiltroRota.ufOrigem, (v) => ({ ufOrigem: v, origem: '' })],
+              ['origem', 'Cidade origem', opcoesFiltroRota.origem, (v) => ({ origem: v })],
+              ['ufDestino', 'UF destino', opcoesFiltroRota.ufDestino, (v) => ({ ufDestino: v, destino: '' })],
+              ['destino', 'Cidade destino', opcoesFiltroRota.destino, (v) => ({ destino: v })],
+            ].map(([campo, rotulo, opcoes, montar]) => (
+              <label key={campo} style={{ fontSize: '0.75rem', color: '#64748b', minWidth: campo.startsWith('uf') ? 110 : 200 }}>
+                {rotulo}
+                <select value={filtroRota[campo]} onChange={(e) => setFiltroRota((f) => ({ ...f, ...montar(e.target.value) }))} style={{ width: '100%' }}>
+                  <option value="">Todas</option>
+                  {opcoes.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </label>
+            ))}
+            {filtroAtivo && (
+              <button type="button" className="sim-tab" onClick={() => setFiltroRota({ ufOrigem: '', origem: '', ufDestino: '', destino: '' })}>Limpar filtros</button>
+            )}
+            {filtroAtivo && (
+              <span style={{ fontSize: '0.78rem', color: '#1d4ed8' }}>
+                Mostrando {fmtN(resultado.totalCtes)} de {fmtN(resultado.totalCtesSemFiltro)} CT-es — cards, rotas e laudo seguem o filtro.
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '0.75rem', margin: '0.5rem 0 1rem' }}>
             <Card label="Rotas atendidas" valor={fmtN(resultado.totalRotas)} sub={`${fmtN(resultado.totalCtes)} CT-es`} cor="#1e293b" />
             <Card label="Sem substituto" valor={fmtN(resultado.rotasSemSubstituto)} sub="rotas sem tabela alternativa" cor="#9b1111" destaque={resultado.rotasSemSubstituto > 0} />
             <Card label="Custo atual" valor={fmt(resultado.custoAtual)} sub="frete pago a esta transportadora" cor="#1e293b" />
@@ -890,13 +1028,13 @@ export default function SimularSaidaTransportadoraPage() {
 
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: '1rem' }}>
             <button type="button" className="primary" onClick={() => exportarLaudo('pdf')} disabled={!!exportando || !resultado.linhas.length}>
-              {exportando === 'pdf' ? 'Gerando laudo...' : 'Laudo completo (PDF)'}
+              {exportando === 'pdf' ? 'Gerando laudo...' : 'Laudo (PDF)'}
             </button>
             <button type="button" className="sim-tab" onClick={() => exportarLaudo('excel')} disabled={!!exportando || !resultado.linhas.length}>
               {exportando === 'excel' ? 'Gerando Excel...' : 'Exportar Excel detalhado'}
             </button>
             <span style={{ fontSize: '0.76rem', color: '#64748b' }}>
-              Parecer, cenários (reajuste × saída total × híbrido), rotas críticas, impacto de prazo, substitutas e detalhe por rota/CT-e — respeita reajuste e exclusões atuais.
+              Laudo: parecer, números principais, rotas que pedem atenção e quem assumiria o volume. Excel: detalhe por rota e CT-e. Ambos seguem reajuste, exclusões e filtros de origem/destino.
             </span>
           </div>
 
