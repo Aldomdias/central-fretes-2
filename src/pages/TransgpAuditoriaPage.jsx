@@ -55,10 +55,29 @@ async function lerTudo(supabase, tabela, colunas, filtro = (q) => q) {
   return linhas;
 }
 
+// Nome da transportadora do fluxo/TransGP ("TRANSGP/SCAPINI") contra o do CT-e: alguma palavra de 4+ letras em comum.
+const palavras = (v) => norm(v).split(/[^A-Z0-9]+/).filter((p) => p.length >= 4 && !['LTDA', 'TRANSPORTES', 'TRANSPORTE', 'LOGISTICA', 'CARGAS', 'RODOVIARIO', 'EIRELI'].includes(p));
+const transportadoraBate = (a, b) => { const pa = palavras(a); const pb = new Set(palavras(b)); return pa.some((p) => pb.has(p)); };
+
+const VINCULO = {
+  VINCULADO: { txt: 'Vinculado à DIST', cor: '#166534', fundo: '#dcfce7' },
+  AUDITADO_SEM_DIST: { txt: 'Auditado sem a DIST', cor: '#b45309', fundo: '#fef3c7' },
+  NA_BASE: { txt: 'Na base, ainda não auditado', cor: '#1d4ed8', fundo: '#dbeafe' },
+  NAO_ENCONTRADO: { txt: 'CT-e não está na base', cor: '#991b1b', fundo: '#fee2e2' },
+  SEM_CTE: { txt: 'Sem CT-e', cor: '#475569', fundo: '#f1f5f9' },
+};
+const diasEntre = (a, b) => Math.abs(new Date(String(a).slice(0, 10)).getTime() - new Date(String(b).slice(0, 10)).getTime()) / 86400000;
+
+function SeloVinculo({ status }) {
+  if (!status) return <span style={{ color: '#94a3b8', fontSize: 12 }}>conferindo...</span>;
+  const v = VINCULO[status];
+  return <span style={{ background: v.fundo, color: v.cor, borderRadius: 999, padding: '2px 9px', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{v.txt}</span>;
+}
+
 export default function TransgpAuditoriaPage() {
   const [linhas, setLinhas] = useState([]);
   const [log, setLog] = useState([]);
-  const [noFluxo, setNoFluxo] = useState(new Set());
+  const [noFluxo, setNoFluxo] = useState(new Map()); // DIST -> { cte, transportadora } do fluxo de lotacao
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState('');
   const [aviso, setAviso] = useState('');
@@ -68,6 +87,45 @@ export default function TransgpAuditoriaPage() {
   const [de, setDe] = useState('');
   const [ate, setAte] = useState('');
   const [aberta, setAberta] = useState(null);
+  // CT-es das DISTs (pelo numero) na Auditoria (auditoria_cte_resultados) e na base de CT-es (realizado_local_ctes).
+  const [resultadosPorNumero, setResultadosPorNumero] = useState(null);
+  const [basePorNumero, setBasePorNumero] = useState(null);
+  const [progressoVinculo, setProgressoVinculo] = useState('');
+
+  // Em segundo plano: busca na Auditoria os CT-es (pelo numero) das DISTs, da TransGP e do fluxo.
+  const verificarVinculos = useCallback(async (supabase, ctesTransgp, fluxo) => {
+    const numeros = new Set();
+    ctesTransgp.forEach((c) => { if (c.numero_cte) numeros.add(String(Number(c.numero_cte))); });
+    fluxo.forEach((f) => f.ctes.forEach((n) => numeros.add(n)));
+    const lista = [...numeros].filter((n) => n && n !== 'NaN');
+    const mapa = new Map();
+    const base = new Map();
+    const lotes = [];
+    for (let i = 0; i < lista.length; i += 200) lotes.push(lista.slice(i, i + 200));
+    let feitos = 0;
+    setProgressoVinculo(lotes.length ? `Conferindo CT-es na Auditoria... 0/${lotes.length}` : '');
+    const fila = [...lotes];
+    const trabalhar = async () => {
+      while (fila.length) {
+        const lote = fila.shift();
+        const [{ data }, { data: daBase }] = await Promise.all([
+          supabase.from('auditoria_cte_resultados')
+            .select('chave_cte,numero_cte,transportadora,data_emissao,status_calculo,valor_cte,valor_calculado,diferenca,dist:detalhes_calculo->>dist,motor:detalhes_calculo->>motor')
+            .in('numero_cte', lote),
+          supabase.from('realizado_local_ctes').select('chave_cte,numero_cte,transportadora,data_emissao,valor_cte').in('numero_cte', lote),
+        ]);
+        const numeroDe = (r) => String(Number(String(r.numero_cte || '').replace(/\D+/g, '')));
+        (data || []).forEach((r) => { const n = numeroDe(r); mapa.set(n, [...(mapa.get(n) || []), r]); });
+        (daBase || []).forEach((r) => { const n = numeroDe(r); base.set(n, [...(base.get(n) || []), r]); });
+        feitos += 1;
+        setProgressoVinculo(`Conferindo CT-es na Auditoria... ${feitos}/${lotes.length}`);
+      }
+    };
+    await Promise.all([trabalhar(), trabalhar(), trabalhar()]);
+    setResultadosPorNumero(mapa);
+    setBasePorNumero(base);
+    setProgressoVinculo('');
+  }, []);
 
   const carregar = useCallback(async () => {
     const supabase = getSupabaseClient();
@@ -81,18 +139,26 @@ export default function TransgpAuditoriaPage() {
       setLinhas(ctes);
       setLog(logs);
       const dists = [...new Set(ctes.map((c) => c.dist).filter(Boolean))];
-      const achadas = new Set();
+      const achadas = new Map();
       for (let i = 0; i < dists.length; i += 200) {
-        const { data } = await supabase.from('lotacao_cargas').select('dist').in('dist', dists.slice(i, i + 200));
-        (data || []).forEach((r) => achadas.add(norm(r.dist)));
+        const { data } = await supabase.from('lotacao_cargas').select('dist,cte,transportadora').in('dist', dists.slice(i, i + 200));
+        (data || []).forEach((r) => {
+          const k = norm(r.dist);
+          const ctes = String(r.cte || '').split(/[^0-9]+/).filter(Boolean).map((n) => String(Number(n)));
+          const atual = achadas.get(k) || { ctes: [], transportadora: '' };
+          achadas.set(k, { ctes: [...new Set([...atual.ctes, ...ctes])], transportadora: atual.transportadora || r.transportadora || '' });
+        });
       }
       setNoFluxo(achadas);
+      setResultadosPorNumero(null);
+      setBasePorNumero(null);
+      verificarVinculos(supabase, ctes, achadas).catch(() => setProgressoVinculo('Não foi possível conferir os vínculos na Auditoria.'));
     } catch (e) {
       setErro(e.message || String(e));
     } finally {
       setCarregando(false);
     }
-  }, []);
+  }, [verificarVinculos]);
 
   useEffect(() => { carregar(); }, [carregar]);
 
@@ -122,6 +188,35 @@ export default function TransgpAuditoriaPage() {
     return [...mapa.values()].sort((a, b) => String(b.coleta_planejada || '').localeCompare(String(a.coleta_planejada || '')));
   }, [linhas]);
 
+  // DIST sem informacao no painel da TransGP: nenhum CT-e anexado la.
+  const semInfo = (d) => !d.ctes.length;
+  const ctesFluxo = (d) => noFluxo.get(norm(d.dist))?.ctes || [];
+
+  // Vinculo da DIST com a nossa base (numero de CT-e repete entre transportadoras: confere a transportadora
+  // e a emissao ate 45 dias da coleta): auditado por esta DIST (fluxo/TransGP) = VINCULADO; auditado por
+  // outro motor (tabela) = AUDITADO_SEM_DIST; so na base de CT-es = NA_BASE; em nenhuma = NAO_ENCONTRADO.
+  const vinculoDaDist = (d) => {
+    const numeros = [...new Set([...d.ctes.map((c) => String(Number(c.numero_cte))), ...ctesFluxo(d)].filter((n) => n && n !== 'NaN'))];
+    if (!numeros.length) return { status: 'SEM_CTE', ctes: [] };
+    if (!resultadosPorNumero) return { status: null, ctes: [] };
+    const chavesTransgp = new Set(d.ctes.map((c) => c.chave_cte));
+    const nomes = [d.transportadora, noFluxo.get(norm(d.dist))?.transportadora].filter(Boolean);
+    const daDist = (r) => chavesTransgp.has(r.chave_cte) || (nomes.some((nome) => transportadoraBate(nome, r.transportadora))
+      && (!d.coleta_planejada || !r.data_emissao || diasEntre(d.coleta_planejada, r.data_emissao) <= 45));
+    const vinculados = []; const auditados = []; const naBase = [];
+    numeros.forEach((n) => {
+      (resultadosPorNumero.get(n) || []).forEach((r) => {
+        if (norm(r.dist) === norm(d.dist) || chavesTransgp.has(r.chave_cte)) vinculados.push(r);
+        else if (daDist(r)) auditados.push(r);
+      });
+      (basePorNumero?.get(n) || []).forEach((r) => { if (daDist(r)) naBase.push({ ...r, status_calculo: 'NAO AUDITADO' }); });
+    });
+    if (vinculados.length) return { status: 'VINCULADO', ctes: vinculados };
+    if (auditados.length) return { status: 'AUDITADO_SEM_DIST', ctes: auditados };
+    if (naBase.length) return { status: 'NA_BASE', ctes: naBase };
+    return { status: 'NAO_ENCONTRADO', ctes: [] };
+  };
+
   const doPeriodo = useMemo(() => dists.filter((d) => {
     const dia = String(d.coleta_planejada || '').slice(0, 10);
     if (de && (!dia || dia < de)) return false;
@@ -134,22 +229,28 @@ export default function TransgpAuditoriaPage() {
     return doPeriodo.filter((d) => {
       if (filtroSituacao === 'LIBERADOS' && !d.liberado_pagamento) return false;
       if (filtroSituacao === 'FORA_FLUXO' && noFluxo.has(norm(d.dist))) return false;
-      if (filtroSituacao && !['LIBERADOS', 'FORA_FLUXO'].includes(filtroSituacao) && d.situacao !== filtroSituacao) return false;
+      if (filtroSituacao === 'SEM_INFO' && !semInfo(d)) return false;
+      if (filtroSituacao === 'SEM_INFO_COM_CTE_FLUXO' && !(semInfo(d) && ctesFluxo(d).length)) return false;
+      if (filtroSituacao.startsWith('VINC_') && vinculoDaDist(d).status !== filtroSituacao.slice(5)) return false;
+      if (filtroSituacao && !filtroSituacao.startsWith('VINC_') && !['LIBERADOS', 'FORA_FLUXO', 'SEM_INFO', 'SEM_INFO_COM_CTE_FLUXO'].includes(filtroSituacao) && d.situacao !== filtroSituacao) return false;
       if (!termo) return true;
-      return [d.dist, d.transportadora, d.origem, d.destinos, ...d.ctes.map((c) => c.numero_cte)].some((v) => norm(v).includes(termo));
+      return [d.dist, d.transportadora, d.origem, d.destinos, ...d.ctes.map((c) => c.numero_cte), ...ctesFluxo(d)].some((v) => norm(v).includes(termo));
     });
-  }, [doPeriodo, busca, filtroSituacao, noFluxo]);
+  }, [doPeriodo, busca, filtroSituacao, noFluxo, resultadosPorNumero, basePorNumero]);
 
   const resumo = useMemo(() => {
-    const r = { total: doPeriodo.length, liberados: 0, valorLiberado: 0, porSituacao: {}, foraFluxo: 0 };
+    const r = { total: doPeriodo.length, liberados: 0, valorLiberado: 0, porSituacao: {}, foraFluxo: 0, semInfo: 0, semInfoComCteFluxo: 0, vinculo: {} };
     doPeriodo.forEach((d) => {
       if (d.liberado_pagamento) { r.liberados += 1; r.valorLiberado += Number(d.cte_total) || 0; }
       const s = r.porSituacao[d.situacao] || (r.porSituacao[d.situacao] = { qtd: 0, valor: 0 });
       s.qtd += 1; s.valor += Number(d.cte_total) || 0;
       if (!noFluxo.has(norm(d.dist))) r.foraFluxo += 1;
+      if (semInfo(d)) { r.semInfo += 1; if (ctesFluxo(d).length) r.semInfoComCteFluxo += 1; }
+      const v = vinculoDaDist(d).status;
+      if (v) r.vinculo[v] = (r.vinculo[v] || 0) + 1;
     });
     return r;
-  }, [doPeriodo, noFluxo]);
+  }, [doPeriodo, noFluxo, resultadosPorNumero, basePorNumero]);
 
   const exportar = () => {
     const rows = filtradas.map((d) => ({
@@ -160,6 +261,10 @@ export default function TransgpAuditoriaPage() {
       'Total CT-es': Number(d.cte_total) || 0, Diferenca: Number(d.diferenca_total) || 0,
       Situacao: SITUACOES[d.situacao]?.txt || d.situacao, 'Liberado p/ pagamento': d.liberado_pagamento ? 'Sim' : 'Nao',
       'Liberado em': dataHoraBr(d.liberado_em), 'No fluxo': noFluxo.has(norm(d.dist)) ? 'Sim' : 'Nao',
+      'CT-es no fluxo': ctesFluxo(d).join('; '), 'Transportadora no fluxo': noFluxo.get(norm(d.dist))?.transportadora || '',
+      'Sem informacao na TransGP': semInfo(d) ? 'Sim' : 'Nao',
+      'Auditoria Central': VINCULO[vinculoDaDist(d).status]?.txt || '',
+      'CT-es na Auditoria': vinculoDaDist(d).ctes.map((c) => `${c.numero_cte} (${c.status_calculo || '-'})`).join('; '),
       'Decisao auditoria': d.decisao_auditoria ? JSON.stringify(d.decisao_auditoria) : '',
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
@@ -207,11 +312,19 @@ export default function TransgpAuditoriaPage() {
         <>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
             <Kpi titulo="DISTs no período" valor={resumo.total.toLocaleString('pt-BR')} ativo={!filtroSituacao} onClick={() => setFiltroSituacao('')} />
+            <Kpi titulo="Sem informação na TransGP" valor={resumo.semInfo.toLocaleString('pt-BR')} sub={`${resumo.semInfoComCteFluxo.toLocaleString('pt-BR')} já com CT-e no nosso fluxo`} cor="#b45309" ativo={filtroSituacao === 'SEM_INFO'} onClick={() => setFiltroSituacao('SEM_INFO')} />
             <Kpi titulo="Liberadas p/ pagamento" valor={resumo.liberados.toLocaleString('pt-BR')} sub={brl(resumo.valorLiberado)} cor="#166534" ativo={filtroSituacao === 'LIBERADOS'} onClick={() => setFiltroSituacao('LIBERADOS')} />
             {['DIVERGENTE', 'REPROVADO', 'AGUARDANDO_CTE', 'SEM_TRANSPORTADORA'].map((s) => (
               <Kpi key={s} titulo={SITUACOES[s].txt} valor={(resumo.porSituacao[s]?.qtd || 0).toLocaleString('pt-BR')} sub={brl(resumo.porSituacao[s]?.valor || 0)} cor={SITUACOES[s].cor} ativo={filtroSituacao === s} onClick={() => setFiltroSituacao(s)} />
             ))}
             <Kpi titulo="Fora do fluxo de lotação" valor={resumo.foraFluxo.toLocaleString('pt-BR')} cor={resumo.foraFluxo ? '#b45309' : '#166534'} ativo={filtroSituacao === 'FORA_FLUXO'} onClick={() => setFiltroSituacao('FORA_FLUXO')} />
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
+            <b style={{ fontSize: 13, color: '#06183d', marginRight: 4 }}>CT-e x nossa Auditoria:</b>
+            {progressoVinculo && <span style={{ fontSize: 13, color: '#64748b' }}>{progressoVinculo}</span>}
+            {!progressoVinculo && ['VINCULADO', 'AUDITADO_SEM_DIST', 'NA_BASE', 'NAO_ENCONTRADO', 'SEM_CTE'].map((v) => (
+              <Kpi key={v} titulo={VINCULO[v].txt} valor={(resumo.vinculo[v] || 0).toLocaleString('pt-BR')} cor={VINCULO[v].cor} ativo={filtroSituacao === `VINC_${v}`} onClick={() => setFiltroSituacao(`VINC_${v}`)} />
+            ))}
           </div>
 
           <div style={{ ...card, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', padding: '12px 16px' }}>
@@ -222,6 +335,9 @@ export default function TransgpAuditoriaPage() {
               <option value="">Todas as situações</option>
               <option value="LIBERADOS">Liberadas p/ pagamento</option>
               <option value="FORA_FLUXO">Fora do fluxo de lotação</option>
+              <option value="SEM_INFO">Sem informação na TransGP (nenhum CT-e lá)</option>
+              <option value="SEM_INFO_COM_CTE_FLUXO">Sem informação na TransGP, mas com CT-e no fluxo</option>
+              {Object.entries(VINCULO).map(([k, v]) => <option key={k} value={`VINC_${k}`}>Auditoria: {v.txt}</option>)}
               {Object.entries(SITUACOES).map(([k, v]) => <option key={k} value={k}>{v.txt}</option>)}
             </select>
             <span style={{ fontSize: 13, color: '#64748b' }}>{filtradas.length.toLocaleString('pt-BR')} DIST(s)</span>
@@ -230,7 +346,7 @@ export default function TransgpAuditoriaPage() {
           <div style={{ ...card, padding: 0, overflow: 'auto', maxHeight: '65vh' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
-                <tr>{['DIST', 'Transportadora', 'Origem → Destino', 'Coleta', 'Status carga', 'Contratado', 'CT-es', 'Cobrado', 'Diferença', 'Situação TransGP', 'Liberado', 'No fluxo'].map((h) => <th key={h} style={th}>{h}</th>)}</tr>
+                <tr>{['DIST', 'Transportadora', 'Origem → Destino', 'Coleta', 'Status carga', 'Contratado', 'CT-es TransGP', 'CT-es no fluxo', 'Cobrado', 'Diferença', 'Situação TransGP', 'Liberado', 'No fluxo', 'Auditoria Central'].map((h) => <th key={h} style={th}>{h}</th>)}</tr>
               </thead>
               <tbody>
                 {filtradas.slice(0, 1000).map((d) => {
@@ -244,22 +360,51 @@ export default function TransgpAuditoriaPage() {
                       <td style={td}>{dataBr(d.coleta_planejada)}</td>
                       <td style={td}>{d.status_carga || '-'}</td>
                       <td style={td}>{brl(d.total_contratado)}</td>
-                      <td style={td}>{d.ctes.map((c) => c.numero_cte).filter(Boolean).join(', ') || '-'}</td>
+                      <td style={td}>{d.ctes.map((c) => c.numero_cte).filter(Boolean).join(', ') || <span style={{ color: '#b45309' }}>nenhum</span>}</td>
+                      <td style={td}>{ctesFluxo(d).join(', ') || '-'}</td>
                       <td style={td}>{brl(d.cte_total)}</td>
                       <td style={{ ...td, color: dif > 0.01 ? '#991b1b' : dif < -0.01 ? '#166534' : undefined, fontWeight: Math.abs(dif) > 0.01 ? 700 : 400 }}>{brl(dif)}</td>
                       <td style={td}><Selo situacao={d.situacao} /></td>
                       <td style={td}>{d.liberado_pagamento ? `Sim${d.liberado_em ? ` (${dataBr(d.liberado_em)})` : ''}` : 'Não'}</td>
                       <td style={td}>{noFluxo.has(k) ? 'Sim' : <span style={{ color: '#b45309', fontWeight: 700 }}>Não</span>}</td>
+                      <td style={td}><SeloVinculo status={vinculoDaDist(d).status} /></td>
                     </tr>,
                     aberta === k && (
                       <tr key={`${k}-det`}>
-                        <td colSpan={12} style={{ ...td, background: '#f8fafc' }}>
+                        <td colSpan={14} style={{ ...td, background: '#f8fafc' }}>
                           <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', fontSize: 13, marginBottom: 8 }}>
                             <span><b>Operação:</b> {d.operacao || '-'}</span>
                             <span><b>Frete:</b> {brl(d.frete_contratado)}</span>
                             <span><b>Pedágio:</b> {brl(d.pedagio)}</span>
                             <span><b>Sincronizado em:</b> {dataHoraBr(d.sincronizado_em)}</span>
                           </div>
+                          {(() => {
+                            const v = vinculoDaDist(d);
+                            if (!v.ctes.length) return <div style={{ fontSize: 13, marginBottom: 8 }}><b>Auditoria Central:</b> {v.status ? VINCULO[v.status].txt : 'conferindo...'}</div>;
+                            return (
+                              <div style={{ marginBottom: 10 }}>
+                                <div style={{ fontSize: 13, marginBottom: 4 }}><b>Na nossa Auditoria ({VINCULO[v.status].txt}):</b></div>
+                                <table style={{ borderCollapse: 'collapse' }}>
+                                  <thead><tr>{['CT-e', 'Transportadora', 'Emissão', 'Status cálculo', 'Motor', 'DIST usada', 'Valor CT-e', 'Calculado', 'Diferença'].map((h) => <th key={h} style={{ ...th, position: 'static' }}>{h}</th>)}</tr></thead>
+                                  <tbody>
+                                    {v.ctes.map((r) => (
+                                      <tr key={r.chave_cte}>
+                                        <td style={td}>{r.numero_cte}</td>
+                                        <td style={td}>{r.transportadora || '-'}</td>
+                                        <td style={td}>{dataBr(r.data_emissao)}</td>
+                                        <td style={td}>{r.status_calculo || '-'}</td>
+                                        <td style={td}>{r.motor || 'tabela'}</td>
+                                        <td style={td}>{r.dist || '-'}</td>
+                                        <td style={td}>{brl(r.valor_cte)}</td>
+                                        <td style={td}>{brl(r.valor_calculado)}</td>
+                                        <td style={td}>{brl(r.diferenca)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            );
+                          })()}
                           {d.decisao_auditoria && (
                             <div style={{ fontSize: 13, marginBottom: 8 }}><b>Decisão da auditoria TransGP:</b> {typeof d.decisao_auditoria === 'object' ? Object.entries(d.decisao_auditoria).map(([a, b]) => `${a}: ${b}`).join(' · ') : String(d.decisao_auditoria)}</div>
                           )}
