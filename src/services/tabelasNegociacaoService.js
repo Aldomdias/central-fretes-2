@@ -18,6 +18,7 @@ import {
   carregarTransportadoraCompletaDb,
   salvarSecaoDb,
   localizarOrigensOficiaisDb,
+  localizarTransportadoraOficialDb,
   limparGrupoTabelaAlternativaOrigensDb,
   salvarVigenciaTabelaAlternativaDb,
   encerrarVigenciasAnterioresDb,
@@ -1790,9 +1791,21 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
     throw new Error('Não foi possível montar origem/rotas/cotações para cadastro oficial. Revise os itens da negociação.');
   }
 
+  // Vigência da nova tabela. Sem data informada vale a partir de hoje.
+  const inicioInformado = String(dados.data_inicio_vigencia || tabela.data_inicio_vigencia || tabela.data_inicio_prevista || '').slice(0, 10);
+  const inicioVigencia = /^\d{4}-\d{2}-\d{2}$/.test(inicioInformado) ? inicioInformado : dataISO().slice(0, 10);
+
+  // Transportadora de destino na base oficial: se já existe (nome sem caixa/
+  // acento ou mesma raiz de CNPJ), publica DENTRO dela com o nome exato do
+  // cadastro. Antes um nome com grafia diferente criava outra transportadora e
+  // a tabela "não aparecia" na existente.
+  const nomeDestino = tabelaCompleta.transportadora;
+  const transportadoraExistente = await localizarTransportadoraOficialDb(nomeDestino, tabelaCompleta.cnpj_transportadora);
+  const nomeOficial = transportadoraExistente?.nome || nomeDestino;
+
   const baseOficial = [{
     ...transportadoraOficial,
-    nome: tabelaCompleta.transportadora,
+    nome: nomeOficial,
     status: 'Ativa',
     origens: (transportadoraOficial.origens || []).map((origem) => ({
       ...origem,
@@ -1804,82 +1817,93 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
       },
       rotas: (origem.rotas || []).map((rota) => ({
         ...rota,
-        inicioVigencia: dados.data_inicio_vigencia || tabela.data_inicio_vigencia || tabela.data_inicio_prevista || '',
+        inicioVigencia,
       })),
     })),
   }];
 
-  // Reajuste com vigência: em vez de sobrescrever a tabela anterior, as origens
-  // que já existem na base oficial recebem a nova tabela como alternativa
-  // "Reajuste dd/mm/aaaa" com início de vigência; a anterior continua valendo
-  // para CT-es emitidos antes. Origens novas seguem o fluxo normal (principal).
-  const inicioVigencia = String(dados.data_inicio_vigencia || '').slice(0, 10);
-  const comoReajuste = Boolean(dados.substituir_tabela_anterior) && /^\d{4}-\d{2}-\d{2}$/.test(inicioVigencia);
-  let reajusteVigencia = null;
-  let origensNormais = baseOficial[0].origens;
+  // Origens que já existem na transportadora oficial NUNCA são sobrescritas: a
+  // nova tabela entra como alternativa "Reajuste dd/mm/aaaa" com início de
+  // vigência e a anterior continua valendo para CT-es emitidos antes. (Gravar
+  // por cima da principal misturava as linhas antigas com as novas.) Origens
+  // novas entram como tabela principal dentro da transportadora.
+  const existentes = transportadoraExistente
+    ? await localizarOrigensOficiaisDb(
+      nomeOficial,
+      baseOficial[0].origens.map((origem) => ({ cidade: origem.cidade, canal: origem.canal, ibgeOrigem: origem.ibgeOrigem })),
+      { transportadoraId: transportadoraExistente.id },
+    )
+    : [];
+  const existentePorIndice = new Map(existentes.map((item) => [item.indice, item]));
+  const origensReajuste = baseOficial[0].origens.filter((_, indice) => existentePorIndice.has(indice));
+  const origensNormais = baseOficial[0].origens.filter((_, indice) => !existentePorIndice.has(indice));
 
-  if (comoReajuste) {
-    const existentes = await localizarOrigensOficiaisDb(
-      baseOficial[0].nome,
-      baseOficial[0].origens.map((origem) => ({ cidade: origem.cidade, canal: origem.canal })),
+  // Origem sem cidade não pode virar cadastro: era isso que criava a origem
+  // "em branco" na transportadora. Bloqueia antes de gravar qualquer coisa.
+  const semCidade = origensNormais.filter((origem) => !texto(origem.cidade));
+  if (semCidade.length) {
+    throw new Error(
+      `A negociação tem ${semCidade.length} origem(ns) sem cidade${semCidade[0].ibgeOrigem ? ` (IBGE ${semCidade[0].ibgeOrigem})` : ''} que não casou com nenhuma origem de ${nomeOficial} na base oficial. `
+      + 'Informe a cidade de origem na negociação (ou escolha a transportadora oficial correta) antes de publicar. Nada foi gravado.'
     );
-    const chaveOrigem = (origem) => `${String(origem.cidade || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase()}__${String(origem.canal || 'ATACADO').trim().toUpperCase()}`;
-    const chavesExistentes = new Set(existentes.map((item) => item.chave));
-    const origensReajuste = baseOficial[0].origens.filter((origem) => chavesExistentes.has(chaveOrigem(origem)));
-    origensNormais = baseOficial[0].origens.filter((origem) => !chavesExistentes.has(chaveOrigem(origem)));
+  }
 
-    if (origensReajuste.length) {
-      const [ano, mes, dia] = inicioVigencia.split('-');
-      const grupo = `Reajuste ${dia}/${mes}/${ano}`;
-      const marcarGrupo = (lista) => (lista || []).map((item) => ({ ...item, grupoTabelaAlternativa: grupo }));
-      // A origem oficial é localizada sem acento e, se o canal diferir mas só
-      // houver uma origem na cidade, por cidade. O salvarSecaoDb casa origens
-      // só por cidade+canal exatos e, no modo somenteAlternativas, não grava a
-      // origem — então sem fixar o id/cidade/canal da origem oficial aqui as
-      // linhas iam com um origem_id novo e o banco recusava
-      // (generalidades_origem_id_fkey).
-      const existentePorChave = new Map(existentes.map((item) => [item.chave, item]));
-      const baseReajuste = [{
-        ...baseOficial[0],
-        origens: origensReajuste.map((origem) => ({
+  let reajusteVigencia = null;
+  if (origensReajuste.length) {
+    const [ano, mes, dia] = inicioVigencia.split('-');
+    const grupo = `Reajuste ${dia}/${mes}/${ano}`;
+    const marcarGrupo = (lista) => (lista || []).map((item) => ({ ...item, grupoTabelaAlternativa: grupo }));
+    // Fixa id/cidade/canal da origem oficial: o salvarSecaoDb casa origens só
+    // por cidade+canal exatos e, no modo somenteAlternativas, não grava a
+    // origem — sem isso as linhas iam com um origem_id novo e o banco recusava
+    // (generalidades_origem_id_fkey).
+    const baseReajuste = [{
+      ...baseOficial[0],
+      id: transportadoraExistente.id,
+      origens: baseOficial[0].origens
+        .map((origem, indice) => ({ origem, oficial: existentePorIndice.get(indice) }))
+        .filter(({ oficial }) => oficial)
+        .map(({ origem, oficial }) => ({
           ...origem,
-          id: existentePorChave.get(chaveOrigem(origem))?.id || origem.id,
-          cidade: existentePorChave.get(chaveOrigem(origem))?.cidade || origem.cidade,
-          canal: existentePorChave.get(chaveOrigem(origem))?.canal || origem.canal,
+          id: oficial.id,
+          cidade: oficial.cidade,
+          canal: oficial.canal,
           rotas: marcarGrupo(origem.rotas),
           cotacoes: marcarGrupo(origem.cotacoes),
           taxasEspeciais: marcarGrupo(origem.taxasEspeciais),
           generalidadesAlternativas: [{ ...(origem.generalidades || {}), grupoTabelaAlternativa: grupo }],
         })),
-      }];
-      const idsOrigens = existentes
-        .filter((item) => origensReajuste.some((origem) => chaveOrigem(origem) === item.chave))
-        .map((item) => item.id);
+    }];
+    const idsOrigens = Array.from(new Set(existentes.map((item) => item.id)));
 
-      // Republicar o mesmo reajuste não pode duplicar linhas do grupo.
-      await limparGrupoTabelaAlternativaOrigensDb(idsOrigens, grupo);
-      const opcoesGrupo = { somenteAlternativas: true };
-      await salvarSecaoDb(baseReajuste, 'generalidades', undefined, opcoesGrupo);
-      await salvarSecaoDb(baseReajuste, 'rotas', undefined, opcoesGrupo);
-      await salvarSecaoDb(baseReajuste, 'cotacoes', undefined, opcoesGrupo);
-      await salvarSecaoDb(baseReajuste, 'taxas', undefined, opcoesGrupo);
+    // Republicar o mesmo reajuste não pode duplicar linhas do grupo.
+    await limparGrupoTabelaAlternativaOrigensDb(idsOrigens, grupo);
+    const opcoesGrupo = { somenteAlternativas: true };
+    await salvarSecaoDb(baseReajuste, 'generalidades', undefined, opcoesGrupo);
+    await salvarSecaoDb(baseReajuste, 'rotas', undefined, opcoesGrupo);
+    await salvarSecaoDb(baseReajuste, 'cotacoes', undefined, opcoesGrupo);
+    await salvarSecaoDb(baseReajuste, 'taxas', undefined, opcoesGrupo);
 
-      for (const origemId of idsOrigens) {
-        // eslint-disable-next-line no-await-in-loop
-        await salvarVigenciaTabelaAlternativaDb(origemId, grupo, { inicio: inicioVigencia, fim: '' });
-      }
-      const anterioresEncerradas = await encerrarVigenciasAnterioresDb(idsOrigens, grupo, inicioVigencia);
-      reajusteVigencia = {
-        grupo,
-        inicio: inicioVigencia,
-        origens: idsOrigens.length,
-        vigencias_anteriores_encerradas: anterioresEncerradas,
-      };
+    for (const origemId of idsOrigens) {
+      // eslint-disable-next-line no-await-in-loop
+      await salvarVigenciaTabelaAlternativaDb(origemId, grupo, { inicio: inicioVigencia, fim: '' });
     }
+    const anterioresEncerradas = await encerrarVigenciasAnterioresDb(idsOrigens, grupo, inicioVigencia);
+    reajusteVigencia = {
+      grupo,
+      inicio: inicioVigencia,
+      origens: idsOrigens.length,
+      cidades: baseReajuste[0].origens.map((origem) => origem.cidade),
+      vigencias_anteriores_encerradas: anterioresEncerradas,
+    };
   }
 
-  if (origensNormais.length || !reajusteVigencia) {
-    const baseNormal = [{ ...baseOficial[0], origens: origensNormais }];
+  if (origensNormais.length) {
+    const baseNormal = [{
+      ...baseOficial[0],
+      ...(transportadoraExistente ? { id: transportadoraExistente.id } : {}),
+      origens: origensNormais,
+    }];
     await salvarSecaoDb(baseNormal, 'generalidades');
     await salvarSecaoDb(baseNormal, 'rotas');
     await salvarSecaoDb(baseNormal, 'cotacoes');
@@ -1892,6 +1916,8 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
     rotas: baseOficial[0].origens.reduce((acc, origem) => acc + (origem.rotas || []).length, 0),
     cotacoes: baseOficial[0].origens.reduce((acc, origem) => acc + (origem.cotacoes || []).length, 0),
     taxas: baseOficial[0].origens.reduce((acc, origem) => acc + (origem.taxasEspeciais || []).length, 0),
+    transportadora_existente: Boolean(transportadoraExistente),
+    origens_novas: origensNormais.map((origem) => origem.cidade),
     ...(reajusteVigencia ? { reajuste_vigencia: reajusteVigencia } : {}),
   };
 }

@@ -166,6 +166,25 @@ function getTipoNegociacaoLabel(tipo) {
   var found = TIPOS_NEGOCIACAO.find(function(item) { return item.value === normalizado; });
   return found ? found.label : 'Nova tabela / Novo transportador';
 }
+// Texto curto do que a publicação fez: alternativa com vigência nas origens
+// que já existiam e/ou origens novas incluídas na transportadora.
+function resumoPublicacaoOficial(tabela) {
+  var promo = (tabela && (tabela.nova_tabela_aprovada_snapshot || (tabela.resumo_simulacao || {}).promocao_oficial)) || {};
+  var partes = [];
+  var reaj = promo.reajuste_vigencia;
+  if (reaj && reaj.origens) {
+    partes.push('Tabela alternativa "' + reaj.grupo + '" criada em ' + reaj.origens + ' origem(ns) existente(s)'
+      + (reaj.cidades && reaj.cidades.length ? ' (' + reaj.cidades.join(', ') + ')' : '')
+      + ', vigente a partir de ' + String(reaj.inicio || '').split('-').reverse().join('/') + '.');
+  }
+  if (promo.origens_novas && promo.origens_novas.length) {
+    partes.push('Origem(ns) nova(s) incluída(s) em ' + (promo.transportadora || 'transportadora') + ': ' + promo.origens_novas.join(', ') + '.');
+  }
+  if (promo.transportadora && promo.transportadora_existente === false) {
+    partes.push('Transportadora ' + promo.transportadora + ' não existia na base oficial e foi cadastrada.');
+  }
+  return partes.join(' ');
+}
 function isReajusteNegociacao(tabela) {
   return getTipoNegociacaoTabela(tabela) === 'REAJUSTE_TABELA_EXISTENTE';
 }
@@ -2740,7 +2759,7 @@ export default function TabelasNegociacaoPage() {
     if (!modalAprovacao) return;
     if (!aprovacao.justificativa_aprovacao.trim()) return setErro('Informe uma justificativa.');
     if (!cnpjPreenchidoValido(aprovacao.cnpj_transportadora)) return setErro('Informe o CNPJ completo da transportadora.');
-    if (aprovacao.modo === 'publicar' && aprovacao.substituir_tabela_anterior && !aprovacao.data_inicio_vigencia) {
+    if (aprovacao.modo === 'publicar' && !aprovacao.data_inicio_vigencia) {
       return setErro('Informe a data de início da vigência: o reajuste entra a partir dela e a tabela anterior vale até o dia anterior.');
     }
     const dadosAprovacao = Object.assign({}, aprovacao, {
@@ -2755,7 +2774,7 @@ export default function TabelasNegociacaoPage() {
           usuario: sessao,
           observacao: aprovacao.observacao_aprovacao || aprovacao.justificativa_aprovacao,
         }));
-        setSucesso('Negociação publicada na base oficial.');
+        setSucesso('Negociação publicada na base oficial. ' + resumoPublicacaoOficial(at));
       } else if (aprovacao.modo === 'aprovar_gestor' && usuarioEhGestor(sessao)) {
         at = await aprovarGestorNegociacao(modalAprovacao.id, Object.assign({}, dadosAprovacao, {
           usuario: sessao,
@@ -2906,7 +2925,7 @@ export default function TabelasNegociacaoPage() {
       });
       setTabelas(function(p) { return p.map(function(i) { return i.id === publicada.id ? publicada : i; }); });
       if (selecionada && selecionada.id === publicada.id) setSelecionada(publicada);
-      setSucesso('Aprovada, publicada na base oficial e dados operacionais da negociação arquivados.');
+      setSucesso('Aprovada e publicada na base oficial. ' + resumoPublicacaoOficial(publicada));
     } catch (e) { setErro(e.message || 'Erro ao aprovar e publicar.'); }
     finally { setSalvandoGestao(false); setProcessamentoPublicacao(null); }
   }
@@ -2951,13 +2970,14 @@ export default function TabelasNegociacaoPage() {
     finally { setGerandoVerum(false); }
   }
 
-  // Reajuste publicado entra como tabela alternativa com vigência (a anterior
-  // continua valendo até o dia anterior). Pergunta o início; devolve ISO ou null
-  // se cancelar. Negociação que não é reajuste segue com a data de hoje.
+  // Publicação: se a origem já existe na transportadora oficial, a nova tabela
+  // entra como alternativa com vigência (a anterior vale até o dia anterior);
+  // origem nova entra como principal. Pergunta o início; devolve ISO ou null.
   function pedirInicioVigenciaReajuste(tabela) {
-    if (!isReajusteNegociacao(tabela)) return hojeISO();
     var resposta = window.prompt(
-      'Reajuste: a nova tabela entra como alternativa com vigência e a anterior vale até o dia anterior.\nInforme o início da vigência (dd/mm/aaaa):',
+      'Início da vigência da nova tabela de ' + (tabela?.transportadora || 'transportadora') + ' (dd/mm/aaaa).\n'
+      + 'Origem que já existe na base oficial: entra como tabela alternativa a partir desta data e a atual vale até o dia anterior.\n'
+      + 'Origem nova: é incluída na transportadora.',
       hojeISO().split('-').reverse().join('/')
     );
     if (resposta === null) return null;
@@ -2988,7 +3008,7 @@ export default function TabelasNegociacaoPage() {
         transportadora_oficial_nome: destinoPublicacao,
       });
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
-      setSucesso('Publicada na base oficial.');
+      setSucesso('Publicada na base oficial. ' + resumoPublicacaoOficial(at));
     } catch (e) { setErro(e.message || 'Erro ao publicar.'); }
     finally { setSalvandoGestao(false); setProcessamentoPublicacao(null); }
   }
