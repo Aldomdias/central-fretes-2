@@ -108,6 +108,8 @@ async function gravarCargasNoFluxo(db, itens) {
   return { atualizadas, inseridas, falhas: falhas.slice(0, 5) };
 }
 
+const SUFIXO_SEM_CTE = '|SEM_CTE';
+
 function linhasDaDist(item, agora) {
   const ctes = Array.isArray(item.ctes) ? item.ctes : [];
   const comum = {
@@ -131,6 +133,9 @@ function linhasDaDist(item, agora) {
     sincronizado_em: agora,
   };
   if (!comum.dist) return [];
+  // DIST ainda sem CT-e anexado: uma linha so da DIST (chave "DIST|SEM_CTE"), para aparecer na tela.
+  // O motor da Auditoria ignora (nao e chave de 44 digitos); some quando a DIST ganha CT-e.
+  if (!ctes.length) return [{ ...comum, chave_cte: `${comum.dist}${SUFIXO_SEM_CTE}`, numero_cte: null, serie: null, valor_cte: null, payload: null }];
   return ctes.map((cte) => {
     const chave = digitos(cte.chave);
     const numero = digitos(cte.numero) ? String(Number(digitos(cte.numero))) : null;
@@ -164,7 +169,7 @@ export default async function handler(req, res) {
   const base = process.env.TRANSGP_API_URL || API_PADRAO;
   const agora = new Date().toISOString();
   let dists = 0;
-  let linhas = 0;
+  let linhas = 0; // CT-es (sem contar as linhas de DIST sem CT-e)
   const todasDists = [];
   try {
     for (let pagina = 1; pagina <= 200; pagina += 1) {
@@ -182,7 +187,12 @@ export default async function handler(req, res) {
         const { error } = await db.from('transgp_auditoria_ctes').upsert(lote.slice(i, i + 500), { onConflict: 'chave_cte' });
         if (error) throw new Error(`Gravar: ${error.message}`);
       }
-      linhas += lote.length;
+      linhas += lote.filter((l) => !l.chave_cte.endsWith(SUFIXO_SEM_CTE)).length;
+      // DIST que ganhou CT-e: tira a linha "sem CT-e" dela.
+      const ganharamCte = dados.filter((d) => Array.isArray(d.ctes) && d.ctes.length && d.dist).map((d) => `${String(d.dist).trim()}${SUFIXO_SEM_CTE}`);
+      for (let i = 0; i < ganharamCte.length; i += 200) {
+        await db.from('transgp_auditoria_ctes').delete().in('chave_cte', ganharamCte.slice(i, i + 200));
+      }
       if (!dados.length || pagina >= (Number(corpo.paginas) || 1)) break;
     }
     const fluxo = await gravarCargasNoFluxo(db, todasDists);

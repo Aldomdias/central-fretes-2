@@ -117,7 +117,7 @@ export default function TransgpAuditoriaPage() {
     linhas.forEach((l) => {
       const k = norm(l.dist);
       if (!mapa.has(k)) mapa.set(k, { ...l, ctes: [] });
-      if (l.numero_cte || l.chave_cte) mapa.get(k).ctes.push(l);
+      if (!String(l.chave_cte || '').endsWith('|SEM_CTE')) mapa.get(k).ctes.push(l); // linha so da DIST (sem CT-e)
     });
     return [...mapa.values()].sort((a, b) => String(b.coleta_planejada || '').localeCompare(String(a.coleta_planejada || '')));
   }, [linhas]);
@@ -208,7 +208,7 @@ export default function TransgpAuditoriaPage() {
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
             <Kpi titulo="DISTs no período" valor={resumo.total.toLocaleString('pt-BR')} ativo={!filtroSituacao} onClick={() => setFiltroSituacao('')} />
             <Kpi titulo="Liberadas p/ pagamento" valor={resumo.liberados.toLocaleString('pt-BR')} sub={brl(resumo.valorLiberado)} cor="#166534" ativo={filtroSituacao === 'LIBERADOS'} onClick={() => setFiltroSituacao('LIBERADOS')} />
-            {['DIVERGENTE', 'REPROVADO', 'AGUARDANDO_CTE'].map((s) => (
+            {['DIVERGENTE', 'REPROVADO', 'AGUARDANDO_CTE', 'SEM_TRANSPORTADORA'].map((s) => (
               <Kpi key={s} titulo={SITUACOES[s].txt} valor={(resumo.porSituacao[s]?.qtd || 0).toLocaleString('pt-BR')} sub={brl(resumo.porSituacao[s]?.valor || 0)} cor={SITUACOES[s].cor} ativo={filtroSituacao === s} onClick={() => setFiltroSituacao(s)} />
             ))}
             <Kpi titulo="Fora do fluxo de lotação" valor={resumo.foraFluxo.toLocaleString('pt-BR')} cor={resumo.foraFluxo ? '#b45309' : '#166534'} ativo={filtroSituacao === 'FORA_FLUXO'} onClick={() => setFiltroSituacao('FORA_FLUXO')} />
