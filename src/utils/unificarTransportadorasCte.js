@@ -75,7 +75,10 @@ export function unificarTransportadorasCtes(ctes = [], { aplicarVinculo = (n) =>
     if (raiz) unir(kNome, `R:${raiz}`);
     // raízes que apontam para o mesmo nome do cadastro também se juntam
     for (const nomeTab of cadastroPorRaiz.get(raiz) || []) unir(kNome, `N:${normChave(nomeTab)}`);
-    infoCte.push({ bruto, vinculado, raiz, kNome });
+    // Linhas agregadas (ex.: resumo por transportadora/CNPJ vindo do banco)
+    // informam quantos CT-es representam em `__qtdCtes`; CT-e avulso vale 1.
+    const peso = Number(cte.__qtdCtes) > 0 ? Number(cte.__qtdCtes) : 1;
+    infoCte.push({ bruto, vinculado, raiz, kNome, peso });
   }
 
   const grupos = new Map(); // raiz union-find -> grupo
@@ -84,14 +87,15 @@ export function unificarTransportadorasCtes(ctes = [], { aplicarVinculo = (n) =>
     const k = achar(info.kNome);
     if (!grupos.has(k)) grupos.set(k, { variantes: new Map(), vinculados: new Map(), tabela: new Map(), raizes: new Set(), ctes: 0 });
     const g = grupos.get(k);
-    g.ctes += 1;
-    g.variantes.set(info.bruto, (g.variantes.get(info.bruto) || 0) + 1);
-    g.vinculados.set(info.vinculado, (g.vinculados.get(info.vinculado) || 0) + 1);
+    const w = info.peso;
+    g.ctes += w;
+    g.variantes.set(info.bruto, (g.variantes.get(info.bruto) || 0) + w);
+    g.vinculados.set(info.vinculado, (g.vinculados.get(info.vinculado) || 0) + w);
     if (info.raiz) g.raizes.add(info.raiz);
     const nomesTab = new Set(cadastroPorRaiz.get(info.raiz) || []);
     const oficialPorNome = cadastroPorNome.get(normChave(info.vinculado));
     if (oficialPorNome) nomesTab.add(oficialPorNome);
-    for (const n of nomesTab) g.tabela.set(n, (g.tabela.get(n) || 0) + 1);
+    for (const n of nomesTab) g.tabela.set(n, (g.tabela.get(n) || 0) + w);
   });
 
   const maisFrequente = (mapa) => [...mapa.entries()].sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0], 'pt-BR'))[0]?.[0] || '';
