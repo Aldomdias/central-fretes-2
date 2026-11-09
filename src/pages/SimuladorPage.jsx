@@ -4699,7 +4699,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // real do CT-e (ignora cubagem por completo) em vez do maior entre peso e peso
   // cubado. O percentual de contingência serve pra simular, de forma controlada,
   // o efeito que a cubagem teria no peso — plano B até a fórmula ser validada.
-  const [usarPesoCteRealizado, setUsarPesoCteRealizado] = useState(true);
+  const [usarPesoCteRealizado, setUsarPesoCteRealizado] = useState(false);
   // Persistidos em localStorage: sem isso, um F5 zerava esses campos e o
   // usuário precisava redigitar transportadora/origem toda vez, caindo de
   // volta no nome ruim da negociação ("Gbex Reajuste" em vez de "GUANABARA
@@ -9590,23 +9590,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 </label>
               )}
             </div>
-            <button className="sim-tab" type="button" onClick={exportarSimuladorRealizado} disabled={!resultadoRealizado?.rotas?.length}>
-              Exportar laudo
-            </button>
-            <button className="sim-tab" type="button"
-              onClick={exportarRelatorioTransportadora}
-              disabled={!resultadoRealizado?.ctesAnalisados}
-              title="Relatório sem saving — para enviar à transportadora"
-              style={{ background: '#dbeafe', color: '#1d4ed8', border: '1px solid #93c5fd' }}>
-              📄 Relatório Transportadora
-            </button>
-            <button className="sim-tab" type="button"
-              onClick={exportarRelatorioFornecedorVsRealizado}
-              disabled={!resultadoRealizado?.ctesDetalhes?.length}
-              title="Comparativo tabela × realizado — sem concorrentes, foco no que foi pago vs tabela"
-              style={{ background: '#f3e8ff', color: '#7c3aed', border: '1px solid #c4b5fd' }}>
-              📋 Fornecedor × Realizado
-            </button>
             <button className="sim-tab" type="button"
               onClick={() => exportarLaudoAjusteRotaFaixaTransportador({ incluirSavingGerencial: false })}
               disabled={!resultadoRealizado?.rotasCotacao?.length}
@@ -9643,29 +9626,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
               Gerar laudo projetado + tabela
             </button>
             <button className="sim-tab" type="button"
-              onClick={exportarRelatorioDiretoria}
-              disabled={!resultadoRealizado?.ctesAnalisados}
-              title="Relatório completo com saving — uso interno/diretoria"
-              style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #86efac' }}>
-              📊 Relatório Diretoria
-            </button>
-            <button className="sim-tab" type="button" onClick={() => setLaudoVisualAberto('executivo')} disabled={!resultadoRealizado?.ctesAnalisados}>
-              Ver Laudo Diretoria
-            </button>
-            <button className="sim-tab" type="button" onClick={() => setLaudoVisualAberto('transportador')} disabled={!resultadoRealizado?.ctesAnalisados}>
-              Ver Laudo Transportador
-            </button>
-            <button className="sim-tab" type="button" onClick={salvarLaudosVisuaisNegociacao} disabled={!negociacaoSelecionadaRealizado?.id || salvandoLaudosVisuais}>
-              {salvandoLaudosVisuais ? 'Salvando laudos...' : 'Salvar laudos na negociação'}
-            </button>
-            <button className="sim-tab" type="button"
               onClick={salvarResultadoNegociacaoRealizado}
               disabled={!resultadoRealizado?.ctesAnalisados || !resultadoRealizado?.negociacaoId || salvandoResultadoNegociacao}
               title={resultadoRealizado?.negociacaoLabel
-                ? `Salva o resultado em ${resultadoRealizado.negociacaoLabel}`
+                ? `Salva tudo em ${resultadoRealizado.negociacaoLabel}: resultado, laudos e a simulação completa (CT-es e rotas)`
                 : 'O resultado precisa ser gerado a partir de uma tabela em negociação'}
               style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d' }}>
-              {salvandoResultadoNegociacao ? 'Salvando...' : '💾 Salvar resultado na negociação'}
+              {salvandoResultadoNegociacao ? 'Salvando...' : '💾 Salvar na negociação'}
             </button>
             {!resultadoRealizado?.negociacaoId ? (
               <button className="sim-tab" type="button"
