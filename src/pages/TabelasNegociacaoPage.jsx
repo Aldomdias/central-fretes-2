@@ -76,6 +76,7 @@ import {
 } from '../utils/laudoRodadasExport';
 import { carregarSessao } from '../utils/authLocal';
 import { podePublicarOficial, usuarioEhGestor, enriquecerTabelaGestao, getEstadoSimulacaoNegociacao } from '../utils/tabelasNegociacaoGestao';
+import PublicacaoOficialModal from '../components/tabelasNegociacao/PublicacaoOficialModal';
 import GestaoShell from '../components/tabelasNegociacao/GestaoShell';
 import NegociacaoDetalheCabecalho from '../components/tabelasNegociacao/NegociacaoDetalheCabecalho';
 import {
@@ -165,6 +166,25 @@ function getTipoNegociacaoLabel(tipo) {
   var normalizado = normalizarTexto(tipo).toUpperCase();
   var found = TIPOS_NEGOCIACAO.find(function(item) { return item.value === normalizado; });
   return found ? found.label : 'Nova tabela / Novo transportador';
+}
+// Texto curto do que a publicação fez: alternativa com vigência nas origens
+// que já existiam e/ou origens novas incluídas na transportadora.
+function resumoPublicacaoOficial(tabela) {
+  var promo = (tabela && (tabela.nova_tabela_aprovada_snapshot || (tabela.resumo_simulacao || {}).promocao_oficial)) || {};
+  var partes = [];
+  var reaj = promo.reajuste_vigencia;
+  if (reaj && reaj.origens) {
+    partes.push('Aba "' + reaj.grupo + '" criada em ' + reaj.origens + ' origem(ns) existente(s)'
+      + (reaj.cidades && reaj.cidades.length ? ' (' + reaj.cidades.join(', ') + ')' : '')
+      + (reaj.inicio ? ', vigente a partir de ' + String(reaj.inicio).split('-').reverse().join('/') : '') + '.');
+  }
+  if (promo.origens_novas && promo.origens_novas.length) {
+    partes.push('Origem(ns) nova(s) incluída(s) em ' + (promo.transportadora || 'transportadora') + ': ' + promo.origens_novas.join(', ') + '.');
+  }
+  if (promo.transportadora && promo.transportadora_existente === false) {
+    partes.push('Transportadora ' + promo.transportadora + ' não existia na base oficial e foi cadastrada.');
+  }
+  return partes.join(' ');
 }
 function isReajusteNegociacao(tabela) {
   return getTipoNegociacaoTabela(tabela) === 'REAJUSTE_TABELA_EXISTENTE';
@@ -1064,7 +1084,6 @@ export default function TabelasNegociacaoPage() {
   // Escolha da transportadora da base oficial que vai receber a tabela publicada.
   // Sem isso a publicacao sempre criava um cadastro novo com o nome da negociacao
   // (era assim que nascia "CARVALIMA B2C" separada de "CARVALIMA TRANSPORTES").
-  const [transportadorasOficiais, setTransportadorasOficiais] = useState([]);
   const [modalDestinoOficial, setModalDestinoOficial] = useState(null);
   const [modalNovaOrigem, setModalNovaOrigem] = useState(null);
   const [novaOrigem, setNovaOrigem] = useState(Object.assign({}, NOVA_ORIGEM_VAZIA));
@@ -2724,7 +2743,6 @@ export default function TabelasNegociacaoPage() {
       transportadora_oficial_nome: '',
       modo: podePublicarOficial(tabela) && usuarioEhGestor(sessao) ? 'publicar' : 'enviar',
     });
-    if (podePublicarOficial(tabela) && usuarioEhGestor(sessao)) carregarTransportadorasOficiais();
     if (!cnpjSalvo) {
       try {
         const cadastro = await buscarCnpjTransportadoraCadastro(tabela?.transportadora);
@@ -2737,29 +2755,18 @@ export default function TabelasNegociacaoPage() {
     }
   }
 
-  async function carregarTransportadorasOficiais() {
-    try {
-      const lista = await listarTransportadorasCadastro();
-      setTransportadorasOficiais(lista || []);
-      return lista || [];
-    } catch {
-      setTransportadorasOficiais([]);
-      return [];
-    }
-  }
-
-  // Abre o seletor e resolve com o nome escolhido (null = cancelou).
-  function escolherTransportadoraOficial(tabela) {
+  // Abre a tela de publicação e resolve com o destino escolhido
+  // ({ transportadora_oficial_nome, data_inicio_vigencia, modo_tabela,
+  // nome_aba, mapa_origens }) ou null se cancelar.
+  function escolherDestinoPublicacao(tabela, titulo) {
     return new Promise(function(resolve) {
-      carregarTransportadorasOficiais().then(function(opcoes) {
-        setModalDestinoOficial({ tabela: tabela, opcoes: opcoes, resolver: resolve });
-      });
+      setModalDestinoOficial({ tabela: tabela, titulo: titulo, resolver: resolve });
     });
   }
 
-  function fecharDestinoOficial(nomeEscolhido) {
+  function fecharDestinoOficial(resultado) {
     setModalDestinoOficial(function(atual) {
-      if (atual && typeof atual.resolver === 'function') atual.resolver(nomeEscolhido);
+      if (atual && typeof atual.resolver === 'function') atual.resolver(resultado);
       return null;
     });
   }
@@ -2768,7 +2775,7 @@ export default function TabelasNegociacaoPage() {
     if (!modalAprovacao) return;
     if (!aprovacao.justificativa_aprovacao.trim()) return setErro('Informe uma justificativa.');
     if (!cnpjPreenchidoValido(aprovacao.cnpj_transportadora)) return setErro('Informe o CNPJ completo da transportadora.');
-    if (aprovacao.modo === 'publicar' && aprovacao.substituir_tabela_anterior && !aprovacao.data_inicio_vigencia) {
+    if (aprovacao.modo === 'publicar' && !aprovacao.data_inicio_vigencia) {
       return setErro('Informe a data de início da vigência: o reajuste entra a partir dela e a tabela anterior vale até o dia anterior.');
     }
     const dadosAprovacao = Object.assign({}, aprovacao, {
@@ -2779,11 +2786,13 @@ export default function TabelasNegociacaoPage() {
     try {
       var at;
       if (aprovacao.modo === 'publicar' && podePublicarOficial(modalAprovacao)) {
-        at = await publicarNegociacaoNaBaseOficial(modalAprovacao.id, Object.assign({}, dadosAprovacao, {
+        var destinoModal = await escolherDestinoPublicacao(modalAprovacao, 'Publicar ' + modalAprovacao.transportadora + ' na base oficial');
+        if (!destinoModal) { setSalvando(false); return; }
+        at = await publicarNegociacaoNaBaseOficial(modalAprovacao.id, Object.assign({}, dadosAprovacao, destinoModal, {
           usuario: sessao,
           observacao: aprovacao.observacao_aprovacao || aprovacao.justificativa_aprovacao,
         }));
-        setSucesso('Negociação publicada na base oficial.');
+        setSucesso('Negociação publicada na base oficial. ' + resumoPublicacaoOficial(at));
       } else if (aprovacao.modo === 'aprovar_gestor' && usuarioEhGestor(sessao)) {
         at = await aprovarGestorNegociacao(modalAprovacao.id, Object.assign({}, dadosAprovacao, {
           usuario: sessao,
@@ -2898,7 +2907,7 @@ export default function TabelasNegociacaoPage() {
         justificativa_aprovacao: obs || 'Aprovada pelo gestor',
       });
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
-      setSucesso('Aprovada pelo gestor.');
+      setSucesso('Aprovada pelo gestor, mas ainda NÃO está na base oficial. Ela foi para "Aprovadas — prontas para publicação": clique em "Publicar na base oficial" para escolher transportadora e origem.');
     } catch (e) { setErro(e.message || 'Erro ao aprovar.'); }
     finally { setSalvandoGestao(false); }
   }
@@ -2906,36 +2915,37 @@ export default function TabelasNegociacaoPage() {
   async function handleAprovarPublicarOficial(tabela, obs) {
     var cnpjPublicacao = await garantirCnpjTransportadora(tabela, 'aprovar e publicar');
     if (!cnpjPublicacao) return;
-    var destinoOficial = await escolherTransportadoraOficial(tabela);
-    if (destinoOficial === null) return;
-    var ok = window.confirm('Aprovar e publicar ' + tabela.transportadora + ' dentro de "' + destinoOficial + '" na base oficial agora? A tabela operacional será movida para a base oficial e os itens pesados serão limpos da negociação.');
-    if (!ok) return;
-    var inicioVigenciaPublicacao = pedirInicioVigenciaReajuste(tabela);
-    if (inicioVigenciaPublicacao === null) return;
+    var destino = await escolherDestinoPublicacao(tabela, 'Aprovar e publicar ' + tabela.transportadora);
+    if (!destino) return;
     setProcessamentoPublicacao({ etapa: 'Aprovando negociação', transportadora: tabela.transportadora });
     setSalvandoGestao(true); setErro(''); setSucesso('');
+    var aprovada = null;
     try {
-      var aprovada = await aprovarGestorNegociacao(tabela.id, {
+      aprovada = await aprovarGestorNegociacao(tabela.id, {
         usuario: sessao,
         cnpj_transportadora: cnpjPublicacao,
         aprovador_id: sessao?.id,
         aprovador_nome: sessao?.nome,
+        data_inicio_vigencia: destino.data_inicio_vigencia,
         observacao_aprovacao: obs,
         justificativa_aprovacao: obs || 'Aprovada pelo gestor',
       });
+      setTabelas(function(p) { return p.map(function(i) { return i.id === aprovada.id ? aprovada : i; }); });
       setProcessamentoPublicacao({ etapa: 'Publicando na base oficial', transportadora: tabela.transportadora });
-      var publicada = await publicarNegociacaoNaBaseOficial(aprovada.id, {
+      var publicada = await publicarNegociacaoNaBaseOficial(aprovada.id, Object.assign({}, destino, {
         usuario: sessao,
         cnpj_transportadora: cnpjPublicacao,
-        data_inicio_vigencia: inicioVigenciaPublicacao,
-        substituir_tabela_anterior: isReajusteNegociacao(aprovada),
-        transportadora_oficial_nome: destinoOficial,
         observacao: obs || 'Aprovada pelo gestor e publicada na base oficial',
-      });
+      }));
       setTabelas(function(p) { return p.map(function(i) { return i.id === publicada.id ? publicada : i; }); });
       if (selecionada && selecionada.id === publicada.id) setSelecionada(publicada);
-      setSucesso('Aprovada, publicada na base oficial e dados operacionais da negociação arquivados.');
-    } catch (e) { setErro(e.message || 'Erro ao aprovar e publicar.'); }
+      setSucesso('Aprovada e publicada na base oficial. ' + resumoPublicacaoOficial(publicada));
+    } catch (e) {
+      // Aprovou mas não publicou: deixar claro que ela NÃO está na base oficial.
+      setErro(aprovada
+        ? 'Aprovada, mas NÃO foi publicada na base oficial: ' + (e.message || 'erro na publicação') + ' Ela está em "Aprovadas — prontas para publicação"; corrija e clique em "Publicar na base oficial".'
+        : (e.message || 'Erro ao aprovar e publicar.'));
+    }
     finally { setSalvandoGestao(false); setProcessamentoPublicacao(null); }
   }
 
@@ -2979,45 +2989,21 @@ export default function TabelasNegociacaoPage() {
     finally { setGerandoVerum(false); }
   }
 
-  // Reajuste publicado entra como tabela alternativa com vigência (a anterior
-  // continua valendo até o dia anterior). Pergunta o início; devolve ISO ou null
-  // se cancelar. Negociação que não é reajuste segue com a data de hoje.
-  function pedirInicioVigenciaReajuste(tabela) {
-    if (!isReajusteNegociacao(tabela)) return hojeISO();
-    var resposta = window.prompt(
-      'Reajuste: a nova tabela entra como alternativa com vigência e a anterior vale até o dia anterior.\nInforme o início da vigência (dd/mm/aaaa):',
-      hojeISO().split('-').reverse().join('/')
-    );
-    if (resposta === null) return null;
-    var texto = String(resposta).trim();
-    var br = texto.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-    var iso = br ? br[3] + '-' + br[2] + '-' + br[1] : texto;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) { setErro('Data de vigência inválida. Use dd/mm/aaaa.'); return null; }
-    return iso;
-  }
-
   async function handlePublicarOficial(tabela) {
     var cnpjPublicar = await garantirCnpjTransportadora(tabela, 'publicar na base oficial');
     if (!cnpjPublicar) return;
-    var destinoPublicacao = await escolherTransportadoraOficial(tabela);
-    if (destinoPublicacao === null) return;
-    var inicioVigenciaPublicar = pedirInicioVigenciaReajuste(tabela);
-    if (inicioVigenciaPublicar === null) return;
-    var ok = window.confirm('Publicar ' + tabela.transportadora + ' dentro de "' + destinoPublicacao + '" na base oficial? Esta ação só é permitida após aprovação do gestor.');
-    if (!ok) return;
+    var destino = await escolherDestinoPublicacao(tabela, 'Publicar ' + tabela.transportadora + ' na base oficial');
+    if (!destino) return;
     setProcessamentoPublicacao({ etapa: 'Publicando na base oficial', transportadora: tabela.transportadora });
     setSalvandoGestao(true); setErro(''); setSucesso('');
     try {
-      var at = await publicarNegociacaoNaBaseOficial(tabela.id, {
+      var at = await publicarNegociacaoNaBaseOficial(tabela.id, Object.assign({}, destino, {
         usuario: sessao,
         cnpj_transportadora: cnpjPublicar,
-        data_inicio_vigencia: inicioVigenciaPublicar,
-        substituir_tabela_anterior: isReajusteNegociacao(tabela),
-        transportadora_oficial_nome: destinoPublicacao,
-      });
+      }));
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
-      setSucesso('Publicada na base oficial.');
-    } catch (e) { setErro(e.message || 'Erro ao publicar.'); }
+      setSucesso('Publicada na base oficial. ' + resumoPublicacaoOficial(at));
+    } catch (e) { setErro('Não foi publicada na base oficial: ' + (e.message || 'erro ao publicar.')); }
     finally { setSalvandoGestao(false); setProcessamentoPublicacao(null); }
   }
 
@@ -4806,42 +4792,12 @@ export default function TabelasNegociacaoPage() {
 
       {/* MODAL APROVAÇÃO */}
       {renderModalPortal(modalDestinoOficial ? (
-        <div
-          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 100001, display: 'grid', placeItems: 'center', padding: 20 }}
-          onClick={function() { fecharDestinoOficial(null); }}
-        >
-          <div className="sim-card" style={{ width: 'min(560px,100%)' }} onClick={function(event) { event.stopPropagation(); }}>
-            <h2 style={{ marginTop: 0 }}>Onde cadastrar esta tabela?</h2>
-            <p style={{ color: '#64748b' }}>
-              A negociação <strong>{modalDestinoOficial.tabela?.transportadora}</strong> vai virar origem na base oficial.
-              Escolha a transportadora que vai receber essa origem — assim ela não fica como um cadastro separado.
-            </p>
-            <label>Transportadora da base oficial
-              <select
-                value={modalDestinoOficial.escolha === undefined ? '' : modalDestinoOficial.escolha}
-                onChange={function(e) {
-                  var valor = e.target.value;
-                  setModalDestinoOficial(function(atual) { return atual ? Object.assign({}, atual, { escolha: valor }) : atual; });
-                }}
-              >
-                <option value="">Criar cadastro novo: {modalDestinoOficial.tabela?.transportadora}</option>
-                {(modalDestinoOficial.opcoes || []).map(function(item) {
-                  return <option key={item.id} value={item.nome}>{item.nome}</option>;
-                })}
-              </select>
-            </label>
-            <div className="sim-actions" style={{ marginTop: 14 }}>
-              <button
-                className="primary"
-                type="button"
-                onClick={function() { fecharDestinoOficial(modalDestinoOficial.escolha || modalDestinoOficial.tabela?.transportadora || ''); }}
-              >
-                Continuar
-              </button>
-              <button className="sim-tab" type="button" onClick={function() { fecharDestinoOficial(null); }}>Cancelar</button>
-            </div>
-          </div>
-        </div>
+        <PublicacaoOficialModal
+          tabela={modalDestinoOficial.tabela}
+          titulo={modalDestinoOficial.titulo}
+          onCancelar={function() { fecharDestinoOficial(null); }}
+          onConfirmar={function(resultado) { fecharDestinoOficial(resultado); }}
+        />
       ) : null)}
       {renderModalPortal(modalAprovacao ? (
         <div
@@ -4900,24 +4856,8 @@ export default function TabelasNegociacaoPage() {
               )}
             </div>
             {aprovacao.modo === 'publicar' ? (
-              <label style={{ marginTop: 12, display: 'block' }}>Cadastrar dentro da transportadora
-                <select
-                  value={aprovacao.transportadora_oficial_nome || ''}
-                  onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { transportadora_oficial_nome: e.target.value }); }); }}
-                >
-                  <option value="">Criar/usar cadastro com o nome da negociação: {modalAprovacao.transportadora}</option>
-                  {transportadorasOficiais.map(function(item) {
-                    return <option key={item.id} value={item.nome}>{item.nome}</option>;
-                  })}
-                </select>
-                <span style={{ display: 'block', fontSize: 12, color: '#64748b', marginTop: 4 }}>
-                  Escolha uma transportadora que já existe na base oficial para a origem entrar dentro dela, em vez de criar um cadastro separado.
-                </span>
-              </label>
-            ) : null}
-            {isReajusteNegociacao(modalAprovacao) ? (
               <div className="sim-alert info" style={{ marginTop: 12 }}>
-                Reajuste aprovado: ao publicar com "Substitui tabela anterior" marcado, a nova tabela entra na base oficial como alternativa "Reajuste dd/mm/aaaa" com vigência a partir da data informada. A tabela anterior não é apagada: continua valendo para CT-es emitidos antes dessa data (e vigências de reajustes anteriores são encerradas no dia anterior). Origens que ainda não existem na base entram como tabela principal.
+                Ao confirmar, abre a tela de publicação para escolher a transportadora, a origem de destino e se a tabela substitui a atual a partir da vigência ou entra como nova aba. Nada vai para a base oficial sem destino definido.
               </div>
             ) : null}
             <label style={{ marginTop: 12 }}>Observacao da aprovacao
