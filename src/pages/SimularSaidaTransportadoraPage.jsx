@@ -368,7 +368,7 @@ function SeletorTransportadora({ grupos, totais, valor, onChange }) {
 
 function Card({ label, valor, sub, cor, destaque }) {
   return (
-    <div style={{ background: '#fff', border: `1px solid ${destaque ? cor : '#e2e8f0'}`, borderLeft: `4px solid ${cor}`, borderRadius: 10, padding: '12px 18px', minWidth: 170 }}>
+    <div style={{ background: '#fff', border: `1px solid ${destaque ? cor : '#e2e8f0'}`, borderLeft: `4px solid ${cor}`, borderRadius: 10, padding: '12px 18px', minWidth: 0 }}>
       <div style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600, marginBottom: 2 }}>{label}</div>
       <div style={{ fontSize: '1.45rem', fontWeight: 800, color: destaque ? cor : '#1e293b' }}>{valor}</div>
       {sub && <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: 2 }}>{sub}</div>}
@@ -607,14 +607,44 @@ export default function SimularSaidaTransportadoraPage() {
     });
   }
 
+  // Filtros de origem/destino sobre o resultado: cards, rotas e laudo seguem o recorte.
+  const [filtroRota, setFiltroRota] = useState({ ufOrigem: '', origem: '', ufDestino: '', destino: '' });
+  const filtroAtivo = Boolean(filtroRota.ufOrigem || filtroRota.origem || filtroRota.ufDestino || filtroRota.destino);
+  const opcoesFiltroRota = useMemo(() => {
+    const ufO = new Set(); const ufD = new Set(); const cidO = new Map(); const cidD = new Map();
+    for (const c of simulacao?.ctesSimulados || []) {
+      if (c.ufOrigem) ufO.add(c.ufOrigem);
+      if (c.ufDestino) ufD.add(c.ufDestino);
+      if (!filtroRota.ufOrigem || c.ufOrigem === filtroRota.ufOrigem) cidO.set(`${c.cidadeOrigem}/${c.ufOrigem}`, true);
+      if (!filtroRota.ufDestino || c.ufDestino === filtroRota.ufDestino) cidD.set(`${c.cidadeDestino}/${c.ufDestino}`, true);
+    }
+    const ord = (arr) => [...arr].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    return { ufOrigem: ord(ufO), ufDestino: ord(ufD), origem: ord(cidO.keys()), destino: ord(cidD.keys()) };
+  }, [simulacao, filtroRota.ufOrigem, filtroRota.ufDestino]);
+  const ctesFiltrados = useMemo(() => {
+    const lista = simulacao?.ctesSimulados || [];
+    if (!filtroAtivo) return lista;
+    return lista.filter((c) => (
+      (!filtroRota.ufOrigem || c.ufOrigem === filtroRota.ufOrigem)
+      && (!filtroRota.origem || `${c.cidadeOrigem}/${c.ufOrigem}` === filtroRota.origem)
+      && (!filtroRota.ufDestino || c.ufDestino === filtroRota.ufDestino)
+      && (!filtroRota.destino || `${c.cidadeDestino}/${c.ufDestino}` === filtroRota.destino)
+    ));
+  }, [simulacao, filtroRota, filtroAtivo]);
+  const descricaoFiltroRota = [
+    filtroRota.origem ? `Origem ${filtroRota.origem}` : (filtroRota.ufOrigem ? `Origem UF ${filtroRota.ufOrigem}` : ''),
+    filtroRota.destino ? `Destino ${filtroRota.destino}` : (filtroRota.ufDestino ? `Destino UF ${filtroRota.ufDestino}` : ''),
+  ].filter(Boolean).join(' • ');
+
   const resultado = useMemo(() => {
     if (!simulacao) return null;
     return {
-      ...agregarRotas(simulacao.ctesSimulados, exclusoes, reajustePct),
-      totalCtes: simulacao.ctesSimulados.length,
+      ...agregarRotas(ctesFiltrados, exclusoes, reajustePct),
+      totalCtes: ctesFiltrados.length,
+      totalCtesSemFiltro: simulacao.ctesSimulados.length,
       semIbge: simulacao.semIbge,
     };
-  }, [simulacao, exclusoes, reajustePct]);
+  }, [simulacao, ctesFiltrados, exclusoes, reajustePct]);
 
   const opcoesExcluir = useMemo(() => {
     if (!simulacao) return [];
@@ -637,6 +667,7 @@ export default function SimularSaidaTransportadoraPage() {
       canal: r.canal || '',
       reajustePct: reajustePct,
       exclusoes: opcoesExcluir.filter((n) => exclusoes.has(norm(n))),
+      filtroRotas: descricaoFiltroRota,
       geradoEm: new Date().toISOString(),
     };
   }
@@ -759,6 +790,7 @@ export default function SimularSaidaTransportadoraPage() {
   async function simularSaida() {
     if (!base || !transportadora) return;
     setStatusSim('carregando'); setErro(''); setSimulacao(null); setExclusoes(new Set()); setRotasAbertas(new Set());
+    setFiltroRota({ ufOrigem: '', origem: '', ufDestino: '', destino: '' });
     try {
       const { municipioPorCidade, mapasIbge, mapaVinculos, unificacao } = base;
       let ctesDaTransp;
@@ -951,7 +983,32 @@ export default function SimularSaidaTransportadoraPage() {
 
       {resultado && (
         <>
-          <div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', margin: '1rem 0' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: 10, margin: '1rem 0 0.5rem' }}>
+            {[
+              ['ufOrigem', 'UF origem', opcoesFiltroRota.ufOrigem, (v) => ({ ufOrigem: v, origem: '' })],
+              ['origem', 'Cidade origem', opcoesFiltroRota.origem, (v) => ({ origem: v })],
+              ['ufDestino', 'UF destino', opcoesFiltroRota.ufDestino, (v) => ({ ufDestino: v, destino: '' })],
+              ['destino', 'Cidade destino', opcoesFiltroRota.destino, (v) => ({ destino: v })],
+            ].map(([campo, rotulo, opcoes, montar]) => (
+              <label key={campo} style={{ fontSize: '0.75rem', color: '#64748b', minWidth: campo.startsWith('uf') ? 110 : 200 }}>
+                {rotulo}
+                <select value={filtroRota[campo]} onChange={(e) => setFiltroRota((f) => ({ ...f, ...montar(e.target.value) }))} style={{ width: '100%' }}>
+                  <option value="">Todas</option>
+                  {opcoes.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </label>
+            ))}
+            {filtroAtivo && (
+              <button type="button" className="sim-tab" onClick={() => setFiltroRota({ ufOrigem: '', origem: '', ufDestino: '', destino: '' })}>Limpar filtros</button>
+            )}
+            {filtroAtivo && (
+              <span style={{ fontSize: '0.78rem', color: '#1d4ed8' }}>
+                Mostrando {fmtN(resultado.totalCtes)} de {fmtN(resultado.totalCtesSemFiltro)} CT-es — cards, rotas e laudo seguem o filtro.
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '0.75rem', margin: '0.5rem 0 1rem' }}>
             <Card label="Rotas atendidas" valor={fmtN(resultado.totalRotas)} sub={`${fmtN(resultado.totalCtes)} CT-es`} cor="#1e293b" />
             <Card label="Sem substituto" valor={fmtN(resultado.rotasSemSubstituto)} sub="rotas sem tabela alternativa" cor="#9b1111" destaque={resultado.rotasSemSubstituto > 0} />
             <Card label="Custo atual" valor={fmt(resultado.custoAtual)} sub="frete pago a esta transportadora" cor="#1e293b" />
@@ -971,13 +1028,13 @@ export default function SimularSaidaTransportadoraPage() {
 
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: '1rem' }}>
             <button type="button" className="primary" onClick={() => exportarLaudo('pdf')} disabled={!!exportando || !resultado.linhas.length}>
-              {exportando === 'pdf' ? 'Gerando laudo...' : 'Laudo completo (PDF)'}
+              {exportando === 'pdf' ? 'Gerando laudo...' : 'Laudo (PDF)'}
             </button>
             <button type="button" className="sim-tab" onClick={() => exportarLaudo('excel')} disabled={!!exportando || !resultado.linhas.length}>
               {exportando === 'excel' ? 'Gerando Excel...' : 'Exportar Excel detalhado'}
             </button>
             <span style={{ fontSize: '0.76rem', color: '#64748b' }}>
-              Parecer, cenários (reajuste × saída total × híbrido), rotas críticas, impacto de prazo, substitutas e detalhe por rota/CT-e — respeita reajuste e exclusões atuais.
+              Laudo: parecer, números principais, rotas que pedem atenção e quem assumiria o volume. Excel: detalhe por rota e CT-e. Ambos seguem reajuste, exclusões e filtros de origem/destino.
             </span>
           </div>
 

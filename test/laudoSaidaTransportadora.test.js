@@ -64,3 +64,13 @@ test('unifica nomes do CT-e pela raiz do CNPJ e pelo cadastro', () => {
   const v = unificarTransportadorasCtes([{ transportadora: 'A1' }, { transportadora: 'A2' }], { aplicarVinculo: (n) => (n === 'A1' ? 'A2' : n) });
   assert.equal(v.grupos.length, 1); assert.equal(v.grupos[0].nome, 'A2');
 });
+
+test('laudo enxuto mostra filtro de origem/destino e não traz mais o detalhamento completo', () => {
+  const html = gerarHtmlLaudoSaida(resultado, { transportadora: 'LTSL ENCOMENDAS', reajustePct: 20, filtroRotas: 'Origem UF SC' });
+  assert.match(html, /Filtro: Origem UF SC/);
+  assert.match(html, /Rotas que pedem atenção/);
+  assert.match(html, /Quem assumiria o volume/);
+  assert.doesNotMatch(html, /Detalhamento completo por rota/);
+  const abas = montarAbasExcelLaudoSaida(resultado, { transportadora: 'X', filtroRotas: 'Origem UF SC' });
+  assert.ok(abas[0].linhas.some((l) => l.includes('Origem UF SC')));
+});
