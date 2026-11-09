@@ -1895,6 +1895,36 @@ export async function localizarTransportadoraOficialDb(nomeTransportadora, cnpj 
   return null;
 }
 
+// Origens cadastradas de uma transportadora oficial (para o gestor escolher
+// onde a tabela aprovada vai entrar). Traz as abas alternativas existentes.
+export async function listarOrigensOficiaisTransportadoraDb(transportadoraId) {
+  if (!isSupabaseConfigured() || !transportadoraId) return [];
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('origens')
+    .select('id, cidade, canal, status')
+    .eq('transportadora_id', transportadoraId)
+    .order('cidade', { ascending: true });
+  if (error) throw error;
+  const origens = data || [];
+  if (!origens.length) return [];
+  const gruposPorOrigem = new Map();
+  for (const lote of chunksDb(origens.map((o) => o.id), 50)) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data: gens, error: erroGen } = await supabase
+      .from('generalidades')
+      .select('origem_id, grupo_tabela_alternativa, vigencia_inicio, vigencia_fim')
+      .in('origem_id', lote)
+      .neq('grupo_tabela_alternativa', '');
+    if (erroGen) throw erroGen;
+    (gens || []).forEach((g) => {
+      if (!gruposPorOrigem.has(g.origem_id)) gruposPorOrigem.set(g.origem_id, []);
+      gruposPorOrigem.get(g.origem_id).push({ grupo: g.grupo_tabela_alternativa, inicio: g.vigencia_inicio || '', fim: g.vigencia_fim || '' });
+    });
+  }
+  return origens.map((o) => ({ ...o, abas: gruposPorOrigem.get(o.id) || [] }));
+}
+
 // Reajuste/publicação aprovados em Negociações: localiza, na base oficial, as
 // origens da transportadora que já existem. Casa por cidade (sem acento) +
 // canal; se o canal diferir mas só houver uma origem na cidade, usa ela; se a

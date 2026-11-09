@@ -87,7 +87,7 @@ export default function GestaoAprovacoes({
             />
             {ehGestor ? (
               <div className="sim-actions" style={{ marginTop: 10 }}>
-                <button className="primary" type="button" disabled={salvando} onClick={() => onAprovar(t, obs(t.id))}>Aprovar</button>
+                <button className="sim-tab" type="button" disabled={salvando} onClick={() => onAprovar(t, obs(t.id))} title="Só aprova. A tabela NÃO vai para Transportadoras até clicar em Publicar na base oficial.">Aprovar (sem publicar)</button>
                 {typeof onAprovarPublicar === 'function' ? (
                   <button className="primary" type="button" disabled={salvando} onClick={() => onAprovarPublicar(t, obs(t.id))}>Aprovar e publicar</button>
                 ) : null}

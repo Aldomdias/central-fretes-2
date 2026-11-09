@@ -19,6 +19,7 @@ import {
   salvarSecaoDb,
   localizarOrigensOficiaisDb,
   localizarTransportadoraOficialDb,
+  listarOrigensOficiaisTransportadoraDb,
   limparGrupoTabelaAlternativaOrigensDb,
   salvarVigenciaTabelaAlternativaDb,
   encerrarVigenciasAnterioresDb,
@@ -1732,6 +1733,60 @@ export async function importarTabelaOficialParaNegociacao(tabela, transportadora
   return convertido.resumo;
 }
 
+// Chave estável de uma origem da negociação convertida (a tela de publicação
+// usa a mesma chave para dizer para qual origem oficial cada uma vai).
+export function chaveOrigemPublicacao(origem = {}) {
+  return [
+    String(origem.cidade || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase(),
+    String(origem.uf || '').trim().toUpperCase(),
+    String(origem.ibgeOrigem || '').replace(/\D/g, ''),
+    String(origem.canal || 'ATACADO').trim().toUpperCase(),
+  ].join('|');
+}
+
+// Tela de publicação: origens que a negociação vai gerar (sem gravar nada) e a
+// sugestão de destino em cada transportadora oficial.
+export async function listarOrigensNegociacaoParaPublicacao(id) {
+  const tabela = await obterTabelaNegociacao(id);
+  const ehLotacao = upper(tabela.tipo_negociacao) === 'TABELA_LOTACAO'
+    || upper(tabela.tipo_tabela) === 'LOTACAO'
+    || upper(tabela.canal) === 'LOTACAO';
+  if (ehLotacao) return { lotacao: true, origens: [] };
+  const itens = await listarTodosItensTabelaNegociacao(id);
+  if (!itens.length) throw new Error('Não há itens salvos nesta negociação para publicar.');
+  const taxasDestino = await listarTodasTaxasDestinoTabela(id);
+  const convertido = converterTabelaNegociacaoParaSimulador({
+    ...tabela,
+    tabelas_negociacao_itens: itens,
+    tabelas_negociacao_taxas_destino: taxasDestino,
+  });
+  const origens = (convertido?.origens || []).map((origem) => ({
+    chave: chaveOrigemPublicacao({ ...origem, canal: origem.canal || tabela.canal || 'ATACADO' }),
+    cidade: origem.cidade || '',
+    uf: origem.uf || '',
+    ibgeOrigem: origem.ibgeOrigem || '',
+    canal: origem.canal || tabela.canal || 'ATACADO',
+    rotas: (origem.rotas || []).length,
+    cotacoes: (origem.cotacoes || []).length,
+  }));
+  return { lotacao: false, origens };
+}
+
+// Origens de uma transportadora oficial + sugestão de destino para cada origem
+// da negociação (mesma cidade/canal ou mesmo IBGE de origem).
+export async function sugerirDestinoOrigensPublicacao(transportadoraId, origensNegociacao = []) {
+  const oficiais = await listarOrigensOficiaisTransportadoraDb(transportadoraId);
+  const sugestoes = {};
+  if (oficiais.length && origensNegociacao.length) {
+    const encontrados = await localizarOrigensOficiaisDb('', origensNegociacao, { transportadoraId });
+    encontrados.forEach((item) => {
+      const origem = origensNegociacao[item.indice];
+      if (origem) sugestoes[origem.chave] = item.id;
+    });
+  }
+  return { oficiais, sugestoes };
+}
+
 async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
   const tabela = await obterTabelaNegociacao(id);
   const itens = await listarTodosItensTabelaNegociacao(id);
@@ -1823,18 +1878,56 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
   }];
 
   // Origens que já existem na transportadora oficial NUNCA são sobrescritas: a
-  // nova tabela entra como alternativa "Reajuste dd/mm/aaaa" com início de
-  // vigência e a anterior continua valendo para CT-es emitidos antes. (Gravar
-  // por cima da principal misturava as linhas antigas com as novas.) Origens
-  // novas entram como tabela principal dentro da transportadora.
-  const existentes = transportadoraExistente
-    ? await localizarOrigensOficiaisDb(
+  // nova tabela entra como aba alternativa — "Reajuste dd/mm/aaaa" com início de
+  // vigência (a anterior vale até o dia anterior) ou uma aba nova com nome
+  // livre. Origens novas entram como tabela principal dentro da transportadora.
+  //
+  // O destino de cada origem vem do gestor (dados.mapa_origens, escolhido na
+  // tela de publicação). Sem mapa, cai na localização automática.
+  const normCidade = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+  const canalDe = (v) => String(v || 'ATACADO').trim().toUpperCase();
+  const modoTabela = upper(dados.modo_tabela) === 'NOVA_ABA' ? 'NOVA_ABA' : 'SUBSTITUIR_VIGENCIA';
+  const mapaManual = dados.mapa_origens && typeof dados.mapa_origens === 'object' ? dados.mapa_origens : null;
+  const oficiaisDaTransportadora = transportadoraExistente
+    ? await listarOrigensOficiaisTransportadoraDb(transportadoraExistente.id)
+    : [];
+
+  const existentePorIndice = new Map();
+  if (mapaManual) {
+    baseOficial[0].origens.forEach((origem, indice) => {
+      const chave = chaveOrigemPublicacao(origem);
+      const escolha = mapaManual[chave];
+      const rotulo = origem.cidade || (origem.ibgeOrigem ? `IBGE ${origem.ibgeOrigem}` : 'sem cidade');
+      if (!escolha) throw new Error(`Escolha o destino da origem ${rotulo} da negociação. Nada foi gravado.`);
+      if (escolha.destino === 'EXISTENTE') {
+        const oficial = oficiaisDaTransportadora.find((o) => String(o.id) === String(escolha.origem_id));
+        if (!oficial) throw new Error(`A origem escolhida para ${rotulo} não pertence a ${nomeOficial}. Nada foi gravado.`);
+        existentePorIndice.set(indice, { ...oficial, indice });
+      } else {
+        const cidade = texto(escolha.cidade) || texto(origem.cidade);
+        if (!cidade) throw new Error(`Informe a cidade da nova origem (${rotulo}). Nada foi gravado.`);
+        const jaExiste = oficiaisDaTransportadora.find((o) => normCidade(o.cidade) === normCidade(cidade) && canalDe(o.canal) === canalDe(origem.canal));
+        if (jaExiste) {
+          throw new Error(`${nomeOficial} já tem a origem ${jaExiste.cidade} (${canalDe(jaExiste.canal)}). Selecione-a como origem existente em vez de criar outra. Nada foi gravado.`);
+        }
+        origem.cidade = cidade;
+        if (texto(escolha.uf)) origem.uf = upper(escolha.uf);
+      }
+    });
+  } else if (transportadoraExistente) {
+    const encontrados = await localizarOrigensOficiaisDb(
       nomeOficial,
       baseOficial[0].origens.map((origem) => ({ cidade: origem.cidade, canal: origem.canal, ibgeOrigem: origem.ibgeOrigem })),
       { transportadoraId: transportadoraExistente.id },
-    )
-    : [];
-  const existentePorIndice = new Map(existentes.map((item) => [item.indice, item]));
+    );
+    encontrados.forEach((item) => existentePorIndice.set(item.indice, item));
+  }
+
+  const idsDestino = Array.from(existentePorIndice.values()).map((item) => String(item.id));
+  if (new Set(idsDestino).size !== idsDestino.length) {
+    throw new Error('Duas origens da negociação foram direcionadas para a mesma origem oficial. Escolha um destino diferente para cada uma. Nada foi gravado.');
+  }
+
   const origensReajuste = baseOficial[0].origens.filter((_, indice) => existentePorIndice.has(indice));
   const origensNormais = baseOficial[0].origens.filter((_, indice) => !existentePorIndice.has(indice));
 
@@ -1844,14 +1937,24 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
   if (semCidade.length) {
     throw new Error(
       `A negociação tem ${semCidade.length} origem(ns) sem cidade${semCidade[0].ibgeOrigem ? ` (IBGE ${semCidade[0].ibgeOrigem})` : ''} que não casou com nenhuma origem de ${nomeOficial} na base oficial. `
-      + 'Informe a cidade de origem na negociação (ou escolha a transportadora oficial correta) antes de publicar. Nada foi gravado.'
+      + 'Escolha a origem de destino na tela de publicação. Nada foi gravado.'
     );
+  }
+
+  let grupo = '';
+  if (origensReajuste.length) {
+    if (modoTabela === 'NOVA_ABA') {
+      grupo = texto(dados.nome_aba);
+      if (!grupo) throw new Error('Informe o nome da nova aba de tabela. Nada foi gravado.');
+      if (/^principal$/i.test(grupo)) throw new Error('"Principal" é reservado. Use outro nome para a nova aba. Nada foi gravado.');
+    } else {
+      const [ano, mes, dia] = inicioVigencia.split('-');
+      grupo = `Reajuste ${dia}/${mes}/${ano}`;
+    }
   }
 
   let reajusteVigencia = null;
   if (origensReajuste.length) {
-    const [ano, mes, dia] = inicioVigencia.split('-');
-    const grupo = `Reajuste ${dia}/${mes}/${ano}`;
     const marcarGrupo = (lista) => (lista || []).map((item) => ({ ...item, grupoTabelaAlternativa: grupo }));
     // Fixa id/cidade/canal da origem oficial: o salvarSecaoDb casa origens só
     // por cidade+canal exatos e, no modo somenteAlternativas, não grava a
@@ -1874,9 +1977,9 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
           generalidadesAlternativas: [{ ...(origem.generalidades || {}), grupoTabelaAlternativa: grupo }],
         })),
     }];
-    const idsOrigens = Array.from(new Set(existentes.map((item) => item.id)));
+    const idsOrigens = Array.from(new Set(idsDestino));
 
-    // Republicar o mesmo reajuste não pode duplicar linhas do grupo.
+    // Republicar a mesma aba não pode duplicar linhas do grupo.
     await limparGrupoTabelaAlternativaOrigensDb(idsOrigens, grupo);
     const opcoesGrupo = { somenteAlternativas: true };
     await salvarSecaoDb(baseReajuste, 'generalidades', undefined, opcoesGrupo);
@@ -1884,14 +1987,18 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
     await salvarSecaoDb(baseReajuste, 'cotacoes', undefined, opcoesGrupo);
     await salvarSecaoDb(baseReajuste, 'taxas', undefined, opcoesGrupo);
 
-    for (const origemId of idsOrigens) {
-      // eslint-disable-next-line no-await-in-loop
-      await salvarVigenciaTabelaAlternativaDb(origemId, grupo, { inicio: inicioVigencia, fim: '' });
+    let anterioresEncerradas = 0;
+    if (modoTabela === 'SUBSTITUIR_VIGENCIA') {
+      for (const origemId of idsOrigens) {
+        // eslint-disable-next-line no-await-in-loop
+        await salvarVigenciaTabelaAlternativaDb(origemId, grupo, { inicio: inicioVigencia, fim: '' });
+      }
+      anterioresEncerradas = await encerrarVigenciasAnterioresDb(idsOrigens, grupo, inicioVigencia);
     }
-    const anterioresEncerradas = await encerrarVigenciasAnterioresDb(idsOrigens, grupo, inicioVigencia);
     reajusteVigencia = {
       grupo,
-      inicio: inicioVigencia,
+      modo: modoTabela,
+      inicio: modoTabela === 'SUBSTITUIR_VIGENCIA' ? inicioVigencia : '',
       origens: idsOrigens.length,
       cidades: baseReajuste[0].origens.map((origem) => origem.cidade),
       vigencias_anteriores_encerradas: anterioresEncerradas,
