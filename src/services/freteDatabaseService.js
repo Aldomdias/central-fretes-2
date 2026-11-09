@@ -1852,15 +1852,91 @@ export async function salvarVigenciaTabelaAlternativaDb(origemId, grupoTabelaAlt
   return { ok: true, origemId: origemIdPersistencia };
 }
 
-// Reajuste aprovado em Negociações: localiza, na base oficial, as origens da
-// transportadora que já existem (mesma cidade e canal; se o canal diferir mas só
-// houver uma origem na cidade, usa ela). Devolve [{ id, cidade, canal, chave }]
-// onde `chave` é a cidade+canal da origem informada (pra o chamador casar).
-export async function localizarOrigensOficiaisDb(nomeTransportadora, origens = []) {
-  if (!isSupabaseConfigured() || !nomeTransportadora || !origens.length) return [];
+// Nome de transportadora comparável: sem acento, sem caixa e só letras/dígitos
+// ("TRANSEXPRESS", "Trans Express" e "Transexpress" viram a mesma chave).
+export function normalizarNomeTransportadoraDb(nome) {
+  return String(nome || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// Publicação de negociação: acha a transportadora JÁ cadastrada na base oficial.
+// Antes a busca era por nome exato (com caixa) e, quando não batia, a publicação
+// criava uma transportadora nova em vez de entrar na existente. Ordem:
+// 1) nome exato; 2) nome normalizado; 3) raiz do CNPJ das origens.
+export async function localizarTransportadoraOficialDb(nomeTransportadora, cnpj = '') {
+  if (!isSupabaseConfigured()) return null;
   const supabase = ensureClient();
-  const transportadoras = await fetchTransportadorasByNome(supabase, [nomeTransportadora]);
-  const alvo = transportadoras.find((t) => String(t.nome || '').trim().toLowerCase() === String(nomeTransportadora).trim().toLowerCase());
+  const nome = String(nomeTransportadora || '').trim();
+  if (nome) {
+    const exatas = await fetchTransportadorasByNome(supabase, [nome]);
+    if (exatas.length) return exatas[0];
+  }
+  const chave = normalizarNomeTransportadoraDb(nome);
+  if (chave) {
+    const { data, error } = await supabase.from('transportadoras').select('id, nome').range(0, 9999);
+    if (error) throw error;
+    const iguais = (data || []).filter((t) => normalizarNomeTransportadoraDb(t.nome) === chave);
+    if (iguais.length === 1) return iguais[0];
+  }
+  const raiz = onlyDigitsDb(cnpj).slice(0, 8);
+  if (raiz.length === 8) {
+    const { data, error } = await supabase
+      .from('origens')
+      .select('transportadora_id')
+      .eq('cnpj_raiz', raiz)
+      .limit(200);
+    if (error) throw error;
+    const ids = Array.from(new Set((data || []).map((o) => o.transportadora_id).filter(Boolean)));
+    if (ids.length === 1) {
+      const { data: t, error: erroT } = await supabase.from('transportadoras').select('id, nome').eq('id', ids[0]).maybeSingle();
+      if (erroT) throw erroT;
+      if (t) return t;
+    }
+  }
+  return null;
+}
+
+// Origens cadastradas de uma transportadora oficial (para o gestor escolher
+// onde a tabela aprovada vai entrar). Traz as abas alternativas existentes.
+export async function listarOrigensOficiaisTransportadoraDb(transportadoraId) {
+  if (!isSupabaseConfigured() || !transportadoraId) return [];
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('origens')
+    .select('id, cidade, canal, status')
+    .eq('transportadora_id', transportadoraId)
+    .order('cidade', { ascending: true });
+  if (error) throw error;
+  const origens = data || [];
+  if (!origens.length) return [];
+  const gruposPorOrigem = new Map();
+  for (const lote of chunksDb(origens.map((o) => o.id), 50)) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data: gens, error: erroGen } = await supabase
+      .from('generalidades')
+      .select('origem_id, grupo_tabela_alternativa, vigencia_inicio, vigencia_fim')
+      .in('origem_id', lote)
+      .neq('grupo_tabela_alternativa', '');
+    if (erroGen) throw erroGen;
+    (gens || []).forEach((g) => {
+      if (!gruposPorOrigem.has(g.origem_id)) gruposPorOrigem.set(g.origem_id, []);
+      gruposPorOrigem.get(g.origem_id).push({ grupo: g.grupo_tabela_alternativa, inicio: g.vigencia_inicio || '', fim: g.vigencia_fim || '' });
+    });
+  }
+  return origens.map((o) => ({ ...o, abas: gruposPorOrigem.get(o.id) || [] }));
+}
+
+// Reajuste/publicação aprovados em Negociações: localiza, na base oficial, as
+// origens da transportadora que já existem. Casa por cidade (sem acento) +
+// canal; se o canal diferir mas só houver uma origem na cidade, usa ela; se a
+// negociação não trouxe cidade (só IBGE), casa pelo IBGE de origem das rotas
+// já cadastradas. Devolve [{ id, cidade, canal, chave, indice }] onde `indice`
+// é a posição da origem informada (pra o chamador casar mesmo sem cidade).
+export async function localizarOrigensOficiaisDb(nomeTransportadora, origens = [], opcoes = {}) {
+  if (!isSupabaseConfigured() || !origens.length) return [];
+  const supabase = ensureClient();
+  const alvo = opcoes.transportadoraId
+    ? { id: opcoes.transportadoraId }
+    : await localizarTransportadoraOficialDb(nomeTransportadora, opcoes.cnpj);
   if (!alvo) return [];
   const { data, error } = await supabase
     .from('origens')
@@ -1868,16 +1944,46 @@ export async function localizarOrigensOficiaisDb(nomeTransportadora, origens = [
     .eq('transportadora_id', alvo.id);
   if (error) throw error;
   const existentes = data || [];
+  if (!existentes.length) return [];
   // Sem acento: "Goiania" e "Goiânia" são a mesma origem (a publicação já falhou
   // em casar por causa disso e criou uma origem duplicada).
-  const norm = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+  const norm = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+  const canalDe = (v) => String(v || 'ATACADO').trim().toUpperCase();
+
+  // IBGE de origem → origens oficiais, lido das rotas já cadastradas.
+  const ibgesBuscados = Array.from(new Set(origens.map((o) => onlyDigitsDb(o.ibgeOrigem).slice(0, 7)).filter((v) => v.length === 7)));
+  const origensPorIbge = new Map();
+  if (ibgesBuscados.length) {
+    for (const origem of existentes) {
+      // eslint-disable-next-line no-await-in-loop
+      const { data: rotas, error: erroRotas } = await supabase
+        .from('rotas')
+        .select('ibge_origem')
+        .eq('origem_id', origem.id)
+        .in('ibge_origem', ibgesBuscados)
+        .limit(1);
+      if (erroRotas) throw erroRotas;
+      const ibge = rotas?.[0]?.ibge_origem;
+      if (ibge) {
+        if (!origensPorIbge.has(ibge)) origensPorIbge.set(ibge, []);
+        origensPorIbge.get(ibge).push(origem);
+      }
+    }
+  }
+
   const encontrados = [];
-  origens.forEach((origem) => {
-    const canal = String(origem.canal || 'ATACADO').trim().toUpperCase();
-    const daCidade = existentes.filter((o) => norm(o.cidade) === norm(origem.cidade));
-    const exata = daCidade.find((o) => String(o.canal || 'ATACADO').trim().toUpperCase() === canal);
-    const escolhida = exata || (daCidade.length === 1 ? daCidade[0] : null);
-    if (escolhida) encontrados.push({ ...escolhida, chave: `${norm(origem.cidade)}__${canal}` });
+  origens.forEach((origem, indice) => {
+    const canal = canalDe(origem.canal);
+    let escolhida = null;
+    if (norm(origem.cidade)) {
+      const daCidade = existentes.filter((o) => norm(o.cidade) === norm(origem.cidade));
+      escolhida = daCidade.find((o) => canalDe(o.canal) === canal) || (daCidade.length === 1 ? daCidade[0] : null);
+    }
+    if (!escolhida) {
+      const doIbge = origensPorIbge.get(onlyDigitsDb(origem.ibgeOrigem).slice(0, 7)) || [];
+      escolhida = doIbge.find((o) => canalDe(o.canal) === canal) || (doIbge.length === 1 ? doIbge[0] : null);
+    }
+    if (escolhida) encontrados.push({ ...escolhida, chave: `${norm(origem.cidade)}__${canal}`, indice });
   });
   return encontrados;
 }

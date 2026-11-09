@@ -48,6 +48,7 @@ import {
   importarTabelaOficialParaNegociacao,
   listarNegociacoesDaTransportadora,
   salvarResultadoSimulacaoNegociacao,
+  carregarSimulacaoSalvaDaNegociacao,
 } from '../services/tabelasNegociacaoService';
 import {
   converterTabelasNegociacaoParaSimulador,
@@ -5578,6 +5579,100 @@ export default function SimuladorPage({ transportadoras = [] }) {
       || null;
   }, [negociacoesSimulador, resultadoRealizado]);
 
+  // Abertura vinda de Negociações: ?nf_page=simulador&nf_sim_neg=<id>&nf_sim_reg=<registro>
+  // carrega a simulação salva na negociação direto no Simulador do realizado.
+  const [aberturaNegociacaoStatus, setAberturaNegociacaoStatus] = useState('');
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const params = new URLSearchParams(window.location.search);
+    const negociacaoId = params.get('nf_sim_neg') || '';
+    if (!negociacaoId) return undefined;
+    const registroId = params.get('nf_sim_reg') || '';
+    params.delete('nf_sim_neg');
+    params.delete('nf_sim_reg');
+    const qs = params.toString();
+    window.history.replaceState(window.history.state, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+
+    let ativo = true;
+    setModoTabelaVsTabela(false);
+    setAba('realizado');
+    setAberturaNegociacaoStatus('Carregando a simulação salva na negociação...');
+    (async () => {
+      try {
+        const { tabela, registro } = await carregarSimulacaoSalvaDaNegociacao(negociacaoId, registroId);
+        const resumo = registro.resumo || {};
+        let base = null;
+        let completa = false;
+        let avisoCompleta = '';
+        if (resumo.analise_completa_id) {
+          try {
+            const pacote = await carregarSimulacaoRealizadoMensal(resumo.analise_completa_id);
+            if (pacote?.resultado) {
+              base = pacote.resultado;
+              completa = true;
+            }
+          } catch (erroCompleta) {
+            avisoCompleta = erroCompleta.message || 'cópia completa indisponível';
+          }
+        }
+        if (!base) base = resumo;
+        if (!ativo) return;
+        const rotuloNegociacao = `${tabela.transportadora || 'Negociação'}${tabela.origem ? ` — ${tabela.origem}` : ''}`;
+        setResultadoRealizado({
+          ...base,
+          filtros: { ...(resumo.filtros || {}), ...(base.filtros || {}) },
+          laudos: base.laudos || resumo.laudos || null,
+          laudosEmail: base.laudosEmail || resumo.laudosEmail || null,
+          negociacaoId: tabela.id,
+          negociacaoNome: tabela.transportadora,
+          negociacaoLabel: rotuloNegociacao,
+          origemResultado: 'negociacao_salva',
+          visaoNegociacao: {
+            id: tabela.id,
+            rotulo: rotuloNegociacao,
+            rodada: registro.rodada || resumo.rodada || 1,
+            canal: registro.canal || resumo.canal || resumo.filtros?.canal || '',
+            salvoEm: registro.criado_em || resumo.salvo_em || '',
+            completa,
+            avisoCompleta,
+          },
+        });
+        setFiltroDetalhe('');
+        setPaginaDetalhe(0);
+        setLinhasExpandidas(new Set());
+        setAberturaNegociacaoStatus('');
+      } catch (error) {
+        if (!ativo) return;
+        setAberturaNegociacaoStatus('');
+        setErroSimulacao(error.message || 'Erro ao abrir a simulação salva na negociação.');
+      }
+    })();
+    return () => { ativo = false; };
+  }, []);
+
+  // Guarda a simulação inteira (CT-es, rotas, laudos) para que a negociação
+  // possa reabri-la no Simulador. Falha aqui não impede salvar o resumo.
+  const salvarAnaliseCompletaDaNegociacao = async (resultado, rotulo = '') => {
+    if (!resultado?.ctesAnalisados) return { id: '', nome: '', aviso: '' };
+    try {
+      const filtros = resultado.filtros || {};
+      const salva = await salvarSimulacaoRealizadoMensal({
+        resultado,
+        filtros: {
+          transportadora: filtros.transportadora || transportadoraRealizado,
+          canal: filtros.canal || canalRealizado,
+          origem: filtros.origem || origemRealizado,
+          inicio: filtros.inicio || inicioRealizado,
+          fim: filtros.fim || fimRealizado,
+        },
+        nome: `[Negociação] ${rotulo || resultado.negociacaoLabel || resultado.negociacaoNome || filtros.transportadora || 'simulação'}${filtros.origem ? ` — ${filtros.origem}` : ''}${filtros.canal ? ` — ${filtros.canal}` : ''}`,
+      });
+      return { id: salva?.id || '', nome: salva?.nome || '', aviso: '' };
+    } catch (error) {
+      return { id: '', nome: '', aviso: error.message || 'não foi possível guardar a simulação completa' };
+    }
+  };
+
   const salvarResultadoNegociacaoRealizado = async () => {
     if (!resultadoRealizado) return;
 
@@ -5599,10 +5694,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
         transportadoraBase: resultadoRealizado.transportadoraBaseRealizado || transportadoraBaseReajusteRealizado,
         analiseRotaFaixa: prepararAnaliseRotaFaixaParaNegociacao(resultadoRealizado),
       };
+      const laudosSalvar = prepararLaudosNegociacao(resultadoRealizado, contextoLaudos);
+      const analiseCompleta = await salvarAnaliseCompletaDaNegociacao(
+        { ...resultadoRealizado, laudosEmail: laudosEmailRealizado, laudos: laudosSalvar },
+        negociacaoResultadoRealizado?.transportadora || resultadoRealizado.negociacaoNome,
+      );
       const negociacaoAtualizada = await salvarResultadoSimulacaoNegociacao(negociacaoId, {
         ...resultadoRealizado,
         laudosEmail: laudosEmailRealizado,
-        laudos: prepararLaudosNegociacao(resultadoRealizado, contextoLaudos),
+        laudos: laudosSalvar,
+        analiseCompletaId: analiseCompleta.id,
+        analiseCompletaNome: analiseCompleta.nome,
       });
       setNegociacoesSimulador((anteriores) => (anteriores || []).map((tabela) => (
         tabela.id === negociacaoId
@@ -5613,7 +5715,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
       const mensagemDisponibilidade = canaisPendentes.length
         ? `A negociação continua no Simulador para analisar: ${canaisPendentes.join(', ')}.`
         : 'Todos os canais da rodada foram analisados e a negociação saiu do Simulador.';
-      alert(`Resultado salvo em ${negociacaoAtualizada.transportadora || resultadoRealizado.negociacaoNome || 'negociação'}. ${mensagemDisponibilidade}`);
+      const mensagemAnalise = analiseCompleta.id
+        ? 'A simulação completa (CT-es, rotas e laudos) foi guardada e pode ser reaberta pela negociação.'
+        : `Atenção: só o resumo foi salvo (${analiseCompleta.aviso || 'simulação completa indisponível'}).`;
+      alert(`Resultado salvo em ${negociacaoAtualizada.transportadora || resultadoRealizado.negociacaoNome || 'negociação'}. ${mensagemDisponibilidade}\n\n${mensagemAnalise}`);
     } catch (error) {
       setErroSimulacao(error.message || 'Erro ao salvar resultado na negociação.');
     } finally {
@@ -5699,8 +5804,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
       }
 
       atualizarProcessamentoUi('Salvando diagnóstico como marco inicial da negociação...', 85);
+      const analiseCompleta = await salvarAnaliseCompletaDaNegociacao(resultadoRealizado, `${nova.transportadora} — diagnóstico inicial (ciclo ${ciclo})`);
       const atualizada = await salvarResultadoSimulacaoNegociacao(nova.id, {
         ...resultadoRealizado,
+        analiseCompletaId: analiseCompleta.id,
+        analiseCompletaNome: analiseCompleta.nome,
         negociacaoId: nova.id,
         negociacaoNome: nova.transportadora,
         negociacaoLabel: `${nova.transportadora}${nova.origem ? ` — ${nova.origem}` : ''} — Revisão de competitividade (ciclo ${ciclo})`,
@@ -10389,8 +10497,35 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </div>
           ) : null}
 
+          {aberturaNegociacaoStatus ? (
+            <div className="sim-alert info" style={{ marginTop: 18 }}>{aberturaNegociacaoStatus}</div>
+          ) : null}
+
           {resultadoRealizado && (
             <div style={{ marginTop: 18, display: 'grid', gap: 16 }}>
+              {resultadoRealizado.visaoNegociacao ? (() => {
+                const visao = resultadoRealizado.visaoNegociacao;
+                const filtrosVisao = resultadoRealizado.filtros || {};
+                const salvoEm = visao.salvoEm ? new Date(visao.salvoEm) : null;
+                return (
+                  <div className={`sim-alert ${visao.completa ? 'info' : 'warning'}`}>
+                    <strong>Simulação salva na negociação {visao.rotulo}</strong>
+                    {' '}· Rodada {visao.rodada}{visao.canal ? ` · ${visao.canal === 'ATACADO' ? 'B2B / Atacado' : visao.canal}` : ''}
+                    {salvoEm && !Number.isNaN(salvoEm.getTime()) ? ` · salva em ${salvoEm.toLocaleString('pt-BR')}` : ''}
+                    <div style={{ marginTop: 6, fontSize: '0.85rem' }}>
+                      Usado na simulação: transportadora <strong>{filtrosVisao.transportadora || visao.rotulo}</strong>
+                      {filtrosVisao.origem ? <> · origem <strong>{filtrosVisao.origem}</strong></> : null}
+                      {filtrosVisao.inicio || filtrosVisao.fim ? <> · período <strong>{filtrosVisao.inicio || '…'} a {filtrosVisao.fim || '…'}</strong></> : null}
+                      {' '}· {Number(resultadoRealizado.ctesAnalisados || 0).toLocaleString('pt-BR')} CT-es analisados
+                    </div>
+                    <div style={{ marginTop: 6, fontSize: '0.85rem' }}>
+                      {visao.completa
+                        ? 'Visão completa: CT-es, rotas, cálculo de frete e laudos exatamente como foram salvos. Use os botões de laudo abaixo para conferir.'
+                        : `Visão parcial: esta simulação foi salva antes da gravação completa${visao.avisoCompleta ? ` (${visao.avisoCompleta})` : ''}. Aparecem só os totais, as principais rotas/UFs e até 800 CT-es de amostra, sem o memorial de cálculo. Para ter a visão completa, simule de novo e salve na negociação.`}
+                    </div>
+                  </div>
+                );
+              })() : null}
               <div className="sim-analise-resumo">
                 <div><span>CT-es buscados</span><strong>{resultadoRealizado.filtros?.ctesBrutos ?? resultadoRealizado.ctesAnalisados}</strong></div>
                 <div><span>{resultadoRealizado.filtros?.modo === 'malha' ? 'Na malha (filtro)' : 'Após filtros'}</span><strong>{resultadoRealizado.filtros?.ctesNaMalha ?? resultadoRealizado.ctesAnalisados}</strong></div>

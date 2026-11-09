@@ -55,6 +55,7 @@ import {
   JORNADA_COR,
 } from '../services/auditoriaCteJornadaService';
 import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
+import { abrirLaudoMeta, prepararAnexosLaudo, carregarMetasCalculoMensais, salvarMetasCalculoMensais } from '../utils/laudoMetaAuditoriaCte';
 import PainelPendenciasJornadaCte from '../components/PainelPendenciasJornadaCte';
 import RespostasPortalPendentes from '../components/RespostasPortalPendentes';
 
@@ -530,15 +531,154 @@ function DiagnosticoFontes({ diagnostico = [] }) {
   );
 }
 
-function ResumoMensalAuditoria({ resumoMensal = [] }) {
+function PainelLaudoMeta({ resumoMensal = [], meta = {}, responsavelPadrao = '' }) {
+  const competencias = useMemo(
+    () => [...new Set(resumoMensal.map((item) => String(item.competencia)))].sort(),
+    [resumoMensal],
+  );
+  const [aberto, setAberto] = useState(false);
+  const [de, setDe] = useState('');
+  const [ate, setAte] = useState('');
+  const [responsavel, setResponsavel] = useState(responsavelPadrao);
+  const [observacoes, setObservacoes] = useState('');
+  const [incluirAssertividade, setIncluirAssertividade] = useState(false);
+  const [metasMensais, setMetasMensais] = useState(carregarMetasCalculoMensais);
+  function alterarMetaMes(comp, valor) {
+    setMetasMensais((atual) => {
+      const novo = { ...atual, [comp]: valor === '' ? '' : Number(valor) };
+      salvarMetasCalculoMensais(novo);
+      return novo;
+    });
+  }
+  const [arquivos, setArquivos] = useState([]);
+  const [gerando, setGerando] = useState(false);
+  const [erroLaudo, setErroLaudo] = useState('');
+
+  const inicio = de || competencias[0] || '';
+  const fim = ate || competencias[competencias.length - 1] || '';
+  const selecionados = resumoMensal.filter((item) => {
+    const c = String(item.competencia);
+    return c >= inicio && c <= fim;
+  });
+
+  function adicionarArquivos(lista) {
+    const novos = Array.from(lista || []);
+    setArquivos((atual) => [...atual, ...novos.filter((n) => !atual.some((a) => a.name === n.name && a.size === n.size))]);
+  }
+
+  async function gerar() {
+    setErroLaudo('');
+    if (!selecionados.length) { setErroLaudo('Nenhuma competência no intervalo escolhido.'); return; }
+    setGerando(true);
+    try {
+      const anexos = await prepararAnexosLaudo(arquivos);
+      abrirLaudoMeta(selecionados, { meta, responsavel, observacoes, anexos, incluirAssertividade, metasCalculoMensais: metasMensais });
+    } catch (e) {
+      setErroLaudo(e?.message || 'Falha ao gerar o laudo.');
+    } finally {
+      setGerando(false);
+    }
+  }
+
+  if (!aberto) {
+    return (
+      <button className="sim-tab" type="button" onClick={() => setAberto(true)} style={{ borderColor: '#2563eb', color: '#2563eb', fontWeight: 700 }}>
+        📄 Gerar laudo da meta
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 10, padding: 14, margin: '8px 0 14px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <strong>📄 Laudo de comprovação da meta</strong>
+        <button className="sim-tab" type="button" onClick={() => setAberto(false)}>Fechar</button>
+      </div>
+      <div style={{ fontSize: 13, color: '#1e3a8a', marginBottom: 10 }}>
+        Meta de cálculo por competência (crescente no ano; fica salva neste navegador).
+        Meses sem valor usam a meta geral de {fmtP(meta.taxaCalculoMeta, 0)}.
+        {incluirAssertividade ? ` Assertividade: meta de ${fmtP(meta.taxaAssertividadeMeta, 0)}.` : ''}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+        {selecionados.map((item) => {
+          const comp = String(item.competencia);
+          return (
+            <label key={comp} style={{ fontSize: 12, width: 92 }}>
+              {comp}
+              <input type="number" min="0" max="100" step="0.5" value={metasMensais[comp] ?? ''}
+                placeholder={String(meta.taxaCalculoMeta ?? '')}
+                onChange={(e) => alterarMetaMes(comp, e.target.value)} />
+            </label>
+          );
+        })}
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, marginBottom: 10 }}>
+        <input type="checkbox" checked={incluirAssertividade} onChange={(e) => setIncluirAssertividade(e.target.checked)} style={{ width: 'auto', margin: 0 }} />
+        Incluir assertividade no laudo
+      </label>
+      <div className="sim-form-grid sim-grid-3" style={{ marginBottom: 10 }}>
+        <label>
+          Competência inicial
+          <select value={inicio} onChange={(e) => setDe(e.target.value)}>
+            {competencias.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </label>
+        <label>
+          Competência final
+          <select value={fim} onChange={(e) => setAte(e.target.value)}>
+            {competencias.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </label>
+        <label>
+          Responsável
+          <input value={responsavel} onChange={(e) => setResponsavel(e.target.value)} placeholder="Nome de quem emite" />
+        </label>
+      </div>
+      <label style={{ display: 'block', marginBottom: 10 }}>
+        Observações / justificativas
+        <textarea rows={3} value={observacoes} onChange={(e) => setObservacoes(e.target.value)} style={{ width: '100%' }}
+          placeholder="Ex.: assertividade impactada pela revisão das tabelas da transportadora X a partir de 2026-04." />
+      </label>
+      <label style={{ display: 'block', marginBottom: 6 }}>
+        Evidências (prints, planilhas, PDFs) — imagens entram no laudo; demais arquivos são listados com hash SHA-256
+        <input type="file" multiple onChange={(e) => { adicionarArquivos(e.target.files); e.target.value = ''; }} />
+      </label>
+      {arquivos.length ? (
+        <ul style={{ margin: '4px 0 10px', paddingLeft: 18, fontSize: 13 }}>
+          {arquivos.map((a, i) => (
+            <li key={`${a.name}-${a.size}`}>
+              {a.name} <span style={{ color: '#64748b' }}>({Math.ceil(a.size / 1024)} KB)</span>{' '}
+              <button type="button" className="sim-tab" style={{ padding: '0 6px', fontSize: 11 }}
+                onClick={() => setArquivos((atual) => atual.filter((_, j) => j !== i))}>remover</button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {erroLaudo ? <div className="sim-alert error" style={{ marginBottom: 8 }}>{erroLaudo}</div> : null}
+      <div className="sim-actions">
+        <button className="primary" type="button" onClick={gerar} disabled={gerando || !selecionados.length}>
+          {gerando ? 'Gerando…' : `Gerar laudo (${selecionados.length} competência${selecionados.length === 1 ? '' : 's'})`}
+        </button>
+      </div>
+      <div style={{ fontSize: 12, color: '#64748b', marginTop: 6 }}>
+        O laudo abre em nova aba: use "Imprimir / Salvar PDF" para gerar o arquivo e anexá-lo onde precisar.
+      </div>
+    </div>
+  );
+}
+
+function ResumoMensalAuditoria({ resumoMensal = [], meta = {}, responsavelPadrao = '' }) {
   if (!resumoMensal.length) return null;
 
   return (
     <section className="sim-card">
-      <h2>Resumo mensal salvo</h2>
-      <p style={{ color: '#64748b', marginTop: -4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0 }}>Resumo mensal salvo</h2>
+      </div>
+      <p style={{ color: '#64748b', marginTop: 4 }}>
         Comparativo mês a mês carregado dos snapshots em <code>auditoria_cte_resumo_mensal</code>.
       </p>
+      <PainelLaudoMeta resumoMensal={resumoMensal} meta={meta} responsavelPadrao={responsavelPadrao} />
       <div className="sim-analise-tabela-wrap">
         <table className="sim-analise-tabela">
           <thead>
@@ -4244,7 +4384,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
 
       {/* Resumo mensal aparece sempre que carregado (o componente já some se vazio),
           inclusive quando se usa só "Carregar resumo mensal" sem carregar CT-es. */}
-      <ResumoMensalAuditoria resumoMensal={resumoMensal} />
+      <ResumoMensalAuditoria resumoMensal={resumoMensal} meta={meta} responsavelPadrao={sessaoAtual?.nome || ''} />
       <DiagnosticoFontes diagnostico={diagnostico} />
 
       {!temDados && !carregando && !processando && !resumoMensal.length ? (
