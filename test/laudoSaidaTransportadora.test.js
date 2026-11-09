@@ -41,7 +41,7 @@ test('gera HTML e abas do Excel', () => {
   assert.match(html, /Laudo de Saída de Transportadora — LTSL ENCOMENDAS/); assert.match(html, /SAÍDA PARCIAL/);
   assert.match(html, /MANAUS\/AM/); assert.match(html, /Impacto de prazo|impacto de prazo/); assert.match(html, /window\.print/);
   const abas = montarAbasExcelLaudoSaida(resultado, { transportadora: 'X' });
-  assert.deepEqual(abas.map((a) => a.nome), ['Resumo', 'Rotas', 'Rotas críticas', 'Impacto de prazo', 'Substitutas', 'Opções por rota', 'CT-es']);
+  assert.deepEqual(abas.map((a) => a.nome), ['Resumo', 'Por origem', 'Rotas', 'Rotas críticas', 'Impacto de prazo', 'Substitutas', 'Opções por rota', 'CT-es']);
   abas.forEach((a) => a.linhas.forEach((l) => assert.equal(l.length, a.colunas.length, a.nome)));
 });
 
@@ -68,9 +68,24 @@ test('unifica nomes do CT-e pela raiz do CNPJ e pelo cadastro', () => {
 test('laudo enxuto mostra filtro de origem/destino e não traz mais o detalhamento completo', () => {
   const html = gerarHtmlLaudoSaida(resultado, { transportadora: 'LTSL ENCOMENDAS', reajustePct: 20, filtroRotas: 'Origem UF SC' });
   assert.match(html, /Filtro: Origem UF SC/);
-  assert.match(html, /Rotas que pedem atenção/);
+  assert.match(html, /Resumo por situação/); assert.match(html, /Sem substituta/); assert.match(html, /Substituta mais cara que hoje/);
   assert.match(html, /Quem assumiria o volume/);
   assert.doesNotMatch(html, /Detalhamento completo por rota/);
   const abas = montarAbasExcelLaudoSaida(resultado, { transportadora: 'X', filtroRotas: 'Origem UF SC' });
   assert.ok(abas[0].linhas.some((l) => l.includes('Origem UF SC')));
+});
+
+test('resumo por origem separa recomendação de cada origem', async () => {
+  const { resumirPorOrigem, analisarRota, RECOMENDACAO_ORIGEM } = await import('../src/utils/laudoSaidaTransportadora.js');
+  const rota = (origem, pago, sub, qtd = 1) => analisarRota({
+    rotaKey: `${origem}-x`, cidadeOrigem: origem, ufOrigem: 'SC', cidadeDestino: 'X', ufDestino: 'SP', ctes: 1, valorPagoTotal: pago, melhorTotal: sub,
+    semSubstituto: 0, substitutos: Array.from({ length: qtd }, (_, i) => ({ transportadora: `S${i}`, ctesCobertos: 1, custoMedio: sub, prazoMedio: 2 })),
+    viagens: [{ valorPago: pago, substituta: 'S0', valorSub: sub }], prazoAtualMedio: 2, prazoSubMedio: 2, substitutoPrincipal: 'S0',
+  }, 20);
+  const res = resumirPorOrigem([rota('ITAJAI', 100, 90, 2), rota('JOINVILLE', 100, 150, 2)]);
+  const porNome = Object.fromEntries(res.map((o) => [o.origem, o]));
+  assert.equal(porNome['ITAJAI/SC'].recomendacao, RECOMENDACAO_ORIGEM.TROCAR);
+  assert.equal(porNome['JOINVILLE/SC'].recomendacao, RECOMENDACAO_ORIGEM.MANTER);
+  const html = gerarHtmlLaudoSaida(resultado, { transportadora: 'X', reajustePct: 20 });
+  assert.match(html, /Por origem/);
 });

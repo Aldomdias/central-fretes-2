@@ -9,7 +9,7 @@ import { intervaloEmissao, janelasEmissao, pesoComoSimuladorRealizado } from '..
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { aplicarVinculoTransportadora as aplicarVinculoPuro } from '../services/vinculosTransportadorasPuro';
 import { unificarTransportadorasCtes } from '../utils/unificarTransportadorasCte';
-import { abrirLaudoSaida, exportarExcelLaudoSaida } from '../utils/laudoSaidaTransportadora';
+import { abrirLaudoSaida, analisarRota, exportarExcelLaudoSaida, RECOMENDACAO_ORIGEM, resumirPorOrigem } from '../utils/laudoSaidaTransportadora';
 
 const LIMITE_MAX_CT = 200000;
 const TOLERANCIA = 0.5; // R$ — diferença abaixo disto é ruído
@@ -366,9 +366,22 @@ function SeletorTransportadora({ grupos, totais, valor, onChange }) {
   );
 }
 
-function Card({ label, valor, sub, cor, destaque }) {
+function Card({ label, valor, sub, cor, destaque, onClick, ativo }) {
+  const clicavel = typeof onClick === 'function';
   return (
-    <div style={{ background: '#fff', border: `1px solid ${destaque ? cor : '#e2e8f0'}`, borderLeft: `4px solid ${cor}`, borderRadius: 10, padding: '12px 18px', minWidth: 0 }}>
+    <div
+      onClick={onClick}
+      role={clicavel ? 'button' : undefined}
+      tabIndex={clicavel ? 0 : undefined}
+      onKeyDown={clicavel ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
+      title={clicavel ? (ativo ? 'Clique para mostrar todas as rotas' : 'Clique para ver só estas rotas') : undefined}
+      style={{
+        background: ativo ? '#eff6ff' : '#fff',
+        border: `${ativo ? 2 : 1}px solid ${ativo ? '#1d4ed8' : (destaque ? cor : '#e2e8f0')}`,
+        borderLeft: `4px solid ${cor}`, borderRadius: 10, padding: '12px 18px', minWidth: 0,
+        cursor: clicavel ? 'pointer' : 'default', boxShadow: ativo ? '0 0 0 3px #bfdbfe' : undefined,
+      }}
+    >
       <div style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600, marginBottom: 2 }}>{label}</div>
       <div style={{ fontSize: '1.45rem', fontWeight: 800, color: destaque ? cor : '#1e293b' }}>{valor}</div>
       {sub && <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: 2 }}>{sub}</div>}
@@ -455,6 +468,31 @@ function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste) {
     custoAtual, custoComSubstitutos, custoComReajuste, aumentoPctSubstitutos, economiaVsReajuste, pctReajuste: pctR,
     prazoAtualMedioGeral: prazoAtualNTot ? prazoAtualSomaTot / prazoAtualNTot : null,
     prazoSubMedioGeral: prazoSubNTot ? prazoSubSomaTot / prazoSubNTot : null,
+  };
+}
+
+// Situações das rotas (mesmas do laudo) — usadas pelos cards clicáveis.
+const SITUACOES_ROTA = {
+  sem: { rotulo: 'Sem substituto', teste: (l) => l.qtdSubstitutos === 0 || l.semSubstituto > 0 },
+  cara: { rotulo: 'Substituta mais cara', teste: (l) => l.qtdSubstitutos > 0 && !l.semSubstituto && l.diferenca > TOLERANCIA },
+  barata: { rotulo: 'Substituta mais barata', teste: (l) => l.qtdSubstitutos > 0 && !l.semSubstituto && l.diferenca < -TOLERANCIA },
+  prazo: { rotulo: 'Prazo maior', teste: (l) => l.prazoAtualMedio != null && l.prazoSubMedio != null && l.prazoSubMedio - l.prazoAtualMedio > 0.05 },
+  unica: { rotulo: 'Substituta única', teste: (l) => l.qtdSubstitutos === 1 },
+};
+
+// Totais de um conjunto de rotas (para os cards de valor seguirem a seleção).
+function totaisDasRotas(linhas, pctReajuste) {
+  let ctes = 0; let atual = 0; let sub = 0; let paS = 0; let paN = 0; let psS = 0; let psN = 0;
+  for (const l of linhas) {
+    ctes += l.ctes; atual += l.valorPagoTotal; sub += l.melhorTotal;
+    paS += l.prazoAtualSoma; paN += l.prazoAtualN; psS += l.prazoSubSoma; psN += l.prazoSubN;
+  }
+  const reajuste = atual * (1 + safeNum(pctReajuste) / 100);
+  return {
+    rotas: linhas.length, ctes, custoAtual: atual, custoComSubstitutos: sub, custoComReajuste: reajuste,
+    economiaVsReajuste: reajuste - sub,
+    aumentoPctSubstitutos: atual > 0 ? ((sub - atual) / atual) * 100 : 0,
+    prazoAtual: paN ? paS / paN : null, prazoSub: psN ? psS / psN : null,
   };
 }
 
@@ -636,6 +674,7 @@ export default function SimularSaidaTransportadoraPage() {
     filtroRota.destino ? `Destino ${filtroRota.destino}` : (filtroRota.ufDestino ? `Destino UF ${filtroRota.ufDestino}` : ''),
   ].filter(Boolean).join(' • ');
 
+  const [filtroCard, setFiltroCard] = useState('');
   const resultado = useMemo(() => {
     if (!simulacao) return null;
     return {
@@ -645,6 +684,30 @@ export default function SimularSaidaTransportadoraPage() {
       semIbge: simulacao.semIbge,
     };
   }, [simulacao, ctesFiltrados, exclusoes, reajustePct]);
+
+  const contagemSituacoes = useMemo(() => {
+    const out = {};
+    for (const [k, def] of Object.entries(SITUACOES_ROTA)) {
+      const lista = (resultado?.linhas || []).filter(def.teste);
+      out[k] = { rotas: lista.length, ctes: lista.reduce((acc, l) => acc + l.ctes, 0), valor: lista.reduce((acc, l) => acc + l.valorPagoTotal, 0) };
+    }
+    return out;
+  }, [resultado]);
+  const linhasVisiveis = useMemo(() => {
+    const linhas = resultado?.linhas || [];
+    const def = SITUACOES_ROTA[filtroCard];
+    return def ? linhas.filter(def.teste) : linhas;
+  }, [resultado, filtroCard]);
+  const totaisSel = useMemo(() => totaisDasRotas(linhasVisiveis, reajustePct), [linhasVisiveis, reajustePct]);
+  // Mesmo cálculo do laudo: por origem, trocar tudo × trocar só onde compensa × reajuste.
+  const porOrigem = useMemo(
+    () => resumirPorOrigem((resultado?.linhas || []).map((l) => analisarRota(l, reajustePct))),
+    [resultado, reajustePct],
+  );
+  const alternarOrigem = (origem) => setFiltroRota((f) => (
+    f.origem === origem ? { ...f, origem: '' } : { ...f, ufOrigem: '', origem }
+  ));
+  const alternarCard = (k) => setFiltroCard((atual) => (atual === k ? '' : k));
 
   const opcoesExcluir = useMemo(() => {
     if (!simulacao) return [];
@@ -791,6 +854,7 @@ export default function SimularSaidaTransportadoraPage() {
     if (!base || !transportadora) return;
     setStatusSim('carregando'); setErro(''); setSimulacao(null); setExclusoes(new Set()); setRotasAbertas(new Set());
     setFiltroRota({ ufOrigem: '', origem: '', ufDestino: '', destino: '' });
+    setFiltroCard('');
     try {
       const { municipioPorCidade, mapasIbge, mapaVinculos, unificacao } = base;
       let ctesDaTransp;
@@ -1008,23 +1072,93 @@ export default function SimularSaidaTransportadoraPage() {
             )}
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '0.75rem', margin: '0.5rem 0 1rem' }}>
-            <Card label="Rotas atendidas" valor={fmtN(resultado.totalRotas)} sub={`${fmtN(resultado.totalCtes)} CT-es`} cor="#1e293b" />
-            <Card label="Sem substituto" valor={fmtN(resultado.rotasSemSubstituto)} sub="rotas sem tabela alternativa" cor="#9b1111" destaque={resultado.rotasSemSubstituto > 0} />
-            <Card label="Custo atual" valor={fmt(resultado.custoAtual)} sub="frete pago a esta transportadora" cor="#1e293b" />
-            <Card label={`Custo c/ reajuste (+${pct(resultado.pctReajuste)})`} valor={fmt(resultado.custoComReajuste)} cor="#9b1111" />
-            <Card label="Custo c/ substitutas" valor={fmt(resultado.custoComSubstitutos)} sub={pct(resultado.aumentoPctSubstitutos) + ' vs. custo atual'} cor="#04C7A4" />
-            <Card label="Economia vs. aceitar reajuste" valor={fmt(resultado.economiaVsReajuste)} cor={resultado.economiaVsReajuste >= 0 ? '#04C7A4' : '#9b1111'} destaque />
+          <div style={{ fontSize: '0.75rem', color: '#64748b', margin: '0.5rem 0 0.35rem' }}>
+            Clique numa situação para ver só essas rotas — os valores abaixo e a tabela passam a mostrar a seleção.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '0.6rem', marginBottom: '0.75rem' }}>
+            <Card label="Todas as rotas" valor={fmtN(resultado.totalRotas)} sub={`${fmtN(resultado.totalCtes)} CT-es · ${fmt(resultado.custoAtual)}`} cor="#1e293b" onClick={() => setFiltroCard('')} ativo={!filtroCard} />
+            {[
+              ['sem', '#9b1111', 'sem tabela alternativa'],
+              ['cara', '#b45309', 'custa mais que hoje'],
+              ['barata', '#04C7A4', 'custa menos que hoje'],
+              ['prazo', '#b45309', 'prazo de tabela maior'],
+              ['unica', '#64748b', 'só 1 transportadora cobre'],
+            ].map(([k, cor, desc]) => (
+              <Card
+                key={k}
+                label={SITUACOES_ROTA[k].rotulo}
+                valor={fmtN(contagemSituacoes[k]?.rotas || 0)}
+                sub={`${desc} · ${fmtN(contagemSituacoes[k]?.ctes || 0)} CT-es`}
+                cor={cor}
+                destaque={k === 'sem' && (contagemSituacoes.sem?.rotas || 0) > 0}
+                onClick={() => alternarCard(k)}
+                ativo={filtroCard === k}
+              />
+            ))}
+          </div>
+
+          <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#334155', marginBottom: '0.35rem' }}>
+            {filtroCard
+              ? `Valores das rotas "${SITUACOES_ROTA[filtroCard].rotulo}" — ${fmtN(totaisSel.rotas)} rota(s), ${fmtN(totaisSel.ctes)} CT-es`
+              : `Valores de todas as rotas — ${fmtN(totaisSel.rotas)} rota(s), ${fmtN(totaisSel.ctes)} CT-es`}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.6rem', marginBottom: '1rem' }}>
+            <Card label="Custo atual" valor={fmt(totaisSel.custoAtual)} sub="frete pago a esta transportadora" cor="#1e293b" />
+            <Card label={`Custo c/ reajuste (+${pct(resultado.pctReajuste)})`} valor={fmt(totaisSel.custoComReajuste)} sub={`+${fmt(totaisSel.custoComReajuste - totaisSel.custoAtual)} vs. hoje`} cor="#9b1111" />
+            <Card label="Custo c/ substitutas" valor={fmt(totaisSel.custoComSubstitutos)} sub={`${totaisSel.aumentoPctSubstitutos >= 0 ? '+' : ''}${pct(totaisSel.aumentoPctSubstitutos)} vs. custo atual`} cor={totaisSel.custoComSubstitutos <= totaisSel.custoAtual ? '#04C7A4' : '#b45309'} />
+            <Card label="Economia vs. aceitar reajuste" valor={fmt(totaisSel.economiaVsReajuste)} sub={totaisSel.economiaVsReajuste >= 0 ? 'substitutas saem mais baratas' : 'reajuste sai mais barato'} cor={totaisSel.economiaVsReajuste >= 0 ? '#04C7A4' : '#9b1111'} destaque />
             {(() => {
-              const pa = resultado.prazoAtualMedioGeral, ps = resultado.prazoSubMedioGeral;
+              const pa = totaisSel.prazoAtual, ps = totaisSel.prazoSub;
               const delta = (pa != null && ps != null) ? ps - pa : null;
               const corPrazo = delta == null ? '#1e293b' : (delta <= 0 ? '#04C7A4' : '#9b1111');
               const sub = delta == null ? 'prazo de tabela'
-                : delta === 0 ? 'mesmo prazo'
+                : Math.abs(delta) < 0.05 ? 'mesmo prazo'
                 : (delta < 0 ? `${fmtDias(-delta)} mais rápido` : `${fmtDias(delta)} mais lento`);
               return <Card label="Prazo médio (atual → subst.)" valor={`${fmtDias(pa)} → ${fmtDias(ps)}`} sub={sub} cor={corPrazo} />;
             })()}
           </div>
+
+          {(porOrigem.length > 1 || filtroRota.origem) && (
+            <div className="panel-card" style={{ marginBottom: '1rem' }}>
+              <div className="panel-title" style={{ marginBottom: 4 }}>Por origem</div>
+              <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: 8 }}>
+                Uma origem pode valer a pena trocar e outra não. Clique numa origem para filtrar a tela por ela (clique de novo para voltar).
+              </div>
+              <div className="sim-analise-tabela-wrap">
+                <table className="sim-analise-tabela">
+                  <thead>
+                    <tr>
+                      <th>Origem</th><th>Rotas</th><th>CT-es</th><th>Pago hoje</th><th>Com reajuste</th>
+                      <th>Trocando tudo</th><th>Trocando só onde compensa</th><th>Economia vs. reajuste</th><th>Sem substituta</th><th>Recomendação</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {porOrigem.map((o) => {
+                      const sel = filtroRota.origem === o.origem;
+                      const corRec = o.recomendacao === RECOMENDACAO_ORIGEM.TROCAR ? '#047857' : (o.recomendacao === RECOMENDACAO_ORIGEM.PARCIAL ? '#b45309' : '#9b1111');
+                      return (
+                        <tr key={o.origem} onClick={() => alternarOrigem(o.origem)} style={{ cursor: 'pointer', background: sel ? '#eff6ff' : undefined }} title={sel ? 'Clique para ver todas as origens' : 'Clique para filtrar por esta origem'}>
+                          <td style={{ fontWeight: sel ? 700 : 600 }}>{o.origem}</td>
+                          <td>{fmtN(o.rotas)}</td>
+                          <td>{fmtN(o.ctes)}</td>
+                          <td>{fmt(o.custoAtual)}</td>
+                          <td>{fmt(o.custoReajuste)}</td>
+                          <td>{fmt(o.custoSaidaTotal)}</td>
+                          <td>{fmt(o.custoHibrido)}</td>
+                          <td style={{ color: o.economiaHibrido >= 0 ? '#047857' : '#9b1111', fontWeight: 600 }}>{fmt(o.economiaHibrido)}</td>
+                          <td style={{ color: o.rotasSem ? '#9b1111' : '#64748b' }}>{fmtN(o.rotasSem)}</td>
+                          <td style={{ color: corRec, fontWeight: 700 }}>
+                            {o.recomendacao}
+                            {o.recomendacao === RECOMENDACAO_ORIGEM.PARCIAL && <span style={{ fontWeight: 400, fontSize: '0.75rem', color: '#64748b' }}> ({fmtN(o.rotasMigrar)} de {fmtN(o.rotas)} rotas)</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: '1rem' }}>
             <button type="button" className="primary" onClick={() => exportarLaudo('pdf')} disabled={!!exportando || !resultado.linhas.length}>
@@ -1034,7 +1168,7 @@ export default function SimularSaidaTransportadoraPage() {
               {exportando === 'excel' ? 'Gerando Excel...' : 'Exportar Excel detalhado'}
             </button>
             <span style={{ fontSize: '0.76rem', color: '#64748b' }}>
-              Laudo: parecer, números principais, rotas que pedem atenção e quem assumiria o volume. Excel: detalhe por rota e CT-e. Ambos seguem reajuste, exclusões e filtros de origem/destino.
+              Laudo: parecer, números, resumo por situação, listas de sem substituta, mais cara, mais barata, prazo maior, substituta única e quem assumiria. Excel: detalhe por rota e CT-e. Ambos seguem reajuste, exclusões e filtros de origem/destino.
             </span>
           </div>
 
@@ -1052,6 +1186,12 @@ export default function SimularSaidaTransportadoraPage() {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: '0.5rem', flexWrap: 'wrap' }}>
               <div className="panel-title" style={{ margin: 0 }}>
                 Rotas de {simulacao?.transportadora || transportadora} — substituta por rota
+                {filtroCard && (
+                  <span style={{ marginLeft: 8, fontSize: '0.78rem', fontWeight: 600, color: '#1d4ed8' }}>
+                    · {SITUACOES_ROTA[filtroCard].rotulo} ({fmtN(linhasVisiveis.length)})
+                    <button type="button" className="sim-tab" onClick={() => setFiltroCard('')} style={{ marginLeft: 6, padding: '1px 8px', fontSize: '0.72rem' }}>mostrar todas</button>
+                  </span>
+                )}
               </div>
               <FiltroExcluir opcoes={opcoesExcluir} exclusoes={exclusoes} onToggle={toggleExcluir} onLimpar={() => setExclusoes(new Set())} />
             </div>
@@ -1083,7 +1223,7 @@ export default function SimularSaidaTransportadoraPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {resultado.linhas.map((l) => {
+                  {linhasVisiveis.map((l) => {
                     const aberta = rotasAbertas.has(l.rotaKey);
                     const deltaPrazo = (l.prazoAtualMedio != null && l.prazoSubMedio != null) ? l.prazoSubMedio - l.prazoAtualMedio : null;
                     const corPrazo = deltaPrazo == null ? '#64748b' : (deltaPrazo <= 0 ? '#04C7A4' : '#9b1111');
@@ -1130,7 +1270,7 @@ export default function SimularSaidaTransportadoraPage() {
                       </React.Fragment>
                     );
                   })}
-                  {!resultado.linhas.length && <tr><td colSpan={9}>Sem rotas para exibir.</td></tr>}
+                  {!linhasVisiveis.length && <tr><td colSpan={9}>Sem rotas para exibir.</td></tr>}
                 </tbody>
               </table>
             </div>
