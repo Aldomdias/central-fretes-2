@@ -258,6 +258,34 @@ function getSimulacoesRodadaAtualPorCanal(tabela) {
   });
   return Array.from(porCanal.values());
 }
+// Abre, em outra aba, a simulação salva na negociação dentro do Simulador do
+// realizado (CT-es, rotas, memorial de cálculo e laudos).
+function abrirSimulacaoSalvaNoSimulador(tabela, registro) {
+  if (typeof window === 'undefined' || !tabela || !tabela.id) return;
+  var params = new URLSearchParams();
+  params.set('nf_page', 'simulador');
+  params.set('nf_sim_neg', tabela.id);
+  if (registro && registro.id) params.set('nf_sim_reg', registro.id);
+  window.open(window.location.pathname + '?' + params.toString(), '_blank');
+}
+function BotaoAbrirSimulacaoSalva(props) {
+  var registro = props.registro || null;
+  var completa = Boolean(registro && registro.resumo && registro.resumo.analise_completa_id);
+  return (
+    <button
+      className={props.compacto ? 'sim-tab' : 'primary'}
+      type="button"
+      title={completa
+        ? 'Abre a simulação completa no Simulador: CT-es, rotas, cálculo do frete e laudos.'
+        : 'Simulação salva antes da gravação completa: abre totais, rotas/UFs e amostra de CT-es. Salve de novo pelo Simulador para ter tudo.'}
+      onClick={function(event) { event.preventDefault(); event.stopPropagation(); abrirSimulacaoSalvaNoSimulador(props.tabela, registro); }}
+      style={props.compacto ? { marginTop: 6, fontSize: 11 } : undefined}
+    >
+      {props.compacto ? 'Abrir' : '🔎 Abrir simulação no Simulador'}
+      {!props.compacto && registro && !completa ? ' (visão parcial)' : ''}
+    </button>
+  );
+}
 function getIndicadoresTabela(tabela, simulacaoCanal) {
   var tabelaBase = simulacaoCanal ? {} : tabela;
   var resumo = simulacaoCanal && simulacaoCanal.resumo ? simulacaoCanal.resumo : getResumoTabela(tabela);
@@ -3522,10 +3550,12 @@ export default function TabelasNegociacaoPage() {
             var ind = getIndicadoresTabela(selecionada);
             var simulacoesPorCanal = getSimulacoesRodadaAtualPorCanal(selecionada);
             var indicadoresPorCanal = simulacoesPorCanal.map(function(simulacao) {
-              return getIndicadoresTabela(selecionada, simulacao);
+              return Object.assign(getIndicadoresTabela(selecionada, simulacao), { registroSimulacao: simulacao });
             });
             var exibirSeparadoPorCanal = indicadoresPorCanal.length > 1;
-            var indicadoresExibidos = exibirSeparadoPorCanal ? indicadoresPorCanal : [ind];
+            var indicadoresExibidos = exibirSeparadoPorCanal
+              ? indicadoresPorCanal
+              : [Object.assign({}, ind, { registroSimulacao: simulacoesPorCanal[0] || null })];
             var savingConsolidado = indicadoresPorCanal.reduce(function(total, item) { return total + item.savingMes; }, 0);
             var faturamentoConsolidado = indicadoresPorCanal.reduce(function(total, item) { return total + item.faturamentoMes; }, 0);
             var ctesConsolidados = indicadoresPorCanal.reduce(function(total, item) { return total + item.ctesAnalisados; }, 0);
@@ -3566,12 +3596,16 @@ export default function TabelasNegociacaoPage() {
                 var chaveCanal = ind.canal || ('geral-' + indiceCanal);
                 return (
                 <section key={'resumo-negociacao-' + chaveCanal} style={exibirSeparadoPorCanal ? { marginBottom: 24 } : undefined}>
-                {exibirSeparadoPorCanal ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '2px 0 10px' }}>
-                    <h3 style={{ margin: 0 }}>Análise {ind.canalLabel}</h3>
-                    <span className="sim-badge">Rodada {ind.rodada}</span>
-                  </div>
-                ) : null}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '2px 0 10px', flexWrap: 'wrap' }}>
+                  {exibirSeparadoPorCanal ? (
+                    <>
+                      <h3 style={{ margin: 0 }}>Análise {ind.canalLabel}</h3>
+                      <span className="sim-badge">Rodada {ind.rodada}</span>
+                    </>
+                  ) : null}
+                  <span style={{ flex: 1 }} />
+                  <BotaoAbrirSimulacaoSalva tabela={selecionada} registro={ind.registroSimulacao} />
+                </div>
               <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', marginBottom: 18 }}>
                 {(ind.isReajuste || ind.isLotacao) ? (
                   <>
@@ -4530,7 +4564,10 @@ export default function TabelasNegociacaoPage() {
                                     Apagar
                                   </button>
                                 </td>
-                                <td style={{ fontSize: 11 }}>{isSim ? 'SIM' : 'IMP'}</td>
+                                <td style={{ fontSize: 11 }}>
+                                  {isSim ? 'SIM' : 'IMP'}
+                                  {isSim ? <><br /><BotaoAbrirSimulacaoSalva tabela={selecionada} registro={rodada} compacto /></> : null}
+                                </td>
                                 <td style={{ fontSize: 11 }}>{isSim ? (rodada.canal || rodada.resumo?.canal || rodada.resumo?.filtros?.canal || '-') : '-'}</td>
                                 <td style={{ fontSize: 11 }}>{formatDateBR(rodada.criado_em)}</td>
                                 <td style={{ fontSize: 11 }}>{isSim ? formatPercent(ind.aderencia || 0) : '-'}</td>
