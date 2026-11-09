@@ -216,14 +216,35 @@ export function gerarHtmlLaudoSaida(resultado, contexto = {}) {
   const titulo = `Laudo de Saída de Transportadora — ${c.transportadora || ''}`;
   const emitido = c.geradoEm ? new Date(c.geradoEm) : new Date();
 
-  // Laudo enxuto: resposta + números principais, só as rotas que pedem
-  // atenção e quem assumiria o volume. O detalhamento completo fica no Excel.
-  const MAX_ATENCAO = 25;
-  const MAX_SUBS = 10;
-  const atencao = L.rotas
-    .filter((r) => r.nivel !== NIVEL.OK)
-    .sort((a, b) => ((a.nivel === NIVEL.CRITICA ? 0 : 1) - (b.nivel === NIVEL.CRITICA ? 0 : 1)) || (b.custoAtual - a.custoAtual));
-  const tabAtencao = atencao.slice(0, MAX_ATENCAO).map((r) => `<tr><td>${badge(r.nivel)}</td><td>${esc(r.origem)} → ${esc(r.destino)}</td><td class="c">${inteiro(r.ctes)}</td><td class="r">${moeda(r.custoAtual)}</td><td class="r">${r.qtdSubstitutos ? moeda(r.custoSubstituta) : '—'}</td><td>${esc(r.substitutoPrincipal || '—')}</td><td class="small">${esc(r.alertas.join(' · '))}</td></tr>`).join('');
+  // Laudo: resposta + números, resumo por situação e uma lista para cada
+  // situação (sem substituta, mais cara, prazo maior, substituta única).
+  // O detalhamento completo por rota/CT-e fica no Excel.
+  const MAX_LINHAS = 60;
+  const MAX_SUBS = 15;
+  const porCusto = (a, b) => b.custoAtual - a.custoAtual;
+  const grupos = {
+    sem: L.rotas.filter((r) => r.qtdSubstitutos === 0 || r.ctesDescobertos > 0).sort(porCusto),
+    cara: L.rotas.filter((r) => r.qtdSubstitutos > 0 && r.ctesDescobertos === 0 && r.diferenca > TOL).sort((a, b) => b.diferenca - a.diferenca),
+    barata: L.rotas.filter((r) => r.qtdSubstitutos > 0 && r.ctesDescobertos === 0 && r.diferenca < -TOL).sort((a, b) => a.diferenca - b.diferenca),
+    prazo: L.impactoPrazo,
+    unica: L.unicaOpcao,
+  };
+  const somaG = (lista, campo) => lista.reduce((acc, r) => acc + num(r[campo]), 0);
+  const linhaResumo = (rotulo, lista, ancora) => `<tr><td><a href="#${ancora}">${esc(rotulo)}</a></td><td class="c">${inteiro(lista.length)}</td><td class="c">${inteiro(somaG(lista, 'ctes'))}</td><td class="r">${moeda(somaG(lista, 'custoAtual'))}</td><td class="r">${moeda(somaG(lista, 'custoSubstituta'))}</td><td class="r ${corDif(somaG(lista, 'custoSubstituta') - somaG(lista, 'custoAtual'))}">${sinal(somaG(lista, 'custoSubstituta') - somaG(lista, 'custoAtual'))}</td></tr>`;
+  const tabResumo = [
+    linhaResumo('Sem substituta (total ou parcial)', grupos.sem, 'sem'),
+    linhaResumo('Substituta mais cara que hoje', grupos.cara, 'cara'),
+    linhaResumo('Substituta mais barata que hoje', grupos.barata, 'barata'),
+    linhaResumo('Prazo maior com a substituta', grupos.prazo, 'prazo'),
+    linhaResumo('Dependem de uma única substituta', grupos.unica, 'unica'),
+  ].join('');
+  const cortar = (lista) => lista.slice(0, MAX_LINHAS);
+  const notaCorte = (lista) => (lista.length > MAX_LINHAS ? `<p class="small">Mostrando ${MAX_LINHAS} de ${inteiro(lista.length)}. A lista completa está no Excel.</p>` : '');
+  const rota = (r) => `${esc(r.origem)} → ${esc(r.destino)}`;
+  const tabSem = cortar(grupos.sem).map((r) => `<tr><td>${rota(r)}</td><td class="c">${inteiro(r.ctes)}</td><td class="c">${inteiro(r.ctesDescobertos)}</td><td class="r">${moeda(r.custoAtual)}</td><td class="r">${moeda(r.valorDescoberto)}</td><td>${r.qtdSubstitutos ? esc(r.substitutos.map((x) => x.transportadora).join(', ')) : '<span class="neg">nenhuma</span>'}</td></tr>`).join('');
+  const tabDif = (lista) => cortar(lista).map((r) => `<tr><td>${rota(r)}</td><td class="c">${inteiro(r.ctes)}</td><td class="r">${moeda(r.custoAtual)}</td><td class="r">${moeda(r.custoSubstituta)}</td><td class="r ${corDif(r.diferenca)}">${sinal(r.diferenca)}</td><td>${esc(r.substitutoPrincipal || '—')}</td><td class="c">${inteiro(r.qtdSubstitutos)}</td><td class="c">${dias(r.prazoAtual)} → ${dias(r.prazoSub)}</td></tr>`).join('');
+  const tabPrazo = cortar(grupos.prazo).map((r) => `<tr><td>${rota(r)}</td><td class="c">${inteiro(r.ctes)}</td><td class="c">${dias(r.prazoAtual)}</td><td class="c">${dias(r.prazoSub)}</td><td class="c neg"><strong>${diasDelta(r.deltaPrazo)}</strong></td><td>${esc(r.substitutoPrincipal || '—')}</td><td>${r.alternativaSemPiora ? `${esc(r.alternativaSemPiora.transportadora)} · ${dias(r.alternativaSemPiora.prazoMedio)} · ${moeda(r.alternativaSemPiora.custoMedio)}/CT-e` : '<span class="muted">sem alternativa</span>'}</td></tr>`).join('');
+  const tabUnica = cortar(grupos.unica).map((r) => `<tr><td>${rota(r)}</td><td class="c">${inteiro(r.ctes)}</td><td class="r">${moeda(r.custoAtual)}</td><td>${esc(r.substitutos[0]?.transportadora || '—')}</td><td class="r">${moeda(r.custoSubstituta)}</td><td class="r ${corDif(r.diferenca)}">${sinal(r.diferenca)}</td><td class="c">${dias(r.prazoAtual)} → ${dias(r.prazoSub)}</td></tr>`).join('');
   const subsComVolume = L.substitutas.filter((x) => x.ctesAssumidos > 0);
   const tabSubs = subsComVolume.slice(0, MAX_SUBS).map((s) => `<tr><td><strong>${esc(s.transportadora)}</strong></td><td class="c">${inteiro(s.ctesAssumidos)}</td><td class="c">${pct(s.pctVolume)}</td><td class="r">${moeda(s.pagoAtualNosCtes)}</td><td class="r">${moeda(s.valorAssumido)}</td><td class="r ${corDif(s.variacao)}">${sinal(s.variacao)}</td></tr>`).join('');
   const pontos = L.pontos.slice(3); // os 3 primeiros repetem os cartões
@@ -265,6 +286,7 @@ tr.grp td{border-top:2px solid var(--line)}
 <div class="header" id="resumo"><div><div class="eyebrow">Central Fretes • Saída de transportadora</div><h1>${esc(titulo)}</h1><div>${esc(c.periodo || 'Período não informado')} • Canal: ${esc(c.canal || 'Todos')} • Reajuste proposto: ${pct(c.pctReajuste)}</div>${resumoFiltros ? `<div class="small" style="margin-top:4px">${esc(resumoFiltros)}</div>` : ''}</div>
 <div class="meta">Emitido em ${esc(emitido.toLocaleString('pt-BR'))}<br>${inteiro(t.ctes)} CT-es • ${inteiro(t.rotas)} rotas${c.geradoPor ? `<br>Responsável: ${esc(c.geradoPor)}` : ''}</div></div>
 
+<nav class="nav"><a href="#resumo">Resumo</a><a href="#situacao">Por situação</a><a href="#sem">Sem substituta</a><a href="#cara">Mais cara</a><a href="#barata">Mais barata</a><a href="#prazo">Prazo maior</a><a href="#unica">Substituta única</a><a href="#substitutas">Quem assumiria</a></nav>
 <div class="parecer ${L.tom}"><div class="rec">${esc(L.recomendacao)}</div>${pontos.length ? `<ul>${pontos.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}</div>
 
 <div class="cards">
@@ -274,16 +296,31 @@ tr.grp td{border-top:2px solid var(--line)}
 <div class="card ${t.economiaHibrido >= 0 ? 'good' : 'danger'}"><span>Trocando só onde compensa</span><strong>${moeda(t.custoHibrido)}</strong><small>${inteiro(t.rotasMigrar)} rota(s) trocam · ${inteiro(t.rotasManter)} ficam</small></div>
 </div>
 
-<h2 id="atencao">Rotas que pedem atenção (${inteiro(atencao.length)} de ${inteiro(t.rotas)})</h2>
-<table><thead><tr><th>Nível</th><th>Rota</th><th class="c">CT-es</th><th class="r">Pago hoje</th><th class="r">Com substituta</th><th>Substituta principal</th><th>Motivo</th></tr></thead><tbody>${tabAtencao || vazio(7, 'Nenhuma — todas as rotas têm substituta sem ressalvas.')}</tbody></table>
-${atencao.length > MAX_ATENCAO ? `<p class="small">Mostrando as ${MAX_ATENCAO} de maior custo. A lista completa está no Excel (aba Rotas).</p>` : ''}
+<h2 id="situacao">Resumo por situação</h2>
+<table><thead><tr><th>Situação</th><th class="c">Rotas</th><th class="c">CT-es</th><th class="r">Pago hoje</th><th class="r">Com substituta</th><th class="r">Diferença</th></tr></thead><tbody>${tabResumo}</tbody></table>
+<p class="small">Uma rota pode aparecer em mais de uma situação (ex.: mais cara e com prazo maior). Onde não há substituta, o valor "com substituta" é o pago hoje.</p>
+
+<h2 id="sem">Sem substituta (${inteiro(grupos.sem.length)})</h2>
+<table><thead><tr><th>Rota</th><th class="c">CT-es</th><th class="c">Sem cobertura</th><th class="r">Pago hoje</th><th class="r">Valor descoberto</th><th>Substitutas existentes</th></tr></thead><tbody>${tabSem || vazio(6, 'Todas as rotas têm substituta para todos os CT-es.')}</tbody></table>${notaCorte(grupos.sem)}
+
+<h2 id="cara">Substituta mais cara que hoje (${inteiro(grupos.cara.length)})</h2>
+<table><thead><tr><th>Rota</th><th class="c">CT-es</th><th class="r">Pago hoje</th><th class="r">Com substituta</th><th class="r">Diferença</th><th>Substituta principal</th><th class="c">Opções</th><th class="c">Prazo (at. → sub.)</th></tr></thead><tbody>${tabDif(grupos.cara) || vazio(8, 'Nenhuma rota fica mais cara com a substituta.')}</tbody></table>${notaCorte(grupos.cara)}
+
+<h2 id="barata">Substituta mais barata que hoje (${inteiro(grupos.barata.length)})</h2>
+<table><thead><tr><th>Rota</th><th class="c">CT-es</th><th class="r">Pago hoje</th><th class="r">Com substituta</th><th class="r">Diferença</th><th>Substituta principal</th><th class="c">Opções</th><th class="c">Prazo (at. → sub.)</th></tr></thead><tbody>${tabDif(grupos.barata) || vazio(8, 'Nenhuma rota fica mais barata com a substituta.')}</tbody></table>${notaCorte(grupos.barata)}
+
+<h2 id="prazo">Prazo maior com a substituta — impacto de prazo (${inteiro(grupos.prazo.length)})</h2>
+<table><thead><tr><th>Rota</th><th class="c">CT-es</th><th class="c">Prazo hoje</th><th class="c">Prazo substituta</th><th class="c">Variação</th><th>Substituta principal</th><th>Alternativa sem piora (prazo · custo médio)</th></tr></thead><tbody>${tabPrazo || vazio(7, 'Nenhuma rota piora o prazo com a substituta principal.')}</tbody></table>${notaCorte(grupos.prazo)}
+
+<h2 id="unica">Dependem de uma única substituta (${inteiro(grupos.unica.length)})</h2>
+<table><thead><tr><th>Rota</th><th class="c">CT-es</th><th class="r">Pago hoje</th><th>Única substituta</th><th class="r">Com substituta</th><th class="r">Diferença</th><th class="c">Prazo (at. → sub.)</th></tr></thead><tbody>${tabUnica || vazio(7, 'Nenhuma rota depende de uma única substituta.')}</tbody></table>${notaCorte(grupos.unica)}
 
 <h2 id="substitutas">Quem assumiria o volume</h2>
 <table><thead><tr><th>Transportadora</th><th class="c">CT-es</th><th class="c">% do volume</th><th class="r">Pago hoje nesses CT-es</th><th class="r">Custo pela substituta</th><th class="r">Diferença</th></tr></thead><tbody>${tabSubs || vazio(6, 'Nenhuma substituta encontrada.')}</tbody></table>
 ${subsComVolume.length > MAX_SUBS ? `<p class="small">Mais ${inteiro(subsComVolume.length - MAX_SUBS)} transportadora(s) com volume menor no Excel (aba Substitutas).</p>` : ''}
 
 <div class="note" style="margin-top:18px">
-<p><strong>Como ler:</strong> cada CT-e que a transportadora levou no período foi recalculado na tabela mais barata das outras transportadoras da mesma rota, com o mesmo peso e valor de NF. Onde não há substituta, fica o valor pago hoje. <strong>Crítica</strong> = rota sem substituta (precisa de cotação). <strong>Atenção</strong> = substituta única, impacto de prazo ou substituta mais cara que o reajuste.</p>
+<p><strong>Como ler:</strong> cada CT-e que a transportadora levou no período foi recalculado na tabela mais barata das outras transportadoras da mesma rota, com o mesmo peso e valor de NF. Onde não há substituta, fica o valor pago hoje. Rotas sem substituta precisam de cotação antes de uma saída.</p>
 <p><strong>Ressalvas:</strong> valores das substitutas são preço de tabela; capacidade e qualidade de quem assumiria devem ser validadas pela operação. Prazo = prazo de tabela.${t.semIbge ? ` ${inteiro(t.semIbge)} CT-e(s) sem IBGE entraram só no custo de hoje.` : ''} Detalhe por rota, opções e CT-es: Excel.</p>
 </div>
 <div class="assin"><div>Elaborado por (Fretes)</div><div>Transporte</div><div>Aprovação</div></div>

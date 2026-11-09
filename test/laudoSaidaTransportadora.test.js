@@ -68,7 +68,7 @@ test('unifica nomes do CT-e pela raiz do CNPJ e pelo cadastro', () => {
 test('laudo enxuto mostra filtro de origem/destino e não traz mais o detalhamento completo', () => {
   const html = gerarHtmlLaudoSaida(resultado, { transportadora: 'LTSL ENCOMENDAS', reajustePct: 20, filtroRotas: 'Origem UF SC' });
   assert.match(html, /Filtro: Origem UF SC/);
-  assert.match(html, /Rotas que pedem atenção/);
+  assert.match(html, /Resumo por situação/); assert.match(html, /Sem substituta/); assert.match(html, /Substituta mais cara que hoje/);
   assert.match(html, /Quem assumiria o volume/);
   assert.doesNotMatch(html, /Detalhamento completo por rota/);
   const abas = montarAbasExcelLaudoSaida(resultado, { transportadora: 'X', filtroRotas: 'Origem UF SC' });
