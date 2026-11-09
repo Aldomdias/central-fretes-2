@@ -4,7 +4,7 @@ import BaseCtesStatus from '../components/BaseCtesStatus';
 import { buscarBaseSimulacaoPorRotasDb, carregarCadastroCnpjTransportadorasDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
 import { categoriaCanalRealizado, montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
-import { aplicarPoliticaBaseCte } from '../services/cteBasePolicy';
+import { aplicarPoliticaBaseCte, isCpsLogCte, isEbazarCte } from '../services/cteBasePolicy';
 import { intervaloEmissao, janelasEmissao, pesoComoSimuladorRealizado } from '../utils/saidaTransportadoraRecorte';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { aplicarVinculoTransportadora as aplicarVinculoPuro } from '../services/vinculosTransportadorasPuro';
@@ -204,6 +204,16 @@ const LIMITES_PADRAO = '6000';
 // tomadores aceitos, sem EBAZAR, sem CPS LOG e sem CP COMERCIAL.
 const OPCOES_POLITICA_BASE = { ocultarEbazar: true, incluirCpsLog: false, incluirCpComercial: false, incluirTodosTomadores: false };
 
+// Segunda barreira, como no Simulador do realizado: depois do vínculo/unificação
+// o nome pode virar CPS LOG (ou EBAZAR) — esses saem da base.
+function nomeExcluidoDaBase(nome) {
+  const row = { transportadora: nome };
+  return isCpsLogCte(row) || isEbazarCte(row);
+}
+function aplicarSegundaBarreira(rows, aplicarVinculo) {
+  return rows.filter((r) => !nomeExcluidoDaBase(aplicarVinculo(String(r.transportadora || '').trim())));
+}
+
 // Busca paginada em realizado_local_ctes por janelas de data de emissão.
 // `nomes`: quando informado, só os CT-es com esses nomes de transportadora
 // (exatamente como gravados no banco).
@@ -284,6 +294,76 @@ async function carregarResumoTransportadoras({ intervalo, canal, onProgress }) {
 function funcaoResumoAusente(error) {
   const txt = `${error?.code || ''} ${error?.message || ''}`;
   return /PGRST202|42883|saida_transportadora_resumo|could not find the function/i.test(txt);
+}
+
+// Lista de transportadoras com busca por nome e ordenação (valor, CT-es, A-Z).
+function SeletorTransportadora({ grupos, totais, valor, onChange }) {
+  const [busca, setBusca] = useState('');
+  const [ordem, setOrdem] = useState('valor');
+  const linhas = useMemo(() => {
+    const termo = normCmp(busca);
+    const lista = grupos
+      .filter((g) => !termo || normCmp(g.nome).includes(termo) || g.variantes.some((v) => normCmp(v).includes(termo)))
+      .map((g) => ({ ...g, total: totais?.get(g.nome) || { ctes: g.ctes || 0, valor: 0 } }));
+    if (ordem === 'valor') lista.sort((a, b) => (b.total.valor - a.total.valor) || a.nome.localeCompare(b.nome, 'pt-BR'));
+    else if (ordem === 'ctes') lista.sort((a, b) => (b.total.ctes - a.total.ctes) || a.nome.localeCompare(b.nome, 'pt-BR'));
+    else lista.sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+    return lista;
+  }, [grupos, totais, busca, ordem]);
+  const thS = { textAlign: 'left', padding: '6px 10px', fontSize: '0.72rem', color: '#64748b', borderBottom: '1px solid #e2e8f0', position: 'sticky', top: 0, background: '#f8fafc' };
+  const tdS = { padding: '6px 10px', fontSize: '0.82rem', borderBottom: '1px solid #f1f5f9' };
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
+        <input
+          type="search"
+          placeholder="Buscar transportadora (nome ou nome no CT-e)..."
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          style={{ flex: '1 1 280px', minWidth: 220 }}
+        />
+        <select value={ordem} onChange={(e) => setOrdem(e.target.value)} style={{ width: 'auto' }}>
+          <option value="valor">Maior valor pago</option>
+          <option value="ctes">Mais CT-es</option>
+          <option value="nome">Nome (A-Z)</option>
+        </select>
+        <span style={{ fontSize: '0.75rem', color: '#64748b' }}>{fmtN(linhas.length)} de {fmtN(grupos.length)}</span>
+      </div>
+      <div style={{ maxHeight: 300, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th style={thS}>Transportadora</th>
+              <th style={{ ...thS, textAlign: 'right' }}>CT-es</th>
+              <th style={{ ...thS, textAlign: 'right' }}>Valor pago</th>
+            </tr>
+          </thead>
+          <tbody>
+            {linhas.map((g) => {
+              const sel = g.nome === valor;
+              return (
+                <tr
+                  key={g.nome}
+                  onClick={() => onChange(g.nome)}
+                  style={{ cursor: 'pointer', background: sel ? '#e0f2fe' : undefined }}
+                >
+                  <td style={{ ...tdS, fontWeight: sel ? 700 : 400 }}>
+                    {g.nome}
+                    {g.variantes.length > 1 && <span style={{ marginLeft: 6, fontSize: '0.7rem', color: '#94a3b8' }}>{g.variantes.length} nomes no CT-e</span>}
+                  </td>
+                  <td style={{ ...tdS, textAlign: 'right' }}>{fmtN(g.total.ctes)}</td>
+                  <td style={{ ...tdS, textAlign: 'right' }}>{fmt(g.total.valor)}</td>
+                </tr>
+              );
+            })}
+            {!linhas.length && (
+              <tr><td colSpan={3} style={{ ...tdS, color: '#94a3b8' }}>Nenhuma transportadora encontrada.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 function Card({ label, valor, sub, cor, destaque }) {
@@ -603,7 +683,9 @@ export default function SimularSaidaTransportadoraPage() {
           onProgress: ({ linhas }) => setProgresso(`Listando transportadoras do período... ${fmtN(linhas)} grupo(s)`),
         });
         if (resumoBruto) {
-          const resumo = aplicarPoliticaBaseCte(resumoBruto, OPCOES_POLITICA_BASE);
+          const resumoPolitica = aplicarSegundaBarreira(aplicarPoliticaBaseCte(resumoBruto, OPCOES_POLITICA_BASE), aplicarVinculo);
+          const unificacaoPolitica = unificarTransportadorasCtes(resumoPolitica, { aplicarVinculo, cadastro });
+          const resumo = resumoPolitica.filter((r) => !nomeExcluidoDaBase(unificacaoPolitica.nomeDoCte(r)));
           if (!resumo.length) throw new Error('Nenhum CT-e encontrado para este recorte.');
           const unificacao = unificarTransportadorasCtes(resumo, { aplicarVinculo, cadastro });
           // nomes exatamente como estão no banco, por transportadora unificada —
@@ -640,7 +722,9 @@ export default function SimularSaidaTransportadoraPage() {
         limite: Number(limiteInput) || 6000,
         onProgress: ({ carregados }) => setProgresso(`Carregando CT-es... ${fmtN(carregados)}`),
       });
-      const { ctes } = carga;
+      const ctesPolitica = aplicarSegundaBarreira(carga.ctes, aplicarVinculo);
+      const unificacaoPolitica = unificarTransportadorasCtes(ctesPolitica, { aplicarVinculo, cadastro });
+      const ctes = ctesPolitica.filter((c) => !nomeExcluidoDaBase(unificacaoPolitica.nomeDoCte(c)));
       if (!ctes.length) throw new Error('Nenhum CT-e encontrado para este recorte.');
 
       // A tabela de frete só é buscada depois, quando a transportadora a
@@ -689,7 +773,7 @@ export default function SimularSaidaTransportadoraPage() {
           onProgress: ({ carregados }) => setProgresso(`Carregando CT-es de ${transportadora}... ${fmtN(carregados)}`),
         });
         if (truncado) console.warn('[SimularSaidaTransportadora] teto de CT-es atingido para', transportadora);
-        ctesDaTransp = aplicarPoliticaBaseCte(linhas, OPCOES_POLITICA_BASE);
+        ctesDaTransp = aplicarSegundaBarreira(aplicarPoliticaBaseCte(linhas, OPCOES_POLITICA_BASE), (n) => aplicarVinculoPuro(n, mapaVinculos));
       } else {
         // compara pelo nome unificado: pega todos os CT-es das variações (CNPJ/vínculo) da transportadora escolhida
         ctesDaTransp = base.ctes.filter((c) => norm(unificacao.nomeDoCte(c)) === norm(transportadora));
@@ -836,23 +920,20 @@ export default function SimularSaidaTransportadoraPage() {
             </div>
           )}
           <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
-            <label>Transportadora a avaliar
-              <select value={transportadora} onChange={(e) => setTransportadora(e.target.value)} style={{ width: '100%' }}>
-                <option value="">Selecione...</option>
-                {transportadoras.map((g) => (
-                  <option key={g.nome} value={g.nome}>
-                    {g.nome}
-                    {base.totaisPorGrupo?.get(g.nome) ? ` — ${fmtN(base.totaisPorGrupo.get(g.nome).ctes)} CT-es · ${fmt(base.totaisPorGrupo.get(g.nome).valor)}` : ''}
-                    {g.variantes.length > 1 ? ` (${g.variantes.length} nomes no CT-e)` : ''}
-                  </option>
-                ))}
-              </select>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Transportadora a avaliar</div>
+              <SeletorTransportadora
+                grupos={transportadoras}
+                totais={base.totaisPorGrupo}
+                valor={transportadora}
+                onChange={setTransportadora}
+              />
               {grupoSelecionado && grupoSelecionado.variantes.length > 1 && (
                 <span style={{ display: 'block', fontWeight: 400, fontSize: '0.72rem', color: '#64748b', marginTop: 4 }}>
                   Unificado (CNPJ/vínculo): {grupoSelecionado.variantes.join(' · ')}
                 </span>
               )}
-            </label>
+            </div>
             <label>Reajuste proposto
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input type="number" value={reajustePct} onChange={(e) => setReajustePct(e.target.value)} style={{ width: 80 }} step={0.5} />
