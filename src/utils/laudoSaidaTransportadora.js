@@ -68,8 +68,8 @@ export function analisarRota(linha, pctReajuste = 0) {
 
   return {
     rotaKey: linha.rotaKey,
-    origem: `${linha.cidadeOrigem}/${linha.ufOrigem}`,
-    destino: `${linha.cidadeDestino}/${linha.ufDestino}`,
+    origem: [linha.cidadeOrigem, linha.ufOrigem].filter(Boolean).join('/'),
+    destino: [linha.cidadeDestino, linha.ufDestino].filter(Boolean).join('/'),
     ctes: num(linha.ctes), ctesCobertos, ctesDescobertos,
     custoAtual: arred(custoAtual), custoReajuste: arred(custoReajuste),
     custoSubstituta: arred(linha.melhorTotal), custoMigrar: arred(custoMigrar),

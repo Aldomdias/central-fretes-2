@@ -43,3 +43,18 @@ test('resumo agregado: política de base e unificação contam CT-es pelo __qtdC
   // nomes como estão no banco (com espaço) seguem acessíveis pela linha
   assert.equal(u.nomeDoCte(filtrado[1]), 'LTSL BAHIA ENCOMENDAS');
 });
+
+import { localPadronizado, montarMunicipioPorIbge, rotuloLocal } from '../src/utils/saidaTransportadoraRecorte.js';
+
+test('padroniza cidade/UF pelo IBGE (sem UF, com acento, UF errada)', () => {
+  const mapa = montarMunicipioPorIbge([
+    { ibge: '2910800', cidade: 'Feira de Santana', uf: 'BA' },
+    { ibge: '3205002', cidade: 'Serra', uf: 'ES' },
+  ]);
+  assert.deepEqual(localPadronizado({ cidade: 'FEIRA DE SANTANA/', uf: '', ibge: '2910800' }, mapa), { cidade: 'FEIRA DE SANTANA', uf: 'BA' });
+  assert.deepEqual(localPadronizado({ cidade: 'Serra', uf: 'BA', ibge: '3205002' }, mapa), { cidade: 'SERRA', uf: 'ES' });
+  // IBGE fora do cadastro: UF vem do código; sem IBGE: texto limpo
+  assert.deepEqual(localPadronizado({ cidade: 'Simões Filho', uf: '', ibge: '2930709' }, mapa), { cidade: 'SIMOES FILHO', uf: 'BA' });
+  assert.deepEqual(localPadronizado({ cidade: 'Simoes Filho/', uf: '' }, mapa), { cidade: 'SIMOES FILHO', uf: '' });
+  assert.equal(rotuloLocal('SIMOES FILHO', ''), 'SIMOES FILHO');
+});
