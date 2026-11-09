@@ -55,7 +55,7 @@ import {
   JORNADA_COR,
 } from '../services/auditoriaCteJornadaService';
 import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
-import { abrirLaudoMeta, prepararAnexosLaudo } from '../utils/laudoMetaAuditoriaCte';
+import { abrirLaudoMeta, prepararAnexosLaudo, carregarMetasCalculoMensais, salvarMetasCalculoMensais } from '../utils/laudoMetaAuditoriaCte';
 import PainelPendenciasJornadaCte from '../components/PainelPendenciasJornadaCte';
 import RespostasPortalPendentes from '../components/RespostasPortalPendentes';
 
@@ -541,6 +541,15 @@ function PainelLaudoMeta({ resumoMensal = [], meta = {}, responsavelPadrao = '' 
   const [ate, setAte] = useState('');
   const [responsavel, setResponsavel] = useState(responsavelPadrao);
   const [observacoes, setObservacoes] = useState('');
+  const [incluirAssertividade, setIncluirAssertividade] = useState(false);
+  const [metasMensais, setMetasMensais] = useState(carregarMetasCalculoMensais);
+  function alterarMetaMes(comp, valor) {
+    setMetasMensais((atual) => {
+      const novo = { ...atual, [comp]: valor === '' ? '' : Number(valor) };
+      salvarMetasCalculoMensais(novo);
+      return novo;
+    });
+  }
   const [arquivos, setArquivos] = useState([]);
   const [gerando, setGerando] = useState(false);
   const [erroLaudo, setErroLaudo] = useState('');
@@ -563,7 +572,7 @@ function PainelLaudoMeta({ resumoMensal = [], meta = {}, responsavelPadrao = '' 
     setGerando(true);
     try {
       const anexos = await prepararAnexosLaudo(arquivos);
-      abrirLaudoMeta(selecionados, { meta, responsavel, observacoes, anexos });
+      abrirLaudoMeta(selecionados, { meta, responsavel, observacoes, anexos, incluirAssertividade, metasCalculoMensais: metasMensais });
     } catch (e) {
       setErroLaudo(e?.message || 'Falha ao gerar o laudo.');
     } finally {
@@ -586,8 +595,27 @@ function PainelLaudoMeta({ resumoMensal = [], meta = {}, responsavelPadrao = '' 
         <button className="sim-tab" type="button" onClick={() => setAberto(false)}>Fechar</button>
       </div>
       <div style={{ fontSize: 13, color: '#1e3a8a', marginBottom: 10 }}>
-        Meta atual: {fmtP(meta.taxaCalculoMeta, 0)} de cálculo e {fmtP(meta.taxaAssertividadeMeta, 0)} de assertividade (altere em "Status da Meta da Área").
+        Meta de cálculo por competência (crescente no ano; fica salva neste navegador).
+        Meses sem valor usam a meta geral de {fmtP(meta.taxaCalculoMeta, 0)}.
+        {incluirAssertividade ? ` Assertividade: meta de ${fmtP(meta.taxaAssertividadeMeta, 0)}.` : ''}
       </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+        {selecionados.map((item) => {
+          const comp = String(item.competencia);
+          return (
+            <label key={comp} style={{ fontSize: 12, width: 92 }}>
+              {comp}
+              <input type="number" min="0" max="100" step="0.5" value={metasMensais[comp] ?? ''}
+                placeholder={String(meta.taxaCalculoMeta ?? '')}
+                onChange={(e) => alterarMetaMes(comp, e.target.value)} />
+            </label>
+          );
+        })}
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, marginBottom: 10 }}>
+        <input type="checkbox" checked={incluirAssertividade} onChange={(e) => setIncluirAssertividade(e.target.checked)} style={{ width: 'auto', margin: 0 }} />
+        Incluir assertividade no laudo
+      </label>
       <div className="sim-form-grid sim-grid-3" style={{ marginBottom: 10 }}>
         <label>
           Competência inicial

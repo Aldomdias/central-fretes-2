@@ -21,8 +21,27 @@ function tamanhoArquivo(bytes) {
 
 function taxa(parte, total) { return total > 0 ? (parte / total) * 100 : 0; }
 
-export function consolidarLaudoMeta(resumoMensal = [], meta = {}) {
-  const metaCalculo = numero(meta.taxaCalculoMeta);
+// Meta de cobertura de cálculo por competência (crescente ao longo de 2026).
+export const METAS_CALCULO_MENSAIS_PADRAO = {
+  '2026-01': 90, '2026-02': 92, '2026-03': 95, '2026-04': 95, '2026-05': 95, '2026-06': 95,
+  '2026-07': 95, '2026-08': 95, '2026-09': 95, '2026-10': 95, '2026-11': 95, '2026-12': 95,
+};
+const METAS_MENSAIS_KEY = 'auditoria_cte_metas_calculo_mensais';
+
+export function carregarMetasCalculoMensais() {
+  try {
+    const salvo = JSON.parse(localStorage.getItem(METAS_MENSAIS_KEY) || 'null');
+    if (salvo && typeof salvo === 'object') return { ...METAS_CALCULO_MENSAIS_PADRAO, ...salvo };
+  } catch { /* usa padrão */ }
+  return { ...METAS_CALCULO_MENSAIS_PADRAO };
+}
+
+export function salvarMetasCalculoMensais(metas = {}) {
+  try { localStorage.setItem(METAS_MENSAIS_KEY, JSON.stringify(metas)); } catch { /* localStorage indisponível */ }
+}
+
+export function consolidarLaudoMeta(resumoMensal = [], meta = {}, metasMensais = {}) {
+  const metaCalculoGeral = numero(meta.taxaCalculoMeta);
   const metaAssert = numero(meta.taxaAssertividadeMeta);
   const meses = [...resumoMensal]
     .sort((a, b) => String(a.competencia).localeCompare(String(b.competencia)))
@@ -32,7 +51,10 @@ export function consolidarLaudoMeta(resumoMensal = [], meta = {}) {
       const assertivos = numero(item.assertivos);
       const taxaCalculo = item.taxa_calculo != null ? numero(item.taxa_calculo) : taxa(calculados, total);
       const taxaAssert = item.taxa_assertividade != null ? numero(item.taxa_assertividade) : taxa(assertivos, calculados);
+      const metaMes = metasMensais[String(item.competencia)];
+      const metaCalculoMes = metaMes != null && metaMes !== '' ? numero(metaMes) : metaCalculoGeral;
       return {
+        metaCalculo: metaCalculoMes,
         competencia: String(item.competencia),
         total,
         calculados,
@@ -44,7 +66,7 @@ export function consolidarLaudoMeta(resumoMensal = [], meta = {}) {
         valorCte: numero(item.valor_total_cte),
         valorCalculado: numero(item.valor_total_calculado),
         divergencia: numero(item.valor_total_divergencia),
-        atingiuCalculo: taxaCalculo >= metaCalculo,
+        atingiuCalculo: taxaCalculo >= metaCalculoMes,
         atingiuAssert: taxaAssert >= metaAssert,
       };
     });
@@ -53,6 +75,11 @@ export function consolidarLaudoMeta(resumoMensal = [], meta = {}) {
   const total = soma('total');
   const calculados = soma('calculados');
   const assertivos = soma('assertivos');
+  // Meta do período = média das metas mensais ponderada pelo volume de CT-es.
+  const metaCalculo = total > 0
+    ? meses.reduce((s, m) => s + m.metaCalculo * m.total, 0) / total
+    : metaCalculoGeral;
+  const metasDistintas = [...new Set(meses.map((m) => m.metaCalculo))];
   const consolidado = {
     total,
     calculados,
@@ -72,6 +99,7 @@ export function consolidarLaudoMeta(resumoMensal = [], meta = {}) {
     meses,
     consolidado,
     metaCalculo,
+    metaVariavel: metasDistintas.length > 1,
     metaAssert,
     mesesCalculoOk: meses.filter((m) => m.atingiuCalculo).length,
     mesesAssertOk: meses.filter((m) => m.atingiuAssert).length,
@@ -119,15 +147,26 @@ function selo(ok) {
 
 export function gerarHtmlLaudoMeta(resumoMensal = [], opcoes = {}) {
   const meta = opcoes.meta || {};
-  const r = consolidarLaudoMeta(resumoMensal, meta);
+  const r = consolidarLaudoMeta(resumoMensal, meta, opcoes.metasCalculoMensais || {});
   const c = r.consolidado;
   const titulo = opcoes.titulo || 'Laudo de Comprovação de Meta — Auditoria CT-e';
   const periodo = r.meses.length ? `${r.meses[0].competencia} a ${r.meses[r.meses.length - 1].competencia}` : 'Sem competências';
   const anexos = opcoes.anexos || [];
-  const ambosConsolidado = c.atingiuCalculo && c.atingiuAssert;
+  // Por padrão o laudo comprova só a meta de cobertura de cálculo; a
+  // assertividade entra apenas quando pedida explicitamente.
+  const A = opcoes.incluirAssertividade === true;
+  const ambosConsolidado = A ? c.atingiuCalculo && c.atingiuAssert : c.atingiuCalculo;
 
+  const casasMeta = r.metaVariavel ? 1 : 0;
+  const rotuloMeta = r.metaVariavel
+    ? `do período de ${percentual(r.metaCalculo, 1)} (metas mensais crescentes, ponderadas pelo volume)`
+    : `de ${percentual(r.metaCalculo, 0)}`;
   let conclusao;
-  if (ambosConsolidado) {
+  if (!A) {
+    conclusao = c.atingiuCalculo
+      ? `No período de <strong>${escapar(periodo)}</strong>, a área <strong>atingiu a meta de cobertura de cálculo</strong>: ${percentual(c.taxaCalculo)} dos CT-es com frete calculado (${inteiro(c.calculados)} de ${inteiro(c.total)}), frente à meta ${rotuloMeta}.`
+      : `No período de <strong>${escapar(periodo)}</strong>, a cobertura de cálculo consolidada foi de ${percentual(c.taxaCalculo)} (${inteiro(c.calculados)} de ${inteiro(c.total)} CT-es), abaixo da meta ${rotuloMeta}.`;
+  } else if (ambosConsolidado) {
     conclusao = `No período de <strong>${escapar(periodo)}</strong>, a área <strong>atingiu integralmente a meta</strong> configurada: ${percentual(c.taxaCalculo)} dos CT-es com cálculo (meta ${percentual(r.metaCalculo, 0)}) e ${percentual(c.taxaAssert)} de assertividade nos calculados (meta ${percentual(r.metaAssert, 0)}).`;
   } else if (c.atingiuCalculo) {
     conclusao = `No período de <strong>${escapar(periodo)}</strong>, a <strong>meta de cobertura de cálculo foi atingida</strong> (${percentual(c.taxaCalculo)} frente à meta de ${percentual(r.metaCalculo, 0)}, cumprida em ${r.mesesCalculoOk} de ${r.meses.length} meses). A meta de assertividade (${percentual(r.metaAssert, 0)}) não foi atingida no consolidado: ${percentual(c.taxaAssert)}.`;
@@ -138,10 +177,10 @@ export function gerarHtmlLaudoMeta(resumoMensal = [], opcoes = {}) {
   }
 
   const maxCalculo = Math.max(100, ...r.meses.map((m) => m.taxaCalculo));
-  const barras = r.meses.map((m) => `<div class="barra-linha"><span class="barra-rotulo">${escapar(m.competencia)}</span><div class="barra-trilho"><i class="${m.atingiuCalculo ? 'ok' : 'nok'}" style="width:${(m.taxaCalculo / maxCalculo) * 100}%"></i><b style="left:${(r.metaCalculo / maxCalculo) * 100}%"></b></div><span class="barra-valor">${percentual(m.taxaCalculo)}</span><div class="barra-trilho"><i class="${m.atingiuAssert ? 'ok' : 'nok'}" style="width:${m.taxaAssert}%"></i><b style="left:${r.metaAssert}%"></b></div><span class="barra-valor">${percentual(m.taxaAssert)}</span></div>`).join('');
+  const barras = r.meses.map((m) => `<div class="barra-linha"><span class="barra-rotulo">${escapar(m.competencia)}</span><div class="barra-trilho"><i class="${m.atingiuCalculo ? 'ok' : 'nok'}" style="width:${(m.taxaCalculo / maxCalculo) * 100}%"></i><b style="left:${(m.metaCalculo / maxCalculo) * 100}%" title="Meta ${percentual(m.metaCalculo, 0)}"></b></div><span class="barra-valor">${percentual(m.taxaCalculo)}</span>${A ? `<div class="barra-trilho"><i class="${m.atingiuAssert ? 'ok' : 'nok'}" style="width:${m.taxaAssert}%"></i><b style="left:${r.metaAssert}%"></b></div><span class="barra-valor">${percentual(m.taxaAssert)}</span>` : ''}</div>`).join('');
 
-  const linhas = r.meses.map((m) => `<tr><td><strong>${escapar(m.competencia)}</strong></td><td>${inteiro(m.total)}</td><td>${inteiro(m.calculados)}</td><td>${inteiro(m.semCalculo)}</td><td>${inteiro(m.assertivos)}</td><td>${inteiro(m.divergentes)}</td><td class="${m.atingiuCalculo ? 'tok' : 'tnok'}">${percentual(m.taxaCalculo)}</td><td class="${m.atingiuAssert ? 'tok' : 'tnok'}">${percentual(m.taxaAssert)}</td><td>${moeda(m.valorCte)}</td><td>${moeda(m.valorCalculado)}</td><td>${moeda(m.divergencia)}</td></tr>`).join('');
-  const linhaTotal = `<tr class="total"><td>Consolidado</td><td>${inteiro(c.total)}</td><td>${inteiro(c.calculados)}</td><td>${inteiro(c.semCalculo)}</td><td>${inteiro(c.assertivos)}</td><td>${inteiro(c.divergentes)}</td><td class="${c.atingiuCalculo ? 'tok' : 'tnok'}">${percentual(c.taxaCalculo)}</td><td class="${c.atingiuAssert ? 'tok' : 'tnok'}">${percentual(c.taxaAssert)}</td><td>${moeda(c.valorCte)}</td><td>${moeda(c.valorCalculado)}</td><td>${moeda(c.divergencia)}</td></tr>`;
+  const linhas = r.meses.map((m) => `<tr><td><strong>${escapar(m.competencia)}</strong></td><td>${inteiro(m.total)}</td><td>${inteiro(m.calculados)}</td><td>${inteiro(m.semCalculo)}</td><td>${percentual(m.metaCalculo, 0)}</td>${A ? `<td>${inteiro(m.assertivos)}</td><td>${inteiro(m.divergentes)}</td>` : ''}<td class="${m.atingiuCalculo ? 'tok' : 'tnok'}">${percentual(m.taxaCalculo)}</td>${A ? `<td class="${m.atingiuAssert ? 'tok' : 'tnok'}">${percentual(m.taxaAssert)}</td>` : ''}<td>${moeda(m.valorCte)}</td><td>${moeda(m.valorCalculado)}</td>${A ? `<td>${moeda(m.divergencia)}</td>` : ''}</tr>`).join('');
+  const linhaTotal = `<tr class="total"><td>Consolidado</td><td>${inteiro(c.total)}</td><td>${inteiro(c.calculados)}</td><td>${inteiro(c.semCalculo)}</td><td>${percentual(r.metaCalculo, casasMeta)}</td>${A ? `<td>${inteiro(c.assertivos)}</td><td>${inteiro(c.divergentes)}</td>` : ''}<td class="${c.atingiuCalculo ? 'tok' : 'tnok'}">${percentual(c.taxaCalculo)}</td>${A ? `<td class="${c.atingiuAssert ? 'tok' : 'tnok'}">${percentual(c.taxaAssert)}</td>` : ''}<td>${moeda(c.valorCte)}</td><td>${moeda(c.valorCalculado)}</td>${A ? `<td>${moeda(c.divergencia)}</td>` : ''}</tr>`;
 
   const listaAnexos = anexos.length
     ? `<table><thead><tr><th>#</th><th>Arquivo</th><th>Tipo</th><th>Tamanho</th><th>SHA-256</th></tr></thead><tbody>${anexos.map((a, i) => `<tr><td>A${i + 1}</td><td>${escapar(a.nome)}</td><td>${escapar(a.tipo)}</td><td>${tamanhoArquivo(a.tamanho)}</td><td class="hash">${escapar(a.hash || '—')}</td></tr>`).join('')}</tbody></table>`
@@ -150,6 +189,11 @@ export function gerarHtmlLaudoMeta(resumoMensal = [], opcoes = {}) {
     .map((a) => `<figure><img src="${a.dataUrl}" alt="${escapar(a.nome)}"><figcaption>A${anexos.indexOf(a) + 1} — ${escapar(a.nome)}</figcaption></figure>`).join('');
 
   const observacoes = String(opcoes.observacoes || '').trim();
+  const descricaoMeta = A
+    ? String(meta.descricao || '')
+    : r.metaVariavel
+      ? `Meta crescente de cobertura de cálculo: ${r.meses.map((m) => `${m.competencia} ${percentual(m.metaCalculo, 0)}`).join(' · ')}. Cada competência é avaliada contra a meta do próprio mês.`
+      : `Meta: ${percentual(r.metaCalculo, 0)} dos CT-es da competência com frete calculado pela tabela vigente.`;
 
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${escapar(titulo)}</title><style>
 :root{--navy:#071b49;--green:#15803d;--red:#b91c1c;--muted:#64748b;--line:#dbe3ef}*{box-sizing:border-box}
@@ -160,7 +204,7 @@ body{font-family:Arial,sans-serif;color:#172033;margin:0;background:#eef2f7;font
 .eyebrow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:700}
 h1{color:var(--navy);margin:4px 0 6px;font-size:24px}h2{color:var(--navy);font-size:16px;margin:26px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
 .meta{text-align:right;color:var(--muted);line-height:1.6}
-.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.card{border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.cards{display:grid;grid-template-columns:repeat(${A ? 4 : 2},1fr);gap:12px}.card{border:1px solid var(--line);border-radius:10px;padding:12px 14px}
 .card span{display:block;color:var(--muted);font-size:11px;font-weight:700;text-transform:uppercase}.card strong{display:block;font-size:24px;margin-top:6px;color:var(--navy)}.card small{color:var(--muted)}
 .card.ok{border-color:#86efac;background:#f0fdf4}.card.ok strong{color:var(--green)}.card.nok{border-color:#fecaca;background:#fef2f2}.card.nok strong{color:var(--red)}
 .callout{border-left:4px solid var(--navy);background:#f5f8fc;padding:12px 14px;line-height:1.6;font-size:13px}.callout.ok{border-color:var(--green);background:#f0fdf4}
@@ -168,7 +212,7 @@ h1{color:var(--navy);margin:4px 0 6px;font-size:24px}h2{color:var(--navy);font-s
 table{width:100%;border-collapse:collapse;margin-top:6px}th,td{border-bottom:1px solid var(--line);padding:7px 6px;text-align:left}th{background:#f5f8fc;color:var(--navy);font-size:11px}
 tr.total td{font-weight:700;background:#f5f8fc;border-top:2px solid var(--navy)}.tok{color:var(--green);font-weight:700}.tnok{color:var(--red);font-weight:700}
 .hash{font-family:monospace;font-size:9.5px;word-break:break-all}.muted{color:var(--muted)}
-.barras-cab,.barra-linha{display:grid;grid-template-columns:80px 1fr 60px 1fr 60px;gap:10px;align-items:center;margin:5px 0}.barras-cab{font-weight:700;color:var(--muted);font-size:11px}
+.barras-cab,.barra-linha{display:grid;grid-template-columns:${A ? '80px 1fr 60px 1fr 60px' : '80px 1fr 60px'};gap:10px;align-items:center;margin:5px 0}.barras-cab{font-weight:700;color:var(--muted);font-size:11px}
 .barra-trilho{position:relative;height:12px;background:#eef2f7;border-radius:6px}.barra-trilho i{position:absolute;left:0;top:0;bottom:0;border-radius:6px}.barra-trilho i.ok{background:#22c55e}.barra-trilho i.nok{background:#f87171}
 .barra-trilho b{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--navy)}.barra-valor{text-align:right;font-weight:700}
 figure{margin:14px 0;page-break-inside:avoid}figure img{max-width:100%;border:1px solid var(--line)}figcaption{color:var(--muted);font-size:11px;margin-top:4px}
@@ -180,28 +224,28 @@ figure{margin:14px 0;page-break-inside:avoid}figure img{max-width:100%;border:1p
 <div class="meta">Emitido em ${escapar(new Date().toLocaleString('pt-BR'))}<br>Responsável: ${escapar(opcoes.responsavel || 'Não informado')}<br>Fonte: auditoria_cte_resumo_mensal</div></div>
 
 <h2>Meta avaliada</h2>
-<p>${escapar(meta.descricao || '')}</p>
+<p>${escapar(descricaoMeta)}</p>
 <div class="cards">
-<div class="card"><span>Meta cobertura de cálculo</span><strong>${percentual(r.metaCalculo, 0)}</strong><small>CT-es com cálculo ÷ total de CT-es</small></div>
+<div class="card"><span>Meta cobertura de cálculo${r.metaVariavel ? ' (período)' : ''}</span><strong>${percentual(r.metaCalculo, casasMeta)}</strong><small>${r.metaVariavel ? 'média das metas mensais ponderada pelo volume' : 'CT-es com cálculo ÷ total de CT-es'}</small></div>
 <div class="card ${c.atingiuCalculo ? 'ok' : 'nok'}"><span>Realizado no período</span><strong>${percentual(c.taxaCalculo)}</strong><small>${inteiro(c.calculados)} de ${inteiro(c.total)} CT-es • ${selo(c.atingiuCalculo)}</small></div>
-<div class="card"><span>Meta assertividade</span><strong>${percentual(r.metaAssert, 0)}</strong><small>assertivos ÷ CT-es calculados</small></div>
-<div class="card ${c.atingiuAssert ? 'ok' : 'nok'}"><span>Realizado no período</span><strong>${percentual(c.taxaAssert)}</strong><small>${inteiro(c.assertivos)} de ${inteiro(c.calculados)} calculados • ${selo(c.atingiuAssert)}</small></div>
+${A ? `<div class="card"><span>Meta assertividade</span><strong>${percentual(r.metaAssert, 0)}</strong><small>assertivos ÷ CT-es calculados</small></div>
+<div class="card ${c.atingiuAssert ? 'ok' : 'nok'}"><span>Realizado no período</span><strong>${percentual(c.taxaAssert)}</strong><small>${inteiro(c.assertivos)} de ${inteiro(c.calculados)} calculados • ${selo(c.atingiuAssert)}</small></div>` : ''}
 </div>
 
 <h2>Conclusão</h2>
-<div class="callout ${ambosConsolidado ? 'ok' : ''}">${conclusao}<br>Meses com meta de cálculo atingida: <strong>${r.mesesCalculoOk}/${r.meses.length}</strong> • meses com meta de assertividade atingida: <strong>${r.mesesAssertOk}/${r.meses.length}</strong> • meses com ambas: <strong>${r.mesesAmbosOk}/${r.meses.length}</strong>.</div>
+<div class="callout ${ambosConsolidado ? 'ok' : ''}">${conclusao}<br>Meses com meta de cálculo atingida: <strong>${r.mesesCalculoOk}/${r.meses.length}</strong>${A ? ` • meses com meta de assertividade atingida: <strong>${r.mesesAssertOk}/${r.meses.length}</strong> • meses com ambas: <strong>${r.mesesAmbosOk}/${r.meses.length}</strong>` : ''}.</div>
 ${observacoes ? `<h2>Observações do responsável</h2><div class="callout">${escapar(observacoes).replace(/\n/g, '<br>')}</div>` : ''}
 
 <h2>Evolução mensal frente à meta</h2>
-<div class="barras-cab"><span>Competência</span><span>% Cálculo (linha = meta ${percentual(r.metaCalculo, 0)})</span><span></span><span>% Assertividade (linha = meta ${percentual(r.metaAssert, 0)})</span><span></span></div>
+<div class="barras-cab"><span>Competência</span><span>% Cálculo (linha = meta ${r.metaVariavel ? 'do mês' : percentual(r.metaCalculo, 0)})</span><span></span>${A ? `<span>% Assertividade (linha = meta ${percentual(r.metaAssert, 0)})</span><span></span>` : ''}</div>
 ${barras || '<p class="muted">Sem dados.</p>'}
 
 <h2>Memória de cálculo por competência</h2>
-<table><thead><tr><th>Competência</th><th>Total CT-es</th><th>Calculados</th><th>Sem cálculo</th><th>Assertivos</th><th>Divergentes</th><th>% Cálculo</th><th>% Assertividade</th><th>Valor CT-e</th><th>Valor calculado</th><th>Divergência</th></tr></thead>
+<table><thead><tr><th>Competência</th><th>Total CT-es</th><th>Calculados</th><th>Sem cálculo</th><th>Meta cálculo</th>${A ? '<th>Assertivos</th><th>Divergentes</th>' : ''}<th>% Cálculo</th>${A ? '<th>% Assertividade</th>' : ''}<th>Valor CT-e</th><th>Valor calculado</th>${A ? '<th>Divergência</th>' : ''}</tr></thead>
 <tbody>${linhas}${r.meses.length > 1 ? linhaTotal : ''}</tbody></table>
 
 <h2>Metodologia</h2>
-<p class="muted" style="line-height:1.6">Os números vêm dos snapshots mensais gravados pelo módulo Auditoria CT-e na tabela <code>auditoria_cte_resumo_mensal</code>. <strong>% Cálculo</strong> = CT-es com frete calculado pela tabela vigente ÷ total de CT-es da competência. <strong>% Assertividade</strong> = CT-es cujo valor cobrado bate com o calculado (dentro da tolerância configurada) ÷ CT-es calculados; CT-es sem cálculo não entram no denominador da assertividade. O consolidado do período é ponderado pelo volume (soma das quantidades), e não a média simples dos percentuais mensais.</p>
+<p class="muted" style="line-height:1.6">Os números vêm dos snapshots mensais gravados pelo módulo Auditoria CT-e na tabela <code>auditoria_cte_resumo_mensal</code>. <strong>% Cálculo</strong> = CT-es com frete calculado pela tabela vigente ÷ total de CT-es da competência.${A ? ' <strong>% Assertividade</strong> = CT-es cujo valor cobrado bate com o calculado (dentro da tolerância configurada) ÷ CT-es calculados; CT-es sem cálculo não entram no denominador da assertividade.' : ''} O consolidado do período é ponderado pelo volume (soma das quantidades), e não a média simples dos percentuais mensais.${r.metaVariavel ? ' Como a meta é crescente, cada mês é comparado com a meta vigente naquele mês, e a meta do período é a média das metas mensais ponderada pelo número de CT-es de cada mês.' : ''}</p>
 
 <h2>Evidências anexadas</h2>
 ${listaAnexos}
