@@ -9625,19 +9625,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
               style={{ background: '#fff7ed', color: '#c2410c', border: '1px solid #fdba74' }}>
               Gerar laudo projetado + tabela
             </button>
-            <button className="sim-tab" type="button"
-              onClick={exportarRelatorioDiretoria}
-              disabled={!resultadoRealizado?.ctesAnalisados}
-              title="Relatório completo com saving — uso interno/diretoria"
-              style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #86efac' }}>
-              📊 Relatório Diretoria
-            </button>
-            <button className="sim-tab" type="button" onClick={() => setLaudoVisualAberto('executivo')} disabled={!resultadoRealizado?.ctesAnalisados}>
-              Ver Laudo Diretoria
-            </button>
-            <button className="sim-tab" type="button" onClick={() => setLaudoVisualAberto('transportador')} disabled={!resultadoRealizado?.ctesAnalisados}>
-              Ver Laudo Transportador
-            </button>
             <button className="sim-tab" type="button" onClick={salvarLaudosVisuaisNegociacao} disabled={!negociacaoSelecionadaRealizado?.id || salvandoLaudosVisuais}>
               {salvandoLaudosVisuais ? 'Salvando laudos...' : 'Salvar laudos na negociação'}
             </button>
