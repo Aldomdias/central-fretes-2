@@ -59,3 +59,42 @@ export function pesoComoSimuladorRealizado(cte = {}) {
     { ignorarCubagem: true, percentualContingenciaPeso: 0 },
   );
 }
+
+// ── Padronização de cidade/UF pelo IBGE ──────────────────────────────────
+// O texto do CT-e varia ("FEIRA DE SANTANA/", "Feira de Santana/BA", UF errada).
+// Quando o IBGE do município está resolvido, nome e UF vêm do cadastro oficial.
+const UF_POR_CODIGO_IBGE = {
+  11: 'RO', 12: 'AC', 13: 'AM', 14: 'RR', 15: 'PA', 16: 'AP', 17: 'TO',
+  21: 'MA', 22: 'PI', 23: 'CE', 24: 'RN', 25: 'PB', 26: 'PE', 27: 'AL', 28: 'SE', 29: 'BA',
+  31: 'MG', 32: 'ES', 33: 'RJ', 35: 'SP', 41: 'PR', 42: 'SC', 43: 'RS',
+  50: 'MS', 51: 'MT', 52: 'GO', 53: 'DF',
+};
+
+function textoPadrao(v) {
+  return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+}
+
+export function montarMunicipioPorIbge(municipios = []) {
+  const mapa = new Map();
+  for (const item of municipios || []) {
+    const ibge = String(item.ibge || item.codigo_ibge || item.codigo || '').replace(/\D/g, '').slice(0, 7);
+    const cidade = item.cidade || item.nome || item.municipio || '';
+    if (ibge.length === 7 && cidade && !mapa.has(ibge)) mapa.set(ibge, { cidade: textoPadrao(cidade), uf: textoPadrao(item.uf || item.estado || '') });
+  }
+  return mapa;
+}
+
+export function localPadronizado({ cidade = '', uf = '', ibge = '' } = {}, municipioPorIbge = new Map()) {
+  const cod = String(ibge || '').replace(/\D/g, '').slice(0, 7);
+  const oficial = cod ? municipioPorIbge.get(cod) : null;
+  const ufIbge = cod.length >= 2 ? (UF_POR_CODIGO_IBGE[cod.slice(0, 2)] || '') : '';
+  const cidadeLimpa = textoPadrao(String(cidade || '').replace(/\/\s*[A-Za-z]{0,2}\s*$/, ''));
+  return {
+    cidade: oficial?.cidade || cidadeLimpa,
+    uf: oficial?.uf || ufIbge || textoPadrao(uf),
+  };
+}
+
+export function rotuloLocal(cidade, uf) {
+  return [cidade, uf].filter(Boolean).join('/');
+}

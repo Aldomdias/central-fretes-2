@@ -5,7 +5,7 @@ import { buscarBaseSimulacaoPorRotasDb, carregarCadastroCnpjTransportadorasDb, c
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
 import { categoriaCanalRealizado, montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
 import { aplicarPoliticaBaseCte, isCpsLogCte, isEbazarCte } from '../services/cteBasePolicy';
-import { intervaloEmissao, janelasEmissao, pesoComoSimuladorRealizado } from '../utils/saidaTransportadoraRecorte';
+import { intervaloEmissao, janelasEmissao, localPadronizado, montarMunicipioPorIbge, pesoComoSimuladorRealizado, rotuloLocal } from '../utils/saidaTransportadoraRecorte';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { aplicarVinculoTransportadora as aplicarVinculoPuro } from '../services/vinculosTransportadorasPuro';
 import { unificarTransportadorasCtes } from '../utils/unificarTransportadorasCte';
@@ -653,8 +653,8 @@ export default function SimularSaidaTransportadoraPage() {
     for (const c of simulacao?.ctesSimulados || []) {
       if (c.ufOrigem) ufO.add(c.ufOrigem);
       if (c.ufDestino) ufD.add(c.ufDestino);
-      if (!filtroRota.ufOrigem || c.ufOrigem === filtroRota.ufOrigem) cidO.set(`${c.cidadeOrigem}/${c.ufOrigem}`, true);
-      if (!filtroRota.ufDestino || c.ufDestino === filtroRota.ufDestino) cidD.set(`${c.cidadeDestino}/${c.ufDestino}`, true);
+      if (!filtroRota.ufOrigem || c.ufOrigem === filtroRota.ufOrigem) cidO.set(rotuloLocal(c.cidadeOrigem, c.ufOrigem), true);
+      if (!filtroRota.ufDestino || c.ufDestino === filtroRota.ufDestino) cidD.set(rotuloLocal(c.cidadeDestino, c.ufDestino), true);
     }
     const ord = (arr) => [...arr].sort((a, b) => a.localeCompare(b, 'pt-BR'));
     return { ufOrigem: ord(ufO), ufDestino: ord(ufD), origem: ord(cidO.keys()), destino: ord(cidD.keys()) };
@@ -664,9 +664,9 @@ export default function SimularSaidaTransportadoraPage() {
     if (!filtroAtivo) return lista;
     return lista.filter((c) => (
       (!filtroRota.ufOrigem || c.ufOrigem === filtroRota.ufOrigem)
-      && (!filtroRota.origem || `${c.cidadeOrigem}/${c.ufOrigem}` === filtroRota.origem)
+      && (!filtroRota.origem || rotuloLocal(c.cidadeOrigem, c.ufOrigem) === filtroRota.origem)
       && (!filtroRota.ufDestino || c.ufDestino === filtroRota.ufDestino)
-      && (!filtroRota.destino || `${c.cidadeDestino}/${c.ufDestino}` === filtroRota.destino)
+      && (!filtroRota.destino || rotuloLocal(c.cidadeDestino, c.ufDestino) === filtroRota.destino)
     ));
   }, [simulacao, filtroRota, filtroAtivo]);
   const descricaoFiltroRota = [
@@ -756,6 +756,7 @@ export default function SimularSaidaTransportadoraPage() {
       const municipios = await carregarMunicipiosIbgeDb().catch(() => []);
       const mapasIbge = montarMapasIbge(municipios);
       const municipioPorCidade = montarMunicipioPorCidade(municipios);
+      const municipioPorIbge = montarMunicipioPorIbge(municipios);
 
       // vínculos: unificam o nome da transportadora executada (ex.: 3 "Brasil Web" viram 1)
       const vinculos = await carregarVinculosTransportadoras().catch(() => []);
@@ -797,7 +798,7 @@ export default function SimularSaidaTransportadoraPage() {
           const totalCtes = resumo.reduce((acc, r) => acc + r.__qtdCtes, 0);
           const brutos = resumoBruto.reduce((acc, r) => acc + r.__qtdCtes, 0);
           setBase({
-            modo: 'resumo', intervalo, municipioPorCidade, mapasIbge, mapaVinculos, unificacao,
+            modo: 'resumo', intervalo, municipioPorCidade, municipioPorIbge, mapasIbge, mapaVinculos, unificacao,
             nomesBancoPorGrupo, totaisPorGrupo,
             carga: { totalCtes, brutos, truncado: false, temPeriodo: true },
           });
@@ -833,7 +834,7 @@ export default function SimularSaidaTransportadoraPage() {
         t.ctes += 1; t.valor += safeNum(c.valor_cte || c.frete_pago || c.valor_frete);
         totaisPorGrupo.set(nome, t);
       }
-      setBase({ modo: 'completo', ctes, municipioPorCidade, mapasIbge, mapaVinculos, unificacao, totaisPorGrupo, carga: { ...carga, totalCtes: ctes.length } });
+      setBase({ modo: 'completo', ctes, municipioPorCidade, municipioPorIbge, mapasIbge, mapaVinculos, unificacao, totaisPorGrupo, carga: { ...carga, totalCtes: ctes.length } });
       setStatusCarga('concluido'); setProgresso('');
     } catch (e) {
       console.error('[SimularSaidaTransportadora]', e);
@@ -857,6 +858,7 @@ export default function SimularSaidaTransportadoraPage() {
     setFiltroCard('');
     try {
       const { municipioPorCidade, mapasIbge, mapaVinculos, unificacao } = base;
+      const municipioPorIbge = base.municipioPorIbge || new Map();
       let ctesDaTransp;
       if (base.modo === 'resumo') {
         // Só os CT-es da escolhida: todos os nomes do grupo (CNPJ/vínculo), no
@@ -907,7 +909,11 @@ export default function SimularSaidaTransportadoraPage() {
 
         const ibgeDestino = ibgeDoCte(cte, 'destino', municipioPorCidade, mapasIbge);
         const ibgeOrigemReal = ibgeDoCte(cte, 'origem', municipioPorCidade, mapasIbge);
-        const rotaKey = `${norm(cidadeOrigem)}|${ufOrigem}=>${norm(cidadeDestino)}|${ufDestino}`;
+        // Nome/UF padronizados pelo IBGE só para exibir e agrupar rotas; o
+        // cálculo continua usando o texto original do CT-e.
+        const origemPad = localPadronizado({ cidade: cidadeOrigem, uf: ufOrigem, ibge: ibgeOrigemReal }, municipioPorIbge);
+        const destinoPad = localPadronizado({ cidade: cidadeDestino, uf: ufDestino, ibge: ibgeDestino }, municipioPorIbge);
+        const rotaKey = `${norm(origemPad.cidade)}|${origemPad.uf}=>${norm(destinoPad.cidade)}|${destinoPad.uf}`;
 
         // prazo/tabela da própria transportadora atual (referência para auditar)
         let atual = null;
@@ -930,7 +936,9 @@ export default function SimularSaidaTransportadoraPage() {
         }
 
         ctesSimulados.push({
-          rotaKey, cidadeOrigem, ufOrigem, cidadeDestino, ufDestino,
+          rotaKey,
+          cidadeOrigem: origemPad.cidade, ufOrigem: origemPad.uf,
+          cidadeDestino: destinoPad.cidade, ufDestino: destinoPad.uf,
           valorPago,
           nf: safeNum(cte.valor_nf || cte.nf_venda),
           peso: safeNum(cte.peso_declarado || cte.peso),
@@ -1230,8 +1238,8 @@ export default function SimularSaidaTransportadoraPage() {
                     return (
                       <React.Fragment key={l.rotaKey}>
                         <tr style={aberta ? { background: '#f8fafc' } : undefined}>
-                          <td>{l.cidadeOrigem}/{l.ufOrigem}</td>
-                          <td>{l.cidadeDestino}/{l.ufDestino}</td>
+                          <td>{rotuloLocal(l.cidadeOrigem, l.ufOrigem)}</td>
+                          <td>{rotuloLocal(l.cidadeDestino, l.ufDestino)}</td>
                           <td>{fmtN(l.ctes)}</td>
                           <td>{fmt(l.valorPagoTotal)}</td>
                           <td style={{ color: l.diferenca <= TOLERANCIA ? '#04C7A4' : '#9b1111', fontWeight: 600 }}>{fmt(l.melhorTotal)}</td>
