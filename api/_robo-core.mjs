@@ -22092,6 +22092,7 @@ var init_authLocal = __esm({
       { chave: "lotacao", label: "Lota\xE7\xE3o Tabelas", grupo: "Lota\xE7\xE3o" },
       { chave: "lotacao-cotacao", label: "Cota\xE7\xE3o Lota\xE7\xE3o (portal)", grupo: "Lota\xE7\xE3o" },
       { chave: "lotacao-operacao", label: "Lota\xE7\xE3o Opera\xE7\xE3o", grupo: "Lota\xE7\xE3o" },
+      { chave: "lotacao-transgp", label: "Auditoria TransGP (API)", grupo: "Lota\xE7\xE3o" },
       { chave: "lotacao-auditoria", label: "Auditoria Lota\xE7\xE3o", grupo: "Auditoria" },
       { chave: "painel-auditoria", label: "Painel Auditoria", grupo: "Auditoria" },
       { chave: "painel-operacao", label: "Painel Opera\xE7\xE3o", grupo: "Opera\xE7\xE3o" },
@@ -26446,14 +26447,7 @@ function calcularCtePelaTransgp(cte = {}, contexto = null) {
   if (!liberado && !SITUACOES_TRANSGP_DECIDIDAS.includes(situacao)) return null;
   const valorCte = toNumber4(pick(cte, ["valor_cte", "valorCte", "valor_frete", "frete"]));
   if (!(valorCte > 0)) return null;
-  let valorCalculado = valorCte;
-  if (!liberado && situacao === "REPROVADO") valorCalculado = 0;
-  else if (!liberado) {
-    const totalCtes = toNumber4(linha.cte_total) || valorCte;
-    const diferencaDist = toNumber4(linha.diferenca_total);
-    valorCalculado = diferencaDist > 0 ? valorCte - diferencaDist * (valorCte / totalCtes) : valorCte;
-  }
-  valorCalculado = Number(Math.max(valorCalculado, 0).toFixed(2));
+  const valorCalculado = liberado || situacao.startsWith("AUTORIZADO") ? valorCte : 0;
   const decisao = linha.decisao_auditoria;
   const base = montarResultadoBase(cte, "CALCULADO", "", {
     transportadora_tabela: linha.transportadora || "",
@@ -26475,7 +26469,7 @@ function calcularCtePelaTransgp(cte = {}, contexto = null) {
       ctes_viagem_qtd: toNumber4(linha.qtd_ctes),
       valor_cobrado_viagem: toNumber4(linha.cte_total),
       diferenca_viagem: toNumber4(linha.diferenca_total),
-      observacao_lotacao: liberado ? `Liberado para pagamento pela auditoria da TransGP (DIST ${linha.dist}, ${situacao}).` : situacao === "REPROVADO" ? `Reprovado pela auditoria da TransGP (DIST ${linha.dist}): nao pagar.` : `Divergente na auditoria da TransGP (DIST ${linha.dist}): cobrado acima do contratado, aguardando analise.`
+      observacao_lotacao: valorCalculado > 0 ? `Liberado para pagamento pela auditoria da TransGP (DIST ${linha.dist}, ${situacao}).` : `Reprovado pela auditoria da TransGP (DIST ${linha.dist}): nao pagar.`
     }
   });
   const valorFinal = valorCalculado > 0 ? valorCalculado : 0.01;
@@ -27859,7 +27853,7 @@ var init_auditoriaCteProcessamentoService = __esm({
     indicesCotacoesPorLista2 = /* @__PURE__ */ new WeakMap();
     _cacheRaizesAdicionaisPorId = /* @__PURE__ */ new Map();
     _cacheTransgp = { em: 0, dados: null };
-    SITUACOES_TRANSGP_DECIDIDAS = ["AUTORIZADO_AUTOMATICO", "AUTORIZADO_AUDITORIA", "REPROVADO", "DIVERGENTE"];
+    SITUACOES_TRANSGP_DECIDIDAS = ["AUTORIZADO_AUTOMATICO", "AUTORIZADO_AUDITORIA", "REPROVADO"];
     _cacheFluxoLotacao = { em: 0, dados: null };
     STATUS_ADICIONAL_APROVADO = ["APROVADO", "APROVADO_OPERACAO"];
     raizDaChaveCte = (cte = {}) => {

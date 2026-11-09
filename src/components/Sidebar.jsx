@@ -36,6 +36,7 @@ export const MENU_GRUPOS = [
       { chave: 'lotacao', label: 'Lotacao tabelas' },
       { chave: 'lotacao-cotacao', label: 'Cotacao lotacao (portal)' },
       { chave: 'lotacao-operacao', label: 'Lotacao operacao' },
+      { chave: 'lotacao-transgp', label: 'Auditoria TransGP (API)' },
       { chave: 'autorizacoes-transporte-b2c', label: 'Autorizacoes transporte B2C' },
       { chave: 'autorizacoes-transporte-atacado', label: 'Autorizacoes transporte Atacado' },
       { chave: 'autorizacoes-transporte-lotacao', label: 'Autorizacoes Lotacao' },

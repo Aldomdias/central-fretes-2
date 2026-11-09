@@ -1102,9 +1102,10 @@ async function carregarContextoLotacaoAuditoria(supabase, mapaVinculos = null) {
 
 // ─── Auditoria da TransGP (API do painel deles, sincronizada em transgp_auditoria_ctes) ───────
 // A TransGP audita cada DIST contra o frete contratado. CT-e que aparece lá (pela chave) segue a
-// decisão deles: liberado_pagamento => vale o que cobrou; REPROVADO => não pagar; DIVERGENTE =>
-// calcula pelo frete contratado (a diferença da DIST, rateada pelo valor dos CT-es, vira divergência).
-// Demais situações (AGUARDANDO_CTE, CTE_SEM_VALOR, SEM_FRETE_CONTRATADO...) seguem o motor normal.
+// decisão deles só quando ela é final: liberado_pagamento => vale o que cobrou; REPROVADO => não pagar.
+// DIVERGENTE fica com o motor normal (fluxo/saldo da DIST): na API real a divergência vem muito de CT-e
+// anexado em duas DISTs, e o valor deles é "aguardando análise", não decisão.
+// Demais situações (AGUARDANDO_CTE, CTE_SEM_VALOR, SEM_FRETE_CONTRATADO...) também seguem o motor normal.
 let _cacheTransgp = { em: 0, dados: null };
 
 async function carregarTransgpAuditoria(supabase) {
@@ -1123,7 +1124,7 @@ async function carregarTransgpAuditoria(supabase) {
   return _cacheTransgp.dados;
 }
 
-const SITUACOES_TRANSGP_DECIDIDAS = ['AUTORIZADO_AUTOMATICO', 'AUTORIZADO_AUDITORIA', 'REPROVADO', 'DIVERGENTE'];
+const SITUACOES_TRANSGP_DECIDIDAS = ['AUTORIZADO_AUTOMATICO', 'AUTORIZADO_AUDITORIA', 'REPROVADO'];
 
 export function calcularCtePelaTransgp(cte = {}, contexto = null) {
   const mapa = contexto?.transgp?.porChave;
@@ -1136,15 +1137,7 @@ export function calcularCtePelaTransgp(cte = {}, contexto = null) {
   if (!liberado && !SITUACOES_TRANSGP_DECIDIDAS.includes(situacao)) return null;
   const valorCte = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
   if (!(valorCte > 0)) return null;
-  let valorCalculado = valorCte;
-  if (!liberado && situacao === 'REPROVADO') valorCalculado = 0;
-  else if (!liberado) {
-    // DIVERGENTE: parte deste CT-e na diferenca da DIST (cobrado - contratado), pelo peso do valor.
-    const totalCtes = toNumber(linha.cte_total) || valorCte;
-    const diferencaDist = toNumber(linha.diferenca_total);
-    valorCalculado = diferencaDist > 0 ? valorCte - diferencaDist * (valorCte / totalCtes) : valorCte;
-  }
-  valorCalculado = Number(Math.max(valorCalculado, 0).toFixed(2));
+  const valorCalculado = liberado || situacao.startsWith('AUTORIZADO') ? valorCte : 0; // REPROVADO = nao pagar
   const decisao = linha.decisao_auditoria;
   const base = montarResultadoBase(cte, 'CALCULADO', '', {
     transportadora_tabela: linha.transportadora || '',
@@ -1166,11 +1159,9 @@ export function calcularCtePelaTransgp(cte = {}, contexto = null) {
       ctes_viagem_qtd: toNumber(linha.qtd_ctes),
       valor_cobrado_viagem: toNumber(linha.cte_total),
       diferenca_viagem: toNumber(linha.diferenca_total),
-      observacao_lotacao: liberado
+      observacao_lotacao: valorCalculado > 0
         ? `Liberado para pagamento pela auditoria da TransGP (DIST ${linha.dist}, ${situacao}).`
-        : situacao === 'REPROVADO'
-          ? `Reprovado pela auditoria da TransGP (DIST ${linha.dist}): nao pagar.`
-          : `Divergente na auditoria da TransGP (DIST ${linha.dist}): cobrado acima do contratado, aguardando analise.`,
+        : `Reprovado pela auditoria da TransGP (DIST ${linha.dist}): nao pagar.`,
     },
   });
   // Calculado 0 ficaria "sem calculo": 0,01 para o CT-e aparecer como divergente integral (igual ao fluxo).

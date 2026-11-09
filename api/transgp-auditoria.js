@@ -5,9 +5,8 @@
  * GET /api/transgp-auditoria?dias=400   — janela maior (max. 400, limite da API deles)
  *
  * Tambem grava as cargas (uma por DIST) no fluxo de lotacao (lotacao_cargas), no lugar da planilha:
- * DIST que ja existe e atualizada so nos campos que a API traz (tipo de veiculo, placas, frete Cantu,
- * valor sem ICMS etc. continuam como estao; transportadora so e preenchida se estiver vazia, porque a
- * alocacao da Operacao manda); DIST nova entra com origem_registro = 'api_transgp'. Nunca apaga.
+ * DIST que ja existe: so PREENCHE campo vazio no fluxo (nunca sobrescreve o que veio da planilha/Operacao);
+ * os CT-es sao somados (uniao). DIST nova entra com origem_registro = 'api_transgp'. Nunca apaga.
  *
  * Fonte: GET https://painel-transgp.vercel.app/api/v1/auditoria/fretes?de=&ate=&pagina=&por_pagina=500
  * (Authorization: Bearer TRANSGP_API_KEY). Uma linha por CT-e de cada DIST, chave = chave do CT-e.
@@ -53,8 +52,11 @@ function cargaDaDist(item) {
     pedagio: num(item.frete?.pedagio),
     cte: ctes.length ? ctes.join(';').slice(0, 500) : null,
     finalizado: /FINALIZ/i.test(status) ? true : null,
+    placa_cavalo: item.placa ? String(item.placa).trim().toUpperCase().slice(0, 20) : null,
   };
 }
+
+const CAMPOS_FLUXO = ['dist', 'operacao', 'transportadora', 'origem', 'uf_origem', 'destino', 'uf_destino', 'status', 'coleta_planejada', 'frete_transp', 'pedagio', 'cte', 'finalizado', 'placa_cavalo'];
 
 async function gravarCargasNoFluxo(db, itens) {
   const porDist = new Map();
@@ -62,7 +64,7 @@ async function gravarCargasNoFluxo(db, itens) {
   const dists = [...new Set([...porDist.values()].map((c) => c.dist))];
   const existentes = new Map();
   for (let i = 0; i < dists.length; i += 200) {
-    const { data, error } = await db.from('lotacao_cargas').select('id,dist,transportadora').in('dist', dists.slice(i, i + 200));
+    const { data, error } = await db.from('lotacao_cargas').select(`id,${CAMPOS_FLUXO.join(',')}`).in('dist', dists.slice(i, i + 200));
     if (error) throw new Error(`Fluxo (ler): ${error.message}`);
     (data || []).forEach((row) => { const k = normDist(row.dist); if (!existentes.has(k)) existentes.set(k, row); });
   }
@@ -73,9 +75,20 @@ async function gravarCargasNoFluxo(db, itens) {
     const atual = existentes.get(k);
     const campos = Object.fromEntries(Object.entries(carga).filter(([, v]) => v !== null && v !== ''));
     if (!atual) { novas.push({ ...campos, arquivo_origem: 'API TransGP', origem_registro: 'api_transgp', importado_em: new Date().toISOString() }); return; }
-    delete campos.dist;
-    if (String(atual.transportadora || '').trim()) delete campos.transportadora; // alocacao da Operacao manda
-    atualizacoes.push({ id: atual.id, campos });
+    // So preenche o que esta vazio: planilha e alocacao da Operacao mandam no que ja tem valor.
+    const vazio = (v) => v === null || v === undefined || String(v).trim() === '' || (typeof v === 'number' && v === 0);
+    const update = {};
+    Object.entries(campos).forEach(([campo, valor]) => {
+      if (campo === 'dist' || campo === 'cte') return;
+      if (campo === 'finalizado') { if (valor === true && atual.finalizado !== true) update.finalizado = true; return; }
+      if (vazio(atual[campo]) && !vazio(valor) && String(atual[campo] ?? '') !== String(valor)) update[campo] = valor;
+    });
+    if (campos.cte) {
+      const antes = String(atual.cte || '').split(/[^0-9]+/).filter(Boolean).map((n) => String(Number(n)));
+      const uniao = [...new Set([...antes, ...campos.cte.split(';')])];
+      if (uniao.length > antes.length) update.cte = uniao.join(';').slice(0, 500);
+    }
+    if (Object.keys(update).length) atualizacoes.push({ id: atual.id, campos: update });
   });
   for (let i = 0; i < atualizacoes.length; i += 20) {
     await Promise.all(atualizacoes.slice(i, i + 20).map(async ({ id, campos }) => {
@@ -129,8 +142,10 @@ function linhasDaDist(item, agora) {
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
+  // ?manual=1 (botao "Sincronizar agora" da tela): sem o segredo do cron, janela padrao e no maximo 1 a cada 3 min.
+  const manual = String(req.query?.manual || '') === '1';
   const segredo = process.env.CRON_SECRET;
-  if (segredo && req.headers.authorization !== `Bearer ${segredo}`) return res.status(401).json({ ok: false, erro: 'Nao autorizado.' });
+  if (!manual && segredo && req.headers.authorization !== `Bearer ${segredo}`) return res.status(401).json({ ok: false, erro: 'Nao autorizado.' });
   const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const chaveDb = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const chaveApi = process.env.TRANSGP_API_KEY;
@@ -138,7 +153,12 @@ export default async function handler(req, res) {
   if (!chaveApi) return res.status(500).json({ ok: false, erro: 'TRANSGP_API_KEY nao configurada no Vercel.' });
   const db = createClient(url, chaveDb, { auth: { persistSession: false } });
 
-  const dias = Math.min(Math.max(Number(req.query?.dias) || 120, 1), 400);
+  if (manual) {
+    const { data: ultima } = await db.from('transgp_auditoria_sync_log').select('iniciado_em').order('id', { ascending: false }).limit(1);
+    const ha = ultima?.[0]?.iniciado_em ? Date.now() - new Date(ultima[0].iniciado_em).getTime() : Infinity;
+    if (ha < 3 * 60 * 1000) return res.status(429).json({ ok: false, erro: 'Sincronizado ha menos de 3 minutos; aguarde um pouco.' });
+  }
+  const dias = manual ? 120 : Math.min(Math.max(Number(req.query?.dias) || 120, 1), 400);
   const ate = new Date();
   const de = new Date(ate.getTime() - (dias - 1) * 86400000);
   const base = process.env.TRANSGP_API_URL || API_PADRAO;

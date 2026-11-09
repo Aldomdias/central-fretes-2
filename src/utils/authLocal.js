@@ -34,6 +34,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'lotacao', label: 'Lotação Tabelas', grupo: 'Lotação' },
   { chave: 'lotacao-cotacao', label: 'Cotação Lotação (portal)', grupo: 'Lotação' },
   { chave: 'lotacao-operacao', label: 'Lotação Operação', grupo: 'Lotação' },
+  { chave: 'lotacao-transgp', label: 'Auditoria TransGP (API)', grupo: 'Lotação' },
   { chave: 'lotacao-auditoria', label: 'Auditoria Lotação', grupo: 'Auditoria' },
   { chave: 'painel-auditoria', label: 'Painel Auditoria', grupo: 'Auditoria' },
   { chave: 'painel-operacao', label: 'Painel Operação', grupo: 'Operação' },
@@ -107,12 +108,12 @@ export const PERFIS_USUARIO = {
   OPERACAO_LOTACAO: {
     nome: 'Operação Lotação',
     descricao: 'Consulta lotação, histórico de cargas, custos adicionais e aprovações.',
-    paginas: ['dashboard', 'conceito-app', 'lotacao', 'lotacao-cotacao', 'lotacao-operacao', 'autorizacoes-transporte-lotacao', 'painel-operacao', 'tratativas', 'avaliacao-prazos'],
+    paginas: ['dashboard', 'conceito-app', 'lotacao', 'lotacao-cotacao', 'lotacao-operacao', 'lotacao-transgp', 'autorizacoes-transporte-lotacao', 'painel-operacao', 'tratativas', 'avaliacao-prazos'],
   },
   AUDITORIA_LOTACAO: {
     nome: 'Auditoria Lotação',
     descricao: 'Consulta DIST/CT-e e registro de auditoria.',
-    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'lotacao-auditoria', 'painel-auditoria', 'faturas', 'tratativas', 'icms-uf'],
+    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'lotacao-auditoria', 'lotacao-transgp', 'painel-auditoria', 'faturas', 'tratativas', 'icms-uf'],
   },
   AUDITORIA_FRETES: {
     nome: 'Auditoria de Fretes',
@@ -376,6 +377,8 @@ export function usuarioTemAcesso(usuario, pagina) {
   if (pagina === 'robos' && usuario.perfil === 'GESTAO') return true;
   // Autorizacoes Lotacao: a Operacao Lotacao decide; vale mesmo com lista de paginas salva antes dela existir.
   if (pagina === 'autorizacoes-transporte-lotacao' && ['GESTAO', 'OPERACAO_LOTACAO'].includes(usuario.perfil)) return true;
+  // Auditoria TransGP (API): tela nova, vale mesmo com lista de paginas salva antes dela existir.
+  if (pagina === 'lotacao-transgp' && ['GESTAO', 'OPERACAO_LOTACAO', 'AUDITORIA_LOTACAO'].includes(usuario.perfil)) return true;
   if (pagina === 'usuarios' || pagina === 'usuarios-ativos') return usuarioPodeAdministrarUsuarios(usuario);
 
   const permissoes = permissoesUsuario(usuario);
