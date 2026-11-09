@@ -1096,6 +1096,92 @@ async function carregarContextoLotacaoAuditoria(supabase, mapaVinculos = null) {
     origensFracionadoPorNome,
     mapaVinculos,
     fluxo: await carregarFluxoLotacaoAuditoria(supabase),
+    transgp: await carregarTransgpAuditoria(supabase),
+  };
+}
+
+// ─── Auditoria da TransGP (API do painel deles, sincronizada em transgp_auditoria_ctes) ───────
+// A TransGP audita cada DIST contra o frete contratado. CT-e que aparece lá (pela chave) segue a
+// decisão deles: liberado_pagamento => vale o que cobrou; REPROVADO => não pagar; DIVERGENTE =>
+// calcula pelo frete contratado (a diferença da DIST, rateada pelo valor dos CT-es, vira divergência).
+// Demais situações (AGUARDANDO_CTE, CTE_SEM_VALOR, SEM_FRETE_CONTRATADO...) seguem o motor normal.
+let _cacheTransgp = { em: 0, dados: null };
+
+async function carregarTransgpAuditoria(supabase) {
+  if (_cacheTransgp.dados && Date.now() - _cacheTransgp.em < 5 * 60 * 1000) return _cacheTransgp.dados;
+  const porChave = new Map();
+  for (let pagina = 0; ; pagina += 1) {
+    const { data, error } = await supabase
+      .from('transgp_auditoria_ctes')
+      .select('chave_cte,numero_cte,valor_cte,dist,transportadora,origem,destinos,frete_contratado,pedagio,total_contratado,qtd_ctes,cte_total,diferenca_total,situacao,liberado_pagamento,liberado_em,decisao_auditoria,sincronizado_em')
+      .range(pagina * PAGE_SIZE, (pagina + 1) * PAGE_SIZE - 1);
+    if (error) return { porChave }; // tabela ainda nao criada: segue sem TransGP
+    (data || []).forEach((row) => porChave.set(String(row.chave_cte), row));
+    if ((data || []).length < PAGE_SIZE) break;
+  }
+  _cacheTransgp = { em: Date.now(), dados: { porChave } };
+  return _cacheTransgp.dados;
+}
+
+const SITUACOES_TRANSGP_DECIDIDAS = ['AUTORIZADO_AUTOMATICO', 'AUTORIZADO_AUDITORIA', 'REPROVADO', 'DIVERGENTE'];
+
+export function calcularCtePelaTransgp(cte = {}, contexto = null) {
+  const mapa = contexto?.transgp?.porChave;
+  if (!mapa?.size) return null;
+  const chave = pickDigits(cte, ['chave_cte', 'chaveCte', 'chave'], 0);
+  const linha = chave.length === 44 ? mapa.get(chave) : null;
+  if (!linha) return null;
+  const situacao = String(linha.situacao || '').toUpperCase();
+  const liberado = linha.liberado_pagamento === true;
+  if (!liberado && !SITUACOES_TRANSGP_DECIDIDAS.includes(situacao)) return null;
+  const valorCte = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
+  if (!(valorCte > 0)) return null;
+  let valorCalculado = valorCte;
+  if (!liberado && situacao === 'REPROVADO') valorCalculado = 0;
+  else if (!liberado) {
+    // DIVERGENTE: parte deste CT-e na diferenca da DIST (cobrado - contratado), pelo peso do valor.
+    const totalCtes = toNumber(linha.cte_total) || valorCte;
+    const diferencaDist = toNumber(linha.diferenca_total);
+    valorCalculado = diferencaDist > 0 ? valorCte - diferencaDist * (valorCte / totalCtes) : valorCte;
+  }
+  valorCalculado = Number(Math.max(valorCalculado, 0).toFixed(2));
+  const decisao = linha.decisao_auditoria;
+  const base = montarResultadoBase(cte, 'CALCULADO', '', {
+    transportadora_tabela: linha.transportadora || '',
+    tipo_calculo: 'LOTACAO',
+    detalhes_calculo: {
+      modalidade: 'LOTACAO',
+      motor: 'transgp_api',
+      dist: linha.dist,
+      origem_cidade: linha.origem,
+      destino_cidade: linha.destinos,
+      transgp_situacao: situacao,
+      transgp_liberado_pagamento: liberado,
+      transgp_liberado_em: linha.liberado_em || null,
+      transgp_decisao_auditoria: decisao ?? null,
+      transgp_sincronizado_em: linha.sincronizado_em || null,
+      frete_viagem: toNumber(linha.frete_contratado),
+      pedagio: toNumber(linha.pedagio),
+      valor_autorizado_viagem: toNumber(linha.total_contratado),
+      ctes_viagem_qtd: toNumber(linha.qtd_ctes),
+      valor_cobrado_viagem: toNumber(linha.cte_total),
+      diferenca_viagem: toNumber(linha.diferenca_total),
+      observacao_lotacao: liberado
+        ? `Liberado para pagamento pela auditoria da TransGP (DIST ${linha.dist}, ${situacao}).`
+        : situacao === 'REPROVADO'
+          ? `Reprovado pela auditoria da TransGP (DIST ${linha.dist}): nao pagar.`
+          : `Divergente na auditoria da TransGP (DIST ${linha.dist}): cobrado acima do contratado, aguardando analise.`,
+    },
+  });
+  // Calculado 0 ficaria "sem calculo": 0,01 para o CT-e aparecer como divergente integral (igual ao fluxo).
+  const valorFinal = valorCalculado > 0 ? valorCalculado : 0.01;
+  const diferenca = base.valor_cte - valorFinal;
+  return {
+    ...base,
+    valor_calculado: valorFinal,
+    diferenca,
+    diferenca_abs: Math.abs(diferenca),
+    percentual_diferenca: (diferenca / valorFinal) * 100,
   };
 }
 
@@ -1357,6 +1443,9 @@ function calcularCteValidadoPelaOperacao(cte = {}, viagem = {}) {
 // (rota fora da tabela de lotação, transportadora sem tabela, origem/rota fora do
 // fracionado), usa o valor combinado da viagem no fluxo de lotação.
 function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracionado) {
+  // CT-e auditado pela TransGP (achado pela chave na API deles) segue a decisão de lá.
+  const pelaTransgp = calcularCtePelaTransgp(cte, contexto);
+  if (pelaTransgp) return pelaTransgp;
   const porTabela = calcularCtePelaTabelaLotacao(cte, contexto, mapaVinculos);
   if (porTabela && toNumber(porTabela.valor_calculado) > 0) return porTabela;
   const resultado = porTabela || calcularFracionado();

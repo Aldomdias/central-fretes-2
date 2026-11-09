@@ -1,10 +1,12 @@
 {
   "crons": [
     { "path": "/api/robo-auditor", "schedule": "0 * * * *" },
-    { "path": "/api/limpar-boletos", "schedule": "30 8 * * *" }
+    { "path": "/api/limpar-boletos", "schedule": "30 8 * * *" },
+    { "path": "/api/transgp-auditoria", "schedule": "15 * * * *" }
   ],
   "functions": {
     "api/robo-auditor.js": { "maxDuration": 300, "includeFiles": "api/_robo-core.mjs" },
-    "api/enviar-laudo-robo.js": { "maxDuration": 60 }
+    "api/enviar-laudo-robo.js": { "maxDuration": 60 },
+    "api/transgp-auditoria.js": { "maxDuration": 120 }
   }
 }

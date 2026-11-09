@@ -22436,6 +22436,19 @@ function somarTrackingAgregado(atual, proximo) {
     origem_vinculo_tracking: atual.origem_vinculo_tracking || item.origem_vinculo_tracking || "raw"
   };
 }
+function adicionarTrackingNoMapa(mapa, chave, item, cubagemBruta = 0) {
+  if (!chave) return;
+  const atual = mapa.get(chave);
+  const somado = somarTrackingAgregado(atual, item);
+  const mesmaNf = atual && apenasDigitosCubagem(atual.chave_nfe) && apenasDigitosCubagem(atual.chave_nfe) === apenasDigitosCubagem(item.chave_nfe);
+  const anterior = numero2(atual?.cubagem_bruta_tracking);
+  somado.cubagem_bruta_tracking = !atual ? cubagemBruta : mesmaNf ? Math.max(anterior, cubagemBruta) : anterior + cubagemBruta;
+  mapa.set(chave, somado);
+}
+function cubagemTrackingParaCalculo(row = {}) {
+  const original = numero2(row.pesoCubadoTracking300 ?? row.peso_cubado_tracking_300) / 300;
+  return original || numero2(row.cubagemTotal || row.cubagem_total || row.cubagem);
+}
 var init_trackingCubagem = __esm({
   "src/utils/trackingCubagem.js"() {
     "use strict";
@@ -22468,15 +22481,6 @@ function chunksTracking(lista = [], tamanho = 300) {
   const saida = [];
   for (let i = 0; i < lista.length; i += tamanho) saida.push(lista.slice(i, i + tamanho));
   return saida;
-}
-function adicionarTrackingNoMapa(mapa, chave, item, cubagemBruta = 0) {
-  if (!chave) return;
-  const atual = mapa.get(chave);
-  const somado = somarTrackingAgregado(atual, item);
-  const mesmaNf = atual && apenasDigitosTracking(atual.chave_nfe) && apenasDigitosTracking(atual.chave_nfe) === apenasDigitosTracking(item.chave_nfe);
-  const anterior = numero3(atual?.cubagem_bruta_tracking);
-  somado.cubagem_bruta_tracking = !atual ? cubagemBruta : mesmaNf ? Math.max(anterior, cubagemBruta) : anterior + cubagemBruta;
-  mapa.set(chave, somado);
 }
 async function buscarTrackingParaRealizado(rows = []) {
   const vazio = {
@@ -25036,15 +25040,15 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
     }
   };
 }
-function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal, ignorarCubagem = false, documentoDestinatario = "", inverterIcms = false, destinoCep = "", incluirCustoTransferencia = true }) {
+function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal, ignorarCubagem = false, documentoDestinatario = "", inverterIcms = false, destinoCep = "", incluirCustoTransferencia = true, fatorCubagemPadrao = 0, cubagemSomenteInformada = false }) {
   const gradeLinha = getLinhaGradeMaisProxima(gradeCanal, peso);
   const fatoresCubagem = [
     origem?.generalidades?.cubagem,
     origem?.generalidades?.fatorCubagem,
     origem?.generalidades?.fator_cubagem
   ].map(toNumber3);
-  const fatorCubagem = fatoresCubagem.find((valor) => valor > 0) || 0;
-  const pesosAplicados = calcularPesosComCubagem({ pesoInformado: peso, cubagemInformada: cubagem, gradeLinha, fatorCubagem, ignorarCubagem });
+  const fatorCubagem = fatoresCubagem.find((valor) => valor > 0) || toNumber3(fatorCubagemPadrao);
+  const pesosAplicados = calcularPesosComCubagem({ pesoInformado: peso, cubagemInformada: cubagem, gradeLinha: cubagemSomenteInformada ? null : gradeLinha, fatorCubagem, ignorarCubagem });
   const cotacao = getCotacaoPorRota(origem, rota.nomeRota, pesosAplicados.pesoConsiderado, destinoCep);
   if (!cotacao) return null;
   const valorNFManualInformado = toNumber3(valorNF);
@@ -26415,7 +26419,73 @@ async function carregarContextoLotacaoAuditoria(supabase2, mapaVinculos = null) 
     tabelas: tabelasValidas.map((tabela) => ({ ...tabela, rotas: rotasPorTabela.get(tabela.id) || [] })),
     origensFracionadoPorNome,
     mapaVinculos,
-    fluxo: await carregarFluxoLotacaoAuditoria(supabase2)
+    fluxo: await carregarFluxoLotacaoAuditoria(supabase2),
+    transgp: await carregarTransgpAuditoria(supabase2)
+  };
+}
+async function carregarTransgpAuditoria(supabase2) {
+  if (_cacheTransgp.dados && Date.now() - _cacheTransgp.em < 5 * 60 * 1e3) return _cacheTransgp.dados;
+  const porChave = /* @__PURE__ */ new Map();
+  for (let pagina = 0; ; pagina += 1) {
+    const { data, error } = await supabase2.from("transgp_auditoria_ctes").select("chave_cte,numero_cte,valor_cte,dist,transportadora,origem,destinos,frete_contratado,pedagio,total_contratado,qtd_ctes,cte_total,diferenca_total,situacao,liberado_pagamento,liberado_em,decisao_auditoria,sincronizado_em").range(pagina * PAGE_SIZE2, (pagina + 1) * PAGE_SIZE2 - 1);
+    if (error) return { porChave };
+    (data || []).forEach((row) => porChave.set(String(row.chave_cte), row));
+    if ((data || []).length < PAGE_SIZE2) break;
+  }
+  _cacheTransgp = { em: Date.now(), dados: { porChave } };
+  return _cacheTransgp.dados;
+}
+function calcularCtePelaTransgp(cte = {}, contexto = null) {
+  const mapa = contexto?.transgp?.porChave;
+  if (!mapa?.size) return null;
+  const chave = pickDigits(cte, ["chave_cte", "chaveCte", "chave"], 0);
+  const linha = chave.length === 44 ? mapa.get(chave) : null;
+  if (!linha) return null;
+  const situacao = String(linha.situacao || "").toUpperCase();
+  const liberado = linha.liberado_pagamento === true;
+  if (!liberado && !SITUACOES_TRANSGP_DECIDIDAS.includes(situacao)) return null;
+  const valorCte = toNumber4(pick(cte, ["valor_cte", "valorCte", "valor_frete", "frete"]));
+  if (!(valorCte > 0)) return null;
+  let valorCalculado = valorCte;
+  if (!liberado && situacao === "REPROVADO") valorCalculado = 0;
+  else if (!liberado) {
+    const totalCtes = toNumber4(linha.cte_total) || valorCte;
+    const diferencaDist = toNumber4(linha.diferenca_total);
+    valorCalculado = diferencaDist > 0 ? valorCte - diferencaDist * (valorCte / totalCtes) : valorCte;
+  }
+  valorCalculado = Number(Math.max(valorCalculado, 0).toFixed(2));
+  const decisao = linha.decisao_auditoria;
+  const base = montarResultadoBase(cte, "CALCULADO", "", {
+    transportadora_tabela: linha.transportadora || "",
+    tipo_calculo: "LOTACAO",
+    detalhes_calculo: {
+      modalidade: "LOTACAO",
+      motor: "transgp_api",
+      dist: linha.dist,
+      origem_cidade: linha.origem,
+      destino_cidade: linha.destinos,
+      transgp_situacao: situacao,
+      transgp_liberado_pagamento: liberado,
+      transgp_liberado_em: linha.liberado_em || null,
+      transgp_decisao_auditoria: decisao ?? null,
+      transgp_sincronizado_em: linha.sincronizado_em || null,
+      frete_viagem: toNumber4(linha.frete_contratado),
+      pedagio: toNumber4(linha.pedagio),
+      valor_autorizado_viagem: toNumber4(linha.total_contratado),
+      ctes_viagem_qtd: toNumber4(linha.qtd_ctes),
+      valor_cobrado_viagem: toNumber4(linha.cte_total),
+      diferenca_viagem: toNumber4(linha.diferenca_total),
+      observacao_lotacao: liberado ? `Liberado para pagamento pela auditoria da TransGP (DIST ${linha.dist}, ${situacao}).` : situacao === "REPROVADO" ? `Reprovado pela auditoria da TransGP (DIST ${linha.dist}): nao pagar.` : `Divergente na auditoria da TransGP (DIST ${linha.dist}): cobrado acima do contratado, aguardando analise.`
+    }
+  });
+  const valorFinal = valorCalculado > 0 ? valorCalculado : 0.01;
+  const diferenca = base.valor_cte - valorFinal;
+  return {
+    ...base,
+    valor_calculado: valorFinal,
+    diferenca,
+    diferenca_abs: Math.abs(diferenca),
+    percentual_diferenca: diferenca / valorFinal * 100
   };
 }
 async function carregarFluxoLotacaoAuditoria(supabase2) {
@@ -26609,6 +26679,8 @@ function calcularCteValidadoPelaOperacao(cte = {}, viagem = {}) {
   return { ...base, valor_calculado: valorCte, diferenca: 0, diferenca_abs: 0, percentual_diferenca: 0 };
 }
 function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracionado) {
+  const pelaTransgp = calcularCtePelaTransgp(cte, contexto);
+  if (pelaTransgp) return pelaTransgp;
   const porTabela = calcularCtePelaTabelaLotacao(cte, contexto, mapaVinculos);
   if (porTabela && toNumber4(porTabela.valor_calculado) > 0) return porTabela;
   const resultado = porTabela || calcularFracionado();
@@ -27657,7 +27729,7 @@ async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
     let cteFinal = cteParaMotor;
     let ignorarCubagemFinal = pesoOverride > 0 ? true : opcoesCalculo.ignorarCubagem;
     if (aplicaModoTracking) {
-      const cubagemTracking = toNumber4(cteParaMotor.peso_cubado_tracking_300) / 300 || toNumber4(cteParaMotor.cubagemTotal || cteParaMotor.cubagem_total || cteParaMotor.cubagem);
+      const cubagemTracking = cubagemTrackingParaCalculo(cteParaMotor);
       let pesoModo = pesoTracking;
       if (modoPeso === "tracking" && cubagemTracking > 0) {
         const sonda = processarCteComMotorSimulador(
@@ -27726,11 +27798,12 @@ async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
   }
   return { registros, encontrados: ctesUnicos.length, naoEncontrados: Math.max(0, normalizadas.length - ctesUnicos.length) };
 }
-var PAGE_SIZE2, TABELA_CTES, UF_POR_CODIGO_IBGE, _cacheBaseFrete, _cacheBaseFretePorTransportadora, _cacheMapaVinculosTransportadoras, _cacheMapaEquivalenciasOrigem, memoNormalizeText, _cacheOrigensHub, TTL_ORIGENS_HUB_MS, indicesCotacoesPorLista2, _cacheRaizesAdicionaisPorId, _cacheFluxoLotacao, STATUS_ADICIONAL_APROVADO, raizDaChaveCte, numeroDoCte, _cacheLookupPorTransportadoras, TOLERANCIA_CANAL_COBRADO;
+var PAGE_SIZE2, TABELA_CTES, UF_POR_CODIGO_IBGE, _cacheBaseFrete, _cacheBaseFretePorTransportadora, _cacheMapaVinculosTransportadoras, _cacheMapaEquivalenciasOrigem, memoNormalizeText, _cacheOrigensHub, TTL_ORIGENS_HUB_MS, indicesCotacoesPorLista2, _cacheRaizesAdicionaisPorId, _cacheTransgp, SITUACOES_TRANSGP_DECIDIDAS, _cacheFluxoLotacao, STATUS_ADICIONAL_APROVADO, raizDaChaveCte, numeroDoCte, _cacheLookupPorTransportadoras, TOLERANCIA_CANAL_COBRADO;
 var init_auditoriaCteProcessamentoService = __esm({
   "src/services/auditoriaCteProcessamentoService.js"() {
     "use strict";
     init_define_import_meta_env();
+    init_trackingCubagem();
     init_supabaseClient();
     init_baixaEntregaService();
     init_transportadoraCnpjsService();
@@ -27785,6 +27858,8 @@ var init_auditoriaCteProcessamentoService = __esm({
     TTL_ORIGENS_HUB_MS = 5 * 60 * 1e3;
     indicesCotacoesPorLista2 = /* @__PURE__ */ new WeakMap();
     _cacheRaizesAdicionaisPorId = /* @__PURE__ */ new Map();
+    _cacheTransgp = { em: 0, dados: null };
+    SITUACOES_TRANSGP_DECIDIDAS = ["AUTORIZADO_AUTOMATICO", "AUTORIZADO_AUDITORIA", "REPROVADO", "DIVERGENTE"];
     _cacheFluxoLotacao = { em: 0, dados: null };
     STATUS_ADICIONAL_APROVADO = ["APROVADO", "APROVADO_OPERACAO"];
     raizDaChaveCte = (cte = {}) => {
