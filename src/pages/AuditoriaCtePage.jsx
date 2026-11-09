@@ -541,6 +541,7 @@ function PainelLaudoMeta({ resumoMensal = [], meta = {}, responsavelPadrao = '' 
   const [ate, setAte] = useState('');
   const [responsavel, setResponsavel] = useState(responsavelPadrao);
   const [observacoes, setObservacoes] = useState('');
+  const [incluirAssertividade, setIncluirAssertividade] = useState(false);
   const [arquivos, setArquivos] = useState([]);
   const [gerando, setGerando] = useState(false);
   const [erroLaudo, setErroLaudo] = useState('');
@@ -563,7 +564,7 @@ function PainelLaudoMeta({ resumoMensal = [], meta = {}, responsavelPadrao = '' 
     setGerando(true);
     try {
       const anexos = await prepararAnexosLaudo(arquivos);
-      abrirLaudoMeta(selecionados, { meta, responsavel, observacoes, anexos });
+      abrirLaudoMeta(selecionados, { meta, responsavel, observacoes, anexos, incluirAssertividade });
     } catch (e) {
       setErroLaudo(e?.message || 'Falha ao gerar o laudo.');
     } finally {
@@ -586,8 +587,12 @@ function PainelLaudoMeta({ resumoMensal = [], meta = {}, responsavelPadrao = '' 
         <button className="sim-tab" type="button" onClick={() => setAberto(false)}>Fechar</button>
       </div>
       <div style={{ fontSize: 13, color: '#1e3a8a', marginBottom: 10 }}>
-        Meta atual: {fmtP(meta.taxaCalculoMeta, 0)} de cálculo e {fmtP(meta.taxaAssertividadeMeta, 0)} de assertividade (altere em "Status da Meta da Área").
+        Meta atual: {fmtP(meta.taxaCalculoMeta, 0)} de cálculo{incluirAssertividade ? ` e ${fmtP(meta.taxaAssertividadeMeta, 0)} de assertividade` : ''} (altere em "Status da Meta da Área").
       </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, marginBottom: 10 }}>
+        <input type="checkbox" checked={incluirAssertividade} onChange={(e) => setIncluirAssertividade(e.target.checked)} style={{ width: 'auto', margin: 0 }} />
+        Incluir assertividade no laudo
+      </label>
       <div className="sim-form-grid sim-grid-3" style={{ marginBottom: 10 }}>
         <label>
           Competência inicial
