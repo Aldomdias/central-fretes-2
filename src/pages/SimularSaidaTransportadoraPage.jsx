@@ -4,7 +4,8 @@ import BaseCtesStatus from '../components/BaseCtesStatus';
 import { buscarBaseSimulacaoPorRotasDb, carregarCadastroCnpjTransportadorasDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
 import { categoriaCanalRealizado, montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
-import { filtrarCpComercialCte } from '../services/cteBasePolicy';
+import { aplicarPoliticaBaseCte } from '../services/cteBasePolicy';
+import { intervaloEmissao, janelasEmissao, pesoComoSimuladorRealizado } from '../utils/saidaTransportadoraRecorte';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { aplicarVinculoTransportadora as aplicarVinculoPuro } from '../services/vinculosTransportadorasPuro';
 import { unificarTransportadorasCtes } from '../utils/unificarTransportadorasCte';
@@ -136,10 +137,20 @@ function nomesPorOrigem(idx, ibgeOrigem7, cidadeCteNorm, cache) {
 // Igual ao motor da Oportunidade Transportadora, mas SEM a transportadora que está saindo.
 // nomesExcluir: Set com norm() de todos os nomes da transportadora que está saindo
 // (nome unificado, variações do CT-e e nomes de tabela com a mesma raiz de CNPJ).
+// Mesmo critério de peso do Simulador do realizado (padrão "usar peso do
+// CT-e"): sem peso cubado e sem cair no peso_declarado (bruto da NF) quando o
+// CT-e tem peso. Sem isto, aqui o motor usava max(peso_declarado, peso_cubado)
+// e os valores das substitutas saíam maiores que no simulador.
+const OPCOES_MOTOR = { ignorarCubagem: true, percentualContingenciaPeso: 0, semComparativoPesos: true };
+function cteComPesoSimulador(cte) {
+  const peso = pesoComoSimuladorRealizado(cte);
+  return { ...cte, peso, peso_declarado: peso, pesoDeclarado: peso, peso_cubado: 0, pesoCubado: 0 };
+}
+
 function simularSubstitutas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigemReal, nomesExcluir) {
   const canalReal = canalRealDe(cte);
   const cteBase = {
-    ...cte,
+    ...cteComPesoSimulador(cte),
     canal: canalReal,
     canal_original: canalReal,
     ibge_origem: ibgeOrigemReal || '',
@@ -153,7 +164,7 @@ function simularSubstitutas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, 
     if (nomesExcluir.has(norm(transp.nome))) continue;
     const teste = { ...cteBase, transportadora: transp.nome, nome_transportadora: transp.nome };
     let r;
-    try { r = processarCte(teste, base); } catch { continue; }
+    try { r = processarCte(teste, base, null, transp.nome, OPCOES_MOTOR); } catch { continue; }
     if (r.status_calculo !== 'CALCULADO') continue;
     if (!cidadeBate(normCmp(r.detalhes_calculo?.origem_cidade), origemRealCmp)) continue;
     const total = safeNum(r.valor_calculado);
@@ -169,7 +180,7 @@ function simularSubstitutas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, 
 function calcComTransportadora(cte, base, nome, ibgeOrigemReal, ibgeDestino, cidadeOrigemReal) {
   const canalReal = canalRealDe(cte);
   const cteBase = {
-    ...cte,
+    ...cteComPesoSimulador(cte),
     canal: canalReal,
     canal_original: canalReal,
     ibge_origem: ibgeOrigemReal || '',
@@ -180,7 +191,7 @@ function calcComTransportadora(cte, base, nome, ibgeOrigemReal, ibgeDestino, cid
     nome_transportadora: nome,
   };
   let r;
-  try { r = processarCte(cteBase, base); } catch { return null; }
+  try { r = processarCte(cteBase, base, null, nome, OPCOES_MOTOR); } catch { return null; }
   if (r.status_calculo !== 'CALCULADO') return null;
   if (!cidadeBate(normCmp(r.detalhes_calculo?.origem_cidade), normCmp(cidadeOrigemReal))) return null;
   const total = safeNum(r.valor_calculado);
@@ -189,31 +200,90 @@ function calcComTransportadora(cte, base, nome, ibgeOrigemReal, ibgeDestino, cid
 
 const LIMITES_PADRAO = '6000';
 
+// Política de base igual à do Simulador do realizado (padrão da tela): só os
+// tomadores aceitos, sem EBAZAR, sem CPS LOG e sem CP COMERCIAL.
+const OPCOES_POLITICA_BASE = { ocultarEbazar: true, incluirCpsLog: false, incluirCpComercial: false, incluirTodosTomadores: false };
+
+// Busca paginada em realizado_local_ctes por janelas de data de emissão.
+// `nomes`: quando informado, só os CT-es com esses nomes de transportadora
+// (exatamente como gravados no banco).
+async function buscarCtesPaginado({ intervalo, canal, nomes = null, teto, diasPorJanela = 1, onProgress }) {
+  const supabase = getSupabaseClient();
+  const temPeriodo = Boolean(intervalo.inicio || intervalo.fimExclusivo);
+  const janelas = temPeriodo ? janelasEmissao(intervalo, diasPorJanela) : [intervalo];
+  const acumulado = [];
+  const PAGE = 1000;
+  for (const janela of janelas) {
+    let from = 0;
+    while (acumulado.length < teto) {
+      let q = supabase.from('realizado_local_ctes').select('*').order('data_emissao', { ascending: false }).order('id', { ascending: true }).range(from, from + PAGE - 1);
+      if (janela.inicio) q = q.gte('data_emissao', janela.inicio);
+      if (janela.fimExclusivo) q = q.lt('data_emissao', janela.fimExclusivo);
+      if (nomes) q = q.in('transportadora', nomes);
+      if (canal) q = q.or(`canal_original.ilike.%${canal}%,canal.ilike.%${canal}%`);
+      let resp = await q;
+      if (resp.error) resp = await q; // uma nova tentativa em instabilidade/timeout
+      const { data, error } = resp;
+      if (error) throw new Error(`Erro ao carregar CT-es${janela.inicio ? ` (${janela.inicio})` : ''}: ${error.message}`);
+      const lote = data || [];
+      acumulado.push(...lote);
+      onProgress?.({ carregados: acumulado.length });
+      if (lote.length < PAGE) break;
+      from += PAGE;
+    }
+    if (acumulado.length >= teto) break;
+  }
+  return { linhas: acumulado.slice(0, teto), truncado: acumulado.length >= teto };
+}
+
+// Modo antigo (sem mês/período, ou banco sem a função de resumo): baixa os CT-es
+// de todas as transportadoras para montar o seletor.
 async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite, onProgress }) {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  const intervalo = intervaloEmissao({ competencia, dataInicio, dataFim });
+  const temPeriodo = Boolean(intervalo.inicio || intervalo.fimExclusivo);
+  // Com mês/período o recorte vem INTEIRO (como no Simulador do realizado).
+  const teto = temPeriodo ? LIMITE_MAX_CT : Math.max(100, Math.min(Number(limite) || 6000, LIMITE_MAX_CT));
+  const { linhas, truncado } = await buscarCtesPaginado({ intervalo, canal, teto, diasPorJanela: 1, onProgress });
+  const ctes = aplicarPoliticaBaseCte(linhas, OPCOES_POLITICA_BASE);
+  return { ctes, brutos: linhas.length, truncado, temPeriodo };
+}
+
+// Modo rápido: só o resumo (transportadora × raiz CNPJ × tomador) do período,
+// sem baixar CT-es. Retorna null se a função não existir no banco.
+async function carregarResumoTransportadoras({ intervalo, canal, onProgress }) {
   const supabase = getSupabaseClient();
-  const teto = Math.max(100, Math.min(Number(limite) || 6000, LIMITE_MAX_CT));
-  const acumulado = [];
-  let from = 0;
   const PAGE = 1000;
-  while (acumulado.length < teto) {
-    let q = supabase.from('realizado_local_ctes').select('*').order('data_emissao', { ascending: false }).range(from, from + PAGE - 1);
-    if (dataInicio || dataFim) {
-      if (dataInicio) q = q.gte('data_emissao', dataInicio);
-      if (dataFim) q = q.lte('data_emissao', dataFim);
-    } else if (competencia) {
-      q = q.eq('competencia', competencia);
+  const linhas = [];
+  let from = 0;
+  for (;;) {
+    const q = supabase.rpc('saida_transportadora_resumo', {
+      p_inicio: intervalo.inicio, p_fim_exclusivo: intervalo.fimExclusivo, p_canal: canal || null,
+    }).range(from, from + PAGE - 1);
+    let resp = await q;
+    if (resp.error && !funcaoResumoAusente(resp.error)) resp = await q;
+    if (resp.error) {
+      if (funcaoResumoAusente(resp.error)) return null;
+      throw new Error(`Erro ao listar transportadoras do período: ${resp.error.message}`);
     }
-    if (canal) q = q.or(`canal_original.ilike.%${canal}%,canal.ilike.%${canal}%`);
-    const { data, error } = await q;
-    if (error) throw new Error(`Erro ao carregar CT-es: ${error.message}`);
-    const lote = data || [];
-    acumulado.push(...lote);
-    onProgress?.({ carregados: acumulado.length });
+    const lote = resp.data || [];
+    linhas.push(...lote);
+    onProgress?.({ linhas: linhas.length });
     if (lote.length < PAGE) break;
     from += PAGE;
   }
-  return filtrarCpComercialCte(acumulado).slice(0, teto);
+  return linhas.map((r) => ({
+    transportadora: r.transportadora,
+    cnpj_transportadora: r.raiz_cnpj || '',
+    tomador_servico: r.tomador_servico,
+    cnpj_tomador: r.cnpj_tomador,
+    __qtdCtes: safeNum(r.ctes),
+    __valorCte: safeNum(r.valor_cte),
+  }));
+}
+function funcaoResumoAusente(error) {
+  const txt = `${error?.code || ''} ${error?.message || ''}`;
+  return /PGRST202|42883|saida_transportadora_resumo|could not find the function/i.test(txt);
 }
 
 function Card({ label, valor, sub, cor, destaque }) {
@@ -519,23 +589,73 @@ export default function SimularSaidaTransportadoraPage() {
       // cadastro com raízes de CNPJ: une nomes diferentes da mesma empresa no CT-e
       const cadastro = await carregarCadastroCnpjTransportadorasDb().catch((e) => { console.warn('[SimularSaidaTransportadora] cadastro CNPJ indisponível', e); return []; });
 
+      const aplicarVinculo = (n) => aplicarVinculoPuro(n, mapaVinculos);
+      const intervalo = intervaloEmissao({ competencia, dataInicio, dataFim });
+      const temPeriodo = Boolean(intervalo.inicio && intervalo.fimExclusivo);
+
+      // Modo rápido: com mês/período, lista as transportadoras pelo resumo do
+      // banco (sem baixar CT-es). Os CT-es só vêm depois, os da escolhida.
+      if (temPeriodo) {
+        setProgresso('Listando transportadoras do período...');
+        const resumoBruto = await carregarResumoTransportadoras({
+          intervalo,
+          canal: canal || '',
+          onProgress: ({ linhas }) => setProgresso(`Listando transportadoras do período... ${fmtN(linhas)} grupo(s)`),
+        });
+        if (resumoBruto) {
+          const resumo = aplicarPoliticaBaseCte(resumoBruto, OPCOES_POLITICA_BASE);
+          if (!resumo.length) throw new Error('Nenhum CT-e encontrado para este recorte.');
+          const unificacao = unificarTransportadorasCtes(resumo, { aplicarVinculo, cadastro });
+          // nomes exatamente como estão no banco, por transportadora unificada —
+          // é por eles que os CT-es da escolhida são buscados depois.
+          const nomesBancoPorGrupo = new Map();
+          const totaisPorGrupo = new Map();
+          for (const row of resumo) {
+            const nome = unificacao.nomeDoCte(row);
+            if (!nomesBancoPorGrupo.has(nome)) nomesBancoPorGrupo.set(nome, new Set());
+            nomesBancoPorGrupo.get(nome).add(row.transportadora);
+            const t = totaisPorGrupo.get(nome) || { ctes: 0, valor: 0 };
+            t.ctes += row.__qtdCtes; t.valor += row.__valorCte;
+            totaisPorGrupo.set(nome, t);
+          }
+          const totalCtes = resumo.reduce((acc, r) => acc + r.__qtdCtes, 0);
+          const brutos = resumoBruto.reduce((acc, r) => acc + r.__qtdCtes, 0);
+          setBase({
+            modo: 'resumo', intervalo, municipioPorCidade, mapasIbge, mapaVinculos, unificacao,
+            nomesBancoPorGrupo, totaisPorGrupo,
+            carga: { totalCtes, brutos, truncado: false, temPeriodo: true },
+          });
+          setStatusCarga('concluido'); setProgresso('');
+          return;
+        }
+        console.warn('[SimularSaidaTransportadora] função saida_transportadora_resumo ausente — usando carga completa.');
+      }
+
       setProgresso('Carregando CT-es...');
-      const ctes = await carregarCtes({
+      const carga = await carregarCtes({
         competencia,
         dataInicio: dataInicio || undefined,
         dataFim: dataFim || undefined,
         canal: canal || undefined,
         limite: Number(limiteInput) || 6000,
-        onProgress: ({ carregados }) => setProgresso(`Carregando CT-es... ${carregados}`),
+        onProgress: ({ carregados }) => setProgresso(`Carregando CT-es... ${fmtN(carregados)}`),
       });
+      const { ctes } = carga;
       if (!ctes.length) throw new Error('Nenhum CT-e encontrado para este recorte.');
 
       // A tabela de frete só é buscada depois, quando a transportadora a
       // avaliar for escolhida — aí sim buscamos só as rotas dela (ver
       // simularSaida), em vez de carregar a base inteira (rotas tem ~1,3M
       // linhas e isso deixava a tela lenta/travando com timeout).
-      const unificacao = unificarTransportadorasCtes(ctes, { aplicarVinculo: (n) => aplicarVinculoPuro(n, mapaVinculos), cadastro });
-      setBase({ ctes, municipioPorCidade, mapasIbge, mapaVinculos, unificacao });
+      const unificacao = unificarTransportadorasCtes(ctes, { aplicarVinculo, cadastro });
+      const totaisPorGrupo = new Map();
+      for (const c of ctes) {
+        const nome = unificacao.nomeDoCte(c);
+        const t = totaisPorGrupo.get(nome) || { ctes: 0, valor: 0 };
+        t.ctes += 1; t.valor += safeNum(c.valor_cte || c.frete_pago || c.valor_frete);
+        totaisPorGrupo.set(nome, t);
+      }
+      setBase({ modo: 'completo', ctes, municipioPorCidade, mapasIbge, mapaVinculos, unificacao, totaisPorGrupo, carga: { ...carga, totalCtes: ctes.length } });
       setStatusCarga('concluido'); setProgresso('');
     } catch (e) {
       console.error('[SimularSaidaTransportadora]', e);
@@ -556,9 +676,24 @@ export default function SimularSaidaTransportadoraPage() {
     if (!base || !transportadora) return;
     setStatusSim('carregando'); setErro(''); setSimulacao(null); setExclusoes(new Set()); setRotasAbertas(new Set());
     try {
-      const { ctes, municipioPorCidade, mapasIbge, mapaVinculos, unificacao } = base;
-      // compara pelo nome unificado: pega todos os CT-es das variações (CNPJ/vínculo) da transportadora escolhida
-      const ctesDaTransp = ctes.filter((c) => norm(unificacao.nomeDoCte(c)) === norm(transportadora));
+      const { municipioPorCidade, mapasIbge, mapaVinculos, unificacao } = base;
+      let ctesDaTransp;
+      if (base.modo === 'resumo') {
+        // Só os CT-es da escolhida: todos os nomes do grupo (CNPJ/vínculo), no
+        // mesmo período/canal e com a mesma política de base do resumo.
+        const nomesBanco = [...(base.nomesBancoPorGrupo.get(transportadora) || [])];
+        if (!nomesBanco.length) throw new Error('Transportadora sem CT-es no resumo do período.');
+        setProgresso(`Carregando CT-es de ${transportadora}...`);
+        const { linhas, truncado } = await buscarCtesPaginado({
+          intervalo: base.intervalo, canal: canal || '', nomes: nomesBanco, teto: LIMITE_MAX_CT, diasPorJanela: 7,
+          onProgress: ({ carregados }) => setProgresso(`Carregando CT-es de ${transportadora}... ${fmtN(carregados)}`),
+        });
+        if (truncado) console.warn('[SimularSaidaTransportadora] teto de CT-es atingido para', transportadora);
+        ctesDaTransp = aplicarPoliticaBaseCte(linhas, OPCOES_POLITICA_BASE);
+      } else {
+        // compara pelo nome unificado: pega todos os CT-es das variações (CNPJ/vínculo) da transportadora escolhida
+        ctesDaTransp = base.ctes.filter((c) => norm(unificacao.nomeDoCte(c)) === norm(transportadora));
+      }
       const grupo = unificacao.grupos.find((g) => g.nome === transportadora);
       const nomesProprios = [transportadora, ...(grupo?.nomesTabela || []), ...(grupo?.variantes || [])];
       const nomesExcluir = new Set(nomesProprios.flatMap((n) => [norm(n), norm(aplicarVinculoPuro(n, mapaVinculos))]));
@@ -675,7 +810,7 @@ export default function SimularSaidaTransportadoraPage() {
           </label>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
             <button className="primary" type="button" onClick={carregar} disabled={statusCarga === 'carregando'}>
-              {statusCarga === 'carregando' ? 'Carregando...' : 'Carregar CT-es'}
+              {statusCarga === 'carregando' ? 'Carregando...' : (competencia || dataInicio || dataFim ? 'Listar transportadoras' : 'Carregar CT-es')}
             </button>
             {base && <button className="sim-tab" type="button" onClick={() => { setBase(null); setSimulacao(null); setExclusoes(new Set()); setStatusCarga('idle'); }}>Limpar</button>}
           </div>
@@ -691,13 +826,24 @@ export default function SimularSaidaTransportadoraPage() {
 
       {base && (
         <section className="sim-card" style={{ marginTop: '1rem' }}>
+          {base.carga && (
+            <div style={{ fontSize: '0.78rem', color: base.carga.truncado ? '#b45309' : '#64748b', marginBottom: 10 }}>
+              {fmtN(base.carga.totalCtes)} CT-es no recorte (de {fmtN(base.carga.brutos)}; mesmos filtros de tomador/EBAZAR/CPS LOG/CP COMERCIAL do Simulador do realizado).
+              {base.modo === 'resumo' ? ' Os CT-es são baixados só da transportadora escolhida.' : ''}
+              {base.carga.truncado && (base.carga.temPeriodo
+                ? ` Atenção: atingiu o teto de ${fmtN(LIMITE_MAX_CT)} CT-es — reduza o período para comparar com o simulador.`
+                : ' Sem mês/período: só os CT-es mais recentes até o limite entraram — informe o mês para comparar com o simulador.')}
+            </div>
+          )}
           <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
             <label>Transportadora a avaliar
               <select value={transportadora} onChange={(e) => setTransportadora(e.target.value)} style={{ width: '100%' }}>
                 <option value="">Selecione...</option>
                 {transportadoras.map((g) => (
                   <option key={g.nome} value={g.nome}>
-                    {g.nome}{g.variantes.length > 1 ? ` (${g.variantes.length} nomes no CT-e)` : ''}
+                    {g.nome}
+                    {base.totaisPorGrupo?.get(g.nome) ? ` — ${fmtN(base.totaisPorGrupo.get(g.nome).ctes)} CT-es · ${fmt(base.totaisPorGrupo.get(g.nome).valor)}` : ''}
+                    {g.variantes.length > 1 ? ` (${g.variantes.length} nomes no CT-e)` : ''}
                   </option>
                 ))}
               </select>
