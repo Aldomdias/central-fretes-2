@@ -9,7 +9,7 @@ import { intervaloEmissao, janelasEmissao, pesoComoSimuladorRealizado } from '..
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { aplicarVinculoTransportadora as aplicarVinculoPuro } from '../services/vinculosTransportadorasPuro';
 import { unificarTransportadorasCtes } from '../utils/unificarTransportadorasCte';
-import { abrirLaudoSaida, exportarExcelLaudoSaida } from '../utils/laudoSaidaTransportadora';
+import { abrirLaudoSaida, analisarRota, exportarExcelLaudoSaida, RECOMENDACAO_ORIGEM, resumirPorOrigem } from '../utils/laudoSaidaTransportadora';
 
 const LIMITE_MAX_CT = 200000;
 const TOLERANCIA = 0.5; // R$ — diferença abaixo disto é ruído
@@ -699,6 +699,14 @@ export default function SimularSaidaTransportadoraPage() {
     return def ? linhas.filter(def.teste) : linhas;
   }, [resultado, filtroCard]);
   const totaisSel = useMemo(() => totaisDasRotas(linhasVisiveis, reajustePct), [linhasVisiveis, reajustePct]);
+  // Mesmo cálculo do laudo: por origem, trocar tudo × trocar só onde compensa × reajuste.
+  const porOrigem = useMemo(
+    () => resumirPorOrigem((resultado?.linhas || []).map((l) => analisarRota(l, reajustePct))),
+    [resultado, reajustePct],
+  );
+  const alternarOrigem = (origem) => setFiltroRota((f) => (
+    f.origem === origem ? { ...f, origem: '' } : { ...f, ufOrigem: '', origem }
+  ));
   const alternarCard = (k) => setFiltroCard((atual) => (atual === k ? '' : k));
 
   const opcoesExcluir = useMemo(() => {
@@ -1109,6 +1117,48 @@ export default function SimularSaidaTransportadoraPage() {
               return <Card label="Prazo médio (atual → subst.)" valor={`${fmtDias(pa)} → ${fmtDias(ps)}`} sub={sub} cor={corPrazo} />;
             })()}
           </div>
+
+          {(porOrigem.length > 1 || filtroRota.origem) && (
+            <div className="panel-card" style={{ marginBottom: '1rem' }}>
+              <div className="panel-title" style={{ marginBottom: 4 }}>Por origem</div>
+              <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: 8 }}>
+                Uma origem pode valer a pena trocar e outra não. Clique numa origem para filtrar a tela por ela (clique de novo para voltar).
+              </div>
+              <div className="sim-analise-tabela-wrap">
+                <table className="sim-analise-tabela">
+                  <thead>
+                    <tr>
+                      <th>Origem</th><th>Rotas</th><th>CT-es</th><th>Pago hoje</th><th>Com reajuste</th>
+                      <th>Trocando tudo</th><th>Trocando só onde compensa</th><th>Economia vs. reajuste</th><th>Sem substituta</th><th>Recomendação</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {porOrigem.map((o) => {
+                      const sel = filtroRota.origem === o.origem;
+                      const corRec = o.recomendacao === RECOMENDACAO_ORIGEM.TROCAR ? '#047857' : (o.recomendacao === RECOMENDACAO_ORIGEM.PARCIAL ? '#b45309' : '#9b1111');
+                      return (
+                        <tr key={o.origem} onClick={() => alternarOrigem(o.origem)} style={{ cursor: 'pointer', background: sel ? '#eff6ff' : undefined }} title={sel ? 'Clique para ver todas as origens' : 'Clique para filtrar por esta origem'}>
+                          <td style={{ fontWeight: sel ? 700 : 600 }}>{o.origem}</td>
+                          <td>{fmtN(o.rotas)}</td>
+                          <td>{fmtN(o.ctes)}</td>
+                          <td>{fmt(o.custoAtual)}</td>
+                          <td>{fmt(o.custoReajuste)}</td>
+                          <td>{fmt(o.custoSaidaTotal)}</td>
+                          <td>{fmt(o.custoHibrido)}</td>
+                          <td style={{ color: o.economiaHibrido >= 0 ? '#047857' : '#9b1111', fontWeight: 600 }}>{fmt(o.economiaHibrido)}</td>
+                          <td style={{ color: o.rotasSem ? '#9b1111' : '#64748b' }}>{fmtN(o.rotasSem)}</td>
+                          <td style={{ color: corRec, fontWeight: 700 }}>
+                            {o.recomendacao}
+                            {o.recomendacao === RECOMENDACAO_ORIGEM.PARCIAL && <span style={{ fontWeight: 400, fontSize: '0.75rem', color: '#64748b' }}> ({fmtN(o.rotasMigrar)} de {fmtN(o.rotas)} rotas)</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: '1rem' }}>
             <button type="button" className="primary" onClick={() => exportarLaudo('pdf')} disabled={!!exportando || !resultado.linhas.length}>

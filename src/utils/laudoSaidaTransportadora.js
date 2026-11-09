@@ -85,6 +85,38 @@ export function analisarRota(linha, pctReajuste = 0) {
   };
 }
 
+// Resumo por origem: numa mesma transportadora uma origem pode valer a pena
+// trocar e outra não. Recebe rotas já analisadas (analisarRota).
+export const RECOMENDACAO_ORIGEM = { TROCAR: 'Trocar', PARCIAL: 'Trocar em parte', MANTER: 'Manter com reajuste' };
+export function resumirPorOrigem(rotasAnalisadas = []) {
+  const mapa = new Map();
+  for (const r of rotasAnalisadas) {
+    const k = r.origem;
+    if (!mapa.has(k)) mapa.set(k, { origem: k, rotas: 0, ctes: 0, custoAtual: 0, custoReajuste: 0, custoSaidaTotal: 0, custoHibrido: 0, rotasSem: 0, rotasMigrar: 0, valorDescoberto: 0 });
+    const o = mapa.get(k);
+    o.rotas += 1; o.ctes += num(r.ctes);
+    o.custoAtual += num(r.custoAtual); o.custoReajuste += num(r.custoReajuste); o.custoSaidaTotal += num(r.custoSubstituta);
+    o.custoHibrido += r.decisao === DECISAO.MIGRAR ? num(r.custoMigrar) : num(r.custoReajuste);
+    o.valorDescoberto += num(r.valorDescoberto);
+    if (r.qtdSubstitutos === 0 || r.ctesDescobertos > 0) o.rotasSem += 1;
+    if (r.decisao === DECISAO.MIGRAR) o.rotasMigrar += 1;
+  }
+  return [...mapa.values()].map((o) => {
+    const economiaSaidaTotal = o.custoReajuste - o.custoSaidaTotal;
+    const economiaHibrido = o.custoReajuste - o.custoHibrido;
+    let recomendacao;
+    if (o.rotasMigrar === 0) recomendacao = RECOMENDACAO_ORIGEM.MANTER;
+    else if (o.rotasMigrar === o.rotas && o.valorDescoberto <= TOL) recomendacao = RECOMENDACAO_ORIGEM.TROCAR;
+    else if (economiaHibrido > TOL) recomendacao = RECOMENDACAO_ORIGEM.PARCIAL;
+    else recomendacao = RECOMENDACAO_ORIGEM.MANTER;
+    return {
+      ...o,
+      custoAtual: arred(o.custoAtual), custoReajuste: arred(o.custoReajuste), custoSaidaTotal: arred(o.custoSaidaTotal), custoHibrido: arred(o.custoHibrido),
+      economiaSaidaTotal: arred(economiaSaidaTotal), economiaHibrido: arred(economiaHibrido), recomendacao,
+    };
+  }).sort((a, b) => b.custoAtual - a.custoAtual);
+}
+
 export function consolidarLaudoSaida(resultado, contexto = {}) {
   const pctReajuste = num(resultado?.pctReajuste ?? contexto.reajustePct);
   const fator = 1 + pctReajuste / 100;
@@ -197,7 +229,7 @@ export function consolidarLaudoSaida(resultado, contexto = {}) {
       rotasMigrar, rotasManter,
     },
     recomendacao, tom, pontos,
-    porNivel, porDecisao,
+    porNivel, porDecisao, porOrigem: resumirPorOrigem(rotas),
     rotas, criticas, impactoPrazo, unicaOpcao, substitutas,
   };
 }
@@ -238,6 +270,8 @@ export function gerarHtmlLaudoSaida(resultado, contexto = {}) {
     linhaResumo('Prazo maior com a substituta', grupos.prazo, 'prazo'),
     linhaResumo('Dependem de uma única substituta', grupos.unica, 'unica'),
   ].join('');
+  const corRec = (rec) => (rec === RECOMENDACAO_ORIGEM.TROCAR ? 'pos' : (rec === RECOMENDACAO_ORIGEM.PARCIAL ? 'aten-t' : 'neg'));
+  const tabOrigem = L.porOrigem.map((o) => `<tr><td><strong>${esc(o.origem)}</strong></td><td class="c">${inteiro(o.rotas)}</td><td class="c">${inteiro(o.ctes)}</td><td class="r">${moeda(o.custoAtual)}</td><td class="r">${moeda(o.custoReajuste)}</td><td class="r">${moeda(o.custoSaidaTotal)}</td><td class="r">${moeda(o.custoHibrido)}</td><td class="r ${o.economiaHibrido >= 0 ? 'pos' : 'neg'}">${moeda(o.economiaHibrido)}</td><td class="c">${o.rotasSem ? `<span class="neg">${inteiro(o.rotasSem)}</span>` : '0'}</td><td class="${corRec(o.recomendacao)}"><strong>${esc(o.recomendacao)}</strong>${o.recomendacao === RECOMENDACAO_ORIGEM.PARCIAL ? ` <span class="small">(${inteiro(o.rotasMigrar)} de ${inteiro(o.rotas)} rotas)</span>` : ''}</td></tr>`).join('');
   const cortar = (lista) => lista.slice(0, MAX_LINHAS);
   const notaCorte = (lista) => (lista.length > MAX_LINHAS ? `<p class="small">Mostrando ${MAX_LINHAS} de ${inteiro(lista.length)}. A lista completa está no Excel.</p>` : '');
   const rota = (r) => `${esc(r.origem)} → ${esc(r.destino)}`;
@@ -286,7 +320,7 @@ tr.grp td{border-top:2px solid var(--line)}
 <div class="header" id="resumo"><div><div class="eyebrow">Central Fretes • Saída de transportadora</div><h1>${esc(titulo)}</h1><div>${esc(c.periodo || 'Período não informado')} • Canal: ${esc(c.canal || 'Todos')} • Reajuste proposto: ${pct(c.pctReajuste)}</div>${resumoFiltros ? `<div class="small" style="margin-top:4px">${esc(resumoFiltros)}</div>` : ''}</div>
 <div class="meta">Emitido em ${esc(emitido.toLocaleString('pt-BR'))}<br>${inteiro(t.ctes)} CT-es • ${inteiro(t.rotas)} rotas${c.geradoPor ? `<br>Responsável: ${esc(c.geradoPor)}` : ''}</div></div>
 
-<nav class="nav"><a href="#resumo">Resumo</a><a href="#situacao">Por situação</a><a href="#sem">Sem substituta</a><a href="#cara">Mais cara</a><a href="#barata">Mais barata</a><a href="#prazo">Prazo maior</a><a href="#unica">Substituta única</a><a href="#substitutas">Quem assumiria</a></nav>
+<nav class="nav"><a href="#resumo">Resumo</a><a href="#origem">Por origem</a><a href="#situacao">Por situação</a><a href="#sem">Sem substituta</a><a href="#cara">Mais cara</a><a href="#barata">Mais barata</a><a href="#prazo">Prazo maior</a><a href="#unica">Substituta única</a><a href="#substitutas">Quem assumiria</a></nav>
 <div class="parecer ${L.tom}"><div class="rec">${esc(L.recomendacao)}</div>${pontos.length ? `<ul>${pontos.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}</div>
 
 <div class="cards">
@@ -295,6 +329,10 @@ tr.grp td{border-top:2px solid var(--line)}
 <div class="card ${t.economiaSaidaTotal >= 0 ? 'good' : 'danger'}"><span>Trocando tudo pelas substitutas</span><strong>${moeda(t.custoSaidaTotal)}</strong><small>${t.economiaSaidaTotal >= 0 ? 'economia' : 'custo extra'} de ${moeda(Math.abs(t.economiaSaidaTotal))} vs. reajuste</small></div>
 <div class="card ${t.economiaHibrido >= 0 ? 'good' : 'danger'}"><span>Trocando só onde compensa</span><strong>${moeda(t.custoHibrido)}</strong><small>${inteiro(t.rotasMigrar)} rota(s) trocam · ${inteiro(t.rotasManter)} ficam</small></div>
 </div>
+
+<h2 id="origem">Por origem (${inteiro(L.porOrigem.length)})</h2>
+<table><thead><tr><th>Origem</th><th class="c">Rotas</th><th class="c">CT-es</th><th class="r">Pago hoje</th><th class="r">Com reajuste</th><th class="r">Trocando tudo</th><th class="r">Trocando só onde compensa</th><th class="r">Economia vs. reajuste</th><th class="c">Rotas sem substituta</th><th>Recomendação</th></tr></thead><tbody>${tabOrigem || vazio(10, 'Sem rotas.')}</tbody></table>
+<p class="small">Economia = aceitar o reajuste − trocar só nas rotas onde a substituta sai mais barata que o reajuste (as demais ficam com a transportadora atual reajustada).</p>
 
 <h2 id="situacao">Resumo por situação</h2>
 <table><thead><tr><th>Situação</th><th class="c">Rotas</th><th class="c">CT-es</th><th class="r">Pago hoje</th><th class="r">Com substituta</th><th class="r">Diferença</th></tr></thead><tbody>${tabResumo}</tbody></table>
@@ -381,6 +419,13 @@ export function montarAbasExcelLaudoSaida(resultado, contexto = {}) {
     ],
   };
 
+  const porOrigem = {
+    nome: 'Por origem',
+    colunas: [T('Origem', 'texto', 28), T('Rotas', 'inteiro', 9), T('CT-es', 'inteiro', 9), T('Pago hoje', 'moeda'), T('Com reajuste', 'moeda'), T('Trocando tudo', 'moeda'),
+      T('Trocando só onde compensa', 'moeda'), T('Economia vs reajuste', 'moeda'), T('Rotas sem substituta', 'inteiro', 12), T('Rotas a migrar', 'inteiro', 12), T('Recomendação', 'texto', 22)],
+    linhas: L.porOrigem.map((o) => [o.origem, o.rotas, o.ctes, o.custoAtual, o.custoReajuste, o.custoSaidaTotal, o.custoHibrido, o.economiaHibrido, o.rotasSem, o.rotasMigrar, o.recomendacao]),
+  };
+
   const rotas = {
     nome: 'Rotas',
     colunas: [T('Nível', 'centro', 16), T('Origem', 'texto', 26), T('Destino', 'texto', 26), T('CT-es', 'inteiro', 9), T('CT-es sem cobertura', 'inteiro', 12),
@@ -428,7 +473,7 @@ export function montarAbasExcelLaudoSaida(resultado, contexto = {}) {
     linhas: L.rotas.flatMap((r) => r.viagens.map((v) => [r.origem, r.destino, v.data || '', v.chave || '', v.nf, v.peso, v.valorPago, v.valorTabelaAtual ?? '', v.substituta || 'sem cobertura', v.valorSub ?? '', v.valorSub != null ? v.valorSub - v.valorPago : '', v.prazoAtual ?? '', v.prazoSub ?? ''])),
   };
 
-  return [resumo, rotas, criticas, prazo, substitutas, opcoes, ctes];
+  return [resumo, porOrigem, rotas, criticas, prazo, substitutas, opcoes, ctes];
 }
 
 export async function exportarExcelLaudoSaida(resultado, contexto = {}) {
