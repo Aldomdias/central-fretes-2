@@ -4699,7 +4699,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // real do CT-e (ignora cubagem por completo) em vez do maior entre peso e peso
   // cubado. O percentual de contingência serve pra simular, de forma controlada,
   // o efeito que a cubagem teria no peso — plano B até a fórmula ser validada.
-  const [usarPesoCteRealizado, setUsarPesoCteRealizado] = useState(true);
+  const [usarPesoCteRealizado, setUsarPesoCteRealizado] = useState(false);
   // Persistidos em localStorage: sem isso, um F5 zerava esses campos e o
   // usuário precisava redigitar transportadora/origem toda vez, caindo de
   // volta no nome ruim da negociação ("Gbex Reajuste" em vez de "GUANABARA
