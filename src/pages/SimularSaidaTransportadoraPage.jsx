@@ -4,7 +4,8 @@ import BaseCtesStatus from '../components/BaseCtesStatus';
 import { buscarBaseSimulacaoPorRotasDb, carregarCadastroCnpjTransportadorasDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
 import { categoriaCanalRealizado, montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
-import { filtrarCpComercialCte } from '../services/cteBasePolicy';
+import { aplicarPoliticaBaseCte } from '../services/cteBasePolicy';
+import { intervaloEmissao, janelasEmissao, pesoComoSimuladorRealizado } from '../utils/saidaTransportadoraRecorte';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { aplicarVinculoTransportadora as aplicarVinculoPuro } from '../services/vinculosTransportadorasPuro';
 import { unificarTransportadorasCtes } from '../utils/unificarTransportadorasCte';
@@ -136,10 +137,20 @@ function nomesPorOrigem(idx, ibgeOrigem7, cidadeCteNorm, cache) {
 // Igual ao motor da Oportunidade Transportadora, mas SEM a transportadora que está saindo.
 // nomesExcluir: Set com norm() de todos os nomes da transportadora que está saindo
 // (nome unificado, variações do CT-e e nomes de tabela com a mesma raiz de CNPJ).
+// Mesmo critério de peso do Simulador do realizado (padrão "usar peso do
+// CT-e"): sem peso cubado e sem cair no peso_declarado (bruto da NF) quando o
+// CT-e tem peso. Sem isto, aqui o motor usava max(peso_declarado, peso_cubado)
+// e os valores das substitutas saíam maiores que no simulador.
+const OPCOES_MOTOR = { ignorarCubagem: true, percentualContingenciaPeso: 0, semComparativoPesos: true };
+function cteComPesoSimulador(cte) {
+  const peso = pesoComoSimuladorRealizado(cte);
+  return { ...cte, peso, peso_declarado: peso, pesoDeclarado: peso, peso_cubado: 0, pesoCubado: 0 };
+}
+
 function simularSubstitutas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigemReal, nomesExcluir) {
   const canalReal = canalRealDe(cte);
   const cteBase = {
-    ...cte,
+    ...cteComPesoSimulador(cte),
     canal: canalReal,
     canal_original: canalReal,
     ibge_origem: ibgeOrigemReal || '',
@@ -153,7 +164,7 @@ function simularSubstitutas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, 
     if (nomesExcluir.has(norm(transp.nome))) continue;
     const teste = { ...cteBase, transportadora: transp.nome, nome_transportadora: transp.nome };
     let r;
-    try { r = processarCte(teste, base); } catch { continue; }
+    try { r = processarCte(teste, base, null, transp.nome, OPCOES_MOTOR); } catch { continue; }
     if (r.status_calculo !== 'CALCULADO') continue;
     if (!cidadeBate(normCmp(r.detalhes_calculo?.origem_cidade), origemRealCmp)) continue;
     const total = safeNum(r.valor_calculado);
@@ -169,7 +180,7 @@ function simularSubstitutas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, 
 function calcComTransportadora(cte, base, nome, ibgeOrigemReal, ibgeDestino, cidadeOrigemReal) {
   const canalReal = canalRealDe(cte);
   const cteBase = {
-    ...cte,
+    ...cteComPesoSimulador(cte),
     canal: canalReal,
     canal_original: canalReal,
     ibge_origem: ibgeOrigemReal || '',
@@ -180,7 +191,7 @@ function calcComTransportadora(cte, base, nome, ibgeOrigemReal, ibgeDestino, cid
     nome_transportadora: nome,
   };
   let r;
-  try { r = processarCte(cteBase, base); } catch { return null; }
+  try { r = processarCte(cteBase, base, null, nome, OPCOES_MOTOR); } catch { return null; }
   if (r.status_calculo !== 'CALCULADO') return null;
   if (!cidadeBate(normCmp(r.detalhes_calculo?.origem_cidade), normCmp(cidadeOrigemReal))) return null;
   const total = safeNum(r.valor_calculado);
@@ -189,31 +200,44 @@ function calcComTransportadora(cte, base, nome, ibgeOrigemReal, ibgeDestino, cid
 
 const LIMITES_PADRAO = '6000';
 
+// Política de base igual à do Simulador do realizado (padrão da tela): só os
+// tomadores aceitos, sem EBAZAR, sem CPS LOG e sem CP COMERCIAL.
+const OPCOES_POLITICA_BASE = { ocultarEbazar: true, incluirCpsLog: false, incluirCpComercial: false, incluirTodosTomadores: false };
+
 async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite, onProgress }) {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
   const supabase = getSupabaseClient();
-  const teto = Math.max(100, Math.min(Number(limite) || 6000, LIMITE_MAX_CT));
+  const intervalo = intervaloEmissao({ competencia, dataInicio, dataFim });
+  const temPeriodo = Boolean(intervalo.inicio || intervalo.fimExclusivo);
+  // Com mês/período o recorte vem INTEIRO (como no Simulador do realizado).
+  // Antes o limite (6.000) valia sempre: num mês com mais CT-es só entravam os
+  // mais recentes e a transportadora aparecia com uma fração do volume.
+  const teto = temPeriodo ? LIMITE_MAX_CT : Math.max(100, Math.min(Number(limite) || 6000, LIMITE_MAX_CT));
+  const janelas = temPeriodo ? janelasEmissao(intervalo, 1) : [intervalo];
   const acumulado = [];
-  let from = 0;
   const PAGE = 1000;
-  while (acumulado.length < teto) {
-    let q = supabase.from('realizado_local_ctes').select('*').order('data_emissao', { ascending: false }).range(from, from + PAGE - 1);
-    if (dataInicio || dataFim) {
-      if (dataInicio) q = q.gte('data_emissao', dataInicio);
-      if (dataFim) q = q.lte('data_emissao', dataFim);
-    } else if (competencia) {
-      q = q.eq('competencia', competencia);
+  for (const janela of janelas) {
+    let from = 0;
+    while (acumulado.length < teto) {
+      let q = supabase.from('realizado_local_ctes').select('*').order('data_emissao', { ascending: false }).order('id', { ascending: true }).range(from, from + PAGE - 1);
+      if (janela.inicio) q = q.gte('data_emissao', janela.inicio);
+      if (janela.fimExclusivo) q = q.lt('data_emissao', janela.fimExclusivo);
+      if (canal) q = q.or(`canal_original.ilike.%${canal}%,canal.ilike.%${canal}%`);
+      let resp = await q;
+      if (resp.error) resp = await q; // uma nova tentativa em instabilidade/timeout
+      const { data, error } = resp;
+      if (error) throw new Error(`Erro ao carregar CT-es${janela.inicio ? ` (${janela.inicio})` : ''}: ${error.message}`);
+      const lote = data || [];
+      acumulado.push(...lote);
+      onProgress?.({ carregados: acumulado.length });
+      if (lote.length < PAGE) break;
+      from += PAGE;
     }
-    if (canal) q = q.or(`canal_original.ilike.%${canal}%,canal.ilike.%${canal}%`);
-    const { data, error } = await q;
-    if (error) throw new Error(`Erro ao carregar CT-es: ${error.message}`);
-    const lote = data || [];
-    acumulado.push(...lote);
-    onProgress?.({ carregados: acumulado.length });
-    if (lote.length < PAGE) break;
-    from += PAGE;
+    if (acumulado.length >= teto) break;
   }
-  return filtrarCpComercialCte(acumulado).slice(0, teto);
+  const brutos = acumulado.slice(0, teto);
+  const ctes = aplicarPoliticaBaseCte(brutos, OPCOES_POLITICA_BASE);
+  return { ctes, brutos: brutos.length, truncado: acumulado.length >= teto, temPeriodo };
 }
 
 function Card({ label, valor, sub, cor, destaque }) {
@@ -520,14 +544,15 @@ export default function SimularSaidaTransportadoraPage() {
       const cadastro = await carregarCadastroCnpjTransportadorasDb().catch((e) => { console.warn('[SimularSaidaTransportadora] cadastro CNPJ indisponível', e); return []; });
 
       setProgresso('Carregando CT-es...');
-      const ctes = await carregarCtes({
+      const carga = await carregarCtes({
         competencia,
         dataInicio: dataInicio || undefined,
         dataFim: dataFim || undefined,
         canal: canal || undefined,
         limite: Number(limiteInput) || 6000,
-        onProgress: ({ carregados }) => setProgresso(`Carregando CT-es... ${carregados}`),
+        onProgress: ({ carregados }) => setProgresso(`Carregando CT-es... ${fmtN(carregados)}`),
       });
+      const { ctes } = carga;
       if (!ctes.length) throw new Error('Nenhum CT-e encontrado para este recorte.');
 
       // A tabela de frete só é buscada depois, quando a transportadora a
@@ -535,7 +560,7 @@ export default function SimularSaidaTransportadoraPage() {
       // simularSaida), em vez de carregar a base inteira (rotas tem ~1,3M
       // linhas e isso deixava a tela lenta/travando com timeout).
       const unificacao = unificarTransportadorasCtes(ctes, { aplicarVinculo: (n) => aplicarVinculoPuro(n, mapaVinculos), cadastro });
-      setBase({ ctes, municipioPorCidade, mapasIbge, mapaVinculos, unificacao });
+      setBase({ ctes, municipioPorCidade, mapasIbge, mapaVinculos, unificacao, carga });
       setStatusCarga('concluido'); setProgresso('');
     } catch (e) {
       console.error('[SimularSaidaTransportadora]', e);
@@ -691,6 +716,14 @@ export default function SimularSaidaTransportadoraPage() {
 
       {base && (
         <section className="sim-card" style={{ marginTop: '1rem' }}>
+          {base.carga && (
+            <div style={{ fontSize: '0.78rem', color: base.carga.truncado ? '#b45309' : '#64748b', marginBottom: 10 }}>
+              {fmtN(base.ctes.length)} CT-es na base (de {fmtN(base.carga.brutos)} lidos; mesmos filtros de tomador/EBAZAR/CPS LOG/CP COMERCIAL do Simulador do realizado).
+              {base.carga.truncado && (base.carga.temPeriodo
+                ? ` Atenção: atingiu o teto de ${fmtN(LIMITE_MAX_CT)} CT-es — reduza o período para comparar com o simulador.`
+                : ' Sem mês/período: só os CT-es mais recentes até o limite entraram — informe o mês para comparar com o simulador.')}
+            </div>
+          )}
           <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
             <label>Transportadora a avaliar
               <select value={transportadora} onChange={(e) => setTransportadora(e.target.value)} style={{ width: '100%' }}>
