@@ -266,6 +266,12 @@ export default function TransgpAuditoriaPage() {
       'Auditoria Central': VINCULO[vinculoDaDist(d).status]?.txt || '',
       'CT-es na Auditoria': vinculoDaDist(d).ctes.map((c) => `${c.numero_cte} (${c.status_calculo || '-'})`).join('; '),
       'Decisao auditoria': d.decisao_auditoria ? JSON.stringify(d.decisao_auditoria) : '',
+      'Tipo veiculo': d.dados_dist?.veiculo?.tipo || '', Eixos: d.dados_dist?.veiculo?.eixos ?? '',
+      'Placa cavalo': d.dados_dist?.veiculo?.placa_cavalo || d.dados_dist?.placa || '', 'Placa carreta': d.dados_dist?.veiculo?.placa_carreta || '',
+      'Frete Cantu': Number(d.dados_dist?.frete?.frete_cantu) || 0, 'CT-es sem ICMS': Number(d.cte_total_sem_icms ?? d.dados_dist?.cte_total_sem_icms) || 0,
+      'Coleta realizada': dataHoraBr(d.dados_dist?.coleta_realizada), 'Emissao NF': dataBr(d.dados_dist?.nf_emissao), Cubagem: d.dados_dist?.cubagem ?? '',
+      Liberada: d.dados_dist?.liberada ? 'Sim' : 'Nao', Descarregada: d.dados_dist?.descarregada ? 'Sim' : 'Nao',
+      Referencia: d.dados_dist?.referencia || '', Ocorrencia: d.dados_dist?.ocorrencia || '', Alertas: (d.dados_dist?.alertas || []).join(' | '),
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
@@ -354,7 +360,7 @@ export default function TransgpAuditoriaPage() {
                   const dif = Number(d.diferenca_total) || 0;
                   return [
                     <tr key={k} onClick={() => setAberta(aberta === k ? null : k)} style={{ cursor: 'pointer', background: aberta === k ? '#f8fafc' : undefined }}>
-                      <td style={{ ...td, fontWeight: 700 }}>{d.dist}</td>
+                      <td style={{ ...td, fontWeight: 700, whiteSpace: 'nowrap' }}>{d.dist}{d.dados_dist?.alertas?.length ? <span title={d.dados_dist.alertas.join('\n')} style={{ color: '#b45309', marginLeft: 4 }}>⚠</span> : null}</td>
                       <td style={td}>{d.transportadora || '-'}</td>
                       <td style={td}>{d.origem || '-'} → {d.destinos || '-'}</td>
                       <td style={td}>{dataBr(d.coleta_planejada)}</td>
@@ -376,8 +382,30 @@ export default function TransgpAuditoriaPage() {
                             <span><b>Operação:</b> {d.operacao || '-'}</span>
                             <span><b>Frete:</b> {brl(d.frete_contratado)}</span>
                             <span><b>Pedágio:</b> {brl(d.pedagio)}</span>
+                            <span><b>Frete Cantu:</b> {brl(d.dados_dist?.frete?.frete_cantu)}</span>
+                            <span><b>CT-es sem ICMS:</b> {brl(d.cte_total_sem_icms ?? d.dados_dist?.cte_total_sem_icms)}</span>
                             <span><b>Sincronizado em:</b> {dataHoraBr(d.sincronizado_em)}</span>
                           </div>
+                          {d.dados_dist && (
+                            <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', fontSize: 13, marginBottom: 8 }}>
+                              <span><b>Veículo:</b> {[d.dados_dist.veiculo?.tipo, d.dados_dist.veiculo?.eixos ? `${d.dados_dist.veiculo.eixos} eixos` : ''].filter(Boolean).join(' · ') || '-'}</span>
+                              <span><b>Placas:</b> {[d.dados_dist.veiculo?.placa_cavalo || d.dados_dist.placa, d.dados_dist.veiculo?.placa_carreta].filter(Boolean).join(' / ') || '-'}</span>
+                              <span><b>Coleta realizada:</b> {dataHoraBr(d.dados_dist.coleta_realizada)}</span>
+                              <span><b>Emissão NF:</b> {dataBr(d.dados_dist.nf_emissao)}</span>
+                              <span><b>Cubagem:</b> {d.dados_dist.cubagem ?? '-'}</span>
+                              <span><b>Liberada:</b> {d.dados_dist.liberada ? `Sim (${dataHoraBr(d.dados_dist.liberada_em)})` : 'Não'}</span>
+                              <span><b>Descarregada:</b> {d.dados_dist.descarregada ? `Sim (${dataHoraBr(d.dados_dist.descarregada_em)})` : 'Não'}</span>
+                              {d.dados_dist.referencia && <span><b>Referência:</b> {d.dados_dist.referencia}</span>}
+                              {d.dados_dist.seguro && <span><b>Seguro:</b> {d.dados_dist.seguro}</span>}
+                              {d.dados_dist.ocorrencia && <span><b>Ocorrência:</b> {d.dados_dist.ocorrencia}</span>}
+                            </div>
+                          )}
+                          {!!d.dados_dist?.alertas?.length && (
+                            <div style={{ fontSize: 13, marginBottom: 8, color: '#b45309' }}><b>Alertas TransGP:</b> {d.dados_dist.alertas.join(' · ')}</div>
+                          )}
+                          {(d.dados_dist?.entregas || []).length > 1 && (
+                            <div style={{ fontSize: 13, marginBottom: 8 }}><b>Entregas:</b> {d.dados_dist.entregas.map((e) => `${e.entrega}. ${e.destino || '-'} (${e.status || '-'}${e.descarregada ? ', descarregada' : ''})`).join(' · ')}</div>
+                          )}
                           {(() => {
                             const v = vinculoDaDist(d);
                             if (!v.ctes.length) return <div style={{ fontSize: 13, marginBottom: 8 }}><b>Auditoria Central:</b> {v.status ? VINCULO[v.status].txt : 'conferindo...'}</div>;
@@ -409,14 +437,17 @@ export default function TransgpAuditoriaPage() {
                             <div style={{ fontSize: 13, marginBottom: 8 }}><b>Decisão da auditoria TransGP:</b> {typeof d.decisao_auditoria === 'object' ? Object.entries(d.decisao_auditoria).map(([a, b]) => `${a}: ${b}`).join(' · ') : String(d.decisao_auditoria)}</div>
                           )}
                           <table style={{ borderCollapse: 'collapse' }}>
-                            <thead><tr>{['CT-e', 'Série', 'Chave', 'Valor'].map((h) => <th key={h} style={{ ...th, position: 'static' }}>{h}</th>)}</tr></thead>
+                            <thead><tr>{['CT-e', 'Série', 'Emissão', 'Chave', 'Valor', 'ICMS', 'Sem ICMS'].map((h) => <th key={h} style={{ ...th, position: 'static' }}>{h}</th>)}</tr></thead>
                             <tbody>
                               {d.ctes.map((c) => (
                                 <tr key={c.chave_cte}>
                                   <td style={td}>{c.numero_cte || '-'}</td>
                                   <td style={td}>{c.serie || '-'}</td>
+                                  <td style={td}>{dataBr(c.payload?.emissao)}</td>
                                   <td style={{ ...td, fontFamily: 'monospace', fontSize: 12 }}>{/^\d{44}$/.test(c.chave_cte) ? c.chave_cte : <span style={{ color: '#b45309' }}>sem chave completa</span>}</td>
                                   <td style={td}>{brl(c.valor_cte)}</td>
+                                  <td style={td}>{brl(c.payload?.valor_icms)}</td>
+                                  <td style={td}>{brl(c.payload?.valor_sem_icms)}</td>
                                 </tr>
                               ))}
                             </tbody>

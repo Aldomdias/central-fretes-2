@@ -38,6 +38,9 @@ function cargaDaDist(item) {
   const numeros = [...new Set((Array.isArray(item.ctes) ? item.ctes : []).map((c) => digitos(c.numero)).filter(Boolean).map((n) => String(Number(n))))];
   const ctes = numeros.length ? numeros : String(item.cte_numeros || '').split(/[^0-9]+/).filter(Boolean).map((n) => String(Number(n)));
   const status = String(item.status_carga || '').trim();
+  const veiculo = item.veiculo || {};
+  const texto = (v, n) => (v === null || v === undefined || String(v).trim() === '' ? null : String(v).trim().slice(0, n));
+  const placa = (v) => (texto(v, 20) ? texto(v, 20).toUpperCase() : null);
   return {
     dist: String(item.dist ?? '').trim().slice(0, 200),
     operacao: item.operacao ? String(item.operacao).slice(0, 100) : null,
@@ -52,11 +55,25 @@ function cargaDaDist(item) {
     pedagio: num(item.frete?.pedagio),
     cte: ctes.length ? ctes.join(';').slice(0, 500) : null,
     finalizado: /FINALIZ/i.test(status) ? true : null,
-    placa_cavalo: item.placa ? String(item.placa).trim().toUpperCase().slice(0, 20) : null,
+    placa_cavalo: placa(veiculo.placa_cavalo || item.placa),
+    placa_carreta: placa(veiculo.placa_carreta),
+    tipo_veiculo: texto(veiculo.tipo, 100),
+    eixos: texto(veiculo.eixos, 20),
+    frete_cantu: num(item.frete?.frete_cantu),
+    coleta_realizada: item.coleta_realizada || null,
+    emissao_nf: item.nf_emissao || null,
+    cubagem: num(item.cubagem),
+    seguro: texto(item.seguro, 200),
+    referencia: texto(item.referencia, 200),
+    ocorrencia: texto(item.ocorrencia, 500),
+    liberado: item.liberada === true ? true : null,
+    descarga: item.descarregada === true ? true : null,
   };
 }
 
-const CAMPOS_FLUXO = ['dist', 'operacao', 'transportadora', 'origem', 'uf_origem', 'destino', 'uf_destino', 'status', 'coleta_planejada', 'frete_transp', 'pedagio', 'cte', 'finalizado', 'placa_cavalo'];
+const CAMPOS_FLUXO = ['dist', 'operacao', 'transportadora', 'origem', 'uf_origem', 'destino', 'uf_destino', 'status', 'coleta_planejada', 'frete_transp', 'pedagio', 'cte', 'finalizado',
+  'placa_cavalo', 'placa_carreta', 'tipo_veiculo', 'eixos', 'frete_cantu', 'coleta_realizada', 'emissao_nf', 'cubagem', 'seguro', 'referencia', 'ocorrencia', 'liberado', 'descarga'];
+const CAMPOS_SIM_NAO = ['finalizado', 'liberado', 'descarga'];
 
 async function gravarCargasNoFluxo(db, itens) {
   const porDist = new Map();
@@ -64,7 +81,9 @@ async function gravarCargasNoFluxo(db, itens) {
   const dists = [...new Set([...porDist.values()].map((c) => c.dist))];
   const existentes = new Map();
   for (let i = 0; i < dists.length; i += 200) {
-    const { data, error } = await db.from('lotacao_cargas').select(`id,${CAMPOS_FLUXO.join(',')}`).in('dist', dists.slice(i, i + 200));
+    const lote = dists.slice(i, i + 200);
+    let { data, error } = await db.from('lotacao_cargas').select(`id,origem_registro,${CAMPOS_FLUXO.join(',')}`).in('dist', lote);
+    if (error && /origem_registro/i.test(error.message)) ({ data, error } = await db.from('lotacao_cargas').select(`id,${CAMPOS_FLUXO.join(',')}`).in('dist', lote));
     if (error) throw new Error(`Fluxo (ler): ${error.message}`);
     (data || []).forEach((row) => { const k = normDist(row.dist); if (!existentes.has(k)) existentes.set(k, row); });
   }
@@ -75,13 +94,18 @@ async function gravarCargasNoFluxo(db, itens) {
     const atual = existentes.get(k);
     const campos = Object.fromEntries(Object.entries(carga).filter(([, v]) => v !== null && v !== ''));
     if (!atual) { novas.push({ ...campos, arquivo_origem: 'API TransGP', origem_registro: 'api_transgp', importado_em: new Date().toISOString() }); return; }
-    // So preenche o que esta vazio: planilha e alocacao da Operacao mandam no que ja tem valor.
+    // Carga que veio da planilha: so preenche o que esta vazio (planilha e alocacao da Operacao mandam).
+    // Carga criada pela propria API: acompanha a TransGP (status, datas, ocorrencia...), menos a
+    // transportadora ja preenchida (alocacao da Operacao).
+    const daApi = atual.origem_registro === 'api_transgp';
     const vazio = (v) => v === null || v === undefined || String(v).trim() === '' || (typeof v === 'number' && v === 0);
+    const igual = (a, b) => (typeof b === 'number' ? Math.abs((Number(a) || 0) - b) < 0.005 : String(a ?? '').slice(0, 19) === String(b ?? '').slice(0, 19));
     const update = {};
     Object.entries(campos).forEach(([campo, valor]) => {
       if (campo === 'dist' || campo === 'cte') return;
-      if (campo === 'finalizado') { if (valor === true && atual.finalizado !== true) update.finalizado = true; return; }
-      if (vazio(atual[campo]) && !vazio(valor) && String(atual[campo] ?? '') !== String(valor)) update[campo] = valor;
+      if (CAMPOS_SIM_NAO.includes(campo)) { if (valor === true && atual[campo] !== true) update[campo] = true; return; }
+      if (vazio(valor) || igual(atual[campo], valor)) return;
+      if (vazio(atual[campo]) || (daApi && campo !== 'transportadora')) update[campo] = valor;
     });
     if (campos.cte) {
       const antes = String(atual.cte || '').split(/[^0-9]+/).filter(Boolean).map((n) => String(Number(n)));
@@ -112,7 +136,10 @@ const SUFIXO_SEM_CTE = '|SEM_CTE';
 
 function linhasDaDist(item, agora) {
   const ctes = Array.isArray(item.ctes) ? item.ctes : [];
+  const { ctes: _ctes, ...dadosDist } = item; // veiculo, entregas, ocorrencia, alertas... (coluna dados_dist)
   const comum = {
+    dados_dist: dadosDist,
+    cte_total_sem_icms: num(item.cte_total_sem_icms),
     dist: String(item.dist ?? '').trim(),
     operacao: item.operacao || null,
     transportadora: item.transportadora || null,
@@ -184,7 +211,13 @@ export default async function handler(req, res) {
       dados.flatMap((item) => linhasDaDist(item, agora)).forEach((l) => porChave.set(l.chave_cte, l));
       const lote = [...porChave.values()];
       for (let i = 0; i < lote.length; i += 500) {
-        const { error } = await db.from('transgp_auditoria_ctes').upsert(lote.slice(i, i + 500), { onConflict: 'chave_cte' });
+        let parte = lote.slice(i, i + 500);
+        let { error } = await db.from('transgp_auditoria_ctes').upsert(parte, { onConflict: 'chave_cte' });
+        if (error && /dados_dist|cte_total_sem_icms/i.test(error.message)) {
+          // migration 20261110_001 ainda nao aplicada: grava sem as colunas novas
+          parte = parte.map(({ dados_dist, cte_total_sem_icms, ...resto }) => resto);
+          ({ error } = await db.from('transgp_auditoria_ctes').upsert(parte, { onConflict: 'chave_cte' }));
+        }
         if (error) throw new Error(`Gravar: ${error.message}`);
       }
       linhas += lote.filter((l) => !l.chave_cte.endsWith(SUFIXO_SEM_CTE)).length;
