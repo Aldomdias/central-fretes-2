@@ -29,15 +29,19 @@ export function analisarRota(linha, pctReajuste = 0) {
   const fator = 1 + num(pctReajuste) / 100;
   const viagens = linha.viagens || [];
   const custoAtual = num(linha.valorPagoTotal);
-  const custoReajuste = custoAtual * fator;
-  let valorDescoberto = 0; let custoSubCoberto = 0; let pagoCoberto = 0;
+  // Custo "mantendo a transportadora": vem pronto da tela por CT-e quando há
+  // tabela nova (negociação); senão é o valor pago × (1 + reajuste).
+  const temReajusteCte = linha.valorReajustadoTotal != null;
+  const custoReajuste = temReajusteCte ? num(linha.valorReajustadoTotal) : custoAtual * fator;
+  const reajustadoViagem = (v) => (v.valorReajustado != null ? num(v.valorReajustado) : num(v.valorPago) * fator);
+  let valorDescoberto = 0; let custoSubCoberto = 0; let pagoCoberto = 0; let descobertoReajustado = 0;
   for (const v of viagens) {
-    if (v.substituta) { custoSubCoberto += num(v.valorSub); pagoCoberto += num(v.valorPago); } else valorDescoberto += num(v.valorPago);
+    if (v.substituta) { custoSubCoberto += num(v.valorSub); pagoCoberto += num(v.valorPago); } else { valorDescoberto += num(v.valorPago); descobertoReajustado += reajustadoViagem(v); }
   }
   const ctesDescobertos = num(linha.semSubstituto);
   const ctesCobertos = num(linha.ctes) - ctesDescobertos;
   // Migrar = CT-es cobertos vão para a substituta; os sem cobertura continuam com a atual, já reajustados.
-  const custoMigrar = custoSubCoberto + valorDescoberto * fator;
+  const custoMigrar = custoSubCoberto + descobertoReajustado;
   const deltaPrazo = (linha.prazoAtualMedio != null && linha.prazoSubMedio != null) ? linha.prazoSubMedio - linha.prazoAtualMedio : null;
   const substitutos = linha.substitutos || [];
   const qtd = substitutos.length;
@@ -118,13 +122,16 @@ export function resumirPorOrigem(rotasAnalisadas = []) {
 }
 
 export function consolidarLaudoSaida(resultado, contexto = {}) {
-  const pctReajuste = num(resultado?.pctReajuste ?? contexto.reajustePct);
-  const fator = 1 + pctReajuste / 100;
-  const rotas = (resultado?.linhas || []).map((l) => analisarRota(l, pctReajuste));
+  const pctInformado = num(resultado?.pctReajuste ?? contexto.reajustePct);
+  const rotas = (resultado?.linhas || []).map((l) => analisarRota(l, pctInformado));
 
   const soma = (lista, campo) => lista.reduce((s, r) => s + num(r[campo]), 0);
   const custoAtual = soma(rotas, 'custoAtual');
-  const custoReajuste = custoAtual * fator;
+  const custoReajuste = soma(rotas, 'custoReajuste');
+  // Percentual efetivo: igual ao informado no modo percentual; no modo tabela
+  // nova é o aumento real que a tabela gera sobre o que foi pago.
+  const pctReajuste = custoAtual > 0 ? (custoReajuste / custoAtual - 1) * 100 : pctInformado;
+  const rotuloReajuste = contexto.reajusteRotulo || `reajuste de ${pct(pctReajuste)}`;
   const custoSaidaTotal = soma(rotas, 'custoSubstituta'); // igual ao card da tela
   const valorDescoberto = soma(rotas, 'valorDescoberto');
   const custoCoberto = soma(rotas, 'custoSubCoberto');
@@ -206,7 +213,7 @@ export function consolidarLaudoSaida(resultado, contexto = {}) {
   }
 
   const pontos = [];
-  pontos.push(`Custo atual no recorte: ${moeda(custoAtual)} em ${inteiro(totalCtes)} CT-es e ${inteiro(rotas.length)} rotas. Com o reajuste de ${pct(pctReajuste)}: ${moeda(custoReajuste)}.`);
+  pontos.push(`Custo atual no recorte: ${moeda(custoAtual)} em ${inteiro(totalCtes)} CT-es e ${inteiro(rotas.length)} rotas. Mantendo com ${rotuloReajuste}: ${moeda(custoReajuste)}.`);
   pontos.push(`Saída total (substitutas onde houver tabela): ${moeda(custoSaidaTotal)} — ${economiaSaidaTotal >= 0 ? 'economia' : 'custo adicional'} de ${moeda(Math.abs(economiaSaidaTotal))} frente a aceitar o reajuste.`);
   pontos.push(`Cenário híbrido (migra só onde compensa): ${moeda(custoHibrido)} — ${economiaHibrido >= 0 ? 'economia' : 'custo adicional'} de ${moeda(Math.abs(economiaHibrido))} frente ao reajuste.`);
   if (criticas.length) pontos.push(`${inteiro(criticas.length)} rota(s) crítica(s), com ${moeda(valorDescoberto)} (${pct(pctDescoberto)} do custo) sem substituta cadastrada — exigem cotação/nova tabela antes de uma saída.`);
@@ -218,7 +225,7 @@ export function consolidarLaudoSaida(resultado, contexto = {}) {
   if (substitutas[0]) pontos.push(`Principal substituta: ${substitutas[0].transportadora}, assumindo ${inteiro(substitutas[0].ctesAssumidos)} CT-es (${pct(substitutas[0].pctVolume)} do volume) em ${inteiro(substitutas[0].rotasAssumidas)} rota(s).`);
 
   return {
-    contexto: { ...contexto, pctReajuste },
+    contexto: { ...contexto, pctReajuste, rotuloReajuste },
     totais: {
       rotas: rotas.length, ctes: totalCtes, semIbge: num(resultado?.semIbge),
       custoAtual: arred(custoAtual), custoReajuste: arred(custoReajuste), custoSaidaTotal: arred(custoSaidaTotal), custoHibrido: arred(custoHibrido),
@@ -317,7 +324,7 @@ tr.grp td{border-top:2px solid var(--line)}
 </style></head><body>
 <button class="print" onclick="window.print()">Imprimir / Salvar PDF</button><button id="baixarHtml" class="print" style="display:none;top:62px;background:var(--navy)">Baixar HTML</button>
 <main class="page">
-<div class="header" id="resumo"><div><div class="eyebrow">Central Fretes • Saída de transportadora</div><h1>${esc(titulo)}</h1><div>${esc(c.periodo || 'Período não informado')} • Canal: ${esc(c.canal || 'Todos')} • Reajuste proposto: ${pct(c.pctReajuste)}</div>${resumoFiltros ? `<div class="small" style="margin-top:4px">${esc(resumoFiltros)}</div>` : ''}</div>
+<div class="header" id="resumo"><div><div class="eyebrow">Central Fretes • Saída de transportadora</div><h1>${esc(titulo)}</h1><div>${esc(c.periodo || 'Período não informado')} • Canal: ${esc(c.canal || 'Todos')} • ${c.reajusteRotulo ? esc(c.reajusteRotulo) : `Reajuste proposto: ${pct(c.pctReajuste)}`}</div>${resumoFiltros ? `<div class="small" style="margin-top:4px">${esc(resumoFiltros)}</div>` : ''}</div>
 <div class="meta">Emitido em ${esc(emitido.toLocaleString('pt-BR'))}<br>${inteiro(t.ctes)} CT-es • ${inteiro(t.rotas)} rotas${c.geradoPor ? `<br>Responsável: ${esc(c.geradoPor)}` : ''}</div></div>
 
 <nav class="nav"><a href="#resumo">Resumo</a><a href="#origem">Por origem</a><a href="#situacao">Por situação</a><a href="#sem">Sem substituta</a><a href="#cara">Mais cara</a><a href="#barata">Mais barata</a><a href="#prazo">Prazo maior</a><a href="#unica">Substituta única</a><a href="#substitutas">Quem assumiria</a></nav>
@@ -325,7 +332,7 @@ tr.grp td{border-top:2px solid var(--line)}
 
 <div class="cards">
 <div class="card"><span>Hoje (valor pago)</span><strong>${moeda(t.custoAtual)}</strong><small>${inteiro(t.ctes)} CT-es</small></div>
-<div class="card danger"><span>Aceitando o reajuste (+${pct(c.pctReajuste)})</span><strong>${moeda(t.custoReajuste)}</strong><small>${sinal(t.custoReajuste - t.custoAtual)} vs. hoje</small></div>
+<div class="card danger"><span>${c.reajusteRotulo ? `Com a tabela nova (${c.pctReajuste >= 0 ? '+' : ''}${pct(c.pctReajuste)})` : `Aceitando o reajuste (+${pct(c.pctReajuste)})`}</span><strong>${moeda(t.custoReajuste)}</strong><small>${sinal(t.custoReajuste - t.custoAtual)} vs. hoje</small></div>
 <div class="card ${t.economiaSaidaTotal >= 0 ? 'good' : 'danger'}"><span>Trocando tudo pelas substitutas</span><strong>${moeda(t.custoSaidaTotal)}</strong><small>${t.economiaSaidaTotal >= 0 ? 'economia' : 'custo extra'} de ${moeda(Math.abs(t.economiaSaidaTotal))} vs. reajuste</small></div>
 <div class="card ${t.economiaHibrido >= 0 ? 'good' : 'danger'}"><span>Trocando só onde compensa</span><strong>${moeda(t.custoHibrido)}</strong><small>${inteiro(t.rotasMigrar)} rota(s) trocam · ${inteiro(t.rotasManter)} ficam</small></div>
 </div>
@@ -403,7 +410,7 @@ export function montarAbasExcelLaudoSaida(resultado, contexto = {}) {
     linhas: [
       ['Transportadora avaliada', c.transportadora || ''],
       ['Nomes unificados no CT-e', (c.variantes || []).join(' · ')],
-      ['Período', c.periodo || ''], ['Canal', c.canal || 'Todos'], ['Reajuste proposto', pct(c.pctReajuste)],
+      ['Período', c.periodo || ''], ['Canal', c.canal || 'Todos'], ['Reajuste', c.reajusteRotulo || pct(c.pctReajuste)], ['Reajuste efetivo sobre o pago', pct(c.pctReajuste)],
       ['Substitutas excluídas', (c.exclusoes || []).join(', ') || 'nenhuma'],
       ['Filtro de origem/destino', c.filtroRotas || 'nenhum'],
       ['RECOMENDAÇÃO', L.recomendacao],
