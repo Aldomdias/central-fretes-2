@@ -1308,7 +1308,7 @@ export default function SimularSaidaTransportadoraPage() {
                 <table className="sim-analise-tabela">
                   <thead>
                     <tr>
-                      <th>Origem</th><th>Rotas</th><th>CT-es</th><th>Pago hoje</th><th>Com reajuste</th>
+                      <th>Origem</th><th>Rotas</th><th>CT-es</th><th>Pago hoje</th><th>{resultado.tabelaNova ? 'Com tabela nova' : 'Com reajuste'}</th>
                       <th>Trocando tudo</th><th>Trocando só onde compensa</th><th>Economia vs. reajuste</th><th>Sem substituta</th><th>Recomendação</th>
                     </tr>
                   </thead>

@@ -338,7 +338,7 @@ tr.grp td{border-top:2px solid var(--line)}
 </div>
 
 <h2 id="origem">Por origem (${inteiro(L.porOrigem.length)})</h2>
-<table><thead><tr><th>Origem</th><th class="c">Rotas</th><th class="c">CT-es</th><th class="r">Pago hoje</th><th class="r">Com reajuste</th><th class="r">Trocando tudo</th><th class="r">Trocando só onde compensa</th><th class="r">Economia vs. reajuste</th><th class="c">Rotas sem substituta</th><th>Recomendação</th></tr></thead><tbody>${tabOrigem || vazio(10, 'Sem rotas.')}</tbody></table>
+<table><thead><tr><th>Origem</th><th class="c">Rotas</th><th class="c">CT-es</th><th class="r">Pago hoje</th><th class="r">${c.reajusteRotulo ? 'Com tabela nova' : 'Com reajuste'}</th><th class="r">Trocando tudo</th><th class="r">Trocando só onde compensa</th><th class="r">Economia vs. reajuste</th><th class="c">Rotas sem substituta</th><th>Recomendação</th></tr></thead><tbody>${tabOrigem || vazio(10, 'Sem rotas.')}</tbody></table>
 <p class="small">Economia = aceitar o reajuste − trocar só nas rotas onde a substituta sai mais barata que o reajuste (as demais ficam com a transportadora atual reajustada).</p>
 
 <h2 id="situacao">Resumo por situação</h2>
