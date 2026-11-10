@@ -4,12 +4,14 @@ import BaseCtesStatus from '../components/BaseCtesStatus';
 import { buscarBaseSimulacaoPorRotasDb, carregarCadastroCnpjTransportadorasDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
 import { categoriaCanalRealizado, montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
-import { aplicarPoliticaBaseCte } from '../services/cteBasePolicy';
-import { intervaloEmissao, janelasEmissao, pesoComoSimuladorRealizado } from '../utils/saidaTransportadoraRecorte';
+import { aplicarPoliticaBaseCte, isCpsLogCte, isEbazarCte } from '../services/cteBasePolicy';
+import { intervaloEmissao, janelasEmissao, localPadronizado, montarMunicipioPorIbge, pesoComoSimuladorRealizado, rotuloLocal } from '../utils/saidaTransportadoraRecorte';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { aplicarVinculoTransportadora as aplicarVinculoPuro } from '../services/vinculosTransportadorasPuro';
 import { unificarTransportadorasCtes } from '../utils/unificarTransportadorasCte';
-import { abrirLaudoSaida, exportarExcelLaudoSaida } from '../utils/laudoSaidaTransportadora';
+import { carregarDetalhesNegociacaoParaSimulacao, listarCapasNegociacaoParaSimulacao } from '../services/tabelasNegociacaoService';
+import { converterTabelasNegociacaoParaSimulador, labelTabelaNegociacaoSimulador, marcarDesambiguacaoNegociacoesSimulador } from '../utils/tabelasNegociacaoSimuladorAdapter';
+import { abrirLaudoSaida, analisarRota, exportarExcelLaudoSaida, RECOMENDACAO_ORIGEM, resumirPorOrigem } from '../utils/laudoSaidaTransportadora';
 
 const LIMITE_MAX_CT = 200000;
 const TOLERANCIA = 0.5; // R$ — diferença abaixo disto é ruído
@@ -204,6 +206,16 @@ const LIMITES_PADRAO = '6000';
 // tomadores aceitos, sem EBAZAR, sem CPS LOG e sem CP COMERCIAL.
 const OPCOES_POLITICA_BASE = { ocultarEbazar: true, incluirCpsLog: false, incluirCpComercial: false, incluirTodosTomadores: false };
 
+// Segunda barreira, como no Simulador do realizado: depois do vínculo/unificação
+// o nome pode virar CPS LOG (ou EBAZAR) — esses saem da base.
+function nomeExcluidoDaBase(nome) {
+  const row = { transportadora: nome };
+  return isCpsLogCte(row) || isEbazarCte(row);
+}
+function aplicarSegundaBarreira(rows, aplicarVinculo) {
+  return rows.filter((r) => !nomeExcluidoDaBase(aplicarVinculo(String(r.transportadora || '').trim())));
+}
+
 // Busca paginada em realizado_local_ctes por janelas de data de emissão.
 // `nomes`: quando informado, só os CT-es com esses nomes de transportadora
 // (exatamente como gravados no banco).
@@ -286,9 +298,92 @@ function funcaoResumoAusente(error) {
   return /PGRST202|42883|saida_transportadora_resumo|could not find the function/i.test(txt);
 }
 
-function Card({ label, valor, sub, cor, destaque }) {
+// Lista de transportadoras com busca por nome e ordenação (valor, CT-es, A-Z).
+function SeletorTransportadora({ grupos, totais, valor, onChange }) {
+  const [busca, setBusca] = useState('');
+  const [ordem, setOrdem] = useState('valor');
+  const linhas = useMemo(() => {
+    const termo = normCmp(busca);
+    const lista = grupos
+      .filter((g) => !termo || normCmp(g.nome).includes(termo) || g.variantes.some((v) => normCmp(v).includes(termo)))
+      .map((g) => ({ ...g, total: totais?.get(g.nome) || { ctes: g.ctes || 0, valor: 0 } }));
+    if (ordem === 'valor') lista.sort((a, b) => (b.total.valor - a.total.valor) || a.nome.localeCompare(b.nome, 'pt-BR'));
+    else if (ordem === 'ctes') lista.sort((a, b) => (b.total.ctes - a.total.ctes) || a.nome.localeCompare(b.nome, 'pt-BR'));
+    else lista.sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+    return lista;
+  }, [grupos, totais, busca, ordem]);
+  const thS = { textAlign: 'left', padding: '6px 10px', fontSize: '0.72rem', color: '#64748b', borderBottom: '1px solid #e2e8f0', position: 'sticky', top: 0, background: '#f8fafc' };
+  const tdS = { padding: '6px 10px', fontSize: '0.82rem', borderBottom: '1px solid #f1f5f9' };
   return (
-    <div style={{ background: '#fff', border: `1px solid ${destaque ? cor : '#e2e8f0'}`, borderLeft: `4px solid ${cor}`, borderRadius: 10, padding: '12px 18px', minWidth: 170 }}>
+    <div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
+        <input
+          type="search"
+          placeholder="Buscar transportadora (nome ou nome no CT-e)..."
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          style={{ flex: '1 1 280px', minWidth: 220 }}
+        />
+        <select value={ordem} onChange={(e) => setOrdem(e.target.value)} style={{ width: 'auto' }}>
+          <option value="valor">Maior valor pago</option>
+          <option value="ctes">Mais CT-es</option>
+          <option value="nome">Nome (A-Z)</option>
+        </select>
+        <span style={{ fontSize: '0.75rem', color: '#64748b' }}>{fmtN(linhas.length)} de {fmtN(grupos.length)}</span>
+      </div>
+      <div style={{ maxHeight: 300, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th style={thS}>Transportadora</th>
+              <th style={{ ...thS, textAlign: 'right' }}>CT-es</th>
+              <th style={{ ...thS, textAlign: 'right' }}>Valor pago</th>
+            </tr>
+          </thead>
+          <tbody>
+            {linhas.map((g) => {
+              const sel = g.nome === valor;
+              return (
+                <tr
+                  key={g.nome}
+                  onClick={() => onChange(g.nome)}
+                  style={{ cursor: 'pointer', background: sel ? '#e0f2fe' : undefined }}
+                >
+                  <td style={{ ...tdS, fontWeight: sel ? 700 : 400 }}>
+                    {g.nome}
+                    {g.variantes.length > 1 && <span style={{ marginLeft: 6, fontSize: '0.7rem', color: '#94a3b8' }}>{g.variantes.length} nomes no CT-e</span>}
+                  </td>
+                  <td style={{ ...tdS, textAlign: 'right' }}>{fmtN(g.total.ctes)}</td>
+                  <td style={{ ...tdS, textAlign: 'right' }}>{fmt(g.total.valor)}</td>
+                </tr>
+              );
+            })}
+            {!linhas.length && (
+              <tr><td colSpan={3} style={{ ...tdS, color: '#94a3b8' }}>Nenhuma transportadora encontrada.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function Card({ label, valor, sub, cor, destaque, onClick, ativo }) {
+  const clicavel = typeof onClick === 'function';
+  return (
+    <div
+      onClick={onClick}
+      role={clicavel ? 'button' : undefined}
+      tabIndex={clicavel ? 0 : undefined}
+      onKeyDown={clicavel ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
+      title={clicavel ? (ativo ? 'Clique para mostrar todas as rotas' : 'Clique para ver só estas rotas') : undefined}
+      style={{
+        background: ativo ? '#eff6ff' : '#fff',
+        border: `${ativo ? 2 : 1}px solid ${ativo ? '#1d4ed8' : (destaque ? cor : '#e2e8f0')}`,
+        borderLeft: `4px solid ${cor}`, borderRadius: 10, padding: '12px 18px', minWidth: 0,
+        cursor: clicavel ? 'pointer' : 'default', boxShadow: ativo ? '0 0 0 3px #bfdbfe' : undefined,
+      }}
+    >
       <div style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600, marginBottom: 2 }}>{label}</div>
       <div style={{ fontSize: '1.45rem', fontWeight: 800, color: destaque ? cor : '#1e293b' }}>{valor}</div>
       {sub && <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: 2 }}>{sub}</div>}
@@ -298,7 +393,14 @@ function Card({ label, valor, sub, cor, destaque }) {
 
 // Agrega os CT-es simulados em rotas, aplicando o conjunto de substitutas excluídas.
 // Pura: roda na hora quando muda a exclusão ou o reajuste, sem reprocessar o motor.
-function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste) {
+// usarTabelaNova: o custo "mantendo a transportadora" de cada CT-e é o valor
+// pago × (tabela nova ÷ tabela atual), com as duas calculadas do mesmo jeito —
+// o aumento real da tabela naquela rota/peso, aplicado ao que se paga hoje.
+// (Comparar a tabela nova direto com o pago mistura o aumento com a diferença
+// que já existe entre pago e tabela.) CT-e sem as duas tabelas usa o percentual.
+function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste, usarTabelaNova = false) {
+  const fatorPct = 1 + safeNum(pctReajuste) / 100;
+  const tn = { ctes: 0, pago: 0, nova: 0, atualTabela: 0, novaComAtual: 0, ctesComNova: 0, pagoComNova: 0, novaBruta: 0 };
   const porRota = new Map();
   for (const c of ctesSimulados) {
     if (!porRota.has(c.rotaKey)) {
@@ -306,11 +408,22 @@ function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste) {
         rotaKey: c.rotaKey, cidadeOrigem: c.cidadeOrigem, ufOrigem: c.ufOrigem, cidadeDestino: c.cidadeDestino, ufDestino: c.ufDestino,
         ctes: 0, valorPagoTotal: 0, melhorTotal: 0, semSubstituto: 0, candidatosUsados: new Map(),
         prazoAtualSoma: 0, prazoAtualN: 0, prazoSubSoma: 0, prazoSubN: 0, viagens: [], substitutosRota: new Map(),
+        valorReajustadoTotal: 0, ctesTabelaNova: 0,
       });
     }
     const rota = porRota.get(c.rotaKey);
     rota.ctes += 1;
     rota.valorPagoTotal += c.valorPago;
+    const temNova = usarTabelaNova && c.valorNovaTabela != null && c.valorTabelaAtual != null && c.valorTabelaAtual > 0;
+    const fatorTabela = temNova ? c.valorNovaTabela / c.valorTabelaAtual : null;
+    const valorReajustado = temNova ? c.valorPago * fatorTabela : c.valorPago * fatorPct;
+    rota.valorReajustadoTotal += valorReajustado;
+    if (usarTabelaNova && c.valorNovaTabela != null) { tn.ctesComNova += 1; tn.pagoComNova += c.valorPago; tn.novaBruta += c.valorNovaTabela; }
+    if (temNova) {
+      rota.ctesTabelaNova += 1;
+      tn.ctes += 1; tn.pago += c.valorPago; tn.nova += valorReajustado;
+      tn.atualTabela += c.valorTabelaAtual; tn.novaComAtual += c.valorNovaTabela;
+    }
     if (c.prazoAtual != null) { rota.prazoAtualSoma += c.prazoAtual; rota.prazoAtualN += 1; }
 
     const disponiveis = exclusoesSet.size
@@ -335,6 +448,7 @@ function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste) {
     rota.viagens.push({
       chave: c.chave, data: c.data, nf: c.nf, peso: c.peso, valorPago: c.valorPago,
       valorTabelaAtual: c.valorTabelaAtual, prazoAtual: c.prazoAtual,
+      valorReajustado, valorNovaTabela: temNova ? c.valorNovaTabela : null,
       substituta: melhor ? melhor.transportadora : null,
       valorSub: melhor ? melhor.total : null,
       prazoSub: melhor ? melhor.prazo : null,
@@ -362,7 +476,8 @@ function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste) {
   const custoComSubstitutos = linhas.reduce((s, l) => s + l.melhorTotal, 0);
   const rotasSemSubstituto = linhas.filter((l) => l.semSubstituto > 0).length;
   const pctR = safeNum(pctReajuste);
-  const custoComReajuste = custoAtual * (1 + pctR / 100);
+  const custoComReajuste = linhas.reduce((s, l) => s + l.valorReajustadoTotal, 0);
+  const pctReajusteEfetivo = custoAtual > 0 ? (custoComReajuste / custoAtual - 1) * 100 : pctR;
   const aumentoPctSubstitutos = custoAtual > 0 ? ((custoComSubstitutos - custoAtual) / custoAtual) * 100 : 0;
   const economiaVsReajuste = custoComReajuste - custoComSubstitutos;
   const prazoAtualSomaTot = linhas.reduce((s, l) => s + l.prazoAtualSoma, 0);
@@ -372,9 +487,42 @@ function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste) {
 
   return {
     linhas, totalRotas: linhas.length, rotasSemSubstituto,
-    custoAtual, custoComSubstitutos, custoComReajuste, aumentoPctSubstitutos, economiaVsReajuste, pctReajuste: pctR,
+    custoAtual, custoComSubstitutos, custoComReajuste, aumentoPctSubstitutos, economiaVsReajuste, pctReajuste: pctR, pctReajusteEfetivo,
+    tabelaNova: usarTabelaNova ? {
+      ...tn,
+      // aumento aplicado (pago × nova/atual), aumento tabela × tabela e, só
+      // para referência, a tabela nova crua contra o valor pago
+      pctAplicado: tn.pago > 0 ? (tn.nova / tn.pago - 1) * 100 : null,
+      pctSobreTabelaAtual: tn.atualTabela > 0 ? (tn.novaComAtual / tn.atualTabela - 1) * 100 : null,
+      pctNovaCruaSobrePago: tn.pagoComNova > 0 ? (tn.novaBruta / tn.pagoComNova - 1) * 100 : null,
+    } : null,
     prazoAtualMedioGeral: prazoAtualNTot ? prazoAtualSomaTot / prazoAtualNTot : null,
     prazoSubMedioGeral: prazoSubNTot ? prazoSubSomaTot / prazoSubNTot : null,
+  };
+}
+
+// Situações das rotas (mesmas do laudo) — usadas pelos cards clicáveis.
+const SITUACOES_ROTA = {
+  sem: { rotulo: 'Sem substituto', teste: (l) => l.qtdSubstitutos === 0 || l.semSubstituto > 0 },
+  cara: { rotulo: 'Substituta mais cara', teste: (l) => l.qtdSubstitutos > 0 && !l.semSubstituto && l.diferenca > TOLERANCIA },
+  barata: { rotulo: 'Substituta mais barata', teste: (l) => l.qtdSubstitutos > 0 && !l.semSubstituto && l.diferenca < -TOLERANCIA },
+  prazo: { rotulo: 'Prazo maior', teste: (l) => l.prazoAtualMedio != null && l.prazoSubMedio != null && l.prazoSubMedio - l.prazoAtualMedio > 0.05 },
+  unica: { rotulo: 'Substituta única', teste: (l) => l.qtdSubstitutos === 1 },
+};
+
+// Totais de um conjunto de rotas (para os cards de valor seguirem a seleção).
+function totaisDasRotas(linhas, pctReajuste) {
+  let ctes = 0; let atual = 0; let sub = 0; let paS = 0; let paN = 0; let psS = 0; let psN = 0;
+  for (const l of linhas) {
+    ctes += l.ctes; atual += l.valorPagoTotal; sub += l.melhorTotal;
+    paS += l.prazoAtualSoma; paN += l.prazoAtualN; psS += l.prazoSubSoma; psN += l.prazoSubN;
+  }
+  const reajuste = linhas.reduce((acc, l) => acc + (l.valorReajustadoTotal ?? l.valorPagoTotal * (1 + safeNum(pctReajuste) / 100)), 0);
+  return {
+    rotas: linhas.length, ctes, custoAtual: atual, custoComSubstitutos: sub, custoComReajuste: reajuste,
+    economiaVsReajuste: reajuste - sub,
+    aumentoPctSubstitutos: atual > 0 ? ((sub - atual) / atual) * 100 : 0,
+    prazoAtual: paN ? paS / paN : null, prazoSub: psN ? psS / psN : null,
   };
 }
 
@@ -505,6 +653,15 @@ export default function SimularSaidaTransportadoraPage() {
 
   const [transportadora, setTransportadora] = useState('');
   const [reajustePct, setReajustePct] = useState('20');
+  // Comparar com: 'pct' (percentual informado) ou 'tabela' (tabela em negociação cadastrada).
+  const [modoReajuste, setModoReajuste] = useState('pct');
+  const [capasNeg, setCapasNeg] = useState(null);
+  const [carregandoCapas, setCarregandoCapas] = useState(false);
+  const [negSelecionadas, setNegSelecionadas] = useState(() => new Set());
+  const [mostrarTodasNeg, setMostrarTodasNeg] = useState(false);
+  // Reajuste dos CT-es sem cálculo nas duas tabelas (modo tabela nova).
+  // Vazio = automático: o aumento médio que a tabela nova deu nos CT-es que calculou.
+  const [pctForaTabela, setPctForaTabela] = useState('');
   const [statusSim, setStatusSim] = useState('idle');
   const [simulacao, setSimulacao] = useState(null); // { transportadora, ctesSimulados, semIbge }
   const [exclusoes, setExclusoes] = useState(() => new Set()); // norm(nome) das substitutas excluídas
@@ -527,14 +684,81 @@ export default function SimularSaidaTransportadoraPage() {
     });
   }
 
+  // Filtros de origem/destino sobre o resultado: cards, rotas e laudo seguem o recorte.
+  const [filtroRota, setFiltroRota] = useState({ ufOrigem: '', origem: '', ufDestino: '', destino: '' });
+  const filtroAtivo = Boolean(filtroRota.ufOrigem || filtroRota.origem || filtroRota.ufDestino || filtroRota.destino);
+  const opcoesFiltroRota = useMemo(() => {
+    const ufO = new Set(); const ufD = new Set(); const cidO = new Map(); const cidD = new Map();
+    for (const c of simulacao?.ctesSimulados || []) {
+      if (c.ufOrigem) ufO.add(c.ufOrigem);
+      if (c.ufDestino) ufD.add(c.ufDestino);
+      if (!filtroRota.ufOrigem || c.ufOrigem === filtroRota.ufOrigem) cidO.set(rotuloLocal(c.cidadeOrigem, c.ufOrigem), true);
+      if (!filtroRota.ufDestino || c.ufDestino === filtroRota.ufDestino) cidD.set(rotuloLocal(c.cidadeDestino, c.ufDestino), true);
+    }
+    const ord = (arr) => [...arr].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    return { ufOrigem: ord(ufO), ufDestino: ord(ufD), origem: ord(cidO.keys()), destino: ord(cidD.keys()) };
+  }, [simulacao, filtroRota.ufOrigem, filtroRota.ufDestino]);
+  const ctesFiltrados = useMemo(() => {
+    const lista = simulacao?.ctesSimulados || [];
+    if (!filtroAtivo) return lista;
+    return lista.filter((c) => (
+      (!filtroRota.ufOrigem || c.ufOrigem === filtroRota.ufOrigem)
+      && (!filtroRota.origem || rotuloLocal(c.cidadeOrigem, c.ufOrigem) === filtroRota.origem)
+      && (!filtroRota.ufDestino || c.ufDestino === filtroRota.ufDestino)
+      && (!filtroRota.destino || rotuloLocal(c.cidadeDestino, c.ufDestino) === filtroRota.destino)
+    ));
+  }, [simulacao, filtroRota, filtroAtivo]);
+  const descricaoFiltroRota = [
+    filtroRota.origem ? `Origem ${filtroRota.origem}` : (filtroRota.ufOrigem ? `Origem UF ${filtroRota.ufOrigem}` : ''),
+    filtroRota.destino ? `Destino ${filtroRota.destino}` : (filtroRota.ufDestino ? `Destino UF ${filtroRota.ufDestino}` : ''),
+  ].filter(Boolean).join(' • ');
+
+  const [filtroCard, setFiltroCard] = useState('');
+  // Aumento médio tabela nova × tabela atual em todos os CT-es simulados (sem
+  // filtros de tela, para o padrão não mudar ao filtrar origem/destino).
+  const pctMediaTabelaNova = useMemo(() => {
+    if (!simulacao?.tabelaNova) return null;
+    let atual = 0; let nova = 0;
+    for (const c of simulacao.ctesSimulados) {
+      if (c.valorNovaTabela != null && c.valorTabelaAtual > 0) { atual += c.valorTabelaAtual; nova += c.valorNovaTabela; }
+    }
+    return atual > 0 ? (nova / atual - 1) * 100 : null;
+  }, [simulacao]);
+  const pctForaAutomatico = String(pctForaTabela).trim() === '';
+  const pctForaEfetivo = pctForaAutomatico ? (pctMediaTabelaNova ?? safeNum(reajustePct)) : safeNum(pctForaTabela);
   const resultado = useMemo(() => {
     if (!simulacao) return null;
     return {
-      ...agregarRotas(simulacao.ctesSimulados, exclusoes, reajustePct),
-      totalCtes: simulacao.ctesSimulados.length,
+      ...agregarRotas(ctesFiltrados, exclusoes, simulacao.tabelaNova ? pctForaEfetivo : reajustePct, Boolean(simulacao.tabelaNova)),
+      totalCtes: ctesFiltrados.length,
+      totalCtesSemFiltro: simulacao.ctesSimulados.length,
       semIbge: simulacao.semIbge,
     };
-  }, [simulacao, exclusoes, reajustePct]);
+  }, [simulacao, ctesFiltrados, exclusoes, reajustePct, pctForaEfetivo]);
+
+  const contagemSituacoes = useMemo(() => {
+    const out = {};
+    for (const [k, def] of Object.entries(SITUACOES_ROTA)) {
+      const lista = (resultado?.linhas || []).filter(def.teste);
+      out[k] = { rotas: lista.length, ctes: lista.reduce((acc, l) => acc + l.ctes, 0), valor: lista.reduce((acc, l) => acc + l.valorPagoTotal, 0) };
+    }
+    return out;
+  }, [resultado]);
+  const linhasVisiveis = useMemo(() => {
+    const linhas = resultado?.linhas || [];
+    const def = SITUACOES_ROTA[filtroCard];
+    return def ? linhas.filter(def.teste) : linhas;
+  }, [resultado, filtroCard]);
+  const totaisSel = useMemo(() => totaisDasRotas(linhasVisiveis, reajustePct), [linhasVisiveis, reajustePct]);
+  // Mesmo cálculo do laudo: por origem, trocar tudo × trocar só onde compensa × reajuste.
+  const porOrigem = useMemo(
+    () => resumirPorOrigem((resultado?.linhas || []).map((l) => analisarRota(l, reajustePct))),
+    [resultado, reajustePct],
+  );
+  const alternarOrigem = (origem) => setFiltroRota((f) => (
+    f.origem === origem ? { ...f, origem: '' } : { ...f, ufOrigem: '', origem }
+  ));
+  const alternarCard = (k) => setFiltroCard((atual) => (atual === k ? '' : k));
 
   const opcoesExcluir = useMemo(() => {
     if (!simulacao) return [];
@@ -557,6 +781,10 @@ export default function SimularSaidaTransportadoraPage() {
       canal: r.canal || '',
       reajustePct: reajustePct,
       exclusoes: opcoesExcluir.filter((n) => exclusoes.has(norm(n))),
+      filtroRotas: descricaoFiltroRota,
+      reajusteRotulo: simulacao?.tabelaNova
+        ? `tabela nova ${simulacao.tabelaNova.rotulos.join(' + ')}${resultado?.tabelaNova?.pctSobreTabelaAtual != null ? ` (${resultado.tabelaNova.pctSobreTabelaAtual >= 0 ? '+' : ''}${pct(resultado.tabelaNova.pctSobreTabelaAtual)} sobre a tabela atual, aplicado ao valor pago de cada CT-e)` : ''}${resultado?.tabelaNova && resultado.tabelaNova.ctes < resultado.totalCtes ? `; CT-es sem cálculo nas duas tabelas com ${pctForaEfetivo >= 0 ? '+' : ''}${pct(pctForaEfetivo)}${pctForaAutomatico ? ' (média da tabela nova)' : ''}` : ''}`
+        : '',
       geradoEm: new Date().toISOString(),
     };
   }
@@ -582,6 +810,7 @@ export default function SimularSaidaTransportadoraPage() {
       const municipios = await carregarMunicipiosIbgeDb().catch(() => []);
       const mapasIbge = montarMapasIbge(municipios);
       const municipioPorCidade = montarMunicipioPorCidade(municipios);
+      const municipioPorIbge = montarMunicipioPorIbge(municipios);
 
       // vínculos: unificam o nome da transportadora executada (ex.: 3 "Brasil Web" viram 1)
       const vinculos = await carregarVinculosTransportadoras().catch(() => []);
@@ -603,7 +832,9 @@ export default function SimularSaidaTransportadoraPage() {
           onProgress: ({ linhas }) => setProgresso(`Listando transportadoras do período... ${fmtN(linhas)} grupo(s)`),
         });
         if (resumoBruto) {
-          const resumo = aplicarPoliticaBaseCte(resumoBruto, OPCOES_POLITICA_BASE);
+          const resumoPolitica = aplicarSegundaBarreira(aplicarPoliticaBaseCte(resumoBruto, OPCOES_POLITICA_BASE), aplicarVinculo);
+          const unificacaoPolitica = unificarTransportadorasCtes(resumoPolitica, { aplicarVinculo, cadastro });
+          const resumo = resumoPolitica.filter((r) => !nomeExcluidoDaBase(unificacaoPolitica.nomeDoCte(r)));
           if (!resumo.length) throw new Error('Nenhum CT-e encontrado para este recorte.');
           const unificacao = unificarTransportadorasCtes(resumo, { aplicarVinculo, cadastro });
           // nomes exatamente como estão no banco, por transportadora unificada —
@@ -621,7 +852,7 @@ export default function SimularSaidaTransportadoraPage() {
           const totalCtes = resumo.reduce((acc, r) => acc + r.__qtdCtes, 0);
           const brutos = resumoBruto.reduce((acc, r) => acc + r.__qtdCtes, 0);
           setBase({
-            modo: 'resumo', intervalo, municipioPorCidade, mapasIbge, mapaVinculos, unificacao,
+            modo: 'resumo', intervalo, municipioPorCidade, municipioPorIbge, mapasIbge, mapaVinculos, unificacao,
             nomesBancoPorGrupo, totaisPorGrupo,
             carga: { totalCtes, brutos, truncado: false, temPeriodo: true },
           });
@@ -640,7 +871,9 @@ export default function SimularSaidaTransportadoraPage() {
         limite: Number(limiteInput) || 6000,
         onProgress: ({ carregados }) => setProgresso(`Carregando CT-es... ${fmtN(carregados)}`),
       });
-      const { ctes } = carga;
+      const ctesPolitica = aplicarSegundaBarreira(carga.ctes, aplicarVinculo);
+      const unificacaoPolitica = unificarTransportadorasCtes(ctesPolitica, { aplicarVinculo, cadastro });
+      const ctes = ctesPolitica.filter((c) => !nomeExcluidoDaBase(unificacaoPolitica.nomeDoCte(c)));
       if (!ctes.length) throw new Error('Nenhum CT-e encontrado para este recorte.');
 
       // A tabela de frete só é buscada depois, quando a transportadora a
@@ -655,7 +888,7 @@ export default function SimularSaidaTransportadoraPage() {
         t.ctes += 1; t.valor += safeNum(c.valor_cte || c.frete_pago || c.valor_frete);
         totaisPorGrupo.set(nome, t);
       }
-      setBase({ modo: 'completo', ctes, municipioPorCidade, mapasIbge, mapaVinculos, unificacao, totaisPorGrupo, carga: { ...carga, totalCtes: ctes.length } });
+      setBase({ modo: 'completo', ctes, municipioPorCidade, municipioPorIbge, mapasIbge, mapaVinculos, unificacao, totaisPorGrupo, carga: { ...carga, totalCtes: ctes.length } });
       setStatusCarga('concluido'); setProgresso('');
     } catch (e) {
       console.error('[SimularSaidaTransportadora]', e);
@@ -672,11 +905,52 @@ export default function SimularSaidaTransportadoraPage() {
     [transportadoras, transportadora],
   );
 
+  // Tabelas em negociação (capas) — carregadas uma vez, quando o usuário
+  // escolhe comparar com uma tabela nova.
+  async function garantirCapasNegociacao() {
+    if (capasNeg || carregandoCapas) return;
+    setCarregandoCapas(true);
+    try {
+      const capas = await listarCapasNegociacaoParaSimulacao({ tipoTabela: 'FRACIONADO', incluirTodas: true });
+      setCapasNeg(marcarDesambiguacaoNegociacoesSimulador(capas || []));
+    } catch (e) {
+      console.error('[SimularSaidaTransportadora] negociações', e);
+      setErro(`Não foi possível carregar as tabelas em negociação: ${e?.message || e}`);
+      setCapasNeg([]);
+    } finally {
+      setCarregandoCapas(false);
+    }
+  }
+  // Negociações da transportadora escolhida (nome da negociação ou nome base
+  // batendo com o nome unificado, nomes do CT-e ou nomes de tabela dela).
+  const capasDaTransportadora = useMemo(() => {
+    const lista = capasNeg || [];
+    if (mostrarTodasNeg || !transportadora) return lista;
+    const nomes = [transportadora, ...(grupoSelecionado?.nomesTabela || []), ...(grupoSelecionado?.variantes || [])]
+      .map(norm).filter((n) => n.length >= 3);
+    const bate = (nome) => {
+      const n = norm(nome);
+      if (n.length < 3) return false;
+      return nomes.some((x) => x === n || (n.length >= 4 && x.startsWith(n)) || (x.length >= 4 && n.startsWith(x)));
+    };
+    return lista.filter((c) => bate(c.transportadora) || bate(c.transportadora_base_nome));
+  }, [capasNeg, mostrarTodasNeg, transportadora, grupoSelecionado]);
+  function toggleNeg(id) {
+    setNegSelecionadas((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
   async function simularSaida() {
     if (!base || !transportadora) return;
     setStatusSim('carregando'); setErro(''); setSimulacao(null); setExclusoes(new Set()); setRotasAbertas(new Set());
+    setFiltroRota({ ufOrigem: '', origem: '', ufDestino: '', destino: '' });
+    setFiltroCard('');
     try {
       const { municipioPorCidade, mapasIbge, mapaVinculos, unificacao } = base;
+      const municipioPorIbge = base.municipioPorIbge || new Map();
       let ctesDaTransp;
       if (base.modo === 'resumo') {
         // Só os CT-es da escolhida: todos os nomes do grupo (CNPJ/vínculo), no
@@ -689,7 +963,7 @@ export default function SimularSaidaTransportadoraPage() {
           onProgress: ({ carregados }) => setProgresso(`Carregando CT-es de ${transportadora}... ${fmtN(carregados)}`),
         });
         if (truncado) console.warn('[SimularSaidaTransportadora] teto de CT-es atingido para', transportadora);
-        ctesDaTransp = aplicarPoliticaBaseCte(linhas, OPCOES_POLITICA_BASE);
+        ctesDaTransp = aplicarSegundaBarreira(aplicarPoliticaBaseCte(linhas, OPCOES_POLITICA_BASE), (n) => aplicarVinculoPuro(n, mapaVinculos));
       } else {
         // compara pelo nome unificado: pega todos os CT-es das variações (CNPJ/vínculo) da transportadora escolhida
         ctesDaTransp = base.ctes.filter((c) => norm(unificacao.nomeDoCte(c)) === norm(transportadora));
@@ -711,6 +985,35 @@ export default function SimularSaidaTransportadoraPage() {
       const idx = indexarBase(baseFrete);
       const mapBaseByNome = new Map(baseFrete.map((t) => [t.nome, t]));
 
+      // Tabela em negociação (modo "comparar com tabela nova"): carrega só os
+      // destinos que esta transportadora rodou e calcula cada CT-e nela.
+      let baseNova = [];
+      let rotulosTabelaNova = [];
+      const capasEscolhidas = modoReajuste === 'tabela'
+        ? (capasNeg || []).filter((c) => negSelecionadas.has(c.id))
+        : [];
+      if (modoReajuste === 'tabela' && !capasEscolhidas.length) throw new Error('Escolha ao menos uma tabela em negociação para comparar (ou volte para "Percentual").');
+      if (capasEscolhidas.length) {
+        const ibgesDestino = new Set();
+        for (const c of ctesDaTransp) { const ib = ibgeDoCte(c, 'destino', municipioPorCidade, mapasIbge); if (ib) ibgesDestino.add(dig7(ib)); }
+        const recorte = { ibgesDestino: [...ibgesDestino] };
+        const detalhadas = [];
+        for (let k = 0; k < capasEscolhidas.length; k++) {
+          const capa = capasEscolhidas[k];
+          setProgresso(`Carregando tabela em negociação ${k + 1}/${capasEscolhidas.length} (${labelTabelaNegociacaoSimulador(capa)})...`);
+          detalhadas.push(await carregarDetalhesNegociacaoParaSimulacao(capa, recorte, (feitos, total) => {
+            setProgresso(`Carregando tabela em negociação ${k + 1}/${capasEscolhidas.length}... ${fmtN(feitos)}/${fmtN(total)} destino(s)`);
+          }));
+        }
+        // a negociação pode não estar marcada para o simulador; aqui ela foi escolhida explicitamente
+        baseNova = normalizarTransportadoras(converterTabelasNegociacaoParaSimulador(
+          detalhadas.map((d) => ({ ...d, incluir_simulacao: true })),
+          { canal: canal || '' },
+        ));
+        rotulosTabelaNova = capasEscolhidas.map((c) => labelTabelaNegociacaoSimulador(c));
+        if (!baseNova.length) throw new Error('A tabela em negociação escolhida não tem rotas para os destinos desta transportadora (confira canal e origem da tabela).');
+      }
+
       const origemCache = new Map();
       const ctesSimulados = [];
       let semIbge = 0;
@@ -727,7 +1030,11 @@ export default function SimularSaidaTransportadoraPage() {
 
         const ibgeDestino = ibgeDoCte(cte, 'destino', municipioPorCidade, mapasIbge);
         const ibgeOrigemReal = ibgeDoCte(cte, 'origem', municipioPorCidade, mapasIbge);
-        const rotaKey = `${norm(cidadeOrigem)}|${ufOrigem}=>${norm(cidadeDestino)}|${ufDestino}`;
+        // Nome/UF padronizados pelo IBGE só para exibir e agrupar rotas; o
+        // cálculo continua usando o texto original do CT-e.
+        const origemPad = localPadronizado({ cidade: cidadeOrigem, uf: ufOrigem, ibge: ibgeOrigemReal }, municipioPorIbge);
+        const destinoPad = localPadronizado({ cidade: cidadeDestino, uf: ufDestino, ibge: ibgeDestino }, municipioPorIbge);
+        const rotaKey = `${norm(origemPad.cidade)}|${origemPad.uf}=>${norm(destinoPad.cidade)}|${destinoPad.uf}`;
 
         // prazo/tabela da própria transportadora atual (referência para auditar)
         let atual = null;
@@ -735,6 +1042,15 @@ export default function SimularSaidaTransportadoraPage() {
           for (const nomeTab of nomesTabelaProprios) {
             atual = calcComTransportadora(cte, baseFrete, nomeTab, ibgeOrigemReal, ibgeDestino, cidadeOrigem);
             if (atual) break;
+          }
+        }
+
+        // valor na tabela em negociação (se houver) — a primeira que calcular
+        let valorNovaTabela = null;
+        if (baseNova.length && ibgeDestino && ibgeOrigemReal) {
+          for (const entrada of baseNova) {
+            const r = calcComTransportadora(cte, baseNova, entrada.nome, ibgeOrigemReal, ibgeDestino, cidadeOrigem);
+            if (r && r.total > 0) { valorNovaTabela = r.total; break; }
           }
         }
 
@@ -750,7 +1066,9 @@ export default function SimularSaidaTransportadoraPage() {
         }
 
         ctesSimulados.push({
-          rotaKey, cidadeOrigem, ufOrigem, cidadeDestino, ufDestino,
+          rotaKey,
+          cidadeOrigem: origemPad.cidade, ufOrigem: origemPad.uf,
+          cidadeDestino: destinoPad.cidade, ufDestino: destinoPad.uf,
           valorPago,
           nf: safeNum(cte.valor_nf || cte.nf_venda),
           peso: safeNum(cte.peso_declarado || cte.peso),
@@ -758,6 +1076,7 @@ export default function SimularSaidaTransportadoraPage() {
           data: cte.data_emissao || '',
           prazoAtual: atual?.prazo ?? null,
           valorTabelaAtual: atual ? atual.total : null,
+          valorNovaTabela,
           resultados,
         });
 
@@ -769,7 +1088,10 @@ export default function SimularSaidaTransportadoraPage() {
         }
       }
 
-      setSimulacao({ transportadora, variantes: grupo?.variantes || [], ctesSimulados, semIbge, recorte: { competencia, dataInicio, dataFim, canal } });
+      setSimulacao({
+        transportadora, variantes: grupo?.variantes || [], ctesSimulados, semIbge, recorte: { competencia, dataInicio, dataFim, canal },
+        tabelaNova: rotulosTabelaNova.length ? { rotulos: rotulosTabelaNova } : null,
+      });
       setStatusSim('concluido'); setProgresso('');
     } catch (e) {
       console.error('[SimularSaidaTransportadora]', e);
@@ -836,29 +1158,95 @@ export default function SimularSaidaTransportadoraPage() {
             </div>
           )}
           <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
-            <label>Transportadora a avaliar
-              <select value={transportadora} onChange={(e) => setTransportadora(e.target.value)} style={{ width: '100%' }}>
-                <option value="">Selecione...</option>
-                {transportadoras.map((g) => (
-                  <option key={g.nome} value={g.nome}>
-                    {g.nome}
-                    {base.totaisPorGrupo?.get(g.nome) ? ` — ${fmtN(base.totaisPorGrupo.get(g.nome).ctes)} CT-es · ${fmt(base.totaisPorGrupo.get(g.nome).valor)}` : ''}
-                    {g.variantes.length > 1 ? ` (${g.variantes.length} nomes no CT-e)` : ''}
-                  </option>
-                ))}
-              </select>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Transportadora a avaliar</div>
+              <SeletorTransportadora
+                grupos={transportadoras}
+                totais={base.totaisPorGrupo}
+                valor={transportadora}
+                onChange={setTransportadora}
+              />
               {grupoSelecionado && grupoSelecionado.variantes.length > 1 && (
                 <span style={{ display: 'block', fontWeight: 400, fontSize: '0.72rem', color: '#64748b', marginTop: 4 }}>
                   Unificado (CNPJ/vínculo): {grupoSelecionado.variantes.join(' · ')}
                 </span>
               )}
-            </label>
-            <label>Reajuste proposto
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input type="number" value={reajustePct} onChange={(e) => setReajustePct(e.target.value)} style={{ width: 80 }} step={0.5} />
-                <span>%</span>
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Comparar a saída com</div>
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+                <label style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, fontWeight: 400, whiteSpace: 'nowrap' }}>
+                  <input type="radio" name="modoReajuste" checked={modoReajuste === 'pct'} onChange={() => setModoReajuste('pct')} />
+                  Percentual de reajuste
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, fontWeight: 400, whiteSpace: 'nowrap' }}>
+                  <input type="radio" name="modoReajuste" checked={modoReajuste === 'tabela'} onChange={() => { setModoReajuste('tabela'); garantirCapasNegociacao(); }} />
+                  Tabela em negociação (tabela nova cadastrada)
+                </label>
+                {modoReajuste === 'pct' ? (
+                  <label style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, fontWeight: 400, whiteSpace: 'nowrap' }}>
+                    Reajuste proposto
+                    <input type="number" value={reajustePct} onChange={(e) => setReajustePct(e.target.value)} style={{ width: 80 }} step={0.5} />
+                    <span>%</span>
+                  </label>
+                ) : (
+                  <label
+                    style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, fontWeight: 400, whiteSpace: 'nowrap' }}
+                    title="Usado só nos CT-es que não calculam nas duas tabelas (origem sem tabela nova marcada, destino fora da tabela nova ou fora da tabela atual). Vazio = aumento médio da própria tabela nova."
+                  >
+                    Reajuste p/ CT-es sem cálculo na tabela nova
+                    <input
+                      type="number"
+                      value={pctForaTabela}
+                      onChange={(e) => setPctForaTabela(e.target.value)}
+                      placeholder={pctMediaTabelaNova != null ? pct(pctMediaTabelaNova) : 'auto'}
+                      style={{ width: 90 }}
+                      step={0.5}
+                    />
+                    <span>%</span>
+                    <span style={{ fontSize: '0.72rem', color: '#64748b' }}>
+                      {pctForaAutomatico
+                        ? (pctMediaTabelaNova != null ? `automático: média da tabela nova (${pct(pctMediaTabelaNova)})` : 'vazio = média da tabela nova')
+                        : <button type="button" className="sim-tab" onClick={() => setPctForaTabela('')} style={{ padding: '0 8px', fontSize: '0.72rem' }}>voltar ao automático</button>}
+                    </span>
+                  </label>
+                )}
               </div>
-            </label>
+              {modoReajuste === 'tabela' && (
+                <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', background: '#f8fafc' }}>
+                  {carregandoCapas && <div style={{ fontSize: '0.8rem', color: '#64748b' }}>Carregando tabelas em negociação...</div>}
+                  {!carregandoCapas && capasNeg && (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '0.78rem', color: '#64748b' }}>
+                          Marque a(s) tabela(s) nova(s) desta transportadora (uma por origem, se for o caso). Cada CT-e é calculado nela, no lugar do percentual.
+                        </span>
+                        <label style={{ fontSize: '0.75rem', fontWeight: 400, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <input type="checkbox" checked={mostrarTodasNeg} onChange={(e) => setMostrarTodasNeg(e.target.checked)} />
+                          mostrar de todas as transportadoras
+                        </label>
+                      </div>
+                      <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+                        {capasDaTransportadora.map((c) => (
+                          <label key={c.id} style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, padding: '3px 2px', fontSize: '0.8rem', fontWeight: 400, cursor: 'pointer' }}>
+                            <input type="checkbox" checked={negSelecionadas.has(c.id)} onChange={() => toggleNeg(c.id)} />
+                            {labelTabelaNegociacaoSimulador(c)}
+                            <span style={{ color: '#94a3b8', fontSize: '0.72rem' }}>
+                              {[c.canal, c.status, c.data_inicio_vigencia || c.data_inicio_prevista].filter(Boolean).join(' · ')}
+                            </span>
+                          </label>
+                        ))}
+                        {!capasDaTransportadora.length && (
+                          <div style={{ fontSize: '0.8rem', color: '#9b1111' }}>
+                            Nenhuma tabela em negociação encontrada para {transportadora || 'esta transportadora'}. Marque "mostrar de todas" para procurar pelo nome.
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
               <button className="primary" type="button" onClick={simularSaida} disabled={!transportadora || statusSim === 'carregando'}>
                 {statusSim === 'carregando' ? 'Simulando...' : 'Simular saída'}
@@ -870,39 +1258,154 @@ export default function SimularSaidaTransportadoraPage() {
 
       {resultado && (
         <>
-          <div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', margin: '1rem 0' }}>
-            <Card label="Rotas atendidas" valor={fmtN(resultado.totalRotas)} sub={`${fmtN(resultado.totalCtes)} CT-es`} cor="#1e293b" />
-            <Card label="Sem substituto" valor={fmtN(resultado.rotasSemSubstituto)} sub="rotas sem tabela alternativa" cor="#9b1111" destaque={resultado.rotasSemSubstituto > 0} />
-            <Card label="Custo atual" valor={fmt(resultado.custoAtual)} sub="frete pago a esta transportadora" cor="#1e293b" />
-            <Card label={`Custo c/ reajuste (+${pct(resultado.pctReajuste)})`} valor={fmt(resultado.custoComReajuste)} cor="#9b1111" />
-            <Card label="Custo c/ substitutas" valor={fmt(resultado.custoComSubstitutos)} sub={pct(resultado.aumentoPctSubstitutos) + ' vs. custo atual'} cor="#04C7A4" />
-            <Card label="Economia vs. aceitar reajuste" valor={fmt(resultado.economiaVsReajuste)} cor={resultado.economiaVsReajuste >= 0 ? '#04C7A4' : '#9b1111'} destaque />
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: 10, margin: '1rem 0 0.5rem' }}>
+            {[
+              ['ufOrigem', 'UF origem', opcoesFiltroRota.ufOrigem, (v) => ({ ufOrigem: v, origem: '' })],
+              ['origem', 'Cidade origem', opcoesFiltroRota.origem, (v) => ({ origem: v })],
+              ['ufDestino', 'UF destino', opcoesFiltroRota.ufDestino, (v) => ({ ufDestino: v, destino: '' })],
+              ['destino', 'Cidade destino', opcoesFiltroRota.destino, (v) => ({ destino: v })],
+            ].map(([campo, rotulo, opcoes, montar]) => (
+              <label key={campo} style={{ fontSize: '0.75rem', color: '#64748b', minWidth: campo.startsWith('uf') ? 110 : 200 }}>
+                {rotulo}
+                <select value={filtroRota[campo]} onChange={(e) => setFiltroRota((f) => ({ ...f, ...montar(e.target.value) }))} style={{ width: '100%' }}>
+                  <option value="">Todas</option>
+                  {opcoes.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </label>
+            ))}
+            {filtroAtivo && (
+              <button type="button" className="sim-tab" onClick={() => setFiltroRota({ ufOrigem: '', origem: '', ufDestino: '', destino: '' })}>Limpar filtros</button>
+            )}
+            {filtroAtivo && (
+              <span style={{ fontSize: '0.78rem', color: '#1d4ed8' }}>
+                Mostrando {fmtN(resultado.totalCtes)} de {fmtN(resultado.totalCtesSemFiltro)} CT-es — cards, rotas e laudo seguem o filtro.
+              </span>
+            )}
+          </div>
+
+          <div style={{ fontSize: '0.75rem', color: '#64748b', margin: '0.5rem 0 0.35rem' }}>
+            Clique numa situação para ver só essas rotas — os valores abaixo e a tabela passam a mostrar a seleção.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '0.6rem', marginBottom: '0.75rem' }}>
+            <Card label="Todas as rotas" valor={fmtN(resultado.totalRotas)} sub={`${fmtN(resultado.totalCtes)} CT-es · ${fmt(resultado.custoAtual)}`} cor="#1e293b" onClick={() => setFiltroCard('')} ativo={!filtroCard} />
+            {[
+              ['sem', '#9b1111', 'sem tabela alternativa'],
+              ['cara', '#b45309', 'custa mais que hoje'],
+              ['barata', '#04C7A4', 'custa menos que hoje'],
+              ['prazo', '#b45309', 'prazo de tabela maior'],
+              ['unica', '#64748b', 'só 1 transportadora cobre'],
+            ].map(([k, cor, desc]) => (
+              <Card
+                key={k}
+                label={SITUACOES_ROTA[k].rotulo}
+                valor={fmtN(contagemSituacoes[k]?.rotas || 0)}
+                sub={`${desc} · ${fmtN(contagemSituacoes[k]?.ctes || 0)} CT-es`}
+                cor={cor}
+                destaque={k === 'sem' && (contagemSituacoes.sem?.rotas || 0) > 0}
+                onClick={() => alternarCard(k)}
+                ativo={filtroCard === k}
+              />
+            ))}
+          </div>
+
+          <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#334155', marginBottom: '0.35rem' }}>
+            {filtroCard
+              ? `Valores das rotas "${SITUACOES_ROTA[filtroCard].rotulo}" — ${fmtN(totaisSel.rotas)} rota(s), ${fmtN(totaisSel.ctes)} CT-es`
+              : `Valores de todas as rotas — ${fmtN(totaisSel.rotas)} rota(s), ${fmtN(totaisSel.ctes)} CT-es`}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.6rem', marginBottom: '1rem' }}>
+            <Card label="Custo atual" valor={fmt(totaisSel.custoAtual)} sub="frete pago a esta transportadora" cor="#1e293b" />
+            <Card
+              label={resultado.tabelaNova
+                ? `Custo c/ tabela nova (${totaisSel.custoAtual > 0 ? `${totaisSel.custoComReajuste >= totaisSel.custoAtual ? '+' : ''}${pct((totaisSel.custoComReajuste / totaisSel.custoAtual - 1) * 100)}` : '—'})`
+                : `Custo c/ reajuste (+${pct(resultado.pctReajuste)})`}
+              valor={fmt(totaisSel.custoComReajuste)}
+              sub={`${totaisSel.custoComReajuste >= totaisSel.custoAtual ? '+' : '−'}${fmt(Math.abs(totaisSel.custoComReajuste - totaisSel.custoAtual))} vs. hoje`}
+              cor="#9b1111"
+            />
+            <Card label="Custo c/ substitutas" valor={fmt(totaisSel.custoComSubstitutos)} sub={`${totaisSel.aumentoPctSubstitutos >= 0 ? '+' : ''}${pct(totaisSel.aumentoPctSubstitutos)} vs. custo atual`} cor={totaisSel.custoComSubstitutos <= totaisSel.custoAtual ? '#04C7A4' : '#b45309'} />
+            <Card label="Economia vs. aceitar reajuste" valor={fmt(totaisSel.economiaVsReajuste)} sub={totaisSel.economiaVsReajuste >= 0 ? 'substitutas saem mais baratas' : 'reajuste sai mais barato'} cor={totaisSel.economiaVsReajuste >= 0 ? '#04C7A4' : '#9b1111'} destaque />
             {(() => {
-              const pa = resultado.prazoAtualMedioGeral, ps = resultado.prazoSubMedioGeral;
+              const pa = totaisSel.prazoAtual, ps = totaisSel.prazoSub;
               const delta = (pa != null && ps != null) ? ps - pa : null;
               const corPrazo = delta == null ? '#1e293b' : (delta <= 0 ? '#04C7A4' : '#9b1111');
               const sub = delta == null ? 'prazo de tabela'
-                : delta === 0 ? 'mesmo prazo'
+                : Math.abs(delta) < 0.05 ? 'mesmo prazo'
                 : (delta < 0 ? `${fmtDias(-delta)} mais rápido` : `${fmtDias(delta)} mais lento`);
               return <Card label="Prazo médio (atual → subst.)" valor={`${fmtDias(pa)} → ${fmtDias(ps)}`} sub={sub} cor={corPrazo} />;
             })()}
           </div>
 
+          {(porOrigem.length > 1 || filtroRota.origem) && (
+            <div className="panel-card" style={{ marginBottom: '1rem' }}>
+              <div className="panel-title" style={{ marginBottom: 4 }}>Por origem</div>
+              <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: 8 }}>
+                Uma origem pode valer a pena trocar e outra não. Clique numa origem para filtrar a tela por ela (clique de novo para voltar).
+              </div>
+              <div className="sim-analise-tabela-wrap">
+                <table className="sim-analise-tabela">
+                  <thead>
+                    <tr>
+                      <th>Origem</th><th>Rotas</th><th>CT-es</th><th>Pago hoje</th><th>{resultado.tabelaNova ? 'Com tabela nova' : 'Com reajuste'}</th>
+                      <th>Trocando tudo</th><th>Trocando só onde compensa</th><th>Economia vs. reajuste</th><th>Sem substituta</th><th>Recomendação</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {porOrigem.map((o) => {
+                      const sel = filtroRota.origem === o.origem;
+                      const corRec = o.recomendacao === RECOMENDACAO_ORIGEM.TROCAR ? '#047857' : (o.recomendacao === RECOMENDACAO_ORIGEM.PARCIAL ? '#b45309' : '#9b1111');
+                      return (
+                        <tr key={o.origem} onClick={() => alternarOrigem(o.origem)} style={{ cursor: 'pointer', background: sel ? '#eff6ff' : undefined }} title={sel ? 'Clique para ver todas as origens' : 'Clique para filtrar por esta origem'}>
+                          <td style={{ fontWeight: sel ? 700 : 600 }}>{o.origem}</td>
+                          <td>{fmtN(o.rotas)}</td>
+                          <td>{fmtN(o.ctes)}</td>
+                          <td>{fmt(o.custoAtual)}</td>
+                          <td>{fmt(o.custoReajuste)}</td>
+                          <td>{fmt(o.custoSaidaTotal)}</td>
+                          <td>{fmt(o.custoHibrido)}</td>
+                          <td style={{ color: o.economiaHibrido >= 0 ? '#047857' : '#9b1111', fontWeight: 600 }}>{fmt(o.economiaHibrido)}</td>
+                          <td style={{ color: o.rotasSem ? '#9b1111' : '#64748b' }}>{fmtN(o.rotasSem)}</td>
+                          <td style={{ color: corRec, fontWeight: 700 }}>
+                            {o.recomendacao}
+                            {o.recomendacao === RECOMENDACAO_ORIGEM.PARCIAL && <span style={{ fontWeight: 400, fontSize: '0.75rem', color: '#64748b' }}> ({fmtN(o.rotasMigrar)} de {fmtN(o.rotas)} rotas)</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: '1rem' }}>
             <button type="button" className="primary" onClick={() => exportarLaudo('pdf')} disabled={!!exportando || !resultado.linhas.length}>
-              {exportando === 'pdf' ? 'Gerando laudo...' : 'Laudo completo (PDF)'}
+              {exportando === 'pdf' ? 'Gerando laudo...' : 'Laudo (PDF)'}
             </button>
             <button type="button" className="sim-tab" onClick={() => exportarLaudo('excel')} disabled={!!exportando || !resultado.linhas.length}>
               {exportando === 'excel' ? 'Gerando Excel...' : 'Exportar Excel detalhado'}
             </button>
             <span style={{ fontSize: '0.76rem', color: '#64748b' }}>
-              Parecer, cenários (reajuste × saída total × híbrido), rotas críticas, impacto de prazo, substitutas e detalhe por rota/CT-e — respeita reajuste e exclusões atuais.
+              Laudo: parecer, números, resumo por situação, listas de sem substituta, mais cara, mais barata, prazo maior, substituta única e quem assumiria. Excel: detalhe por rota e CT-e. Ambos seguem reajuste, exclusões e filtros de origem/destino.
             </span>
           </div>
 
           {resultado.semIbge > 0 && (
             <div style={{ background: '#fef9c3', border: '1px solid #fde68a', borderRadius: 8, padding: '10px 16px', marginBottom: '1rem', fontSize: '0.84rem', color: '#854d0e' }}>
               {fmtN(resultado.semIbge)} CT-e(s) sem IBGE de origem/destino resolvido — entraram no custo atual sem buscar substituto.
+            </div>
+          )}
+
+          {resultado.tabelaNova && (
+            <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 8, padding: '10px 16px', marginBottom: '1rem', fontSize: '0.84rem', color: '#4c1d95', lineHeight: 1.5 }}>
+              <strong>Tabela nova:</strong> {simulacao.tabelaNova.rotulos.join(' + ')}<br />
+              Aumento da tabela nova sobre a tabela atual: <strong>{resultado.tabelaNova.pctSobreTabelaAtual != null ? `${resultado.tabelaNova.pctSobreTabelaAtual >= 0 ? '+' : ''}${pct(resultado.tabelaNova.pctSobreTabelaAtual)}` : '—'}</strong>
+              {' '}em {fmtN(resultado.tabelaNova.ctes)} de {fmtN(resultado.totalCtes)} CT-es — aplicado CT-e a CT-e sobre o valor pago
+              {resultado.tabelaNova.pctAplicado != null && <> (resultado: <strong>{resultado.tabelaNova.pctAplicado >= 0 ? '+' : ''}{pct(resultado.tabelaNova.pctAplicado)}</strong> sobre o pago)</>}.
+              {resultado.tabelaNova.pctNovaCruaSobrePago != null && (
+                <><br /><span style={{ fontSize: '0.78rem', color: '#6d28d9' }}>Referência: a tabela nova calculada direto contra o valor pago daria {resultado.tabelaNova.pctNovaCruaSobrePago >= 0 ? '+' : ''}{pct(resultado.tabelaNova.pctNovaCruaSobrePago)} — a diferença é o quanto o pago hoje já fica abaixo/acima da tabela atual.</span></>
+              )}
+              {resultado.tabelaNova.ctes < resultado.totalCtes && <><br />Os {fmtN(resultado.totalCtes - resultado.tabelaNova.ctes)} CT-es sem cálculo nas duas tabelas usam {pctForaEfetivo >= 0 ? '+' : ''}{pct(pctForaEfetivo)}{pctForaAutomatico ? ' — o aumento médio da própria tabela nova' : ' — valor informado'}.</>}
             </div>
           )}
 
@@ -914,6 +1417,12 @@ export default function SimularSaidaTransportadoraPage() {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: '0.5rem', flexWrap: 'wrap' }}>
               <div className="panel-title" style={{ margin: 0 }}>
                 Rotas de {simulacao?.transportadora || transportadora} — substituta por rota
+                {filtroCard && (
+                  <span style={{ marginLeft: 8, fontSize: '0.78rem', fontWeight: 600, color: '#1d4ed8' }}>
+                    · {SITUACOES_ROTA[filtroCard].rotulo} ({fmtN(linhasVisiveis.length)})
+                    <button type="button" className="sim-tab" onClick={() => setFiltroCard('')} style={{ marginLeft: 6, padding: '1px 8px', fontSize: '0.72rem' }}>mostrar todas</button>
+                  </span>
+                )}
               </div>
               <FiltroExcluir opcoes={opcoesExcluir} exclusoes={exclusoes} onToggle={toggleExcluir} onLimpar={() => setExclusoes(new Set())} />
             </div>
@@ -945,15 +1454,15 @@ export default function SimularSaidaTransportadoraPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {resultado.linhas.map((l) => {
+                  {linhasVisiveis.map((l) => {
                     const aberta = rotasAbertas.has(l.rotaKey);
                     const deltaPrazo = (l.prazoAtualMedio != null && l.prazoSubMedio != null) ? l.prazoSubMedio - l.prazoAtualMedio : null;
                     const corPrazo = deltaPrazo == null ? '#64748b' : (deltaPrazo <= 0 ? '#04C7A4' : '#9b1111');
                     return (
                       <React.Fragment key={l.rotaKey}>
                         <tr style={aberta ? { background: '#f8fafc' } : undefined}>
-                          <td>{l.cidadeOrigem}/{l.ufOrigem}</td>
-                          <td>{l.cidadeDestino}/{l.ufDestino}</td>
+                          <td>{rotuloLocal(l.cidadeOrigem, l.ufOrigem)}</td>
+                          <td>{rotuloLocal(l.cidadeDestino, l.ufDestino)}</td>
                           <td>{fmtN(l.ctes)}</td>
                           <td>{fmt(l.valorPagoTotal)}</td>
                           <td style={{ color: l.diferenca <= TOLERANCIA ? '#04C7A4' : '#9b1111', fontWeight: 600 }}>{fmt(l.melhorTotal)}</td>
@@ -992,7 +1501,7 @@ export default function SimularSaidaTransportadoraPage() {
                       </React.Fragment>
                     );
                   })}
-                  {!resultado.linhas.length && <tr><td colSpan={9}>Sem rotas para exibir.</td></tr>}
+                  {!linhasVisiveis.length && <tr><td colSpan={9}>Sem rotas para exibir.</td></tr>}
                 </tbody>
               </table>
             </div>
