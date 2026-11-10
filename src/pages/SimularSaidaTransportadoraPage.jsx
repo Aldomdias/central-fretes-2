@@ -1160,15 +1160,15 @@ export default function SimularSaidaTransportadoraPage() {
             <div style={{ gridColumn: '1 / -1' }}>
               <div style={{ fontWeight: 600, marginBottom: 6 }}>Comparar a saída com</div>
               <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 400 }}>
+                <label style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, fontWeight: 400, whiteSpace: 'nowrap' }}>
                   <input type="radio" name="modoReajuste" checked={modoReajuste === 'pct'} onChange={() => setModoReajuste('pct')} />
                   Percentual de reajuste
                 </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 400 }}>
+                <label style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, fontWeight: 400, whiteSpace: 'nowrap' }}>
                   <input type="radio" name="modoReajuste" checked={modoReajuste === 'tabela'} onChange={() => { setModoReajuste('tabela'); garantirCapasNegociacao(); }} />
                   Tabela em negociação (tabela nova cadastrada)
                 </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 400 }}>
+                <label style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, fontWeight: 400, whiteSpace: 'nowrap' }}>
                   {modoReajuste === 'tabela' ? 'Percentual p/ CT-es fora da tabela nova' : 'Reajuste proposto'}
                   <input type="number" value={reajustePct} onChange={(e) => setReajustePct(e.target.value)} style={{ width: 80 }} step={0.5} />
                   <span>%</span>
@@ -1183,14 +1183,14 @@ export default function SimularSaidaTransportadoraPage() {
                         <span style={{ fontSize: '0.78rem', color: '#64748b' }}>
                           Marque a(s) tabela(s) nova(s) desta transportadora (uma por origem, se for o caso). Cada CT-e é calculado nela, no lugar do percentual.
                         </span>
-                        <label style={{ fontSize: '0.75rem', fontWeight: 400, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <label style={{ fontSize: '0.75rem', fontWeight: 400, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                           <input type="checkbox" checked={mostrarTodasNeg} onChange={(e) => setMostrarTodasNeg(e.target.checked)} />
                           mostrar de todas as transportadoras
                         </label>
                       </div>
                       <div style={{ maxHeight: 200, overflowY: 'auto' }}>
                         {capasDaTransportadora.map((c) => (
-                          <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 2px', fontSize: '0.8rem', fontWeight: 400, cursor: 'pointer' }}>
+                          <label key={c.id} style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, padding: '3px 2px', fontSize: '0.8rem', fontWeight: 400, cursor: 'pointer' }}>
                             <input type="checkbox" checked={negSelecionadas.has(c.id)} onChange={() => toggleNeg(c.id)} />
                             {labelTabelaNegociacaoSimulador(c)}
                             <span style={{ color: '#94a3b8', fontSize: '0.72rem' }}>
