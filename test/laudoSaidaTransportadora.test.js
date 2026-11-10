@@ -89,3 +89,19 @@ test('resumo por origem separa recomendação de cada origem', async () => {
   const html = gerarHtmlLaudoSaida(resultado, { transportadora: 'X', reajustePct: 20 });
   assert.match(html, /Por origem/);
 });
+
+test('reajuste por CT-e (tabela nova) substitui o percentual no laudo', async () => {
+  const { analisarRota, consolidarLaudoSaida } = await import('../src/utils/laudoSaidaTransportadora.js');
+  const linha = {
+    rotaKey: 'a', cidadeOrigem: 'ITAJAI', ufOrigem: 'SC', cidadeDestino: 'X', ufDestino: 'SP', ctes: 2, valorPagoTotal: 200, melhorTotal: 230,
+    valorReajustadoTotal: 216, semSubstituto: 1, substitutos: [{ transportadora: 'S', ctesCobertos: 1, custoMedio: 120, prazoMedio: 2 }],
+    viagens: [{ valorPago: 100, valorReajustado: 108, substituta: 'S', valorSub: 130 }, { valorPago: 100, valorReajustado: 108, substituta: null }],
+    prazoAtualMedio: 2, prazoSubMedio: 2, substitutoPrincipal: 'S',
+  };
+  const r = analisarRota(linha, 50); // percentual ignorado: vem pronto por CT-e
+  assert.equal(r.custoReajuste, 216);
+  assert.equal(r.custoMigrar, 130 + 108);
+  const L = consolidarLaudoSaida({ linhas: [linha], pctReajuste: 50 }, { reajusteRotulo: 'tabela nova X' });
+  assert.equal(Math.round(L.contexto.pctReajuste * 10) / 10, 8);
+  assert.match(gerarHtmlLaudoSaida({ linhas: [linha], pctReajuste: 50 }, { transportadora: 'T', reajusteRotulo: 'tabela nova X' }), /Com a tabela nova \(\+8,0%\)/);
+});

@@ -9,6 +9,8 @@ import { intervaloEmissao, janelasEmissao, localPadronizado, montarMunicipioPorI
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { aplicarVinculoTransportadora as aplicarVinculoPuro } from '../services/vinculosTransportadorasPuro';
 import { unificarTransportadorasCtes } from '../utils/unificarTransportadorasCte';
+import { carregarDetalhesNegociacaoParaSimulacao, listarCapasNegociacaoParaSimulacao } from '../services/tabelasNegociacaoService';
+import { converterTabelasNegociacaoParaSimulador, labelTabelaNegociacaoSimulador, marcarDesambiguacaoNegociacoesSimulador } from '../utils/tabelasNegociacaoSimuladorAdapter';
 import { abrirLaudoSaida, analisarRota, exportarExcelLaudoSaida, RECOMENDACAO_ORIGEM, resumirPorOrigem } from '../utils/laudoSaidaTransportadora';
 
 const LIMITE_MAX_CT = 200000;
@@ -391,7 +393,14 @@ function Card({ label, valor, sub, cor, destaque, onClick, ativo }) {
 
 // Agrega os CT-es simulados em rotas, aplicando o conjunto de substitutas excluídas.
 // Pura: roda na hora quando muda a exclusão ou o reajuste, sem reprocessar o motor.
-function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste) {
+// usarTabelaNova: o custo "mantendo a transportadora" de cada CT-e é o valor
+// pago × (tabela nova ÷ tabela atual), com as duas calculadas do mesmo jeito —
+// o aumento real da tabela naquela rota/peso, aplicado ao que se paga hoje.
+// (Comparar a tabela nova direto com o pago mistura o aumento com a diferença
+// que já existe entre pago e tabela.) CT-e sem as duas tabelas usa o percentual.
+function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste, usarTabelaNova = false) {
+  const fatorPct = 1 + safeNum(pctReajuste) / 100;
+  const tn = { ctes: 0, pago: 0, nova: 0, atualTabela: 0, novaComAtual: 0, ctesComNova: 0, pagoComNova: 0, novaBruta: 0 };
   const porRota = new Map();
   for (const c of ctesSimulados) {
     if (!porRota.has(c.rotaKey)) {
@@ -399,11 +408,22 @@ function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste) {
         rotaKey: c.rotaKey, cidadeOrigem: c.cidadeOrigem, ufOrigem: c.ufOrigem, cidadeDestino: c.cidadeDestino, ufDestino: c.ufDestino,
         ctes: 0, valorPagoTotal: 0, melhorTotal: 0, semSubstituto: 0, candidatosUsados: new Map(),
         prazoAtualSoma: 0, prazoAtualN: 0, prazoSubSoma: 0, prazoSubN: 0, viagens: [], substitutosRota: new Map(),
+        valorReajustadoTotal: 0, ctesTabelaNova: 0,
       });
     }
     const rota = porRota.get(c.rotaKey);
     rota.ctes += 1;
     rota.valorPagoTotal += c.valorPago;
+    const temNova = usarTabelaNova && c.valorNovaTabela != null && c.valorTabelaAtual != null && c.valorTabelaAtual > 0;
+    const fatorTabela = temNova ? c.valorNovaTabela / c.valorTabelaAtual : null;
+    const valorReajustado = temNova ? c.valorPago * fatorTabela : c.valorPago * fatorPct;
+    rota.valorReajustadoTotal += valorReajustado;
+    if (usarTabelaNova && c.valorNovaTabela != null) { tn.ctesComNova += 1; tn.pagoComNova += c.valorPago; tn.novaBruta += c.valorNovaTabela; }
+    if (temNova) {
+      rota.ctesTabelaNova += 1;
+      tn.ctes += 1; tn.pago += c.valorPago; tn.nova += valorReajustado;
+      tn.atualTabela += c.valorTabelaAtual; tn.novaComAtual += c.valorNovaTabela;
+    }
     if (c.prazoAtual != null) { rota.prazoAtualSoma += c.prazoAtual; rota.prazoAtualN += 1; }
 
     const disponiveis = exclusoesSet.size
@@ -428,6 +448,7 @@ function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste) {
     rota.viagens.push({
       chave: c.chave, data: c.data, nf: c.nf, peso: c.peso, valorPago: c.valorPago,
       valorTabelaAtual: c.valorTabelaAtual, prazoAtual: c.prazoAtual,
+      valorReajustado, valorNovaTabela: temNova ? c.valorNovaTabela : null,
       substituta: melhor ? melhor.transportadora : null,
       valorSub: melhor ? melhor.total : null,
       prazoSub: melhor ? melhor.prazo : null,
@@ -455,7 +476,8 @@ function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste) {
   const custoComSubstitutos = linhas.reduce((s, l) => s + l.melhorTotal, 0);
   const rotasSemSubstituto = linhas.filter((l) => l.semSubstituto > 0).length;
   const pctR = safeNum(pctReajuste);
-  const custoComReajuste = custoAtual * (1 + pctR / 100);
+  const custoComReajuste = linhas.reduce((s, l) => s + l.valorReajustadoTotal, 0);
+  const pctReajusteEfetivo = custoAtual > 0 ? (custoComReajuste / custoAtual - 1) * 100 : pctR;
   const aumentoPctSubstitutos = custoAtual > 0 ? ((custoComSubstitutos - custoAtual) / custoAtual) * 100 : 0;
   const economiaVsReajuste = custoComReajuste - custoComSubstitutos;
   const prazoAtualSomaTot = linhas.reduce((s, l) => s + l.prazoAtualSoma, 0);
@@ -465,7 +487,15 @@ function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste) {
 
   return {
     linhas, totalRotas: linhas.length, rotasSemSubstituto,
-    custoAtual, custoComSubstitutos, custoComReajuste, aumentoPctSubstitutos, economiaVsReajuste, pctReajuste: pctR,
+    custoAtual, custoComSubstitutos, custoComReajuste, aumentoPctSubstitutos, economiaVsReajuste, pctReajuste: pctR, pctReajusteEfetivo,
+    tabelaNova: usarTabelaNova ? {
+      ...tn,
+      // aumento aplicado (pago × nova/atual), aumento tabela × tabela e, só
+      // para referência, a tabela nova crua contra o valor pago
+      pctAplicado: tn.pago > 0 ? (tn.nova / tn.pago - 1) * 100 : null,
+      pctSobreTabelaAtual: tn.atualTabela > 0 ? (tn.novaComAtual / tn.atualTabela - 1) * 100 : null,
+      pctNovaCruaSobrePago: tn.pagoComNova > 0 ? (tn.novaBruta / tn.pagoComNova - 1) * 100 : null,
+    } : null,
     prazoAtualMedioGeral: prazoAtualNTot ? prazoAtualSomaTot / prazoAtualNTot : null,
     prazoSubMedioGeral: prazoSubNTot ? prazoSubSomaTot / prazoSubNTot : null,
   };
@@ -487,7 +517,7 @@ function totaisDasRotas(linhas, pctReajuste) {
     ctes += l.ctes; atual += l.valorPagoTotal; sub += l.melhorTotal;
     paS += l.prazoAtualSoma; paN += l.prazoAtualN; psS += l.prazoSubSoma; psN += l.prazoSubN;
   }
-  const reajuste = atual * (1 + safeNum(pctReajuste) / 100);
+  const reajuste = linhas.reduce((acc, l) => acc + (l.valorReajustadoTotal ?? l.valorPagoTotal * (1 + safeNum(pctReajuste) / 100)), 0);
   return {
     rotas: linhas.length, ctes, custoAtual: atual, custoComSubstitutos: sub, custoComReajuste: reajuste,
     economiaVsReajuste: reajuste - sub,
@@ -623,6 +653,15 @@ export default function SimularSaidaTransportadoraPage() {
 
   const [transportadora, setTransportadora] = useState('');
   const [reajustePct, setReajustePct] = useState('20');
+  // Comparar com: 'pct' (percentual informado) ou 'tabela' (tabela em negociação cadastrada).
+  const [modoReajuste, setModoReajuste] = useState('pct');
+  const [capasNeg, setCapasNeg] = useState(null);
+  const [carregandoCapas, setCarregandoCapas] = useState(false);
+  const [negSelecionadas, setNegSelecionadas] = useState(() => new Set());
+  const [mostrarTodasNeg, setMostrarTodasNeg] = useState(false);
+  // Reajuste dos CT-es sem cálculo nas duas tabelas (modo tabela nova).
+  // Vazio = automático: o aumento médio que a tabela nova deu nos CT-es que calculou.
+  const [pctForaTabela, setPctForaTabela] = useState('');
   const [statusSim, setStatusSim] = useState('idle');
   const [simulacao, setSimulacao] = useState(null); // { transportadora, ctesSimulados, semIbge }
   const [exclusoes, setExclusoes] = useState(() => new Set()); // norm(nome) das substitutas excluídas
@@ -675,15 +714,27 @@ export default function SimularSaidaTransportadoraPage() {
   ].filter(Boolean).join(' • ');
 
   const [filtroCard, setFiltroCard] = useState('');
+  // Aumento médio tabela nova × tabela atual em todos os CT-es simulados (sem
+  // filtros de tela, para o padrão não mudar ao filtrar origem/destino).
+  const pctMediaTabelaNova = useMemo(() => {
+    if (!simulacao?.tabelaNova) return null;
+    let atual = 0; let nova = 0;
+    for (const c of simulacao.ctesSimulados) {
+      if (c.valorNovaTabela != null && c.valorTabelaAtual > 0) { atual += c.valorTabelaAtual; nova += c.valorNovaTabela; }
+    }
+    return atual > 0 ? (nova / atual - 1) * 100 : null;
+  }, [simulacao]);
+  const pctForaAutomatico = String(pctForaTabela).trim() === '';
+  const pctForaEfetivo = pctForaAutomatico ? (pctMediaTabelaNova ?? safeNum(reajustePct)) : safeNum(pctForaTabela);
   const resultado = useMemo(() => {
     if (!simulacao) return null;
     return {
-      ...agregarRotas(ctesFiltrados, exclusoes, reajustePct),
+      ...agregarRotas(ctesFiltrados, exclusoes, simulacao.tabelaNova ? pctForaEfetivo : reajustePct, Boolean(simulacao.tabelaNova)),
       totalCtes: ctesFiltrados.length,
       totalCtesSemFiltro: simulacao.ctesSimulados.length,
       semIbge: simulacao.semIbge,
     };
-  }, [simulacao, ctesFiltrados, exclusoes, reajustePct]);
+  }, [simulacao, ctesFiltrados, exclusoes, reajustePct, pctForaEfetivo]);
 
   const contagemSituacoes = useMemo(() => {
     const out = {};
@@ -731,6 +782,9 @@ export default function SimularSaidaTransportadoraPage() {
       reajustePct: reajustePct,
       exclusoes: opcoesExcluir.filter((n) => exclusoes.has(norm(n))),
       filtroRotas: descricaoFiltroRota,
+      reajusteRotulo: simulacao?.tabelaNova
+        ? `tabela nova ${simulacao.tabelaNova.rotulos.join(' + ')}${resultado?.tabelaNova?.pctSobreTabelaAtual != null ? ` (${resultado.tabelaNova.pctSobreTabelaAtual >= 0 ? '+' : ''}${pct(resultado.tabelaNova.pctSobreTabelaAtual)} sobre a tabela atual, aplicado ao valor pago de cada CT-e)` : ''}${resultado?.tabelaNova && resultado.tabelaNova.ctes < resultado.totalCtes ? `; CT-es sem cálculo nas duas tabelas com ${pctForaEfetivo >= 0 ? '+' : ''}${pct(pctForaEfetivo)}${pctForaAutomatico ? ' (média da tabela nova)' : ''}` : ''}`
+        : '',
       geradoEm: new Date().toISOString(),
     };
   }
@@ -851,6 +905,44 @@ export default function SimularSaidaTransportadoraPage() {
     [transportadoras, transportadora],
   );
 
+  // Tabelas em negociação (capas) — carregadas uma vez, quando o usuário
+  // escolhe comparar com uma tabela nova.
+  async function garantirCapasNegociacao() {
+    if (capasNeg || carregandoCapas) return;
+    setCarregandoCapas(true);
+    try {
+      const capas = await listarCapasNegociacaoParaSimulacao({ tipoTabela: 'FRACIONADO', incluirTodas: true });
+      setCapasNeg(marcarDesambiguacaoNegociacoesSimulador(capas || []));
+    } catch (e) {
+      console.error('[SimularSaidaTransportadora] negociações', e);
+      setErro(`Não foi possível carregar as tabelas em negociação: ${e?.message || e}`);
+      setCapasNeg([]);
+    } finally {
+      setCarregandoCapas(false);
+    }
+  }
+  // Negociações da transportadora escolhida (nome da negociação ou nome base
+  // batendo com o nome unificado, nomes do CT-e ou nomes de tabela dela).
+  const capasDaTransportadora = useMemo(() => {
+    const lista = capasNeg || [];
+    if (mostrarTodasNeg || !transportadora) return lista;
+    const nomes = [transportadora, ...(grupoSelecionado?.nomesTabela || []), ...(grupoSelecionado?.variantes || [])]
+      .map(norm).filter((n) => n.length >= 3);
+    const bate = (nome) => {
+      const n = norm(nome);
+      if (n.length < 3) return false;
+      return nomes.some((x) => x === n || (n.length >= 4 && x.startsWith(n)) || (x.length >= 4 && n.startsWith(x)));
+    };
+    return lista.filter((c) => bate(c.transportadora) || bate(c.transportadora_base_nome));
+  }, [capasNeg, mostrarTodasNeg, transportadora, grupoSelecionado]);
+  function toggleNeg(id) {
+    setNegSelecionadas((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
   async function simularSaida() {
     if (!base || !transportadora) return;
     setStatusSim('carregando'); setErro(''); setSimulacao(null); setExclusoes(new Set()); setRotasAbertas(new Set());
@@ -893,6 +985,35 @@ export default function SimularSaidaTransportadoraPage() {
       const idx = indexarBase(baseFrete);
       const mapBaseByNome = new Map(baseFrete.map((t) => [t.nome, t]));
 
+      // Tabela em negociação (modo "comparar com tabela nova"): carrega só os
+      // destinos que esta transportadora rodou e calcula cada CT-e nela.
+      let baseNova = [];
+      let rotulosTabelaNova = [];
+      const capasEscolhidas = modoReajuste === 'tabela'
+        ? (capasNeg || []).filter((c) => negSelecionadas.has(c.id))
+        : [];
+      if (modoReajuste === 'tabela' && !capasEscolhidas.length) throw new Error('Escolha ao menos uma tabela em negociação para comparar (ou volte para "Percentual").');
+      if (capasEscolhidas.length) {
+        const ibgesDestino = new Set();
+        for (const c of ctesDaTransp) { const ib = ibgeDoCte(c, 'destino', municipioPorCidade, mapasIbge); if (ib) ibgesDestino.add(dig7(ib)); }
+        const recorte = { ibgesDestino: [...ibgesDestino] };
+        const detalhadas = [];
+        for (let k = 0; k < capasEscolhidas.length; k++) {
+          const capa = capasEscolhidas[k];
+          setProgresso(`Carregando tabela em negociação ${k + 1}/${capasEscolhidas.length} (${labelTabelaNegociacaoSimulador(capa)})...`);
+          detalhadas.push(await carregarDetalhesNegociacaoParaSimulacao(capa, recorte, (feitos, total) => {
+            setProgresso(`Carregando tabela em negociação ${k + 1}/${capasEscolhidas.length}... ${fmtN(feitos)}/${fmtN(total)} destino(s)`);
+          }));
+        }
+        // a negociação pode não estar marcada para o simulador; aqui ela foi escolhida explicitamente
+        baseNova = normalizarTransportadoras(converterTabelasNegociacaoParaSimulador(
+          detalhadas.map((d) => ({ ...d, incluir_simulacao: true })),
+          { canal: canal || '' },
+        ));
+        rotulosTabelaNova = capasEscolhidas.map((c) => labelTabelaNegociacaoSimulador(c));
+        if (!baseNova.length) throw new Error('A tabela em negociação escolhida não tem rotas para os destinos desta transportadora (confira canal e origem da tabela).');
+      }
+
       const origemCache = new Map();
       const ctesSimulados = [];
       let semIbge = 0;
@@ -924,6 +1045,15 @@ export default function SimularSaidaTransportadoraPage() {
           }
         }
 
+        // valor na tabela em negociação (se houver) — a primeira que calcular
+        let valorNovaTabela = null;
+        if (baseNova.length && ibgeDestino && ibgeOrigemReal) {
+          for (const entrada of baseNova) {
+            const r = calcComTransportadora(cte, baseNova, entrada.nome, ibgeOrigemReal, ibgeDestino, cidadeOrigem);
+            if (r && r.total > 0) { valorNovaTabela = r.total; break; }
+          }
+        }
+
         let resultados = [];
         if (!ibgeDestino || !ibgeOrigemReal) {
           semIbge += 1;
@@ -946,6 +1076,7 @@ export default function SimularSaidaTransportadoraPage() {
           data: cte.data_emissao || '',
           prazoAtual: atual?.prazo ?? null,
           valorTabelaAtual: atual ? atual.total : null,
+          valorNovaTabela,
           resultados,
         });
 
@@ -957,7 +1088,10 @@ export default function SimularSaidaTransportadoraPage() {
         }
       }
 
-      setSimulacao({ transportadora, variantes: grupo?.variantes || [], ctesSimulados, semIbge, recorte: { competencia, dataInicio, dataFim, canal } });
+      setSimulacao({
+        transportadora, variantes: grupo?.variantes || [], ctesSimulados, semIbge, recorte: { competencia, dataInicio, dataFim, canal },
+        tabelaNova: rotulosTabelaNova.length ? { rotulos: rotulosTabelaNova } : null,
+      });
       setStatusSim('concluido'); setProgresso('');
     } catch (e) {
       console.error('[SimularSaidaTransportadora]', e);
@@ -1038,12 +1172,81 @@ export default function SimularSaidaTransportadoraPage() {
                 </span>
               )}
             </div>
-            <label>Reajuste proposto
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input type="number" value={reajustePct} onChange={(e) => setReajustePct(e.target.value)} style={{ width: 80 }} step={0.5} />
-                <span>%</span>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Comparar a saída com</div>
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+                <label style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, fontWeight: 400, whiteSpace: 'nowrap' }}>
+                  <input type="radio" name="modoReajuste" checked={modoReajuste === 'pct'} onChange={() => setModoReajuste('pct')} />
+                  Percentual de reajuste
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, fontWeight: 400, whiteSpace: 'nowrap' }}>
+                  <input type="radio" name="modoReajuste" checked={modoReajuste === 'tabela'} onChange={() => { setModoReajuste('tabela'); garantirCapasNegociacao(); }} />
+                  Tabela em negociação (tabela nova cadastrada)
+                </label>
+                {modoReajuste === 'pct' ? (
+                  <label style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, fontWeight: 400, whiteSpace: 'nowrap' }}>
+                    Reajuste proposto
+                    <input type="number" value={reajustePct} onChange={(e) => setReajustePct(e.target.value)} style={{ width: 80 }} step={0.5} />
+                    <span>%</span>
+                  </label>
+                ) : (
+                  <label
+                    style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, fontWeight: 400, whiteSpace: 'nowrap' }}
+                    title="Usado só nos CT-es que não calculam nas duas tabelas (origem sem tabela nova marcada, destino fora da tabela nova ou fora da tabela atual). Vazio = aumento médio da própria tabela nova."
+                  >
+                    Reajuste p/ CT-es sem cálculo na tabela nova
+                    <input
+                      type="number"
+                      value={pctForaTabela}
+                      onChange={(e) => setPctForaTabela(e.target.value)}
+                      placeholder={pctMediaTabelaNova != null ? pct(pctMediaTabelaNova) : 'auto'}
+                      style={{ width: 90 }}
+                      step={0.5}
+                    />
+                    <span>%</span>
+                    <span style={{ fontSize: '0.72rem', color: '#64748b' }}>
+                      {pctForaAutomatico
+                        ? (pctMediaTabelaNova != null ? `automático: média da tabela nova (${pct(pctMediaTabelaNova)})` : 'vazio = média da tabela nova')
+                        : <button type="button" className="sim-tab" onClick={() => setPctForaTabela('')} style={{ padding: '0 8px', fontSize: '0.72rem' }}>voltar ao automático</button>}
+                    </span>
+                  </label>
+                )}
               </div>
-            </label>
+              {modoReajuste === 'tabela' && (
+                <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', background: '#f8fafc' }}>
+                  {carregandoCapas && <div style={{ fontSize: '0.8rem', color: '#64748b' }}>Carregando tabelas em negociação...</div>}
+                  {!carregandoCapas && capasNeg && (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '0.78rem', color: '#64748b' }}>
+                          Marque a(s) tabela(s) nova(s) desta transportadora (uma por origem, se for o caso). Cada CT-e é calculado nela, no lugar do percentual.
+                        </span>
+                        <label style={{ fontSize: '0.75rem', fontWeight: 400, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <input type="checkbox" checked={mostrarTodasNeg} onChange={(e) => setMostrarTodasNeg(e.target.checked)} />
+                          mostrar de todas as transportadoras
+                        </label>
+                      </div>
+                      <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+                        {capasDaTransportadora.map((c) => (
+                          <label key={c.id} style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, padding: '3px 2px', fontSize: '0.8rem', fontWeight: 400, cursor: 'pointer' }}>
+                            <input type="checkbox" checked={negSelecionadas.has(c.id)} onChange={() => toggleNeg(c.id)} />
+                            {labelTabelaNegociacaoSimulador(c)}
+                            <span style={{ color: '#94a3b8', fontSize: '0.72rem' }}>
+                              {[c.canal, c.status, c.data_inicio_vigencia || c.data_inicio_prevista].filter(Boolean).join(' · ')}
+                            </span>
+                          </label>
+                        ))}
+                        {!capasDaTransportadora.length && (
+                          <div style={{ fontSize: '0.8rem', color: '#9b1111' }}>
+                            Nenhuma tabela em negociação encontrada para {transportadora || 'esta transportadora'}. Marque "mostrar de todas" para procurar pelo nome.
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
               <button className="primary" type="button" onClick={simularSaida} disabled={!transportadora || statusSim === 'carregando'}>
                 {statusSim === 'carregando' ? 'Simulando...' : 'Simular saída'}
@@ -1112,7 +1315,14 @@ export default function SimularSaidaTransportadoraPage() {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.6rem', marginBottom: '1rem' }}>
             <Card label="Custo atual" valor={fmt(totaisSel.custoAtual)} sub="frete pago a esta transportadora" cor="#1e293b" />
-            <Card label={`Custo c/ reajuste (+${pct(resultado.pctReajuste)})`} valor={fmt(totaisSel.custoComReajuste)} sub={`+${fmt(totaisSel.custoComReajuste - totaisSel.custoAtual)} vs. hoje`} cor="#9b1111" />
+            <Card
+              label={resultado.tabelaNova
+                ? `Custo c/ tabela nova (${totaisSel.custoAtual > 0 ? `${totaisSel.custoComReajuste >= totaisSel.custoAtual ? '+' : ''}${pct((totaisSel.custoComReajuste / totaisSel.custoAtual - 1) * 100)}` : '—'})`
+                : `Custo c/ reajuste (+${pct(resultado.pctReajuste)})`}
+              valor={fmt(totaisSel.custoComReajuste)}
+              sub={`${totaisSel.custoComReajuste >= totaisSel.custoAtual ? '+' : '−'}${fmt(Math.abs(totaisSel.custoComReajuste - totaisSel.custoAtual))} vs. hoje`}
+              cor="#9b1111"
+            />
             <Card label="Custo c/ substitutas" valor={fmt(totaisSel.custoComSubstitutos)} sub={`${totaisSel.aumentoPctSubstitutos >= 0 ? '+' : ''}${pct(totaisSel.aumentoPctSubstitutos)} vs. custo atual`} cor={totaisSel.custoComSubstitutos <= totaisSel.custoAtual ? '#04C7A4' : '#b45309'} />
             <Card label="Economia vs. aceitar reajuste" valor={fmt(totaisSel.economiaVsReajuste)} sub={totaisSel.economiaVsReajuste >= 0 ? 'substitutas saem mais baratas' : 'reajuste sai mais barato'} cor={totaisSel.economiaVsReajuste >= 0 ? '#04C7A4' : '#9b1111'} destaque />
             {(() => {
@@ -1136,7 +1346,7 @@ export default function SimularSaidaTransportadoraPage() {
                 <table className="sim-analise-tabela">
                   <thead>
                     <tr>
-                      <th>Origem</th><th>Rotas</th><th>CT-es</th><th>Pago hoje</th><th>Com reajuste</th>
+                      <th>Origem</th><th>Rotas</th><th>CT-es</th><th>Pago hoje</th><th>{resultado.tabelaNova ? 'Com tabela nova' : 'Com reajuste'}</th>
                       <th>Trocando tudo</th><th>Trocando só onde compensa</th><th>Economia vs. reajuste</th><th>Sem substituta</th><th>Recomendação</th>
                     </tr>
                   </thead>
@@ -1183,6 +1393,19 @@ export default function SimularSaidaTransportadoraPage() {
           {resultado.semIbge > 0 && (
             <div style={{ background: '#fef9c3', border: '1px solid #fde68a', borderRadius: 8, padding: '10px 16px', marginBottom: '1rem', fontSize: '0.84rem', color: '#854d0e' }}>
               {fmtN(resultado.semIbge)} CT-e(s) sem IBGE de origem/destino resolvido — entraram no custo atual sem buscar substituto.
+            </div>
+          )}
+
+          {resultado.tabelaNova && (
+            <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 8, padding: '10px 16px', marginBottom: '1rem', fontSize: '0.84rem', color: '#4c1d95', lineHeight: 1.5 }}>
+              <strong>Tabela nova:</strong> {simulacao.tabelaNova.rotulos.join(' + ')}<br />
+              Aumento da tabela nova sobre a tabela atual: <strong>{resultado.tabelaNova.pctSobreTabelaAtual != null ? `${resultado.tabelaNova.pctSobreTabelaAtual >= 0 ? '+' : ''}${pct(resultado.tabelaNova.pctSobreTabelaAtual)}` : '—'}</strong>
+              {' '}em {fmtN(resultado.tabelaNova.ctes)} de {fmtN(resultado.totalCtes)} CT-es — aplicado CT-e a CT-e sobre o valor pago
+              {resultado.tabelaNova.pctAplicado != null && <> (resultado: <strong>{resultado.tabelaNova.pctAplicado >= 0 ? '+' : ''}{pct(resultado.tabelaNova.pctAplicado)}</strong> sobre o pago)</>}.
+              {resultado.tabelaNova.pctNovaCruaSobrePago != null && (
+                <><br /><span style={{ fontSize: '0.78rem', color: '#6d28d9' }}>Referência: a tabela nova calculada direto contra o valor pago daria {resultado.tabelaNova.pctNovaCruaSobrePago >= 0 ? '+' : ''}{pct(resultado.tabelaNova.pctNovaCruaSobrePago)} — a diferença é o quanto o pago hoje já fica abaixo/acima da tabela atual.</span></>
+              )}
+              {resultado.tabelaNova.ctes < resultado.totalCtes && <><br />Os {fmtN(resultado.totalCtes - resultado.tabelaNova.ctes)} CT-es sem cálculo nas duas tabelas usam {pctForaEfetivo >= 0 ? '+' : ''}{pct(pctForaEfetivo)}{pctForaAutomatico ? ' — o aumento médio da própria tabela nova' : ' — valor informado'}.</>}
             </div>
           )}
 
