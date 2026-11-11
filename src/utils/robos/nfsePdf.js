@@ -154,7 +154,9 @@ function extrairModeloRps(L, U) {
 const RE_VL_TOTAL = /\bV[LI1|]\.?\s*TOTAL DOS SERVICOS/;
 const RE_VL_LIQUIDO = /\bV[LI1|]\.?\s*LIQUIDO DA NOTA/;
 const UF_VALIDAS = new Set(Object.values(UF_IBGE));
-function extrairModeloIssNet(L, U) {
+function extrairModeloIssNet(linhas, U) {
+  // OCR troca o zero do dia por letra ("D4/09/2026 20:45:09" = 04/09/2026)
+  const L = linhas.map((l) => l.replace(/(^|\s)[ODoQ](\d\/\d{2}\/20\d{2})/g, '$10$2'));
   const dados = { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null, chave: '', valorLiquido: null, municipioPrestador: '', municipioTomador: '' };
   const todo = L.join('\n');
   const chave = (todo.match(/\b(\d{50})\b/) || [])[1];
