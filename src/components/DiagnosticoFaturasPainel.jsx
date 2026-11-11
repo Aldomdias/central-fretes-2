@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarPlataformaAuditoria } from '../services/auditoriaFretesService';
-import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap } from '../services/diagnosticoFaturasService';
+import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual } from '../services/diagnosticoFaturasService';
 import { diasAte } from '../utils/auditoriaFretesDomain';
+import { carregarSessao } from '../utils/authLocal';
 import {
+  agrupamentoManual,
   FAIXAS_A_VENCER,
   faixaDaLinha,
   faturaLancada,
@@ -132,6 +134,8 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const [aviso, setAviso] = useState('');
   const [exportando, setExportando] = useState(false);
   const [atualizando, setAtualizando] = useState(false);
+  const [selecionadas, setSelecionadas] = useState(() => new Set());
+  const [marcando, setMarcando] = useState(false);
 
   useEffect(() => {
     try { sessionStorage.setItem(CHAVE_SESSAO, JSON.stringify({ texto, transportadora, escolhidos, filtros, ordem })); } catch { /* sem sessionStorage: so nao lembra */ }
@@ -273,6 +277,28 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     } catch (e) { setAviso(`Erro ao atualizar: ${e.message || e}`); } finally { setAtualizando(false); }
   };
 
+  // Selecao para marcar agrupamento manual: so faturas que existem na plataforma e estao no recorte.
+  const idsRecorte = useMemo(() => resultado.filter((l) => l.fatura).map((l) => l.fatura.id), [resultado]);
+  const selecaoValida = idsRecorte.filter((id) => selecionadas.has(id));
+  const todasSelecionadas = idsRecorte.length > 0 && selecaoValida.length === idsRecorte.length;
+  const alternarSelecao = (id) => setSelecionadas((atual) => { const n = new Set(atual); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const alternarTodas = () => setSelecionadas(todasSelecionadas ? new Set() : new Set(idsRecorte));
+  const aplicarAgrupamento = async (marcar) => {
+    const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l.fatura]));
+    const alvo = selecaoValida.filter((id) => agrupamentoManual(porId.get(id)) !== marcar);
+    if (!alvo.length) { setAviso(marcar ? 'As selecionadas já estão marcadas.' : 'Nenhuma selecionada está marcada.'); return; }
+    if (!marcar && !window.confirm(`Tirar a marcação de agrupamento manual de ${alvo.length} fatura(s)?`)) return;
+    setMarcando(true);
+    setAviso('');
+    try {
+      const sessao = carregarSessao();
+      const gravadas = await marcarAgrupamentoManual(alvo, marcar, sessao?.nome || sessao?.email || '');
+      onState((atual) => ({ ...atual, faturas: (atual.faturas || []).map((f) => (gravadas.has(f.id) ? { ...f, ...gravadas.get(f.id) } : f)) }));
+      setSelecionadas(new Set());
+      setAviso(`${inteiro(gravadas.size)} fatura(s) ${marcar ? 'marcada(s) para agrupamento manual' : 'desmarcada(s)'}.`);
+    } catch (e) { setAviso(`Erro ao marcar: ${e.message || e}`); } finally { setMarcando(false); }
+  };
+
   const descricaoFiltros = () => {
     const cards = GRUPOS_DIAGNOSTICO.filter((g) => escolhidos[g.id]).map((g) => [g.titulo, g.cards.find((c) => c.id === escolhidos[g.id])?.rotulo || '']);
     const campos = [['Busca', filtros.busca], ['Auditor', filtros.auditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)]]
@@ -294,7 +320,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
           { titulo: 'Status', largura: 24 }, { titulo: 'CT-es auditados', largura: 10, tipo: 'inteiro' }, { titulo: 'CT-es totais', largura: 10, tipo: 'inteiro' },
           { titulo: 'Fatura lançada', largura: 10, tipo: 'centro' }, { titulo: 'Partida', largura: 14 }, { titulo: 'Lançamento financeiro', largura: 14 }, { titulo: 'Enviado ERP', largura: 12, tipo: 'data' }, { titulo: 'Situação envio ERP', largura: 22 },
           { titulo: 'CT-es com partida', largura: 10, tipo: 'inteiro' }, { titulo: 'CT-es sem partida', largura: 10, tipo: 'inteiro' }, { titulo: 'Valor sem partida', largura: 16, tipo: 'moeda' },
-          { titulo: 'Pagamento', largura: 18 }, { titulo: 'Data pagamento', largura: 12, tipo: 'data' }, { titulo: 'Valor pago', largura: 16, tipo: 'moeda' }, { titulo: 'Auditor', largura: 26 }, { titulo: 'Próxima ação', largura: 28 }, { titulo: 'Observação', largura: 34 },
+          { titulo: 'Pagamento', largura: 18 }, { titulo: 'Data pagamento', largura: 12, tipo: 'data' }, { titulo: 'Valor pago', largura: 16, tipo: 'moeda' }, { titulo: 'Auditor', largura: 26 }, { titulo: 'Próxima ação', largura: 28 }, { titulo: 'Agrupamento manual', largura: 20 }, { titulo: 'Marcado por', largura: 22 }, { titulo: 'Observação', largura: 34 },
         ],
         linhas: resultado.map((l) => {
           const f = l.fatura;
@@ -303,7 +329,9 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             String(l.numero), f ? 'Sim' : 'Não', f?.transportadora || '', f?.cnpj_transportadora || '', f?.data_emissao || '', f?.data_vencimento || '', (f?.data_vencimento || l.vencimentoLista) ? diasAte(f?.data_vencimento || l.vencimentoLista) ?? '' : '',
             f ? Number(f.valor_fatura || 0) : '', l.valorLista ?? '', l.vencimentoLista || '', f ? nomeStatus(f.status) : '', f ? Number(f.ctes_auditados || 0) : '', f ? Number(f.ctes_totais || 0) : '',
             f ? (faturaLancada(f) ? 'Sim' : 'Não') : '', f?.partida || '', f?.lancamento_financeiro || '', f?.data_envio_erp || '', f ? ROTULO_ENVIO_ERP[situacaoEnvioErp(l)] : '', l.ctes ? l.ctes.lancados : '', l.ctes ? l.ctes.semPartida.length : '', l.ctes ? l.ctes.valorSemPartida : '',
-            textoPagamentoLinha(l), f?.data_pagamento || '', f?.valor_pago != null ? Number(f.valor_pago) : '', f?.auditor_nome || '', proximaAcao(l), observacao,
+            textoPagamentoLinha(l), f?.data_pagamento || '', f?.valor_pago != null ? Number(f.valor_pago) : '', f?.auditor_nome || '', proximaAcao(l),
+            agrupamentoManual(f) ? (faturaLancada(f) ? 'Já agrupada' : 'A enviar') : '', agrupamentoManual(f) ? (f.agrupamento_manual_por || '') : '',
+            observacao,
           ];
         }),
         resumo: descricaoFiltros(),
@@ -434,6 +462,14 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               <button type="button" className="btn-secondary" disabled={!resultado.length} onClick={copiarNumeros}>Copiar números</button>
               <button type="button" className="btn-secondary" disabled={Boolean(progresso) || atualizando} onClick={atualizarDados} title="Busca de novo as faturas, os CT-es e as partidas no banco">{atualizando ? 'Atualizando...' : '↻ Atualizar dados'}</button>
               {temFiltro && <button type="button" className="btn-secondary" onClick={limparFiltros}>Limpar filtros</button>}
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
+              <span className="compact" style={{ color: '#475569' }} title="Contingência até o protocolo funcionar dentro do AMD. A fatura sai do card 'a enviar' quando receber partida.">
+                Agrupamento manual (contingência): {inteiro(selecaoValida.length)} selecionada(s)
+              </span>
+              <button type="button" className="btn-primary" style={{ background: '#9153F0', borderColor: '#9153F0' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarAgrupamento(true)}>{marcando ? 'Gravando...' : 'Marcar para agrupamento manual'}</button>
+              <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando} onClick={() => aplicarAgrupamento(false)}>Desmarcar</button>
+              {selecaoValida.length > 0 && <button type="button" className="btn-secondary" onClick={() => setSelecionadas(new Set())}>Limpar seleção</button>}
               {aviso && <span className="compact" role="status">{aviso}</span>}
             </div>
           </div>
@@ -441,7 +477,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
           <div className="table-card">
             <div className="sim-analise-tabela-wrap">
               <table className="sim-analise-tabela">
-                <thead><tr>{COLUNAS.map(cabecalhoCel)}</tr></thead>
+                <thead><tr>
+                  <th style={{ width: 28 }}><input type="checkbox" checked={todasSelecionadas} disabled={!idsRecorte.length} onChange={alternarTodas} title={`Selecionar as ${idsRecorte.length} faturas do recorte (todas as páginas)`} /></th>
+                  {COLUNAS.map(cabecalhoCel)}
+                </tr></thead>
                 <tbody>
                   {visiveis.map((l) => {
                     const f = l.fatura;
@@ -450,9 +489,20 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                     const corCtes = situacao === 'TODOS' ? '#14733b' : situacao === 'PARCIAL' ? '#c2410c' : situacao === 'NENHUM' ? '#9b1111' : '#64748b';
                     return (
                       <tr key={l.id} onClick={() => abrir(l)} style={{ cursor: f ? 'pointer' : 'default', ...(ultimaAberta === l.id ? { background: '#eaf1ff' } : {}) }} title={f ? 'Abrir a fatura' : undefined}>
+                        <td onClick={(e) => e.stopPropagation()}>
+                          {f && <input type="checkbox" checked={selecionadas.has(f.id)} onChange={() => alternarSelecao(f.id)} aria-label={`Selecionar fatura ${l.numero}`} />}
+                        </td>
                         <td>
                           {f ? <button type="button" className="link-button" onClick={(e) => { e.stopPropagation(); abrir(l); }}>{l.numero}</button> : <strong>{l.numero}</strong>}
                           {l.repetida > 1 && <div style={{ fontSize: 11, color: '#b78700' }}>{l.repetida} faturas</div>}
+                          {agrupamentoManual(f) && (
+                            <div
+                              style={{ fontSize: 11, fontWeight: 700, color: faturaLancada(f) ? '#14733b' : '#9153F0', whiteSpace: 'nowrap' }}
+                              title={`Marcada para agrupamento manual${f.agrupamento_manual_por ? ` por ${f.agrupamento_manual_por}` : ''}${f.agrupamento_manual_em ? ` em ${new Date(f.agrupamento_manual_em).toLocaleString('pt-BR')}` : ''}`}
+                            >
+                              {faturaLancada(f) ? 'Agrupada (manual)' : 'Agrup. manual'}
+                            </div>
+                          )}
                         </td>
                         <td>{f?.transportadora || (l.outrasTransportadoras?.length ? <span style={{ color: '#b45309' }}>Existe em: {l.outrasTransportadoras.join(', ')}</span> : <span style={{ color: '#9b1111' }}>Não localizada</span>)}</td>
                         <td>{dataBr(f?.data_emissao)}</td>
@@ -472,7 +522,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                       </tr>
                     );
                   })}
-                  {!visiveis.length && <tr><td colSpan={COLUNAS.length}>Nenhuma fatura neste filtro.</td></tr>}
+                  {!visiveis.length && <tr><td colSpan={COLUNAS.length + 1}>Nenhuma fatura neste filtro.</td></tr>}
                 </tbody>
               </table>
             </div>

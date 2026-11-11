@@ -147,6 +147,8 @@ export function situacaoPagamento(f) {
 export const faturaLancada = (f) => Boolean(f.partida || f.lancamento_financeiro || situacaoPagamento(f).startsWith('PAGA'));
 
 export const enviadaErp = (f) => Boolean(f.data_envio_erp);
+// Contingencia: fatura que vai para protocolo por agrupamento manual (fora do AMD).
+export const agrupamentoManual = (f) => Boolean(f?.agrupamento_manual);
 
 // Ha transportadora cujo SAP so tem partida por CT-e (Referencia "numero-serie"), sem linha com o numero
 // da fatura: com todos os CT-es lancados a fatura nao e erro de envio.
@@ -245,6 +247,7 @@ export function proximaAcao(linha) {
   const auditoria = situacaoAuditoria(f);
   if (auditoria === 'CANCELADA') return 'Nenhuma (cancelada/substituída)';
   if (situacaoPagamento(f) !== 'ABERTA') return 'Nenhuma (paga)';
+  if (agrupamentoManual(f) && !faturaLancada(f)) return 'Aguardar agrupamento manual do financeiro';
   if (situacaoEnvioErp(linha) === 'SEM_PARTIDA') return 'Verificar envio ao ERP (sem partida)';
   if (auditoria === 'NAO_AUDITADA' || auditoria === 'PARCIAL') return 'Auditar';
   if (auditoria === 'AUDITADA') return 'Tratar e liberar';
@@ -287,6 +290,13 @@ export const GRUPOS_DIAGNOSTICO = [
     { id: 'enviadas_partida_ctes', rotulo: 'Partida só nos CT-es', cor: '#b78700', teste: comFatura((l) => ativa(l) && situacaoEnvioErp(l) === 'PARTIDA_NOS_CTES'), dica: 'Enviadas ao ERP com todos os CT-es lançados no SAP, mas sem partida pelo número da fatura.' },
     { id: 'enviadas_com_partida', rotulo: 'Enviadas com partida', cor: '#14733b', teste: comFatura((l) => ativa(l) && situacaoEnvioErp(l) === 'COM_PARTIDA'), dica: 'Enviadas ao ERP com partida na fatura, lançamento ou já pagas.' },
     { id: 'nao_enviadas', rotulo: 'Não enviadas', cor: '#64748b', teste: comFatura((l) => ativa(l) && !enviadaErp(l.fatura)), dica: 'Sem data de envio ao ERP.' },
+  ] },
+  // Contingencia ate o protocolo funcionar dentro do AMD: marcacao feita na propria tela.
+  { id: 'protocolo', titulo: 'Protocolo (contingência)', cards: [
+    // Sai do card "a agrupar" sozinha quando a fatura recebe partida (o financeiro ja agrupou).
+    { id: 'manual_a_agrupar', rotulo: 'Agrupamento manual a enviar', cor: '#9153F0', teste: comFatura((l) => ativa(l) && agrupamentoManual(l.fatura) && !faturaLancada(l.fatura)), dica: 'Marcadas para protocolo por agrupamento manual (fora do AMD) e ainda sem partida na fatura.' },
+    { id: 'manual_agrupadas', rotulo: 'Já agrupadas pelo financeiro', cor: '#14733b', teste: comFatura((l) => agrupamentoManual(l.fatura) && faturaLancada(l.fatura)), dica: 'Marcadas para agrupamento manual que já receberam partida, lançamento ou pagamento.' },
+    { id: 'sem_marcacao', rotulo: 'Sem marcação', cor: '#64748b', teste: comFatura((l) => ativa(l) && !agrupamentoManual(l.fatura)), dica: 'Seguem o fluxo normal do AMD.' },
   ] },
   { id: 'ctes', titulo: 'CT-es no SAP', cards: [
     { id: 'todos', rotulo: 'Todos os CT-es lançados', cor: '#14733b', teste: ctes('TODOS'), dica: 'Todos os CT-es da fatura tem partida própria no SAP.' },

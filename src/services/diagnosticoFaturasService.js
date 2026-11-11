@@ -84,6 +84,42 @@ export async function carregarPartidasCtes(detalhes = []) {
   }));
 }
 
+// Contingencia: marca/desmarca faturas que vao para protocolo por agrupamento manual (fora do AMD).
+// Devolve os campos gravados por id, para atualizar a tela sem recarregar tudo.
+export async function marcarAgrupamentoManual(ids = [], marcar = true, usuario = '') {
+  if (!isSupabaseConfigured() || !ids.length) return new Map();
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const campos = marcar
+    ? { agrupamento_manual: true, agrupamento_manual_em: agora, agrupamento_manual_por: usuario || null }
+    : { agrupamento_manual: false, agrupamento_manual_em: null, agrupamento_manual_por: null };
+  const gravadas = new Map();
+  for (let i = 0; i < ids.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await client.from('faturas').update(campos).in('id', ids.slice(i, i + 200)).select('id');
+    if (error) {
+      if (/agrupamento_manual/.test(error.message || '')) throw new Error('A migration 20261111_001_faturas_agrupamento_manual.sql ainda não foi aplicada no Supabase.');
+      throw error;
+    }
+    (data || []).forEach((r) => gravadas.set(r.id, campos));
+  }
+  const historico = [...gravadas.keys()].map((id) => ({
+    id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `agrup-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    fatura_id: id,
+    created_at: agora,
+    acao: marcar ? 'AGRUPAMENTO_MANUAL_MARCADO' : 'AGRUPAMENTO_MANUAL_DESMARCADO',
+    descricao: marcar ? 'Marcada para protocolo por agrupamento manual (contingência, fora do AMD) pela tela Diagnóstico.' : 'Marcação de agrupamento manual retirada pela tela Diagnóstico.',
+    usuario_nome: usuario || null,
+    usuario_email: '',
+  }));
+  for (let i = 0; i < historico.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await client.from('auditoria_fatura_historico').insert(historico.slice(i, i + 200));
+    if (error) { console.warn('Historico do agrupamento manual nao registrado:', error.message); break; }
+  }
+  return gravadas;
+}
+
 // Data do ultimo relatorio SAP importado: mostra ate quando a informacao de partida por CT-e vale.
 export async function carregarUltimaImportacaoSap() {
   if (!isSupabaseConfigured()) return null;

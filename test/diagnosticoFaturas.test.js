@@ -182,3 +182,12 @@ test('proxima acao', () => {
   assert.equal(proximaAcao({ fatura: liberada, ctes: { total: 2, lancados: 2, nfse: 0 } }), 'Lançar a fatura');
   assert.equal(proximaAcao({ fatura: { ...liberada, partida: '123' }, ctes: { total: 2, lancados: 2, nfse: 0 } }), 'Aguardar pagamento');
 });
+
+test('agrupamento manual: sai do card a enviar quando a fatura recebe partida', () => {
+  const ref = { status: 'RECEBIDA', ctes_totais: 1, ctes_auditados: 1, agrupamento_manual: true };
+  const linhas = [{ fatura: ref }, { fatura: { ...ref, partida: '200123' } }, { fatura: { ...ref, agrupamento_manual: false } }];
+  assert.equal(filtrarPorCards(linhas, { protocolo: 'manual_a_agrupar' }).length, 1);
+  assert.equal(filtrarPorCards(linhas, { protocolo: 'manual_agrupadas' })[0].fatura.partida, '200123');
+  assert.equal(filtrarPorCards(linhas, { protocolo: 'sem_marcacao' }).length, 1);
+  assert.equal(proximaAcao(linhas[0]), 'Aguardar agrupamento manual do financeiro');
+});
