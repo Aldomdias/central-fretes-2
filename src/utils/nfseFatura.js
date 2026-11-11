@@ -1,4 +1,4 @@
-import { lancamentoDaFatura, resumirLancamentosFatura } from './robos/historicoLancamentos';
+import { lancamentoDaFatura, resumirLancamentosFatura } from './robos/historicoLancamentos.js';
 
 // Linha de fatura que e NFS-e (nota fiscal de servico municipal), nao CT-e: serie de NFS-e (SPN, CWN, RJN... ou OS)
 // e sem chave de 44 digitos. Nunca vai estar na base de CT-es, entao o robo nao audita: vai para conferencia manual.

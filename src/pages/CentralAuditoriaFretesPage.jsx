@@ -123,6 +123,7 @@ import { autorizarPelaGestao, normalizarCanalAutorizacao, carregarDecisoesPorCha
 import AnaliseFreteTabela from '../components/AnaliseFreteTabela';
 import ProdutividadeDiaFaturas from '../components/ProdutividadeDiaFaturas';
 import MeuPainelAuditor from '../components/MeuPainelAuditor';
+import DiagnosticoFaturasPainel from '../components/DiagnosticoFaturasPainel';
 import BoletosPendentesPainel from '../components/BoletosPendentesPainel';
 import RoboAuditoriaPainel from '../components/RoboAuditoriaPainel';
 import LancamentosRoboFatura from '../components/LancamentosRoboFatura';
@@ -164,6 +165,7 @@ const TABS = [
   ['robo', 'Robo'],
   ['dashboard', 'Dashboard'],
   ['painel', 'Painel'],
+  ['diagnostico', 'Diagnóstico'],
   ['faturas', 'Faturas'],
   ['aprovacao', 'Aprovacao da Gestao'],
   ['gestao', 'Centro de Gestores'],
@@ -10461,6 +10463,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
       {tab === 'meu-painel' && <MeuPainelAuditor state={state} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onEnviarEmailLaudo={enviarLaudosPorEmailRobo} />}
       {tab === 'robo' && <RoboAuditoriaPainel state={state} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onAbrirConsolidado={(transportadora, fats) => irParaFaturasComFiltro({ filtro: transportadora, selecionarIds: fats.map((f) => f.id), acaoAuto: 'laudo-transportador-lote' })} onEnviarEmail={enviarLaudosPorEmailRobo} resultadosEmail={resultadosEmailRobo} onLimparResultadosEmail={() => setResultadosEmailRobo([])} />}
       {tab === 'dashboard' && <Dashboard state={state} />}
+      {tab === 'diagnostico' && <DiagnosticoFaturasPainel state={state} onState={setState} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} />}
       {tab === 'painel' && (
         <PainelAcompanhamento
           state={state}

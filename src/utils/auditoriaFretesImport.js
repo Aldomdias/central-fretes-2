@@ -139,8 +139,15 @@ function parteChave(valorParte) {
   return String(valorParte ?? '').trim().toUpperCase().replace(/^0+(?=.)/, '');
 }
 
+// Serie "0" e serie vazia sao a mesma fatura: o arquivo pode trazer uma ou outra, e tratar
+// como diferentes criava uma copia a cada reimportacao.
+function parteChaveSerie(serie) {
+  const parte = parteChave(serie);
+  return parte === '0' ? '' : parte;
+}
+
 export function chaveFatura(numeroFatura, serieFatura) {
-  return `${parteChave(numeroFatura)}::${parteChave(serieFatura)}`;
+  return `${parteChave(numeroFatura)}::${parteChaveSerie(serieFatura)}`;
 }
 
 // Identifica a transportadora pelo CNPJ (raiz) quando disponível — imune a
