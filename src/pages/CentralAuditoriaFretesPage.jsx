@@ -124,6 +124,7 @@ import AnaliseFreteTabela from '../components/AnaliseFreteTabela';
 import ProdutividadeDiaFaturas from '../components/ProdutividadeDiaFaturas';
 import MeuPainelAuditor from '../components/MeuPainelAuditor';
 import DiagnosticoFaturasPainel from '../components/DiagnosticoFaturasPainel';
+import { carregarPartidasCtes } from '../services/diagnosticoFaturasService';
 import BoletosPendentesPainel from '../components/BoletosPendentesPainel';
 import RoboAuditoriaPainel from '../components/RoboAuditoriaPainel';
 import LancamentosRoboFatura from '../components/LancamentosRoboFatura';
@@ -1938,6 +1939,32 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   );
   const duplicadosRemovidos = Math.max(0, detalhesOriginais.length - detalhes.length);
 
+  // Partida no SAP de cada CT-e (relatorio SAP importado): card com/sem partida e coluna na tabela.
+  const [partidasCtes, setPartidasCtes] = useState(null);
+  const [erroPartidasCtes, setErroPartidasCtes] = useState('');
+  const [filtroPartidaCte, setFiltroPartidaCte] = useState('todos');
+  useEffect(() => {
+    if (!detalhesOriginais.length) { setPartidasCtes(new Map()); return undefined; }
+    let ativo = true;
+    setPartidasCtes(null);
+    setErroPartidasCtes('');
+    carregarPartidasCtes(detalhesOriginais)
+      .then((mapa) => { if (ativo) setPartidasCtes(mapa); })
+      .catch((error) => { if (ativo) setErroPartidasCtes(error.message || String(error)); });
+    return () => { ativo = false; };
+  }, [detalhesOriginais]);
+  const resumoPartidasCtes = useMemo(() => {
+    if (!partidasCtes) return null;
+    const r = { com: 0, sem: 0, estornados: 0, nfse: 0, valorSem: 0 };
+    detalhes.forEach((item) => {
+      const sit = partidasCtes.get(item.id)?.situacao;
+      if (sit === 'COM_PARTIDA') r.com += 1;
+      else if (sit === 'NFSE') r.nfse += 1;
+      else { r.sem += 1; r.valorSem += Number(item.valor_frete || 0); if (sit === 'ESTORNADO') r.estornados += 1; }
+    });
+    return r;
+  }, [partidasCtes, detalhes]);
+
   // Saldo autorizado pelo gestor do transporte (B2C/Atacado) por chave do CT-e
   // ou da NF — coluna propria na tabela de CT-es; soma ao calculado na reauditoria.
   useEffect(() => {
@@ -3230,6 +3257,10 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       || referenciaCtes.get(normalizarChaveCte(item.numero_cte));
     if (filtroCanalCte !== 'todos' && (item.canal || base?.canal || '') !== filtroCanalCte) return false;
     if (filtroStatusCte !== 'todos' && statusFiltroCte(item, base) !== filtroStatusCte) return false;
+    if (filtroPartidaCte !== 'todos' && partidasCtes) {
+      const sit = partidasCtes.get(item.id)?.situacao;
+      if (filtroPartidaCte === 'com' ? sit !== 'COM_PARTIDA' : (sit === 'COM_PARTIDA' || sit === 'NFSE')) return false;
+    }
     if (filtroEntregaCte !== 'todos') {
       const st = entregaCtes?.get(chaveEntregaRegistro(item))?.status;
       if (filtroEntregaCte === 'entregue' ? st !== STATUS_ENTREGA.ENTREGUE : (!st || st === STATUS_ENTREGA.ENTREGUE)) return false;
@@ -3317,6 +3348,13 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
             <option value="nao_entregue">Não entregues / sem tracking</option>
           </select>
         </label>
+        <label className="field">Partida SAP
+          <select value={filtroPartidaCte} onChange={(e) => setFiltroPartidaCte(e.target.value)}>
+            <option value="todos">Todos</option>
+            <option value="com">Com partida</option>
+            <option value="sem">Sem partida</option>
+          </select>
+        </label>
         <label className="field">Buscar (CT-e, chave, cidade, UF)
           <input value={buscaCtes} onChange={(e) => setBuscaCtes(e.target.value)} placeholder="Digite para filtrar..." />
         </label>
@@ -3352,7 +3390,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
               }}
             />
           </th>
-          <th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th title="Peso do CT-e (base). Fundo verde = peso usado no calculo.">Peso CT-e</th><th title="Peso calculado pelo Tracking: maior entre peso fisico e cubagem x 300. Vermelho = diverge do peso usado no calculo.">Peso Tracking</th><th>Valor NF</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Saldo autorizado</th><th>Motivo</th><th>Status</th><th>Entrega</th>
+          <th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th title="Peso do CT-e (base). Fundo verde = peso usado no calculo.">Peso CT-e</th><th title="Peso calculado pelo Tracking: maior entre peso fisico e cubagem x 300. Vermelho = diverge do peso usado no calculo.">Peso Tracking</th><th>Valor NF</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Saldo autorizado</th><th>Motivo</th><th>Status</th><th>Entrega</th><th title="Partida do CT-e no relatorio SAP importado">Partida SAP</th>
         </tr></thead>
         <tbody>
           {lista.map((item) => {
@@ -3450,10 +3488,19 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                       return <span title={ent.dataEntrega ? `Entregue em ${new Date(ent.dataEntrega).toLocaleDateString('pt-BR')}` : ''} style={{ padding: '2px 6px', borderRadius: 6, fontWeight: 700, background: bg, color: fg }}>{ROTULO_ENTREGA[ent.status]}</span>;
                     })()}
                   </td>
+                  <td style={{ whiteSpace: 'nowrap', fontSize: 11 }}>
+                    {(() => {
+                      if (!partidasCtes) return <span style={{ color: '#94a3b8' }}>{erroPartidasCtes ? '—' : '...'}</span>;
+                      const p = partidasCtes.get(item.id);
+                      if (p?.situacao === 'COM_PARTIDA') return <span title={p.data_lancamento ? `Lançado em ${dataBr(p.data_lancamento)}` : ''} style={{ padding: '2px 6px', borderRadius: 6, fontWeight: 700, background: '#dcfce7', color: '#166534' }}>{p.lancamento_contabil || 'Lançado'}</span>;
+                      if (p?.situacao === 'NFSE') return <span style={{ color: '#94a3b8' }} title="NFS-e não entra no relatório SAP de CT-e">NFS-e</span>;
+                      return <span style={{ padding: '2px 6px', borderRadius: 6, fontWeight: 700, background: '#fee2e2', color: '#991b1b' }}>{p?.situacao === 'ESTORNADO' ? 'Estornado' : 'Sem partida'}</span>;
+                    })()}
+                  </td>
                 </tr>
                 {expandido && (
                   <tr>
-                    <td colSpan="17" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
+                    <td colSpan="18" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
                       <div className="hint-box compact" style={{ marginBottom: 10, borderColor: semValorNf ? '#fdba74' : '#dbe3ef', background: semValorNf ? '#fff7ed' : '#f8fafc' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                           <strong>{semValorNf ? 'CT-e sem valor NF identificado.' : 'Ajustes manuais do CT-e'}</strong>
@@ -3664,6 +3711,24 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <Card label="Cobranca acima" value={dinheiro(resumoAuditoriaFatura.cobrancaAcima)} color="#dc2626" onClick={() => cliqueCard('acima')} ativo={cardAtivo('acima')} />
         <Card label="Cobranca abaixo" value={dinheiro(resumoAuditoriaFatura.cobrancaAbaixo)} color="#d97706" onClick={() => cliqueCard('abaixo')} ativo={cardAtivo('abaixo')} />
         <Card label="Total a descontar" value={dinheiro(totalDescontarFatura)} color={totalDescontarFatura ? '#d97706' : '#047857'} detail={faturaConsideraMenor(fatura) ? 'Considerando cobranca a menor' : 'So cobranca a maior'} />
+        <Card
+          label="CT-es com partida"
+          value={resumoPartidasCtes ? resumoPartidasCtes.com : (erroPartidasCtes ? '—' : '...')}
+          color="#047857"
+          detail={erroPartidasCtes ? `Erro ao consultar SAP: ${erroPartidasCtes}` : 'Relatório SAP importado'}
+          onClick={() => { setTab('ctes'); setFiltroPartidaCte(filtroPartidaCte === 'com' ? 'todos' : 'com'); }}
+          ativo={tab === 'ctes' && filtroPartidaCte === 'com'}
+          titulo="Ver só os CT-es com partida no SAP"
+        />
+        <Card
+          label="CT-es sem partida"
+          value={resumoPartidasCtes ? resumoPartidasCtes.sem : (erroPartidasCtes ? '—' : '...')}
+          color={resumoPartidasCtes?.sem ? '#dc2626' : '#047857'}
+          detail={resumoPartidasCtes ? `${dinheiro(resumoPartidasCtes.valorSem)}${resumoPartidasCtes.estornados ? ` · ${resumoPartidasCtes.estornados} estornado(s)` : ''}${resumoPartidasCtes.nfse ? ` · ${resumoPartidasCtes.nfse} NFS-e fora da conta` : ''}` : ''}
+          onClick={() => { setTab('ctes'); setFiltroPartidaCte(filtroPartidaCte === 'sem' ? 'todos' : 'sem'); }}
+          ativo={tab === 'ctes' && filtroPartidaCte === 'sem'}
+          titulo="Ver só os CT-es sem partida no SAP"
+        />
       </div>
       <LancamentosRoboFatura fatura={fatura} />
       {linhasNfse.length > 0 && (

@@ -1,6 +1,6 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { identificacaoSapDoCte, resumirCtesFatura } from '../utils/diagnosticoFaturas';
-import { chaveCasamentoCte } from '../utils/lancamentosCteSap';
+import { chaveCasamentoCte, situacaoLancamentoCte } from '../utils/lancamentosCteSap';
 import { ehLinhaNfse } from '../utils/nfseFatura';
 
 const PAGINA = 1000;
@@ -69,6 +69,19 @@ export async function carregarResumoCtesFaturas(faturaIds = []) {
   const porFatura = new Map(faturaIds.map((id) => [String(id), []]));
   detalhes.forEach((d) => porFatura.get(String(d.fatura_id))?.push(d));
   return new Map([...porFatura].map(([id, lista]) => [id, resumirCtesFatura(lista, lancamentos)]));
+}
+
+// Partida no SAP de cada CT-e de uma fatura (tela da fatura): Map(detalheId -> situacao).
+// situacao: { situacao: 'COM_PARTIDA' | 'SEM_PARTIDA' | 'ESTORNADO' | 'NFSE', lancamento_contabil, data_lancamento }
+export async function carregarPartidasCtes(detalhes = []) {
+  if (!isSupabaseConfigured() || !detalhes.length) return new Map();
+  const lancamentos = await carregarLancamentos(getSupabaseClient(), detalhes);
+  return new Map(detalhes.map((item) => {
+    if (ehLinhaNfse(item)) return [item.id, { situacao: 'NFSE' }];
+    const sit = situacaoLancamentoCte(lancamentos.get(chaveCasamentoCte(identificacaoSapDoCte(item))) || []);
+    if (sit.lancado) return [item.id, { situacao: 'COM_PARTIDA', lancamento_contabil: sit.lancamento_contabil, data_lancamento: sit.data_lancamento }];
+    return [item.id, { situacao: sit.estornado ? 'ESTORNADO' : 'SEM_PARTIDA' }];
+  }));
 }
 
 // Data do ultimo relatorio SAP importado: mostra ate quando a informacao de partida por CT-e vale.
