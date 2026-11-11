@@ -184,6 +184,18 @@ export function faixaDaLinha(l, referencia = new Date()) {
 
 export const FAIXAS_A_VENCER = ['HOJE_AMANHA', 'ATE_7', 'MAIS_7'];
 
+// Previsao de pagamento combinada com o financeiro no protocolo (agrupamento manual). Fora do protocolo
+// o prazo e o vencimento. So vale enquanto a fatura esta no protocolo e nao foi paga.
+export const previsaoPagamento = (f) => (f && f.agrupamento_manual && situacaoPagamento(f) === 'ABERTA' ? String(f.data_previsao_pagamento || '').slice(0, 10) : '');
+
+// SEM_PREVISAO, PREVISTA (hoje ou adiante) ou ATRASADA (a data combinada passou e nao pagou).
+export function situacaoPrevisao(f, referencia = new Date()) {
+  const data = previsaoPagamento(f);
+  if (!data) return 'SEM_PREVISAO';
+  const dias = diasAte(data, referencia);
+  return dias != null && dias < 0 ? 'ATRASADA' : 'PREVISTA';
+}
+
 // Identificacao do CT-e no SAP: emitente e serie saem da chave de acesso (e o CNPJ da filial que emitiu).
 export function identificacaoSapDoCte(item = {}) {
   const chave = digitos(item.chave_cte);
@@ -242,6 +254,22 @@ export function situacaoCtes(resumo) {
 
 export const temFenix = (linha) => Boolean(linha?.ctes?.fenix?.length);
 
+// Pedido de estorno da Fenix ao financeiro, antes do protocolo (marcacao feita na tela):
+// A_ENVIAR -> AGUARDANDO (enviada ao financeiro) -> RETORNO (estorno feito: mandar protocolo) -> PROTOCOLO.
+// O retorno vale pela marcacao manual ou sozinho, quando o SAP reimportado ja nao mostra a Fenix.
+export const statusAjusteFenix = (f) => (['ENVIADO', 'RETORNADO'].includes(f?.fenix_ajuste_status) ? f.fenix_ajuste_status : '');
+
+export function etapaFenix(linha) {
+  const f = linha?.fatura;
+  if (!f || inativa(f) || situacaoPagamento(f) !== 'ABERTA') return '';
+  const status = statusAjusteFenix(f);
+  if (!status) return temFenix(linha) ? 'A_ENVIAR' : '';
+  if (agrupamentoManual(f)) return 'PROTOCOLO';
+  if (status === 'RETORNADO') return 'RETORNO';
+  // Sem o resumo dos CT-es ainda nao da para saber se o estorno chegou.
+  return linha.ctes && !temFenix(linha) ? 'RETORNO' : 'AGUARDANDO';
+}
+
 const ROTULO_PAGAMENTO = { PAGA: 'Paga', PAGA_DIVERGENTE: 'Paga c/ divergência', CANCELADA: 'Cancelada' };
 
 // Texto da coluna Pagamento: a fatura em aberto mostra tambem ate onde o lancamento chegou.
@@ -261,15 +289,23 @@ export function proximaAcao(linha) {
   const auditoria = situacaoAuditoria(f);
   if (auditoria === 'CANCELADA') return 'Nenhuma (cancelada/substituída)';
   if (situacaoPagamento(f) !== 'ABERTA') return 'Nenhuma (paga)';
-  if (temFenix(linha)) return 'Pedir estorno da compensação Fênix ao financeiro';
-  if (agrupamentoManual(f) && !faturaLancada(f)) return 'Aguardar agrupamento manual do financeiro';
+  const fenix = etapaFenix(linha);
+  if (fenix === 'A_ENVIAR') return 'Pedir estorno da compensação Fênix ao financeiro';
+  if (fenix === 'AGUARDANDO') return 'Aguardar retorno do financeiro (Fênix)';
+  if (fenix === 'RETORNO') return 'Mandar protocolo (Fênix ajustada)';
+  if (agrupamentoManual(f) && !faturaLancada(f)) {
+    const previsto = previsaoPagamento(f);
+    return `Aguardar agrupamento manual do financeiro${previsto ? ` (pagamento previsto ${previsto.split('-').reverse().join('/')})` : ''}`;
+  }
   if (situacaoEnvioErp(linha) === 'SEM_PARTIDA') return 'Verificar envio ao ERP (sem partida)';
   if (auditoria === 'NAO_AUDITADA' || auditoria === 'PARCIAL') return 'Auditar';
   if (auditoria === 'AUDITADA') return 'Tratar e liberar';
   if (auditoria === 'FORNECEDOR') return 'Cobrar retorno do fornecedor';
   if (auditoria === 'GESTAO') return 'Aprovar na gestão';
   if (['PARCIAL', 'NENHUM'].includes(situacaoCtes(linha.ctes))) return 'Lançar CT-es sem partida';
-  return faturaLancada(f) ? 'Aguardar pagamento' : 'Lançar a fatura';
+  if (!faturaLancada(f)) return 'Lançar a fatura';
+  const previsao = previsaoPagamento(f);
+  return previsao ? `Aguardar pagamento (previsto ${previsao.split('-').reverse().join('/')})` : 'Aguardar pagamento';
 }
 
 const comFatura = (fn) => (l) => Boolean(l.fatura) && fn(l);
@@ -323,6 +359,19 @@ export const GRUPOS_DIAGNOSTICO = [
   { id: 'fenix', titulo: 'Partida Fênix (compensação não paga)', cards: [
     { id: 'com_fenix', rotulo: 'CT-es com a Fênix', cor: '#b91c1c', teste: comFatura((l) => ativa(l) && temFenix(l)), dica: 'Faturas com CT-e compensado pela partida Fênix (1501163056): o financeiro precisa estornar a compensação para a fatura escriturar.', detalheFenix: true },
     { id: 'sem_fenix', rotulo: 'Sem Fênix', cor: '#64748b', teste: comFatura((l) => ativa(l) && Boolean(l.ctes) && !temFenix(l)), dica: 'Faturas verificadas sem CT-e na partida Fênix.' },
+  ] },
+  // Controle do pedido ao financeiro: a fatura anda de card conforme e marcada na tela.
+  { id: 'fenix_ajuste', titulo: 'Ajuste Fênix no financeiro (antes do protocolo)', cards: [
+    { id: 'fenix_a_enviar', rotulo: 'Fênix a enviar ao financeiro', cor: '#b91c1c', teste: (l) => etapaFenix(l) === 'A_ENVIAR', dica: 'Com CT-e na Fênix e ainda não marcadas como enviadas ao financeiro. Gere o termo, envie e marque "Enviado para ajustar Fênix".', detalheFenix: true },
+    { id: 'fenix_aguardando', rotulo: 'Enviadas, aguardando retorno', cor: '#b78700', teste: (l) => etapaFenix(l) === 'AGUARDANDO', dica: 'Enviadas ao financeiro para estornar a compensação Fênix; aguardando o retorno.', detalheFenix: true },
+    { id: 'fenix_retorno', rotulo: 'Retorno recebido: mandar protocolo', cor: '#315ee7', teste: (l) => etapaFenix(l) === 'RETORNO', dica: 'O financeiro já ajustou (marcado como retorno recebido, ou a Fênix sumiu do relatório SAP reimportado). Falta marcar para protocolo.' },
+    { id: 'fenix_protocolo', rotulo: 'Já no protocolo', cor: '#14733b', teste: (l) => etapaFenix(l) === 'PROTOCOLO', dica: 'Passaram pelo ajuste Fênix e já foram marcadas para protocolo (agrupamento manual).' },
+  ] },
+  // Data combinada com o financeiro para as faturas do protocolo, para repassar a transportadora.
+  { id: 'previsao', titulo: 'Previsão de pagamento (protocolo)', cards: [
+    { id: 'protocolo_sem_previsao', rotulo: 'No protocolo sem previsão', cor: '#9b1111', teste: comFatura((l) => ativa(l) && agrupamentoManual(l.fatura) && situacaoPagamento(l.fatura) === 'ABERTA' && situacaoPrevisao(l.fatura) === 'SEM_PREVISAO'), dica: 'Marcadas para protocolo, não pagas e ainda sem a data alinhada com o financeiro.' },
+    { id: 'com_previsao', rotulo: 'Com previsão', cor: '#04a484', teste: comFatura((l) => ativa(l) && situacaoPrevisao(l.fatura) === 'PREVISTA'), dica: 'No protocolo com pagamento previsto para hoje ou adiante: dá para avisar a transportadora.' },
+    { id: 'previsao_atrasada', rotulo: 'Previsão passou, não paga', cor: '#e67e22', teste: comFatura((l) => ativa(l) && situacaoPrevisao(l.fatura) === 'ATRASADA'), dica: 'A data prevista já passou e a fatura segue sem pagamento: cobrar o financeiro ou atualizar a data.' },
   ] },
   { id: 'pagamento', titulo: 'Pagamento', cards: [
     { id: 'pagas', rotulo: 'Pagas', cor: '#14733b', teste: pagamento('PAGA'), dica: 'Pagas ou pagas com desconto.' },
