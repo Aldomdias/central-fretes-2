@@ -83,6 +83,32 @@ const COLUNAS = [
   { campo: 'vencimento', titulo: 'Vencimento', w: 122, tipo: 'date' },
 ];
 
+// Andamento da leitura dos PDFs: arquivo X de N, pagina, % do OCR, barra geral e tempo estimado.
+function ProgressoPdf({ p }) {
+  const porArquivo = p.paginas ? (Math.max(0, p.pagina - 1) + (p.ocr ? p.pct / 100 : 0)) / p.paginas : 0;
+  const feito = p.total ? Math.min(1, (Math.max(0, p.atual - 1) + porArquivo) / p.total) : 0;
+  const seg = Math.round((Date.now() - p.inicio) / 1000);
+  const tempo = (t) => (t >= 60 ? `${Math.floor(t / 60)}min${String(t % 60).padStart(2, '0')}s` : `${t}s`);
+  const falta = feito > 0.02 ? Math.round((seg / feito) * (1 - feito)) : null;
+  return (
+    <div style={{ padding: 12, borderRadius: 8, background: '#eff6ff', color: '#1e3a8a', border: '1px solid #bfdbfe' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <b>Lendo PDFs: arquivo {fmt(p.atual)} de {fmt(p.total)}</b>
+        <span>{fmt(Math.round(feito * 100))}% · {tempo(seg)}{falta !== null ? ` · falta ~${tempo(falta)}` : ''}</span>
+      </div>
+      <div style={{ height: 8, background: '#dbeafe', borderRadius: 4, margin: '8px 0', overflow: 'hidden' }}>
+        <div style={{ width: `${Math.round(feito * 100)}%`, height: '100%', background: '#2563eb', transition: 'width .3s' }} />
+      </div>
+      <div style={{ fontSize: 12 }}>
+        {p.nome || '...'}
+        {p.paginas ? ` — página ${fmt(p.pagina)} de ${fmt(p.paginas)}` : ''}
+        {p.ocr ? ` — sem texto, lendo por OCR ${fmt(p.pct)}%` : ''}
+        {p.atual > 1 ? ` · até agora: ${fmt(p.lidas)} lida(s)${p.falhas ? `, ${fmt(p.falhas)} com problema` : ''}` : ''}
+      </div>
+    </div>
+  );
+}
+
 export default function LancamentoNfseRobo() {
   const inicial = useMemo(() => ler(CHAVE_LOTE, {}), []);
   const [parametros, setParametros] = useState(carregarParametros);
@@ -92,6 +118,8 @@ export default function LancamentoNfseRobo() {
   const [colado, setColado] = useState('');
   const [erro, setErro] = useState('');
   const [feedback, setFeedback] = useState('');
+  // Andamento da leitura dos PDFs (arquivo/pagina/OCR), para nao parecer travado em lotes grandes.
+  const [progressoPdf, setProgressoPdf] = useState(null);
   const [focar, setFocar] = useState(null);
   const [scriptTela, setScriptTela] = useState(null); // script aberto na tela para copiar
   const refArquivo = useRef(null);
@@ -342,17 +370,23 @@ export default function LancamentoNfseRobo() {
       const { lerNfsePdf } = await import('../../utils/robos/nfsePdf');
       const { ocrDaPagina, encerrarOcr } = await import('../../utils/robos/nfseOcr');
       let ocrUsado = 0;
+      const inicio = Date.now();
+      const prog = { total: lista.length, atual: 0, nome: '', pagina: 0, paginas: 0, ocr: false, pct: 0, lidas: 0, falhas: 0, inicio };
+      const mostrar = (mud) => { Object.assign(prog, mud); setProgressoPdf({ ...prog }); };
       const ocr = async (pdf, n) => {
         ocrUsado += 1;
-        setFeedback(`Lendo por OCR a pagina ${n} (PDF sem texto)... pode levar alguns segundos por pagina.`);
-        return ocrDaPagina(pdf, n);
+        mostrar({ ocr: true, pct: 0 });
+        let ultimo = 0;
+        return ocrDaPagina(pdf, n, (f) => { const pct = Math.round(f * 100); if (pct - ultimo >= 5 || pct === 100) { ultimo = pct; mostrar({ pct }); } });
       };
       const lidas = [];
       const falhas = [];
       let puladas = 0;
-      for (const arq of lista) {
+      mostrar({});
+      for (const [i, arq] of lista.entries()) {
+        mostrar({ atual: i + 1, nome: arq.name, pagina: 0, paginas: 0, ocr: false, pct: 0, lidas: lidas.length, falhas: falhas.length });
         try {
-          const { totalPaginas, notas, ignoradas = [] } = await lerNfsePdf(arq, { ocr });
+          const { totalPaginas, notas, ignoradas = [] } = await lerNfsePdf(arq, { ocr, onPagina: (pagina, paginas) => mostrar({ pagina, paginas, ocr: false, pct: 0 }) });
           // pagina pulada como continuacao da nota anterior: avisa, pode ser uma nota que o OCR nao conseguiu ler
           ignoradas.filter((g) => g.motivo === 'continuacao').forEach((g) => {
             puladas += 1;
@@ -387,7 +421,7 @@ export default function LancamentoNfseRobo() {
       if (naoLidas) setErro(`${fmt(naoLidas)} PDF(s) nao foram lidos${repetidas ? ` e ${fmt(repetidas)} eram repetidos` : ''}.${avisoPuladas} Baixe o relatorio abaixo para ver quais e por que.`);
       else if (novas.length || puladas) setFeedback(`${alvo ? `Fatura ${daFatura.fatura}: ` : ''}${fmt(novas.length)} nota(s) lida(s) do PDF${repetidas ? ` (${fmt(repetidas)} repetida(s) ignorada(s))` : ''}.${avisoPuladas} Preencha o EscrV (e a Fatura). Cod (IN/IQ) e CFOP (1933AA/2933AA) vieram da nota; confira.${novas.some((n) => n.ocr) ? ' As marcadas com OCR foram lidas por imagem: confira CNPJ e valor.' : ''}`);
     } catch (e) { setErro(e.message || 'Nao consegui ler os PDFs.'); }
-    finally { if (refPdf.current) refPdf.current.value = ''; }
+    finally { setProgressoPdf(null); if (refPdf.current) refPdf.current.value = ''; }
   }
 
   function lerPdfsDaFatura(fatura) {
@@ -552,7 +586,8 @@ export default function LancamentoNfseRobo() {
       <AvisoFila tipo="NFSE" />
       {scriptTela ? <ScriptParaCopiar script={scriptTela.script} nomeArquivo={scriptTela.nome} onFechar={() => setScriptTela(null)} titulo={scriptTela.macro ? 'Código da macro (Excel)' : undefined} passos={scriptTela.macro ? passosMacroExcel(scriptTela.macro) : undefined} /> : null}
       {erro ? <div style={{ padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{erro}</div> : null}
-      {feedback && !erro ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}
+      {progressoPdf ? <ProgressoPdf p={progressoPdf} /> : null}
+      {feedback && !erro && !progressoPdf ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}
 
       <ParametrosLancamentoCard parametros={parametros} onChange={setParametros} onErro={setErro} onFeedback={setFeedback} />
 

@@ -658,11 +658,13 @@ export function lerPaginas(paginas = [], opcoes = {}) {
 }
 
 // opcoes.ocr(pdf, n) -> linhas: usado nas paginas sem texto (PDF escaneado ou com letras desenhadas).
-export async function lerNfsePdf(arquivo, { ocr } = {}) {
+// opcoes.onPagina(n, total): avisa a pagina que vai ser lida (progresso na tela).
+export async function lerNfsePdf(arquivo, { ocr, onPagina } = {}) {
   const pdf = await abrirPdf(arquivo);
   const paginas = [];
   const ocrPaginas = [];
   for (let n = 1; n <= pdf.numPages; n += 1) {
+    if (onPagina) onPagina(n, pdf.numPages);
     let linhas = await linhasDaPagina(pdf, n);
     if (!linhas.length && ocr) {
       linhas = await ocr(pdf, n);
