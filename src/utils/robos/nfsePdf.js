@@ -149,6 +149,11 @@ function extrairModeloRps(L, U) {
 
 // Modelo ISS.NET / Nota Control (ex.: Governo do Distrito Federal): blocos "Dados do Prestador de
 // Servico" e "Dados do Tomador de Servicos", valores na linha abaixo dos titulos do "Detalhamento dos Tributos".
+// O PDF do DF as vezes vem com as letras desenhadas (sem texto) e passa pelo OCR, que le "Vl." como "VI."
+// e "DF" como "DE", junta o nome do prestador com a data de geracao e mistura lixo do QR Code nas linhas.
+const RE_VL_TOTAL = /\bV[LI1|]\.?\s*TOTAL DOS SERVICOS/;
+const RE_VL_LIQUIDO = /\bV[LI1|]\.?\s*LIQUIDO DA NOTA/;
+const UF_VALIDAS = new Set(Object.values(UF_IBGE));
 function extrairModeloIssNet(L, U) {
   const dados = { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null, chave: '', valorLiquido: null, municipioPrestador: '', municipioTomador: '' };
   const todo = L.join('\n');
@@ -175,7 +180,10 @@ function extrairModeloIssNet(L, U) {
     for (let k = iPrest + 1; k < fimPrest; k += 1) {
       const t = L[k].split(SEP)[0].trim();
       if (!t || /^(DATA|COD\.|RESPONSAVEL|IDENTIFICACAO)/.test(semAcento(t).toUpperCase()) || /^[\d/: ]+$/.test(t)) continue;
-      dados.transportadora = t;
+      // OCR: "NOME LTDA. 10/09/2026 13:29:10 | lixo" -> corta na data; linhas de lixo tem poucas letras
+      const nome = t.replace(/\s*\d{2}\/\d{2}\/\d{4}.*$/, '').replace(/\s*\|.*$/, '').trim();
+      if ((nome.match(/[A-Za-zÀ-ÿ]/g) || []).length < 8) continue;
+      dados.transportadora = nome;
       break;
     }
     for (let k = iPrest + 1; k < fimPrest; k += 1) {
@@ -185,19 +193,28 @@ function extrairModeloIssNet(L, U) {
       if (mun && !dados.municipioPrestador) { dados.municipioPrestador = chaveMunicipio(`${mun[1]}${mun[2]}`); dados.ufPrestador = mun[2].toUpperCase(); }
     }
   }
+  // a chave (IBGE do municipio emissor) vale mais que a UF lida (o OCR troca "DF" por "DE")
+  const ufChave = dados.chave ? UF_IBGE[dados.chave.slice(0, 2)] || '' : '';
+  if (ufChave && dados.ufPrestador !== ufChave) {
+    dados.municipioPrestador = `IBGE${dados.chave.slice(0, 7)}`;
+    dados.ufPrestador = ufChave;
+  } else if (dados.ufPrestador && !UF_VALIDAS.has(dados.ufPrestador)) {
+    dados.municipioPrestador = '';
+    dados.ufPrestador = '';
+  }
   if (iTom >= 0) {
     for (let k = iTom + 1; k < Math.min(iTom + 8, L.length); k += 1) {
       const cnpj = L[k].match(RE_CNPJ);
       if (cnpj && !dados.cnpjTomador) dados.cnpjTomador = cnpj[1].replace(/\D/g, '');
       const mun = L[k].match(/Cidade\s*\/\s*UF\s*:\s*(?:¦\s*)?([^/¦]+?)\s*\/\s*([A-Za-z]{2})\b/i);
-      if (mun && !dados.municipioTomador) { dados.municipioTomador = chaveMunicipio(`${mun[1]}${mun[2]}`); dados.ufTomador = mun[2].toUpperCase(); }
+      if (mun && !dados.municipioTomador && UF_VALIDAS.has(mun[2].toUpperCase())) { dados.municipioTomador = chaveMunicipio(`${mun[1]}${mun[2]}`); dados.ufTomador = mun[2].toUpperCase(); }
     }
   }
 
   // "Vl. Total dos Servicos" e a 1a coluna; "Vl. Liquido da NotaFiscal" e a ultima
-  const iTot = U.findIndex((l) => l.includes('VL. TOTAL DOS SERVICOS'));
+  const iTot = U.findIndex((l) => RE_VL_TOTAL.test(l));
   if (iTot >= 0) { const v = (L[iTot + 1] || '').match(RE_VALOR); if (v) dados.valor = paraNumero(v[1]); }
-  const iLiq = U.findIndex((l) => l.includes('VL. LIQUIDO DA NOTA'));
+  const iLiq = U.findIndex((l) => RE_VL_LIQUIDO.test(l));
   if (iLiq >= 0) { const v = numeros(L[iLiq + 1] || ''); if (v.length) dados.valorLiquido = v[v.length - 1]; }
   aplicarRegrasLancamento(dados);
   return resultado(dados);
@@ -462,7 +479,7 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   const L = linhas.map((l) => String(l ?? ''));
   const U = L.map((l) => semAcento(l).toUpperCase());
   if (U.some((l) => l.includes('RECIBO PROVISORIO DE SERVICOS'))) return extrairModeloRps(L, U);
-  if (U.some((l) => l.includes('DADOS DO TOMADOR DE SERVICO')) && U.some((l) => l.includes('VL. TOTAL DOS SERVICOS'))) return extrairModeloIssNet(L, U);
+  if (U.some((l) => l.includes('DADOS DO TOMADOR DE SERVICO')) && U.some((l) => RE_VL_TOTAL.test(l))) return extrairModeloIssNet(L, U);
   const todo = L.join('\n');
   const dados = { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null, chave: '' };
   const faltando = [];
