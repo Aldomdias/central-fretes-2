@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarPlataformaAuditoria } from '../services/auditoriaFretesService';
-import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual } from '../services/diagnosticoFaturasService';
+import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, marcarAjusteFenix } from '../services/diagnosticoFaturasService';
 import { diasAte } from '../utils/auditoriaFretesDomain';
 import { carregarSessao } from '../utils/authLocal';
 import {
   agrupamentoManual,
+  etapaFenix,
   FAIXAS_A_VENCER,
   faixaDaLinha,
   faturaLancada,
@@ -17,6 +18,7 @@ import {
   situacaoEnvioErp,
   situacaoPagamento,
   situacaoPagamentoLinha,
+  statusAjusteFenix,
   temFenix,
   textoPagamentoLinha,
   valorDaLinha,
@@ -37,6 +39,8 @@ const nomeStatus = (s) => String(s || '-').replaceAll('_', ' ');
 const carimbo = (f) => f.updated_at || '';
 const COR_PAGAMENTO = { Paga: '#14733b', 'Paga c/ divergência': '#b78700', 'Lançada, não paga': '#315ee7', 'Lançada nos CT-es, não paga': '#b78700', 'Não lançada': '#9b1111' };
 const ROTULO_SITUACAO_CTE = { COM_PARTIDA: 'Com partida', SEM_PARTIDA: 'Sem partida', ESTORNADO: 'Estornado no SAP', NFSE: 'NFS-e (fora do SAP CT-e)' };
+const ROTULO_ETAPA_FENIX = { A_ENVIAR: 'A enviar ao financeiro', AGUARDANDO: 'Enviada, aguardando retorno', RETORNO: 'Retorno recebido: mandar protocolo', PROTOCOLO: 'Já no protocolo' };
+const COR_ETAPA_FENIX = { A_ENVIAR: '#b91c1c', AGUARDANDO: '#b78700', RETORNO: '#315ee7', PROTOCOLO: '#14733b' };
 const ROTULO_ENVIO_ERP = { NAO_ENVIADA: 'Não enviada', COM_PARTIDA: 'Enviada com partida', PARTIDA_NOS_CTES: 'Enviada, partida só nos CT-es', SEM_PARTIDA: 'Enviada sem partida', VERIFICANDO: 'Não verificada' };
 
 // Fica fora do componente para sobreviver a troca de aba; a versao da fatura (updated_at) invalida o item.
@@ -307,6 +311,39 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     } catch (e) { setAviso(`Erro ao marcar: ${e.message || e}`); } finally { setMarcando(false); }
   };
 
+  // Ajuste Fenix: marca as selecionadas como enviadas ao financeiro, com retorno recebido, ou desfaz.
+  const temAjusteFenix = useMemo(() => linhas.some((l) => etapaFenix(l)), [linhas]);
+  const aplicarAjusteFenix = async (acao) => {
+    const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l]));
+    const alvo = selecaoValida.filter((id) => {
+      const l = porId.get(id);
+      const status = statusAjusteFenix(l.fatura);
+      if (acao === 'ENVIADO') return !status && temFenix(l);
+      if (acao === 'RETORNADO') return status === 'ENVIADO';
+      return Boolean(status);
+    });
+    if (!alvo.length) {
+      setAviso({
+        ENVIADO: 'Nenhuma selecionada com CT-e na Fênix ainda sem envio ao financeiro.',
+        RETORNADO: 'Nenhuma selecionada está como enviada ao financeiro (aguardando retorno).',
+        '': 'Nenhuma selecionada tem marcação de ajuste Fênix.',
+      }[acao]);
+      return;
+    }
+    if (!acao && !window.confirm(`Tirar a marcação de ajuste Fênix de ${alvo.length} fatura(s)? Elas voltam para "a enviar" se ainda tiverem CT-e na Fênix.`)) return;
+    setMarcando(true);
+    setAviso('');
+    try {
+      const sessao = carregarSessao();
+      const gravadas = await marcarAjusteFenix(alvo, acao, sessao?.nome || sessao?.email || '');
+      onState((atual) => ({ ...atual, faturas: (atual.faturas || []).map((f) => (gravadas.has(f.id) ? { ...f, ...gravadas.get(f.id) } : f)) }));
+      setSelecionadas(new Set());
+      const texto = { ENVIADO: 'marcada(s) como enviada(s) para ajustar a Fênix', RETORNADO: 'com retorno do financeiro: agora é mandar protocolo', '': 'sem marcação de ajuste Fênix' }[acao];
+      const ignoradas = selecaoValida.length - gravadas.size;
+      setAviso(`${inteiro(gravadas.size)} fatura(s) ${texto}.${ignoradas > 0 ? ` ${inteiro(ignoradas)} selecionada(s) não se aplicavam.` : ''}`);
+    } catch (e) { setAviso(`Erro ao marcar: ${e.message || e}`); } finally { setMarcando(false); }
+  };
+
   const descricaoFiltros = () => {
     const cards = GRUPOS_DIAGNOSTICO.filter((g) => escolhidos[g.id]).map((g) => [g.titulo, g.cards.find((c) => c.id === escolhidos[g.id])?.rotulo || '']);
     const campos = [['Busca', filtros.busca], ['Auditor', filtros.auditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)]]
@@ -328,7 +365,8 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
           { titulo: 'Status', largura: 24 }, { titulo: 'CT-es auditados', largura: 10, tipo: 'inteiro' }, { titulo: 'CT-es totais', largura: 10, tipo: 'inteiro' },
           { titulo: 'Fatura lançada', largura: 10, tipo: 'centro' }, { titulo: 'Partida', largura: 14 }, { titulo: 'Lançamento financeiro', largura: 14 }, { titulo: 'Enviado ERP', largura: 12, tipo: 'data' }, { titulo: 'Situação envio ERP', largura: 22 },
           { titulo: 'CT-es com partida', largura: 10, tipo: 'inteiro' }, { titulo: 'CT-es sem partida', largura: 10, tipo: 'inteiro' }, { titulo: 'Valor sem partida', largura: 16, tipo: 'moeda' },
-          { titulo: 'Pagamento', largura: 18 }, { titulo: 'Data pagamento', largura: 12, tipo: 'data' }, { titulo: 'Valor pago', largura: 16, tipo: 'moeda' }, { titulo: 'Auditor', largura: 26 }, { titulo: 'Próxima ação', largura: 28 }, { titulo: 'Agrupamento manual', largura: 20 }, { titulo: 'Marcado por', largura: 22 }, { titulo: 'Observação', largura: 34 },
+          { titulo: 'Pagamento', largura: 18 }, { titulo: 'Data pagamento', largura: 12, tipo: 'data' }, { titulo: 'Valor pago', largura: 16, tipo: 'moeda' }, { titulo: 'Auditor', largura: 26 }, { titulo: 'Próxima ação', largura: 28 }, { titulo: 'Agrupamento manual', largura: 20 }, { titulo: 'Marcado por', largura: 22 },
+          { titulo: 'Ajuste Fênix', largura: 30 }, { titulo: 'Enviado Fênix em', largura: 12, tipo: 'data' }, { titulo: 'Enviado Fênix por', largura: 22 }, { titulo: 'Retorno Fênix em', largura: 12, tipo: 'data' }, { titulo: 'Observação', largura: 34 },
         ],
         linhas: resultado.map((l) => {
           const f = l.fatura;
@@ -339,6 +377,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             f ? (faturaLancada(f) ? 'Sim' : 'Não') : '', f?.partida || '', f?.lancamento_financeiro || '', f?.data_envio_erp || '', f ? ROTULO_ENVIO_ERP[situacaoEnvioErp(l)] : '', l.ctes ? l.ctes.lancados : '', l.ctes ? l.ctes.semPartida.length : '', l.ctes ? l.ctes.valorSemPartida : '',
             textoPagamentoLinha(l), f?.data_pagamento || '', f?.valor_pago != null ? Number(f.valor_pago) : '', f?.auditor_nome || '', proximaAcao(l),
             agrupamentoManual(f) ? (faturaLancada(f) ? 'Já agrupada' : 'A enviar') : '', agrupamentoManual(f) ? (f.agrupamento_manual_por || '') : '',
+            ROTULO_ETAPA_FENIX[etapaFenix(l)] || '', f?.fenix_enviado_em ? String(f.fenix_enviado_em).slice(0, 10) : '', f?.fenix_enviado_por || '', f?.fenix_retorno_em ? String(f.fenix_retorno_em).slice(0, 10) : '',
             observacao,
           ];
         }),
@@ -524,6 +563,16 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               {selecaoValida.length > 0 && <button type="button" className="btn-secondary" onClick={() => setSelecionadas(new Set())}>Limpar seleção</button>}
               {aviso && <span className="compact" role="status">{aviso}</span>}
             </div>
+            {temAjusteFenix && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
+                <span className="compact" style={{ color: '#475569' }} title="Controle do pedido de estorno da compensação Fênix ao financeiro. Quando o retorno chegar, marque para protocolo (agrupamento manual) e a fatura vai para 'Já no protocolo'.">
+                  Ajuste Fênix no financeiro: {inteiro(selecaoValida.length)} selecionada(s)
+                </span>
+                <button type="button" className="btn-primary" style={{ background: '#b78700', borderColor: '#b78700' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarAjusteFenix('ENVIADO')} title="As selecionadas com CT-e na Fênix vão para 'Enviadas, aguardando retorno'">{marcando ? 'Gravando...' : 'Enviado para ajustar Fênix'}</button>
+                <button type="button" className="btn-primary" style={{ background: '#315ee7', borderColor: '#315ee7' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarAjusteFenix('RETORNADO')} title="O financeiro devolveu: as selecionadas vão para 'Retorno recebido: mandar protocolo'. Com o relatório SAP reimportado sem a Fênix isso acontece sozinho.">Retorno recebido</button>
+                <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando} onClick={() => aplicarAjusteFenix('')}>Desfazer ajuste Fênix</button>
+              </div>
+            )}
             {ctesFenix.length > 0 && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, padding: 10, borderRadius: 8, background: '#fef2f2', border: '1px solid #fecaca' }}>
                 <span className="compact" style={{ color: '#991b1b', fontWeight: 700 }} title={`CT-es compensados pela partida Fênix (${PARTIDAS_FENIX.join(', ')}): a fatura não escritura até o financeiro estornar a compensação.`}>
@@ -582,6 +631,11 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                         <td style={{ color: corCtes, fontWeight: 700 }}>
                           {textoCtes(l)}
                           {temFenix(l) && <div style={{ fontSize: 11, color: '#b91c1c', whiteSpace: 'nowrap' }} title={`Partida(s) compensada(s) pela Fênix: ${l.ctes.fenix.map((c) => c.partida).join(', ')}`}>{l.ctes.fenix.length} na Fênix</div>}
+                          {etapaFenix(l) && etapaFenix(l) !== 'A_ENVIAR' && (
+                            <div style={{ fontSize: 11, color: COR_ETAPA_FENIX[etapaFenix(l)], whiteSpace: 'nowrap' }} title={[f.fenix_enviado_em && `Enviada ao financeiro em ${dataBr(f.fenix_enviado_em)}${f.fenix_enviado_por ? ` por ${f.fenix_enviado_por}` : ''}`, f.fenix_retorno_em && `Retorno em ${dataBr(f.fenix_retorno_em)}${f.fenix_retorno_por ? ` por ${f.fenix_retorno_por}` : ''}`].filter(Boolean).join(' · ')}>
+                              Fênix: {{ AGUARDANDO: 'aguardando', RETORNO: 'retornou', PROTOCOLO: 'no protocolo' }[etapaFenix(l)]}
+                            </div>
+                          )}
                         </td>
                         <td style={{ color: COR_PAGAMENTO[textoPagamentoLinha(l)], fontWeight: 600 }}>{textoPagamentoLinha(l)}</td>
                         <td>{f ? (f.auditor_nome || 'Sem auditor') : '-'}</td>

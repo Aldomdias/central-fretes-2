@@ -242,6 +242,22 @@ export function situacaoCtes(resumo) {
 
 export const temFenix = (linha) => Boolean(linha?.ctes?.fenix?.length);
 
+// Pedido de estorno da Fenix ao financeiro, antes do protocolo (marcacao feita na tela):
+// A_ENVIAR -> AGUARDANDO (enviada ao financeiro) -> RETORNO (estorno feito: mandar protocolo) -> PROTOCOLO.
+// O retorno vale pela marcacao manual ou sozinho, quando o SAP reimportado ja nao mostra a Fenix.
+export const statusAjusteFenix = (f) => (['ENVIADO', 'RETORNADO'].includes(f?.fenix_ajuste_status) ? f.fenix_ajuste_status : '');
+
+export function etapaFenix(linha) {
+  const f = linha?.fatura;
+  if (!f || inativa(f) || situacaoPagamento(f) !== 'ABERTA') return '';
+  const status = statusAjusteFenix(f);
+  if (!status) return temFenix(linha) ? 'A_ENVIAR' : '';
+  if (agrupamentoManual(f)) return 'PROTOCOLO';
+  if (status === 'RETORNADO') return 'RETORNO';
+  // Sem o resumo dos CT-es ainda nao da para saber se o estorno chegou.
+  return linha.ctes && !temFenix(linha) ? 'RETORNO' : 'AGUARDANDO';
+}
+
 const ROTULO_PAGAMENTO = { PAGA: 'Paga', PAGA_DIVERGENTE: 'Paga c/ divergência', CANCELADA: 'Cancelada' };
 
 // Texto da coluna Pagamento: a fatura em aberto mostra tambem ate onde o lancamento chegou.
@@ -261,7 +277,10 @@ export function proximaAcao(linha) {
   const auditoria = situacaoAuditoria(f);
   if (auditoria === 'CANCELADA') return 'Nenhuma (cancelada/substituída)';
   if (situacaoPagamento(f) !== 'ABERTA') return 'Nenhuma (paga)';
-  if (temFenix(linha)) return 'Pedir estorno da compensação Fênix ao financeiro';
+  const fenix = etapaFenix(linha);
+  if (fenix === 'A_ENVIAR') return 'Pedir estorno da compensação Fênix ao financeiro';
+  if (fenix === 'AGUARDANDO') return 'Aguardar retorno do financeiro (Fênix)';
+  if (fenix === 'RETORNO') return 'Mandar protocolo (Fênix ajustada)';
   if (agrupamentoManual(f) && !faturaLancada(f)) return 'Aguardar agrupamento manual do financeiro';
   if (situacaoEnvioErp(linha) === 'SEM_PARTIDA') return 'Verificar envio ao ERP (sem partida)';
   if (auditoria === 'NAO_AUDITADA' || auditoria === 'PARCIAL') return 'Auditar';
@@ -323,6 +342,13 @@ export const GRUPOS_DIAGNOSTICO = [
   { id: 'fenix', titulo: 'Partida Fênix (compensação não paga)', cards: [
     { id: 'com_fenix', rotulo: 'CT-es com a Fênix', cor: '#b91c1c', teste: comFatura((l) => ativa(l) && temFenix(l)), dica: 'Faturas com CT-e compensado pela partida Fênix (1501163056): o financeiro precisa estornar a compensação para a fatura escriturar.', detalheFenix: true },
     { id: 'sem_fenix', rotulo: 'Sem Fênix', cor: '#64748b', teste: comFatura((l) => ativa(l) && Boolean(l.ctes) && !temFenix(l)), dica: 'Faturas verificadas sem CT-e na partida Fênix.' },
+  ] },
+  // Controle do pedido ao financeiro: a fatura anda de card conforme e marcada na tela.
+  { id: 'fenix_ajuste', titulo: 'Ajuste Fênix no financeiro (antes do protocolo)', cards: [
+    { id: 'fenix_a_enviar', rotulo: 'Fênix a enviar ao financeiro', cor: '#b91c1c', teste: (l) => etapaFenix(l) === 'A_ENVIAR', dica: 'Com CT-e na Fênix e ainda não marcadas como enviadas ao financeiro. Gere o termo, envie e marque "Enviado para ajustar Fênix".', detalheFenix: true },
+    { id: 'fenix_aguardando', rotulo: 'Enviadas, aguardando retorno', cor: '#b78700', teste: (l) => etapaFenix(l) === 'AGUARDANDO', dica: 'Enviadas ao financeiro para estornar a compensação Fênix; aguardando o retorno.', detalheFenix: true },
+    { id: 'fenix_retorno', rotulo: 'Retorno recebido: mandar protocolo', cor: '#315ee7', teste: (l) => etapaFenix(l) === 'RETORNO', dica: 'O financeiro já ajustou (marcado como retorno recebido, ou a Fênix sumiu do relatório SAP reimportado). Falta marcar para protocolo.' },
+    { id: 'fenix_protocolo', rotulo: 'Já no protocolo', cor: '#14733b', teste: (l) => etapaFenix(l) === 'PROTOCOLO', dica: 'Passaram pelo ajuste Fênix e já foram marcadas para protocolo (agrupamento manual).' },
   ] },
   { id: 'pagamento', titulo: 'Pagamento', cards: [
     { id: 'pagas', rotulo: 'Pagas', cor: '#14733b', teste: pagamento('PAGA'), dica: 'Pagas ou pagas com desconto.' },

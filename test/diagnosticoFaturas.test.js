@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  etapaFenix,
   faixaDaLinha,
   faixaDiagnostico,
   filtrarPorCards,
+  GRUPOS_DIAGNOSTICO,
   identificacaoSapDoCte,
   montarLinhasDiagnostico,
   parseListaFaturas,
@@ -190,4 +192,37 @@ test('agrupamento manual: sai do card a enviar quando a fatura recebe partida', 
   assert.equal(filtrarPorCards(linhas, { protocolo: 'manual_agrupadas' })[0].fatura.partida, '200123');
   assert.equal(filtrarPorCards(linhas, { protocolo: 'sem_marcacao' }).length, 1);
   assert.equal(proximaAcao(linhas[0]), 'Aguardar agrupamento manual do financeiro');
+});
+
+test('ajuste Fênix: a enviar -> aguardando -> retorno -> protocolo', () => {
+  const fenix = { total: 1, lancados: 1, nfse: 0, fenix: [{ partida: '5100000001' }] };
+  const limpo = { total: 1, lancados: 1, nfse: 0, fenix: [] };
+  const fat = (extra = {}) => ({ id: 'f1', status: 'PRONTA_PARA_PAGAMENTO', ctes_totais: 1, ctes_auditados: 1, ...extra });
+  const pega = (linha) => GRUPOS_DIAGNOSTICO.find((g) => g.id === 'fenix_ajuste').cards.filter((c) => c.teste(linha)).map((c) => c.id);
+
+  const aEnviar = { fatura: fat(), ctes: fenix };
+  assert.equal(etapaFenix(aEnviar), 'A_ENVIAR');
+  assert.deepEqual(pega(aEnviar), ['fenix_a_enviar']);
+  assert.equal(proximaAcao(aEnviar), 'Pedir estorno da compensação Fênix ao financeiro');
+
+  const enviada = { fatura: fat({ fenix_ajuste_status: 'ENVIADO' }), ctes: fenix };
+  assert.equal(etapaFenix(enviada), 'AGUARDANDO');
+  assert.equal(proximaAcao(enviada), 'Aguardar retorno do financeiro (Fênix)');
+  // Sem o resumo dos CT-es continua aguardando.
+  assert.equal(etapaFenix({ fatura: enviada.fatura }), 'AGUARDANDO');
+
+  // Retorno manual (SAP ainda nao reimportado) ou sozinho (Fenix sumiu do SAP).
+  assert.equal(etapaFenix({ fatura: fat({ fenix_ajuste_status: 'RETORNADO' }), ctes: fenix }), 'RETORNO');
+  const voltou = { fatura: fat({ fenix_ajuste_status: 'ENVIADO' }), ctes: limpo };
+  assert.equal(etapaFenix(voltou), 'RETORNO');
+  assert.deepEqual(pega(voltou), ['fenix_retorno']);
+  assert.equal(proximaAcao(voltou), 'Mandar protocolo (Fênix ajustada)');
+
+  const protocolo = { fatura: fat({ fenix_ajuste_status: 'RETORNADO', agrupamento_manual: true }), ctes: limpo };
+  assert.equal(etapaFenix(protocolo), 'PROTOCOLO');
+  assert.deepEqual(pega(protocolo), ['fenix_protocolo']);
+
+  // Fora do fluxo: sem Fenix e sem marcacao, ou ja paga.
+  assert.equal(etapaFenix({ fatura: fat(), ctes: limpo }), '');
+  assert.equal(etapaFenix({ fatura: fat({ status: 'PAGA', fenix_ajuste_status: 'ENVIADO' }), ctes: fenix }), '');
 });
