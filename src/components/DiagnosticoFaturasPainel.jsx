@@ -17,10 +17,13 @@ import {
   situacaoEnvioErp,
   situacaoPagamento,
   situacaoPagamentoLinha,
+  temFenix,
   textoPagamentoLinha,
   valorDaLinha,
 } from '../utils/diagnosticoFaturas';
 import { exportarExcelFormatado } from '../utils/exportarExcelFormatado';
+import { gerarTermoDocx, MOTIVO_FENIX, nomeEmpresaSap, partidasDoTermo, PARTIDAS_FENIX, ROTULO_FENIX } from '../utils/termoCorrecaoFenix';
+import modeloTermoUrl from '../assets/modelos/termo-correcao-lancamento.docx?url';
 
 const CHAVE_SESSAO = 'cf_diagnostico_faturas_v1';
 const TAM_PAGINA = 100;
@@ -78,8 +81,12 @@ const COLUNAS = [
 
 function CardFiltro({ card, grupo, linhas, ativo, onClick }) {
   const qtd = linhas.length;
-  const totalCtes = card.detalheCtes ? linhas.reduce((s, l) => s + (l.ctes?.semPartida?.length || 0), 0) : 0;
-  const valor = card.detalheCtes ? linhas.reduce((s, l) => s + (l.ctes?.valorSemPartida || 0), 0) : linhas.reduce((s, l) => s + valorDaLinha(l), 0);
+  const porCte = card.detalheCtes || card.detalheFenix;
+  const listaCtes = (l) => (card.detalheFenix ? l.ctes?.fenix : l.ctes?.semPartida) || [];
+  const totalCtes = porCte ? linhas.reduce((s, l) => s + listaCtes(l).length, 0) : 0;
+  const valor = porCte
+    ? linhas.reduce((s, l) => s + Number((card.detalheFenix ? l.ctes?.valorFenix : l.ctes?.valorSemPartida) || 0), 0)
+    : linhas.reduce((s, l) => s + valorDaLinha(l), 0);
   const zerado = !qtd && !ativo;
   return (
     <button
@@ -93,7 +100,7 @@ function CardFiltro({ card, grupo, linhas, ativo, onClick }) {
     >
       <span>{card.rotulo}</span>
       <strong>{inteiro(qtd)}</strong>
-      <small>{card.detalheCtes ? `${inteiro(totalCtes)} CT-e(s) · ${dinheiro(valor)}` : dinheiro(valor)}</small>
+      <small>{porCte ? `${inteiro(totalCtes)} CT-e(s) · ${dinheiro(valor)}` : dinheiro(valor)}</small>
     </button>
   );
 }
@@ -136,10 +143,11 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const [atualizando, setAtualizando] = useState(false);
   const [selecionadas, setSelecionadas] = useState(() => new Set());
   const [marcando, setMarcando] = useState(false);
+  const [solicitante, setSolicitante] = useState(() => salvo.solicitante || carregarSessao()?.nome || '');
 
   useEffect(() => {
-    try { sessionStorage.setItem(CHAVE_SESSAO, JSON.stringify({ texto, transportadora, escolhidos, filtros, ordem })); } catch { /* sem sessionStorage: so nao lembra */ }
-  }, [texto, transportadora, escolhidos, filtros, ordem]);
+    try { sessionStorage.setItem(CHAVE_SESSAO, JSON.stringify({ texto, transportadora, escolhidos, filtros, ordem, solicitante })); } catch { /* sem sessionStorage: so nao lembra */ }
+  }, [texto, transportadora, escolhidos, filtros, ordem, solicitante]);
   useEffect(() => { carregarUltimaImportacaoSap().then(setUltimaSap).catch(() => {}); }, [recarga]);
   useEffect(() => { setPagina(1); }, [texto, transportadora, escolhidos, filtros, ordem]);
 
@@ -366,16 +374,60 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
           { titulo: 'Fatura', largura: 14 }, { titulo: 'Transportadora', largura: 34 }, { titulo: 'Status fatura', largura: 22 }, { titulo: 'Vencimento fatura', largura: 12, tipo: 'data' }, { titulo: 'Pagamento fatura', largura: 22 },
           { titulo: 'Número CT-e', largura: 14 }, { titulo: 'Série', largura: 8, tipo: 'centro' }, { titulo: 'Chave CT-e', largura: 48 }, { titulo: 'Valor frete', largura: 16, tipo: 'moeda' },
           { titulo: 'Situação SAP', largura: 18 }, { titulo: 'Partida CT-e', largura: 14 }, { titulo: 'Data lançamento', largura: 12, tipo: 'data' }, { titulo: 'Valor lançado', largura: 16, tipo: 'moeda' },
+          { titulo: 'Partida Fênix', largura: 12, tipo: 'centro' },
         ],
         linhas: todosCtes.map(({ l, c }) => [
           String(l.numero), l.fatura.transportadora || '', nomeStatus(l.fatura.status), l.fatura.data_vencimento || '', textoPagamentoLinha(l),
           String(c.numero_cte || ''), String(c.serie_cte || ''), String(c.chave_cte || ''), c.valor_frete,
           ROTULO_SITUACAO_CTE[c.situacao] || '', c.lancamento_contabil || '', c.data_lancamento || '', c.situacao === 'COM_PARTIDA' ? c.valor_lancado : '',
+          c.fenix ? 'Sim' : '',
         ]),
         resumo: descricaoFiltros(),
       });
     } catch (e) { setAviso(`Erro ao exportar: ${e.message || e}`); } finally { setExportando(false); }
   };
+  // Partida Fenix: CT-es do recorte compensados pela 1501163056, no formato do termo enviado ao financeiro.
+  const ctesFenix = useMemo(() => resultado.flatMap((l) => (l.ctes?.fenix || []).map((c) => ({ ...c, numero_fatura: String(l.numero), transportadora: l.fatura.transportadora || '' }))), [resultado]);
+  const partidasFenix = useMemo(() => partidasDoTermo(ctesFenix), [ctesFenix]);
+  const faturasFenix = useMemo(() => resultado.filter(temFenix).length, [resultado]);
+  const exportarFenixExcel = async () => {
+    setExportando(true);
+    try {
+      await exportarExcelFormatado({
+        nomeArquivo: `termo-correcao-fenix-${hojeArquivo}.xlsx`,
+        aba: 'Partida Fênix',
+        colunas: [
+          { titulo: 'Empresa', largura: 26 }, { titulo: 'Cód. fornecedor', largura: 14, tipo: 'centro' }, { titulo: 'Fornecedor', largura: 34 }, { titulo: 'Pedido', largura: 22 },
+          { titulo: 'Partida', largura: 14, tipo: 'centro' }, { titulo: 'Solicitante', largura: 24 }, { titulo: 'Motivo correção', largura: 30 },
+          { titulo: 'Fatura', largura: 14 }, { titulo: 'Número CT-e', largura: 12 }, { titulo: 'Série', largura: 7, tipo: 'centro' }, { titulo: 'Chave CT-e', largura: 48 },
+          { titulo: 'Valor frete', largura: 15, tipo: 'moeda' }, { titulo: 'Montante SAP', largura: 15, tipo: 'moeda' }, { titulo: 'Data lançamento', largura: 12, tipo: 'data' }, { titulo: 'Data compensação', largura: 12, tipo: 'data' },
+        ],
+        linhas: ctesFenix.map((c) => [
+          nomeEmpresaSap(c.empresa), c.codigo_fornecedor || '', c.fornecedor || c.transportadora, `${c.documento_compensacao || PARTIDAS_FENIX[0]} ${ROTULO_FENIX}`,
+          String(c.partida || ''), solicitante, MOTIVO_FENIX,
+          c.numero_fatura, String(c.numero_cte || ''), String(c.serie_cte || ''), String(c.chave_cte || ''), c.valor_frete, c.montante, c.data_lancamento || '', c.data_compensacao || '',
+        ]),
+        resumo: [...descricaoFiltros(), ['Partida Fênix', PARTIDAS_FENIX.join(', ')], ['CT-es', String(ctesFenix.length)], ['Partidas', String(partidasFenix.length)], ['Solicitante', solicitante || '-']],
+      });
+    } catch (e) { setAviso(`Erro ao exportar: ${e.message || e}`); } finally { setExportando(false); }
+  };
+  const gerarTermoWord = async () => {
+    setExportando(true);
+    try {
+      const resposta = await fetch(modeloTermoUrl);
+      if (!resposta.ok) throw new Error(`modelo do termo não encontrado (${resposta.status})`);
+      const bytes = gerarTermoDocx(new Uint8Array(await resposta.arrayBuffer()), ctesFenix, { solicitante });
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Termo_Correcao_Lancamento_Fenix_${hojeArquivo}.docx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) { setAviso(`Erro ao gerar o termo: ${e.message || e}`); } finally { setExportando(false); }
+  };
+
   const copiarNumeros = async () => {
     try {
       await navigator.clipboard.writeText(resultado.map((l) => l.numero).join('\n'));
@@ -472,6 +524,18 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               {selecaoValida.length > 0 && <button type="button" className="btn-secondary" onClick={() => setSelecionadas(new Set())}>Limpar seleção</button>}
               {aviso && <span className="compact" role="status">{aviso}</span>}
             </div>
+            {ctesFenix.length > 0 && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, padding: 10, borderRadius: 8, background: '#fef2f2', border: '1px solid #fecaca' }}>
+                <span className="compact" style={{ color: '#991b1b', fontWeight: 700 }} title={`CT-es compensados pela partida Fênix (${PARTIDAS_FENIX.join(', ')}): a fatura não escritura até o financeiro estornar a compensação.`}>
+                  Partida Fênix: {inteiro(ctesFenix.length)} CT-e(s) · {inteiro(partidasFenix.length)} partida(s) em {inteiro(faturasFenix)} fatura(s)
+                </span>
+                <label className="compact" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>Solicitante
+                  <input value={solicitante} onChange={(e) => setSolicitante(e.target.value)} placeholder="Nome no termo" style={{ width: 200 }} />
+                </label>
+                <button type="button" className="btn-primary" style={{ background: '#b91c1c', borderColor: '#b91c1c' }} disabled={exportando || Boolean(progresso)} onClick={gerarTermoWord} title={progresso ? 'Aguarde a verificação dos CT-es no SAP terminar' : 'Termo de Correção de Lançamento (Word), um bloco por partida, no modelo enviado ao financeiro'}>Termo de correção (Word)</button>
+                <button type="button" className="btn-secondary" disabled={exportando || Boolean(progresso)} onClick={exportarFenixExcel} title="Planilha com as mesmas informações do termo, um CT-e por linha (melhor quando são muitos casos)">Planilha Fênix (Excel)</button>
+              </div>
+            )}
           </div>
 
           <div className="table-card">
@@ -515,7 +579,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                         <td>{f ? `${Number(f.ctes_auditados || 0)}/${Number(f.ctes_totais || 0)}` : '-'}</td>
                         <td>{f ? (f.partida || f.lancamento_financeiro || (situacao === 'TODOS' ? <span style={{ color: '#b78700' }} title="Todos os CT-es têm partida no SAP, mas não há partida pelo número da fatura.">Nos CT-es</span> : '-')) : '-'}</td>
                         <td style={situacaoEnvioErp(l) === 'SEM_PARTIDA' ? { color: '#9b1111', fontWeight: 700 } : undefined}>{dataBr(f?.data_envio_erp)}</td>
-                        <td style={{ color: corCtes, fontWeight: 700 }}>{textoCtes(l)}</td>
+                        <td style={{ color: corCtes, fontWeight: 700 }}>
+                          {textoCtes(l)}
+                          {temFenix(l) && <div style={{ fontSize: 11, color: '#b91c1c', whiteSpace: 'nowrap' }} title={`Partida(s) compensada(s) pela Fênix: ${l.ctes.fenix.map((c) => c.partida).join(', ')}`}>{l.ctes.fenix.length} na Fênix</div>}
+                        </td>
                         <td style={{ color: COR_PAGAMENTO[textoPagamentoLinha(l)], fontWeight: 600 }}>{textoPagamentoLinha(l)}</td>
                         <td>{f ? (f.auditor_nome || 'Sem auditor') : '-'}</td>
                         <td>{proximaAcao(l)}</td>
