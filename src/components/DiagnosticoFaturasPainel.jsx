@@ -12,6 +12,7 @@ import {
   filtrarPorCards,
   GRUPOS_DIAGNOSTICO,
   montarLinhasDiagnostico,
+  nomeAuditor,
   parseListaFaturas,
   previsaoPagamento,
   proximaAcao,
@@ -135,6 +136,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const salvo = useMemo(lerSessao, []);
   const [texto, setTexto] = useState(salvo.texto || '');
   const [transportadora, setTransportadora] = useState(salvo.transportadora || '');
+  const [auditor, setAuditor] = useState(salvo.auditor || '');
   const [escolhidos, setEscolhidos] = useState(salvo.escolhidos || {});
   const [filtros, setFiltros] = useState({ ...FILTROS_VAZIOS, ...(salvo.filtros || {}) });
   const [ordem, setOrdem] = useState(salvo.ordem || { coluna: 'vencimento', direcao: 1 });
@@ -154,10 +156,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const [solicitante, setSolicitante] = useState(() => salvo.solicitante || carregarSessao()?.nome || '');
 
   useEffect(() => {
-    try { sessionStorage.setItem(CHAVE_SESSAO, JSON.stringify({ texto, transportadora, escolhidos, filtros, ordem, solicitante })); } catch { /* sem sessionStorage: so nao lembra */ }
-  }, [texto, transportadora, escolhidos, filtros, ordem, solicitante]);
+    try { sessionStorage.setItem(CHAVE_SESSAO, JSON.stringify({ texto, transportadora, auditor, escolhidos, filtros, ordem, solicitante })); } catch { /* sem sessionStorage: so nao lembra */ }
+  }, [texto, transportadora, auditor, escolhidos, filtros, ordem, solicitante]);
   useEffect(() => { carregarUltimaImportacaoSap().then(setUltimaSap).catch(() => {}); }, [recarga]);
-  useEffect(() => { setPagina(1); }, [texto, transportadora, escolhidos, filtros, ordem]);
+  useEffect(() => { setPagina(1); }, [texto, transportadora, auditor, escolhidos, filtros, ordem]);
 
   const transportadoras = useMemo(() => {
     const nomes = new Map();
@@ -168,11 +170,19 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     return [...nomes.values()].sort((a, b) => a.localeCompare(b, 'pt-BR'));
   }, [state.faturas]);
 
+  const auditores = useMemo(() => [...new Set((state.faturas || []).map(nomeAuditor))].sort((a, b) => a.localeCompare(b, 'pt-BR')), [state.faturas]);
+  // "Minhas faturas": o auditor logado, quando o nome dele bate com o auditor das faturas.
+  const meuNome = useMemo(() => {
+    const sessao = carregarSessao();
+    const nomes = [sessao?.nome, sessao?.email].map((v) => String(v || '').trim().toUpperCase()).filter(Boolean);
+    return auditores.find((a) => nomes.includes(a.toUpperCase())) || '';
+  }, [auditores]);
+
   const lista = useMemo(() => parseListaFaturas(texto), [texto]);
   const temLista = lista.itens.length > 0;
   const linhasBase = useMemo(
-    () => montarLinhasDiagnostico({ itens: lista.itens, faturas: state.faturas || [], transportadora }),
-    [lista, state.faturas, transportadora],
+    () => montarLinhasDiagnostico({ itens: lista.itens, faturas: state.faturas || [], transportadora, auditor }),
+    [lista, state.faturas, transportadora, auditor],
   );
 
   const faturasBase = useMemo(() => linhasBase.filter((l) => l.fatura).map((l) => l.fatura), [linhasBase]);
@@ -207,7 +217,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const opcoes = useMemo(() => {
     const unicos = (fn) => [...new Set(linhas.map(fn).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
     return {
-      auditores: unicos((l) => l.fatura && (l.fatura.auditor_nome || 'Sem auditor')),
+      auditores: unicos((l) => l.fatura && nomeAuditor(l.fatura)),
       status: unicos((l) => l.fatura?.status),
       canais: unicos((l) => l.fatura?.canal),
     };
@@ -221,7 +231,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
         const alvo = `${l.numero} ${f?.transportadora || ''} ${f?.auditor_nome || ''}`.toLowerCase();
         if (!termos.every((t) => alvo.includes(t))) return false;
       }
-      if (filtros.auditor && (!f || (f.auditor_nome || 'Sem auditor') !== filtros.auditor)) return false;
+      if (filtros.auditor && (!f || nomeAuditor(f) !== filtros.auditor)) return false;
       if (filtros.status && f?.status !== filtros.status) return false;
       if (filtros.canal && f?.canal !== filtros.canal) return false;
       const venc = String(f?.data_vencimento || l.vencimentoLista || '').slice(0, 10);
@@ -276,7 +286,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
 
   const alternarCard = (grupo, card) => setEscolhidos((atual) => ({ ...atual, [grupo]: atual[grupo] === card ? '' : card }));
   const limparFiltros = () => { setEscolhidos({}); setFiltros(FILTROS_VAZIOS); };
-  const limparTudo = () => { limparFiltros(); setTexto(''); setTransportadora(''); };
+  const limparTudo = () => { limparFiltros(); setTexto(''); setTransportadora(''); setAuditor(''); };
   const mudarFiltro = (campo) => (e) => setFiltros((atual) => ({ ...atual, [campo]: e.target.value }));
   const ordenarPor = (coluna) => setOrdem((atual) => (atual.coluna === coluna ? { coluna, direcao: -atual.direcao } : { coluna, direcao: 1 }));
   const abrir = (l) => { if (!l.fatura) return; setUltimaAberta(l.id); onAbrirFatura(l.fatura); };
@@ -391,7 +401,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     const cards = GRUPOS_DIAGNOSTICO.filter((g) => escolhidos[g.id]).map((g) => [g.titulo, g.cards.find((c) => c.id === escolhidos[g.id])?.rotulo || '']);
     const campos = [['Busca', filtros.busca], ['Auditor', filtros.auditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)]]
       .filter(([, v]) => v && v !== '-');
-    return [['Transportadora', transportadora || 'Todas'], ['Números colados', temLista ? String(lista.itens.length) : 'Nenhum'], ...cards, ...campos];
+    return [['Transportadora', transportadora || 'Todas'], ['Auditor', auditor || 'Todos'], ['Números colados', temLista ? String(lista.itens.length) : 'Nenhum'], ...cards, ...campos];
   };
   const hojeArquivo = new Date().toLocaleDateString('sv-SE');
 
@@ -537,21 +547,30 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                 {transportadoras.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </label>
-            <button type="button" className="btn-secondary" onClick={limparTudo} disabled={!texto && !transportadora && !temFiltro}>Limpar tudo</button>
+            <label className="field">Auditor
+              <div style={{ display: 'flex', gap: 6 }}>
+                <select value={auditor} onChange={(e) => setAuditor(e.target.value)} style={{ flex: 1, minWidth: 0 }}>
+                  <option value="">Todos</option>
+                  {auditores.map((a) => <option key={a} value={a}>{a}</option>)}
+                </select>
+                {meuNome && auditor !== meuNome && <button type="button" className="btn-secondary" onClick={() => setAuditor(meuNome)} title={`Mostrar as faturas de ${meuNome}`}>Minhas</button>}
+              </div>
+            </label>
+            <button type="button" className="btn-secondary" onClick={limparTudo} disabled={!texto && !transportadora && !auditor && !temFiltro}>Limpar tudo</button>
           </div>
           <label className="field" style={{ flex: '999 1 260px', minWidth: 0 }}>Lista de faturas (cole do Excel ou e-mail; vencimento e valor são opcionais)
             <textarea
               rows={4}
               value={texto}
               onChange={(e) => setTexto(e.target.value)}
-              placeholder={'Um número por linha, ou a tabela com as colunas Fatura, Vencimento e Valor.\nSem lista, mostra todas as faturas da transportadora escolhida.'}
+              placeholder={'Um número por linha, ou a tabela com as colunas Fatura, Vencimento e Valor.\nSem lista, mostra as faturas da transportadora e/ou do auditor escolhido.'}
               spellCheck={false}
             />
           </label>
         </div>
-        {(temLista || transportadora) && (
+        {(temLista || transportadora || auditor) && (
           <div className="compact" style={{ marginTop: 8, color: '#475569', fontSize: 13 }}>
-            {temLista ? `${inteiro(lista.itens.length)} número(s) lido(s)${lista.repetidosNaLista ? ` · ${inteiro(lista.repetidosNaLista)} repetido(s) na lista ignorado(s)` : ''}` : `Todas as faturas de ${transportadora}`}
+            {temLista ? `${inteiro(lista.itens.length)} número(s) lido(s)${lista.repetidosNaLista ? ` · ${inteiro(lista.repetidosNaLista)} repetido(s) na lista ignorado(s)` : ''}` : transportadora ? `Todas as faturas de ${transportadora}${auditor ? ` do auditor ${auditor}` : ''}` : `Faturas em aberto de ${auditor} (não pagas e não canceladas)`}{temLista && auditor ? ` · só as do auditor ${auditor}` : ''}
             {progresso ? ` · Verificando CT-es no SAP: ${inteiro(progresso.feitas)} de ${inteiro(progresso.total)} faturas...` : ''}
             {ultimaSap ? ` · Partidas de CT-e conforme o relatório SAP importado (último lançamento em ${dataBr(ultimaSap)}).` : ''}
           </div>
@@ -560,7 +579,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       </div>
 
       {!linhas.length ? (
-        <div className="hint-box">Cole uma lista de faturas ou escolha uma transportadora para ver o diagnóstico.</div>
+        <div className="hint-box">Cole uma lista de faturas ou escolha uma transportadora ou um auditor para ver o diagnóstico.</div>
       ) : (
         <>
           <div className="summary-strip audit-summary-grid" style={{ marginBottom: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
@@ -693,7 +712,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                           )}
                         </td>
                         <td style={{ color: COR_PAGAMENTO[textoPagamentoLinha(l)], fontWeight: 600 }}>{textoPagamentoLinha(l)}</td>
-                        <td>{f ? (f.auditor_nome || 'Sem auditor') : '-'}</td>
+                        <td>{f ? nomeAuditor(f) : '-'}</td>
                         <td>{proximaAcao(l)}</td>
                       </tr>
                     );

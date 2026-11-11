@@ -251,3 +251,20 @@ test('previsão de pagamento: cards, situação e próxima ação', () => {
   assert.ok(!card('protocolo_sem_previsao')({ fatura: foraProtocolo, ctes: linha.ctes }));
   assert.equal(proximaAcao({ fatura: foraProtocolo, ctes: linha.ctes }), 'Aguardar pagamento');
 });
+
+test('filtro por auditor: sozinho mostra as em aberto dele; com transportadora ou lista restringe', () => {
+  const faturas = [
+    { id: 'a', numero_fatura: '10', transportadora: 'WM', auditor_nome: 'Ana', status: 'PENDENTE' },
+    { id: 'b', numero_fatura: '11', transportadora: 'WM', auditor_nome: 'Ana', status: 'PAGA' },
+    { id: 'c', numero_fatura: '12', transportadora: 'WM', auditor_nome: 'Bruno', status: 'PENDENTE' },
+    { id: 'd', numero_fatura: '13', transportadora: 'XP', auditor_nome: 'Ana', status: 'CANCELADA' },
+    { id: 'e', numero_fatura: '14', transportadora: 'XP', auditor_nome: '', status: 'PENDENTE' },
+  ];
+  const ids = (ls) => ls.map((l) => l.fatura?.id || l.numero);
+  assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, auditor: 'Ana' })), ['a']);
+  assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, auditor: 'Sem auditor' })), ['e']);
+  assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, transportadora: 'WM', auditor: 'Ana' })), ['a', 'b']);
+  assert.deepEqual(ids(montarLinhasDiagnostico({ faturas })), []);
+  const { itens } = parseListaFaturas('10\n12\n999');
+  assert.deepEqual(ids(montarLinhasDiagnostico({ itens, faturas, auditor: 'Ana' })), ['a', '999']);
+});

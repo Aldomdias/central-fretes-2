@@ -93,11 +93,20 @@ export function criarFiltroTransportadora(faturas = [], transportadora = '') {
 const inativa = (f) => ['CANCELADA', 'SUBSTITUIDA'].includes(f.status);
 const linhaDaFatura = (fatura, extra = {}) => ({ id: String(fatura.id), fatura, numero: String(fatura.numero_fatura || ''), repetida: 1, ...extra });
 
+export const nomeAuditor = (f) => String(f?.auditor_nome || '').trim() || 'Sem auditor';
+
 // Monta as linhas do diagnostico. Com lista: uma linha por numero colado (mais de uma so se o numero
 // existir em faturas ativas diferentes). Sem lista: todas as faturas da transportadora escolhida.
-export function montarLinhasDiagnostico({ itens = [], faturas = [], transportadora = '' }) {
+// Auditor: so as faturas dele. Escolhido sozinho (sem lista e sem transportadora), mostra as que ele
+// ainda esta tratando: nao pagas e nao canceladas (protocolo, Fenix, previsao...).
+export function montarLinhasDiagnostico({ itens = [], faturas = [], transportadora = '', auditor = '' }) {
   const daTransportadora = criarFiltroTransportadora(faturas, transportadora);
-  if (!itens.length) return transportadora ? faturas.filter(daTransportadora).map((f) => linhaDaFatura(f)) : [];
+  const doAuditor = (f) => !auditor || nomeAuditor(f) === auditor;
+  if (!itens.length) {
+    if (transportadora) return faturas.filter((f) => daTransportadora(f) && doAuditor(f)).map((f) => linhaDaFatura(f));
+    if (!auditor) return [];
+    return faturas.filter((f) => doAuditor(f) && !inativa(f) && situacaoPagamento(f) === 'ABERTA').map((f) => linhaDaFatura(f));
+  }
   const indice = new Map();
   faturas.forEach((f) => {
     const n = numeroComparavel(f.numero_fatura);
@@ -109,6 +118,8 @@ export function montarLinhasDiagnostico({ itens = [], faturas = [], transportado
     const semSerie = numeroComparavel(item.numero.replace(/[-/]\d{1,3}$/, ''));
     const candidatas = indice.get(item.comparavel) || indice.get(semSerie) || [];
     const daEscolhida = candidatas.filter(daTransportadora);
+    // Numero de outro auditor sai da lista; o nao localizado fica (nao da para saber de quem e).
+    if (daEscolhida.length && !daEscolhida.some(doAuditor)) return;
     if (!daEscolhida.length) {
       linhas.push({
         id: `lista-${item.comparavel}`, fatura: null, numero: item.numero, valorLista: item.valor, vencimentoLista: item.vencimento, repetida: 0,
@@ -116,8 +127,8 @@ export function montarLinhasDiagnostico({ itens = [], faturas = [], transportado
       });
       return;
     }
-    const ativas = daEscolhida.filter((f) => !inativa(f));
-    const escolhidas = ativas.length ? ativas : daEscolhida;
+    const ativas = daEscolhida.filter((f) => doAuditor(f) && !inativa(f));
+    const escolhidas = ativas.length ? ativas : daEscolhida.filter(doAuditor);
     escolhidas.forEach((fatura) => {
       const diferencaLista = item.valor == null ? null : Number((Number(fatura.valor_fatura || 0) - item.valor).toFixed(2));
       linhas.push(linhaDaFatura(fatura, { numero: String(fatura.numero_fatura || item.numero), valorLista: item.valor, vencimentoLista: item.vencimento, repetida: escolhidas.length, diferencaLista }));
