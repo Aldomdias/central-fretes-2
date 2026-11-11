@@ -198,6 +198,31 @@ export default function LancamentoNfseRobo() {
     });
   }
 
+  // Uma fatura so para todas as notas do lote (faturas com centenas de notas). Pergunta antes: o normal e
+  // cada nota ter a sua, e quem lanca precisa ter certeza de que todas sao da mesma fatura. Notas que ja tem
+  // MIRO nao mudam.
+  function replicarFatura() {
+    const comMiro = new Set(linhas.filter((l) => l.miro).map((l) => l.uid));
+    const alvo = entradas.filter((e) => !comMiro.has(e.uid));
+    if (!alvo.length) { setErro('Nenhuma nota sem MIRO para preencher a fatura.'); return; }
+    const sugestao = String(alvo.find((e) => String(e.fatura ?? '').trim())?.fatura ?? '').trim();
+    const digitada = window.prompt(`Numero da fatura para as ${fmt(alvo.length)} nota(s) do lote:`, sugestao);
+    if (digitada === null) return;
+    const fatura = String(digitada).trim();
+    if (!fatura) { setErro('Informe o numero da fatura.'); return; }
+    const outras = alvo.filter((e) => { const f = String(e.fatura ?? '').trim(); return f && f !== fatura; }).length;
+    const aviso = [
+      `Tem certeza que TODAS as ${fmt(alvo.length)} nota(s) sao da fatura ${fatura}?`,
+      outras ? `\n${fmt(outras)} nota(s) ja tem outra fatura preenchida e vao ser trocadas para ${fatura}.` : '',
+      comMiro.size ? `\n${fmt(comMiro.size)} nota(s) com MIRO nao mudam.` : '',
+    ].join('');
+    if (!window.confirm(aviso)) return;
+    const uids = new Set(alvo.map((e) => e.uid));
+    setEntradas((atual) => atual.map((e) => (uids.has(e.uid) ? { ...e, fatura } : e)));
+    setErro('');
+    setFeedback(`Fatura ${fatura} aplicada em ${fmt(alvo.length)} nota(s).`);
+  }
+
   function removerLinha(uid) {
     setEntradas((atual) => atual.filter((e) => e.uid !== uid));
     setManuais((a) => { const n = { ...a }; delete n[uid]; return n; });
@@ -552,6 +577,7 @@ export default function LancamentoNfseRobo() {
               {falhasPdf.length ? <button type="button" className="btn-secondary" onClick={baixarRelatorioPdf} title="Lista os PDFs que nao foram lidos ou eram repetidos, com o motivo">Baixar relatório dos PDFs não lidos ({falhasPdf.length})</button> : null}
               {entradas.length ? <button type="button" className="btn-secondary" onClick={baixarPreenchido} title="Baixa a grade em Excel para completar o que falta (ex.: EscrV) e voltar com Importar arquivo">Baixar planilha preenchida (.xlsx)</button> : null}
               <button type="button" className="btn-secondary" onClick={baixarModelo}>Baixar modelo de importação (.xlsx)</button>
+              {entradas.length ? <button type="button" className="btn-secondary" onClick={replicarFatura} title="Preenche a mesma fatura em todas as notas do lote (pede confirmacao). Para notas de faturas diferentes, preencha uma a uma na grade">Mesma fatura para todas</button> : null}
               {entradas.length ? <button type="button" className="btn-secondary" onClick={limparTudo}>Limpar tudo</button> : null}
               <div className="field" style={{ marginLeft: 'auto' }}>
                 <label>Vencimento padrão</label>
