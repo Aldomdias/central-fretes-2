@@ -27,6 +27,7 @@ import {
   valorDaLinha,
 } from '../utils/diagnosticoFaturas';
 import { exportarExcelFormatado } from '../utils/exportarExcelFormatado';
+import { gerarHtmlLaudo } from '../utils/laudoDiagnostico';
 import { gerarTermoDocx, MOTIVO_FENIX, nomeEmpresaSap, partidasDoTermo, PARTIDAS_FENIX, ROTULO_FENIX } from '../utils/termoCorrecaoFenix';
 import modeloTermoUrl from '../assets/modelos/termo-correcao-lancamento.docx?url';
 
@@ -522,6 +523,24 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     } catch (e) { setAviso(`Erro ao gerar o termo: ${e.message || e}`); } finally { setExportando(false); }
   };
 
+  // Laudo visual (HTML autonomo) do recorte atual: pago x programado no financeiro x em tratativa.
+  const gerarLaudo = () => {
+    try {
+      const transps = [...new Set(resultado.filter((l) => l.fatura).map((l) => l.fatura.transportadora).filter(Boolean))];
+      const titulo = transportadora || (transps.length === 1 ? transps[0] : auditor ? `Auditor ${auditor}` : 'Faturas selecionadas');
+      const html = gerarHtmlLaudo({ linhas: resultado, titulo, filtros: descricaoFiltros() });
+      const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `laudo-faturas-${titulo.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase()}-${hojeArquivo}.html`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      setAviso('Laudo baixado. Abra o arquivo no navegador; para PDF, use Imprimir > Salvar como PDF.');
+    } catch (e) { setAviso(`Erro ao gerar o laudo: ${e.message || e}`); }
+  };
+
   const copiarNumeros = async () => {
     try {
       await navigator.clipboard.writeText(resultado.map((l) => l.numero).join('\n'));
@@ -612,6 +631,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
               <button type="button" className="btn-primary" disabled={!resultado.length || exportando} onClick={exportarFaturas}>Exportar faturas ({inteiro(resultado.length)})</button>
+              <button type="button" className="btn-primary" style={{ background: '#04a484', borderColor: '#04a484' }} disabled={!resultado.some((l) => l.fatura)} onClick={gerarLaudo} title="Laudo visual das faturas do recorte: total, pago, programado no financeiro (protocolo com previsão) e em tratativa. Baixa um HTML que abre no navegador e imprime em PDF.">Gerar laudo</button>
               <button type="button" className="btn-secondary" disabled={!todosCtes.length || exportando || Boolean(progresso)} onClick={exportarTodosCtes} title={progresso ? 'Aguarde a verificação dos CT-es no SAP terminar' : 'Todos os CT-es das faturas do recorte, com a partida de cada um'}>Exportar CT-es ({inteiro(todosCtes.length)})</button>
               <button type="button" className="btn-secondary" disabled={!ctesSemPartida.length || exportando} onClick={exportarCtes}>Exportar CT-es sem partida ({inteiro(ctesSemPartida.length)})</button>
               <button type="button" className="btn-secondary" disabled={!resultado.length} onClick={copiarNumeros}>Copiar números</button>
