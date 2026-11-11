@@ -177,14 +177,20 @@ export async function transferirParaTransporte(itens = [], { destino, motivo, us
   return { transferidos: itens.length, destino: canalDestino };
 }
 
+const faltaColunaCiencia = (error) => /ciencia_auditor_em/i.test(String(error?.message || ''));
+
 export async function decidirAutorizacao({ id, autorizar, valorAutorizado, observacao, usuarioNome, item = null }) {
-  const { error } = await exigirClient().from(TABELA).update({
+  const campos = {
     status: autorizar ? 'AUTORIZADA' : 'RECUSADA',
     valor_autorizado: autorizar ? numero(valorAutorizado) : 0,
     observacao_gestor: observacao || null,
     decidido_por: usuarioNome || null,
     decidido_em: new Date().toISOString(),
-  }).eq('id', id);
+  };
+  // Nova decisao = novo aviso pro auditor que enviou (zera a ciencia anterior).
+  let { error } = await exigirClient().from(TABELA).update({ ...campos, ciencia_auditor_em: null }).eq('id', id);
+  // Migration 20261111_002 ainda nao aplicada: grava a decisao sem o aviso.
+  if (error && faltaColunaCiencia(error)) ({ error } = await exigirClient().from(TABELA).update(campos).eq('id', id));
   if (error) throw new Error(`Erro ao registrar decisao: ${error.message}`);
   // Suprimentos: quem aprova o valor assume o chamado AMD (vai corrigir a tabela depois).
   let chamadoAssumido = false;
@@ -200,6 +206,32 @@ export async function decidirAutorizacao({ id, autorizar, valorAutorizado, obser
     }
   }
   return { chamadoAssumido };
+}
+
+// Decisoes (aprovadas/recusadas) de CT-es que o auditor enviou e que ele ainda
+// nao viu. Ignora o que o proprio usuario decidiu (ex.: aprovacao de gestao).
+export async function listarDecisoesNaoVistasAuditor(usuarioNome) {
+  const nome = String(usuarioNome || '').trim();
+  if (!nome) return [];
+  const { data, error } = await exigirClient().from(TABELA)
+    .select('id, canal, status, chave_cte, chave_nfe, numero_pedido, transportadora, valor_cte, valor_divergente, valor_autorizado, observacao_gestor, decidido_por, decidido_em, protocolo_amd, fatura_id')
+    .eq('ativo', true).eq('origem', 'AUDITORIA').eq('enviado_por', nome)
+    .in('status', ['AUTORIZADA', 'RECUSADA'])
+    .is('ciencia_auditor_em', null)
+    .order('decidido_em', { ascending: false })
+    .limit(200);
+  if (error) {
+    if (faltaColunaCiencia(error)) return [];
+    throw new Error(`Erro ao buscar decisoes: ${error.message}`);
+  }
+  return (data || []).filter((row) => String(row.decidido_por || '').trim() !== nome);
+}
+
+export async function marcarCienciaAuditor(ids = []) {
+  const lista = ids.filter(Boolean);
+  if (!lista.length) return;
+  const { error } = await exigirClient().from(TABELA).update({ ciencia_auditor_em: new Date().toISOString() }).in('id', lista);
+  if (error) throw new Error(`Erro ao marcar ciencia: ${error.message}`);
 }
 
 // Auditor -> Suprimentos: abre um chamado AMD (Central de Solicitacoes) e coloca

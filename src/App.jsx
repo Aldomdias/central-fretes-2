@@ -18,6 +18,7 @@ import CteRapidoModal from './components/CteRapidoModal';
 import ChamadoRapidoModal from './components/ChamadoRapidoModal';
 import AvisoAprovacoesSuprimentos from './components/AvisoAprovacoesSuprimentos';
 import AvisoPrazoFaturas from './components/AvisoPrazoFaturas';
+import AvisoDecisoesAuditor from './components/AvisoDecisoesAuditor';
 import LoginPage from './pages/LoginPage';
 import UserManagementPage from './pages/UserManagementPage';
 import PainelUsuariosAtivosPage from './pages/PainelUsuariosAtivosPage';
@@ -306,13 +307,16 @@ export default function App() {
       {(usuarioTemAcesso(sessao, 'autorizacoes-suprimentos') || sessao?.perfil === 'NEGOCIACAO_FRETES') && paginaAtual !== 'autorizacoes-suprimentos' && (
         <AvisoAprovacoesSuprimentos movivel usuarioId={sessao?.id || sessao?.email || ''} oculto={avisosOcultos && sessao?.perfil !== 'NEGOCIACAO_FRETES'} onAbrir={() => mudarPagina('autorizacoes-suprimentos')} />
       )}
+      {(usuarioTemAcesso(sessao, 'faturas') || usuarioTemAcesso(sessao, 'auditoria-cte')) && (
+        <AvisoDecisoesAuditor usuarioNome={sessao?.nome || sessao?.email || ''} oculto={avisosOcultos} onAbrirFaturas={usuarioTemAcesso(sessao, 'faturas') ? () => mudarPagina('faturas') : undefined} />
+      )}
       {/* Um botao so pra esconder/mostrar todos os avisos fixos de uma vez — em vez
           de cada um ter seu proprio minimizar, o que tampava outros botoes fixos. */}
       {sessao?.perfil !== 'NEGOCIACAO_FRETES' && (
       <button
         type="button"
         onClick={() => setAvisosOcultos((v) => { const next = !v; try { window.localStorage.setItem('central_fretes_avisos_ocultos', next ? '1' : '0'); } catch { /* localStorage indisponivel: segue so na sessao */ } return next; })}
-        title={avisosOcultos ? 'Mostrar avisos (Faturas, Suprimentos)' : 'Esconder avisos (Faturas, Suprimentos)'}
+        title={avisosOcultos ? 'Mostrar avisos (Faturas, Suprimentos, Decididas)' : 'Esconder avisos (Faturas, Suprimentos, Decididas)'}
         style={{ position: 'fixed', right: 16, bottom: 244, zIndex: 9998, width: 30, height: 30, borderRadius: '50%', cursor: 'pointer', border: '1px solid #cbd5e1', background: '#fff', color: '#334155', fontWeight: 700, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(0,0,0,.15)' }}
       >
         {avisosOcultos ? '👁' : '−'}
