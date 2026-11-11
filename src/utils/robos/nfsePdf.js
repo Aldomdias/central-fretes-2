@@ -526,6 +526,12 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
 
   const iNomePrest = U.findIndex((l, k) => k > iPrest && iPrest >= 0 && l.includes('NOME / NOME EMPRESARIAL'));
   if (iNomePrest >= 0 && L[iNomePrest + 1]) dados.transportadora = semEmail(L[iNomePrest + 1].split(SEP)[0].trim());
+  // OCR (sem colunas): o municipio vem grudado no nome ("RB TRANSLOG LTDA Luis Eduardo Magalhaes / BA 29.19553 /")
+  if (/\/\s*[A-Za-z]{2}\s+\d{2}\.?\d{5}/.test(dados.transportadora)) {
+    const t = dados.transportadora;
+    const m = t.match(/^(.*?\b(?:LTDA|S\.?\s?A|EIRELI|EPP|MEI?)\b\.?)\s/i);
+    dados.transportadora = m ? m[1].trim() : t.replace(/\s*\/\s*[A-Za-z]{2}\s+\d{2}\.?\d{5}.*$/, '').trim();
+  }
 
   if (!dados.transportadora && iPrest >= 0) {
     const k = U.findIndex((l, n) => n > iPrest && n < iPrest + 6 && l.includes('RAZAO'));
@@ -589,7 +595,11 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
       if (U[k].includes('NOME / NOME EMPRESARIAL') && L[k + 1]) { // modelo nacional: Nome ¦ Municipio / UF ¦ IBGE / CEP
         const cel = L[k + 1].split(SEP);
         const ibge = (cel[2] || '').split('/')[0].replace(/\D/g, '');
-        return ibge.length >= 6 ? `IBGE${ibge}` : chaveMun(cel[1] || '');
+        if (ibge.length >= 6) return `IBGE${ibge}`;
+        // OCR (sem colunas): "RB TRANSLOG LTDA Luis Eduardo Magalhaes / BA 29.19553 / 47.862-094"
+        const o = cel.length === 1 ? L[k + 1].match(/\/\s*[A-Za-z]{2}\s+(\d{2})\.?(\d{5})\b/) : null;
+        if (o) return `IBGE${o[1]}${o[2]}`;
+        return chaveMun(cel[1] || '');
       }
       if (U[k].trim() === 'ENDERECO' && L[k + 1]) { // modelo de Palmas: ... - CEP: 77023-122 - Palmas - TO
         const a = L[k + 1].match(/-\s*([^-¦]+?)\s*-\s*([A-Za-z]{2})\s*$/);
