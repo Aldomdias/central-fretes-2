@@ -37,6 +37,50 @@ export function itensParaLinhas(itens = []) {
 }
 
 const RE_CNPJ = /(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/;
+
+function cnpjValido(c) {
+  if (!/^\d{14}$/.test(c) || /^(\d)\1+$/.test(c)) return false;
+  const dv = (base) => {
+    let soma = 0;
+    let peso = base.length - 7;
+    for (const ch of base) { soma += Number(ch) * peso; peso = peso === 2 ? 9 : peso - 1; }
+    const r = soma % 11;
+    return r < 2 ? 0 : 11 - r;
+  };
+  return dv(c.slice(0, 12)) === Number(c[12]) && dv(c.slice(0, 13)) === Number(c[13]);
+}
+
+// OCR: CNPJ com letra no lugar de numero ("1O.158.356/0036-3l"), virgula no lugar do ponto ou espacos.
+// So vale se o digito verificador confere, para nao inventar CNPJ a partir de lixo.
+const D_OCR = '[\\dOoDQIl]';
+const RE_CNPJ_OCR = new RegExp(`(?<![\\dOoDQIl])(${D_OCR}{2})\\s?[.,]?\\s?(${D_OCR}{3})\\s?[.,]?\\s?(${D_OCR}{3})\\s?[/|\\\\]?\\s?(${D_OCR}{4})\\s?[-–—~.]?\\s?(${D_OCR}{2})(?![\\dOoDQIl])`, 'g');
+function cnpjsOcr(linha) {
+  const achados = [];
+  for (const m of String(linha).matchAll(RE_CNPJ_OCR)) {
+    const c = m.slice(1, 6).join('').replace(/[OoDQ]/g, '0').replace(/[Il]/g, '1');
+    if (cnpjValido(c)) achados.push(c);
+  }
+  return achados;
+}
+// OCR: primeira data dd/mm/aaaa valida do texto (sem exigir a hora ao lado)
+function dataValidaNoTexto(txt) {
+  for (const m of String(txt).matchAll(/(?<!\d)(\d{2})\/(\d{2})\/(20\d{2})(?!\d)/g)) {
+    const [dia, mes] = [Number(m[1]), Number(m[2])];
+    if (dia >= 1 && dia <= 31 && mes >= 1 && mes <= 12) return m;
+  }
+  return null;
+}
+function cnpjDaLinha(linha, ocr) {
+  const m = String(linha).match(RE_CNPJ);
+  if (m) return m[1].replace(/\D/g, '');
+  return ocr ? (cnpjsOcr(linha)[0] || '') : '';
+}
+
+// OCR: o nome vem grudado com o que esta ao lado (data, lixo). Corta no fim da razao social.
+function cortarNaRazaoSocial(nome) {
+  const m = String(nome).match(/^(.*?\b(?:LTDA|S\.?\s?A|EIRELI|EPP|MEI?)\b\.?)(?=\s|$)/i);
+  return m ? m[1].trim() : String(nome).trim();
+}
 const RE_VALOR = /R\$\s*([\d.]+,\d{2})/;
 const semAcento = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '');
 
@@ -172,7 +216,8 @@ function extrairModeloIssNet(linhas, U, { ocr = false } = {}) {
     if (m) dados.numeroNfse = String(Number(m[1]));
   }
   dados.nf = nfComSufixoF(dados.numeroNfse);
-  const d = todo.match(/(\d{2})\/(\d{2})\/(\d{4})\s+\d{2}:\d{2}(?::\d{2})?/);
+  // data de geracao (com hora); se o OCR estragou essa, vale a data de competencia (mesmo dia no ISS.NET)
+  const d = todo.match(/(\d{2})\/(\d{2})\/(\d{4})\s+\d{2}:\d{2}(?::\d{2})?/) || (ocr ? dataValidaNoTexto(todo) : null);
   if (d) dados.dataEmissao = `${d[3]}-${d[2]}-${d[1]}`;
 
   const iPrest = U.findIndex((l) => l.includes('DADOS DO PRESTADOR DE SERVICO'));
@@ -185,7 +230,8 @@ function extrairModeloIssNet(linhas, U, { ocr = false } = {}) {
       const t = L[k].split(SEP)[0].trim();
       if (!t || /^(DATA|COD\.|RESPONSAVEL|IDENTIFICACAO)/.test(semAcento(t).toUpperCase()) || /^[\d/: ]+$/.test(t)) continue;
       // OCR: "NOME LTDA. 10/09/2026 13:29:10 | lixo" -> corta na data; linhas de lixo tem poucas letras
-      const nome = t.replace(/\s*\d{2}\/\d{2}\/\d{4}.*$/, '').replace(/\s*\|.*$/, '').trim();
+      let nome = t.replace(/\s*\d{2}\/\d{2}\/\d{4}.*$/, '').replace(/\s*\|.*$/, '').trim();
+      if (ocr) nome = cortarNaRazaoSocial(nome.replace(/\s+\S*\d\S*\s+\d{1,2}:\d{2}.*$/, ''));
       if ((nome.match(/[A-Za-zÀ-ÿ]/g) || []).length < 8) continue;
       candidatos.push(nome);
       if (!ocr) break;
@@ -210,8 +256,7 @@ function extrairModeloIssNet(linhas, U, { ocr = false } = {}) {
   }
   if (iTom >= 0) {
     for (let k = iTom + 1; k < Math.min(iTom + 8, L.length); k += 1) {
-      const cnpj = L[k].match(RE_CNPJ);
-      if (cnpj && !dados.cnpjTomador) dados.cnpjTomador = cnpj[1].replace(/\D/g, '');
+      if (!dados.cnpjTomador) dados.cnpjTomador = cnpjDaLinha(L[k], ocr);
       const mun = L[k].match(/Cidade\s*\/\s*UF\s*:\s*(?:¦\s*)?([^/¦]+?)\s*\/\s*([A-Za-z]{2})\b/i);
       if (mun && !dados.municipioTomador && UF_VALIDAS.has(mun[2].toUpperCase())) { dados.municipioTomador = chaveMunicipio(`${mun[1]}${mun[2]}`); dados.ufTomador = mun[2].toUpperCase(); }
     }
@@ -511,22 +556,26 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   dados.nf =nfComSufixoF(dados.numeroNfse);
 
   // data da emissao da NFS-e: primeira data seguida de hora (a competencia vem sem hora)
-  const d = todo.match(/(\d{2})\/(\d{2})\/(\d{4})\s*,?\s+\d{2}:\d{2}(?::\d{2})?/);
+  const d = todo.match(/(\d{2})\/(\d{2})\/(\d{4})\s*,?\s+\d{2}:\d{2}(?::\d{2})?/) || (ocr ? dataValidaNoTexto(todo) : null);
   if (d) dados.dataEmissao = `${d[3]}-${d[2]}-${d[1]}`;
 
   // prestador (nome e, se faltar a chave, o CNPJ) e tomador (CNPJ)
   const iPrest = U.findIndex((l) => l.includes('PRESTADOR / FORNECEDOR') || /^PRESTADOR D[EO] SERVICO/.test(l.trim()));
-  const iTom = U.findIndex((l) => l.includes('TOMADOR / ADQUIRENTE') || /^TOMADOR D[EO] SERVICO/.test(l.trim()));
+  const iTom = U.findIndex((l) => /TOMADOR\s*[/|\\]\s*ADQUIRENTE/.test(l) || /^TOMADOR D[EO] SERVICO/.test(l.trim()));
   const cnpjApos = (inicio) => {
     if (inicio < 0) return '';
     for (let k = inicio; k < Math.min(inicio + 6, L.length); k += 1) {
-      const m = L[k].match(RE_CNPJ);
-      if (m) return m[1].replace(/\D/g, '');
+      const c = cnpjDaLinha(L[k], ocr);
+      if (c) return c;
     }
     return '';
   };
   if (!dados.cnpjTransp) dados.cnpjTransp = cnpjApos(iPrest);
   dados.cnpjTomador = cnpjApos(iTom);
+  if (ocr && dados.cnpjTomador.length !== 14) {
+    // OCR estragou o titulo do bloco do tomador: vale o 1o CNPJ valido do texto que nao e o do prestador
+    dados.cnpjTomador = L.flatMap((l) => cnpjsOcr(l)).find((c) => c !== dados.cnpjTransp) || dados.cnpjTomador;
+  }
 
   const iNomePrest = U.findIndex((l, k) => k > iPrest && iPrest >= 0 && l.includes('NOME / NOME EMPRESARIAL'));
   if (iNomePrest >= 0 && L[iNomePrest + 1]) dados.transportadora = semEmail(L[iNomePrest + 1].split(SEP)[0].trim());

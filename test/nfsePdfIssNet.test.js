@@ -240,3 +240,64 @@ test('NFS-e ISS.NET por OCR: lixo do QR Code antes do nome do prestador (NFS 180
   assert.equal(dados.codImp, 'IQ');
   assert.equal(dados.cfop, '1933AA');
 });
+
+// NFS 18089 lida pelo OCR do navegador (Chromium): a data de geracao saiu estragada ("Jon5/2026 13:29:10")
+// e grudada no nome. Vale a data de competencia e o nome e cortado no fim da razao social.
+const LINHAS_DF_OCR_18089_NAVEGADOR = 
+[
+  ".. Série do D it",
+  "À Governo do Distrito Federal i Nm Pat \".",
+  "fe Secretaria de Estado de Economia do Distrito Federal Eletrônica, | —Eletrônica-NFS-e",
+  "Te”  Fone:()-156-Opção3-www.sefaz.df.gov.br .—.——",
+  "Dados do Prestador de Serviço",
+  "FL BRASIL HOLDING, LOGISTICA E TRANSPORTE LTDA. Jon5/2026 13:29:10 Eindene",
+  "Á Ea LO, SA",
+  "TRAGETTA | | 10/09/2026 ! ERA",
+  "Ade Conjunto 2 Lote 02 Lote 03 Lote 13 Lote 14, - Area de Desenvolvimento Economico (nucle Td. de Autenticidade Fo NE AAA",
+  "CEP 71735-720 - Brasília/ DF | Caseisrao — enrole nad bri",
+  "fiscalQexpressojundiai.com.br C48B13F39 Ee EETADE RA",
+  "Inscrição Municipal 0786583000209 - CPF/CNPJ 18.233.211/0036-60 Responsável pela Retenção EIA E",
+  "Identificação da Nota Fiscal Eletrônica",
+  "Natureza da Operação Número do RPS Série do RPS Data de Emissão do RPS",
+  "Local dos Serviços Município Incidência",
+  "Brasília - Distrito Federal Brasília - Distrito Federal",
+  "Dados do Tomador de Serviços",
+  "CNPJ/CPF : 10.158.356/0014-26 IM: 0802364800205",
+  "Razão Social: CPX DISTRIBUIDORAS A",
+  "Endereço : SETOR SCIA QUADRA 14 CONJUNTO 2 LOTE 13 SALA 01. Número: O",
+  "Complemento : Bairro : ZONA INDUSTRIAL (GUARA)",
+  "CEP: 70000-001 Cidade/UF : Brasília/ DF",
+  "Telefone : (47)98815-0761 E-mail : emailQemail.com",
+  "Dados do Intermediário de Serviços",
+  "Descrição dos Serviços",
+  "Detalhamento dos Tributos",
+  "Atividade do Município Alíquota  [ltem da LC116/2003 Cód. NBS Cód. CNAE",
+  "1602 - 16.02 - Outros serviços de transporte de natureza mun... 1602 105011900 | 4930201",
+  "VI. Total dos Serviços | Desconto Incondicionado — |Deduções Base Cálculo Base de Cálculo Total do ISSQN ISSQN Retido Desconto Condicionado",
+  "R$ 167,77 R$ 0,00 R$ 0,00 R$ 167,77 R$ 8,39 | Não R$ 0,00",
+  "PIS COFINS INSS IRRF CSLL Outras Retenções VI. ISSON Retido — | VI. Líquido da Nota Fiscal",
+  "R$ 0,00 R$ 0,00 R$ 0,00 R$ 0,00 | R$ 0,00 R$ 0,00 R$ 0,00 R$ 167,77",
+  "Construção Civil Cód. Obra : CO",
+  "Informações Adicionais",
+  "PROCON: TEL 151- SETOR COMERCIAL SUL, QUADRA 8, BLOCO B-60, SALA 240- BRASILIA - DF",
+  "Chave de acesso no Ambiente de Dados Nacional: 53001081218233211003660000000001808926091789046952.",
+  "Consulte a autenticidade deste documento acessando o site: https://iss.fazenda.df.gov.br/online/Login/Login.aspx",
+  "ISS.NET - Sistema Nota Control& + www.notacontrol.com.br"
+];
+
+test('NFS-e ISS.NET por OCR: data de geracao estragada usa a competencia (NFS 18089 no navegador)', () => {
+  const { dados, faltando } = extrairDadosNfse(LINHAS_DF_OCR_18089_NAVEGADOR, { ocr: true });
+  assert.deepEqual(faltando, []);
+  assert.equal(dados.nf, '18089-F');
+  assert.equal(dados.dataEmissao, '2026-09-10');
+  assert.equal(dados.transportadora, 'FL BRASIL HOLDING, LOGISTICA E TRANSPORTE LTDA.');
+  assert.equal(dados.cnpjTomador, '10158356001426');
+  assert.equal(dados.valor, 167.77);
+});
+
+test('NFS-e ISS.NET por OCR: CNPJ do tomador com letra no lugar de numero', () => {
+  const linhas = LINHAS_DF_OCR_18084.map((l) => l.replace('10.158.356/0014-26', '1O.158,356 / OO14-26'));
+  const { dados, faltando } = extrairDadosNfse(linhas, { ocr: true });
+  assert.deepEqual(faltando, []);
+  assert.equal(dados.cnpjTomador, '10158356001426');
+});

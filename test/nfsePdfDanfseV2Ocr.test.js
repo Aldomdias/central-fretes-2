@@ -84,3 +84,24 @@ test('DANFSe v2.0 lido por OCR: municipio pelo IBGE e nome sem o municipio gruda
   assert.equal(dados.codImp, 'IQ');
   assert.equal(dados.cfop, '1933AA');
 });
+
+// OCR de outra maquina: o CNPJ do tomador vem com letra no lugar de numero, virgula e espacos,
+// ou o titulo "TOMADOR / ADQUIRENTE" sai estragado. O CNPJ so vale se o digito verificador confere.
+for (const [nome, troca] of [
+  ['letra no lugar de numero', (l) => l.replace('10.158.356/0036-31', '1O.158.356/OO36-3l')],
+  ['virgula e espacos', (l) => l.replace('10.158.356/0036-31', '10,158.356 / 0036 -31')],
+  ['titulo do bloco estragado', (l) => l.replace('TOMADOR / ADQUIRENTE', 'TOMAD0R ! ADOUIRENTE')],
+]) {
+  test(`DANFSe v2.0 por OCR: CNPJ do tomador com ${nome}`, () => {
+    const { dados, faltando } = extrairDadosNfse(LINHAS_RB_OCR.map(troca), { ocr: true });
+    assert.deepEqual(faltando, []);
+    assert.equal(dados.cnpjTomador, '10158356003631');
+    assert.equal(dados.cnpjTransp, '39485760000171');
+  });
+}
+
+test('DANFSe v2.0 por OCR: CNPJ com digito verificador errado nao e aceito', () => {
+  const linhas = LINHAS_RB_OCR.map((l) => l.replace('10.158.356/0036-31', '10.158.356/0036-3B'));
+  const { faltando } = extrairDadosNfse(linhas, { ocr: true });
+  assert.ok(faltando.includes('CNPJ do tomador'));
+});
