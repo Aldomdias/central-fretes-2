@@ -195,17 +195,24 @@ export function identificacaoSapDoCte(item = {}) {
 // Resumo dos CT-es de uma fatura contra as linhas SAP (Map chaveCasamento -> linhas).
 export function resumirCtesFatura(detalhes = [], lancamentosPorChave = new Map()) {
   const vistos = new Set();
-  const resumo = { total: 0, lancados: 0, nfse: 0, semPartida: [], valorSemPartida: 0 };
+  // itens: todos os CT-es da fatura (com partida, sem partida, NFS-e) para a planilha completa.
+  const resumo = { total: 0, lancados: 0, nfse: 0, itens: [], semPartida: [], valorSemPartida: 0 };
   detalhes.forEach((item) => {
     if (item.excluido_da_versao === true) return;
     const unico = digitos(item.chave_cte) || `${digitos(item.numero_cte)}-${item.serie_cte || ''}`;
     if (vistos.has(unico)) return;
     vistos.add(unico);
-    if (ehLinhaNfse(item)) { resumo.nfse += 1; return; }
+    const base = { numero_cte: item.numero_cte, serie_cte: item.serie_cte, chave_cte: item.chave_cte, valor_frete: Number(item.valor_frete || 0) };
+    if (ehLinhaNfse(item)) { resumo.nfse += 1; resumo.itens.push({ ...base, situacao: 'NFSE' }); return; }
     resumo.total += 1;
     const situacao = situacaoLancamentoCte(lancamentosPorChave.get(chaveCasamentoCte(identificacaoSapDoCte(item))) || []);
-    if (situacao.lancado) { resumo.lancados += 1; return; }
-    resumo.semPartida.push({ numero_cte: item.numero_cte, serie_cte: item.serie_cte, chave_cte: item.chave_cte, valor_frete: Number(item.valor_frete || 0), estornado: situacao.estornado });
+    if (situacao.lancado) {
+      resumo.lancados += 1;
+      resumo.itens.push({ ...base, situacao: 'COM_PARTIDA', lancamento_contabil: situacao.lancamento_contabil, data_lancamento: situacao.data_lancamento, valor_lancado: situacao.valor_lancado });
+      return;
+    }
+    resumo.itens.push({ ...base, situacao: situacao.estornado ? 'ESTORNADO' : 'SEM_PARTIDA' });
+    resumo.semPartida.push({ ...base, estornado: situacao.estornado });
     resumo.valorSemPartida += Number(item.valor_frete || 0);
   });
   resumo.valorSemPartida = Number(resumo.valorSemPartida.toFixed(2));

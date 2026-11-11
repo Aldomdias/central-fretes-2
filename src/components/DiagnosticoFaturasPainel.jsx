@@ -31,6 +31,7 @@ const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/')
 const nomeStatus = (s) => String(s || '-').replaceAll('_', ' ');
 const carimbo = (f) => f.updated_at || '';
 const COR_PAGAMENTO = { Paga: '#14733b', 'Paga c/ divergência': '#b78700', 'Lançada, não paga': '#315ee7', 'Lançada nos CT-es, não paga': '#b78700', 'Não lançada': '#9b1111' };
+const ROTULO_SITUACAO_CTE = { COM_PARTIDA: 'Com partida', SEM_PARTIDA: 'Sem partida', ESTORNADO: 'Estornado no SAP', NFSE: 'NFS-e (fora do SAP CT-e)' };
 const ROTULO_ENVIO_ERP = { NAO_ENVIADA: 'Não enviada', COM_PARTIDA: 'Enviada com partida', PARTIDA_NOS_CTES: 'Enviada, partida só nos CT-es', SEM_PARTIDA: 'Enviada sem partida', VERIFICANDO: 'Não verificada' };
 
 // Fica fora do componente para sobreviver a troca de aba; a versao da fatura (updated_at) invalida o item.
@@ -326,6 +327,27 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       });
     } catch (e) { setAviso(`Erro ao exportar: ${e.message || e}`); } finally { setExportando(false); }
   };
+  const todosCtes = useMemo(() => resultado.flatMap((l) => (l.ctes?.itens || []).map((c) => ({ l, c }))), [resultado]);
+  const exportarTodosCtes = async () => {
+    setExportando(true);
+    try {
+      await exportarExcelFormatado({
+        nomeArquivo: `ctes-faturas-${hojeArquivo}.xlsx`,
+        aba: 'CT-es',
+        colunas: [
+          { titulo: 'Fatura', largura: 14 }, { titulo: 'Transportadora', largura: 34 }, { titulo: 'Status fatura', largura: 22 }, { titulo: 'Vencimento fatura', largura: 12, tipo: 'data' }, { titulo: 'Pagamento fatura', largura: 22 },
+          { titulo: 'Número CT-e', largura: 14 }, { titulo: 'Série', largura: 8, tipo: 'centro' }, { titulo: 'Chave CT-e', largura: 48 }, { titulo: 'Valor frete', largura: 16, tipo: 'moeda' },
+          { titulo: 'Situação SAP', largura: 18 }, { titulo: 'Partida CT-e', largura: 14 }, { titulo: 'Data lançamento', largura: 12, tipo: 'data' }, { titulo: 'Valor lançado', largura: 16, tipo: 'moeda' },
+        ],
+        linhas: todosCtes.map(({ l, c }) => [
+          String(l.numero), l.fatura.transportadora || '', nomeStatus(l.fatura.status), l.fatura.data_vencimento || '', textoPagamentoLinha(l),
+          String(c.numero_cte || ''), String(c.serie_cte || ''), String(c.chave_cte || ''), c.valor_frete,
+          ROTULO_SITUACAO_CTE[c.situacao] || '', c.lancamento_contabil || '', c.data_lancamento || '', c.situacao === 'COM_PARTIDA' ? c.valor_lancado : '',
+        ]),
+        resumo: descricaoFiltros(),
+      });
+    } catch (e) { setAviso(`Erro ao exportar: ${e.message || e}`); } finally { setExportando(false); }
+  };
   const copiarNumeros = async () => {
     try {
       await navigator.clipboard.writeText(resultado.map((l) => l.numero).join('\n'));
@@ -407,6 +429,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
               <button type="button" className="btn-primary" disabled={!resultado.length || exportando} onClick={exportarFaturas}>Exportar faturas ({inteiro(resultado.length)})</button>
+              <button type="button" className="btn-secondary" disabled={!todosCtes.length || exportando || Boolean(progresso)} onClick={exportarTodosCtes} title={progresso ? 'Aguarde a verificação dos CT-es no SAP terminar' : 'Todos os CT-es das faturas do recorte, com a partida de cada um'}>Exportar CT-es ({inteiro(todosCtes.length)})</button>
               <button type="button" className="btn-secondary" disabled={!ctesSemPartida.length || exportando} onClick={exportarCtes}>Exportar CT-es sem partida ({inteiro(ctesSemPartida.length)})</button>
               <button type="button" className="btn-secondary" disabled={!resultado.length} onClick={copiarNumeros}>Copiar números</button>
               <button type="button" className="btn-secondary" disabled={Boolean(progresso) || atualizando} onClick={atualizarDados} title="Busca de novo as faturas, os CT-es e as partidas no banco">{atualizando ? 'Atualizando...' : '↻ Atualizar dados'}</button>

@@ -117,6 +117,10 @@ test('resumo de CT-es: lancado, estornado, duplicado e NFS-e', () => {
   assert.equal(r.semPartida.find((c) => c.numero_cte === '2').estornado, true);
   assert.equal(situacaoCtes(r), 'PARCIAL');
   assert.equal(situacaoCtes({ total: 0, lancados: 0, nfse: 1 }), 'SO_NFSE');
+  // Lista completa para a planilha: todos os CT-es, com a partida de quem tem.
+  assert.equal(r.itens.length, 4);
+  assert.deepEqual(r.itens.map((c) => c.situacao).sort(), ['COM_PARTIDA', 'ESTORNADO', 'NFSE', 'SEM_PARTIDA']);
+  assert.ok(r.itens.find((c) => c.situacao === 'COM_PARTIDA').lancamento_contabil);
 });
 
 test('cards de grupos diferentes se somam', () => {
