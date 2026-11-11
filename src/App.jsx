@@ -309,6 +309,18 @@ export default function App() {
       )}
       {(usuarioTemAcesso(sessao, 'faturas') || usuarioTemAcesso(sessao, 'auditoria-cte')) && (
         <AvisoDecisoesAuditor
+          usuarioId={sessao?.id || ''}
+          onAbrirAuditoriaCte={usuarioTemAcesso(sessao, 'auditoria-cte') ? () => {
+            mudarPagina('auditoria-cte');
+            // O painel de respostas carrega depois da tela: tenta rolar ate ele por alguns segundos.
+            let tentativas = 0;
+            const rolar = () => {
+              const painel = document.getElementById('painel-respostas-portal');
+              if (painel) { painel.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+              if ((tentativas += 1) < 20) window.setTimeout(rolar, 300);
+            };
+            window.setTimeout(rolar, 300);
+          } : undefined}
           usuarioNome={sessao?.nome || sessao?.email || ''}
           usuarioEmail={sessao?.email || ''}
           oculto={avisosOcultos}

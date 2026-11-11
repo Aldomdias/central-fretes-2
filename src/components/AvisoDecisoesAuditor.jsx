@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isSupabaseConfigured } from '../lib/supabaseClient';
 import { listarDecisoesNaoVistasAuditor, marcarCienciaAuditor } from '../services/transporteAutorizacoesService';
-import { ACOES_RESPOSTA_TRANSPORTADORA, listarRespostasTransportadoraNaoVistas, marcarCienciaRespostasTransportadora } from '../services/avisosAuditorService';
+import { ACOES_RESPOSTA_TRANSPORTADORA, listarRespostasLaudoCteNaoVistas, listarRespostasTransportadoraNaoVistas, marcarCienciaRespostasLaudoCte, marcarCienciaRespostasTransportadora } from '../services/avisosAuditorService';
 
 const INTERVALO_MS = 60000;
 const NOME_CANAL = { SUPRIMENTOS: 'Suprimentos', B2C: 'Transporte B2C', ATACADO: 'Transporte Atacado', LOTACAO: 'Lotação' };
@@ -13,7 +13,7 @@ const resumir = (texto, max = 260) => { const t = String(texto || ''); return t.
 // Junta as duas fontes num formato so: decisoes de Suprimentos/Transporte sobre
 // CT-es que o auditor enviou, e respostas da transportadora pelo portal nas
 // faturas do auditor.
-function normalizar(decisoes = [], respostas = []) {
+function normalizar(decisoes = [], respostas = [], laudosCte = []) {
   const a = decisoes.map((item) => ({
     chave: `D:${item.id}`,
     tipo: 'DECISAO',
@@ -32,14 +32,23 @@ function normalizar(decisoes = [], respostas = []) {
     fatura: item.fatura,
     item,
   }));
-  return [...a, ...b].sort((x, y) => String(y.quando || '').localeCompare(String(x.quando || '')));
+  const c = laudosCte.map((grupo) => ({
+    chave: `C:${grupo.id}`,
+    tipo: 'LAUDO_CTE',
+    id: grupo.id,
+    quando: grupo.respondido_em,
+    positivo: grupo.positivo,
+    fatura: null,
+    item: grupo,
+  }));
+  return [...a, ...b, ...c].sort((x, y) => String(y.quando || '').localeCompare(String(x.quando || '')));
 }
 
 // Aviso pro auditor de tudo que voltou pra ele e ja pode seguir:
 //  - CT-e enviado pra aprovacao (Suprimentos, B2C, Atacado, Lotacao) foi decidido;
 //  - a transportadora respondeu pelo portal numa fatura dele.
 // Fica piscando no canto ate ele marcar "Ciente".
-export default function AvisoDecisoesAuditor({ usuarioNome = '', usuarioEmail = '', oculto = false, onAbrirFatura }) {
+export default function AvisoDecisoesAuditor({ usuarioId = '', usuarioNome = '', usuarioEmail = '', oculto = false, onAbrirFatura, onAbrirAuditoriaCte }) {
   const [avisos, setAvisos] = useState([]);
   const [aberto, setAberto] = useState(false);
   const [novas, setNovas] = useState(0);
@@ -49,17 +58,18 @@ export default function AvisoDecisoesAuditor({ usuarioNome = '', usuarioEmail = 
   const consultar = useCallback(async () => {
     if (!isSupabaseConfigured() || (!usuarioNome && !usuarioEmail)) return;
     // Cada fonte e independente: se uma falhar (ex.: migration nao aplicada), a outra segue.
-    const [decisoes, respostas] = await Promise.all([
+    const [decisoes, respostas, laudosCte] = await Promise.all([
       listarDecisoesNaoVistasAuditor(usuarioNome).catch(() => []),
       listarRespostasTransportadoraNaoVistas({ nome: usuarioNome, email: usuarioEmail }).catch(() => []),
+      listarRespostasLaudoCteNaoVistas({ id: usuarioId, nome: usuarioNome }).catch(() => []),
     ]);
-    const lista = normalizar(decisoes, respostas);
+    const lista = normalizar(decisoes, respostas, laudosCte);
     const antes = vistos.current;
     const chegaram = antes === null ? lista.length : lista.filter((aviso) => !antes.has(aviso.chave)).length;
     vistos.current = new Set(lista.map((aviso) => aviso.chave));
     setAvisos(lista);
     if (chegaram > 0) setNovas(chegaram);
-  }, [usuarioNome, usuarioEmail]);
+  }, [usuarioId, usuarioNome, usuarioEmail]);
 
   useEffect(() => {
     vistos.current = null;
@@ -84,7 +94,9 @@ export default function AvisoDecisoesAuditor({ usuarioNome = '', usuarioEmail = 
     try {
       const decisoes = lista.filter((a) => a.tipo === 'DECISAO').map((a) => a.id);
       const respostas = lista.filter((a) => a.tipo === 'TRANSPORTADORA').map((a) => a.id);
+      const laudosCte = lista.filter((a) => a.tipo === 'LAUDO_CTE').flatMap((a) => a.item.ids);
       await Promise.all([
+        laudosCte.length ? marcarCienciaRespostasLaudoCte(laudosCte) : null,
         decisoes.length ? marcarCienciaAuditor(decisoes) : null,
         respostas.length ? marcarCienciaRespostasTransportadora(respostas, usuarioNome) : null,
       ]);
@@ -108,7 +120,7 @@ export default function AvisoDecisoesAuditor({ usuarioNome = '', usuarioEmail = 
   if (!avisos.length || oculto) return null;
 
   const decisoes = avisos.filter((a) => a.tipo === 'DECISAO');
-  const transportadora = avisos.filter((a) => a.tipo === 'TRANSPORTADORA');
+  const transportadora = avisos.filter((a) => a.tipo !== 'DECISAO');
   const cor = avisos.some((a) => a.positivo) ? '#15803d' : '#b45309';
   const partes = [
     decisoes.length ? `${decisoes.length} de Suprimentos/Transporte` : '',
@@ -150,6 +162,18 @@ export default function AvisoDecisoesAuditor({ usuarioNome = '', usuarioEmail = 
     );
   };
 
+  const renderLaudoCte = ({ item }) => (
+    <>
+      <div><span style={{ fontWeight: 700, color: item.positivo ? '#15803d' : '#b45309' }}>📋 Transportadora respondeu o laudo de CT-e</span></div>
+      <div style={{ color: '#334155' }}>
+        {item.transportadora || '-'}{item.processo?.codigo ? ` · Laudo ${item.processo.codigo}` : ''}
+        {item.processo?.competencia ? ` · Competência ${item.processo.competencia}` : ''} · {item.ids.length} CT-e{item.ids.length === 1 ? '' : 's'}
+      </div>
+      <div style={{ color: '#334155' }}>{item.resumo}{item.valorProposto ? ` · desconto proposto ${moeda(item.valorProposto)}` : ''}</div>
+      <div style={{ color: '#64748b' }}>Por {item.respondido_por || 'portal'} em {dataHora(item.respondido_em)} · aguardando sua validação</div>
+    </>
+  );
+
   return (
     <>
       <style>{'@keyframes aviso-pulso-auditor{0%,100%{box-shadow:0 0 0 0 rgba(21,128,61,.6);transform:scale(1)}50%{box-shadow:0 0 0 12px rgba(21,128,61,0);transform:scale(1.04)}}'}</style>
@@ -171,9 +195,12 @@ export default function AvisoDecisoesAuditor({ usuarioNome = '', usuarioEmail = 
           {avisos.map((aviso) => (
             <div key={aviso.chave} style={{ borderTop: '1px solid #e2e8f0', padding: '8px 0', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                {aviso.tipo === 'DECISAO' ? renderDecisao(aviso) : renderResposta(aviso)}
+                {aviso.tipo === 'DECISAO' ? renderDecisao(aviso) : aviso.tipo === 'LAUDO_CTE' ? renderLaudoCte(aviso) : renderResposta(aviso)}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {aviso.tipo === 'LAUDO_CTE' && onAbrirAuditoriaCte && (
+                  <button type="button" className="btn-secondary" onClick={() => { setAberto(false); onAbrirAuditoriaCte(); }}>Validar respostas</button>
+                )}
                 {onAbrirFatura && (aviso.fatura?.numero_fatura || aviso.tipo === 'DECISAO') && (
                   <button type="button" className="btn-secondary" onClick={() => abrirFatura(aviso)}>{aviso.fatura?.numero_fatura ? 'Abrir fatura' : 'Ir p/ Faturas'}</button>
                 )}
@@ -186,7 +213,7 @@ export default function AvisoDecisoesAuditor({ usuarioNome = '', usuarioEmail = 
       <button
         type="button"
         onClick={() => { setNovas(0); setAberto((v) => !v); }}
-        title="Aprovações de Suprimentos/Transporte e respostas da transportadora que voltaram pra você"
+        title="Aprovações de Suprimentos/Transporte e respostas da transportadora (faturas e laudo de CT-e) que voltaram pra você"
         style={{ position: 'fixed', right: 16, bottom: 286, zIndex: 9998, borderRadius: 999, padding: '8px 14px', cursor: 'pointer', border: 'none', background: cor, color: '#fff', fontWeight: 700, animation: aberto ? undefined : 'aviso-pulso-auditor 1.6s infinite' }}
       >
         🔔 Pra seguir: {partes}
