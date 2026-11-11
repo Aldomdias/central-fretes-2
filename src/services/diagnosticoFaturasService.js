@@ -49,7 +49,7 @@ async function carregarLancamentos(client, detalhes) {
       const lote = lista.slice(i, i + LOTE_NUMEROS);
       // eslint-disable-next-line no-await-in-loop
       const linhas = await paginarPorId(() => client.from('ctes_lancamentos_sap')
-        .select('id,cnpj_emitente,numero_cte,serie_cte,lancamento_contabil,data_lancamento,montante')
+        .select('id,cnpj_emitente,numero_cte,serie_cte,lancamento_contabil,data_lancamento,montante,documento_compensacao,data_compensacao,empresa,codigo_fornecedor,fornecedor')
         .eq('cnpj_emitente', cnpj).in('numero_cte', lote));
       linhas.forEach((l) => {
         const k = chaveCasamentoCte({ cnpj: l.cnpj_emitente, numero: l.numero_cte, serie: l.serie_cte });

@@ -6,6 +6,7 @@ import { obterRaizCnpj, raizCnpjValida } from './cnpj.js';
 import { chaveCasamentoCte, cnpj14, serieDaChave, situacaoLancamentoCte } from './lancamentosCteSap.js';
 import { ehLinhaNfse } from './nfseFatura.js';
 import { parseNumeroPlanilha } from './parseNumeroPlanilha.js';
+import { linhaFenixDoCte } from './termoCorrecaoFenix.js';
 
 export const TOLERANCIA_VALOR_LISTA = 0.05;
 
@@ -198,7 +199,8 @@ export function identificacaoSapDoCte(item = {}) {
 export function resumirCtesFatura(detalhes = [], lancamentosPorChave = new Map()) {
   const vistos = new Set();
   // itens: todos os CT-es da fatura (com partida, sem partida, NFS-e) para a planilha completa.
-  const resumo = { total: 0, lancados: 0, nfse: 0, itens: [], semPartida: [], valorSemPartida: 0 };
+  // fenix: CT-es compensados pela partida Fenix (compensacao nao paga): travam a escrituracao da fatura.
+  const resumo = { total: 0, lancados: 0, nfse: 0, itens: [], semPartida: [], valorSemPartida: 0, fenix: [], valorFenix: 0 };
   detalhes.forEach((item) => {
     if (item.excluido_da_versao === true) return;
     const unico = digitos(item.chave_cte) || `${digitos(item.numero_cte)}-${item.serie_cte || ''}`;
@@ -207,10 +209,19 @@ export function resumirCtesFatura(detalhes = [], lancamentosPorChave = new Map()
     const base = { numero_cte: item.numero_cte, serie_cte: item.serie_cte, chave_cte: item.chave_cte, valor_frete: Number(item.valor_frete || 0) };
     if (ehLinhaNfse(item)) { resumo.nfse += 1; resumo.itens.push({ ...base, situacao: 'NFSE' }); return; }
     resumo.total += 1;
-    const situacao = situacaoLancamentoCte(lancamentosPorChave.get(chaveCasamentoCte(identificacaoSapDoCte(item))) || []);
+    const linhasSap = lancamentosPorChave.get(chaveCasamentoCte(identificacaoSapDoCte(item))) || [];
+    const situacao = situacaoLancamentoCte(linhasSap);
     if (situacao.lancado) {
       resumo.lancados += 1;
-      resumo.itens.push({ ...base, situacao: 'COM_PARTIDA', lancamento_contabil: situacao.lancamento_contabil, data_lancamento: situacao.data_lancamento, valor_lancado: situacao.valor_lancado });
+      const fenix = linhaFenixDoCte(linhasSap);
+      resumo.itens.push({ ...base, situacao: 'COM_PARTIDA', lancamento_contabil: situacao.lancamento_contabil, data_lancamento: situacao.data_lancamento, valor_lancado: situacao.valor_lancado, fenix: Boolean(fenix) });
+      if (fenix) {
+        resumo.fenix.push({
+          ...base, partida: fenix.lancamento_contabil, documento_compensacao: fenix.documento_compensacao, data_compensacao: fenix.data_compensacao || null,
+          data_lancamento: fenix.data_lancamento || null, montante: Math.abs(Number(fenix.montante || 0)), empresa: fenix.empresa || '', codigo_fornecedor: fenix.codigo_fornecedor || '', fornecedor: fenix.fornecedor || '',
+        });
+        resumo.valorFenix += Number(item.valor_frete || 0);
+      }
       return;
     }
     resumo.itens.push({ ...base, situacao: situacao.estornado ? 'ESTORNADO' : 'SEM_PARTIDA' });
@@ -218,6 +229,7 @@ export function resumirCtesFatura(detalhes = [], lancamentosPorChave = new Map()
     resumo.valorSemPartida += Number(item.valor_frete || 0);
   });
   resumo.valorSemPartida = Number(resumo.valorSemPartida.toFixed(2));
+  resumo.valorFenix = Number(resumo.valorFenix.toFixed(2));
   return resumo;
 }
 
@@ -227,6 +239,8 @@ export function situacaoCtes(resumo) {
   if (resumo.lancados === resumo.total) return 'TODOS';
   return resumo.lancados ? 'PARCIAL' : 'NENHUM';
 }
+
+export const temFenix = (linha) => Boolean(linha?.ctes?.fenix?.length);
 
 const ROTULO_PAGAMENTO = { PAGA: 'Paga', PAGA_DIVERGENTE: 'Paga c/ divergência', CANCELADA: 'Cancelada' };
 
@@ -247,6 +261,7 @@ export function proximaAcao(linha) {
   const auditoria = situacaoAuditoria(f);
   if (auditoria === 'CANCELADA') return 'Nenhuma (cancelada/substituída)';
   if (situacaoPagamento(f) !== 'ABERTA') return 'Nenhuma (paga)';
+  if (temFenix(linha)) return 'Pedir estorno da compensação Fênix ao financeiro';
   if (agrupamentoManual(f) && !faturaLancada(f)) return 'Aguardar agrupamento manual do financeiro';
   if (situacaoEnvioErp(linha) === 'SEM_PARTIDA') return 'Verificar envio ao ERP (sem partida)';
   if (auditoria === 'NAO_AUDITADA' || auditoria === 'PARCIAL') return 'Auditar';
@@ -303,6 +318,11 @@ export const GRUPOS_DIAGNOSTICO = [
     { id: 'sem_partida', rotulo: 'Com CT-e sem partida', cor: '#e67e22', teste: ctes('PARCIAL', 'NENHUM'), dica: 'Pelo menos um CT-e da fatura sem partida no SAP.', detalheCtes: true },
     { id: 'nenhum', rotulo: 'Nenhum CT-e lançado', cor: '#9b1111', teste: ctes('NENHUM'), dica: 'Nenhum CT-e da fatura tem partida no SAP.', detalheCtes: true },
     { id: 'sem_ctes', rotulo: 'Sem CT-e / só NFS-e', cor: '#64748b', teste: ctes('SEM_CTES', 'SO_NFSE'), dica: 'Fatura sem CT-e vinculado ou só com NFS-e (não entram no relatório SAP de CT-e).' },
+  ] },
+  // Partida Fenix (1501163056): compensacao nao paga em CT-e. A fatura nao escritura ate o financeiro estornar.
+  { id: 'fenix', titulo: 'Partida Fênix (compensação não paga)', cards: [
+    { id: 'com_fenix', rotulo: 'CT-es com a Fênix', cor: '#b91c1c', teste: comFatura((l) => ativa(l) && temFenix(l)), dica: 'Faturas com CT-e compensado pela partida Fênix (1501163056): o financeiro precisa estornar a compensação para a fatura escriturar.', detalheFenix: true },
+    { id: 'sem_fenix', rotulo: 'Sem Fênix', cor: '#64748b', teste: comFatura((l) => ativa(l) && Boolean(l.ctes) && !temFenix(l)), dica: 'Faturas verificadas sem CT-e na partida Fênix.' },
   ] },
   { id: 'pagamento', titulo: 'Pagamento', cards: [
     { id: 'pagas', rotulo: 'Pagas', cor: '#14733b', teste: pagamento('PAGA'), dica: 'Pagas ou pagas com desconto.' },
