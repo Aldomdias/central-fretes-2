@@ -318,10 +318,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   // Previsao de pagamento: grava (ou limpa) a data combinada nas selecionadas que ainda nao foram pagas.
   const aplicarPrevisao = async (limpar = false) => {
     const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l.fatura]));
-    const abertas = selecaoValida.filter((id) => situacaoPagamento(porId.get(id)) === 'ABERTA');
+    const abertas = selecaoValida.filter((id) => agrupamentoManual(porId.get(id)) && situacaoPagamento(porId.get(id)) === 'ABERTA');
     const alvo = limpar ? abertas.filter((id) => previsaoPagamento(porId.get(id))) : abertas;
     if (!limpar && !dataPrevisao) { setAviso('Escolha a data prevista de pagamento.'); return; }
-    if (!alvo.length) { setAviso(limpar ? 'Nenhuma selecionada tem previsão de pagamento.' : 'Nenhuma selecionada está em aberto (pagas e canceladas ficam de fora).'); return; }
+    if (!alvo.length) { setAviso(limpar ? 'Nenhuma selecionada tem previsão de pagamento.' : 'Nenhuma selecionada está no protocolo em aberto. A previsão é só para as marcadas para protocolo; as demais seguem o vencimento.'); return; }
     if (!limpar && (diasAte(dataPrevisao) ?? 0) < 0 && !window.confirm(`A data ${dataBr(dataPrevisao)} já passou. Gravar assim mesmo?`)) return;
     if (limpar && !window.confirm(`Tirar a previsão de pagamento de ${alvo.length} fatura(s)?`)) return;
     setMarcando(true);
@@ -609,8 +609,8 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               {aviso && <span className="compact" role="status">{aviso}</span>}
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
-              <span className="compact" style={{ color: '#475569' }} title="Data combinada de pagamento (ex.: vencidas liberadas que vão para o protocolo). Vale só para faturas em aberto e some quando a fatura é paga.">
-                Previsão de pagamento: {inteiro(selecaoValida.length)} selecionada(s)
+              <span className="compact" style={{ color: '#475569' }} title="Data alinhada com o financeiro para as faturas marcadas para protocolo. As demais seguem o vencimento. Some quando a fatura é paga.">
+                Previsão de pagamento (protocolo): {inteiro(selecaoValida.length)} selecionada(s)
               </span>
               <input type="date" value={dataPrevisao} onChange={(e) => setDataPrevisao(e.target.value)} aria-label="Data prevista de pagamento" />
               <button type="button" className="btn-primary" style={{ background: '#04a484', borderColor: '#04a484' }} disabled={!selecaoValida.length || !dataPrevisao || marcando} onClick={() => aplicarPrevisao(false)}>{marcando ? 'Gravando...' : 'Gravar previsão'}</button>

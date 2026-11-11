@@ -184,8 +184,9 @@ export function faixaDaLinha(l, referencia = new Date()) {
 
 export const FAIXAS_A_VENCER = ['HOJE_AMANHA', 'ATE_7', 'MAIS_7'];
 
-// Previsao de pagamento combinada (marcada na tela). So vale enquanto a fatura nao foi paga.
-export const previsaoPagamento = (f) => (f && situacaoPagamento(f) === 'ABERTA' ? String(f.data_previsao_pagamento || '').slice(0, 10) : '');
+// Previsao de pagamento combinada com o financeiro no protocolo (agrupamento manual). Fora do protocolo
+// o prazo e o vencimento. So vale enquanto a fatura esta no protocolo e nao foi paga.
+export const previsaoPagamento = (f) => (f && f.agrupamento_manual && situacaoPagamento(f) === 'ABERTA' ? String(f.data_previsao_pagamento || '').slice(0, 10) : '');
 
 // SEM_PREVISAO, PREVISTA (hoje ou adiante) ou ATRASADA (a data combinada passou e nao pagou).
 export function situacaoPrevisao(f, referencia = new Date()) {
@@ -292,7 +293,10 @@ export function proximaAcao(linha) {
   if (fenix === 'A_ENVIAR') return 'Pedir estorno da compensação Fênix ao financeiro';
   if (fenix === 'AGUARDANDO') return 'Aguardar retorno do financeiro (Fênix)';
   if (fenix === 'RETORNO') return 'Mandar protocolo (Fênix ajustada)';
-  if (agrupamentoManual(f) && !faturaLancada(f)) return 'Aguardar agrupamento manual do financeiro';
+  if (agrupamentoManual(f) && !faturaLancada(f)) {
+    const previsto = previsaoPagamento(f);
+    return `Aguardar agrupamento manual do financeiro${previsto ? ` (pagamento previsto ${previsto.split('-').reverse().join('/')})` : ''}`;
+  }
   if (situacaoEnvioErp(linha) === 'SEM_PARTIDA') return 'Verificar envio ao ERP (sem partida)';
   if (auditoria === 'NAO_AUDITADA' || auditoria === 'PARCIAL') return 'Auditar';
   if (auditoria === 'AUDITADA') return 'Tratar e liberar';
@@ -363,12 +367,11 @@ export const GRUPOS_DIAGNOSTICO = [
     { id: 'fenix_retorno', rotulo: 'Retorno recebido: mandar protocolo', cor: '#315ee7', teste: (l) => etapaFenix(l) === 'RETORNO', dica: 'O financeiro já ajustou (marcado como retorno recebido, ou a Fênix sumiu do relatório SAP reimportado). Falta marcar para protocolo.' },
     { id: 'fenix_protocolo', rotulo: 'Já no protocolo', cor: '#14733b', teste: (l) => etapaFenix(l) === 'PROTOCOLO', dica: 'Passaram pelo ajuste Fênix e já foram marcadas para protocolo (agrupamento manual).' },
   ] },
-  // Data combinada de pagamento, para repassar a transportadora o que ja esta pronto.
-  { id: 'previsao', titulo: 'Previsão de pagamento (não pagas)', cards: [
-    { id: 'vencidas_sem_previsao', rotulo: 'Vencidas sem previsão', cor: '#9b1111', teste: comFatura((l) => ativa(l) && faixaDaLinha(l) === 'VENCIDA' && situacaoPrevisao(l.fatura) === 'SEM_PREVISAO'), dica: 'Vencidas e não pagas sem data prevista de pagamento.' },
-    { id: 'com_previsao', rotulo: 'Com previsão', cor: '#04a484', teste: comFatura((l) => ativa(l) && situacaoPrevisao(l.fatura) === 'PREVISTA'), dica: 'Não pagas com data prevista de pagamento hoje ou adiante: dá para avisar a transportadora.' },
-    { id: 'previsao_atrasada', rotulo: 'Previsão passou, não paga', cor: '#e67e22', teste: comFatura((l) => ativa(l) && situacaoPrevisao(l.fatura) === 'ATRASADA'), dica: 'A data prevista de pagamento já passou e a fatura segue sem pagamento: cobrar o financeiro ou atualizar a data.' },
-    { id: 'sem_previsao', rotulo: 'Sem previsão', cor: '#64748b', teste: comFatura((l) => ativa(l) && situacaoPagamento(l.fatura) === 'ABERTA' && situacaoPrevisao(l.fatura) === 'SEM_PREVISAO'), dica: 'Não pagas sem data prevista de pagamento.' },
+  // Data combinada com o financeiro para as faturas do protocolo, para repassar a transportadora.
+  { id: 'previsao', titulo: 'Previsão de pagamento (protocolo)', cards: [
+    { id: 'protocolo_sem_previsao', rotulo: 'No protocolo sem previsão', cor: '#9b1111', teste: comFatura((l) => ativa(l) && agrupamentoManual(l.fatura) && situacaoPagamento(l.fatura) === 'ABERTA' && situacaoPrevisao(l.fatura) === 'SEM_PREVISAO'), dica: 'Marcadas para protocolo, não pagas e ainda sem a data alinhada com o financeiro.' },
+    { id: 'com_previsao', rotulo: 'Com previsão', cor: '#04a484', teste: comFatura((l) => ativa(l) && situacaoPrevisao(l.fatura) === 'PREVISTA'), dica: 'No protocolo com pagamento previsto para hoje ou adiante: dá para avisar a transportadora.' },
+    { id: 'previsao_atrasada', rotulo: 'Previsão passou, não paga', cor: '#e67e22', teste: comFatura((l) => ativa(l) && situacaoPrevisao(l.fatura) === 'ATRASADA'), dica: 'A data prevista já passou e a fatura segue sem pagamento: cobrar o financeiro ou atualizar a data.' },
   ] },
   { id: 'pagamento', titulo: 'Pagamento', cards: [
     { id: 'pagas', rotulo: 'Pagas', cor: '#14733b', teste: pagamento('PAGA'), dica: 'Pagas ou pagas com desconto.' },

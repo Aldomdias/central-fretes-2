@@ -231,7 +231,7 @@ test('ajuste Fênix: a enviar -> aguardando -> retorno -> protocolo', () => {
 
 test('previsão de pagamento: cards, situação e próxima ação', () => {
   const ref = new Date('2026-11-11T12:00:00');
-  const fat = (extra = {}) => ({ id: 'p1', status: 'PRONTA_PARA_PAGAMENTO', partida: '5100000009', ctes_totais: 1, ctes_auditados: 1, data_vencimento: '2026-11-01', ...extra });
+  const fat = (extra = {}) => ({ id: 'p1', status: 'PRONTA_PARA_PAGAMENTO', partida: '5100000009', agrupamento_manual: true, ctes_totais: 1, ctes_auditados: 1, data_vencimento: '2026-11-01', ...extra });
   assert.equal(situacaoPrevisao(fat(), ref), 'SEM_PREVISAO');
   assert.equal(situacaoPrevisao(fat({ data_previsao_pagamento: '2026-11-12' }), ref), 'PREVISTA');
   assert.equal(situacaoPrevisao(fat({ data_previsao_pagamento: '2026-11-11' }), ref), 'PREVISTA');
@@ -241,7 +241,13 @@ test('previsão de pagamento: cards, situação e próxima ação', () => {
   const linha = { fatura: fat({ data_previsao_pagamento: '2026-11-12' }), ctes: { total: 1, lancados: 1, nfse: 0, fenix: [] } };
   assert.equal(proximaAcao(linha), 'Aguardar pagamento (previsto 12/11/2026)');
   const grupo = GRUPOS_DIAGNOSTICO.find((g) => g.id === 'previsao');
-  const sem = { fatura: fat(), ctes: linha.ctes };
-  assert.ok(grupo.cards.find((c) => c.id === 'vencidas_sem_previsao').teste(sem));
-  assert.ok(!grupo.cards.find((c) => c.id === 'vencidas_sem_previsao').teste(linha));
+  const card = (id) => grupo.cards.find((c) => c.id === id).teste;
+  assert.ok(card('protocolo_sem_previsao')({ fatura: fat(), ctes: linha.ctes }));
+  assert.ok(!card('protocolo_sem_previsao')(linha));
+  assert.ok(card('com_previsao')(linha));
+  // Fora do protocolo a previsao nao vale: segue o vencimento.
+  const foraProtocolo = fat({ agrupamento_manual: false, data_previsao_pagamento: '2026-11-12' });
+  assert.equal(previsaoPagamento(foraProtocolo), '');
+  assert.ok(!card('protocolo_sem_previsao')({ fatura: foraProtocolo, ctes: linha.ctes }));
+  assert.equal(proximaAcao({ fatura: foraProtocolo, ctes: linha.ctes }), 'Aguardar pagamento');
 });
