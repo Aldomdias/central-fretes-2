@@ -9,6 +9,8 @@ import {
   identificacaoSapDoCte,
   montarLinhasDiagnostico,
   parseListaFaturas,
+  previsaoPagamento,
+  situacaoPrevisao,
   proximaAcao,
   resumirCtesFatura,
   situacaoAuditoria,
@@ -225,4 +227,21 @@ test('ajuste Fênix: a enviar -> aguardando -> retorno -> protocolo', () => {
   // Fora do fluxo: sem Fenix e sem marcacao, ou ja paga.
   assert.equal(etapaFenix({ fatura: fat(), ctes: limpo }), '');
   assert.equal(etapaFenix({ fatura: fat({ status: 'PAGA', fenix_ajuste_status: 'ENVIADO' }), ctes: fenix }), '');
+});
+
+test('previsão de pagamento: cards, situação e próxima ação', () => {
+  const ref = new Date('2026-11-11T12:00:00');
+  const fat = (extra = {}) => ({ id: 'p1', status: 'PRONTA_PARA_PAGAMENTO', partida: '5100000009', ctes_totais: 1, ctes_auditados: 1, data_vencimento: '2026-11-01', ...extra });
+  assert.equal(situacaoPrevisao(fat(), ref), 'SEM_PREVISAO');
+  assert.equal(situacaoPrevisao(fat({ data_previsao_pagamento: '2026-11-12' }), ref), 'PREVISTA');
+  assert.equal(situacaoPrevisao(fat({ data_previsao_pagamento: '2026-11-11' }), ref), 'PREVISTA');
+  assert.equal(situacaoPrevisao(fat({ data_previsao_pagamento: '2026-11-10' }), ref), 'ATRASADA');
+  // Paga: a previsao deixa de valer.
+  assert.equal(previsaoPagamento(fat({ status: 'PAGA', data_previsao_pagamento: '2026-11-12' })), '');
+  const linha = { fatura: fat({ data_previsao_pagamento: '2026-11-12' }), ctes: { total: 1, lancados: 1, nfse: 0, fenix: [] } };
+  assert.equal(proximaAcao(linha), 'Aguardar pagamento (previsto 12/11/2026)');
+  const grupo = GRUPOS_DIAGNOSTICO.find((g) => g.id === 'previsao');
+  const sem = { fatura: fat(), ctes: linha.ctes };
+  assert.ok(grupo.cards.find((c) => c.id === 'vencidas_sem_previsao').teste(sem));
+  assert.ok(!grupo.cards.find((c) => c.id === 'vencidas_sem_previsao').teste(linha));
 });

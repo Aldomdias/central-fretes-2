@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarPlataformaAuditoria } from '../services/auditoriaFretesService';
-import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, marcarAjusteFenix } from '../services/diagnosticoFaturasService';
+import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, marcarAjusteFenix, marcarPrevisaoPagamento } from '../services/diagnosticoFaturasService';
 import { diasAte } from '../utils/auditoriaFretesDomain';
 import { carregarSessao } from '../utils/authLocal';
 import {
@@ -13,11 +13,13 @@ import {
   GRUPOS_DIAGNOSTICO,
   montarLinhasDiagnostico,
   parseListaFaturas,
+  previsaoPagamento,
   proximaAcao,
   situacaoCtes,
   situacaoEnvioErp,
   situacaoPagamento,
   situacaoPagamentoLinha,
+  situacaoPrevisao,
   statusAjusteFenix,
   temFenix,
   textoPagamentoLinha,
@@ -72,6 +74,7 @@ const COLUNAS = [
   { id: 'transportadora', titulo: 'Transportadora', valor: (l) => l.fatura?.transportadora || '' },
   { id: 'emissao', titulo: 'Emissão', valor: (l) => l.fatura?.data_emissao || '' },
   { id: 'vencimento', titulo: 'Vencimento', valor: (l) => l.fatura?.data_vencimento || l.vencimentoLista || '' },
+  { id: 'previsao', titulo: 'Previsão pgto', valor: (l) => previsaoPagamento(l.fatura) },
   { id: 'valor', titulo: 'Valor', valor: valorDaLinha },
   { id: 'status', titulo: 'Status', valor: (l) => l.fatura?.status || '' },
   { id: 'auditados', titulo: 'Auditados', valor: (l) => Number(l.fatura?.ctes_auditados || 0) },
@@ -147,6 +150,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const [atualizando, setAtualizando] = useState(false);
   const [selecionadas, setSelecionadas] = useState(() => new Set());
   const [marcando, setMarcando] = useState(false);
+  const [dataPrevisao, setDataPrevisao] = useState('');
   const [solicitante, setSolicitante] = useState(() => salvo.solicitante || carregarSessao()?.nome || '');
 
   useEffect(() => {
@@ -311,6 +315,45 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     } catch (e) { setAviso(`Erro ao marcar: ${e.message || e}`); } finally { setMarcando(false); }
   };
 
+  // Previsao de pagamento: grava (ou limpa) a data combinada nas selecionadas que ainda nao foram pagas.
+  const aplicarPrevisao = async (limpar = false) => {
+    const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l.fatura]));
+    const abertas = selecaoValida.filter((id) => situacaoPagamento(porId.get(id)) === 'ABERTA');
+    const alvo = limpar ? abertas.filter((id) => previsaoPagamento(porId.get(id))) : abertas;
+    if (!limpar && !dataPrevisao) { setAviso('Escolha a data prevista de pagamento.'); return; }
+    if (!alvo.length) { setAviso(limpar ? 'Nenhuma selecionada tem previsão de pagamento.' : 'Nenhuma selecionada está em aberto (pagas e canceladas ficam de fora).'); return; }
+    if (!limpar && (diasAte(dataPrevisao) ?? 0) < 0 && !window.confirm(`A data ${dataBr(dataPrevisao)} já passou. Gravar assim mesmo?`)) return;
+    if (limpar && !window.confirm(`Tirar a previsão de pagamento de ${alvo.length} fatura(s)?`)) return;
+    setMarcando(true);
+    setAviso('');
+    try {
+      const sessao = carregarSessao();
+      const gravadas = await marcarPrevisaoPagamento(alvo, limpar ? '' : dataPrevisao, sessao?.nome || sessao?.email || '');
+      onState((atual) => ({ ...atual, faturas: (atual.faturas || []).map((f) => (gravadas.has(f.id) ? { ...f, ...gravadas.get(f.id) } : f)) }));
+      setSelecionadas(new Set());
+      const ignoradas = selecaoValida.length - gravadas.size;
+      setAviso(`${inteiro(gravadas.size)} fatura(s) ${limpar ? 'sem previsão de pagamento' : `com pagamento previsto para ${dataBr(dataPrevisao)}`}.${ignoradas > 0 ? ` ${inteiro(ignoradas)} selecionada(s) não se aplicavam.` : ''}`);
+    } catch (e) { setAviso(`Erro ao gravar a previsão: ${e.message || e}`); } finally { setMarcando(false); }
+  };
+  // Texto pronto para mandar a transportadora: faturas do recorte com previsao, agrupadas pela data.
+  const comPrevisao = useMemo(() => resultado.filter((l) => previsaoPagamento(l.fatura)), [resultado]);
+  const copiarPrevisoes = async () => {
+    const porData = new Map();
+    [...comPrevisao].sort((a, b) => previsaoPagamento(a.fatura).localeCompare(previsaoPagamento(b.fatura)) || String(a.numero).localeCompare(String(b.numero), 'pt-BR', { numeric: true }))
+      .forEach((l) => { const d = previsaoPagamento(l.fatura); porData.set(d, [...(porData.get(d) || []), l]); });
+    const transportadoras = [...new Set(comPrevisao.map((l) => l.fatura.transportadora).filter(Boolean))];
+    const blocos = [...porData].map(([d, ls]) => [
+      `Pagamento previsto para ${dataBr(d)}:`,
+      ...ls.map((l) => `- Fatura ${l.numero} · vencimento ${dataBr(l.fatura.data_vencimento)} · ${dinheiro(valorDaLinha(l))}${transportadoras.length > 1 ? ` · ${l.fatura.transportadora}` : ''}`),
+      `Total: ${dinheiro(ls.reduce((s, l) => s + valorDaLinha(l), 0))}`,
+    ].join('\n'));
+    const texto = [`Previsão de pagamento das faturas${transportadoras.length === 1 ? ` - ${transportadoras[0]}` : ''}`, '', blocos.join('\n\n')].join('\n');
+    try {
+      await navigator.clipboard.writeText(texto);
+      setAviso(`Previsão de ${inteiro(comPrevisao.length)} fatura(s) copiada para mandar à transportadora.`);
+    } catch { setAviso('O navegador não permitiu copiar.'); }
+  };
+
   // Ajuste Fenix: marca as selecionadas como enviadas ao financeiro, com retorno recebido, ou desfaz.
   const temAjusteFenix = useMemo(() => linhas.some((l) => etapaFenix(l)), [linhas]);
   const aplicarAjusteFenix = async (acao) => {
@@ -361,6 +404,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
         colunas: [
           { titulo: 'Fatura', largura: 14 }, { titulo: 'Na plataforma', largura: 14, tipo: 'centro' }, { titulo: 'Transportadora', largura: 34 }, { titulo: 'CNPJ', largura: 18 },
           { titulo: 'Emissão', largura: 12, tipo: 'data' }, { titulo: 'Vencimento', largura: 12, tipo: 'data' }, { titulo: 'Dias p/ vencer', largura: 10, tipo: 'inteiro' },
+          { titulo: 'Previsão de pagamento', largura: 12, tipo: 'data' }, { titulo: 'Previsão por', largura: 22 },
           { titulo: 'Valor plataforma', largura: 16, tipo: 'moeda' }, { titulo: 'Valor da lista', largura: 16, tipo: 'moeda' }, { titulo: 'Vencimento da lista', largura: 12, tipo: 'data' },
           { titulo: 'Status', largura: 24 }, { titulo: 'CT-es auditados', largura: 10, tipo: 'inteiro' }, { titulo: 'CT-es totais', largura: 10, tipo: 'inteiro' },
           { titulo: 'Fatura lançada', largura: 10, tipo: 'centro' }, { titulo: 'Partida', largura: 14 }, { titulo: 'Lançamento financeiro', largura: 14 }, { titulo: 'Enviado ERP', largura: 12, tipo: 'data' }, { titulo: 'Situação envio ERP', largura: 22 },
@@ -373,6 +417,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
           const observacao = !f && l.outrasTransportadoras?.length ? `Existe em: ${l.outrasTransportadoras.join(', ')}` : l.repetida > 1 ? `Número em ${l.repetida} faturas ativas` : '';
           return [
             String(l.numero), f ? 'Sim' : 'Não', f?.transportadora || '', f?.cnpj_transportadora || '', f?.data_emissao || '', f?.data_vencimento || '', (f?.data_vencimento || l.vencimentoLista) ? diasAte(f?.data_vencimento || l.vencimentoLista) ?? '' : '',
+            previsaoPagamento(f), previsaoPagamento(f) ? (f.previsao_pagamento_por || '') : '',
             f ? Number(f.valor_fatura || 0) : '', l.valorLista ?? '', l.vencimentoLista || '', f ? nomeStatus(f.status) : '', f ? Number(f.ctes_auditados || 0) : '', f ? Number(f.ctes_totais || 0) : '',
             f ? (faturaLancada(f) ? 'Sim' : 'Não') : '', f?.partida || '', f?.lancamento_financeiro || '', f?.data_envio_erp || '', f ? ROTULO_ENVIO_ERP[situacaoEnvioErp(l)] : '', l.ctes ? l.ctes.lancados : '', l.ctes ? l.ctes.semPartida.length : '', l.ctes ? l.ctes.valorSemPartida : '',
             textoPagamentoLinha(l), f?.data_pagamento || '', f?.valor_pago != null ? Number(f.valor_pago) : '', f?.auditor_nome || '', proximaAcao(l),
@@ -563,6 +608,15 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               {selecaoValida.length > 0 && <button type="button" className="btn-secondary" onClick={() => setSelecionadas(new Set())}>Limpar seleção</button>}
               {aviso && <span className="compact" role="status">{aviso}</span>}
             </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
+              <span className="compact" style={{ color: '#475569' }} title="Data combinada de pagamento (ex.: vencidas liberadas que vão para o protocolo). Vale só para faturas em aberto e some quando a fatura é paga.">
+                Previsão de pagamento: {inteiro(selecaoValida.length)} selecionada(s)
+              </span>
+              <input type="date" value={dataPrevisao} onChange={(e) => setDataPrevisao(e.target.value)} aria-label="Data prevista de pagamento" />
+              <button type="button" className="btn-primary" style={{ background: '#04a484', borderColor: '#04a484' }} disabled={!selecaoValida.length || !dataPrevisao || marcando} onClick={() => aplicarPrevisao(false)}>{marcando ? 'Gravando...' : 'Gravar previsão'}</button>
+              <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando} onClick={() => aplicarPrevisao(true)}>Tirar previsão</button>
+              <button type="button" className="btn-secondary" disabled={!comPrevisao.length} onClick={copiarPrevisoes} title="Copia um texto com as faturas do recorte que têm previsão, agrupadas pela data, para mandar à transportadora">Copiar previsões p/ transportadora ({inteiro(comPrevisao.length)})</button>
+            </div>
             {temAjusteFenix && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
                 <span className="compact" style={{ color: '#475569' }} title="Controle do pedido de estorno da compensação Fênix ao financeiro. Quando o retorno chegar, marque para protocolo (agrupamento manual) e a fatura vai para 'Já no protocolo'.">
@@ -620,6 +674,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                         <td>{f?.transportadora || (l.outrasTransportadoras?.length ? <span style={{ color: '#b45309' }}>Existe em: {l.outrasTransportadoras.join(', ')}</span> : <span style={{ color: '#9b1111' }}>Não localizada</span>)}</td>
                         <td>{dataBr(f?.data_emissao)}</td>
                         <td>{dataBr(f?.data_vencimento || l.vencimentoLista)}<div style={{ fontSize: 11, fontWeight: 700, color: prazo.cor }}>{prazo.texto}</div></td>
+                        <td style={{ whiteSpace: 'nowrap', ...(situacaoPrevisao(f) === 'ATRASADA' ? { color: '#c2410c', fontWeight: 700 } : {}) }} title={previsaoPagamento(f) ? `Previsão gravada${f.previsao_pagamento_por ? ` por ${f.previsao_pagamento_por}` : ''}${f.previsao_pagamento_em ? ` em ${new Date(f.previsao_pagamento_em).toLocaleString('pt-BR')}` : ''}${situacaoPrevisao(f) === 'ATRASADA' ? ' · a data já passou e não foi paga' : ''}` : undefined}>{previsaoPagamento(f) ? dataBr(previsaoPagamento(f)) : '-'}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>
                           {dinheiro(valorDaLinha(l))}
                           {l.diferencaLista != null && Math.abs(l.diferencaLista) > 0.05 && <div style={{ fontSize: 11, color: '#c2410c' }}>Lista: {dinheiro(l.valorLista)}</div>}
