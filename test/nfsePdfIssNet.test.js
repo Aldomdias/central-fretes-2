@@ -119,3 +119,12 @@ test('NFS-e ISS.NET (Distrito Federal) lida por OCR: le todos os campos do lanca
   assert.equal(dados.codImp, 'IQ');
   assert.equal(dados.cfop, '1933AA');
 });
+
+test('PDF com varias notas: pagina pulada como continuacao vai para a lista de ignoradas', async () => {
+  const { lerPaginas } = await import('../src/utils/robos/nfsePdf.js');
+  const outra = LINHAS_DF_OCR.map((l) => l.replace('0000000001808926', '0000000001809026'));
+  const ignoradas = [];
+  const notas = lerPaginas([LINHAS_DF_OCR, ['lixo do OCR'], outra], { ocrPaginas: [true, true, true], ignoradas });
+  assert.deepEqual(notas.map((n) => n.dados.nf), ['18089-F', '18090-F']);
+  assert.deepEqual(ignoradas, [{ pagina: 2, motivo: 'continuacao', ocr: true }]);
+});

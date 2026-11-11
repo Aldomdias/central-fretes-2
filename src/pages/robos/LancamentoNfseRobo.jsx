@@ -324,9 +324,15 @@ export default function LancamentoNfseRobo() {
       };
       const lidas = [];
       const falhas = [];
+      let puladas = 0;
       for (const arq of lista) {
         try {
-          const { totalPaginas, notas } = await lerNfsePdf(arq, { ocr });
+          const { totalPaginas, notas, ignoradas = [] } = await lerNfsePdf(arq, { ocr });
+          // pagina pulada como continuacao da nota anterior: avisa, pode ser uma nota que o OCR nao conseguiu ler
+          ignoradas.filter((g) => g.motivo === 'continuacao').forEach((g) => {
+            puladas += 1;
+            falhas.push({ arquivo: `${arq.name} (pag. ${g.pagina})`, motivo: `Pagina pulada${g.ocr ? ' (lida por OCR)' : ''}: sem numero, CNPJ e valor, tratada como continuacao da nota anterior. Confira se nao e outra nota`, faltando: '', nf: '' });
+          });
           for (const n of notas) {
             const nome = totalPaginas > 1 ? `${arq.name} (pag. ${n.pagina})` : arq.name;
             if (n.semTexto) falhas.push({ arquivo: nome, motivo: 'PDF sem texto (imagem escaneada): digite a nota na grade', faltando: '', nf: '' });
@@ -350,10 +356,11 @@ export default function LancamentoNfseRobo() {
       if (ocrUsado) await encerrarOcr();
       setFalhasPdf(falhas);
       if (novas.length) acrescentar(novas, `${fmt(novas.length)} PDF(s)`);
-      const naoLidas = falhas.filter((f) => !f.motivo.startsWith('Repetida')).length;
-      const repetidas = falhas.length - naoLidas;
-      if (naoLidas) setErro(`${fmt(naoLidas)} PDF(s) nao foram lidos${repetidas ? ` e ${fmt(repetidas)} eram repetidos` : ''}. Baixe o relatorio abaixo para ver quais e por que.`);
-      else if (novas.length) setFeedback(`${alvo ? `Fatura ${daFatura.fatura}: ` : ''}${fmt(novas.length)} nota(s) lida(s) do PDF${repetidas ? ` (${fmt(repetidas)} repetida(s) ignorada(s))` : ''}. Preencha o EscrV (e a Fatura). Cod (IN/IQ) e CFOP (1933AA/2933AA) vieram da nota; confira.${novas.some((n) => n.ocr) ? ' As marcadas com OCR foram lidas por imagem: confira CNPJ e valor.' : ''}`);
+      const repetidas = falhas.filter((f) => f.motivo.startsWith('Repetida')).length;
+      const naoLidas = falhas.length - repetidas - puladas;
+      const avisoPuladas = puladas ? ` ${fmt(puladas)} pagina(s) pulada(s) como continuacao: confira no relatorio abaixo se nao sao notas.` : '';
+      if (naoLidas) setErro(`${fmt(naoLidas)} PDF(s) nao foram lidos${repetidas ? ` e ${fmt(repetidas)} eram repetidos` : ''}.${avisoPuladas} Baixe o relatorio abaixo para ver quais e por que.`);
+      else if (novas.length || puladas) setFeedback(`${alvo ? `Fatura ${daFatura.fatura}: ` : ''}${fmt(novas.length)} nota(s) lida(s) do PDF${repetidas ? ` (${fmt(repetidas)} repetida(s) ignorada(s))` : ''}.${avisoPuladas} Preencha o EscrV (e a Fatura). Cod (IN/IQ) e CFOP (1933AA/2933AA) vieram da nota; confira.${novas.some((n) => n.ocr) ? ' As marcadas com OCR foram lidas por imagem: confira CNPJ e valor.' : ''}`);
     } catch (e) { setErro(e.message || 'Nao consegui ler os PDFs.'); }
     finally { if (refPdf.current) refPdf.current.value = ''; }
   }

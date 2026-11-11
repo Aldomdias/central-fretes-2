@@ -627,16 +627,18 @@ async function linhasDaPagina(pdf, n) {
 // Um PDF pode ter varias notas, uma por pagina. Devolve uma leitura por pagina; paginas de
 // continuacao (sem numero, CNPJ nem valor, depois de uma pagina lida) ficam de fora.
 // opcoes.ocr: leitura de texto vindo de OCR; opcoes.ocrPaginas[i]: so a pagina i veio de OCR.
+// opcoes.ignoradas: recebe as paginas puladas (continuacao ou RPS), para a tela avisar e nada sumir calado.
 export function lerPaginas(paginas = [], opcoes = {}) {
+  const ignoradas = Array.isArray(opcoes.ignoradas) ? opcoes.ignoradas : [];
   const notas = [];
   let rps = 0;
   paginas.forEach((linhas, i) => {
     const ocr = Boolean(opcoes.ocr || (opcoes.ocrPaginas || [])[i]);
     const r = { pagina: i + 1, ocr, ...extrairDadosNfse(linhas, { ocr }), semTexto: linhas.length === 0 };
-    if (r.rps) { rps += 1; return; } // RPS (recibo provisorio): ignora, vale so a nota fiscal
+    if (r.rps) { rps += 1; ignoradas.push({ pagina: i + 1, motivo: 'rps' }); return; } // RPS (recibo provisorio): ignora, vale so a nota fiscal
     const vazia = !r.dados.numeroNfse && r.dados.cnpjTransp.length !== 14 && !(r.dados.valor > 0);
     const anteriorOk = notas.some((n) => !n.faltando.length);
-    if (i > 0 && anteriorOk && (r.semTexto || vazia)) return;
+    if (i > 0 && anteriorOk && (r.semTexto || vazia)) { ignoradas.push({ pagina: i + 1, motivo: 'continuacao', ocr }); return; }
     notas.push(r);
   });
   if (!notas.length && rps) notas.push({ pagina: 1, ocr: false, dados: { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null }, faltando: ['NFS-e (o arquivo so tem RPS)'], semTexto: false });
@@ -656,5 +658,7 @@ export async function lerNfsePdf(arquivo, { ocr } = {}) {
     }
     paginas.push(linhas);
   }
-  return { totalPaginas: pdf.numPages, notas: lerPaginas(paginas, { ocrPaginas }) };
+  const ignoradas = [];
+  const notas = lerPaginas(paginas, { ocrPaginas, ignoradas });
+  return { totalPaginas: pdf.numPages, notas, ignoradas };
 }
