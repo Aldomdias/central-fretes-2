@@ -308,7 +308,15 @@ export default function App() {
         <AvisoAprovacoesSuprimentos movivel usuarioId={sessao?.id || sessao?.email || ''} oculto={avisosOcultos && sessao?.perfil !== 'NEGOCIACAO_FRETES'} onAbrir={() => mudarPagina('autorizacoes-suprimentos')} />
       )}
       {(usuarioTemAcesso(sessao, 'faturas') || usuarioTemAcesso(sessao, 'auditoria-cte')) && (
-        <AvisoDecisoesAuditor usuarioNome={sessao?.nome || sessao?.email || ''} oculto={avisosOcultos} onAbrirFaturas={usuarioTemAcesso(sessao, 'faturas') ? () => mudarPagina('faturas') : undefined} />
+        <AvisoDecisoesAuditor
+          usuarioNome={sessao?.nome || sessao?.email || ''}
+          usuarioEmail={sessao?.email || ''}
+          oculto={avisosOcultos}
+          onAbrirFatura={usuarioTemAcesso(sessao, 'faturas') ? (fatura) => {
+            setFiltroFaturasExterno({ chave: Date.now(), visao: 'todas', ...(fatura?.numero_fatura ? { abrirNumeroFatura: fatura.numero_fatura, abrirTransportadora: fatura.transportadora || '' } : {}) });
+            mudarPagina('faturas');
+          } : undefined}
+        />
       )}
       {/* Um botao so pra esconder/mostrar todos os avisos fixos de uma vez — em vez
           de cada um ter seu proprio minimizar, o que tampava outros botoes fixos. */}

@@ -224,7 +224,15 @@ export async function listarDecisoesNaoVistasAuditor(usuarioNome) {
     if (faltaColunaCiencia(error)) return [];
     throw new Error(`Erro ao buscar decisoes: ${error.message}`);
   }
-  return (data || []).filter((row) => String(row.decidido_por || '').trim() !== nome);
+  const linhas = (data || []).filter((row) => String(row.decidido_por || '').trim() !== nome);
+  // Numero da fatura, pra o aviso abrir direto nela.
+  const idsFatura = [...new Set(linhas.map((row) => row.fatura_id).filter(Boolean))];
+  if (idsFatura.length) {
+    const { data: faturas } = await exigirClient().from('faturas').select('id, numero_fatura, transportadora').in('id', idsFatura);
+    const porId = new Map((faturas || []).map((f) => [f.id, f]));
+    linhas.forEach((row) => { row.fatura = porId.get(row.fatura_id) || null; });
+  }
+  return linhas;
 }
 
 export async function marcarCienciaAuditor(ids = []) {
