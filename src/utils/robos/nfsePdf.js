@@ -154,7 +154,8 @@ function extrairModeloRps(L, U) {
 const RE_VL_TOTAL = /\bV[LI1|]\.?\s*TOTAL DOS SERVICOS/;
 const RE_VL_LIQUIDO = /\bV[LI1|]\.?\s*LIQUIDO DA NOTA/;
 const UF_VALIDAS = new Set(Object.values(UF_IBGE));
-function extrairModeloIssNet(linhas, U) {
+const RE_RAZAO_SOCIAL = /\b(?:LTDA|S\.?\s?A|EIRELI|EPP|MEI?)\b\.?$/i;
+function extrairModeloIssNet(linhas, U, { ocr = false } = {}) {
   // OCR troca o zero do dia por letra ("D4/09/2026 20:45:09" = 04/09/2026)
   const L = linhas.map((l) => l.replace(/(^|\s)[ODoQ](\d\/\d{2}\/20\d{2})/g, '$10$2'));
   const dados = { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null, chave: '', valorLiquido: null, municipioPrestador: '', municipioTomador: '' };
@@ -179,15 +180,18 @@ function extrairModeloIssNet(linhas, U) {
   const fimPrest = iTom > iPrest ? iTom : L.length;
   if (iPrest >= 0) {
     // nome: primeira linha do bloco que nao e titulo nem data (as datas da coluna da direita se intercalam)
+    const candidatos = [];
     for (let k = iPrest + 1; k < fimPrest; k += 1) {
       const t = L[k].split(SEP)[0].trim();
       if (!t || /^(DATA|COD\.|RESPONSAVEL|IDENTIFICACAO)/.test(semAcento(t).toUpperCase()) || /^[\d/: ]+$/.test(t)) continue;
       // OCR: "NOME LTDA. 10/09/2026 13:29:10 | lixo" -> corta na data; linhas de lixo tem poucas letras
       const nome = t.replace(/\s*\d{2}\/\d{2}\/\d{4}.*$/, '').replace(/\s*\|.*$/, '').trim();
       if ((nome.match(/[A-Za-zÀ-ÿ]/g) || []).length < 8) continue;
-      dados.transportadora = nome;
-      break;
+      candidatos.push(nome);
+      if (!ocr) break;
     }
+    // OCR: o lixo do QR Code pode vir antes do nome ("8: ARIANA BATA"); vale a linha com cara de razao social
+    dados.transportadora = candidatos.find((n) => RE_RAZAO_SOCIAL.test(n)) || candidatos[0] || '';
     for (let k = iPrest + 1; k < fimPrest; k += 1) {
       const cnpj = L[k].match(RE_CNPJ);
       if (cnpj && !dados.cnpjTransp) dados.cnpjTransp = cnpj[1].replace(/\D/g, '');
@@ -481,7 +485,7 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   const L = linhas.map((l) => String(l ?? ''));
   const U = L.map((l) => semAcento(l).toUpperCase());
   if (U.some((l) => l.includes('RECIBO PROVISORIO DE SERVICOS'))) return extrairModeloRps(L, U);
-  if (U.some((l) => l.includes('DADOS DO TOMADOR DE SERVICO')) && U.some((l) => RE_VL_TOTAL.test(l))) return extrairModeloIssNet(L, U);
+  if (U.some((l) => l.includes('DADOS DO TOMADOR DE SERVICO')) && U.some((l) => RE_VL_TOTAL.test(l))) return extrairModeloIssNet(L, U, { ocr });
   const todo = L.join('\n');
   const dados = { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null, chave: '' };
   const faltando = [];
