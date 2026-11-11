@@ -147,6 +147,8 @@ export function situacaoPagamento(f) {
 export const faturaLancada = (f) => Boolean(f.partida || f.lancamento_financeiro || situacaoPagamento(f).startsWith('PAGA'));
 
 export const enviadaErp = (f) => Boolean(f.data_envio_erp);
+// Fatura marcada como cancelada pela tela (nao existe mais na transportadora): sai das pendencias.
+export const canceladaManual = (f) => Boolean(f && f.status === 'CANCELADA' && f.cancelada_em);
 // Contingencia: fatura que vai para protocolo por agrupamento manual (fora do AMD).
 export const agrupamentoManual = (f) => Boolean(f?.agrupamento_manual);
 

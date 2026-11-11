@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarPlataformaAuditoria } from '../services/auditoriaFretesService';
-import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual } from '../services/diagnosticoFaturasService';
+import { cancelarFaturas, carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, reativarFaturas } from '../services/diagnosticoFaturasService';
 import { diasAte } from '../utils/auditoriaFretesDomain';
 import { carregarSessao } from '../utils/authLocal';
 import {
   agrupamentoManual,
+  canceladaManual,
   FAIXAS_A_VENCER,
   faixaDaLinha,
   faturaLancada,
@@ -299,6 +300,37 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     } catch (e) { setAviso(`Erro ao marcar: ${e.message || e}`); } finally { setMarcando(false); }
   };
 
+  // Fatura que nao existe mais na transportadora: vira CANCELADA (sai de em aberto/vencidas) e continua visivel.
+  const aplicarCancelamento = async (cancelar) => {
+    const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l.fatura]));
+    const selecionadasFaturas = selecaoValida.map((id) => porId.get(id)).filter(Boolean);
+    const alvo = cancelar
+      ? selecionadasFaturas.filter((f) => !['CANCELADA', 'SUBSTITUIDA'].includes(f.status) && situacaoPagamento(f) === 'ABERTA')
+      : selecionadasFaturas.filter(canceladaManual);
+    if (!alvo.length) {
+      setAviso(cancelar ? 'Nenhuma selecionada pode ser cancelada (já cancelada, substituída ou paga).' : 'Nenhuma selecionada foi cancelada por esta tela.');
+      return;
+    }
+    const ignoradas = selecionadasFaturas.length - alvo.length;
+    let motivo = '';
+    if (cancelar) {
+      const resposta = window.prompt(`Marcar ${alvo.length} fatura(s) como CANCELADA${ignoradas ? ` (${ignoradas} ignorada(s): já cancelada, substituída ou paga)` : ''}.\nElas saem das pendências (em aberto/vencidas), mas continuam na plataforma.\n\nMotivo (obrigatório):`, 'Fatura cancelada pela transportadora');
+      if (resposta == null) return;
+      motivo = resposta.trim();
+      if (!motivo) { setAviso('Informe o motivo do cancelamento.'); return; }
+    } else if (!window.confirm(`Desfazer o cancelamento de ${alvo.length} fatura(s)? Elas voltam ao status anterior e às pendências.`)) return;
+    setMarcando(true);
+    setAviso('');
+    try {
+      const sessao = carregarSessao();
+      const usuario = sessao?.nome || sessao?.email || '';
+      const gravadas = cancelar ? await cancelarFaturas(alvo, motivo, usuario) : await reativarFaturas(alvo, usuario);
+      onState((atual) => ({ ...atual, faturas: (atual.faturas || []).map((f) => (gravadas.has(f.id) ? { ...f, ...gravadas.get(f.id) } : f)) }));
+      setSelecionadas(new Set());
+      setAviso(`${inteiro(gravadas.size)} fatura(s) ${cancelar ? 'marcada(s) como cancelada(s)' : 'reativada(s)'}.${ignoradas ? ` ${inteiro(ignoradas)} ignorada(s).` : ''}`);
+    } catch (e) { setAviso(`Erro ao ${cancelar ? 'cancelar' : 'desfazer'}: ${e.message || e}`); } finally { setMarcando(false); }
+  };
+
   const descricaoFiltros = () => {
     const cards = GRUPOS_DIAGNOSTICO.filter((g) => escolhidos[g.id]).map((g) => [g.titulo, g.cards.find((c) => c.id === escolhidos[g.id])?.rotulo || '']);
     const campos = [['Busca', filtros.busca], ['Auditor', filtros.auditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)]]
@@ -324,7 +356,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
         ],
         linhas: resultado.map((l) => {
           const f = l.fatura;
-          const observacao = !f && l.outrasTransportadoras?.length ? `Existe em: ${l.outrasTransportadoras.join(', ')}` : l.repetida > 1 ? `Número em ${l.repetida} faturas ativas` : '';
+          const observacao = canceladaManual(f) ? `Cancelada${f.cancelada_por ? ` por ${f.cancelada_por}` : ''}${f.cancelamento_motivo ? `: ${f.cancelamento_motivo}` : ''}` : !f && l.outrasTransportadoras?.length ? `Existe em: ${l.outrasTransportadoras.join(', ')}` : l.repetida > 1 ? `Número em ${l.repetida} faturas ativas` : '';
           return [
             String(l.numero), f ? 'Sim' : 'Não', f?.transportadora || '', f?.cnpj_transportadora || '', f?.data_emissao || '', f?.data_vencimento || '', (f?.data_vencimento || l.vencimentoLista) ? diasAte(f?.data_vencimento || l.vencimentoLista) ?? '' : '',
             f ? Number(f.valor_fatura || 0) : '', l.valorLista ?? '', l.vencimentoLista || '', f ? nomeStatus(f.status) : '', f ? Number(f.ctes_auditados || 0) : '', f ? Number(f.ctes_totais || 0) : '',
@@ -465,10 +497,13 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
               <span className="compact" style={{ color: '#475569' }} title="Contingência até o protocolo funcionar dentro do AMD. A fatura sai do card 'a enviar' quando receber partida.">
-                Agrupamento manual (contingência): {inteiro(selecaoValida.length)} selecionada(s)
+                {inteiro(selecaoValida.length)} selecionada(s) · Agrupamento manual (contingência):
               </span>
               <button type="button" className="btn-primary" style={{ background: '#9153F0', borderColor: '#9153F0' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarAgrupamento(true)}>{marcando ? 'Gravando...' : 'Marcar para agrupamento manual'}</button>
               <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando} onClick={() => aplicarAgrupamento(false)}>Desmarcar</button>
+              <span style={{ borderLeft: '1px solid #cbd5e1', alignSelf: 'stretch', margin: '0 4px' }} />
+              <button type="button" className="btn-secondary" style={{ color: '#9b1111', borderColor: '#fca5a5' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarCancelamento(true)} title="Fatura que não existe mais na transportadora: fica como CANCELADA, sai de em aberto/vencidas e continua visível no card Canceladas/substituídas.">Marcar como cancelada</button>
+              <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando} onClick={() => aplicarCancelamento(false)} title="Volta a fatura cancelada por esta tela ao status anterior.">Desfazer cancelamento</button>
               {selecaoValida.length > 0 && <button type="button" className="btn-secondary" onClick={() => setSelecionadas(new Set())}>Limpar seleção</button>}
               {aviso && <span className="compact" role="status">{aviso}</span>}
             </div>
@@ -495,6 +530,14 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                         <td>
                           {f ? <button type="button" className="link-button" onClick={(e) => { e.stopPropagation(); abrir(l); }}>{l.numero}</button> : <strong>{l.numero}</strong>}
                           {l.repetida > 1 && <div style={{ fontSize: 11, color: '#b78700' }}>{l.repetida} faturas</div>}
+                          {canceladaManual(f) && (
+                            <div
+                              style={{ fontSize: 11, fontWeight: 700, color: '#64748b', whiteSpace: 'nowrap' }}
+                              title={`Cancelada${f.cancelada_por ? ` por ${f.cancelada_por}` : ''}${f.cancelada_em ? ` em ${new Date(f.cancelada_em).toLocaleString('pt-BR')}` : ''}${f.cancelamento_motivo ? ` · Motivo: ${f.cancelamento_motivo}` : ''}`}
+                            >
+                              Cancelada
+                            </div>
+                          )}
                           {agrupamentoManual(f) && (
                             <div
                               style={{ fontSize: 11, fontWeight: 700, color: faturaLancada(f) ? '#14733b' : '#9153F0', whiteSpace: 'nowrap' }}

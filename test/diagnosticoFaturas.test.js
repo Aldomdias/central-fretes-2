@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  canceladaManual,
   faixaDaLinha,
   faixaDiagnostico,
   filtrarPorCards,
@@ -190,4 +191,19 @@ test('agrupamento manual: sai do card a enviar quando a fatura recebe partida', 
   assert.equal(filtrarPorCards(linhas, { protocolo: 'manual_agrupadas' })[0].fatura.partida, '200123');
   assert.equal(filtrarPorCards(linhas, { protocolo: 'sem_marcacao' }).length, 1);
   assert.equal(proximaAcao(linhas[0]), 'Aguardar agrupamento manual do financeiro');
+});
+
+test('fatura cancelada pela tela sai de vencidas/em aberto e aparece em canceladas', () => {
+  const ref = new Date('2026-11-11T12:00:00');
+  const vencida = { id: 1, status: 'RECEBIDA', data_vencimento: '2026-08-31', valor_fatura: 483.9 };
+  const cancelada = { ...vencida, id: 2, status: 'CANCELADA', cancelada_em: '2026-11-11T10:00:00Z', status_antes_cancelamento: 'RECEBIDA' };
+  assert.equal(canceladaManual(vencida), false);
+  assert.equal(canceladaManual(cancelada), true);
+  assert.equal(canceladaManual({ status: 'CANCELADA' }), false);
+  assert.equal(faixaDiagnostico(vencida, ref), 'VENCIDA');
+  assert.equal(faixaDiagnostico(cancelada, ref), 'ENCERRADA');
+  const linhas = [{ id: '1', fatura: vencida }, { id: '2', fatura: cancelada }];
+  assert.deepEqual(filtrarPorCards(linhas, { pagamento: 'abertas' }).map((l) => l.id), ['1']);
+  assert.deepEqual(filtrarPorCards(linhas, { pagamento: 'canceladas' }).map((l) => l.id), ['2']);
+  assert.equal(proximaAcao({ fatura: cancelada }), 'Nenhuma (cancelada/substituída)');
 });

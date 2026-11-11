@@ -120,6 +120,87 @@ export async function marcarAgrupamentoManual(ids = [], marcar = true, usuario =
   return gravadas;
 }
 
+const idHistorico = (prefixo) => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${prefixo}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+// Marca como CANCELADA a fatura que nao existe mais (cancelada pela transportadora): sai das pendencias,
+// mas continua na plataforma. Guarda o status anterior para desfazer. Devolve os campos gravados por id.
+// faturas: [{ id, status }] (o status atual vira status_antes_cancelamento).
+export async function cancelarFaturas(faturas = [], motivo = '', usuario = '') {
+  if (!isSupabaseConfigured() || !faturas.length) return new Map();
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const gravadas = new Map();
+  // Agrupa por status anterior: um update por grupo.
+  const porStatus = new Map();
+  faturas.forEach((f) => {
+    const anterior = f.status || null;
+    porStatus.set(anterior, [...(porStatus.get(anterior) || []), f.id]);
+  });
+  for (const [anterior, ids] of porStatus) {
+    const campos = { status: 'CANCELADA', cancelada_em: agora, cancelada_por: usuario || null, cancelamento_motivo: motivo || null, status_antes_cancelamento: anterior };
+    for (let i = 0; i < ids.length; i += 200) {
+      // eslint-disable-next-line no-await-in-loop
+      const { data, error } = await client.from('faturas').update(campos).in('id', ids.slice(i, i + 200)).select('id');
+      if (error) {
+        if (/cancelad|cancelamento/.test(error.message || '')) throw new Error('A migration 20261111_002_faturas_cancelamento_manual.sql ainda não foi aplicada no Supabase.');
+        throw error;
+      }
+      (data || []).forEach((r) => gravadas.set(r.id, campos));
+    }
+  }
+  await registrarHistorico(client, [...gravadas.keys()].map((id) => ({
+    id: idHistorico('cancel'),
+    fatura_id: id,
+    created_at: agora,
+    acao: 'FATURA_CANCELADA',
+    descricao: `Fatura marcada como cancelada pela tela Diagnóstico${motivo ? `: ${motivo}` : '.'}`,
+    usuario_nome: usuario || null,
+    usuario_email: '',
+  })));
+  return gravadas;
+}
+
+// Desfaz o cancelamento manual: volta ao status anterior (ou RECEBIDA, se nao houver).
+// faturas: [{ id, status_antes_cancelamento }].
+export async function reativarFaturas(faturas = [], usuario = '') {
+  if (!isSupabaseConfigured() || !faturas.length) return new Map();
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const gravadas = new Map();
+  const porStatus = new Map();
+  faturas.forEach((f) => {
+    const volta = f.status_antes_cancelamento && f.status_antes_cancelamento !== 'CANCELADA' ? f.status_antes_cancelamento : 'RECEBIDA';
+    porStatus.set(volta, [...(porStatus.get(volta) || []), f.id]);
+  });
+  for (const [volta, ids] of porStatus) {
+    const campos = { status: volta, cancelada_em: null, cancelada_por: null, cancelamento_motivo: null, status_antes_cancelamento: null };
+    for (let i = 0; i < ids.length; i += 200) {
+      // eslint-disable-next-line no-await-in-loop
+      const { data, error } = await client.from('faturas').update(campos).in('id', ids.slice(i, i + 200)).select('id');
+      if (error) throw error;
+      (data || []).forEach((r) => gravadas.set(r.id, campos));
+    }
+  }
+  await registrarHistorico(client, [...gravadas.keys()].map((id) => ({
+    id: idHistorico('reativ'),
+    fatura_id: id,
+    created_at: agora,
+    acao: 'FATURA_REATIVADA',
+    descricao: `Cancelamento desfeito pela tela Diagnóstico (voltou para ${String(gravadas.get(id).status).replaceAll('_', ' ')}).`,
+    usuario_nome: usuario || null,
+    usuario_email: '',
+  })));
+  return gravadas;
+}
+
+async function registrarHistorico(client, historico) {
+  for (let i = 0; i < historico.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await client.from('auditoria_fatura_historico').insert(historico.slice(i, i + 200));
+    if (error) { console.warn('Historico da fatura nao registrado:', error.message); break; }
+  }
+}
+
 // Data do ultimo relatorio SAP importado: mostra ate quando a informacao de partida por CT-e vale.
 export async function carregarUltimaImportacaoSap() {
   if (!isSupabaseConfigured()) return null;
