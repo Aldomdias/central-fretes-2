@@ -37,7 +37,9 @@ import modeloTermoUrl from '../assets/modelos/termo-correcao-lancamento.docx?url
 const CHAVE_SESSAO = 'cf_diagnostico_faturas_v1';
 const TAM_PAGINA = 100;
 const LOTE_VERIFICACAO = 120;
-const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimentoDe: '', vencimentoAte: '' };
+const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimentoDe: '', vencimentoAte: '', grupoTransp: '' };
+const SEM_TRANSP = '__sem_fatura__';
+const TOP_RANKING = 15;
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const ehCancelada = (l) => situacaoPagamentoLinha(l) === 'CANCELADA';
@@ -121,6 +123,66 @@ function CardFiltro({ card, grupo, linhas, ativo, onClick }) {
   );
 }
 
+// Mini dinamica do recorte por transportadora: maiores primeiro; clicar filtra a lista (clicar de novo tira).
+function RankingTransportadoras({ itens, ativo, aberto, onAlternar, criterio, onCriterio, onEscolher }) {
+  const [todas, setTodas] = useState(false);
+  const total = itens.reduce((s, i) => s + (criterio === 'valor' ? i.valor : i.qtd), 0) || 1;
+  const maior = Math.max(1, ...itens.map((i) => (criterio === 'valor' ? i.valor : i.qtd)));
+  const visiveis = todas ? itens : itens.slice(0, TOP_RANKING);
+  const nomeAtivo = itens.find((i) => i.chave === ativo)?.rotulo;
+  return (
+    <div className="panel-card" style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button type="button" className="btn-secondary" onClick={onAlternar} aria-expanded={aberto}>{aberto ? '▾' : '▸'} Por transportadora ({inteiro(itens.length)})</button>
+        {aberto && (
+          <span className="compact" style={{ display: 'flex', gap: 4, alignItems: 'center', color: '#475569' }}>Ordenar por
+            <button type="button" className={criterio === 'valor' ? 'btn-primary' : 'btn-secondary'} onClick={() => onCriterio('valor')}>Valor</button>
+            <button type="button" className={criterio === 'qtd' ? 'btn-primary' : 'btn-secondary'} onClick={() => onCriterio('qtd')}>Quantidade</button>
+          </span>
+        )}
+        {ativo && (
+          <span className="compact" style={{ color: '#071d49' }}>
+            Filtrando: <strong>{nomeAtivo || 'transportadora fora do recorte'}</strong>{' '}
+            <button type="button" className="btn-secondary" onClick={() => onEscolher('')}>× Tirar</button>
+          </span>
+        )}
+      </div>
+      {aberto && (
+        <div style={{ marginTop: 10, display: 'grid', gap: 4 }}>
+          {!itens.length && <span className="compact" style={{ color: '#64748b' }}>Nenhuma fatura no recorte.</span>}
+          {visiveis.map((i) => {
+            const medida = criterio === 'valor' ? i.valor : i.qtd;
+            const selecionada = i.chave === ativo;
+            return (
+              <button
+                key={i.chave}
+                type="button"
+                onClick={() => onEscolher(selecionada ? '' : i.chave)}
+                aria-pressed={selecionada}
+                title={selecionada ? 'Clique para tirar o filtro' : `Clique para ver só ${i.rotulo}`}
+                style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, 280px) 1fr 70px 130px 52px', gap: 10, alignItems: 'center', textAlign: 'left', font: 'inherit', fontSize: 13, padding: '4px 8px', border: selecionada ? '1px solid #315ee7' : '1px solid transparent', borderRadius: 6, background: selecionada ? '#eef2ff' : 'transparent', cursor: 'pointer', opacity: ativo && !selecionada ? 0.6 : 1 }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: selecionada ? 700 : 500 }}>{i.rotulo}</span>
+                <span style={{ background: '#e2e8f0', borderRadius: 4, height: 10, overflow: 'hidden' }}>
+                  <span style={{ display: 'block', height: '100%', width: `${Math.max(1, (medida / maior) * 100)}%`, background: selecionada ? '#315ee7' : '#071d49', borderRadius: 4 }} />
+                </span>
+                <span style={{ textAlign: 'right' }}>{inteiro(i.qtd)} fat.</span>
+                <span style={{ textAlign: 'right' }}>{dinheiro(i.valor)}</span>
+                <span style={{ textAlign: 'right', color: '#64748b' }}>{((medida / total) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</span>
+              </button>
+            );
+          })}
+          {itens.length > TOP_RANKING && (
+            <button type="button" className="btn-secondary" style={{ justifySelf: 'start', marginTop: 4 }} onClick={() => setTodas((v) => !v)}>
+              {todas ? `Mostrar só as ${TOP_RANKING} maiores` : `Ver todas (${inteiro(itens.length)})`}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CardResumo({ rotulo, valor, detalhe, cor, ativo = false, dica, onClick }) {
   return (
     <button
@@ -162,10 +224,12 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const [marcando, setMarcando] = useState(false);
   const [dataPrevisao, setDataPrevisao] = useState('');
   const [solicitante, setSolicitante] = useState(() => salvo.solicitante || carregarSessao()?.nome || '');
+  const [rankingAberto, setRankingAberto] = useState(salvo.rankingAberto ?? true);
+  const [criterioRanking, setCriterioRanking] = useState(salvo.criterioRanking || 'valor');
 
   useEffect(() => {
-    try { sessionStorage.setItem(CHAVE_SESSAO, JSON.stringify({ texto, transportadora, auditor, escolhidos, filtros, ordem, solicitante })); } catch { /* sem sessionStorage: so nao lembra */ }
-  }, [texto, transportadora, auditor, escolhidos, filtros, ordem, solicitante]);
+    try { sessionStorage.setItem(CHAVE_SESSAO, JSON.stringify({ texto, transportadora, auditor, escolhidos, filtros, ordem, solicitante, rankingAberto, criterioRanking })); } catch { /* sem sessionStorage: so nao lembra */ }
+  }, [texto, transportadora, auditor, escolhidos, filtros, ordem, solicitante, rankingAberto, criterioRanking]);
   useEffect(() => { carregarUltimaImportacaoSap().then(setUltimaSap).catch(() => {}); }, [recarga]);
   // Cadastro (CNPJ principal, origens, adicionais): junta nomes/CNPJs diferentes numa transportadora so.
   const [cadastroPorRaiz, setCadastroPorRaiz] = useState(() => new Map());
@@ -254,14 +318,32 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const verCanceladas = escolhidos.pagamento === 'canceladas' || ['CANCELADA', 'SUBSTITUIDA'].includes(filtros.status);
   const verDuplicadas = escolhidos.pagamento === 'duplicadas';
   // Um recorte so para a tela inteira: cards, totais e lista sempre mostram os mesmos numeros.
-  const recorte = useMemo(() => {
+  // Chave da transportadora (mesmo agrupamento do seletor do topo); linha sem fatura fica num grupo a parte.
+  const chaveTransp = (l) => (l.fatura ? agrupador.chaveDaFatura(l.fatura) : SEM_TRANSP);
+  const doGrupo = (ls) => (filtros.grupoTransp ? ls.filter((l) => chaveTransp(l) === filtros.grupoTransp) : ls);
+  // Recorte sem o filtro de transportadora: base do ranking (senao ele so mostraria a escolhida).
+  const recorteTodas = useMemo(() => {
     const r = filtrarPorCards(filtradas, escolhidos);
     return verCanceladas || verDuplicadas ? r : r.filter((l) => !ehOculta(l));
   }, [filtradas, escolhidos, verCanceladas, verDuplicadas]);
+  const recorte = useMemo(() => doGrupo(recorteTodas), [recorteTodas, filtros.grupoTransp, agrupador]); // eslint-disable-line react-hooks/exhaustive-deps
+  const rankingTransp = useMemo(() => {
+    const rotulos = new Map(agrupador.opcoes.map((o) => [o.chave, o.rotulo]));
+    const mapa = new Map();
+    recorteTodas.forEach((l) => {
+      const c = chaveTransp(l);
+      const item = mapa.get(c) || { chave: c, rotulo: c === SEM_TRANSP ? 'Não localizadas na plataforma' : rotulos.get(c) || l.fatura?.transportadora || '-', qtd: 0, valor: 0 };
+      item.qtd += 1;
+      item.valor += valorDaLinha(l);
+      mapa.set(c, item);
+    });
+    const medida = (i) => (criterioRanking === 'valor' ? i.valor : i.qtd);
+    return [...mapa.values()].sort((a, b) => medida(b) - medida(a) || b.qtd - a.qtd || a.rotulo.localeCompare(b.rotulo, 'pt-BR'));
+  }, [recorteTodas, agrupador, criterioRanking]); // eslint-disable-line react-hooks/exhaustive-deps
   // O card das canceladas ignora os outros cards (ex.: "Vencidas"): cancelada nao e mais vencida, nem
   // aberta, nem lancada... e sumiria. Vale so a pesquisa e os filtros de campo.
-  const canceladasRecorte = useMemo(() => filtradas.filter(ehCancelada), [filtradas]);
-  const duplicadasRecorte = useMemo(() => filtradas.filter((l) => l.duplicada), [filtradas]);
+  const canceladasRecorte = useMemo(() => doGrupo(filtradas.filter(ehCancelada)), [filtradas, filtros.grupoTransp, agrupador]); // eslint-disable-line react-hooks/exhaustive-deps
+  const duplicadasRecorte = useMemo(() => doGrupo(filtradas.filter((l) => l.duplicada)), [filtradas, filtros.grupoTransp, agrupador]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const grupos = useMemo(() => GRUPOS_DIAGNOSTICO
     .filter((g) => temLista || !g.soComLista)
@@ -470,7 +552,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
 
   const descricaoFiltros = () => {
     const cards = GRUPOS_DIAGNOSTICO.filter((g) => escolhidos[g.id]).map((g) => [g.titulo, g.cards.find((c) => c.id === escolhidos[g.id])?.rotulo || '']);
-    const campos = [['Busca', filtros.busca], ['Auditor', filtros.auditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)]]
+    const campos = [['Busca', filtros.busca], ['Auditor', filtros.auditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)], ['Transportadora (ranking)', filtros.grupoTransp ? (rankingTransp.find((i) => i.chave === filtros.grupoTransp)?.rotulo || '') : '']]
       .filter(([, v]) => v && v !== '-');
     return [['Transportadora', transportadora || 'Todas'], ['Auditor', auditor || 'Todos'], ['Números colados', temLista ? String(lista.itens.length) : 'Nenhum'], ...cards, ...campos];
   };
@@ -760,6 +842,16 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               </div>
             )}
           </div>
+
+          <RankingTransportadoras
+            itens={rankingTransp}
+            ativo={filtros.grupoTransp}
+            aberto={rankingAberto}
+            onAlternar={() => setRankingAberto((v) => !v)}
+            criterio={criterioRanking}
+            onCriterio={setCriterioRanking}
+            onEscolher={(chave) => setFiltros((atual) => ({ ...atual, grupoTransp: chave }))}
+          />
 
           <div className="table-card">
             <div className="sim-analise-tabela-wrap">
