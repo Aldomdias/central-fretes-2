@@ -542,7 +542,12 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdici
         ? candidatas.filter((fatura) => {
           return transportadoraTemRaiz({
             cnpj: fatura.cnpj_transportadora,
-            raizesAdicionais: raizesAdicionaisPorTransportadora.get(normalizar(fatura.transportadora)) || [],
+            // Pelo nome do cadastro e tambem pela raiz do CNPJ da fatura (grupo da transportadora):
+            // o nome da fatura nem sempre e' igual ao do cadastro.
+            raizesAdicionais: [
+              ...(raizesAdicionaisPorTransportadora.get(normalizar(fatura.transportadora)) || []),
+              ...(raizesAdicionaisPorTransportadora.get(obterRaizCnpj(fatura.cnpj_transportadora)) || []),
+            ],
           }, raizPagamento);
         })
         : [];

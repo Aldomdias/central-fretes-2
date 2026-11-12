@@ -19,7 +19,7 @@ import RespostasCteSemNfFatura from '../components/RespostasCteSemNfFatura';
 import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
 import { montarCorpoEmailLaudo, montarEml, slugArquivoEmail } from '../utils/emailLaudoTransportador';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
-import { carregarRaizesAdicionaisPorTransportadora } from '../services/transportadoraCnpjsService';
+import { carregarGruposRaizTransportadora, carregarRaizesAdicionaisPorTransportadora } from '../services/transportadoraCnpjsService';
 import { lerCteXml } from '../utils/cteXml';
 import {
   atualizarStatusJornada,
@@ -89,6 +89,7 @@ import {
   salvarPagamentosFinanceiros,
   salvarPagamentosFinanceirosEmLote,
   salvarSapSemVinculo,
+  marcarSapSemVinculoResolvidas,
   reaplicarPagamentosNasFaturas,
   atualizarStatusFaturasPagasEmLote,
   marcarFaturasLancadasFinanceiroEmLote,
@@ -9917,7 +9918,13 @@ function Financeiro({ state, onState }) {
     if (pareceRelatorioPagamentosSap(headers)) {
       // Relatorio SAP: cobre a empresa inteira (dezenas de milhares de
       // linhas), so persistimos e mudamos status das faturas que casaram.
+      // Chaves: nome da transportadora (cadastro) e raiz do CNPJ (8 digitos) -> raizes do mesmo grupo.
       const raizesAdicionais = await carregarRaizesAdicionaisPorTransportadora();
+      try {
+        (await carregarGruposRaizTransportadora()).forEach((raizes, raiz) => raizesAdicionais.set(raiz, raizes));
+      } catch (error) {
+        console.warn('[Pagamentos SAP] grupos de raiz nao carregados', error?.message || error);
+      }
       const conciliados = conciliarPagamentosSap(stateAtual.faturas, rows, raizesAdicionais);
       const matched = conciliados.filter((item) => item.fatura_id);
       const compensados = matched.filter((item) => item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE');
@@ -9936,6 +9943,8 @@ function Financeiro({ state, onState }) {
         || (item.resultado === 'NAO_LOCALIZADO' && valoresEmAberto.has(Math.round(Number(item.valor_pago || 0) * 100)))
       ));
       const guardadas = await salvarSapSemVinculo(paraVincular);
+      // Linhas que antes ficaram sem vinculo e agora casaram (ex.: CNPJ adicional cadastrado depois) saem da fila manual.
+      await marcarSapSemVinculoResolvidas(matched);
       // Lancamentos de CT-e (MIRO "numero-serie") do mesmo relatorio: base da provisao por competencia.
       const lancamentosCte = extrairLancamentosCteSap(rows, file.name);
       let resultadoCtes = { enviadas: 0 };

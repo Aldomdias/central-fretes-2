@@ -2216,6 +2216,37 @@ export async function salvarSapSemVinculo(linhas = []) {
   }
 }
 
+// Linhas da fila "sem vinculo" que numa reimportacao passaram a casar sozinhas
+// (ex.: CNPJ adicional cadastrado depois): marca como vinculadas a fatura casada.
+export async function marcarSapSemVinculoResolvidas(conciliados = []) {
+  if (!isSupabaseConfigured() || !conciliados.length) return { marcadas: 0 };
+  const porFatura = new Map();
+  conciliados.filter((item) => item.fatura_id).forEach((item) => {
+    const chaves = porFatura.get(item.fatura_id) || new Set();
+    chaves.add(chaveSapSemVinculo(item));
+    porFatura.set(item.fatura_id, chaves);
+  });
+  const client = getSupabaseClient();
+  let marcadas = 0;
+  try {
+    for (const [faturaId, chaves] of porFatura) {
+      const lista = [...chaves];
+      for (let inicio = 0; inicio < lista.length; inicio += 200) {
+        const { data, error } = await client.from(TABELA_SAP_SEM_VINCULO).update({
+          vinculado_fatura_id: faturaId,
+          vinculado_por: 'Conciliacao automatica',
+          vinculado_em: new Date().toISOString(),
+        }).in('chave', lista.slice(inicio, inicio + 200)).is('vinculado_em', null).select('id');
+        if (error) throw error;
+        marcadas += (data || []).length;
+      }
+    }
+  } catch (error) {
+    console.warn('[Pagamentos SAP] nao marquei linhas sem vinculo resolvidas.', error?.message || error);
+  }
+  return { marcadas };
+}
+
 export async function listarSapSemVinculo() {
   if (!isSupabaseConfigured()) return [];
   return paginarTudo(getSupabaseClient(), TABELA_SAP_SEM_VINCULO, '*', undefined, (q) => q.is('vinculado_em', null));
