@@ -95,13 +95,68 @@ const linhaDaFatura = (fatura, extra = {}) => ({ id: String(fatura.id), fatura, 
 
 export const nomeAuditor = (f) => String(f?.auditor_nome || '').trim() || 'Sem auditor';
 
+// ---- Auditores: o mesmo auditor gravado com nomes diferentes ("Paulo Ricardo" x "Paulo Ricardo dos Santos") ----
+// Junta pelo e-mail e, depois, o nome curto ao completo quando o curto esta contido nele (mesmo primeiro
+// nome, ignorando da/de/dos) e so existe uma pessoa possivel. Rotulo: o nome mais completo.
+const PARTICULAS = new Set(['da', 'de', 'do', 'das', 'dos', 'e']);
+const tokensNome = (nome) => String(nome || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+  .replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((t) => t && !PARTICULAS.has(t));
+export function criarUnificadorAuditores(faturas = []) {
+  const grafias = new Map(); // chave -> Map(grafia original -> qtd)
+  const emails = new Map(); // chave -> Set(email)
+  faturas.forEach((f) => {
+    const nome = String(f?.auditor_nome || '').trim();
+    const chave = tokensNome(nome).join(' ');
+    if (!chave) return;
+    if (!grafias.has(chave)) { grafias.set(chave, new Map()); emails.set(chave, new Set()); }
+    grafias.get(chave).set(nome, (grafias.get(chave).get(nome) || 0) + 1);
+    const email = String(f.auditor_email || '').trim().toLowerCase();
+    if (email) emails.get(chave).add(email);
+  });
+  const pai = new Map([...grafias.keys()].map((c) => [c, c]));
+  const raiz = (c) => { while (pai.get(c) !== c) c = pai.get(c); return c; };
+  const unir = (a, b) => { const ra = raiz(a); const rb = raiz(b); if (ra !== rb) pai.set(ra, rb); };
+  const porEmail = new Map();
+  emails.forEach((set, c) => set.forEach((e) => { if (porEmail.has(e)) unir(c, porEmail.get(e)); else porEmail.set(e, c); }));
+  // Do mais completo para o mais curto: quando o curto for avaliado, os longos ja estao agrupados.
+  const chaves = [...grafias.keys()].sort((a, b) => b.split(' ').length - a.split(' ').length);
+  chaves.forEach((curto) => {
+    const tc = curto.split(' ');
+    const destinos = new Set(chaves.filter((longo) => {
+      const tl = longo.split(' ');
+      return longo !== curto && tl.length > tc.length && tl[0] === tc[0] && tc.every((t) => tl.includes(t));
+    }).map(raiz));
+    destinos.delete(raiz(curto));
+    if (destinos.size === 1) unir(curto, [...destinos][0]);
+  });
+  const membros = new Map();
+  chaves.forEach((c) => { const r = raiz(c); membros.set(r, [...(membros.get(r) || []), c]); });
+  const rotuloDaChave = new Map();
+  membros.forEach((cs) => {
+    const total = (c) => [...grafias.get(c).values()].reduce((s, n) => s + n, 0);
+    const melhor = [...cs].sort((a, b) => b.split(' ').length - a.split(' ').length || b.length - a.length || total(b) - total(a))[0];
+    const grafia = [...grafias.get(melhor)].sort((a, b) => b[1] - a[1])[0][0];
+    cs.forEach((c) => rotuloDaChave.set(c, grafia));
+  });
+  const canonico = (nome) => rotuloDaChave.get(tokensNome(nome).join(' ')) || String(nome || '').trim() || 'Sem auditor';
+  const porEmailRotulo = new Map([...porEmail].map(([e, c]) => [e, rotuloDaChave.get(c)]));
+  return {
+    nome: (f) => canonico(f?.auditor_nome),
+    canonico,
+    // Nome unificado de quem esta logado (pelo e-mail ou pelo nome).
+    doUsuario: ({ nome, email } = {}) => porEmailRotulo.get(String(email || '').trim().toLowerCase()) || rotuloDaChave.get(tokensNome(nome).join(' ')) || '',
+    opcoes: [...new Set([...rotuloDaChave.values()])].sort((a, b) => a.localeCompare(b, 'pt-BR')),
+    grafiasDe: (rotulo) => [...rotuloDaChave].filter(([, r]) => r === rotulo).flatMap(([c]) => [...grafias.get(c).keys()]),
+  };
+}
+
 // Monta as linhas do diagnostico. Com lista: uma linha por numero colado (mais de uma so se o numero
 // existir em faturas ativas diferentes). Sem lista: todas as faturas da transportadora escolhida.
 // Auditor: so as faturas dele. Escolhido sozinho (sem lista e sem transportadora), mostra as que ele
 // ainda esta tratando: nao pagas (protocolo, Fenix, previsao...), mais as canceladas para o card delas.
-export function montarLinhasDiagnostico({ itens = [], faturas = [], transportadora = '', auditor = '', filtroTransportadora = null }) {
+export function montarLinhasDiagnostico({ itens = [], faturas = [], transportadora = '', auditor = '', filtroTransportadora = null, nomeDoAuditor = nomeAuditor }) {
   const daTransportadora = filtroTransportadora || criarFiltroTransportadora(faturas, transportadora);
-  const doAuditor = (f) => !auditor || nomeAuditor(f) === auditor;
+  const doAuditor = (f) => !auditor || nomeDoAuditor(f) === auditor;
   if (!itens.length) {
     if (transportadora) return faturas.filter((f) => daTransportadora(f) && doAuditor(f)).map((f) => linhaDaFatura(f));
     if (!auditor) return [];
