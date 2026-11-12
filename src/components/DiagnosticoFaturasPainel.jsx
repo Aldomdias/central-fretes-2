@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarPlataformaAuditoria } from '../services/auditoriaFretesService';
-import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarCanceladas, marcarPrevisaoPagamento } from '../services/diagnosticoFaturasService';
+import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarCanceladas, marcarPrevisaoPagamento, marcarSubstituidasDuplicadas } from '../services/diagnosticoFaturasService';
+import { carregarCadastroPorRaiz } from '../services/transportadoraCnpjsService';
 import { diasAte } from '../utils/auditoriaFretesDomain';
 import { carregarSessao } from '../utils/authLocal';
 import {
   agrupamentoManual,
+  criarAgrupadorTransportadoras,
+  detectarDuplicadas,
   etapaFenix,
   FAIXAS_A_VENCER,
   faixaDaLinha,
@@ -38,6 +41,9 @@ const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimen
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const ehCancelada = (l) => situacaoPagamentoLinha(l) === 'CANCELADA';
+// Fora da lista e dos totais: canceladas/substituidas e duplicadas (cada uma so no seu card).
+const ehOculta = (l) => ehCancelada(l) || Boolean(l.duplicada);
+const CARDS_OCULTAS = ['canceladas', 'duplicadas'];
 const inteiro = (v) => Number(v || 0).toLocaleString('pt-BR');
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
 const nomeStatus = (s) => String(s || '-').replaceAll('_', ' ');
@@ -161,16 +167,16 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     try { sessionStorage.setItem(CHAVE_SESSAO, JSON.stringify({ texto, transportadora, auditor, escolhidos, filtros, ordem, solicitante })); } catch { /* sem sessionStorage: so nao lembra */ }
   }, [texto, transportadora, auditor, escolhidos, filtros, ordem, solicitante]);
   useEffect(() => { carregarUltimaImportacaoSap().then(setUltimaSap).catch(() => {}); }, [recarga]);
+  // Cadastro (CNPJ principal, origens, adicionais): junta nomes/CNPJs diferentes numa transportadora so.
+  const [cadastroPorRaiz, setCadastroPorRaiz] = useState(() => new Map());
+  useEffect(() => { carregarCadastroPorRaiz().then(setCadastroPorRaiz).catch((e) => console.warn('[Diagnostico] cadastro', e?.message || e)); }, [recarga]);
   useEffect(() => { setPagina(1); }, [texto, transportadora, auditor, escolhidos, filtros, ordem]);
 
-  const transportadoras = useMemo(() => {
-    const nomes = new Map();
-    (state.faturas || []).forEach((f) => {
-      const nome = String(f.transportadora || '').trim();
-      if (nome) nomes.set(nome.toUpperCase(), nome);
-    });
-    return [...nomes.values()].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-  }, [state.faturas]);
+  const agrupador = useMemo(() => criarAgrupadorTransportadoras(state.faturas || [], cadastroPorRaiz), [state.faturas, cadastroPorRaiz]);
+  const transportadoras = useMemo(() => agrupador.opcoes.map((o) => o.rotulo), [agrupador]);
+  const nomesDoGrupo = useMemo(() => new Map(agrupador.opcoes.map((o) => [o.rotulo, o.nomes])), [agrupador]);
+  // Mesma fatura importada mais de uma vez (em toda a base, nao so no recorte).
+  const duplicadas = useMemo(() => detectarDuplicadas(state.faturas || [], agrupador.chaveDaFatura), [state.faturas, agrupador]);
 
   const auditores = useMemo(() => [...new Set((state.faturas || []).map(nomeAuditor))].sort((a, b) => a.localeCompare(b, 'pt-BR')), [state.faturas]);
   // "Minhas faturas": o auditor logado, quando o nome dele bate com o auditor das faturas.
@@ -183,8 +189,8 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const lista = useMemo(() => parseListaFaturas(texto), [texto]);
   const temLista = lista.itens.length > 0;
   const linhasBase = useMemo(
-    () => montarLinhasDiagnostico({ itens: lista.itens, faturas: state.faturas || [], transportadora, auditor }),
-    [lista, state.faturas, transportadora, auditor],
+    () => montarLinhasDiagnostico({ itens: lista.itens, faturas: state.faturas || [], transportadora, auditor, filtroTransportadora: transportadora ? agrupador.filtro(transportadora) : null }),
+    [lista, state.faturas, transportadora, auditor, agrupador],
   );
 
   const faturasBase = useMemo(() => linhasBase.filter((l) => l.fatura).map((l) => l.fatura), [linhasBase]);
@@ -212,8 +218,8 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   }, [faturasBase, recarga]);
 
   const linhas = useMemo(
-    () => linhasBase.map((l) => (l.fatura ? { ...l, ctes: cacheCtes.get(String(l.fatura.id))?.resumo } : l)),
-    [linhasBase, versaoCtes],
+    () => linhasBase.map((l) => (l.fatura ? { ...l, ctes: cacheCtes.get(String(l.fatura.id))?.resumo, duplicada: duplicadas.get(l.fatura.id) } : l)),
+    [linhasBase, versaoCtes, duplicadas],
   );
 
   const opcoes = useMemo(() => {
@@ -246,18 +252,20 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   // Canceladas/substituidas ficam fora da lista, dos cards e dos totais: so aparecem clicando no card
   // "Canceladas" (ou filtrando o status cancelada/substituida).
   const verCanceladas = escolhidos.pagamento === 'canceladas' || ['CANCELADA', 'SUBSTITUIDA'].includes(filtros.status);
+  const verDuplicadas = escolhidos.pagamento === 'duplicadas';
   // Um recorte so para a tela inteira: cards, totais e lista sempre mostram os mesmos numeros.
   const recorte = useMemo(() => {
     const r = filtrarPorCards(filtradas, escolhidos);
-    return verCanceladas ? r : r.filter((l) => !ehCancelada(l));
-  }, [filtradas, escolhidos, verCanceladas]);
+    return verCanceladas || verDuplicadas ? r : r.filter((l) => !ehOculta(l));
+  }, [filtradas, escolhidos, verCanceladas, verDuplicadas]);
   // O card das canceladas ignora os outros cards (ex.: "Vencidas"): cancelada nao e mais vencida, nem
   // aberta, nem lancada... e sumiria. Vale so a pesquisa e os filtros de campo.
   const canceladasRecorte = useMemo(() => filtradas.filter(ehCancelada), [filtradas]);
+  const duplicadasRecorte = useMemo(() => filtradas.filter((l) => l.duplicada), [filtradas]);
 
   const grupos = useMemo(() => GRUPOS_DIAGNOSTICO
     .filter((g) => temLista || !g.soComLista)
-    .map((g) => ({ ...g, cards: g.cards.filter((c) => !c.oculto).map((c) => ({ ...c, linhas: c.id === 'canceladas' ? canceladasRecorte : recorte.filter(c.teste) })) })), [recorte, canceladasRecorte, temLista]);
+    .map((g) => ({ ...g, cards: g.cards.filter((c) => !c.oculto).map((c) => ({ ...c, linhas: { canceladas: canceladasRecorte, duplicadas: duplicadasRecorte }[c.id] || recorte.filter(c.teste) })) })), [recorte, canceladasRecorte, duplicadasRecorte, temLista]);
 
   const resultado = useMemo(() => {
     const coluna = COLUNAS.find((c) => c.id === ordem.coluna) || COLUNAS[3];
@@ -297,7 +305,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
 
   // Abrir as canceladas tira os outros cards (com "Vencidas" ativo a lista ficaria vazia).
   const alternarCard = (grupo, card) => setEscolhidos((atual) => {
-    if (card === 'canceladas') return atual.pagamento === 'canceladas' ? {} : { pagamento: 'canceladas' };
+    if (CARDS_OCULTAS.includes(card)) return atual.pagamento === card ? {} : { pagamento: card };
     return { ...atual, [grupo]: atual[grupo] === card ? '' : card };
   });
   const limparFiltros = () => { setEscolhidos({}); setFiltros(FILTROS_VAZIOS); };
@@ -347,9 +355,9 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l.fatura]));
     const alvo = selecaoValida.map((id) => porId.get(id)).filter((f) => f && (cancelar
       ? situacaoPagamento(f) === 'ABERTA'
-      : f.status === 'CANCELADA'));
+      : ['CANCELADA', 'SUBSTITUIDA'].includes(f.status)));
     if (!alvo.length) {
-      setAviso(cancelar ? 'Nenhuma selecionada pode ser cancelada (só as não pagas e ainda ativas).' : 'Nenhuma selecionada está cancelada.');
+      setAviso(cancelar ? 'Nenhuma selecionada pode ser cancelada (só as não pagas e ainda ativas).' : 'Nenhuma selecionada está cancelada ou substituída.');
       return;
     }
     let motivo = '';
@@ -368,6 +376,24 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       const ignoradas = selecaoValida.length - gravadas.size;
       setAviso(`${inteiro(gravadas.size)} fatura(s) ${cancelar ? 'cancelada(s): estão no card "Canceladas"' : 'reativada(s)'}.${ignoradas > 0 ? ` ${inteiro(ignoradas)} selecionada(s) não se aplicavam.` : ''}`);
     } catch (e) { setAviso(`Erro ao ${cancelar ? 'cancelar' : 'reativar'}: ${e.message || e}`); } finally { setMarcando(false); }
+  };
+
+  // Duplicadas: as copias viram SUBSTITUIDA (a principal fica valendo) e passam para o card "Canceladas".
+  const aplicarSubstituicao = async () => {
+    const porId = new Map(resultado.filter((l) => l.fatura && l.duplicada).map((l) => [l.fatura.id, l]));
+    const alvo = selecaoValida.map((id) => porId.get(id)).filter(Boolean);
+    if (!alvo.length) { setAviso('Nenhuma selecionada é duplicada.'); return; }
+    if (!window.confirm(`Marcar ${alvo.length} fatura(s) duplicada(s) como substituídas? Fica valendo a outra cópia de cada uma (coluna Próxima ação).`)) return;
+    setMarcando(true);
+    setAviso('');
+    try {
+      const sessao = carregarSessao();
+      const itens = alvo.map((l) => ({ id: l.fatura.id, status: l.fatura.status, principalId: l.duplicada.principal.id, principalNumero: l.duplicada.principal.numero_fatura, principalTransportadora: l.duplicada.principal.transportadora }));
+      const gravadas = await marcarSubstituidasDuplicadas(itens, sessao?.nome || sessao?.email || '');
+      onState((atual) => ({ ...atual, faturas: (atual.faturas || []).map((f) => (gravadas.has(f.id) ? { ...f, ...gravadas.get(f.id) } : f)) }));
+      setSelecionadas(new Set());
+      setAviso(`${inteiro(gravadas.size)} duplicada(s) marcada(s) como substituída(s): estão no card "Canceladas".`);
+    } catch (e) { setAviso(`Erro ao marcar duplicadas: ${e.message || e}`); } finally { setMarcando(false); }
   };
 
   // Previsao de pagamento: grava (ou limpa) a data combinada nas selecionadas que ainda nao foram pagas.
@@ -607,7 +633,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             <label className="field">Transportadora
               <select value={transportadora} onChange={(e) => setTransportadora(e.target.value)}>
                 <option value="">Todas</option>
-                {transportadoras.map((t) => <option key={t} value={t}>{t}</option>)}
+                {transportadoras.map((t) => { const nomes = nomesDoGrupo.get(t) || []; return <option key={t} value={t} title={nomes.length > 1 ? `Inclui: ${nomes.join(' · ')}` : undefined}>{t}{nomes.length > 1 ? ` (${nomes.length} nomes)` : ''}</option>; })}
               </select>
             </label>
             <label className="field">Auditor
@@ -653,6 +679,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             <CardResumo rotulo="A vencer" valor={dinheiro(totais.aVencer.valor)} detalhe={totais.aVencer.detalhe} cor="#e67e22" ativo={escolhidos.vencimento === 'a_vencer'} dica="Clique para ver as faturas não pagas que ainda vão vencer." onClick={() => alternarCard('vencimento', 'a_vencer')} />
             <CardResumo rotulo="Pago" valor={dinheiro(totais.pago.valor)} detalhe={totais.pago.detalhe} cor="#14733b" ativo={escolhidos.pagamento === 'pagas_todas'} dica="Clique para ver as faturas pagas, com ou sem divergência." onClick={() => alternarCard('pagamento', 'pagas_todas')} />
             <CardResumo rotulo="Canceladas" valor={inteiro(canceladasRecorte.length)} detalhe={`${dinheiro(canceladasRecorte.reduce((s, l) => s + valorDaLinha(l), 0))} · clique para ver`} cor="#64748b" ativo={escolhidos.pagamento === 'canceladas'} dica="Canceladas/substituídas ficam fora da lista e dos totais. Clique para vê-las (e reativar, se preciso)." onClick={() => alternarCard('pagamento', 'canceladas')} />
+            {(duplicadasRecorte.length > 0 || verDuplicadas) && <CardResumo rotulo="Duplicadas" valor={inteiro(duplicadasRecorte.length)} detalhe={`${dinheiro(duplicadasRecorte.reduce((s, l) => s + valorDaLinha(l), 0))} · fora dos totais`} cor="#b45309" ativo={verDuplicadas} dica="Mesma fatura (número, valor e emissão) importada mais de uma vez. Não entram nos totais; clique para ver e marcar como substituídas." onClick={() => alternarCard('pagamento', 'duplicadas')} />}
 
           </div>
 
@@ -705,9 +732,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               <span className="compact" style={{ color: '#475569' }} title="Faturas que não serão pagas (ex.: vencidas sem tratativa). Saem da lista e dos totais e ficam no card 'Canceladas'.">
                 Cancelamento: {inteiro(selecaoValida.length)} selecionada(s)
               </span>
-              {verCanceladas
+              {verDuplicadas && <button type="button" className="btn-primary" style={{ background: '#b45309', borderColor: '#b45309' }} disabled={!selecaoValida.length || marcando} onClick={aplicarSubstituicao} title="As selecionadas são cópias de outra fatura (mesmo número, valor e emissão): viram 'Substituída' e a outra cópia fica valendo">{marcando ? 'Gravando...' : 'Marcar como substituídas'}</button>}
+              {!verDuplicadas && (verCanceladas
                 ? <button type="button" className="btn-primary" style={{ background: '#315ee7', borderColor: '#315ee7' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarCancelamento(false)} title="Volta as selecionadas ao status que tinham antes do cancelamento">{marcando ? 'Gravando...' : 'Reativar selecionadas'}</button>
-                : <button type="button" className="btn-primary" style={{ background: '#64748b', borderColor: '#64748b' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarCancelamento(true)} title="Marca as selecionadas (não pagas) como canceladas: saem da lista e vão para o card 'Canceladas'">{marcando ? 'Gravando...' : 'Cancelar selecionadas'}</button>}
+                : <button type="button" className="btn-primary" style={{ background: '#64748b', borderColor: '#64748b' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarCancelamento(true)} title="Marca as selecionadas (não pagas) como canceladas: saem da lista e vão para o card 'Canceladas'">{marcando ? 'Gravando...' : 'Cancelar selecionadas'}</button>)}
             </div>
             {temAjusteFenix && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
