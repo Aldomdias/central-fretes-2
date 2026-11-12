@@ -70,6 +70,24 @@ export function extrairLancamentosCteSap(rows = [], arquivoOrigem = '') {
   return [...porChave.values()];
 }
 
+// CT-e lancado no SAP com o CNPJ de outra empresa do mesmo grupo (ex.: CT-e da FLORESTA lancado
+// no fornecedor TAPATI) ou de outra filial. Casa por numero + serie entre as raizes do grupo e,
+// para nao pegar o CT-e de mesmo numero da outra empresa, so aceita se o valor lancado bate com o
+// frete do CT-e (2% ou R$ 1). Se mais de um CNPJ servir, nao casa (ambiguo).
+// cte: { numero, serie, valor }; linhas: linhas SAP de raizes do grupo com o mesmo numero.
+const TOLERANCIA_GRUPO = (valor) => Math.max(1, Math.abs(valor) * 0.02);
+export function casarLancamentoPeloGrupo(cte = {}, linhas = []) {
+  const valor = Number(cte.valor || 0);
+  if (!(valor > 0)) return [];
+  const porCnpj = new Map();
+  linhas
+    .filter((l) => semZeros(l.numero_cte) === semZeros(cte.numero) && semZeros(l.serie_cte) === semZeros(cte.serie))
+    .forEach((l) => porCnpj.set(cnpj14(l.cnpj_emitente), [...(porCnpj.get(cnpj14(l.cnpj_emitente)) || []), l]));
+  const servem = [...porCnpj.values()].filter((grupo) => grupo.some((l) => Number(l.montante || 0) < 0
+    && Math.abs(Math.abs(Number(l.montante)) - valor) <= TOLERANCIA_GRUPO(valor)));
+  return servem.length === 1 ? servem[0] : [];
+}
+
 // Situacao de lancamento de um CT-e a partir das suas linhas no SAP: montante
 // negativo lanca, positivo estorna (MIR4). Vale a data em que o saldo ficou
 // lancado pela ultima vez (estornou e relancou = data do relancamento).

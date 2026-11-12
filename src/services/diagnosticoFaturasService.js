@@ -1,6 +1,7 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { identificacaoSapDoCte, resumirCtesFatura } from '../utils/diagnosticoFaturas';
-import { chaveCasamentoCte, situacaoLancamentoCte } from '../utils/lancamentosCteSap';
+import { casarLancamentoPeloGrupo, chaveCasamentoCte, situacaoLancamentoCte } from '../utils/lancamentosCteSap';
+import { carregarGruposRaizTransportadora } from './transportadoraCnpjsService';
 import { ehLinhaNfse } from '../utils/nfseFatura';
 
 const PAGINA = 1000;
@@ -33,30 +34,81 @@ async function carregarDetalhes(client, faturaIds) {
   return detalhes;
 }
 
+const COLUNAS_LANCAMENTO = 'id,cnpj_emitente,numero_cte,serie_cte,lancamento_contabil,data_lancamento,montante,documento_compensacao,data_compensacao,empresa,codigo_fornecedor,fornecedor';
+
+// Raiz -> raizes da mesma transportadora (principal, origens, CNPJs adicionais). Cache curto: a tela
+// verifica as faturas em lotes e nao precisa recarregar o cadastro a cada lote.
+let cacheGrupos = null;
+async function gruposRaiz() {
+  if (cacheGrupos && Date.now() - cacheGrupos.em < 5 * 60 * 1000) return cacheGrupos.grupos;
+  try {
+    cacheGrupos = { em: Date.now(), grupos: await carregarGruposRaizTransportadora() };
+  } catch (e) {
+    console.warn('[Diagnostico] grupos de CNPJ nao carregados', e?.message || e);
+    cacheGrupos = { em: Date.now(), grupos: new Map() };
+  }
+  return cacheGrupos.grupos;
+}
+export function limparCacheGruposCnpj() { cacheGrupos = null; }
+
+async function buscarEmLotes(numeros, montar) {
+  const lista = [...numeros];
+  const linhas = [];
+  for (let i = 0; i < lista.length; i += LOTE_NUMEROS) {
+    // eslint-disable-next-line no-await-in-loop
+    linhas.push(...await paginarPorId(() => montar(lista.slice(i, i + LOTE_NUMEROS))));
+  }
+  return linhas;
+}
+
 async function carregarLancamentos(client, detalhes) {
+  const ctes = [];
   const numerosPorCnpj = new Map();
   detalhes.forEach((item) => {
     if (item.excluido_da_versao === true || ehLinhaNfse(item)) return;
-    const { cnpj, numero } = identificacaoSapDoCte(item);
-    if (!cnpj || numero === '0') return;
-    if (!numerosPorCnpj.has(cnpj)) numerosPorCnpj.set(cnpj, new Set());
-    numerosPorCnpj.get(cnpj).add(numero);
+    const id = identificacaoSapDoCte(item);
+    if (!id.cnpj || id.numero === '0') return;
+    ctes.push({ ...id, valor: Number(item.valor_frete || 0) });
+    if (!numerosPorCnpj.has(id.cnpj)) numerosPorCnpj.set(id.cnpj, new Set());
+    numerosPorCnpj.get(id.cnpj).add(id.numero);
   });
   const porChave = new Map();
   for (const [cnpj, numeros] of numerosPorCnpj) {
-    const lista = [...numeros];
-    for (let i = 0; i < lista.length; i += LOTE_NUMEROS) {
-      const lote = lista.slice(i, i + LOTE_NUMEROS);
-      // eslint-disable-next-line no-await-in-loop
-      const linhas = await paginarPorId(() => client.from('ctes_lancamentos_sap')
-        .select('id,cnpj_emitente,numero_cte,serie_cte,lancamento_contabil,data_lancamento,montante,documento_compensacao,data_compensacao,empresa,codigo_fornecedor,fornecedor')
-        .eq('cnpj_emitente', cnpj).in('numero_cte', lote));
-      linhas.forEach((l) => {
-        const k = chaveCasamentoCte({ cnpj: l.cnpj_emitente, numero: l.numero_cte, serie: l.serie_cte });
-        porChave.set(k, [...(porChave.get(k) || []), l]);
-      });
-    }
+    // eslint-disable-next-line no-await-in-loop
+    const linhas = await buscarEmLotes(numeros, (lote) => client.from('ctes_lancamentos_sap').select(COLUNAS_LANCAMENTO).eq('cnpj_emitente', cnpj).in('numero_cte', lote));
+    linhas.forEach((l) => {
+      const k = chaveCasamentoCte({ cnpj: l.cnpj_emitente, numero: l.numero_cte, serie: l.serie_cte });
+      porChave.set(k, [...(porChave.get(k) || []), l]);
+    });
   }
+
+  // Sem lancamento no CNPJ do CT-e: procura nas outras empresas/filiais do grupo da transportadora.
+  const faltam = ctes.filter((c) => !porChave.has(chaveCasamentoCte(c)));
+  if (!faltam.length) return porChave;
+  const grupos = await gruposRaiz();
+  const numerosPorRaiz = new Map();
+  faltam.forEach((c) => {
+    const raiz = c.cnpj.slice(0, 8);
+    new Set([raiz, ...(grupos.get(raiz) || [])]).forEach((r) => {
+      if (!numerosPorRaiz.has(r)) numerosPorRaiz.set(r, new Set());
+      numerosPorRaiz.get(r).add(c.numero);
+    });
+  });
+  const porRaizNumero = new Map();
+  for (const [raiz, numeros] of numerosPorRaiz) {
+    // eslint-disable-next-line no-await-in-loop
+    const linhas = await buscarEmLotes(numeros, (lote) => client.from('ctes_lancamentos_sap').select(COLUNAS_LANCAMENTO).like('cnpj_emitente', `${raiz}%`).in('numero_cte', lote));
+    linhas.forEach((l) => {
+      const k = `${raiz}|${Number(l.numero_cte)}`;
+      porRaizNumero.set(k, [...(porRaizNumero.get(k) || []), l]);
+    });
+  }
+  faltam.forEach((c) => {
+    const raiz = c.cnpj.slice(0, 8);
+    const candidatas = [...new Set([raiz, ...(grupos.get(raiz) || [])])].flatMap((r) => porRaizNumero.get(`${r}|${Number(c.numero)}`) || []);
+    const casadas = casarLancamentoPeloGrupo(c, candidatas);
+    if (casadas.length) porChave.set(chaveCasamentoCte(c), casadas);
+  });
   return porChave;
 }
 
