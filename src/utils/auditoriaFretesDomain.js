@@ -449,8 +449,11 @@ export function pareceRelatorioPagamentosSap(headers = []) {
 // pagamento efetivo (banco/boleto).
 const PREFIXO_PARTIDA_PAGAMENTO = '200';
 
+// Referencia do SAP lida como numero de planilha vem "548.0": o numero da fatura e "548".
+export const normalizarReferenciaSap = (valor) => String(valor ?? '').trim().replace(/^(\d+)\.0+$/, '$1');
+
 export function mapearPagamentoSap(row = {}) {
-  const referencia = String(row['Referência'] ?? row['Referencia'] ?? '').trim();
+  const referencia = normalizarReferenciaSap(row['Referência'] ?? row['Referencia']);
   const montante = Number(row['Montante (ME)'] ?? row['Montante'] ?? 0);
   const statusComp = String(row['Status comp.'] ?? '').trim();
   // Uma fatura pode passar por varios lancamentos intermediarios ("190..."

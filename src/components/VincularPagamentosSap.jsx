@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { listarSapSemVinculo, vincularLinhaSapAFatura } from '../services/auditoriaFretesService';
+import { normalizarReferenciaSap } from '../utils/auditoriaFretesDomain';
 import { obterRaizCnpj } from '../utils/cnpj';
 import { carregarGruposRaizTransportadora } from '../services/transportadoraCnpjsService';
 
@@ -37,7 +38,7 @@ function mesmoGrupoCnpj(fatura, linha, gruposRaiz) {
 function pontuar(fatura, linha, raizesDaTransportadora, gruposRaiz = new Map()) {
   let pontos = 0;
   const motivos = [];
-  if (String(linha.numero_fatura || '').trim().toUpperCase() === String(fatura.numero_fatura || '').trim().toUpperCase()) { pontos += 50; motivos.push('mesmo numero'); }
+  if (normalizarReferenciaSap(linha.numero_fatura).toUpperCase() === String(fatura.numero_fatura || '').trim().toUpperCase()) { pontos += 50; motivos.push('mesmo numero'); }
   const dif = Math.abs(Number(linha.valor_pago || 0) - Number(fatura.valor_fatura || 0));
   if (dif <= 0.01) { pontos += 30; motivos.push('valor igual'); }
   else if (Number(fatura.valor_fatura) > 0 && dif / Number(fatura.valor_fatura) <= 0.05) { pontos += 10; motivos.push('valor proximo'); }
@@ -110,7 +111,7 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
   const porNumero = useMemo(() => {
     const mapa = new Map();
     for (const l of linhas) {
-      const n = String(l.numero_fatura || '').trim().toUpperCase();
+      const n = normalizarReferenciaSap(l.numero_fatura).toUpperCase();
       mapa.set(n, [...(mapa.get(n) || []), l]);
     }
     return mapa;
@@ -125,7 +126,7 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
       base = linhas.filter((l) => `${l.numero_fatura} ${l.transportadora_sap} ${l.cnpj} ${l.valor_pago} ${l.partida} ${l.lancamento_contabil}`.toLowerCase().includes(manual));
     } else {
       const cents = Math.round(Number(fatura.valor_fatura || 0) * 100);
-      base = [...(porNumero.get(numero) || []), ...linhas.filter((l) => Math.round(Number(l.valor_pago || 0) * 100) === cents && String(l.numero_fatura || '').trim().toUpperCase() !== numero)];
+      base = [...(porNumero.get(numero) || []), ...linhas.filter((l) => Math.round(Number(l.valor_pago || 0) * 100) === cents && normalizarReferenciaSap(l.numero_fatura).toUpperCase() !== numero)];
     }
     return base
       .map((linha) => ({ linha, ...pontuar(fatura, linha, raizes, gruposRaiz) }))
@@ -152,7 +153,7 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
     }
     const pares = [];
     for (const linha of linhas) {
-      const n = String(linha.numero_fatura || '').trim().toUpperCase();
+      const n = normalizarReferenciaSap(linha.numero_fatura).toUpperCase();
       const candidatas = (abertasPorNumero.get(n) || []).filter((f) => mesmoGrupoCnpj(f, linha, gruposRaiz));
       if (candidatas.length === 1) pares.push({ fatura: candidatas[0], linha });
     }
