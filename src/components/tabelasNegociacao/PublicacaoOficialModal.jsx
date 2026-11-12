@@ -46,9 +46,9 @@ export default function PublicacaoOficialModal({ tabela, titulo, onCancelar, onC
   const [cidadesNovas, setCidadesNovas] = useState({});
   const [modoTabela, setModoTabela] = useState('SUBSTITUIR_VIGENCIA');
   const [nomeAba, setNomeAba] = useState('');
-  // Só no modo "nova aba": gravar a data como vigência da aba. Sem isso a aba
+  // Só no modo "nova aba": gravar a data como vigência da aba (marcado por padrão). Desmarcado, a aba
   // entra sem vigência e concorre com a principal em qualquer data.
-  const [vigenciaNaAba, setVigenciaNaAba] = useState(false);
+  const [vigenciaNaAba, setVigenciaNaAba] = useState(true);
   const [inicioVigencia, setInicioVigencia] = useState(tabela?.data_inicio_vigencia ? String(tabela.data_inicio_vigencia).slice(0, 10) : hojeISO());
 
   useEffect(() => {
