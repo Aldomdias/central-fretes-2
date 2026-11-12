@@ -176,6 +176,7 @@ export async function marcarAgrupamentoManual(ids = [], marcar = true, usuario =
 // fica no historico (status_anterior) e volta ao reativar. faturas: [{ id, status }].
 // Devolve os campos gravados por id, para atualizar a tela sem recarregar tudo.
 export const ACAO_CANCELADA_DIAGNOSTICO = 'CANCELADA_PELO_DIAGNOSTICO';
+export const ACAO_SUBSTITUIDA_DUPLICIDADE = 'SUBSTITUIDA_DUPLICIDADE';
 export async function marcarCanceladas(faturas = [], cancelar = true, usuario = '', motivo = '') {
   if (!isSupabaseConfigured() || !faturas.length) return new Map();
   const client = getSupabaseClient();
@@ -191,7 +192,7 @@ export async function marcarCanceladas(faturas = [], cancelar = true, usuario = 
       // eslint-disable-next-line no-await-in-loop
       const { data, error } = await client.from('auditoria_fatura_historico')
         .select('fatura_id, status_anterior, created_at')
-        .eq('acao', ACAO_CANCELADA_DIAGNOSTICO)
+        .in('acao', [ACAO_CANCELADA_DIAGNOSTICO, ACAO_SUBSTITUIDA_DUPLICIDADE])
         .in('fatura_id', ids.slice(i, i + 200))
         .order('created_at', { ascending: false });
       if (error) throw error;
@@ -232,6 +233,40 @@ export async function marcarCanceladas(faturas = [], cancelar = true, usuario = 
     // eslint-disable-next-line no-await-in-loop
     const { error } = await client.from('auditoria_fatura_historico').insert(historico.slice(i, i + 200));
     if (error) { console.warn('Historico do cancelamento nao registrado:', error.message); break; }
+  }
+  return gravadas;
+}
+
+// Duplicadas (mesma fatura importada mais de uma vez): marca as copias como SUBSTITUIDA, com a fatura
+// que fica (principal) no historico. itens: [{ id, status, principalId, principalNumero, principalTransportadora }].
+export async function marcarSubstituidasDuplicadas(itens = [], usuario = '') {
+  if (!isSupabaseConfigured() || !itens.length) return new Map();
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const gravadas = new Map();
+  const ids = itens.map((i) => i.id);
+  for (let i = 0; i < ids.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await client.from('faturas').update({ status: 'SUBSTITUIDA' }).in('id', ids.slice(i, i + 200)).select('id');
+    if (error) throw error;
+    (data || []).forEach((r) => gravadas.set(r.id, { status: 'SUBSTITUIDA' }));
+  }
+  const historico = itens.filter((i) => gravadas.has(i.id)).map((i) => ({
+    id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `dup-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    fatura_id: i.id,
+    created_at: agora,
+    acao: ACAO_SUBSTITUIDA_DUPLICIDADE,
+    status_anterior: i.status || null,
+    status_novo: 'SUBSTITUIDA',
+    descricao: `Fatura duplicada (mesmo número, valor e emissão): fica valendo a fatura ${i.principalNumero || ''} de ${i.principalTransportadora || '-'}. Marcada pela tela Diagnóstico.`,
+    metadata: { fatura_valida_id: i.principalId },
+    usuario_nome: usuario || null,
+    usuario_email: '',
+  }));
+  for (let i = 0; i < historico.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await client.from('auditoria_fatura_historico').insert(historico.slice(i, i + 200));
+    if (error) { console.warn('Historico das duplicadas nao registrado:', error.message); break; }
   }
   return gravadas;
 }

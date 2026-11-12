@@ -99,8 +99,8 @@ export const nomeAuditor = (f) => String(f?.auditor_nome || '').trim() || 'Sem a
 // existir em faturas ativas diferentes). Sem lista: todas as faturas da transportadora escolhida.
 // Auditor: so as faturas dele. Escolhido sozinho (sem lista e sem transportadora), mostra as que ele
 // ainda esta tratando: nao pagas (protocolo, Fenix, previsao...), mais as canceladas para o card delas.
-export function montarLinhasDiagnostico({ itens = [], faturas = [], transportadora = '', auditor = '' }) {
-  const daTransportadora = criarFiltroTransportadora(faturas, transportadora);
+export function montarLinhasDiagnostico({ itens = [], faturas = [], transportadora = '', auditor = '', filtroTransportadora = null }) {
+  const daTransportadora = filtroTransportadora || criarFiltroTransportadora(faturas, transportadora);
   const doAuditor = (f) => !auditor || nomeAuditor(f) === auditor;
   if (!itens.length) {
     if (transportadora) return faturas.filter((f) => daTransportadora(f) && doAuditor(f)).map((f) => linhaDaFatura(f));
@@ -136,6 +136,97 @@ export function montarLinhasDiagnostico({ itens = [], faturas = [], transportado
     });
   });
   return linhas;
+}
+
+// ---- Uma transportadora so, mesmo com nomes e CNPJs diferentes nas faturas ----
+// cadastroPorRaiz: Map(raiz -> { id, nome }) do cadastro (CNPJ principal, origens e CNPJs adicionais).
+// Chave da fatura: transportadora do cadastro dona da raiz; sem cadastro, a propria raiz; sem CNPJ, o nome.
+export function criarAgrupadorTransportadoras(faturas = [], cadastroPorRaiz = new Map()) {
+  const chaveBruta = (f) => {
+    const raiz = obterRaizCnpj(f.cnpj_transportadora);
+    if (raizCnpjValida(raiz) && !/^0+$/.test(raiz)) return cadastroPorRaiz.has(raiz) ? `T:${cadastroPorRaiz.get(raiz).id}` : `R:${raiz}`;
+    return '';
+  };
+  // Fatura sem CNPJ vai para o grupo de quem usa o mesmo nome.
+  const chavePorNome = new Map();
+  faturas.forEach((f) => { const c = chaveBruta(f); const n = norm(f.transportadora); if (c && n && !chavePorNome.has(n)) chavePorNome.set(n, c); });
+  const chaveDaFatura = (f) => chaveBruta(f) || chavePorNome.get(norm(f.transportadora)) || `N:${norm(f.transportadora)}`;
+  const nomesPorChave = new Map();
+  const nomeCadastro = new Map([...cadastroPorRaiz.values()].map((t) => [`T:${t.id}`, String(t.nome || '').trim()]));
+  faturas.forEach((f) => {
+    const nome = String(f.transportadora || '').trim();
+    if (!nome) return;
+    const c = chaveDaFatura(f);
+    if (!nomesPorChave.has(c)) nomesPorChave.set(c, new Map());
+    nomesPorChave.get(c).set(nome, (nomesPorChave.get(c).get(nome) || 0) + 1);
+  });
+  const rotulos = new Map();
+  const usados = new Map();
+  nomesPorChave.forEach((nomes, c) => {
+    const maisUsado = [...nomes].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0];
+    const rotulo = nomeCadastro.get(c) || maisUsado;
+    rotulos.set(c, rotulo);
+    usados.set(norm(rotulo), [...(usados.get(norm(rotulo)) || []), c]);
+  });
+  // Dois grupos com o mesmo nome (raizes sem cadastro): diferencia pela raiz.
+  usados.forEach((chaves) => { if (chaves.length > 1) chaves.forEach((c) => { if (c.startsWith('R:')) rotulos.set(c, `${rotulos.get(c)} (${c.slice(2)})`); }); });
+  const opcoes = [...rotulos].map(([chave, rotulo]) => ({ chave, rotulo, nomes: [...nomesPorChave.get(chave).keys()] }))
+    .sort((a, b) => a.rotulo.localeCompare(b.rotulo, 'pt-BR'));
+  const chavePorRotulo = new Map(opcoes.map((o) => [norm(o.rotulo), o.chave]));
+  // Rotulo escolhido (ou nome antigo salvo na sessao) -> filtro das faturas do grupo.
+  const filtro = (rotulo) => {
+    if (!rotulo) return () => true;
+    const chave = chavePorRotulo.get(norm(rotulo)) || opcoes.find((o) => o.nomes.some((n) => norm(n) === norm(rotulo)))?.chave;
+    return chave ? (f) => chaveDaFatura(f) === chave : criarFiltroTransportadora(faturas, rotulo);
+  };
+  return { opcoes, chaveDaFatura, filtro };
+}
+
+// ---- Faturas duplicadas: mesma fatura importada mais de uma vez ----
+// Mesmo numero, mesmo valor (centavos) e mesma emissao, ativas. Fica uma (a principal); as outras sao
+// duplicadas e saem dos totais. Duplicada so quando e da mesma transportadora (mesma chave do agrupador)
+// ou quando a principal ja esta paga (a mesma fatura foi paga em outro CNPJ ainda nao cadastrado).
+const pesoPrincipal = (f) => [
+  String(f.status || '').startsWith('PAGA') ? 1 : 0,
+  f.partida || f.lancamento_financeiro ? 1 : 0,
+  STATUS_LIBERADAS.has(f.status) ? 1 : 0,
+  Number(f.ctes_auditados || 0),
+];
+function compararPrincipal(a, b) {
+  const pa = pesoPrincipal(a);
+  const pb = pesoPrincipal(b);
+  for (let i = 0; i < pa.length; i += 1) if (pa[i] !== pb[i]) return pb[i] - pa[i];
+  return String(a.created_at || '').localeCompare(String(b.created_at || '')) || String(a.id).localeCompare(String(b.id));
+}
+export function detectarDuplicadas(faturas = [], chaveDaFatura = (f) => obterRaizCnpj(f.cnpj_transportadora) || norm(f.transportadora)) {
+  const grupos = new Map();
+  faturas.forEach((f) => {
+    if (inativa(f)) return;
+    const numero = numeroComparavel(f.numero_fatura) || norm(f.numero_fatura);
+    const valor = Math.round(Number(f.valor_fatura || 0) * 100);
+    if (!numero || !valor) return;
+    const k = `${numero}|${valor}|${String(f.data_emissao || '').slice(0, 10)}`;
+    grupos.set(k, [...(grupos.get(k) || []), f]);
+  });
+  const duplicadas = new Map();
+  grupos.forEach((lista) => {
+    if (lista.length < 2) return;
+    const ordenadas = [...lista].sort(compararPrincipal);
+    const pendentes = [...ordenadas];
+    while (pendentes.length) {
+      const principal = pendentes.shift();
+      const paga = String(principal.status || '').startsWith('PAGA');
+      for (let i = pendentes.length - 1; i >= 0; i -= 1) {
+        const f = pendentes[i];
+        const mesma = chaveDaFatura(f) === chaveDaFatura(principal);
+        if (mesma || (paga && !String(f.status || '').startsWith('PAGA'))) {
+          duplicadas.set(f.id, { principal, motivo: mesma ? 'MESMA_TRANSPORTADORA' : 'PAGA_EM_OUTRO_CNPJ' });
+          pendentes.splice(i, 1);
+        }
+      }
+    }
+  });
+  return duplicadas;
 }
 
 const STATUS_LIBERADAS = new Set(['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO', 'ENVIADA_AO_FINANCEIRO', 'TRATADA']);
@@ -298,6 +389,10 @@ export function textoPagamentoLinha(linha) {
 export function proximaAcao(linha) {
   const f = linha.fatura;
   if (!f) return 'Localizar / importar a fatura';
+  if (linha.duplicada) {
+    const p = linha.duplicada.principal;
+    return `Duplicada: vale a ${p.numero_fatura} de ${p.transportadora || '-'} (${String(p.status || '').startsWith('PAGA') ? 'já paga' : 'em aberto'}). Marcar como substituída`;
+  }
   const auditoria = situacaoAuditoria(f);
   if (auditoria === 'CANCELADA') return 'Nenhuma (cancelada/substituída)';
   if (situacaoPagamento(f) !== 'ABERTA') return 'Nenhuma (paga)';
@@ -390,6 +485,8 @@ export const GRUPOS_DIAGNOSTICO = [
     { id: 'pagas_divergentes', rotulo: 'Pagas com divergência', cor: '#b78700', teste: pagamento('PAGA_DIVERGENTE'), dica: 'Valor pago diferente do esperado.' },
     { id: 'abertas', rotulo: 'Não pagas', cor: '#315ee7', teste: pagamento('ABERTA'), dica: 'Ainda sem pagamento. Inclui as não localizadas.' },
     { id: 'canceladas', rotulo: 'Canceladas/substituídas', cor: '#64748b', teste: pagamento('CANCELADA'), dica: 'Canceladas ou substituídas.' },
+    // Mesma fatura importada mais de uma vez: fora dos totais, so aparecem neste card.
+    { id: 'duplicadas', rotulo: 'Duplicadas', cor: '#b45309', teste: (l) => Boolean(l.duplicada), dica: 'Mesma fatura (número, valor e emissão) importada mais de uma vez. Ficam fora dos totais; marque como substituídas.' },
     // Sem card proprio: usado pelo card "Pago" do topo, que soma pagas e pagas com divergencia.
     { id: 'pagas_todas', rotulo: 'Pagas (todas)', cor: '#14733b', oculto: true, teste: comFatura((l) => situacaoPagamento(l.fatura).startsWith('PAGA')), dica: 'Todas as pagas.' },
   ] },

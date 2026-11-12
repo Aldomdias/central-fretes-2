@@ -269,3 +269,43 @@ test('filtro por auditor: sozinho mostra as em aberto dele; com transportadora o
   const { itens } = parseListaFaturas('10\n12\n999');
   assert.deepEqual(ids(montarLinhasDiagnostico({ itens, faturas, auditor: 'Ana' })), ['a', '999']);
 });
+
+test('duplicadas: mesma fatura em dois CNPJs, a paga fica valendo; mesma transportadora em aberto fica a mais antiga', async () => {
+  const { detectarDuplicadas, criarAgrupadorTransportadoras } = await import('../src/utils/diagnosticoFaturas.js');
+  const faturas = [
+    { id: 'paga', numero_fatura: '498', transportadora: 'FLORESTA', cnpj_transportadora: '48733968000153', valor_fatura: 3190.7, data_emissao: '2026-08-04', status: 'PAGA', created_at: '2026-08-13' },
+    { id: 'copia', numero_fatura: '498', transportadora: 'FLORESTA LOGISTICA LTDA', cnpj_transportadora: '22163228000135', valor_fatura: 3190.7, data_emissao: '2026-08-04', status: 'RECEBIDA', created_at: '2026-08-06' },
+    { id: 'a1', numero_fatura: '0010', transportadora: 'ALFA', cnpj_transportadora: '11111111000100', valor_fatura: 100, data_emissao: '2026-09-01', status: 'RECEBIDA', created_at: '2026-09-02' },
+    { id: 'a2', numero_fatura: '10', transportadora: 'ALFA TRANSPORTES', cnpj_transportadora: '11111111000200', valor_fatura: 100, data_emissao: '2026-09-01', status: 'RECEBIDA', created_at: '2026-09-05' },
+    // Mesmo numero/valor/emissao em outra empresa, nenhuma paga: coincidencia, nao marca.
+    { id: 'x1', numero_fatura: '7', transportadora: 'BETA', cnpj_transportadora: '33333333000100', valor_fatura: 50, data_emissao: '2026-09-01', status: 'RECEBIDA' },
+    { id: 'x2', numero_fatura: '7', transportadora: 'GAMA', cnpj_transportadora: '44444444000100', valor_fatura: 50, data_emissao: '2026-09-01', status: 'RECEBIDA' },
+    { id: 'canc', numero_fatura: '10', transportadora: 'ALFA', cnpj_transportadora: '11111111000100', valor_fatura: 100, data_emissao: '2026-09-01', status: 'CANCELADA' },
+  ];
+  const { chaveDaFatura } = criarAgrupadorTransportadoras(faturas);
+  const dup = detectarDuplicadas(faturas, chaveDaFatura);
+  assert.deepEqual([...dup.keys()].sort(), ['a2', 'copia']);
+  assert.equal(dup.get('copia').principal.id, 'paga');
+  assert.equal(dup.get('copia').motivo, 'PAGA_EM_OUTRO_CNPJ');
+  assert.equal(dup.get('a2').principal.id, 'a1');
+});
+
+test('agrupador: nomes e CNPJs do mesmo cadastro viram uma transportadora so', async () => {
+  const { criarAgrupadorTransportadoras } = await import('../src/utils/diagnosticoFaturas.js');
+  const faturas = [
+    { id: '1', transportadora: 'FLORESTA', cnpj_transportadora: '48733968000153' },
+    { id: '2', transportadora: 'FLORESTA LOGISTICA LTDA', cnpj_transportadora: '22163228000135' },
+    { id: '3', transportadora: 'FLORESTA LOGISTICA LTDA - PRUDENTE', cnpj_transportadora: '22163228000488' },
+    { id: '4', transportadora: 'GENEROSO LTDA', cnpj_transportadora: '29453826000100' },
+    { id: '5', transportadora: 'TRANSPORTE GENEROSO', cnpj_transportadora: '29453826000200' },
+    { id: '6', transportadora: 'TRANSPORTE GENEROSO', cnpj_transportadora: '29453826000200' },
+    { id: '7', transportadora: 'SEM CNPJ', cnpj_transportadora: '' },
+  ];
+  const cadastro = new Map([['48733968', { id: 't1', nome: 'FLORESTA' }], ['22163228', { id: 't1', nome: 'FLORESTA' }]]);
+  const { opcoes, filtro } = criarAgrupadorTransportadoras(faturas, cadastro);
+  assert.deepEqual(opcoes.map((o) => o.rotulo), ['FLORESTA', 'SEM CNPJ', 'TRANSPORTE GENEROSO']);
+  assert.deepEqual(faturas.filter(filtro('FLORESTA')).map((f) => f.id), ['1', '2', '3']);
+  // Nome antigo salvo na sessao continua funcionando.
+  assert.deepEqual(faturas.filter(filtro('FLORESTA LOGISTICA LTDA')).map((f) => f.id), ['1', '2', '3']);
+  assert.deepEqual(faturas.filter(filtro('TRANSPORTE GENEROSO')).map((f) => f.id), ['4', '5', '6']);
+});
