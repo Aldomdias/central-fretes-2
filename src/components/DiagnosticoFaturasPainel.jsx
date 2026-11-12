@@ -50,6 +50,9 @@ const ehOculta = (l) => ehCancelada(l) || Boolean(l.duplicada);
 const CARDS_OCULTAS = ['canceladas', 'duplicadas'];
 const inteiro = (v) => Number(v || 0).toLocaleString('pt-BR');
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
+// CT-e no formato de pesquisa do SAP: numero-serie, sem zeros a esquerda (ex.: 1234-1).
+const semZeros = (v) => String(v ?? '').trim().replace(/^0+(?=\d)/, '');
+const cteSap = (c) => { const n = semZeros(c.numero_cte); const s = semZeros(c.serie_cte); return n && s ? `${n}-${s}` : n; };
 const nomeStatus = (s) => String(s || '-').replaceAll('_', ' ');
 const carimbo = (f) => f.updated_at || '';
 const COR_PAGAMENTO = { Paga: '#14733b', 'Paga c/ divergência': '#b78700', 'Lançada, não paga': '#315ee7', 'Lançada nos CT-es, não paga': '#b78700', 'Não lançada': '#9b1111' };
@@ -630,10 +633,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
         nomeArquivo: `ctes-sem-partida-${hojeArquivo}.xlsx`,
         aba: 'CT-es sem partida',
         colunas: [
-          { titulo: 'Fatura', largura: 14 }, { titulo: 'Transportadora', largura: 34 }, { titulo: 'Vencimento fatura', largura: 12, tipo: 'data' }, { titulo: 'Número CT-e', largura: 14 }, { titulo: 'Série', largura: 8, tipo: 'centro' },
+          { titulo: 'Fatura', largura: 14 }, { titulo: 'Transportadora', largura: 34 }, { titulo: 'Vencimento fatura', largura: 12, tipo: 'data' }, { titulo: 'Número CT-e', largura: 14 }, { titulo: 'Série', largura: 8, tipo: 'centro' }, { titulo: 'CT-e SAP', largura: 16 },
           { titulo: 'Chave CT-e', largura: 48 }, { titulo: 'Valor frete', largura: 16, tipo: 'moeda' }, { titulo: 'Situação', largura: 18 },
         ],
-        linhas: ctesSemPartida.map(({ l, c }) => [String(l.numero), l.fatura.transportadora || '', l.fatura.data_vencimento || '', String(c.numero_cte || ''), String(c.serie_cte || ''), String(c.chave_cte || ''), c.valor_frete, c.estornado ? 'Estornado no SAP' : 'Sem partida']),
+        linhas: ctesSemPartida.map(({ l, c }) => [String(l.numero), l.fatura.transportadora || '', l.fatura.data_vencimento || '', String(c.numero_cte || ''), String(c.serie_cte || ''), cteSap(c), String(c.chave_cte || ''), c.valor_frete, c.estornado ? 'Estornado no SAP' : 'Sem partida']),
         resumo: descricaoFiltros(),
       });
     } catch (e) { setAviso(`Erro ao exportar: ${e.message || e}`); } finally { setExportando(false); }
@@ -647,13 +650,13 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
         aba: 'CT-es',
         colunas: [
           { titulo: 'Fatura', largura: 14 }, { titulo: 'Transportadora', largura: 34 }, { titulo: 'Status fatura', largura: 22 }, { titulo: 'Vencimento fatura', largura: 12, tipo: 'data' }, { titulo: 'Pagamento fatura', largura: 22 },
-          { titulo: 'Número CT-e', largura: 14 }, { titulo: 'Série', largura: 8, tipo: 'centro' }, { titulo: 'Chave CT-e', largura: 48 }, { titulo: 'Valor frete', largura: 16, tipo: 'moeda' },
+          { titulo: 'Número CT-e', largura: 14 }, { titulo: 'Série', largura: 8, tipo: 'centro' }, { titulo: 'CT-e SAP', largura: 16 }, { titulo: 'Chave CT-e', largura: 48 }, { titulo: 'Valor frete', largura: 16, tipo: 'moeda' },
           { titulo: 'Situação SAP', largura: 18 }, { titulo: 'Partida CT-e', largura: 14 }, { titulo: 'Data lançamento', largura: 12, tipo: 'data' }, { titulo: 'Valor lançado', largura: 16, tipo: 'moeda' },
           { titulo: 'Partida Fênix', largura: 12, tipo: 'centro' },
         ],
         linhas: todosCtes.map(({ l, c }) => [
           String(l.numero), l.fatura.transportadora || '', nomeStatus(l.fatura.status), l.fatura.data_vencimento || '', textoPagamentoLinha(l),
-          String(c.numero_cte || ''), String(c.serie_cte || ''), String(c.chave_cte || ''), c.valor_frete,
+          String(c.numero_cte || ''), String(c.serie_cte || ''), cteSap(c), String(c.chave_cte || ''), c.valor_frete,
           ROTULO_SITUACAO_CTE[c.situacao] || '', c.lancamento_contabil || '', c.data_lancamento || '', c.situacao === 'COM_PARTIDA' ? c.valor_lancado : '',
           c.fenix ? 'Sim' : '',
         ]),
@@ -674,13 +677,13 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
         colunas: [
           { titulo: 'Empresa', largura: 26 }, { titulo: 'Cód. fornecedor', largura: 14, tipo: 'centro' }, { titulo: 'Fornecedor', largura: 34 }, { titulo: 'Pedido', largura: 22 },
           { titulo: 'Partida', largura: 14, tipo: 'centro' }, { titulo: 'Solicitante', largura: 24 }, { titulo: 'Motivo correção', largura: 30 },
-          { titulo: 'Fatura', largura: 14 }, { titulo: 'Número CT-e', largura: 12 }, { titulo: 'Série', largura: 7, tipo: 'centro' }, { titulo: 'Chave CT-e', largura: 48 },
+          { titulo: 'Fatura', largura: 14 }, { titulo: 'Número CT-e', largura: 12 }, { titulo: 'Série', largura: 7, tipo: 'centro' }, { titulo: 'CT-e SAP', largura: 16 }, { titulo: 'Chave CT-e', largura: 48 },
           { titulo: 'Valor frete', largura: 15, tipo: 'moeda' }, { titulo: 'Montante SAP', largura: 15, tipo: 'moeda' }, { titulo: 'Data lançamento', largura: 12, tipo: 'data' }, { titulo: 'Data compensação', largura: 12, tipo: 'data' },
         ],
         linhas: ctesFenix.map((c) => [
           nomeEmpresaSap(c.empresa), c.codigo_fornecedor || '', c.fornecedor || c.transportadora, `${c.documento_compensacao || PARTIDAS_FENIX[0]} ${ROTULO_FENIX}`,
           String(c.partida || ''), solicitante, MOTIVO_FENIX,
-          c.numero_fatura, String(c.numero_cte || ''), String(c.serie_cte || ''), String(c.chave_cte || ''), c.valor_frete, c.montante, c.data_lancamento || '', c.data_compensacao || '',
+          c.numero_fatura, String(c.numero_cte || ''), String(c.serie_cte || ''), cteSap(c), String(c.chave_cte || ''), c.valor_frete, c.montante, c.data_lancamento || '', c.data_compensacao || '',
         ]),
         resumo: [...descricaoFiltros(), ['Partida Fênix', PARTIDAS_FENIX.join(', ')], ['CT-es', String(ctesFenix.length)], ['Partidas', String(partidasFenix.length)], ['Solicitante', solicitante || '-']],
       });
