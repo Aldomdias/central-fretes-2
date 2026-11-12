@@ -266,6 +266,8 @@ test('filtro por auditor: sozinho mostra as em aberto dele; com transportadora o
   assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, auditor: 'Ana' })), ['a', 'd']);
   assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, auditor: 'Sem auditor' })), ['e']);
   assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, transportadora: 'WM', auditor: 'Ana' })), ['a', 'b']);
+  // Visao do gestor: em aberto (e canceladas) de todos os auditores.
+  assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, todos: true })), ['a', 'c', 'd', 'e']);
   assert.deepEqual(ids(montarLinhasDiagnostico({ faturas })), []);
   const { itens } = parseListaFaturas('10\n12\n999');
   assert.deepEqual(ids(montarLinhasDiagnostico({ itens, faturas, auditor: 'Ana' })), ['a', '999']);

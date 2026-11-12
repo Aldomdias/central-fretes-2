@@ -152,14 +152,14 @@ export function criarUnificadorAuditores(faturas = []) {
 
 // Monta as linhas do diagnostico. Com lista: uma linha por numero colado (mais de uma so se o numero
 // existir em faturas ativas diferentes). Sem lista: todas as faturas da transportadora escolhida.
-// Auditor: so as faturas dele. Escolhido sozinho (sem lista e sem transportadora), mostra as que ele
+// Auditor: so as faturas dele. Escolhido sozinho (ou "todos", visao do gestor), sem lista e sem transportadora, mostra as que
 // ainda esta tratando: nao pagas (protocolo, Fenix, previsao...), mais as canceladas para o card delas.
-export function montarLinhasDiagnostico({ itens = [], faturas = [], transportadora = '', auditor = '', filtroTransportadora = null, nomeDoAuditor = nomeAuditor }) {
+export function montarLinhasDiagnostico({ itens = [], faturas = [], transportadora = '', auditor = '', todos = false, filtroTransportadora = null, nomeDoAuditor = nomeAuditor }) {
   const daTransportadora = filtroTransportadora || criarFiltroTransportadora(faturas, transportadora);
   const doAuditor = (f) => !auditor || nomeDoAuditor(f) === auditor;
   if (!itens.length) {
     if (transportadora) return faturas.filter((f) => daTransportadora(f) && doAuditor(f)).map((f) => linhaDaFatura(f));
-    if (!auditor) return [];
+    if (!auditor && !todos) return [];
     // As canceladas entram tambem: ficam fora da lista e so aparecem no card "Canceladas".
     return faturas.filter((f) => doAuditor(f) && (inativa(f) || situacaoPagamento(f) === 'ABERTA')).map((f) => linhaDaFatura(f));
   }
