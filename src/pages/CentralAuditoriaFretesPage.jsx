@@ -666,11 +666,21 @@ function detalheSemValorNf(item = {}, base = null) {
   return !temValorNf && !temChaveNfAuditoria(item, base) && !temCalculo;
 }
 
+// Marca da tabela TRANSFERENCIA: "Possivel transferencia" quando venceu por proximidade do valor cobrado
+// (CNPJ do destinatario nao identificado); "Transferencia" quando decidida pelo CNPJ ou pelo auditor.
+function marcaTransferenciaAuditoria(detalhesCalculo) {
+  const det = parseDetalhesCalculoAuditoria(detalhesCalculo);
+  if (det.possivel_transferencia) return 'Possivel transferencia';
+  if (det.transferencia_entre_unidades) return 'Transferencia';
+  return '';
+}
 function motivoAuditoriaLinha(item = {}, semValorNf = false) {
   if (semValorNf) return 'Sem valor NF - informar chave NF';
+  const marca = marcaTransferenciaAuditoria(item.detalhes_calculo);
   const motivo = String(item.motivo_divergencia || item.motivo_sem_calculo || '').trim();
-  if (/sem\s+valor\s+nf|informar\s+chave\s+nf/i.test(motivo)) return '-';
-  return nomeStatus(motivo || '-');
+  const texto = /sem\s+valor\s+nf|informar\s+chave\s+nf/i.test(motivo) ? '-' : nomeStatus(motivo || '-');
+  if (!marca) return texto;
+  return texto === '-' ? marca : `${marca} · ${texto}`;
 }
 function resumirDetalhesAuditoria(lista = [], tolerancia = TOLERANCIA_PADRAO) {
   const total = lista.length;
@@ -937,6 +947,9 @@ function montarResultadoComTabelaAuditoria(resultado, alternativa) {
       tabela_principal_aplicada: Boolean(alternativa.principal),
       tabela_alternativa_aplicada: alternativa.variante || (alternativa.principal ? 'Principal' : ''),
       tabela_alternativa_override_manual: true,
+      // Escolha do auditor encerra a "possivel transferencia" automatica.
+      possivel_transferencia: false,
+      aviso_transferencia: alternativa.transferencia ? 'Tabela TRANSFERENCIA escolhida manualmente pelo auditor.' : '',
     },
   };
 }
@@ -7297,7 +7310,7 @@ ${portaisLaudo.length ? `
                           <td>
                             <CelulaSaldoTransporte saldo={Number(row.detalhes_calculo?.saldo_transporte_autorizado || 0)} decisoes={decisoesTransporteDoItem(decisoesAvulsas, [row.chave_cte, row.chave_nfe])} formatar={dinheiroMaybe} />
                           </td>
-                          <td><span className={statusClass}>{semValorNf ? 'Sem valor NF' : linhaOk ? 'Dentro da tolerancia' : (row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-'))}</span></td>
+                          <td><span className={statusClass}>{semValorNf ? 'Sem valor NF' : linhaOk ? 'Dentro da tolerancia' : (row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-'))}</span>{marcaTransferenciaAuditoria(row.detalhes_calculo) ? <div style={{ fontSize: 11, fontWeight: 700, color: '#b45309' }}>{marcaTransferenciaAuditoria(row.detalhes_calculo)}</div> : null}</td>
                         </tr>
                         {aberto && (
                           <tr className="audit-quick-detail-row"><td colSpan="15">

@@ -1690,6 +1690,25 @@ export function motivoTransferenciaCte(cte = {}) {
   return cnpjPertenceEmpresaCadastrada(remetente) && cnpjPertenceEmpresaCadastrada(destinatario) ? 'cnpj_grupo' : '';
 }
 
+const AVISO_POSSIVEL_TRANSFERENCIA = 'Possível transferência entre unidades: CNPJ do destinatário não identificado e a tabela TRANSFERENCIA foi a aplicada (mais próxima do valor cobrado). Confira; se não for transferência, marque a tabela principal.';
+
+// Resultado calculado pela tabela TRANSFERENCIA sem a confirmação do CNPJ (nem
+// marcação do auditor) sai sempre sinalizado, venha do comparativo ou não.
+function marcarPossivelTransferencia(resultado, transportadoras = []) {
+  const det = resultado?.detalhes_calculo || {};
+  if (resultado?.status_calculo !== 'CALCULADO' || det.possivel_transferencia || det.transferencia_entre_unidades) return resultado;
+  const idAplicado = String(det.tabela_id_aplicada || '');
+  if (!idAplicado) return resultado;
+  const ehTransferencia = (transportadoras || []).some((entrada) => (
+    ehTabelaTransferencia(entrada) && String(entrada.negociacaoId || entrada.id || '') === idAplicado
+  ));
+  if (!ehTransferencia) return resultado;
+  return {
+    ...resultado,
+    detalhes_calculo: { ...det, possivel_transferencia: true, aviso_transferencia: AVISO_POSSIVEL_TRANSFERENCIA },
+  };
+}
+
 function ctePareceTransferencia(cte = {}) {
   return Boolean(motivoTransferenciaCte(cte));
 }
@@ -1720,11 +1739,19 @@ function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, de
   ))) || (grupos.length === 1 ? grupos[0] : null);
   if (!grupoAlvo || grupoAlvo.length <= 1) return null;
 
+  // Tabela TRANSFERENCIA: com o CNPJ do destinatário a decisão já foi tomada
+  // (grupo -> calculado direto por ela, antes daqui; fora do grupo -> nunca
+  // concorre). SEM o CNPJ (contingência), ela concorre como qualquer
+  // alternativa e vence se for a mais próxima do valor cobrado — o resultado
+  // sai marcado como "possível transferência" para o auditor conferir.
+  const destinatarioIdentificado = cnpjDestinatarioCte(cte).length === 14;
+  const grupoComparavel = destinatarioIdentificado
+    ? grupoAlvo.filter((entrada) => !ehTabelaTransferencia(entrada))
+    : grupoAlvo;
+  if (grupoComparavel.length <= 1 && grupoComparavel.length !== grupoAlvo.length) return null;
   // Reajuste com vigência: pela data de emissão decide quais tabelas concorrem
   // (a tabela em vigor substitui a principal).
-  const grupoSemTransferencia = grupoAlvo.filter((entrada) => !ehTabelaTransferencia(entrada));
-  if (grupoSemTransferencia.length <= 1 && grupoSemTransferencia.length !== grupoAlvo.length) return null;
-  const { entradas: entradasGrupo, porVigencia } = aplicarVigenciaNoGrupo(grupoSemTransferencia, dataEmissaoIsoCte(cte));
+  const { entradas: entradasGrupo, porVigencia } = aplicarVigenciaNoGrupo(grupoComparavel, dataEmissaoIsoCte(cte));
   const valorCtePago = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
   const candidatos = entradasGrupo.map((entrada) => {
     const detalhe = calcularValorParaTabelaEspecifica(cte, entrada, canaisTentativa, cidadePorIbge, opcoes, usarRotaInvertida);
@@ -1738,6 +1765,7 @@ function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, de
         || entrada.descricaoTabela
         || (entrada.tabelaAlternativaDe ? 'Alternativa' : 'Principal'),
       principal: !entrada.tabelaAlternativaDe,
+      transferencia: ehTabelaTransferencia(entrada),
       vigenciaInicio: entrada.vigenciaInicio || '',
       vigenciaFim: entrada.vigenciaFim || '',
       transportadoraNome: entrada.nome,
@@ -1809,11 +1837,10 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
         detalhe = calcularValorParaTabelaEspecifica(cte, entrada, canaisTentativa, cidadePorIbge, opcoes, false);
         if (detalhe) break;
       }
-      if (!detalhe) {
-        return montarResultadoBase(cte, 'SEM_ROTA', `CT-e de transferência (${motivoTransferencia === 'manual' ? 'marcado pelo auditor' : 'remetente e destinatário do grupo'}): rota não encontrada na tabela alternativa de transferência.`, {
-          transportadora_tabela: transportadoraTabela,
-        });
-      }
+      // Não calculou pelo motor (ex.: CT-e de transferência sem peso, que não
+      // passa pelo Tracking): devolve null para a contingência tentar SÓ com a
+      // tabela TRANSFERENCIA — nunca cai na principal.
+      if (!detalhe) return null;
       transferenciaAplicada = true;
     } else if (motivoTransferencia === 'manual') {
       avisoTransferencia = 'CT-e marcado como transferência, mas a transportadora não tem tabela TRANSFERENCIA cadastrada: calculado pela tabela principal.';
@@ -1927,6 +1954,7 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
     tabela_id: c.tabelaId,
     variante: c.variante,
     principal: c.principal,
+    transferencia: Boolean(c.transferencia),
     vigencia_inicio: c.vigenciaInicio || null,
     vigencia_fim: c.vigenciaFim || null,
     transportadora_tabela: c.detalhe?.transportadoraSimulada || c.transportadoraNome,
@@ -1996,6 +2024,10 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
       comparativo_tabelas: candidatosResumo,
       melhor_comparativo_tabela: melhor.variante || '',
       tabela_alternativa_aplicada: melhor.variante || '',
+      ...(melhor.transferencia ? {
+        possivel_transferencia: true,
+        aviso_transferencia: AVISO_POSSIVEL_TRANSFERENCIA,
+      } : {}),
       tabela_por_vigencia: Boolean(porVigencia),
       vigencia_inicio_aplicada: melhor.vigenciaInicio || null,
     },
@@ -2274,15 +2306,61 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
 }
 
 function processarCteSemChecagemCanal(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '', opcoes = {}) {
-  const resultadoSimulador = processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
+  const resultadoSimulador = marcarPossivelTransferencia(processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes), transportadoras);
   if (resultadoSimulador && opcoes?.semComparativoPesos) return resultadoSimulador;
   if (resultadoSimulador) return anexarComparativoPesos(resultadoSimulador, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
 
-  // Contingência (ex.: CT-e sem peso): a tabela TRANSFERENCIA só vale pra CT-e
-  // de transferência — sem este filtro ela entrava como candidata comum.
-  const transportadorasContingencia = ctePareceTransferencia(cte)
-    ? transportadoras
-    : (transportadoras || []).filter((entrada) => !ehTabelaTransferencia(entrada));
+  // Contingência (ex.: CT-e sem peso). Tabela TRANSFERENCIA, mesma regra do motor:
+  // - transferência (CNPJ do grupo ou marcada pelo auditor): calcula SÓ por ela;
+  // - CNPJ do destinatário desconhecido: concorre com as demais e vence se for a
+  //   mais próxima do valor cobrado ("possível transferência");
+  // - destinatário identificado fora do grupo: nunca concorre.
+  const motivoTransferencia = motivoTransferenciaCte(cte);
+  const nomeAlvoTransferencia = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
+  const entradasTransferencia = (transportadoras || []).filter((entrada) => (
+    ehTabelaTransferencia(entrada)
+    && (entrada.nome === nomeAlvoTransferencia || nomeCompativel(entrada.nome, nomeAlvoTransferencia))
+  ));
+  const somenteTransferencia = Boolean(motivoTransferencia) && entradasTransferencia.length > 0;
+  if (somenteTransferencia) {
+    const resultadoTransferencia = calcularContingenciaAuditoria(cte, entradasTransferencia, mapaVinculos, transportadoraAlvo, opcoes);
+    if (resultadoTransferencia.status_calculo !== 'CALCULADO') {
+      return {
+        ...resultadoTransferencia,
+        motivo_sem_calculo: `CT-e de transferência (${motivoTransferencia === 'manual' ? 'marcado pelo auditor' : 'remetente e destinatário do grupo'}): ${resultadoTransferencia.motivo_sem_calculo || 'não calculado'} (tabela TRANSFERENCIA).`,
+      };
+    }
+    return {
+      ...resultadoTransferencia,
+      detalhes_calculo: {
+        ...(resultadoTransferencia.detalhes_calculo || {}),
+        transferencia_entre_unidades: true,
+        transferencia_motivo: motivoTransferencia,
+        transferencia_manual: motivoTransferencia === 'manual',
+        observacao_transferencia: motivoTransferencia === 'manual'
+          ? 'CT-e marcado pelo auditor como transferência entre unidades: calculado pela tabela alternativa de transferência.'
+          : 'CT-e de transferência (remetente e destinatário são empresas do grupo) calculado pela tabela alternativa de transferência.',
+      },
+    };
+  }
+  const destinatarioIdentificado = cnpjDestinatarioCte(cte).length === 14;
+  const transportadorasContingencia = destinatarioIdentificado
+    ? (transportadoras || []).filter((entrada) => !ehTabelaTransferencia(entrada))
+    : (transportadoras || []);
+  const resultadoContingencia = calcularContingenciaAuditoria(cte, transportadorasContingencia, mapaVinculos, transportadoraAlvo, opcoes);
+  if (motivoTransferencia === 'manual' && !entradasTransferencia.length && resultadoContingencia.status_calculo === 'CALCULADO') {
+    return {
+      ...resultadoContingencia,
+      detalhes_calculo: {
+        ...(resultadoContingencia.detalhes_calculo || {}),
+        aviso_transferencia: 'CT-e marcado como transferência, mas a transportadora não tem tabela TRANSFERENCIA cadastrada: calculado pela tabela principal.',
+      },
+    };
+  }
+  return marcarPossivelTransferencia(resultadoContingencia, transportadoras);
+}
+
+function calcularContingenciaAuditoria(cte, transportadorasContingencia = [], mapaVinculos = null, transportadoraAlvo = '', opcoes = {}) {
   const tabelaDireta = localizarTabelaAuditoria(transportadorasContingencia, cte, mapaVinculos, transportadoraAlvo, opcoes);
   const tabelaInvertida = tabelaDireta.status === 'OK'
     ? null
@@ -2438,6 +2516,7 @@ function processarCteSemChecagemCanal(cte, transportadoras = [], mapaVinculos = 
         tabela_nome: nomeTabela,
         variante: nomeTabela,
         principal: !entrada.tabelaAlternativaDe,
+        transferencia: ehTabelaTransferencia(entrada),
         vigencia_inicio: entrada.vigenciaInicio || null,
         vigencia_fim: entrada.vigenciaFim || null,
         valor_calculado: Number(calculadoTabela.valor_calculado),
@@ -2471,6 +2550,10 @@ function processarCteSemChecagemCanal(cte, transportadoras = [], mapaVinculos = 
         comparativo_tabelas: candidatos.map(({ resultado: _resultado, ...resumo }) => resumo),
         melhor_comparativo_tabela: melhor?.tabela_nome || '',
         tabela_alternativa_aplicada: escolhido.detalhes_calculo?.tabela_nome_aplicada || '',
+        ...(melhor?.transferencia && melhor?.resultado ? {
+          possivel_transferencia: true,
+          aviso_transferencia: AVISO_POSSIVEL_TRANSFERENCIA,
+        } : {}),
         tabela_por_vigencia: Boolean(porVigencia),
       },
     };

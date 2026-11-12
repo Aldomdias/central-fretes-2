@@ -271,8 +271,23 @@ test('transferência: mesma raiz fora do grupo não é transferência', () => {
   assert.equal(calcularTransf(cteTransferencia('11222333000100', '11222333000280')).valor_calculado, 500);
 });
 
-test('transferência: sem CNPJ do destinatário fica na principal', () => {
-  assert.equal(calcularTransf(cteTransferencia(CNPJ_CPX, '')).valor_calculado, 500);
+test('transferência: sem CNPJ do destinatário, TRANSFERENCIA concorre e vence se for a mais próxima (possível transferência)', () => {
+  const r = calcularTransf(cteTransferencia(CNPJ_CPX, ''));
+  assert.equal(r.valor_calculado, 80);
+  assert.equal(r.detalhes_calculo.possivel_transferencia, true);
+  assert.match(r.detalhes_calculo.aviso_transferencia, /Possível transferência/);
+});
+
+test('transferência: sem CNPJ do destinatário e cobrança de venda, fica na principal sem aviso', () => {
+  const r = calcularTransf(cteTransferencia(CNPJ_CPX, '', { valor_cte: 500 }));
+  assert.equal(r.valor_calculado, 500);
+  assert.ok(!r.detalhes_calculo.possivel_transferencia);
+});
+
+test('transferência: com CNPJ de cliente, TRANSFERENCIA nem concorre (mesmo cobrando 0,8%)', () => {
+  const r = calcularTransf(cteTransferencia(CNPJ_CPX, CNPJ_CLIENTE, { valor_cte: 80 }));
+  assert.equal(r.valor_calculado, 500);
+  assert.ok(!r.detalhes_calculo.possivel_transferencia);
 });
 
 test('transferência: sem remetente usa o emissor da chave da NF-e', () => {
@@ -307,4 +322,26 @@ test('montarCorrecoesCalculoFatura leva a marcação manual de transferência pa
     { id: 'b', chave_cte: '26261046811890000112570010000251191613632881', transferencia_manual: false },
   ]);
   assert.deepEqual(Object.keys(transferenciaPorChave), [chave]);
+});
+
+// CT-e de transferência real chega SEM peso (não passa pelo Tracking): o motor
+// principal não calcula e a contingência precisa aplicar a mesma regra.
+test('transferência sem peso e sem CNPJ do destinatário: contingência aplica TRANSFERENCIA como possível', () => {
+  const r = calcularTransf(cteTransferencia(CNPJ_CPX, '', { peso: 0 }));
+  assert.equal(r.status_calculo, 'CALCULADO');
+  assert.equal(r.valor_calculado, 80);
+  assert.equal(r.detalhes_calculo.possivel_transferencia, true);
+});
+
+test('transferência sem peso marcada pelo auditor: calcula só pela TRANSFERENCIA', () => {
+  const r = calcularTransf(cteTransferencia(CNPJ_CPX, '', { peso: 0, valor_cte: 500, transferencia_manual: true }));
+  assert.equal(r.valor_calculado, 80);
+  assert.equal(r.detalhes_calculo.transferencia_motivo, 'manual');
+  assert.ok(!r.detalhes_calculo.possivel_transferencia);
+});
+
+test('venda sem peso com CNPJ de cliente: TRANSFERENCIA fora mesmo na contingência', () => {
+  const r = calcularTransf(cteTransferencia(CNPJ_CPX, CNPJ_CLIENTE, { peso: 0 }));
+  assert.equal(r.valor_calculado, 500);
+  assert.ok(!r.detalhes_calculo.possivel_transferencia);
 });
