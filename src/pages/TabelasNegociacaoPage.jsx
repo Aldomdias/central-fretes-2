@@ -1779,7 +1779,7 @@ export default function TabelasNegociacaoPage() {
     if (abaNegoc === 'taxas') {
       carregarTaxasNegociacao(selecionada.id);
     }
-    if (abaNegoc === 'rodadas') {
+    if (abaNegoc === 'rodadas' || getResumoTabela(selecionada)._capa) {
       carregarResumoCompletoNegociacaoSelecionada(selecionada.id);
     }
   }, [abaNegoc, selecionada?.id]); // eslint-disable-line
