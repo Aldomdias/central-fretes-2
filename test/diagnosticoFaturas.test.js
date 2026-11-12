@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  criarUnificadorAuditores,
   etapaFenix,
   faixaDaLinha,
   faixaDiagnostico,
@@ -265,6 +266,8 @@ test('filtro por auditor: sozinho mostra as em aberto dele; com transportadora o
   assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, auditor: 'Ana' })), ['a', 'd']);
   assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, auditor: 'Sem auditor' })), ['e']);
   assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, transportadora: 'WM', auditor: 'Ana' })), ['a', 'b']);
+  // Visao do gestor: em aberto (e canceladas) de todos os auditores.
+  assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, todos: true })), ['a', 'c', 'd', 'e']);
   assert.deepEqual(ids(montarLinhasDiagnostico({ faturas })), []);
   const { itens } = parseListaFaturas('10\n12\n999');
   assert.deepEqual(ids(montarLinhasDiagnostico({ itens, faturas, auditor: 'Ana' })), ['a', '999']);
@@ -308,4 +311,21 @@ test('agrupador: nomes e CNPJs do mesmo cadastro viram uma transportadora so', a
   // Nome antigo salvo na sessao continua funcionando.
   assert.deepEqual(faturas.filter(filtro('FLORESTA LOGISTICA LTDA')).map((f) => f.id), ['1', '2', '3']);
   assert.deepEqual(faturas.filter(filtro('TRANSPORTE GENEROSO')).map((f) => f.id), ['4', '5', '6']);
+});
+
+test('unifica o mesmo auditor gravado com nomes diferentes', () => {
+  const nomes = ['Paulo Ricardo', 'Paulo Ricardo dos Santos', 'Alisson Lucas', 'Alisson Silva', 'Alisson Lucas da Silva', 'Deborah', 'Deborah Winnie Moraes Thomazi', 'Rudieris Rodrigues dos Santos', ''];
+  const faturas = nomes.map((n, i) => ({ id: String(i), auditor_nome: n, status: 'RECEBIDA' }));
+  const u = criarUnificadorAuditores(faturas);
+  assert.deepEqual(u.opcoes, ['Alisson Lucas da Silva', 'Deborah Winnie Moraes Thomazi', 'Paulo Ricardo dos Santos', 'Rudieris Rodrigues dos Santos']);
+  assert.equal(u.canonico('paulo ricardo'), 'Paulo Ricardo dos Santos');
+  assert.equal(u.nome(faturas[8]), 'Sem auditor');
+  const ids = montarLinhasDiagnostico({ faturas, auditor: 'Paulo Ricardo dos Santos', nomeDoAuditor: u.nome }).map((l) => l.fatura.id);
+  assert.deepEqual(ids, ['0', '1']);
+  // Nome curto que cabe em duas pessoas diferentes nao e juntado.
+  assert.deepEqual(criarUnificadorAuditores([{ auditor_nome: 'Ana' }, { auditor_nome: 'Ana Souza' }, { auditor_nome: 'Ana Lima' }]).opcoes, ['Ana', 'Ana Lima', 'Ana Souza']);
+  // Mesmo e-mail junta mesmo sem nome contido; usuario logado e achado pelo e-mail.
+  const porEmail = criarUnificadorAuditores([{ auditor_nome: 'Bia R', auditor_email: 'b@x.com' }, { auditor_nome: 'Bianca Ruzzante', auditor_email: 'B@X.com' }]);
+  assert.deepEqual(porEmail.opcoes, ['Bianca Ruzzante']);
+  assert.equal(porEmail.doUsuario({ email: 'b@x.com' }), 'Bianca Ruzzante');
 });

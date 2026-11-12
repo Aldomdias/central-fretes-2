@@ -7,6 +7,7 @@ import { carregarSessao } from '../utils/authLocal';
 import {
   agrupamentoManual,
   criarAgrupadorTransportadoras,
+  criarUnificadorAuditores,
   detectarDuplicadas,
   etapaFenix,
   FAIXAS_A_VENCER,
@@ -15,7 +16,6 @@ import {
   filtrarPorCards,
   GRUPOS_DIAGNOSTICO,
   montarLinhasDiagnostico,
-  nomeAuditor,
   parseListaFaturas,
   previsaoPagamento,
   proximaAcao,
@@ -37,7 +37,11 @@ import modeloTermoUrl from '../assets/modelos/termo-correcao-lancamento.docx?url
 const CHAVE_SESSAO = 'cf_diagnostico_faturas_v1';
 const TAM_PAGINA = 100;
 const LOTE_VERIFICACAO = 120;
-const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimentoDe: '', vencimentoAte: '' };
+const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimentoDe: '', vencimentoAte: '', grupoTransp: '', grupoAuditor: '' };
+const SEM_TRANSP = '__sem_fatura__';
+// Auditor "todos": visao geral do gestor (faturas em aberto de todos os auditores).
+const TODOS_AUDITORES = '__todos__';
+const TOP_RANKING = 15;
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const ehCancelada = (l) => situacaoPagamentoLinha(l) === 'CANCELADA';
@@ -91,7 +95,7 @@ const COLUNAS = [
   { id: 'erp', titulo: 'Enviado ERP', valor: (l) => l.fatura?.data_envio_erp || '' },
   { id: 'ctes', titulo: 'CT-es no SAP', valor: (l) => (l.ctes?.total ? l.ctes.lancados / l.ctes.total : -1) },
   { id: 'pagamento', titulo: 'Pagamento', valor: textoPagamentoLinha },
-  { id: 'auditor', titulo: 'Auditor', valor: (l) => l.fatura?.auditor_nome || '' },
+  { id: 'auditor', titulo: 'Auditor', valor: (l) => l.auditor || '' },
   { id: 'acao', titulo: 'Próxima ação', valor: proximaAcao },
 ];
 
@@ -118,6 +122,72 @@ function CardFiltro({ card, grupo, linhas, ativo, onClick }) {
       <strong>{inteiro(qtd)}</strong>
       <small>{porCte ? `${inteiro(totalCtes)} CT-e(s) · ${dinheiro(valor)}` : dinheiro(valor)}</small>
     </button>
+  );
+}
+
+// Mini dinamica do recorte por transportadora: maiores primeiro; clicar filtra a lista (clicar de novo tira).
+function RankingTransportadoras({ itens, dimensao, onDimensao, filtrosAtivos, aberto, onAlternar, criterio, onCriterio, onEscolher }) {
+  const ativo = filtrosAtivos[dimensao]?.chave || '';
+  const [todas, setTodas] = useState(false);
+  const total = itens.reduce((s, i) => s + (criterio === 'valor' ? i.valor : i.qtd), 0) || 1;
+  const maior = Math.max(1, ...itens.map((i) => (criterio === 'valor' ? i.valor : i.qtd)));
+  const visiveis = todas ? itens : itens.slice(0, TOP_RANKING);
+  return (
+    <div className="panel-card" style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button type="button" className="btn-secondary" onClick={onAlternar} aria-expanded={aberto}>{aberto ? '▾' : '▸'} Por {dimensao === 'auditor' ? 'auditor' : 'transportadora'} ({inteiro(itens.length)})</button>
+        {aberto && (
+          <span className="compact" style={{ display: 'flex', gap: 4, alignItems: 'center', color: '#475569' }}>Agrupar por
+            <button type="button" className={dimensao === 'transp' ? 'btn-primary' : 'btn-secondary'} onClick={() => onDimensao('transp')}>Transportadora</button>
+            <button type="button" className={dimensao === 'auditor' ? 'btn-primary' : 'btn-secondary'} onClick={() => onDimensao('auditor')}>Auditor</button>
+          </span>
+        )}
+        {aberto && (
+          <span className="compact" style={{ display: 'flex', gap: 4, alignItems: 'center', color: '#475569' }}>Ordenar por
+            <button type="button" className={criterio === 'valor' ? 'btn-primary' : 'btn-secondary'} onClick={() => onCriterio('valor')}>Valor</button>
+            <button type="button" className={criterio === 'qtd' ? 'btn-primary' : 'btn-secondary'} onClick={() => onCriterio('qtd')}>Quantidade</button>
+          </span>
+        )}
+        {Object.entries(filtrosAtivos).filter(([, v]) => v.chave).map(([d, v]) => (
+          <span key={d} className="compact" style={{ color: '#071d49' }}>
+            {d === 'auditor' ? 'Auditor' : 'Transportadora'}: <strong>{v.rotulo || '-'}</strong>{' '}
+            <button type="button" className="btn-secondary" onClick={() => onEscolher(d, '')}>× Tirar</button>
+          </span>
+        ))}
+      </div>
+      {aberto && (
+        <div style={{ marginTop: 10, display: 'grid', gap: 4 }}>
+          {!itens.length && <span className="compact" style={{ color: '#64748b' }}>Nenhuma fatura no recorte.</span>}
+          {visiveis.map((i) => {
+            const medida = criterio === 'valor' ? i.valor : i.qtd;
+            const selecionada = i.chave === ativo;
+            return (
+              <button
+                key={i.chave}
+                type="button"
+                onClick={() => onEscolher(dimensao, selecionada ? '' : i.chave)}
+                aria-pressed={selecionada}
+                title={selecionada ? 'Clique para tirar o filtro' : `Clique para ver só ${i.rotulo}`}
+                style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, 280px) 1fr 70px 130px 52px', gap: 10, alignItems: 'center', textAlign: 'left', font: 'inherit', fontSize: 13, padding: '4px 8px', border: selecionada ? '1px solid #315ee7' : '1px solid transparent', borderRadius: 6, background: selecionada ? '#eef2ff' : 'transparent', cursor: 'pointer', opacity: ativo && !selecionada ? 0.6 : 1 }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: selecionada ? 700 : 500 }}>{i.rotulo}</span>
+                <span style={{ background: '#e2e8f0', borderRadius: 4, height: 10, overflow: 'hidden' }}>
+                  <span style={{ display: 'block', height: '100%', width: `${Math.max(1, (medida / maior) * 100)}%`, background: selecionada ? '#315ee7' : '#071d49', borderRadius: 4 }} />
+                </span>
+                <span style={{ textAlign: 'right' }}>{inteiro(i.qtd)} fat.</span>
+                <span style={{ textAlign: 'right' }}>{dinheiro(i.valor)}</span>
+                <span style={{ textAlign: 'right', color: '#64748b' }}>{((medida / total) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</span>
+              </button>
+            );
+          })}
+          {itens.length > TOP_RANKING && (
+            <button type="button" className="btn-secondary" style={{ justifySelf: 'start', marginTop: 4 }} onClick={() => setTodas((v) => !v)}>
+              {todas ? `Mostrar só as ${TOP_RANKING} maiores` : `Ver todas (${inteiro(itens.length)})`}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -162,10 +232,13 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const [marcando, setMarcando] = useState(false);
   const [dataPrevisao, setDataPrevisao] = useState('');
   const [solicitante, setSolicitante] = useState(() => salvo.solicitante || carregarSessao()?.nome || '');
+  const [rankingAberto, setRankingAberto] = useState(salvo.rankingAberto ?? true);
+  const [criterioRanking, setCriterioRanking] = useState(salvo.criterioRanking || 'valor');
+  const [dimensaoRanking, setDimensaoRanking] = useState(salvo.dimensaoRanking || 'transp');
 
   useEffect(() => {
-    try { sessionStorage.setItem(CHAVE_SESSAO, JSON.stringify({ texto, transportadora, auditor, escolhidos, filtros, ordem, solicitante })); } catch { /* sem sessionStorage: so nao lembra */ }
-  }, [texto, transportadora, auditor, escolhidos, filtros, ordem, solicitante]);
+    try { sessionStorage.setItem(CHAVE_SESSAO, JSON.stringify({ texto, transportadora, auditor, escolhidos, filtros, ordem, solicitante, rankingAberto, criterioRanking, dimensaoRanking })); } catch { /* sem sessionStorage: so nao lembra */ }
+  }, [texto, transportadora, auditor, escolhidos, filtros, ordem, solicitante, rankingAberto, criterioRanking, dimensaoRanking]);
   useEffect(() => { carregarUltimaImportacaoSap().then(setUltimaSap).catch(() => {}); }, [recarga]);
   // Cadastro (CNPJ principal, origens, adicionais): junta nomes/CNPJs diferentes numa transportadora so.
   const [cadastroPorRaiz, setCadastroPorRaiz] = useState(() => new Map());
@@ -178,19 +251,27 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   // Mesma fatura importada mais de uma vez (em toda a base, nao so no recorte).
   const duplicadas = useMemo(() => detectarDuplicadas(state.faturas || [], agrupador.chaveDaFatura), [state.faturas, agrupador]);
 
-  const auditores = useMemo(() => [...new Set((state.faturas || []).map(nomeAuditor))].sort((a, b) => a.localeCompare(b, 'pt-BR')), [state.faturas]);
-  // "Minhas faturas": o auditor logado, quando o nome dele bate com o auditor das faturas.
+  // Mesmo auditor com nomes diferentes ("Paulo Ricardo" x "Paulo Ricardo dos Santos") vira um nome so.
+  const unificador = useMemo(() => criarUnificadorAuditores(state.faturas || []), [state.faturas]);
+  const auditores = useMemo(() => {
+    const semAuditor = (state.faturas || []).some((f) => !String(f.auditor_nome || '').trim());
+    return [...unificador.opcoes, ...(semAuditor ? ['Sem auditor'] : [])].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [unificador, state.faturas]);
+  // Nome salvo na sessao com a grafia antiga ("Paulo Ricardo") passa para o nome unificado.
+  const verTodosAuditores = auditor === TODOS_AUDITORES;
+  const auditorEscolhido = auditor && !verTodosAuditores ? unificador.canonico(auditor) : '';
+  const filtroAuditor = filtros.auditor ? unificador.canonico(filtros.auditor) : '';
+  // "Minhas faturas": o auditor logado, pelo e-mail ou pelo nome.
   const meuNome = useMemo(() => {
     const sessao = carregarSessao();
-    const nomes = [sessao?.nome, sessao?.email].map((v) => String(v || '').trim().toUpperCase()).filter(Boolean);
-    return auditores.find((a) => nomes.includes(a.toUpperCase())) || '';
-  }, [auditores]);
+    return unificador.doUsuario({ nome: sessao?.nome, email: sessao?.email });
+  }, [unificador]);
 
   const lista = useMemo(() => parseListaFaturas(texto), [texto]);
   const temLista = lista.itens.length > 0;
   const linhasBase = useMemo(
-    () => montarLinhasDiagnostico({ itens: lista.itens, faturas: state.faturas || [], transportadora, auditor, filtroTransportadora: transportadora ? agrupador.filtro(transportadora) : null }),
-    [lista, state.faturas, transportadora, auditor, agrupador],
+    () => montarLinhasDiagnostico({ itens: lista.itens, faturas: state.faturas || [], transportadora, auditor: auditorEscolhido, todos: verTodosAuditores, filtroTransportadora: transportadora ? agrupador.filtro(transportadora) : null, nomeDoAuditor: unificador.nome }),
+    [lista, state.faturas, transportadora, auditorEscolhido, verTodosAuditores, agrupador, unificador],
   );
 
   const faturasBase = useMemo(() => linhasBase.filter((l) => l.fatura).map((l) => l.fatura), [linhasBase]);
@@ -218,14 +299,14 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   }, [faturasBase, recarga]);
 
   const linhas = useMemo(
-    () => linhasBase.map((l) => (l.fatura ? { ...l, ctes: cacheCtes.get(String(l.fatura.id))?.resumo, duplicada: duplicadas.get(l.fatura.id) } : l)),
-    [linhasBase, versaoCtes, duplicadas],
+    () => linhasBase.map((l) => (l.fatura ? { ...l, ctes: cacheCtes.get(String(l.fatura.id))?.resumo, duplicada: duplicadas.get(l.fatura.id), auditor: unificador.nome(l.fatura) } : l)),
+    [linhasBase, versaoCtes, duplicadas, unificador],
   );
 
   const opcoes = useMemo(() => {
     const unicos = (fn) => [...new Set(linhas.map(fn).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
     return {
-      auditores: unicos((l) => l.fatura && nomeAuditor(l.fatura)),
+      auditores: unicos((l) => l.fatura && l.auditor),
       status: unicos((l) => l.fatura?.status),
       canais: unicos((l) => l.fatura?.canal),
     };
@@ -236,10 +317,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     return linhas.filter((l) => {
       const f = l.fatura;
       if (termos.length) {
-        const alvo = `${l.numero} ${f?.transportadora || ''} ${f?.auditor_nome || ''}`.toLowerCase();
+        const alvo = `${l.numero} ${f?.transportadora || ''} ${f?.auditor_nome || ''} ${l.auditor || ''}`.toLowerCase();
         if (!termos.every((t) => alvo.includes(t))) return false;
       }
-      if (filtros.auditor && (!f || nomeAuditor(f) !== filtros.auditor)) return false;
+      if (filtroAuditor && (!f || l.auditor !== filtroAuditor)) return false;
       if (filtros.status && f?.status !== filtros.status) return false;
       if (filtros.canal && f?.canal !== filtros.canal) return false;
       const venc = String(f?.data_vencimento || l.vencimentoLista || '').slice(0, 10);
@@ -247,21 +328,50 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       if (filtros.vencimentoAte && (!venc || venc > filtros.vencimentoAte)) return false;
       return true;
     });
-  }, [linhas, filtros]);
+  }, [linhas, filtros, filtroAuditor]);
 
   // Canceladas/substituidas ficam fora da lista, dos cards e dos totais: so aparecem clicando no card
   // "Canceladas" (ou filtrando o status cancelada/substituida).
   const verCanceladas = escolhidos.pagamento === 'canceladas' || ['CANCELADA', 'SUBSTITUIDA'].includes(filtros.status);
   const verDuplicadas = escolhidos.pagamento === 'duplicadas';
   // Um recorte so para a tela inteira: cards, totais e lista sempre mostram os mesmos numeros.
-  const recorte = useMemo(() => {
+  // Ranking: transportadora (mesmo agrupamento do seletor do topo) ou auditor (nome unificado).
+  // Linha sem fatura fica num grupo a parte. Clicar num item filtra so pela dimensao dele.
+  const chaveDe = {
+    transp: (l) => (l.fatura ? agrupador.chaveDaFatura(l.fatura) : SEM_TRANSP),
+    auditor: (l) => (l.fatura ? l.auditor : SEM_TRANSP),
+  };
+  const campoGrupo = { transp: 'grupoTransp', auditor: 'grupoAuditor' };
+  const doGrupo = (ls, exceto = '') => ls.filter((l) => Object.keys(chaveDe).every((d) => d === exceto || !filtros[campoGrupo[d]] || chaveDe[d](l) === filtros[campoGrupo[d]]));
+  // Recorte antes do filtro do ranking: base do ranking (senao ele so mostraria o item escolhido).
+  const recorteTodas = useMemo(() => {
     const r = filtrarPorCards(filtradas, escolhidos);
     return verCanceladas || verDuplicadas ? r : r.filter((l) => !ehOculta(l));
   }, [filtradas, escolhidos, verCanceladas, verDuplicadas]);
+  const recorte = useMemo(() => doGrupo(recorteTodas), [recorteTodas, filtros.grupoTransp, filtros.grupoAuditor, agrupador]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ranking = useMemo(() => {
+    const rotulos = new Map(agrupador.opcoes.map((o) => [o.chave, o.rotulo]));
+    const rotulo = (c, l) => {
+      if (c === SEM_TRANSP) return 'Não localizadas na plataforma';
+      return dimensaoRanking === 'auditor' ? c : rotulos.get(c) || l.fatura?.transportadora || '-';
+    };
+    const mapa = new Map();
+    // Cruzado: escolhida uma transportadora, o ranking por auditor mostra so os dela (e vice-versa).
+    doGrupo(recorteTodas, dimensaoRanking).forEach((l) => {
+      const c = chaveDe[dimensaoRanking](l);
+      const item = mapa.get(c) || { chave: c, rotulo: rotulo(c, l), qtd: 0, valor: 0 };
+      item.qtd += 1;
+      item.valor += valorDaLinha(l);
+      mapa.set(c, item);
+    });
+    const medida = (i) => (criterioRanking === 'valor' ? i.valor : i.qtd);
+    return [...mapa.values()].sort((a, b) => medida(b) - medida(a) || b.qtd - a.qtd || a.rotulo.localeCompare(b.rotulo, 'pt-BR'));
+  }, [recorteTodas, agrupador, criterioRanking, dimensaoRanking, filtros.grupoTransp, filtros.grupoAuditor]); // eslint-disable-line react-hooks/exhaustive-deps
+  const rotuloTransp = (chave) => (chave === SEM_TRANSP ? 'Não localizadas' : agrupador.opcoes.find((o) => o.chave === chave)?.rotulo || '');
   // O card das canceladas ignora os outros cards (ex.: "Vencidas"): cancelada nao e mais vencida, nem
   // aberta, nem lancada... e sumiria. Vale so a pesquisa e os filtros de campo.
-  const canceladasRecorte = useMemo(() => filtradas.filter(ehCancelada), [filtradas]);
-  const duplicadasRecorte = useMemo(() => filtradas.filter((l) => l.duplicada), [filtradas]);
+  const canceladasRecorte = useMemo(() => doGrupo(filtradas.filter(ehCancelada)), [filtradas, filtros.grupoTransp, filtros.grupoAuditor, agrupador]); // eslint-disable-line react-hooks/exhaustive-deps
+  const duplicadasRecorte = useMemo(() => doGrupo(filtradas.filter((l) => l.duplicada)), [filtradas, filtros.grupoTransp, filtros.grupoAuditor, agrupador]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const grupos = useMemo(() => GRUPOS_DIAGNOSTICO
     .filter((g) => temLista || !g.soComLista)
@@ -470,9 +580,9 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
 
   const descricaoFiltros = () => {
     const cards = GRUPOS_DIAGNOSTICO.filter((g) => escolhidos[g.id]).map((g) => [g.titulo, g.cards.find((c) => c.id === escolhidos[g.id])?.rotulo || '']);
-    const campos = [['Busca', filtros.busca], ['Auditor', filtros.auditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)]]
+    const campos = [['Busca', filtros.busca], ['Auditor', filtroAuditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)], ['Transportadora (ranking)', filtros.grupoTransp ? rotuloTransp(filtros.grupoTransp) : ''], ['Auditor (ranking)', filtros.grupoAuditor === SEM_TRANSP ? 'Não localizadas' : filtros.grupoAuditor]]
       .filter(([, v]) => v && v !== '-');
-    return [['Transportadora', transportadora || 'Todas'], ['Auditor', auditor || 'Todos'], ['Números colados', temLista ? String(lista.itens.length) : 'Nenhum'], ...cards, ...campos];
+    return [['Transportadora', transportadora || 'Todas'], ['Auditor', auditorEscolhido || 'Todos'], ['Números colados', temLista ? String(lista.itens.length) : 'Nenhum'], ...cards, ...campos];
   };
   const hojeArquivo = new Date().toLocaleDateString('sv-SE');
 
@@ -501,7 +611,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             previsaoPagamento(f), previsaoPagamento(f) ? (f.previsao_pagamento_por || '') : '',
             f ? Number(f.valor_fatura || 0) : '', l.valorLista ?? '', l.vencimentoLista || '', f ? nomeStatus(f.status) : '', f ? Number(f.ctes_auditados || 0) : '', f ? Number(f.ctes_totais || 0) : '',
             f ? (faturaLancada(f) ? 'Sim' : 'Não') : '', f?.partida || '', f?.lancamento_financeiro || '', f?.data_envio_erp || '', f ? ROTULO_ENVIO_ERP[situacaoEnvioErp(l)] : '', l.ctes ? l.ctes.lancados : '', l.ctes ? l.ctes.semPartida.length : '', l.ctes ? l.ctes.valorSemPartida : '',
-            textoPagamentoLinha(l), f?.data_pagamento || '', f?.valor_pago != null ? Number(f.valor_pago) : '', f?.auditor_nome || '', proximaAcao(l),
+            textoPagamentoLinha(l), f?.data_pagamento || '', f?.valor_pago != null ? Number(f.valor_pago) : '', f ? l.auditor : '', proximaAcao(l),
             agrupamentoManual(f) ? (faturaLancada(f) ? 'Já agrupada' : 'A enviar') : '', agrupamentoManual(f) ? (f.agrupamento_manual_por || '') : '',
             ROTULO_ETAPA_FENIX[etapaFenix(l)] || '', f?.fenix_enviado_em ? String(f.fenix_enviado_em).slice(0, 10) : '', f?.fenix_enviado_por || '', f?.fenix_retorno_em ? String(f.fenix_retorno_em).slice(0, 10) : '',
             observacao,
@@ -597,7 +707,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const gerarLaudo = () => {
     try {
       const transps = [...new Set(resultado.filter((l) => l.fatura).map((l) => l.fatura.transportadora).filter(Boolean))];
-      const titulo = transportadora || (transps.length === 1 ? transps[0] : auditor ? `Auditor ${auditor}` : 'Faturas selecionadas');
+      const titulo = transportadora || (transps.length === 1 ? transps[0] : auditorEscolhido ? `Auditor ${auditorEscolhido}` : verTodosAuditores ? 'Faturas em aberto' : 'Faturas selecionadas');
       const html = gerarHtmlLaudo({ linhas: resultado, titulo, filtros: descricaoFiltros() });
       const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
       const a = document.createElement('a');
@@ -638,11 +748,13 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             </label>
             <label className="field">Auditor
               <div style={{ display: 'flex', gap: 6 }}>
-                <select value={auditor} onChange={(e) => setAuditor(e.target.value)} style={{ flex: 1, minWidth: 0 }}>
-                  <option value="">Todos</option>
-                  {auditores.map((a) => <option key={a} value={a}>{a}</option>)}
+                <select value={verTodosAuditores ? TODOS_AUDITORES : auditorEscolhido} onChange={(e) => setAuditor(e.target.value)} style={{ flex: 1, minWidth: 0 }}>
+                  <option value="">Nenhum</option>
+                  <option value={TODOS_AUDITORES}>Todos os auditores (visão geral)</option>
+                  {auditores.map((a) => { const grafias = unificador.grafiasDe(a); return <option key={a} value={a} title={grafias.length > 1 ? `Inclui: ${grafias.join(' · ')}` : undefined}>{a}</option>; })}
                 </select>
-                {meuNome && auditor !== meuNome && <button type="button" className="btn-secondary" onClick={() => setAuditor(meuNome)} title={`Mostrar as faturas de ${meuNome}`}>Minhas</button>}
+                {!verTodosAuditores && <button type="button" className="btn-secondary" onClick={() => setAuditor(TODOS_AUDITORES)} title="Visão do gestor: faturas em aberto de todos os auditores, com os cards de vencidas, a vencer etc.">Todos</button>}
+                {meuNome && auditorEscolhido !== meuNome && <button type="button" className="btn-secondary" onClick={() => setAuditor(meuNome)} title={`Mostrar as faturas de ${meuNome}`}>Minhas</button>}
               </div>
             </label>
             <button type="button" className="btn-secondary" onClick={limparTudo} disabled={!texto && !transportadora && !auditor && !temFiltro}>Limpar tudo</button>
@@ -659,7 +771,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
         </div>
         {(temLista || transportadora || auditor) && (
           <div className="compact" style={{ marginTop: 8, color: '#475569', fontSize: 13 }}>
-            {temLista ? `${inteiro(lista.itens.length)} número(s) lido(s)${lista.repetidosNaLista ? ` · ${inteiro(lista.repetidosNaLista)} repetido(s) na lista ignorado(s)` : ''}` : transportadora ? `Todas as faturas de ${transportadora}${auditor ? ` do auditor ${auditor}` : ''}` : `Faturas em aberto de ${auditor} (não pagas; as canceladas ficam no card "Canceladas")`}{temLista && auditor ? ` · só as do auditor ${auditor}` : ''}
+            {temLista ? `${inteiro(lista.itens.length)} número(s) lido(s)${lista.repetidosNaLista ? ` · ${inteiro(lista.repetidosNaLista)} repetido(s) na lista ignorado(s)` : ''}` : transportadora ? `Todas as faturas de ${transportadora}${auditorEscolhido ? ` do auditor ${auditorEscolhido}` : ''}` : `Faturas em aberto de ${verTodosAuditores ? 'todos os auditores' : auditorEscolhido} (não pagas; as canceladas ficam no card "Canceladas")`}{temLista && auditorEscolhido ? ` · só as do auditor ${auditorEscolhido}` : ''}
             {progresso ? ` · Verificando CT-es no SAP: ${inteiro(progresso.feitas)} de ${inteiro(progresso.total)} faturas...` : ''}
             {ultimaSap ? ` · Partidas de CT-e conforme o relatório SAP importado (último lançamento em ${dataBr(ultimaSap)}).` : ''}
           </div>
@@ -668,7 +780,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       </div>
 
       {!linhas.length ? (
-        <div className="hint-box">Cole uma lista de faturas ou escolha uma transportadora ou um auditor para ver o diagnóstico.</div>
+        <div className="hint-box">Cole uma lista de faturas, escolha uma transportadora ou um auditor, ou clique em "Todos" para a visão geral de todos os auditores.</div>
       ) : (
         <>
           <div className="summary-strip audit-summary-grid" style={{ marginBottom: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
@@ -695,7 +807,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
           <div className="panel-card" style={{ marginBottom: 14 }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
               <label className="field">Buscar<input value={filtros.busca} onChange={mudarFiltro('busca')} placeholder="Número, transportadora, auditor" /></label>
-              <label className="field">Auditor<select value={filtros.auditor} onChange={mudarFiltro('auditor')}><option value="">Todos</option>{opcoes.auditores.map((a) => <option key={a} value={a}>{a}</option>)}</select></label>
+              <label className="field">Auditor<select value={filtroAuditor} onChange={mudarFiltro('auditor')}><option value="">Todos</option>{opcoes.auditores.map((a) => <option key={a} value={a}>{a}</option>)}</select></label>
               <label className="field">Status<select value={filtros.status} onChange={mudarFiltro('status')}><option value="">Todos</option>{opcoes.status.map((s) => <option key={s} value={s}>{nomeStatus(s)}</option>)}</select></label>
               <label className="field">Canal<select value={filtros.canal} onChange={mudarFiltro('canal')}><option value="">Todos</option>{opcoes.canais.map((c) => <option key={c} value={c}>{c}</option>)}</select></label>
               <label className="field">Vencimento de<input type="date" value={filtros.vencimentoDe} onChange={mudarFiltro('vencimentoDe')} /></label>
@@ -761,6 +873,21 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             )}
           </div>
 
+          <RankingTransportadoras
+            itens={ranking}
+            dimensao={dimensaoRanking}
+            onDimensao={setDimensaoRanking}
+            filtrosAtivos={{
+              transp: { chave: filtros.grupoTransp, rotulo: rotuloTransp(filtros.grupoTransp) },
+              auditor: { chave: filtros.grupoAuditor, rotulo: filtros.grupoAuditor === SEM_TRANSP ? 'Não localizadas' : filtros.grupoAuditor },
+            }}
+            aberto={rankingAberto}
+            onAlternar={() => setRankingAberto((v) => !v)}
+            criterio={criterioRanking}
+            onCriterio={setCriterioRanking}
+            onEscolher={(d, chave) => setFiltros((atual) => ({ ...atual, [campoGrupo[d]]: chave }))}
+          />
+
           <div className="table-card">
             <div className="sim-analise-tabela-wrap">
               <table className="sim-analise-tabela">
@@ -813,7 +940,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                           )}
                         </td>
                         <td style={{ color: COR_PAGAMENTO[textoPagamentoLinha(l)], fontWeight: 600 }}>{textoPagamentoLinha(l)}</td>
-                        <td>{f ? nomeAuditor(f) : '-'}</td>
+                        <td title={f && f.auditor_nome && f.auditor_nome.trim() !== l.auditor ? `Gravado como: ${f.auditor_nome}` : undefined}>{f ? l.auditor : '-'}</td>
                         <td>{proximaAcao(l)}</td>
                       </tr>
                     );
