@@ -2650,8 +2650,51 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
     && Boolean(item.resposta_operacao || item.respostaOperacao || item.resposta)
   )), [movimentosFiltrados, visao]);
 
+  const devolviveisIds = useMemo(() => new Set(devolviveis.map((item) => item.id)), [devolviveis]);
+  const visaoComLote = visao === 'pendencias' || visao === 'pagamento';
+  const linhasVisiveis = useMemo(() => movimentosFiltrados.slice(0, 250), [movimentosFiltrados]);
+  const selecionaveis = useMemo(() => (
+    visaoComLote ? linhasVisiveis.filter((item) => item.id) : []
+  ), [linhasVisiveis, visaoComLote]);
   const selecionadosSet = useMemo(() => new Set(selecionados), [selecionados]);
-  const todosSelecionados = devolviveis.length > 0 && devolviveis.every((item) => selecionadosSet.has(item.id));
+  const itensSelecionados = useMemo(() => (
+    selecionaveis.filter((item) => selecionadosSet.has(item.id))
+  ), [selecionaveis, selecionadosSet]);
+  const todosSelecionados = selecionaveis.length > 0 && selecionaveis.every((item) => selecionadosSet.has(item.id));
+
+  // Ações disponíveis para tratamento em massa. "aplicavel" filtra quais itens
+  // selecionados aceitam a ação; os demais são ignorados e informados no resultado.
+  const acoesLote = useMemo(() => (visao === 'pagamento'
+    ? [
+        { valor: 'FINALIZADO', label: 'OK, conferido (encerrar)', exigeObs: false, aplicavel: () => true },
+      ]
+    : [
+        { valor: 'FINALIZADO', label: 'Encerrar (finalizar)', exigeObs: false, aplicavel: () => true },
+        { valor: 'LIBERADO_PAGAMENTO', label: 'Liberar para pagamento', exigeObs: false, aplicavel: (item) => item.tipoGestao !== 'QUESTIONAMENTO' },
+        { valor: 'RECUSADO_OPERACAO', label: 'Recusar', exigeObs: true, aplicavel: (item) => item.tipoGestao !== 'QUESTIONAMENTO' },
+        { valor: STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO, label: 'Devolver para a Operação (complemento)', exigeObs: true, aplicavel: (item) => devolviveisIds.has(item.id) },
+      ]), [visao, devolviveisIds]);
+  const [acaoLote, setAcaoLote] = useState('FINALIZADO');
+  const acaoLoteAtual = acoesLote.find((acao) => acao.valor === acaoLote) || acoesLote[0];
+  const itensAplicaveisLote = itensSelecionados.filter((item) => acaoLoteAtual.aplicavel(item));
+
+  useEffect(() => {
+    setSelecionados([]);
+    setAcaoLote('FINALIZADO');
+    setResultadoLote('');
+  }, [visao]);
+
+  // ESC fecha o modal de tratamento (ou o laudo).
+  useEffect(() => {
+    if (!detalhe && !laudoAberto) return undefined;
+    const onKey = (event) => {
+      if (event.key !== 'Escape') return;
+      if (detalhe && !salvando) setDetalhe(null);
+      else if (laudoAberto) setLaudoAberto(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [detalhe, laudoAberto, salvando]);
 
   const atualizarFiltro = (campo, valor) => setFiltros((prev) => ({ ...prev, [campo]: valor }));
 
@@ -2713,30 +2756,37 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
   };
 
   const alternarTodos = () => {
-    setSelecionados(todosSelecionados ? [] : devolviveis.map((item) => item.id));
+    setSelecionados(todosSelecionados ? [] : selecionaveis.map((item) => item.id));
   };
 
-  const devolverSelecionados = async () => {
-    const itens = devolviveis.filter((item) => selecionadosSet.has(item.id));
-    if (!itens.length || !String(observacaoLote || '').trim()) return;
+  const aplicarAcaoLote = async () => {
+    const acao = acaoLoteAtual;
+    const itens = itensAplicaveisLote;
+    const obs = String(observacaoLote || '').trim();
+    if (!acao || !itens.length || typeof onAtualizarStatus !== 'function') return;
+    if (acao.exigeObs && !obs) return;
+    const ignorados = itensSelecionados.length - itens.length;
+    if (!globalThis.confirm?.(`${acao.label}: aplicar em ${itens.length} item(ns)?${ignorados ? `\n${ignorados} selecionado(s) não aceitam esta ação e serão ignorados.` : ''}`)) return;
     setProcessandoLote(true);
     setResultadoLote('');
     const enviados = [];
     const falhas = [];
+    const comentario = obs || (visao === 'pagamento' ? 'Conferido pela Auditoria e encaminhado para pagamento.' : `${acao.label} em lote pela Auditoria.`);
     for (const item of itens) {
       try {
-        await onAtualizarStatus(item, STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO, observacaoLote);
+        await onAtualizarStatus(item, acao.valor, comentario);
         enviados.push(item.id);
       } catch (error) {
         falhas.push(`${item.cte || item.numeroInformado || item.id}: ${error.message || String(error)}`);
       }
     }
     setSelecionados((atuais) => atuais.filter((id) => !enviados.includes(id)));
+    const sufixoIgnorados = ignorados ? ` ${ignorados} ignorado(s) por não aceitarem a ação.` : '';
     if (!falhas.length) {
       setObservacaoLote('');
-      setResultadoLote(`${enviados.length} item(ns) devolvido(s) para a Operação.`);
+      setResultadoLote(`✓ ${enviados.length} item(ns) atualizado(s): ${acao.label}.${sufixoIgnorados}`);
     } else {
-      setResultadoLote(`${enviados.length} enviado(s) e ${falhas.length} com falha. ${falhas.slice(0, 2).join(' | ')}`);
+      setResultadoLote(`${enviados.length} atualizado(s) e ${falhas.length} com falha.${sufixoIgnorados} ${falhas.slice(0, 2).join(' | ')}`);
     }
     setProcessandoLote(false);
   };
@@ -2874,43 +2924,64 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
         Exibindo {movimentosFiltrados.length.toLocaleString('pt-BR')} registro(s) nesta etapa do fluxo.
       </div>
 
-      {visao === 'pendencias' && devolviveis.length > 0 && (
-        <div className="panel-card top-space-sm" style={{ padding: 14 }}>
-          <div className="section-row compact-top">
-            <div>
-              <div className="panel-title">Devolver selecionados para a Operação</div>
-              <p className="compact">Marque os retornos incompletos e informe uma única orientação para o lote.</p>
+      {visaoComLote && selecionaveis.length > 0 && (
+        <div
+          className="panel-card top-space-sm"
+          style={{ padding: 12, position: 'sticky', top: 0, zIndex: 5, border: itensSelecionados.length ? '1px solid #2563eb' : undefined }}
+        >
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 160 }}>
+              <div className="panel-title" style={{ fontSize: '0.95rem' }}>Tratar em massa</div>
+              <span className={`status-pill ${itensSelecionados.length ? 'dark' : ''}`}>{itensSelecionados.length} selecionado(s)</span>
             </div>
-            <span className="status-pill">{selecionados.length} selecionado(s)</span>
-          </div>
-          <div className="form-grid two top-space-sm">
-            <label className="field full-span">
-              O que ainda falta?
-              <textarea
+            <label className="field" style={{ minWidth: 230, margin: 0 }}>
+              Ação
+              <select value={acaoLoteAtual.valor} onChange={(e) => setAcaoLote(e.target.value)} disabled={processandoLote}>
+                {acoesLote.map((acao) => <option key={acao.valor} value={acao.valor}>{acao.label}</option>)}
+              </select>
+            </label>
+            <label className="field" style={{ flex: 1, minWidth: 260, margin: 0 }}>
+              {acaoLoteAtual.exigeObs ? 'Observação (obrigatória)' : 'Observação (opcional)'}
+              <input
                 value={observacaoLote}
                 onChange={(event) => setObservacaoLote(event.target.value)}
-                placeholder="Ex.: Informar a DIST correta e anexar o comprovante."
-                style={{ minHeight: 72 }}
+                placeholder={acaoLoteAtual.valor === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO ? 'Ex.: Informar a DIST correta e anexar o comprovante.' : 'Mesma observação para todos os itens'}
               />
             </label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {itensSelecionados.length > 0 && (
+                <button type="button" className="btn-secondary" style={{ width: 'auto', padding: '7px 12px', fontSize: '0.82rem' }} onClick={() => setSelecionados([])} disabled={processandoLote}>
+                  Limpar seleção
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ width: 'auto', padding: '7px 12px', fontSize: '0.82rem' }}
+                onClick={aplicarAcaoLote}
+                disabled={salvando || processandoLote || !itensAplicaveisLote.length || (acaoLoteAtual.exigeObs && !observacaoLote.trim())}
+              >
+                {processandoLote ? 'Processando...' : `Aplicar em ${itensAplicaveisLote.length} item(ns)`}
+              </button>
+            </div>
           </div>
-          <div className="actions-right">
-            <button
-              type="button"
-              className="btn-primary"
-              style={{ width: 'auto', padding: '7px 12px', fontSize: '0.82rem' }}
-              onClick={devolverSelecionados}
-              disabled={salvando || processandoLote || !selecionados.length || !observacaoLote.trim()}
-            >
-              {processandoLote ? 'Enviando...' : `Devolver ${selecionados.length || ''} selecionado(s)`}
-            </button>
-          </div>
+          {itensSelecionados.length > itensAplicaveisLote.length && (
+            <small className="muted" style={{ display: 'block', marginTop: 6 }}>
+              {itensSelecionados.length - itensAplicaveisLote.length} selecionado(s) não aceitam esta ação e serão ignorados.
+            </small>
+          )}
           {resultadoLote && <div className="hint-box compact top-space-sm">{resultadoLote}</div>}
         </div>
       )}
 
       {detalhe && (
-        <div className="panel-card top-space-sm">
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 100000, display: 'grid', placeItems: 'center', padding: 20 }}
+          onMouseDown={(event) => { if (event.target === event.currentTarget && !salvando) setDetalhe(null); }}
+        >
+        <div className="panel-card" style={{ width: 'min(960px, 100%)', maxHeight: '90vh', overflow: 'auto', margin: 0, boxShadow: '0 20px 50px rgba(15,23,42,0.35)' }}>
           <div className="section-row compact-top">
             <div>
               <div className="panel-title">{modoDetalhe === 'devolver' ? 'Solicitar complemento da Operação' : 'Tratar pendência'}</div>
@@ -2920,7 +2991,7 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
                   : 'A resposta/tratamento será salvo em campo próprio, sem alterar a descrição original da solicitação.'}
               </p>
             </div>
-            <button type="button" className="btn-secondary" onClick={() => setDetalhe(null)} disabled={salvando}>Fechar</button>
+            <button type="button" className="btn-secondary" onClick={() => setDetalhe(null)} disabled={salvando} title="Fechar (Esc)">Fechar (Esc)</button>
           </div>
           <div className="summary-strip lotacao-summary-mini">
             <div className="summary-card"><span>Tipo</span><strong>{detalhe.tipoGestao === 'QUESTIONAMENTO' ? 'Questionamento' : 'Excedente'}</strong><small>{detalhe.prioridade || '-'}</small></div>
@@ -2993,6 +3064,8 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
                   ? 'Descreva objetivamente a informação, documento ou correção que ainda falta.'
                   : 'Informe o retorno da Operação ou a conclusão da Auditoria. Não será gravado junto da descrição original.'}
                 style={{ minHeight: 90 }}
+                autoFocus
+                onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) salvarTratamento(); }}
               />
             </label>
           </div>
@@ -3001,6 +3074,8 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
               {salvando ? 'Salvando...' : modoDetalhe === 'devolver' ? 'Devolver para Operação' : 'Salvar tratamento'}
             </button>
           </div>
+          <p className="compact muted" style={{ textAlign: 'right', marginTop: 6 }}>Esc fecha · Ctrl+Enter salva</p>
+        </div>
         </div>
       )}
 
@@ -3008,16 +3083,16 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
         <table className="sim-analise-tabela">
           <thead>
             <tr>
-              {visao === 'pendencias' && (
+              {visaoComLote && (
                 <th>
-                  <input type="checkbox" checked={todosSelecionados} onChange={alternarTodos} title="Selecionar todos os itens devolvíveis" />
+                  <input type="checkbox" checked={todosSelecionados} onChange={alternarTodos} disabled={!selecionaveis.length || processandoLote} title="Selecionar todos os itens exibidos" />
                 </th>
               )}
               <th>Data</th><th>Tipo / status</th><th>CT-e / Fatura</th><th>Transportadora</th><th>DIST/viagem</th><th>Valor</th><th>Resumo</th><th>Ações</th>
             </tr>
           </thead>
           <tbody>
-            {movimentosFiltrados.slice(0, 250).map((item, idx) => {
+            {linhasVisiveis.map((item, idx) => {
               const idLinha = item.id || `${chaveSolicitacaoAuditoria(item)}-${idx}`;
               const expandido = expandidoId === idLinha;
               const descricao = item.motivoQuestionamento || item.motivo_questionamento || item.observacao || item.descricaoProblema || item.descricao_problema || '-';
@@ -3028,12 +3103,12 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
                     style={{ cursor: 'pointer' }}
                     title="Clique para expandir os detalhes"
                   >
-                    {visao === 'pendencias' && (
+                    {visaoComLote && (
                       <td onClick={(event) => event.stopPropagation()}>
                         <input
                           type="checkbox"
                           checked={selecionadosSet.has(item.id)}
-                          disabled={!devolviveis.some((devolvivel) => devolvivel.id === item.id) || salvando}
+                          disabled={!item.id || processandoLote}
                           onChange={() => alternarSelecionado(item.id)}
                         />
                       </td>
@@ -3082,7 +3157,7 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
                               abrirDetalhe(item, 'devolver');
                             }}
                           >
-                            Devolver para OperaÃ§Ã£o
+                            Devolver para Operação
                           </button>
                         )}
                         {visao === 'pagamento' && (
@@ -3117,7 +3192,7 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
                   </tr>
                   {expandido && (
                     <tr>
-                      <td colSpan={visao === 'pendencias' ? 9 : 8} style={{ background: '#f8fafc' }}>
+                      <td colSpan={visaoComLote ? 9 : 8} style={{ background: '#f8fafc' }}>
                         <div className="form-grid three" style={{ padding: 8 }}>
                           <div className="hint-box compact" style={{ whiteSpace: 'pre-wrap' }}>
                             <strong>Descrição original</strong><br />{descricao}
@@ -3142,7 +3217,7 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
                 </Fragment>
               );
             })}
-            {!movimentosFiltrados.length && <tr><td colSpan={visao === 'pendencias' ? 9 : 8}>Nenhum item encontrado nesta etapa.</td></tr>}
+            {!movimentosFiltrados.length && <tr><td colSpan={visaoComLote ? 9 : 8}>Nenhum item encontrado nesta etapa.</td></tr>}
           </tbody>
         </table>
       </div>
