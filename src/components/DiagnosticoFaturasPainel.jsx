@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarPlataformaAuditoria } from '../services/auditoriaFretesService';
-import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, marcarAjusteFenix, marcarPrevisaoPagamento } from '../services/diagnosticoFaturasService';
+import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, marcarAjusteFenix, marcarCanceladas, marcarPrevisaoPagamento } from '../services/diagnosticoFaturasService';
 import { diasAte } from '../utils/auditoriaFretesDomain';
 import { carregarSessao } from '../utils/authLocal';
 import {
@@ -37,6 +37,7 @@ const LOTE_VERIFICACAO = 120;
 const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimentoDe: '', vencimentoAte: '' };
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const ehCancelada = (l) => situacaoPagamentoLinha(l) === 'CANCELADA';
 const inteiro = (v) => Number(v || 0).toLocaleString('pt-BR');
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
 const nomeStatus = (s) => String(s || '-').replaceAll('_', ' ');
@@ -242,12 +243,23 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     });
   }, [linhas, filtros]);
 
+  // Canceladas/substituidas ficam fora da lista, dos cards e dos totais: so aparecem clicando no card
+  // "Canceladas" (ou filtrando o status cancelada/substituida).
+  const verCanceladas = escolhidos.pagamento === 'canceladas' || ['CANCELADA', 'SUBSTITUIDA'].includes(filtros.status);
   // Um recorte so para a tela inteira: cards, totais e lista sempre mostram os mesmos numeros.
-  const recorte = useMemo(() => filtrarPorCards(filtradas, escolhidos), [filtradas, escolhidos]);
+  const recorte = useMemo(() => {
+    const r = filtrarPorCards(filtradas, escolhidos);
+    return verCanceladas ? r : r.filter((l) => !ehCancelada(l));
+  }, [filtradas, escolhidos, verCanceladas]);
+  // O card das canceladas conta pelos demais filtros, mesmo com elas escondidas da lista.
+  const canceladasRecorte = useMemo(
+    () => filtrarPorCards(filtradas, { ...escolhidos, pagamento: '' }).filter(ehCancelada),
+    [filtradas, escolhidos],
+  );
 
   const grupos = useMemo(() => GRUPOS_DIAGNOSTICO
     .filter((g) => temLista || !g.soComLista)
-    .map((g) => ({ ...g, cards: g.cards.filter((c) => !c.oculto).map((c) => ({ ...c, linhas: recorte.filter(c.teste) })) })), [recorte, temLista]);
+    .map((g) => ({ ...g, cards: g.cards.filter((c) => !c.oculto).map((c) => ({ ...c, linhas: c.id === 'canceladas' ? canceladasRecorte : recorte.filter(c.teste) })) })), [recorte, canceladasRecorte, temLista]);
 
   const resultado = useMemo(() => {
     const coluna = COLUNAS.find((c) => c.id === ordem.coluna) || COLUNAS[3];
@@ -324,6 +336,35 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       setSelecionadas(new Set());
       setAviso(`${inteiro(gravadas.size)} fatura(s) ${marcar ? 'marcada(s) para agrupamento manual' : 'desmarcada(s)'}.`);
     } catch (e) { setAviso(`Erro ao marcar: ${e.message || e}`); } finally { setMarcando(false); }
+  };
+
+  // Cancelar: faturas que nao serao pagas (ex.: vencidas sem tratativa). Saem da lista e vao para o card
+  // "Canceladas". Reativar devolve o status que a fatura tinha antes do cancelamento.
+  const aplicarCancelamento = async (cancelar) => {
+    const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l.fatura]));
+    const alvo = selecaoValida.map((id) => porId.get(id)).filter((f) => f && (cancelar
+      ? situacaoPagamento(f) === 'ABERTA'
+      : f.status === 'CANCELADA'));
+    if (!alvo.length) {
+      setAviso(cancelar ? 'Nenhuma selecionada pode ser cancelada (só as não pagas e ainda ativas).' : 'Nenhuma selecionada está cancelada.');
+      return;
+    }
+    let motivo = '';
+    if (cancelar) {
+      const resposta = window.prompt(`Cancelar ${alvo.length} fatura(s)? Elas saem da lista e ficam no card "Canceladas".\n\nMotivo (opcional):`, '');
+      if (resposta === null) return;
+      motivo = resposta;
+    } else if (!window.confirm(`Reativar ${alvo.length} fatura(s)? Elas voltam ao status que tinham antes do cancelamento.`)) return;
+    setMarcando(true);
+    setAviso('');
+    try {
+      const sessao = carregarSessao();
+      const gravadas = await marcarCanceladas(alvo.map((f) => ({ id: f.id, status: f.status })), cancelar, sessao?.nome || sessao?.email || '', motivo);
+      onState((atual) => ({ ...atual, faturas: (atual.faturas || []).map((f) => (gravadas.has(f.id) ? { ...f, ...gravadas.get(f.id) } : f)) }));
+      setSelecionadas(new Set());
+      const ignoradas = selecaoValida.length - gravadas.size;
+      setAviso(`${inteiro(gravadas.size)} fatura(s) ${cancelar ? 'cancelada(s): estão no card "Canceladas"' : 'reativada(s)'}.${ignoradas > 0 ? ` ${inteiro(ignoradas)} selecionada(s) não se aplicavam.` : ''}`);
+    } catch (e) { setAviso(`Erro ao ${cancelar ? 'cancelar' : 'reativar'}: ${e.message || e}`); } finally { setMarcando(false); }
   };
 
   // Previsao de pagamento: grava (ou limpa) a data combinada nas selecionadas que ainda nao foram pagas.
@@ -608,6 +649,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             <CardResumo rotulo="Vencido" valor={dinheiro(totais.vencido.valor)} detalhe={totais.vencido.detalhe} cor="#9b1111" ativo={escolhidos.vencimento === 'vencidas'} dica="Clique para ver as faturas vencidas e não pagas." onClick={() => alternarCard('vencimento', 'vencidas')} />
             <CardResumo rotulo="A vencer" valor={dinheiro(totais.aVencer.valor)} detalhe={totais.aVencer.detalhe} cor="#e67e22" ativo={escolhidos.vencimento === 'a_vencer'} dica="Clique para ver as faturas não pagas que ainda vão vencer." onClick={() => alternarCard('vencimento', 'a_vencer')} />
             <CardResumo rotulo="Pago" valor={dinheiro(totais.pago.valor)} detalhe={totais.pago.detalhe} cor="#14733b" ativo={escolhidos.pagamento === 'pagas_todas'} dica="Clique para ver as faturas pagas, com ou sem divergência." onClick={() => alternarCard('pagamento', 'pagas_todas')} />
+            <CardResumo rotulo="Canceladas" valor={inteiro(canceladasRecorte.length)} detalhe={`${dinheiro(canceladasRecorte.reduce((s, l) => s + valorDaLinha(l), 0))} · fora da lista`} cor="#64748b" ativo={escolhidos.pagamento === 'canceladas'} dica="Canceladas/substituídas ficam fora da lista e dos totais. Clique para vê-las (e reativar, se preciso)." onClick={() => alternarCard('pagamento', 'canceladas')} />
 
           </div>
 
@@ -655,6 +697,14 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               <button type="button" className="btn-primary" style={{ background: '#04a484', borderColor: '#04a484' }} disabled={!selecaoValida.length || !dataPrevisao || marcando} onClick={() => aplicarPrevisao(false)}>{marcando ? 'Gravando...' : 'Gravar previsão'}</button>
               <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando} onClick={() => aplicarPrevisao(true)}>Tirar previsão</button>
               <button type="button" className="btn-secondary" disabled={!comPrevisao.length} onClick={copiarPrevisoes} title="Copia um texto com as faturas do recorte que têm previsão, agrupadas pela data, para mandar à transportadora">Copiar previsões p/ transportadora ({inteiro(comPrevisao.length)})</button>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
+              <span className="compact" style={{ color: '#475569' }} title="Faturas que não serão pagas (ex.: vencidas sem tratativa). Saem da lista e dos totais e ficam no card 'Canceladas'.">
+                Cancelamento: {inteiro(selecaoValida.length)} selecionada(s)
+              </span>
+              {verCanceladas
+                ? <button type="button" className="btn-primary" style={{ background: '#315ee7', borderColor: '#315ee7' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarCancelamento(false)} title="Volta as selecionadas ao status que tinham antes do cancelamento">{marcando ? 'Gravando...' : 'Reativar selecionadas'}</button>
+                : <button type="button" className="btn-primary" style={{ background: '#64748b', borderColor: '#64748b' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarCancelamento(true)} title="Marca as selecionadas (não pagas) como canceladas: saem da lista e vão para o card 'Canceladas'">{marcando ? 'Gravando...' : 'Cancelar selecionadas'}</button>}
             </div>
             {temAjusteFenix && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
