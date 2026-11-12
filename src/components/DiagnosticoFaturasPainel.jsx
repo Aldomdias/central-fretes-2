@@ -251,11 +251,9 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     const r = filtrarPorCards(filtradas, escolhidos);
     return verCanceladas ? r : r.filter((l) => !ehCancelada(l));
   }, [filtradas, escolhidos, verCanceladas]);
-  // O card das canceladas conta pelos demais filtros, mesmo com elas escondidas da lista.
-  const canceladasRecorte = useMemo(
-    () => filtrarPorCards(filtradas, { ...escolhidos, pagamento: '' }).filter(ehCancelada),
-    [filtradas, escolhidos],
-  );
+  // O card das canceladas ignora os outros cards (ex.: "Vencidas"): cancelada nao e mais vencida, nem
+  // aberta, nem lancada... e sumiria. Vale so a pesquisa e os filtros de campo.
+  const canceladasRecorte = useMemo(() => filtradas.filter(ehCancelada), [filtradas]);
 
   const grupos = useMemo(() => GRUPOS_DIAGNOSTICO
     .filter((g) => temLista || !g.soComLista)
@@ -297,7 +295,11 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const visiveis = resultado.slice((paginaAtual - 1) * TAM_PAGINA, paginaAtual * TAM_PAGINA);
   const temFiltro = Object.values(escolhidos).some(Boolean) || Object.values(filtros).some(Boolean);
 
-  const alternarCard = (grupo, card) => setEscolhidos((atual) => ({ ...atual, [grupo]: atual[grupo] === card ? '' : card }));
+  // Abrir as canceladas tira os outros cards (com "Vencidas" ativo a lista ficaria vazia).
+  const alternarCard = (grupo, card) => setEscolhidos((atual) => {
+    if (card === 'canceladas') return atual.pagamento === 'canceladas' ? {} : { pagamento: 'canceladas' };
+    return { ...atual, [grupo]: atual[grupo] === card ? '' : card };
+  });
   const limparFiltros = () => { setEscolhidos({}); setFiltros(FILTROS_VAZIOS); };
   const limparTudo = () => { limparFiltros(); setTexto(''); setTransportadora(''); setAuditor(''); };
   const mudarFiltro = (campo) => (e) => setFiltros((atual) => ({ ...atual, [campo]: e.target.value }));
@@ -649,7 +651,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             <CardResumo rotulo="Vencido" valor={dinheiro(totais.vencido.valor)} detalhe={totais.vencido.detalhe} cor="#9b1111" ativo={escolhidos.vencimento === 'vencidas'} dica="Clique para ver as faturas vencidas e não pagas." onClick={() => alternarCard('vencimento', 'vencidas')} />
             <CardResumo rotulo="A vencer" valor={dinheiro(totais.aVencer.valor)} detalhe={totais.aVencer.detalhe} cor="#e67e22" ativo={escolhidos.vencimento === 'a_vencer'} dica="Clique para ver as faturas não pagas que ainda vão vencer." onClick={() => alternarCard('vencimento', 'a_vencer')} />
             <CardResumo rotulo="Pago" valor={dinheiro(totais.pago.valor)} detalhe={totais.pago.detalhe} cor="#14733b" ativo={escolhidos.pagamento === 'pagas_todas'} dica="Clique para ver as faturas pagas, com ou sem divergência." onClick={() => alternarCard('pagamento', 'pagas_todas')} />
-            <CardResumo rotulo="Canceladas" valor={inteiro(canceladasRecorte.length)} detalhe={`${dinheiro(canceladasRecorte.reduce((s, l) => s + valorDaLinha(l), 0))} · fora da lista`} cor="#64748b" ativo={escolhidos.pagamento === 'canceladas'} dica="Canceladas/substituídas ficam fora da lista e dos totais. Clique para vê-las (e reativar, se preciso)." onClick={() => alternarCard('pagamento', 'canceladas')} />
+            <CardResumo rotulo="Canceladas" valor={inteiro(canceladasRecorte.length)} detalhe={`${dinheiro(canceladasRecorte.reduce((s, l) => s + valorDaLinha(l), 0))} · clique para ver`} cor="#64748b" ativo={escolhidos.pagamento === 'canceladas'} dica="Canceladas/substituídas ficam fora da lista e dos totais. Clique para vê-las (e reativar, se preciso)." onClick={() => alternarCard('pagamento', 'canceladas')} />
 
           </div>
 
