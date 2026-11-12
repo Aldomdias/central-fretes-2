@@ -21,6 +21,7 @@ import {
   aplicarVinculoTransportadora,
   carregarVinculosTransportadoras,
   criarMapaVinculosTransportadoras,
+  expandirTermosBuscaTransportadora,
 } from '../services/vinculosTransportadorasService';
 import {
   aplicarPoliticaBaseCte,
@@ -702,6 +703,40 @@ async function consultarCtesOtimizado(supabase, filtros, limite, offset = 0) {
   });
 }
 
+function chaveLinhaCte(row) {
+  return row?.id ?? row?.chave_cte ?? JSON.stringify(row);
+}
+
+function ordenarPorEmissaoDesc(rows = []) {
+  return [...rows].sort((a, b) => String(b?.data_emissao || '').localeCompare(String(a?.data_emissao || '')));
+}
+
+// Quando o nome digitado é o nome vinculado (ex.: MOVIMENTE) e no CT-e consta o
+// nome original (ex.: MVT), a busca precisa rodar para cada nome original.
+function termosTransportadoraDaBusca(filtros = {}) {
+  const termos = (filtros.termosTransportadora || []).filter(Boolean);
+  return !filtros.buscaDocumento && termos.length > 1 ? termos : null;
+}
+
+async function consultarCtesTodosTermos(supabase, filtros, termos, limitePorTermo) {
+  const vistos = new Set();
+  const linhas = [];
+  for (const termo of termos) {
+    const resposta = await executarQuerySupabaseComRetry(
+      () => consultarCtesOtimizado(supabase, { ...filtros, transportadoraRealizada: termo }, limitePorTermo, 0),
+      `Erro Supabase (${TABELA}) ao buscar CT-es da transportadora ${termo}`,
+    );
+    if (resposta?.error) throw new Error(`Erro Supabase (${TABELA}): ${resposta.error.message}`);
+    (resposta?.data || []).forEach((row) => {
+      const chave = chaveLinhaCte(row);
+      if (vistos.has(chave)) return;
+      vistos.add(chave);
+      linhas.push(row);
+    });
+  }
+  return ordenarPorEmissaoDesc(linhas);
+}
+
 async function buscarCtesPagina(filtros = {}, pagina = 1) {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado. Verifique o .env.');
   if (!temFiltroAtivo(filtros)) {
@@ -711,6 +746,18 @@ async function buscarCtesPagina(filtros = {}, pagina = 1) {
   const supabase = getSupabaseClient();
   const inicio = (Number(pagina || 1) - 1) * PAGE_SIZE;
   const fim = inicio + PAGE_SIZE - 1;
+
+  const termosMultiplos = termosTransportadoraDaBusca(filtros);
+  if (termosMultiplos) {
+    const todas = await consultarCtesTodosTermos(supabase, filtros, termosMultiplos, Math.min(inicio + PAGE_SIZE + 1, 1000));
+    const linhasMulti = aplicarFiltroCanalNormalizado(todas, filtros).slice(inicio);
+    return {
+      data: linhasMulti.slice(0, PAGE_SIZE),
+      hasNext: linhasMulti.length > PAGE_SIZE,
+      pagina: Number(pagina || 1),
+      pageSize: PAGE_SIZE,
+    };
+  }
 
   let resposta = await executarQuerySupabaseComRetry(async () => {
     if (!filtros.buscaDocumento) {
@@ -757,6 +804,27 @@ async function buscarCtesParaAnalise(filtros = {}, onProgress) {
   if (!temFiltroAtivo(filtros)) return [];
 
   const supabase = getSupabaseClient();
+  const termosMultiplos = termosTransportadoraDaBusca(filtros);
+  if (termosMultiplos) {
+    const vistos = new Set();
+    const acumuladoMulti = [];
+    for (const termo of termosMultiplos) {
+      const filtrosTermo = { ...filtros, transportadoraRealizada: termo, termosTransportadora: null };
+      // Reaproveita o carregamento em lotes para cada nome original do vínculo.
+      // eslint-disable-next-line no-await-in-loop
+      const linhasTermo = await buscarCtesParaAnalise(filtrosTermo, (p) => {
+        onProgress?.({ carregados: acumuladoMulti.length + Number(p?.carregados || 0), total: null });
+      });
+      linhasTermo.forEach((row) => {
+        const chave = chaveLinhaCte(row);
+        if (vistos.has(chave)) return;
+        vistos.add(chave);
+        acumuladoMulti.push(row);
+      });
+    }
+    return ordenarPorEmissaoDesc(acumuladoMulti);
+  }
+
   const acumulado = [];
   let total = null;
 
@@ -2920,7 +2988,11 @@ export default function CtePage({ transportadoras = [] }) {
     }
   }
 
-  const buscar = async (paginaSolicitada = 1, filtrosBusca = filtros) => {
+  const buscar = async (paginaSolicitada = 1, filtrosBuscaTela = filtros) => {
+    const filtrosBusca = {
+      ...filtrosBuscaTela,
+      termosTransportadora: expandirTermosBuscaTransportadora(filtrosBuscaTela.transportadoraRealizada, mapaVinculosTransportadoras),
+    };
     setCarregando(true);
     setCarregandoAnalise(true);
     setProgressoAnalise({ etapa: 'buscando_ctes', carregados: 0, total: null });
