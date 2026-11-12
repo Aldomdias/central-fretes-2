@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarPlataformaAuditoria } from '../services/auditoriaFretesService';
-import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, marcarAjusteFenix, marcarCanceladas, marcarPrevisaoPagamento } from '../services/diagnosticoFaturasService';
+import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarCanceladas, marcarPrevisaoPagamento } from '../services/diagnosticoFaturasService';
 import { diasAte } from '../utils/auditoriaFretesDomain';
 import { carregarSessao } from '../utils/authLocal';
 import {
@@ -312,6 +312,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     try {
       const { faturas } = await carregarPlataformaAuditoria();
       cacheCtes.clear();
+      limparCacheGruposCnpj();
       onState((atual) => ({ ...atual, faturas }));
       setVersaoCtes((v) => v + 1);
       setRecarga((v) => v + 1);
