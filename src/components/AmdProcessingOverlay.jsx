@@ -13,6 +13,7 @@ export const ETAPA_LABEL_AUDITORIA = {
   buscando_ctes: 'Buscando CT-es',
   corrigindo_tracking: 'Corrigindo base pelo tracking',
   carregando_ctes_analise: 'Carregando CT-es para análise',
+  montando_painel: 'Montando o painel de gestão',
   salvando_faturas: 'Gravando faturas e CT-es',
   verificando_existentes: 'Verificando faturas já existentes',
   verificando_pedidos_existentes: 'Verificando pedidos já existentes',

@@ -2948,7 +2948,12 @@ export default function CtePage({ transportadoras = [] }) {
       const dadosAnalise = await buscarCtesParaAnalise(filtrosBusca, (progresso) => {
         setProgressoAnalise({ etapa: 'carregando_ctes_analise', ...progresso });
       });
+      // Mantém o overlay AMD enquanto o painel é montado com os dados recebidos:
+      // o cálculo da análise roda no render, então só libera a tela depois que
+      // o navegador pintou o painel já pronto.
+      setProgressoAnalise({ etapa: 'montando_painel', carregados: dadosAnalise.length, total: dadosAnalise.length });
       setRowsAnalise(dadosAnalise);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));
     } catch (error) {
       setRowsAnalise([]);
       setErro(`Lista carregada, mas a análise resumida falhou. Tente filtros menores ou buscar novamente. Detalhe: ${error.message || String(error)}`);
