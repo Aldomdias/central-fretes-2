@@ -1,7 +1,7 @@
 import { normalizarChaveCte } from './auditoriaFretesDomain';
 
 // Correcoes manuais de uma fatura que entram no calculo dos CT-es (valor da NF, peso aplicado, NF/tracking manual,
-// endereco, canal, reentrega e forma de peso escolhida na linha). Usado pelo Recalcular da tela da fatura e pelo
+// endereco, canal, reentrega, transferencia e forma de peso escolhida na linha). Usado pelo Recalcular da tela da fatura e pelo
 // Reavaliar do Robo Auditor: sem isso o robo recalculava ignorando as correcoes e sobrescrevia o resultado.
 
 export function parseDetalhesCalculoAuditoria(valor) {
@@ -93,6 +93,8 @@ export function montarCorrecoesCalculoFatura(alvo = [], { modoPorId = null, peso
   const valorNfOverridePorChave = {};
   const trackingOverridePorChave = {};
   const reentregaPorChave = {};
+  // Contingencia da transferencia entre unidades: CT-e marcado pelo auditor (o automatico e pelo CNPJ do destinatario).
+  const transferenciaPorChave = {};
   const modoPesoPorChave = {};
   // Chaves que entram na escolha automatica de peso, exceto as com forma escolhida agora na linha.
   const chavesAutoPeso = new Set();
@@ -159,8 +161,9 @@ export function montarCorrecoesCalculoFatura(alvo = [], { modoPorId = null, peso
       };
     }
     if (item.reentrega_manual) reentregaPorChave[chave] = true;
+    if (item.transferencia_manual) transferenciaPorChave[chave] = true;
   });
-  return { valorNfOverridePorChave, trackingOverridePorChave, reentregaPorChave, modoPesoPorChave, chavesAutoPeso };
+  return { valorNfOverridePorChave, trackingOverridePorChave, reentregaPorChave, transferenciaPorChave, modoPesoPorChave, chavesAutoPeso };
 }
 
 // Peso efetivamente usado num resultado do motor.

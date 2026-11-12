@@ -17,6 +17,7 @@ import {
 import { carregarMatrizIcmsUfCentralizada, resolverAliquotaIcmsUfContexto } from '../utils/icmsUfMatrix';
 import { buscarTrackingParaRealizado, enriquecerRealizadoComTracking } from './realizadoTrackingEnrichment';
 import { obterRaizCnpj } from '../utils/cnpj.js';
+import { cnpjPertenceEmpresaCadastrada } from '../utils/filiaisCnpj.js';
 import { carregarMapaEquivalenciasOrigem } from './origemEquivalenciaService';
 import { ibgesOrigemEquivalentes, normalizarTextoOrigemEquiv, origemAceitaPorExcecao } from '../utils/origemEquivalencia';
 import { cederThread, esperarLeve } from '../utils/cederThread';
@@ -1659,16 +1660,38 @@ function calcularValorParaTabelaEspecifica(cte, tabelaEntry, canaisTentativa, ci
   return null;
 }
 
-// ─── Transferência entre unidades (ex.: CPX → CPX) ────────────────────────
-// CT-e em que remetente e destinatário são a MESMA empresa (mesma raiz de CNPJ)
-// é transferência e tem negociação própria (ex.: % sobre a NF). A transportadora
-// cadastra uma tabela alternativa cujo rótulo contém "TRANSFERENCIA"; o CT-e de
-// transferência é calculado SÓ por ela (não procura rota na tabela principal) e
-// os demais CT-es nunca a usam como candidata.
+// ─── Transferência entre unidades do grupo (ex.: CPX → CPX, CPX → ITR) ─────
+// CT-e em que remetente E destinatário são empresas do grupo (raízes de CNPJ
+// cadastradas em utils/filiaisCnpj.js: CPX, ITR, GP, GRIP, CP, AFB) é
+// transferência e tem negociação própria (ex.: CSRG = 0,8% sobre a NF). A
+// transportadora cadastra uma tabela alternativa cujo rótulo contém
+// "TRANSFERENCIA"; o CT-e de transferência é calculado SÓ por ela (não procura
+// rota na tabela principal) e os demais CT-es nunca a usam como candidata.
+// O remetente também precisa ser do grupo: só o destino não basta, senão uma
+// devolução de cliente para a CPX viraria "transferência".
+// Prioridade: automático pelo CNPJ (remetente do CT-e ou, sem ele, o emissor da
+// chave da NF-e; destinatário do CT-e/Tracking/XML). Contingência: o auditor
+// marca o CT-e como transferência na fatura (`transferencia_manual`).
+function cnpjRemetenteCte(cte = {}) {
+  return pickDigits(cte, ['documento_remetente', 'documentoRemetente', 'cnpj_remetente'], 14)
+    || cnpjDaChaveNfe(pick(cte, ['chave_nfe', 'chaveNfe']));
+}
+
+function cnpjDestinatarioCte(cte = {}) {
+  return pickDigits(cte, ['documento_destinatario', 'documentoDestinatario', 'cnpj_destinatario'], 14);
+}
+
+// '' (não é transferência) | 'cnpj_grupo' (automático) | 'manual' (auditor).
+export function motivoTransferenciaCte(cte = {}) {
+  if (cte?.transferencia_manual === true || cte?.transferenciaManual === true) return 'manual';
+  const remetente = cnpjRemetenteCte(cte);
+  const destinatario = cnpjDestinatarioCte(cte);
+  if (remetente.length !== 14 || destinatario.length !== 14) return '';
+  return cnpjPertenceEmpresaCadastrada(remetente) && cnpjPertenceEmpresaCadastrada(destinatario) ? 'cnpj_grupo' : '';
+}
+
 function ctePareceTransferencia(cte = {}) {
-  const remetente = obterRaizCnpj(pickDigits(cte, ['documento_remetente', 'documentoRemetente', 'cnpj_remetente'], 14));
-  const destinatario = obterRaizCnpj(pickDigits(cte, ['documento_destinatario', 'documentoDestinatario', 'cnpj_destinatario'], 14));
-  return Boolean(remetente) && remetente.length === 8 && remetente === destinatario;
+  return Boolean(motivoTransferenciaCte(cte));
 }
 
 function ehTabelaTransferencia(entrada = {}) {
@@ -1774,8 +1797,10 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
   let detalhe = null;
   let calculoInvertido = false;
   let transferenciaAplicada = false;
+  let avisoTransferencia = '';
+  const motivoTransferencia = motivoTransferenciaCte(cte);
 
-  if (ctePareceTransferencia(cte)) {
+  if (motivoTransferencia) {
     const tabelasTransferencia = (transportadoras || []).filter((t) => (
       ehTabelaTransferencia(t) && (t.nome === transportadoraTabela || nomeCompativel(t.nome, transportadoraTabela))
     ));
@@ -1785,11 +1810,13 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
         if (detalhe) break;
       }
       if (!detalhe) {
-        return montarResultadoBase(cte, 'SEM_ROTA', 'CT-e de transferência (remetente e destinatário do mesmo grupo): rota não encontrada na tabela alternativa de transferência.', {
+        return montarResultadoBase(cte, 'SEM_ROTA', `CT-e de transferência (${motivoTransferencia === 'manual' ? 'marcado pelo auditor' : 'remetente e destinatário do grupo'}): rota não encontrada na tabela alternativa de transferência.`, {
           transportadora_tabela: transportadoraTabela,
         });
       }
       transferenciaAplicada = true;
+    } else if (motivoTransferencia === 'manual') {
+      avisoTransferencia = 'CT-e marcado como transferência, mas a transportadora não tem tabela TRANSFERENCIA cadastrada: calculado pela tabela principal.';
     }
   }
 
@@ -1846,6 +1873,7 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
       motor: 'simulador_realizado',
       calculo_devolucao_invertida: calculoInvertido,
       observacao_devolucao: calculoInvertido ? 'CT-e de devolucao calculado pela rota de ida equivalente.' : '',
+      ...(avisoTransferencia ? { aviso_transferencia: avisoTransferencia } : {}),
     },
   });
 
@@ -1873,7 +1901,11 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
       detalhes_calculo: {
         ...resultado.detalhes_calculo,
         transferencia_entre_unidades: true,
-        observacao_transferencia: 'CT-e de transferência (remetente e destinatário do mesmo grupo) calculado pela tabela alternativa de transferência.',
+        transferencia_motivo: motivoTransferencia,
+        transferencia_manual: motivoTransferencia === 'manual',
+        observacao_transferencia: motivoTransferencia === 'manual'
+          ? 'CT-e marcado pelo auditor como transferência entre unidades: calculado pela tabela alternativa de transferência.'
+          : 'CT-e de transferência (remetente e destinatário são empresas do grupo) calculado pela tabela alternativa de transferência.',
       },
     };
   }
@@ -3187,9 +3219,15 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
   const registros = [];
   for (let index = 0; index < ctesUnicos.length; index += 1) {
     verificarCancelamento();
-    const cteBase = ctesParaCalculo[index] || ctesUnicos[index];
-    const chaveCte = onlyDigits(pick(cteBase, ['chave_cte', 'chaveCte', 'chave']));
-    const numeroCte = onlyDigits(pick(cteBase, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']));
+    const cteBruto = ctesParaCalculo[index] || ctesUnicos[index];
+    const chaveCte = onlyDigits(pick(cteBruto, ['chave_cte', 'chaveCte', 'chave']));
+    const numeroCte = onlyDigits(pick(cteBruto, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']));
+    // Contingência da transferência: CT-e marcado pelo auditor na fatura.
+    const transferenciaManual = Boolean(
+      opcoesCalculo.transferenciaPorChave?.[chaveCte]
+      ?? opcoesCalculo.transferenciaPorChave?.[numeroCte]
+    );
+    const cteBase = transferenciaManual ? { ...cteBruto, transferencia_manual: true } : cteBruto;
     const pesoOverride = Number(
       opcoesCalculo.pesosOverridePorChave?.[chaveCte]
       ?? opcoesCalculo.pesosOverridePorChave?.[numeroCte]

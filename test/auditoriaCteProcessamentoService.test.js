@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { escolherMelhorTabela, expandirTabelasAlternativasOficiais, aplicarVigenciaNoGrupo, calcularCtePelaTabelaLotacao } from '../src/services/auditoriaCteProcessamentoService.js';
+import { escolherMelhorTabela, expandirTabelasAlternativasOficiais, aplicarVigenciaNoGrupo, calcularCtePelaTabelaLotacao, processarCte, motivoTransferenciaCte, normalizarTransportadoras } from '../src/services/auditoriaCteProcessamentoService.js';
+import { montarCorrecoesCalculoFatura } from '../src/utils/correcoesCalculoFatura.js';
 
 const contextoLotacao = (totalOrigensFracionado = 0) => ({
   tabelas: [{
@@ -189,4 +190,121 @@ test('expandirTabelasAlternativasOficiais propaga a vigência do grupo para a en
   const expandido = expandirTabelasAlternativasOficiais(base);
   const alt = expandido.find((e) => e.tabelaAlternativaDe);
   assert.equal(alt.vigenciaInicio, '2026-10-01');
+});
+
+// ─── Transferência entre unidades do grupo (tabela alternativa TRANSFERENCIA) ───
+// Ex.: CSRG cobra 0,8% sobre a NF quando a CPX transfere para uma unidade do grupo.
+
+const generalidadeTransf = { incideIcms: false, aliquotaIcms: 0, adValorem: 0, adValoremMinimo: 0, pedagio: 0, gris: 0, grisMinimo: 0, tas: 0, ctrc: 0, cubagem: 300, tipoCalculo: 'FAIXA_DE_PESO', freteMinimo: 0, regraCalculo: '', taxaEmergencial: 0 };
+const rotaTransf = (grupo) => ({ id: `r-${grupo || 'principal'}`, nomeRota: 'Capital', ibgeOrigem: '2607901', ibgeDestino: '2611606', canal: 'ATACADO', prazoEntregaDias: 1, valorMinimoFrete: 0, grupoTabelaAlternativa: grupo });
+const cotacaoPrincipalTransf = { id: 'c-principal', rota: 'Capital', pesoMin: 0, pesoMax: 99999, rsKg: 0, excesso: 0, percentual: 0, valorFixo: 500, grupoTabelaAlternativa: null };
+const cotacaoTransf = { id: 'c-transf', rota: 'Capital', pesoMin: 0, pesoMax: 99999999, rsKg: 0, excesso: 0, percentual: 0.8, valorFixo: 0, grupoTabelaAlternativa: 'TRANSFERENCIA', tipoCalculo: 'PERCENTUAL', regraCalculo: 'Maior valor', freteMinimo: '0' };
+
+function baseTransferencia({ comTabelaTransferencia = true } = {}) {
+  return normalizarTransportadoras(expandirTabelasAlternativasOficiais([{
+    id: 'csrg',
+    nome: 'CSRG TRANSPORTES LTDA',
+    cnpj: '46811890000112',
+    origens: [{
+      id: 'o-jaboatao',
+      cidade: 'Jaboatão dos Guararapes',
+      canal: 'ATACADO',
+      cnpjRaiz: '46811890',
+      generalidades: generalidadeTransf,
+      generalidadesAlternativas: comTabelaTransferencia ? [{ ...generalidadeTransf, tipoCalculo: 'PERCENTUAL', grupoTabelaAlternativa: 'TRANSFERENCIA' }] : [],
+      vigenciasAlternativas: {},
+      rotas: comTabelaTransferencia ? [rotaTransf(null), rotaTransf('TRANSFERENCIA')] : [rotaTransf(null)],
+      cotacoes: comTabelaTransferencia ? [cotacaoPrincipalTransf, cotacaoTransf] : [cotacaoPrincipalTransf],
+      taxasEspeciais: [],
+    }],
+  }]));
+}
+
+const CNPJ_CPX = '10158356001930';
+const CNPJ_CPX_OUTRA = '10158356000110';
+const CNPJ_ITR = '15426874000100';
+const CNPJ_CLIENTE = '99888777000100';
+
+const cteTransferencia = (remetente, destinatario, extra = {}) => ({
+  transportadora: 'CSRG TRANSPORTES LTDA',
+  cnpj_transportadora: '46811890000112',
+  cidade_origem: 'JABOATAO DOS GUARARAPES',
+  uf_origem: 'PE',
+  ibge_origem: '2607901',
+  cidade_destino: 'RECIFE',
+  uf_destino: 'PE',
+  ibge_destino: '2611606',
+  canal: 'ATACADO',
+  peso: 100,
+  valor_nf: 10000,
+  valor_cte: 80,
+  documento_remetente: remetente,
+  documento_destinatario: destinatario,
+  data_emissao: '2026-10-21',
+  ...extra,
+});
+
+const calcularTransf = (cte, base = baseTransferencia()) => processarCte(cte, base, null, '', { ignorarCubagem: true });
+
+test('transferência: CPX -> CPX usa a tabela TRANSFERENCIA automaticamente', () => {
+  const r = calcularTransf(cteTransferencia(CNPJ_CPX, CNPJ_CPX_OUTRA));
+  assert.equal(r.valor_calculado, 80);
+  assert.equal(r.detalhes_calculo.transferencia_entre_unidades, true);
+  assert.equal(r.detalhes_calculo.transferencia_motivo, 'cnpj_grupo');
+});
+
+test('transferência: CPX -> ITR (outra empresa do grupo) também é transferência', () => {
+  assert.equal(calcularTransf(cteTransferencia(CNPJ_CPX, CNPJ_ITR)).valor_calculado, 80);
+});
+
+test('transferência: venda para cliente fica na tabela principal', () => {
+  const r = calcularTransf(cteTransferencia(CNPJ_CPX, CNPJ_CLIENTE));
+  assert.equal(r.valor_calculado, 500);
+  assert.ok(!r.detalhes_calculo.transferencia_entre_unidades);
+});
+
+test('transferência: devolução de cliente para a CPX não é transferência', () => {
+  assert.equal(calcularTransf(cteTransferencia(CNPJ_CLIENTE, CNPJ_CPX)).valor_calculado, 500);
+});
+
+test('transferência: mesma raiz fora do grupo não é transferência', () => {
+  assert.equal(calcularTransf(cteTransferencia('11222333000100', '11222333000280')).valor_calculado, 500);
+});
+
+test('transferência: sem CNPJ do destinatário fica na principal', () => {
+  assert.equal(calcularTransf(cteTransferencia(CNPJ_CPX, '')).valor_calculado, 500);
+});
+
+test('transferência: sem remetente usa o emissor da chave da NF-e', () => {
+  const cte = cteTransferencia('', CNPJ_ITR, { chave_nfe: '26261010158356001930550010006279091458855440' });
+  assert.equal(calcularTransf(cte).valor_calculado, 80);
+});
+
+test('transferência manual (contingência do auditor) sem CNPJ do destinatário', () => {
+  const r = calcularTransf(cteTransferencia(CNPJ_CPX, '', { transferencia_manual: true }));
+  assert.equal(r.valor_calculado, 80);
+  assert.equal(r.detalhes_calculo.transferencia_motivo, 'manual');
+  assert.equal(r.detalhes_calculo.transferencia_manual, true);
+});
+
+test('transferência manual sem tabela TRANSFERENCIA cadastrada: principal com aviso', () => {
+  const r = calcularTransf(cteTransferencia(CNPJ_CPX, '', { transferencia_manual: true }), baseTransferencia({ comTabelaTransferencia: false }));
+  assert.equal(r.valor_calculado, 500);
+  assert.match(r.detalhes_calculo.aviso_transferencia, /não tem tabela TRANSFERENCIA/);
+});
+
+test('motivoTransferenciaCte exige remetente e destinatário do grupo', () => {
+  assert.equal(motivoTransferenciaCte({ documento_remetente: CNPJ_CPX, documento_destinatario: CNPJ_ITR }), 'cnpj_grupo');
+  assert.equal(motivoTransferenciaCte({ documento_remetente: CNPJ_CPX, documento_destinatario: CNPJ_CLIENTE }), '');
+  assert.equal(motivoTransferenciaCte({ documento_remetente: CNPJ_CLIENTE, documento_destinatario: CNPJ_CPX }), '');
+  assert.equal(motivoTransferenciaCte({ transferencia_manual: true }), 'manual');
+});
+
+test('montarCorrecoesCalculoFatura leva a marcação manual de transferência para o recálculo', () => {
+  const chave = '26261046811890000112570010000251181613632880';
+  const { transferenciaPorChave } = montarCorrecoesCalculoFatura([
+    { id: 'a', chave_cte: chave, transferencia_manual: true },
+    { id: 'b', chave_cte: '26261046811890000112570010000251191613632881', transferencia_manual: false },
+  ]);
+  assert.deepEqual(Object.keys(transferenciaPorChave), [chave]);
 });

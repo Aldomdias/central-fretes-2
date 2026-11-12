@@ -1020,6 +1020,8 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
           {linhaDetalhe('Origem tabela', det.origem_cidade || '-')}
           {linhaDetalhe('Tabela validada?', det.origem_validada ? `Sim${det.origem_validado_por ? ` (${det.origem_validado_por})` : ''}` : 'Não')}
           {det.calculo_devolucao_invertida ? linhaDetalhe('Regra devolucao', det.observacao_devolucao || 'Calculado pela rota de ida equivalente.', true) : null}
+          {det.transferencia_entre_unidades ? linhaDetalhe('Transferencia', det.observacao_transferencia || 'Calculado pela tabela TRANSFERENCIA.', true) : null}
+          {det.aviso_transferencia ? linhaDetalhe('Transferencia', det.aviso_transferencia, true) : null}
           {linhaDetalhe('Rota/cotacao', det.rota_nome || '-')}
           {linhaDetalhe('Peso considerado', pesoDetalhe > 0 ? `${numeroFmt(pesoDetalhe, 3)} kg` : '-', true)}
           {linhaDetalhe('Valor NF', valorNfDetalhe > 0 ? dinheiroMaybe(valorNfDetalhe) : '-', true)}
@@ -2588,7 +2590,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       if (!chaves.length) throw new Error('Esta fatura não possui CT-es com chave para recalcular.');
 
       // Correcoes manuais da fatura (NF, peso, endereco, canal, reentrega, forma de peso): mesma montagem do Reavaliar do robo.
-      const { valorNfOverridePorChave, trackingOverridePorChave, reentregaPorChave, modoPesoPorChave, chavesAutoPeso } = montarCorrecoesCalculoFatura(alvo, {
+      const { valorNfOverridePorChave, trackingOverridePorChave, reentregaPorChave, transferenciaPorChave, modoPesoPorChave, chavesAutoPeso } = montarCorrecoesCalculoFatura(alvo, {
         modoPorId,
         pesoTrackingMaisProximo: Boolean(fatura.peso_tracking_mais_proximo),
       });
@@ -2597,6 +2599,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         valorNfOverridePorChave,
         trackingOverridePorChave,
         reentregaPorChave,
+        transferenciaPorChave,
         deveCancelar: () => cancelarRecalculoRef.current,
       };
       let { registros, encontrados, naoEncontrados } = await processarCtesPorChave(chaves, setProgressoRecalculo, {
@@ -3568,6 +3571,19 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                                 }, event.target.checked ? 'Reentrega marcada. Recalcule para aplicar 50% do valor da ida.' : 'Reentrega desmarcada.')}
                               />
                               <span>Aplicar 50% do calculo da ida</span>
+                            </span>
+                          </label>
+                          <label className="field">Transferencia entre unidades
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 36 }}>
+                              <input
+                                type="checkbox"
+                                checked={Boolean(item.transferencia_manual)}
+                                onChange={(event) => atualizarDetalheManual(item, {
+                                  transferencia_manual: event.target.checked,
+                                  motivo_divergencia: event.target.checked ? 'CT-e marcado manualmente como transferencia entre unidades: calcular pela tabela TRANSFERENCIA.' : item.motivo_divergencia,
+                                }, event.target.checked ? 'Transferencia marcada. Recalcule para aplicar a tabela TRANSFERENCIA da transportadora.' : 'Transferencia desmarcada. Recalcule para voltar ao calculo automatico.')}
+                              />
+                              <span>{parseDetalhesCalculoAuditoria(item.detalhes_calculo || base?.detalhes_calculo).transferencia_entre_unidades && !item.transferencia_manual ? 'Ja identificada automaticamente (CNPJ do grupo)' : 'Calcular pela tabela TRANSFERENCIA'}</span>
                             </span>
                           </label>
                           {semValorNf ? (
@@ -4990,6 +5006,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       const valorNfOverridePorChave = {};
       const trackingOverridePorChave = {};
       const reentregaPorChave = {};
+      const transferenciaPorChave = {};
       resultadoCtesAvulsos.forEach((row) => {
         const chave = chaveResultadoAuditoria(row);
         if (!chave) return;
@@ -5012,6 +5029,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
           };
         }
         if (row.reentrega_manual) reentregaPorChave[chave] = true;
+        if (row.transferencia_manual) transferenciaPorChave[chave] = true;
       });
       const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(ids, setProgressoCtesAvulsos, {
         ignorarCubagem: usarPesoCteAvulso,
@@ -5020,6 +5038,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         valorNfOverridePorChave,
         trackingOverridePorChave,
         reentregaPorChave,
+        transferenciaPorChave,
       });
       const registrosComFaturas = await enriquecerCtesComFaturas(registros);
       setResultadoCtesAvulsos(registrosComFaturas);
@@ -7308,6 +7327,18 @@ ${portaisLaudo.length ? `
                                       })}
                                     />
                                     <span>Aplicar 50% do calculo da ida</span>
+                                  </span>
+                                </label>
+                                <label className="field">Transferencia entre unidades
+                                  <span style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 36 }}>
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(row.transferencia_manual)}
+                                      onChange={(event) => atualizarCteAvulsoManual(row, {
+                                        transferencia_manual: event.target.checked,
+                                      })}
+                                    />
+                                    <span>{parseDetalhesCalculoAuditoria(row.detalhes_calculo).transferencia_entre_unidades && !row.transferencia_manual ? 'Ja identificada automaticamente (CNPJ do grupo)' : 'Calcular pela tabela TRANSFERENCIA'}</span>
                                   </span>
                                 </label>
                                 {semValorNf ? (

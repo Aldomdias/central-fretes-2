@@ -355,13 +355,14 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
       aoProgredir({ fase: 'corrigindo_tracking', atual: 0, total: semCalculo.length });
       try { await corrigirBaseCtesPeloTracking(semCalculo); } catch (e) { console.warn('[robo] correcao pelo tracking falhou:', e?.message || e); }
     }
-    // Mesmas correcoes manuais do Recalcular da fatura (endereco, canal, NF/peso, reentrega, forma de peso da linha).
+    // Mesmas correcoes manuais do Recalcular da fatura (endereco, canal, NF/peso, reentrega, transferencia, forma de peso da linha).
     const correcoes = montarCorrecoesCalculoFatura(lista.filter(precisaCalcular), { pesoTrackingMaisProximo: pesoMaisProximo });
     const opcoesBase = {
       ignorarCubagem: true,
       valorNfOverridePorChave: correcoes.valorNfOverridePorChave,
       trackingOverridePorChave: correcoes.trackingOverridePorChave,
       reentregaPorChave: correcoes.reentregaPorChave,
+      transferenciaPorChave: correcoes.transferenciaPorChave,
     };
     const modoDoLote = (lote, forcar) => Object.fromEntries(lote
       .map((c) => [c, forcar || (pesoMaisProximo ? null : correcoes.modoPesoPorChave[c])])
