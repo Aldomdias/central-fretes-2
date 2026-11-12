@@ -632,7 +632,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
         </div>
         {(temLista || transportadora || auditor) && (
           <div className="compact" style={{ marginTop: 8, color: '#475569', fontSize: 13 }}>
-            {temLista ? `${inteiro(lista.itens.length)} número(s) lido(s)${lista.repetidosNaLista ? ` · ${inteiro(lista.repetidosNaLista)} repetido(s) na lista ignorado(s)` : ''}` : transportadora ? `Todas as faturas de ${transportadora}${auditor ? ` do auditor ${auditor}` : ''}` : `Faturas em aberto de ${auditor} (não pagas e não canceladas)`}{temLista && auditor ? ` · só as do auditor ${auditor}` : ''}
+            {temLista ? `${inteiro(lista.itens.length)} número(s) lido(s)${lista.repetidosNaLista ? ` · ${inteiro(lista.repetidosNaLista)} repetido(s) na lista ignorado(s)` : ''}` : transportadora ? `Todas as faturas de ${transportadora}${auditor ? ` do auditor ${auditor}` : ''}` : `Faturas em aberto de ${auditor} (não pagas; as canceladas ficam no card "Canceladas")`}{temLista && auditor ? ` · só as do auditor ${auditor}` : ''}
             {progresso ? ` · Verificando CT-es no SAP: ${inteiro(progresso.feitas)} de ${inteiro(progresso.total)} faturas...` : ''}
             {ultimaSap ? ` · Partidas de CT-e conforme o relatório SAP importado (último lançamento em ${dataBr(ultimaSap)}).` : ''}
           </div>

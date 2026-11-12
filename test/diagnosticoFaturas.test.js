@@ -261,7 +261,8 @@ test('filtro por auditor: sozinho mostra as em aberto dele; com transportadora o
     { id: 'e', numero_fatura: '14', transportadora: 'XP', auditor_nome: '', status: 'PENDENTE' },
   ];
   const ids = (ls) => ls.map((l) => l.fatura?.id || l.numero);
-  assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, auditor: 'Ana' })), ['a']);
+  // Sozinho: as em aberto e as canceladas (estas so aparecem no card "Canceladas").
+  assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, auditor: 'Ana' })), ['a', 'd']);
   assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, auditor: 'Sem auditor' })), ['e']);
   assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, transportadora: 'WM', auditor: 'Ana' })), ['a', 'b']);
   assert.deepEqual(ids(montarLinhasDiagnostico({ faturas })), []);
