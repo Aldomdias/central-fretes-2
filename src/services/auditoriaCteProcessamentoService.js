@@ -1437,6 +1437,9 @@ function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracio
   // CT-e auditado pela TransGP (achado pela chave na API deles) segue a decisão de lá.
   const pelaTransgp = calcularCtePelaTransgp(cte, contexto);
   if (pelaTransgp) return pelaTransgp;
+  // B2C nunca é lotação (envios B2C são manuais, fora do fluxo): sem tabela/fluxo de lotação e sem
+  // questionamento/autorização para a Operação Lotação. Sem cálculo, fica na auditoria para revisar.
+  if (canalCategoria(pick(cte, ['canal', 'canal_original'])) === 'B2C') return calcularFracionado();
   const porTabela = calcularCtePelaTabelaLotacao(cte, contexto, mapaVinculos);
   if (porTabela && toNumber(porTabela.valor_calculado) > 0) return porTabela;
   const resultado = porTabela || calcularFracionado();
@@ -1447,12 +1450,12 @@ function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracio
 }
 
 // CT-e de lotação (não fracionado): transportadora com tabela de lotação, que aparece no fluxo, ou canal
-// de lotação. Sem DIST na tabela nem no fluxo, quem informa a viagem é a Operação.
+// de lotação. B2C nunca (ex.: TransGP/Movvi B2C não vão para a Operação Lotação). Sem DIST na tabela nem no fluxo, quem informa a viagem é a Operação.
 // Fora: INTERCOMPANY (transferência não tem DIST no fluxo) e transportadora com tabela fracionada cadastrada
 // (SEM_ORIGEM/SEM_ROTA: o fracionado achou a transportadora, o problema é a rota) — ex.: Brasil Web, S3 Cargo.
 function cteDeLotacao(cte, contexto, mapaVinculos, porTabela, resultado = null) {
   const canal = canalCategoria(pick(cte, ['canal', 'canal_original']));
-  if (canal === 'INTERCOMPANY') return false;
+  if (canal === 'INTERCOMPANY' || canal === 'B2C') return false;
   if (porTabela) return true;
   if (['SEM_ORIGEM', 'SEM_ROTA'].includes(resultado?.status_calculo)) return false;
   if (['LOTACAO', 'LOTAÇÃO'].includes(canal)) return true;
@@ -1482,6 +1485,7 @@ function localizarTabelaLotacaoContexto(cte = {}, contexto = null, mapaVinculos 
     ?? contexto.origensFracionadoPorNome.get(normalizeTransportadoraCompare(tabela.nome))
     ?? 0;
   const canal = canalCategoria(pick(cte, ['canal', 'canal_original']));
+  if (canal === 'B2C') return null;
   const somenteLotacao = totalOrigensFracionado === 0;
   const canalLotacao = canal === 'INTERCOMPANY' || canal === 'LOTACAO' || canal === 'LOTAÇÃO';
   if (!somenteLotacao && !canalLotacao) return null;
