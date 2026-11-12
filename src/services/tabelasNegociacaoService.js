@@ -1995,10 +1995,20 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
       }
       anterioresEncerradas = await encerrarVigenciasAnterioresDb(idsOrigens, grupo, inicioVigencia);
     }
+    // Nova aba com vigência (ex.: Passeio + Agrícola a partir de 12/11): grava só
+    // o início na aba, sem encerrar outras abas — várias abas com a mesma data
+    // passam a valer juntas no lugar da principal.
+    const vigenciaNaAba = modoTabela === 'NOVA_ABA' && Boolean(dados.vigencia_na_aba || dados.vigenciaNaAba);
+    if (vigenciaNaAba) {
+      for (const origemId of idsOrigens) {
+        // eslint-disable-next-line no-await-in-loop
+        await salvarVigenciaTabelaAlternativaDb(origemId, grupo, { inicio: inicioVigencia, fim: '' });
+      }
+    }
     reajusteVigencia = {
       grupo,
       modo: modoTabela,
-      inicio: modoTabela === 'SUBSTITUIR_VIGENCIA' ? inicioVigencia : '',
+      inicio: modoTabela === 'SUBSTITUIR_VIGENCIA' || vigenciaNaAba ? inicioVigencia : '',
       origens: idsOrigens.length,
       cidades: baseReajuste[0].origens.map((origem) => origem.cidade),
       vigencias_anteriores_encerradas: anterioresEncerradas,

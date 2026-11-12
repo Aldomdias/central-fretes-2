@@ -46,6 +46,9 @@ export default function PublicacaoOficialModal({ tabela, titulo, onCancelar, onC
   const [cidadesNovas, setCidadesNovas] = useState({});
   const [modoTabela, setModoTabela] = useState('SUBSTITUIR_VIGENCIA');
   const [nomeAba, setNomeAba] = useState('');
+  // Só no modo "nova aba": gravar a data como vigência da aba. Sem isso a aba
+  // entra sem vigência e concorre com a principal em qualquer data.
+  const [vigenciaNaAba, setVigenciaNaAba] = useState(false);
   const [inicioVigencia, setInicioVigencia] = useState(tabela?.data_inicio_vigencia ? String(tabela.data_inicio_vigencia).slice(0, 10) : hojeISO());
 
   useEffect(() => {
@@ -133,6 +136,7 @@ export default function PublicacaoOficialModal({ tabela, titulo, onCancelar, onC
       data_inicio_vigencia: inicioVigencia,
       modo_tabela: modoTabela,
       nome_aba: String(nomeAba).trim(),
+      vigencia_na_aba: modoTabela === 'NOVA_ABA' && vigenciaNaAba,
       mapa_origens: mapa,
     });
   }
@@ -218,9 +222,22 @@ export default function PublicacaoOficialModal({ tabela, titulo, onCancelar, onC
                   <span>Incluir como nova aba de tabela (sem encerrar a atual)</span>
                 </label>
                 {modoTabela === 'NOVA_ABA' ? (
-                  <label>Nome da nova aba
-                    <input value={nomeAba} onChange={(e) => setNomeAba(e.target.value)} placeholder="Ex.: Tabela OTR" />
-                  </label>
+                  <>
+                    <label>Nome da nova aba
+                      <input value={nomeAba} onChange={(e) => setNomeAba(e.target.value)} placeholder="Ex.: Tabela OTR" />
+                    </label>
+                    <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
+                      <input type="checkbox" checked={vigenciaNaAba} onChange={(e) => setVigenciaNaAba(e.target.checked)} />
+                      <span>
+                        Gravar o início da vigência nesta aba — a partir da data, esta aba (e outras abas com a mesma data) substituem a tabela principal na Auditoria; antes dela continua a principal.
+                      </span>
+                    </label>
+                    {!vigenciaNaAba ? (
+                      <div style={{ fontSize: 12, color: '#92400e', background: '#fef3c7', borderRadius: 8, padding: '6px 10px', marginTop: 6 }}>
+                        Sem marcar, a aba entra <strong>sem vigência</strong>: concorre com a tabela principal em qualquer data (como OTR/rodas). A data abaixo não fica registrada na aba.
+                      </div>
+                    ) : null}
+                  </>
                 ) : null}
               </div>
             ) : null}
