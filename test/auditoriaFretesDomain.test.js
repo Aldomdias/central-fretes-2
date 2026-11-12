@@ -227,3 +227,16 @@ test('conciliacao SAP casa partida com CNPJ de outra raiz do grupo da transporta
   assert.equal(comGrupo[0].fatura_id, 'f1');
   assert.equal(comGrupo[0].resultado, 'LANCADA_FINANCEIRO');
 });
+
+test('referencia do SAP lida como numero de planilha ("548.0") casa com a fatura 548', async () => {
+  const { normalizarReferenciaSap } = await import('../src/utils/auditoriaFretesDomain.js');
+  assert.equal(normalizarReferenciaSap('548.0'), '548');
+  assert.equal(normalizarReferenciaSap(' 2489302.00 '), '2489302');
+  assert.equal(normalizarReferenciaSap('143429-3'), '143429-3');
+  assert.equal(normalizarReferenciaSap('12.5'), '12.5');
+  const faturas = [{ id: 'f548', numero_fatura: '548', transportadora: 'FLORESTA', cnpj_transportadora: '48733968000153', valor_fatura: 3086.18, status: 'REAUDITADA_CENTRAL' }];
+  const linha = { 'Referência': '548.0', 'Nome do fornecedor': 'TAPATI ENCOMENDAS LTDA', 'Montante (ME)': -3086.18, 'Nº ID fiscal 1': '48733968000153', 'Status comp.': '1', 'Lançamento contábil': '1900000001', 'Lançto.compensação': '2005700988' };
+  const [r] = conciliarPagamentosSap(faturas, [linha], new Map());
+  assert.equal(r.fatura_id, 'f548');
+  assert.equal(r.resultado, 'PAGO');
+});
