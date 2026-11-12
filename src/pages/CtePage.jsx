@@ -2945,7 +2945,9 @@ export default function CtePage({ transportadoras = [] }) {
     }
 
     try {
-      const dadosAnalise = await buscarCtesParaAnalise(filtrosBusca, setProgressoAnalise);
+      const dadosAnalise = await buscarCtesParaAnalise(filtrosBusca, (progresso) => {
+        setProgressoAnalise({ etapa: 'carregando_ctes_analise', ...progresso });
+      });
       setRowsAnalise(dadosAnalise);
     } catch (error) {
       setRowsAnalise([]);
@@ -3138,9 +3140,9 @@ export default function CtePage({ transportadoras = [] }) {
   return (
     <div className="page-shell cte-page">
       <AmdProcessingOverlay
-        ativo={(carregando || carregandoAnalise) && progressoAnalise?.etapa === 'buscando_ctes'}
+        ativo={carregando || carregandoAnalise}
         progresso={progressoAnalise || { etapa: 'buscando_ctes', carregados: 0, total: null }}
-        mensagemRodape="Buscando somente o recorte informado. Bases maiores são carregadas em lotes."
+        mensagemRodape="Buscando somente o recorte informado. Bases maiores são carregadas em lotes. A tela libera sozinha ao terminar."
       />
       <div className="page-top between">
         <div className="page-header">
