@@ -98,14 +98,15 @@ export const nomeAuditor = (f) => String(f?.auditor_nome || '').trim() || 'Sem a
 // Monta as linhas do diagnostico. Com lista: uma linha por numero colado (mais de uma so se o numero
 // existir em faturas ativas diferentes). Sem lista: todas as faturas da transportadora escolhida.
 // Auditor: so as faturas dele. Escolhido sozinho (sem lista e sem transportadora), mostra as que ele
-// ainda esta tratando: nao pagas e nao canceladas (protocolo, Fenix, previsao...).
+// ainda esta tratando: nao pagas (protocolo, Fenix, previsao...), mais as canceladas para o card delas.
 export function montarLinhasDiagnostico({ itens = [], faturas = [], transportadora = '', auditor = '' }) {
   const daTransportadora = criarFiltroTransportadora(faturas, transportadora);
   const doAuditor = (f) => !auditor || nomeAuditor(f) === auditor;
   if (!itens.length) {
     if (transportadora) return faturas.filter((f) => daTransportadora(f) && doAuditor(f)).map((f) => linhaDaFatura(f));
     if (!auditor) return [];
-    return faturas.filter((f) => doAuditor(f) && !inativa(f) && situacaoPagamento(f) === 'ABERTA').map((f) => linhaDaFatura(f));
+    // As canceladas entram tambem: ficam fora da lista e so aparecem no card "Canceladas".
+    return faturas.filter((f) => doAuditor(f) && (inativa(f) || situacaoPagamento(f) === 'ABERTA')).map((f) => linhaDaFatura(f));
   }
   const indice = new Map();
   faturas.forEach((f) => {
