@@ -120,6 +120,70 @@ export async function marcarAgrupamentoManual(ids = [], marcar = true, usuario =
   return gravadas;
 }
 
+// Cancela faturas pela tela Diagnostico (ex.: vencidas que nao serao pagas) ou desfaz. O status anterior
+// fica no historico (status_anterior) e volta ao reativar. faturas: [{ id, status }].
+// Devolve os campos gravados por id, para atualizar a tela sem recarregar tudo.
+export const ACAO_CANCELADA_DIAGNOSTICO = 'CANCELADA_PELO_DIAGNOSTICO';
+export async function marcarCanceladas(faturas = [], cancelar = true, usuario = '', motivo = '') {
+  if (!isSupabaseConfigured() || !faturas.length) return new Map();
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const ids = faturas.map((f) => f.id);
+  // Status de destino por fatura.
+  const destino = new Map();
+  if (cancelar) {
+    faturas.forEach((f) => destino.set(f.id, { de: f.status || null, para: 'CANCELADA' }));
+  } else {
+    const ultimos = new Map();
+    for (let i = 0; i < ids.length; i += 200) {
+      // eslint-disable-next-line no-await-in-loop
+      const { data, error } = await client.from('auditoria_fatura_historico')
+        .select('fatura_id, status_anterior, created_at')
+        .eq('acao', ACAO_CANCELADA_DIAGNOSTICO)
+        .in('fatura_id', ids.slice(i, i + 200))
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      (data || []).forEach((r) => { if (!ultimos.has(r.fatura_id)) ultimos.set(r.fatura_id, r.status_anterior); });
+    }
+    // Sem registro do status anterior (cancelada fora desta tela): volta como pendente.
+    faturas.forEach((f) => {
+      const anterior = ultimos.get(f.id);
+      destino.set(f.id, { de: f.status || null, para: anterior && !['CANCELADA', 'SUBSTITUIDA'].includes(anterior) ? anterior : 'PENDENTE' });
+    });
+  }
+  const porStatus = new Map();
+  destino.forEach(({ para }, id) => porStatus.set(para, [...(porStatus.get(para) || []), id]));
+  const gravadas = new Map();
+  for (const [status, lista] of porStatus) {
+    for (let i = 0; i < lista.length; i += 200) {
+      // eslint-disable-next-line no-await-in-loop
+      const { data, error } = await client.from('faturas').update({ status }).in('id', lista.slice(i, i + 200)).select('id');
+      if (error) throw error;
+      (data || []).forEach((r) => gravadas.set(r.id, { status }));
+    }
+  }
+  const textoMotivo = String(motivo || '').trim();
+  const historico = [...gravadas.keys()].map((id) => ({
+    id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `canc-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    fatura_id: id,
+    created_at: agora,
+    acao: cancelar ? ACAO_CANCELADA_DIAGNOSTICO : 'REATIVADA_PELO_DIAGNOSTICO',
+    status_anterior: destino.get(id)?.de || null,
+    status_novo: destino.get(id)?.para || null,
+    descricao: cancelar
+      ? `Cancelada pela tela Diagnóstico (não será paga).${textoMotivo ? ` Motivo: ${textoMotivo}` : ''}`
+      : 'Cancelamento desfeito pela tela Diagnóstico: fatura reativada.',
+    usuario_nome: usuario || null,
+    usuario_email: '',
+  }));
+  for (let i = 0; i < historico.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await client.from('auditoria_fatura_historico').insert(historico.slice(i, i + 200));
+    if (error) { console.warn('Historico do cancelamento nao registrado:', error.message); break; }
+  }
+  return gravadas;
+}
+
 // Pedido de estorno da Fenix ao financeiro (antes do protocolo). acao: 'ENVIADO' (enviada para ajustar),
 // 'RETORNADO' (financeiro devolveu, falta protocolo) ou '' (desfaz). Devolve os campos gravados por id.
 const DESCRICAO_FENIX = {
