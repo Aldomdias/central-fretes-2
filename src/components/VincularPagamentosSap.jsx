@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { listarSapSemVinculo, vincularLinhaSapAFatura } from '../services/auditoriaFretesService';
 import { obterRaizCnpj } from '../utils/cnpj';
 import { carregarGruposRaizTransportadora } from '../services/transportadoraCnpjsService';
@@ -65,11 +65,14 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
   const [buscaManual, setBuscaManual] = useState({});
   const [gruposRaiz, setGruposRaiz] = useState(new Map());
   const [autoVinculando, setAutoVinculando] = useState(false);
+  // Roda o vinculo automatico uma vez por carga da fila (sem clique), sem repetir em loop.
+  const autoExecutado = useRef(false);
 
   const carregar = async () => {
     setCarregando(true);
     setErro('');
     try {
+      autoExecutado.current = false;
       setLinhas(await listarSapSemVinculo());
       try { setGruposRaiz(await carregarGruposRaizTransportadora()); } catch (e) { console.warn('[Vincular SAP] grupos de raiz', e?.message || e); }
     } catch (error) {
@@ -156,9 +159,9 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
     return pares;
   }, [linhas, state.faturas, gruposRaiz]);
 
-  const vincularAutomaticos = async () => {
+  const vincularAutomaticos = async ({ silencioso = false } = {}) => {
     if (!paresAutomaticos.length) return;
-    if (!window.confirm(`Vincular ${paresAutomaticos.length} linha(s) do SAP com mesmo numero de fatura e CNPJ cadastrado na transportadora?`)) return;
+    if (!silencioso && !window.confirm(`Vincular ${paresAutomaticos.length} linha(s) do SAP com mesmo numero de fatura e CNPJ cadastrado na transportadora?`)) return;
     setAutoVinculando(true);
     setErro('');
     setMensagem('');
@@ -170,7 +173,7 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
         atual = await vincularLinhaSapAFatura(atual, linha, faturaAtual, usuarioNome);
         feitas.add(linha.id);
       }
-      setMensagem(`${feitas.size} linha(s) do SAP vinculada(s) automaticamente.`);
+      setMensagem(`${feitas.size} linha(s) do SAP vinculada(s) automaticamente (mesmo numero de fatura + CNPJ cadastrado na transportadora).`);
     } catch (error) {
       setErro(`${feitas.size} vinculada(s) antes do erro: ${error.message || error}`);
     } finally {
@@ -179,6 +182,14 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
       setAutoVinculando(false);
     }
   };
+
+  // Automatico: assim que a fila e os CNPJs da transportadora carregam, vincula o que casa pela regra.
+  useEffect(() => {
+    if (carregando || autoVinculando || autoExecutado.current || !paresAutomaticos.length) return;
+    autoExecutado.current = true;
+    vincularAutomaticos({ silencioso: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carregando, paresAutomaticos]);
 
   const vincular = async (fatura, linha) => {
     const alerta = obterRaizCnpj(linha.cnpj) && !mesmoGrupoCnpj(fatura, linha, gruposRaiz)
@@ -212,7 +223,7 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
           </p>
         </div>
         <div className="audit-form-actions">
-          <button className="btn-primary" onClick={vincularAutomaticos} disabled={carregando || autoVinculando || !paresAutomaticos.length}
+          <button className="btn-primary" onClick={() => vincularAutomaticos()} disabled={carregando || autoVinculando || !paresAutomaticos.length}
             title="Mesmo numero de fatura e CNPJ do SAP cadastrado na transportadora (principal, origem ou CNPJ adicional)">
             {autoVinculando ? 'Vinculando...' : `Vincular automaticos (${paresAutomaticos.length})`}
           </button>
