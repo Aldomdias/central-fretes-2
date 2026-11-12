@@ -4,6 +4,7 @@ import {
   aplicarReauditoriaDetalhes,
   calcularDashboard,
   conciliarPagamentos,
+  conciliarPagamentosSap,
   faixaVencimento,
   gerarProtocolo,
   montarArquivoDoccobEdi,
@@ -210,4 +211,19 @@ test('vinculo fatura x detalhe tolera zeros a esquerda e serie divergente', () =
 test('conversao de data Excel preserva formato ISO', () => {
   assert.equal(excelDateToISO('2026-06-15'), '2026-06-15');
   assert.equal(excelDateToISO('15/06/2026'), '2026-06-15');
+});
+
+test('conciliacao SAP casa partida com CNPJ de outra raiz do grupo da transportadora (indexado pela raiz da fatura)', () => {
+  const faturas = [{ id: 'f1', numero_fatura: '18903', transportadora: 'TAP EXPRESS LTDA', cnpj_transportadora: '11222333000144', valor_fatura: 25925.76, status: 'REAUDITADA_CENTRAL' }];
+  const linha = {
+    'Referência': '18903', 'Nome do fornecedor': 'L. J. TRANSPORTES RODOVIARIOS PRESI', 'Montante (ME)': -25925.76,
+    'Nº ID fiscal 1': '02102588000110', 'Status comp.': '2', 'Lançamento contábil': '1900005792', 'Lançto.compensação': '',
+  };
+  const semGrupo = conciliarPagamentosSap(faturas, [linha], new Map());
+  assert.equal(semGrupo[0].resultado, 'CNPJ_DIVERGENTE');
+  // Cadastro com nome diferente da fatura ("TAP EXPRESS"), mas raiz da fatura -> grupo com a raiz da L. J.
+  const grupos = new Map([['TAP EXPRESS', ['02102588']], ['11222333', ['11222333', '02102588']]]);
+  const comGrupo = conciliarPagamentosSap(faturas, [linha], grupos);
+  assert.equal(comGrupo[0].fatura_id, 'f1');
+  assert.equal(comGrupo[0].resultado, 'LANCADA_FINANCEIRO');
 });
