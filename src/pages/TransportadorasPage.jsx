@@ -436,7 +436,25 @@ function exportarTdesCadastradas(regras, transportadoraNome) {
   XLSX.writeFile(workbook, `tde-${nomeSeguro || 'transportadora'}.xlsx`);
 }
 
+function CabecalhoRecolhivel({ titulo, resumo, aberto, onToggle, tituloStyle }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={aberto}
+      style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left', color: 'inherit', font: 'inherit' }}
+    >
+      <span style={tituloStyle}>
+        <span style={{ display: 'inline-block', width: 16, transition: 'transform .15s', transform: aberto ? 'rotate(90deg)' : 'none' }}>▸</span>
+        {titulo}
+      </span>
+      <span style={{ fontSize: 12, color: 'var(--muted, #64748b)', whiteSpace: 'nowrap' }}>{resumo}{aberto ? ' · recolher' : ' · clique para expandir'}</span>
+    </button>
+  );
+}
+
 function TdeSection({ transportadora, store }) {
+  const [aberto, setAberto] = useState(false);
   const inputRef = useRef(null);
   const [feedback, setFeedback] = useState('');
   const regras = normalizarRegrasTde(transportadora.tdeCnpjs, transportadora.tde);
@@ -467,7 +485,14 @@ function TdeSection({ transportadora, store }) {
 
   return (
     <div className="form-card" style={{ marginTop: 12, padding: 16, background: '#f8fafc', borderRadius: 8 }}>
-      <strong style={{ fontSize: '0.9rem' }}>TDE por CNPJ do destinatário</strong>
+      <CabecalhoRecolhivel
+        titulo="TDE por CNPJ do destinatário"
+        resumo={`${regras.length} CNPJ(s) com TDE`}
+        aberto={aberto}
+        onToggle={() => setAberto((v) => !v)}
+        tituloStyle={{ fontSize: '0.9rem', fontWeight: 700 }}
+      />
+      {aberto ? <>
       <p style={{ fontSize: 12, color: 'var(--muted)', margin: '4px 0 10px' }}>
         Vale para toda a transportadora (todas as origens). Aplicada no Simulador Realizado e na Auditoria CT-e quando o
         documento (CNPJ) do destinatário do CT-e está cadastrado. Cada CNPJ pode ter um valor diferente.
@@ -480,6 +505,7 @@ function TdeSection({ transportadora, store }) {
         <input hidden ref={inputRef} type="file" accept=".xlsx,.xls,.csv" onChange={importarCnpjs} />
         <span style={{ fontSize: 12, color: 'var(--muted)' }}><strong>{regras.length}</strong> CNPJ(s) com TDE</span>
       </div>
+      </> : null}
       {feedback && <div className="mini-feedback info top-space" style={{ marginTop: 8 }}>{feedback}</div>}
     </div>
   );
@@ -1822,6 +1848,7 @@ function CnpjsAdicionaisTransportadoraSection({ transportadora, podeEditar }) {
   const [descricao, setDescricao] = useState('');
   const [carregando, setCarregando] = useState(false);
   const [feedback, setFeedback] = useState('');
+  const [aberto, setAberto] = useState(false);
 
   const carregar = async () => {
     if (!transportadora?.id) return;
@@ -1872,7 +1899,14 @@ function CnpjsAdicionaisTransportadoraSection({ transportadora, podeEditar }) {
 
   return (
     <div className="panel-card top-space">
-      <div className="panel-title">CNPJs adicionais para vínculo</div>
+      <CabecalhoRecolhivel
+        titulo={<span className="panel-title" style={{ margin: 0 }}>CNPJs adicionais para vínculo</span>}
+        resumo={`Principal ${formatarCnpj(transportadora.cnpj) || '-'} · ${itens.length} adicional(is)`}
+        aberto={aberto}
+        onToggle={() => setAberto((v) => !v)}
+        tituloStyle={{ display: 'inline-flex', alignItems: 'center' }}
+      />
+      {aberto ? <>
       <p className="compact">Cadastre outros CNPJs desta transportadora. O CNPJ adicional vale para pagamentos (SAP) e para CT-es na auditoria. O vínculo é pela raiz do CNPJ (8 primeiros dígitos): filiais da mesma raiz entram automaticamente. Nunca há vínculo por aproximação de nome, e a mesma raiz não pode estar em duas transportadoras.</p>
       <div className="summary-strip top-space-sm" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
         <div><span>CNPJ principal</span><strong>{formatarCnpj(transportadora.cnpj) || '-'}</strong></div>
@@ -1892,6 +1926,7 @@ function CnpjsAdicionaisTransportadoraSection({ transportadora, podeEditar }) {
         <input value={descricao} onChange={(event) => setDescricao(event.target.value)} placeholder="Descrição opcional, ex.: filial SAP" />
         <button type="button" className="btn-primary" onClick={adicionar} disabled={carregando || !cnpjPreenchidoValido(cnpj)}>{carregando ? 'Salvando...' : 'Adicionar CNPJ'}</button>
       </div> : null}
+      </> : null}
       {feedback ? <div className="mini-feedback info top-space-sm">{feedback}</div> : null}
     </div>
   );
