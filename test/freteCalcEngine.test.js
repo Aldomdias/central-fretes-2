@@ -659,3 +659,35 @@ test('tracking agregado le total de unidades e quantidade de itens do raw import
   assert.equal(agregado.cubagem_dividida_por_itens, true);
   assert.ok(Math.abs(agregado.cubagem_total - 7.575) < 0.000001);
 });
+
+test('coringa R$/kg com franquia (coleta/entrega Rodocap): minimo ate a franquia, maior entre minimo e peso x R$/kg acima', () => {
+  const taxaDestino = { taxasExtras: [{ nome: 'Coleta/Entrega', min: 100, valorKg: 0.3, franquiaKg: 100 }] };
+  const ate100 = resolverTaxas({ generalidades: {}, taxaDestino, valorNf: 1000, pesoKg: 100 });
+  assert.equal(ate100.taxaExtra, 100);
+  const acimaAbaixoMinimo = resolverTaxas({ generalidades: {}, taxaDestino, valorNf: 1000, pesoKg: 200 });
+  assert.equal(acimaAbaixoMinimo.taxaExtra, 100); // 200 x 0,30 = 60 < 100
+  const acimaMinimo = resolverTaxas({ generalidades: {}, taxaDestino, valorNf: 1000, pesoKg: 500 });
+  assert.ok(Math.abs(acimaMinimo.taxaExtra - 150) < 1e-9); // 500 x 0,30
+  assert.equal(acimaMinimo.taxasExtrasDetalhes[0].franquiaKg, 100);
+
+  // Sem franquia: maior entre minimo e peso x R$/kg desde o 1o kg.
+  const semFranquia = resolverTaxas({ generalidades: {}, taxaDestino: { taxasExtras: [{ nome: 'x', min: 15, valorKg: 0.2 }] }, valorNf: 0, pesoKg: 90 });
+  assert.equal(semFranquia.taxaExtra, 18);
+});
+
+test('tabela Rodocap: maior entre % NF, R$/kg e minimo + coleta/entrega com franquia + pedagio por fracao', () => {
+  const resultado = calcularFretePercentual({
+    cotacao: { percentual: 2.4, rsKg: 0.8, freteMinimo: 50 },
+    generalidades: { pedagio: 2.5 },
+    taxaDestino: { taxasExtras: [{ nome: 'Coleta/Entrega', min: 100, valorKg: 0.3, franquiaKg: 100 }] },
+    pesoKg: 350,
+    valorNf: 5000,
+  });
+  // % NF = 120; kg = 280; minimo = 50 -> base 280 (kg)
+  assert.equal(resultado.componenteBase, 'kgGarantia');
+  assert.ok(Math.abs(resultado.valorBase - 280) < 1e-9);
+  // coleta/entrega = max(100, 350 x 0,30 = 105) = 105; pedagio = 4 fracoes x 2,50 = 10
+  assert.ok(Math.abs(resultado.taxas.taxaExtra - 105) < 1e-9);
+  assert.equal(resultado.taxas.pedagio, 10);
+  assert.ok(Math.abs(resultado.total - 395) < 1e-9);
+});

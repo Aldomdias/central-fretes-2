@@ -47,6 +47,8 @@ function colunasCoringaTaxas(rows = []) {
     `${nome} R$ fixo`,
     `${nome} R$ por fracao`,
     `${nome} Base kg`,
+    `${nome} R$ por kg`,
+    `${nome} Franquia kg`,
   ]));
 }
 
@@ -60,6 +62,8 @@ function valoresCoringaTaxas(item, colunas = []) {
     valores[`${nome} R$ fixo`] = taxa.valor ?? '';
     valores[`${nome} R$ por fracao`] = taxa.valorPorPeso ?? taxa.valor_por_peso ?? '';
     valores[`${nome} Base kg`] = taxa.pesoBase ?? taxa.peso_base ?? '';
+    valores[`${nome} R$ por kg`] = taxa.valorKg ?? taxa.valor_kg ?? '';
+    valores[`${nome} Franquia kg`] = taxa.franquiaKg ?? taxa.franquia_kg ?? '';
   });
   return valores;
 }
@@ -67,12 +71,16 @@ function valoresCoringaTaxas(item, colunas = []) {
 function extrairCoringasTaxas(row) {
   const coringas = new Map();
   const obter = (nome) => {
-    if (!coringas.has(nome)) coringas.set(nome, { nome, pct: 0, min: 0, valor: 0, valorPorPeso: 0, pesoBase: 0 });
+    if (!coringas.has(nome)) coringas.set(nome, { nome, pct: 0, min: 0, valor: 0, valorPorPeso: 0, pesoBase: 0, valorKg: 0, franquiaKg: 0 });
     return coringas.get(nome);
   };
   Object.entries(row || {}).forEach(([coluna, valor]) => {
     const key = normalizeHeader(coluna);
-    let match = key.match(/^(.*) r por fracao$/);
+    let match = key.match(/^(.*) r por kg$/);
+    if (match && match[1]) { obter(match[1]).valorKg = toNumber(valor); return; }
+    match = key.match(/^(.*) franquia kg$/);
+    if (match && match[1]) { obter(match[1]).franquiaKg = toNumber(valor); return; }
+    match = key.match(/^(.*) r por fracao$/);
     if (match && match[1]) { obter(match[1]).valorPorPeso = toNumber(valor); return; }
     match = key.match(/^(.*) base kg$/);
     if (match && match[1]) { obter(match[1]).pesoBase = toNumber(valor); return; }
@@ -83,7 +91,7 @@ function extrairCoringasTaxas(row) {
     match = key.match(/^(.*) nf$/);
     if (match && match[1] && !['gris', 'ad valorem'].includes(match[1])) obter(match[1]).pct = toNumber(valor);
   });
-  return [...coringas.values()].filter((taxa) => taxa.pct || taxa.min || taxa.valor || taxa.valorPorPeso);
+  return [...coringas.values()].filter((taxa) => taxa.pct || taxa.min || taxa.valor || taxa.valorPorPeso || taxa.valorKg);
 }
 
 export function exportarInconsistenciasExcel({

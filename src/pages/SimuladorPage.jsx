@@ -1141,6 +1141,7 @@ function ResultadoCard({ item }) {
                 <div key={`taxa-vinculada-${indice}`}>
                   {taxa.nome || `Taxa coringa ${indice + 1}`}: <strong>{formatMoney(taxa.valor)}</strong>
                   {Number(taxa.valorPorPeso) > 0 && <span> ({formatMoney(taxa.valorPorPeso)} / {Number(taxa.pesoBase) || 100} kg)</span>}
+                  {Number(taxa.valorKg) > 0 && <span> ({formatMoney(taxa.valorKg)}/kg{Number(taxa.franquiaKg) > 0 ? ` acima de ${Number(taxa.franquiaKg)} kg` : ''}{Number(taxa.min) > 0 ? `, mín. ${formatMoney(taxa.min)}` : ''})</span>}
                   {Number(taxa.pct) > 0 && <span> ({formatPercent(taxa.pct)} sobre NF)</span>}
                   {Number(taxa.valorFixo) > 0 && <span> (fixo)</span>}
                 </div>

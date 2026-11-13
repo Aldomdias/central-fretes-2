@@ -4358,7 +4358,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                                     {taxaExtraDetalhes
                                       .filter((taxa) => !ocultarTaxasZeradas || Number(taxa.valor) > 0)
                                       .map((taxa, i) => linhaDetalhe(
-                                        `${taxa.nome || `Extra ${i + 1}`}${Number(taxa.valorPorPeso) > 0 ? ` (${fmtMaybe(taxa.valorPorPeso)} / ${Number(taxa.pesoBase) || 100} kg)` : ''}`,
+                                        `${taxa.nome || `Extra ${i + 1}`}${Number(taxa.valorPorPeso) > 0 ? ` (${fmtMaybe(taxa.valorPorPeso)} / ${Number(taxa.pesoBase) || 100} kg)` : ''}${Number(taxa.valorKg) > 0 ? ` (${fmtMaybe(taxa.valorKg)}/kg${Number(taxa.franquiaKg) > 0 ? ` acima de ${Number(taxa.franquiaKg)} kg` : ''}${Number(taxa.min) > 0 ? `, mín. ${fmtMaybe(taxa.min)}` : ''})` : ''}`,
                                         fmtMaybe(taxa.valor)
                                       ))}
                                     {linhaDetalhe('Total taxas', fmtMaybe(totalTaxas), true)}
