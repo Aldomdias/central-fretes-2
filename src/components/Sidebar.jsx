@@ -33,8 +33,8 @@ export const MENU_GRUPOS = [
       { chave: 'tracking-prazos', label: 'Acompanhar entregas' },
       { chave: 'torre-controle', label: 'Torre de controle' },
       { chave: 'painel-operacao', label: 'Painel operacao' },
-      { chave: 'lotacao', label: 'Lotacao tabelas' },
-      { chave: 'lotacao-cotacao', label: 'Cotacao lotacao (portal)' },
+      { chave: 'lotacao-cotacao', label: 'Gestao de tabelas lotacao' },
+      { chave: 'lotacao', label: 'Gestao de tabelas lotacao', soSemAcesso: 'lotacao-cotacao' },
       { chave: 'lotacao-operacao', label: 'Lotacao operacao' },
       { chave: 'lotacao-transgp', label: 'Auditoria TransGP (API)' },
       { chave: 'autorizacoes-transporte-b2c', label: 'Autorizacoes transporte B2C' },
@@ -157,7 +157,10 @@ export default function Sidebar({
   const grupos = MENU_GRUPOS
     .map((grupo) => ({
       ...grupo,
-      itens: grupo.itens.filter((item) => item.chave === 'conceito-app' || usuarioTemAcesso(usuario, item.chave)),
+      itens: grupo.itens.filter((item) => {
+        if (item.soSemAcesso && usuarioTemAcesso(usuario, item.soSemAcesso)) return false;
+        return item.chave === 'conceito-app' || usuarioTemAcesso(usuario, item.chave);
+      }),
     }))
     .filter((grupo) => grupo.itens.length);
 

@@ -156,7 +156,7 @@ export async function importarPropostasConvite({ convite, cotacaoId, itens, rota
 
 // Envia a proposta avaliada para a Tabela de Lotacao (lugar oficial). Substitui a tabela
 // anterior da mesma transportadora. basePublicada: 'BRUTO' (com ICMS) ou 'LIQUIDO'.
-export async function oficializarProposta({ nome, propostas, rotasPorChave, basePublicada }) {
+export async function oficializarProposta({ nome, propostas, rotasPorChave, basePublicada, eixosPadrao = 5 }) {
   const linhas = [];
   propostas.forEach((p, i) => {
     const rota = rotasPorChave.get(p.chave);
@@ -174,6 +174,8 @@ export async function oficializarProposta({ nome, propostas, rotasPorChave, base
       ufDestino: rota.uf_destino || '',
       tipo: rota.tipo_veiculo,
       km: rota.km ? Number(rota.km) : null,
+      eixos: Number(p.eixos ?? eixosPadrao) === 6 ? 6 : 5,
+      obs: p.observacao || '',
       prazo: p.prazo_dias ? String(p.prazo_dias) : '',
       icms: p.aliquota_icms != null ? Number(p.aliquota_icms) / 100 : null,
       pedagio: null,
@@ -253,6 +255,18 @@ export async function salvarRegraAntt(regra) {
     { chave: 'lotacao_antt_regra', valor: regra, updated_at: new Date().toISOString() }, { onConflict: 'chave' },
   );
   if (error) throw error;
+}
+
+// Tudo que a ANTT por regra precisa (regra + KM das rotas + matriz ICMS).
+// Usado por todas as telas que leem as tabelas de lotacao.
+export async function carregarContextoAntt() {
+  const { carregarMatrizIcmsUfCentralizada } = await import('../utils/icmsUfMatrix');
+  const [regra, kmRotas, matriz] = await Promise.all([
+    carregarRegraAntt(),
+    carregarKmRotas(),
+    carregarMatrizIcmsUfCentralizada().then((r) => r?.linhas || []).catch(() => []),
+  ]);
+  return { regra, kmRotas, matriz };
 }
 
 // Mapa de KM por par de cidades (gravado em simulador_configuracoes).

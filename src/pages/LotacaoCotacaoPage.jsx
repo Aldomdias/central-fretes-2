@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  baixarModeloAntt, baixarModeloTransportadora, carregarTabelasLotacao, importarTabelaLotacao, obterTabelasPorTipo,
+  baixarModeloTransportadora, carregarTabelasLotacao, importarTabelaLotacao, obterTabelasPorTipo,
 } from '../utils/lotacaoTables';
 import {
   carregarTabelasLotacaoSupabase, lotacaoSupabaseConfigurado, resumoRotasLotacaoSupabase,
@@ -259,7 +259,7 @@ function CartaoRegraAntt({ regra, onSalvar, ocupado }) {
     <div style={{ flex: 1, minWidth: 340, border: '1px solid #cbd5e1', borderRadius: 12, padding: 14, background: '#f0fdf4' }}>
       <b style={{ fontSize: 15 }}>ANTT — regra de cálculo (Tabela B)</b>
       <div style={{ fontSize: 12, color: '#475569', margin: '2px 0 8px' }}>
-        Valor = KM × CCD + CC (só o veículo automotor, retorno vazio fora). Calculado na hora com o KM de cada rota: não existe tabela para importar nem manter.
+        Valor = KM × CCD + CC (só o veículo automotor, retorno vazio fora). Calculado na hora com o KM de cada rota: não existe tabela para importar nem manter. Esta é a ANTT única do sistema: ao salvar, vale também para Tabelas vigentes, alocação da Lotação operação e comparativo de reajuste.
       </div>
       {[5, 6].map((e) => (
         <div key={e} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: '6px 0' }}>
@@ -387,7 +387,7 @@ export default function LotacaoCotacaoPage() {
   }, [regraAntt, matriz]);
   const salvarRegra = async (nova) => {
     setOcupado(true);
-    try { await salvarRegraAntt(nova); setRegraAntt(nova); aviso('Regra da ANTT salva. A análise já foi recalculada.'); } catch (e) { aviso(`Erro ao salvar a regra: ${e.message}`, 'erro'); } finally { setOcupado(false); }
+    try { await salvarRegraAntt(nova); setRegraAntt(nova); aviso('Regra da ANTT salva. A análise já foi recalculada e a aba Tabelas vigentes / Lotação operação passam a usar a nova regra.'); } catch (e) { aviso(`Erro ao salvar a regra: ${e.message}`, 'erro'); } finally { setOcupado(false); }
   };
   const transportadores = useMemo(() => dados.convites.filter((c) => !eRef(c)), [dados.convites]);
 
@@ -640,7 +640,8 @@ As propostas já recebidas e as tabelas de referência (TransGP) desta cotação
       { h: 'ICMS (R$)', w: 13, t: 'money', cor: 'calc', get: (l) => Number(l.p.icms_valor) },
       { h: 'Valor bruto total (R$)', w: 20, t: 'money', cor: 'calc', bold: true, get: (l) => l.b },
       { h: 'Prazo (dias)', w: 11, t: 'int', cor: 'in', get: (l) => l.p.prazo_dias }, { h: 'Observação', w: 28, cor: 'in', get: (l) => l.p.observacao },
-      { h: 'TransGP bruto (R$)', w: 17, t: 'money', cor: 'cmp', get: (l) => l.vc }, { h: 'Δ % vs TransGP', w: 13, t: 'pct', cor: 'cmp', get: (l) => l.dCasa }, { h: 'vs TransGP', w: 11, cor: 'cmp', resultado: true, get: (l) => l.rc },
+      // relatorio pode ir para o transportador: a TransGP aparece so como "Target"
+      { h: 'Target bruto (R$)', w: 17, t: 'money', cor: 'cmp', get: (l) => l.vc }, { h: 'Δ % vs target', w: 13, t: 'pct', cor: 'cmp', get: (l) => l.dCasa }, { h: 'vs target', w: 11, cor: 'cmp', resultado: true, get: (l) => l.rc },
       { h: `ANTT ${Number(cv.eixos) === 6 ? 6 : 5} eixos bruto (R$)`, w: 20, t: 'money', cor: 'cmp', get: (l) => l.va }, { h: 'Δ % vs ANTT', w: 12, t: 'pct', cor: 'cmp', get: (l) => l.dAntt }, { h: 'vs ANTT', w: 10, cor: 'cmp', resultado: true, get: (l) => l.ra },
       { h: 'Menor outro transportador (R$)', w: 22, t: 'money', cor: 'cmp', get: (l) => l.menorOutro?.v }, { h: 'Quem', w: 22, cor: 'cmp', get: (l) => l.menorOutro?.nome },
       { h: 'Realizado médio (R$)', w: 18, t: 'money', cor: 'cmp', get: (l) => l.real }, { h: 'Δ % vs realizado', w: 14, t: 'pct', cor: 'cmp', get: (l) => l.dReal }, { h: 'vs realizado', w: 12, cor: 'cmp', resultado: true, get: (l) => l.rr },
@@ -648,7 +649,7 @@ As propostas já recebidas e as tabelas de referência (TransGP) desta cotação
     const resumo = [
       ['Transportador', cv.transportadora], ['Eixos do veículo', Number(cv.eixos) === 6 ? 6 : 5], ['CNPJ informado', fmtCnpj(cv.respondente_cnpj)], ['Respondente', cv.respondente_nome ? `${cv.respondente_nome} (${cv.respondente_email})` : '-'],
       ['Rotas cotadas / rotas da cotação', `${S.cotadas} / ${S.escopo}`], ['Aderência (rotas)', pct(S.escopo ? S.cotadas / S.escopo : null)], ['Aderência (volume)', pct(S.volTot ? S.volCot / S.volTot : null)],
-      ['Ganha da TransGP', `${S.casa.g} de ${S.casa.g + S.casa.p + S.casa.e}`], ['Ganha da ANTT', `${S.antt.g} de ${S.antt.g + S.antt.p + S.antt.e}`],
+      ['Ganha do target', `${S.casa.g} de ${S.casa.g + S.casa.p + S.casa.e}`], ['Ganha da ANTT', `${S.antt.g} de ${S.antt.g + S.antt.p + S.antt.e}`],
       ['Menor preço entre os transportadores', `${S.menor.g} de ${S.menor.comp}`], ['Ganha do realizado', `${S.real.g} de ${S.real.comp}`],
       ['Economia nas rotas que ganha (R$)', Math.round(S.econGanhas)], ['Impacto líquido vs realizado (R$)', Math.round(S.impacto)],
     ];
@@ -669,7 +670,7 @@ As propostas já recebidas e as tabelas de referência (TransGP) desta cotação
       { h: 'Origem', w: 26, bold: true, get: (r) => r.origem }, { h: 'UF origem', w: 9, get: (r) => r.uf_origem }, { h: 'Destino', w: 28, bold: true, get: (r) => r.destino },
       { h: 'UF destino', w: 9, get: (r) => r.uf_destino }, { h: 'Veículo', w: 18, get: (r) => r.tipo_veiculo }, { h: 'KM', w: 8, t: 'int', get: (r) => r.km }, { h: 'Média mensal (viagens)', w: 13, t: 'dec1', get: (r) => r.viagens },
       { h: 'Realizado médio (R$)', w: 18, t: 'money', cor: 'cmp', get: (r) => (Number(r.frete_medio) > 0 ? Number(r.frete_medio) : null) },
-      { h: 'TransGP bruto (R$)', w: 17, t: 'money', cor: 'cmp', get: (r) => propMap.get(conviteCasa?.id)?.get(r.chave)?.valor_bruto },
+      { h: 'Target bruto (R$)', w: 17, t: 'money', cor: 'cmp', get: (r) => propMap.get(conviteCasa?.id)?.get(r.chave)?.valor_bruto },
       { h: 'ANTT 5 eixos bruto (R$)', w: 20, t: 'money', cor: 'cmp', get: (r) => anttBrutoRota(r, 5) },
       { h: 'ANTT 6 eixos bruto (R$)', w: 20, t: 'money', cor: 'cmp', get: (r) => anttBrutoRota(r, 6) },
       ...comparativo.map(({ cv }) => ({ h: `${cv.transportadora} (${Number(cv.eixos) === 6 ? 6 : 5} eixos) bruto (R$)`, w: 20, t: 'money', cor: 'calc', get: (r) => propMap.get(cv.id)?.get(r.chave)?.valor_bruto })),
@@ -696,7 +697,7 @@ As propostas já recebidas e as tabelas de referência (TransGP) desta cotação
     setOcupado(true);
     try {
       const props = Array.from((propMap.get(cv.id) || new Map()).values());
-      const r = await oficializarProposta({ nome: cv.transportadora, propostas: props, rotasPorChave, basePublicada: base });
+      const r = await oficializarProposta({ nome: cv.transportadora, propostas: props, rotasPorChave, basePublicada: base, eixosPadrao: Number(cv.eixos) === 6 ? 6 : 5 });
       aviso(`Tabela de ${cv.transportadora} enviada para a Tabela de Lotação (${r.linhas} rotas, valores ${base === 'BRUTO' ? 'brutos' : 'líquidos'}). Ela agora é a tabela oficial desse transportador.`);
       setOficial(null);
     } catch (e) { aviso(`Erro ao enviar para a Tabela de Lotação: ${e.message}`, 'erro'); } finally { setOcupado(false); }

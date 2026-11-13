@@ -252,7 +252,12 @@ function rotaParaDb(linha = {}, tabelaId) {
     diferenca_antt: linha.diferencaAntt ?? null,
     valor: linha.valor ?? null,
     valor_fonte: linha.valorFonte || '',
-    raw: linha.raw || {},
+    // eixos (5/6) e observacao ficam no raw: sem migration
+    raw: {
+      ...(linha.raw || {}),
+      ...(Number(linha.eixos) === 5 || Number(linha.eixos) === 6 ? { eixos: Number(linha.eixos) } : {}),
+      ...(linha.obs ? { obs: String(linha.obs).slice(0, 500) } : {}),
+    },
   };
 }
 
@@ -278,6 +283,8 @@ function dbParaRota(row = {}) {
     valor: row.valor === null || row.valor === undefined ? null : Number(row.valor),
     valorFonte: row.valor_fonte || '',
     chave: row.chave || '',
+    eixos: Number(row.raw?.eixos) === 6 ? 6 : Number(row.raw?.eixos) === 5 ? 5 : null,
+    obs: row.raw?.obs || '',
     raw: row.raw || {},
   };
 }
@@ -347,7 +354,22 @@ export async function carregarTabelasLotacaoSupabase() {
     rotasPorTabela.set(row.tabela_id, atual);
   });
   const tabelas = tabelasDb.map((row) => dbParaTabela(row, rotasPorTabela.get(row.id) || []));
-  return { fonte: 'supabase', tabelas };
+  return { fonte: 'supabase', tabelas: await aplicarAnttDaRegra(tabelas) };
+}
+
+// A ANTT nao e mais importada: sai da regra cadastrada em Gestao de tabelas
+// lotacao (KM x CCD + CC). Qualquer ANTT antiga importada e ignorada.
+async function aplicarAnttDaRegra(tabelas) {
+  try {
+    const [{ carregarContextoAntt }, { substituirAnttPorRegra }] = await Promise.all([
+      import('./lotacaoCotacaoReferenciasService'),
+      import('../utils/lotacaoAnttRegra'),
+    ]);
+    return substituirAnttPorRegra(tabelas, await carregarContextoAntt());
+  } catch (error) {
+    console.warn('ANTT por regra indisponivel:', error);
+    return tabelas;
+  }
 }
 
 export async function marcarTabelaLotacaoValidadaSupabase(tabelaId, validado, usuarioNome = '') {
@@ -479,6 +501,52 @@ export async function salvarTabelaLotacaoSupabase(tabela) {
     if (error) throw new Error(detalheErroSupabase(error));
   }
   return { ok: true, modo: 'supabase', tabelaId: tabela.id, rotas: rotas.length };
+}
+
+// ---- Manutencao rota a rota (aba Gestao) ---------------------------------
+async function recontarTabelaLotacao(supabase, tabelaId) {
+  const { count, error } = await supabase.from('lotacao_rotas').select('id', { count: 'exact', head: true }).eq('tabela_id', tabelaId);
+  if (error) return;
+  await supabase.from('lotacao_tabelas').update({ total_linhas: count || 0, updated_at: new Date().toISOString() }).eq('id', tabelaId);
+}
+
+export async function atualizarRotaLotacaoSupabase(tabelaId, linha) {
+  const supabase = ensureClient();
+  const { id, tabela_id: _t, ...campos } = rotaParaDb(linha, tabelaId);
+  const { error } = await supabase.from('lotacao_rotas').update(campos).eq('id', id);
+  if (error) throw new Error(detalheErroSupabase(error));
+  await supabase.from('lotacao_tabelas').update({ updated_at: new Date().toISOString() }).eq('id', tabelaId);
+  return { ok: true };
+}
+
+export async function inserirRotasLotacaoSupabase(tabelaId, linhas = []) {
+  const supabase = ensureClient();
+  const rotas = linhas.map((linha) => rotaParaDb(linha, tabelaId));
+  for (let index = 0; index < rotas.length; index += INSERT_CHUNK_SIZE) {
+    const { error } = await supabase.from('lotacao_rotas').insert(rotas.slice(index, index + INSERT_CHUNK_SIZE));
+    if (error) throw new Error(detalheErroSupabase(error));
+  }
+  await recontarTabelaLotacao(supabase, tabelaId);
+  return { ok: true, rotas: rotas.length };
+}
+
+export async function removerRotaLotacaoSupabase(tabelaId, rotaId) {
+  const supabase = ensureClient();
+  const { error } = await supabase.from('lotacao_rotas').delete().eq('id', rotaId);
+  if (error) throw new Error(detalheErroSupabase(error));
+  await recontarTabelaLotacao(supabase, tabelaId);
+  return { ok: true };
+}
+
+export async function atualizarVigenciaTabelaLotacaoSupabase(tabelaId, { vigenciaInicio, vigenciaFim }) {
+  const supabase = ensureClient();
+  const { error } = await supabase.from('lotacao_tabelas').update({
+    vigencia_inicio: vigenciaInicio || null,
+    vigencia_fim: vigenciaFim || null,
+    updated_at: new Date().toISOString(),
+  }).eq('id', tabelaId);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
 }
 
 export async function removerTabelaLotacaoSupabase(tabelaId) {

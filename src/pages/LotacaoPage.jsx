@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   analisarAnttTodasTransportadoras,
   analisarTabelaVersusAntt,
-  baixarModeloAntt,
   baixarModeloTransportadora,
   carregarTabelasLotacao,
   chaveRota,
@@ -14,7 +13,6 @@ import {
   formatarPercentual,
   importarTabelaLotacao,
   nomeTipoLotacao,
-  obterAntt,
   obterTabelasPorTipo,
   pesquisarRotaLotacao,
   rankingMelhoresPorRota,
@@ -33,6 +31,8 @@ import {
   resumoRotasLotacaoSupabase,
 } from '../services/lotacaoSupabaseService';
 import { carregarNegociacoesLotacaoParaComparacao } from '../services/tabelasNegociacaoService';
+import { carregarContextoAntt } from '../services/lotacaoCotacaoReferenciasService';
+import { ID_TABELA_ANTT_REGRA, montarTabelaAnttPorRegra } from '../utils/lotacaoAnttRegra';
 
 function formatarData(valor) {
   if (!valor) return '-';
@@ -401,9 +401,6 @@ function ModelosAceitos() {
           <button type="button" className="btn-secondary" onClick={baixarModeloTransportadora}>
             Baixar modelo Transportadora
           </button>
-          <button type="button" className="btn-secondary" onClick={baixarModeloAntt}>
-            Baixar modelo ANTT
-          </button>
         </div>
       </div>
 
@@ -418,8 +415,8 @@ function ModelosAceitos() {
         <div>
           <strong>ANTT</strong>
           <p>
-            Use o modelo ANTT BASE enviado. O sistema compara todas as transportadoras contra o Frete ANTT Oficial
-            e mostra quantas rotas estão abaixo, iguais ou acima da referência.
+            Não é mais importada. Sai da regra cadastrada em Gestão de tabelas lotação (KM × CCD + CC, 5 ou 6 eixos),
+            calculada com o KM de cada rota. Alterou a regra lá, muda aqui na hora.
           </p>
         </div>
         <div>
@@ -859,7 +856,8 @@ function PesquisaRotas({ tabelas }) {
   );
 }
 
-function ListaTabelas({ tabelas, onRemover }) {
+function ListaTabelas({ tabelas: todasTabelas, onRemover }) {
+  const tabelas = todasTabelas.filter((tabela) => !tabela.virtual && normLot(tabela.tipo) !== 'ANTT');
   if (!tabelas.length) {
     return (
       <div className="panel-card">
@@ -874,7 +872,7 @@ function ListaTabelas({ tabelas, onRemover }) {
       <div className="section-row compact-top">
         <div>
           <div className="panel-title">Tabelas cadastradas</div>
-          <p className="compact">A ANTT é única. Ao subir novamente, o sistema substitui a versão anterior. Transportadoras são substituídas pelo mesmo nome.</p>
+          <p className="compact">Transportadoras são substituídas pelo mesmo nome. A ANTT não aparece aqui: é calculada pela regra.</p>
         </div>
       </div>
       <div className="sim-analise-tabela-wrap">
@@ -2042,8 +2040,36 @@ function PainelTransportadora({
   );
 }
 
-export default function LotacaoPage() {
+function CartaoAnttRegra({ contexto, antt, onAbrirCotacao }) {
+  const regra = contexto?.regra;
+  return (
+    <div className="panel-card">
+      <div className="panel-title">ANTT — calculada pela regra</div>
+      <p className="compact">
+        Não precisa mais importar tabela ANTT. O piso é calculado com a regra cadastrada em
+        <strong> Gestão de tabelas lotação → Cotação</strong>: KM × CCD + CC (carreta 5 eixos; LS/vanderleia 6 eixos),
+        em valor líquido (sem ICMS), igual às tabelas das transportadoras.
+      </p>
+      {regra ? (
+        <p className="compact">
+          <strong>5 eixos:</strong> CCD {regra[5]?.ccd} · CC {regra[5]?.cc} &nbsp;|&nbsp;
+          <strong>6 eixos:</strong> CCD {regra[6]?.ccd} · CC {regra[6]?.cc} &nbsp;|&nbsp;
+          fórmula em {regra.base === 'BRUTO' ? 'bruto (ICMS retirado pela rota)' : 'líquido'}
+        </p>
+      ) : <p className="compact">Carregando regra...</p>}
+      <p className="compact">
+        {antt ? `${antt.linhas.length} rotas com ANTT calculada.` : 'Nenhuma rota com KM para calcular.'} Rotas sem KM ou que não são carreta ficam sem ANTT.
+      </p>
+      {onAbrirCotacao ? (
+        <button type="button" className="btn-secondary" onClick={onAbrirCotacao}>Editar regra da ANTT</button>
+      ) : null}
+    </div>
+  );
+}
+
+export default function LotacaoPage({ onAbrirCotacao, onAbrirGestao } = {}) {
   const [tabelas, setTabelas] = useState([]);
+  const [contextoAntt, setContextoAntt] = useState(null);
   const [selecionadaId, setSelecionadaId] = useState('');
   const [carregando, setCarregando] = useState(false);
   const [feedback, setFeedback] = useState('');
@@ -2118,6 +2144,11 @@ export default function LotacaoPage() {
 
   useEffect(() => {
     if (!usarSupabase) return;
+    carregarContextoAntt().then(setContextoAntt).catch(() => {});
+  }, [usarSupabase]);
+
+  useEffect(() => {
+    if (!usarSupabase) return;
     resumoRotasLotacaoSupabase({}).then(d => setResumoRealizado(d||[])).catch(()=>{});
   }, [usarSupabase]);
 
@@ -2140,7 +2171,15 @@ export default function LotacaoPage() {
     () => [...transportadorasOficiais, ...negociacoesLotacaoComparacao],
     [transportadorasOficiais, negociacoesLotacaoComparacao]
   );
-  const antt = useMemo(() => obterAntt(tabelas), [tabelas]);
+  // ANTT pela regra cadastrada: cobre as tabelas oficiais, as negociações e o
+  // reajuste carregado (rota nova também ganha ANTT, desde que tenha KM).
+  const antt = useMemo(() => {
+    if (!contextoAntt) return tabelas.find((t) => t.id === ID_TABELA_ANTT_REGRA) || null;
+    return montarTabelaAnttPorRegra(
+      [...transportadoras, ...(tabelaReajuste ? [tabelaReajuste] : [])],
+      contextoAntt,
+    );
+  }, [contextoAntt, tabelas, transportadoras, tabelaReajuste]);
   const referenciaMenorPreco = useMemo(() => criarReferenciaMenorPreco(transportadoras), [transportadoras]);
   const ranking = useMemo(() => rankingMelhoresPorRota(transportadoras), [transportadoras]);
   const analiseAnttGeral = useMemo(() => analisarAnttTodasTransportadoras(transportadoras, antt), [transportadoras, antt]);
@@ -2192,7 +2231,7 @@ export default function LotacaoPage() {
     setCarregando(true);
     setFeedback('');
     try {
-      const nomePadrao = tipo === 'ANTT' ? 'ANTT' : nome;
+      const nomePadrao = nome;
       const tabela = await importarTabelaLotacao(file, { tipo, nomePadrao });
 
       if (usarSupabase) {
@@ -2384,31 +2423,36 @@ export default function LotacaoPage() {
         </div>
         <div className="summary-card">
           <span>Rotas ANTT</span>
-          <strong>{resumo.rotasAntt}</strong>
-          <small>{resumo.rotasUnicasAntt || 0} únicas</small>
+          <strong>{antt?.linhas?.length || 0}</strong>
+          <small>calculadas pela regra</small>
         </div>
         <div className="summary-card">
           <span>Total de rotas</span>
-          <strong>{resumo.totalRotas}</strong>
+          <strong>{resumo.totalRotasTransportadoras}</strong>
         </div>
       </div>
 
       <div className="feature-grid import-grid">
-        <UploadCard
-          tipo="ANTT"
-          titulo="Subir tabela ANTT"
-          descricao="Use o modelo ANTT BASE enviado. O valor de comparação será a coluna Frete ANTT Oficial. Subir novamente substitui a versão anterior."
-          onImportar={importar}
-          carregando={carregando}
-        />
-        <UploadCard
-          tipo="TRANSPORTADORA"
-          titulo="Cadastrar transportadora"
-          descricao="Use o modelo de transportadora baseado no TARGET enviado. A coluna TARGET será o valor da tabela da transportadora."
-          nomeObrigatorio
-          onImportar={importar}
-          carregando={carregando}
-        />
+        <CartaoAnttRegra contexto={contextoAntt} antt={antt} onAbrirCotacao={onAbrirCotacao} />
+        {onAbrirGestao ? (
+          <div className="panel-card">
+            <div className="panel-title">Incluir ou editar tabelas</div>
+            <p className="compact">
+              A entrada de tabelas agora é pela aba <strong>Gestão</strong>, com o mesmo modelo do portal (eixos 5/6, ANTT de referência),
+              uma ou várias transportadoras de uma vez, e edição rota a rota. As tabelas do portal chegam pela aba Cotação.
+            </p>
+            <button type="button" className="btn-secondary" onClick={onAbrirGestao}>Ir para Gestão</button>
+          </div>
+        ) : (
+          <UploadCard
+            tipo="TRANSPORTADORA"
+            titulo="Cadastrar transportadora"
+            descricao="Use o modelo de transportadora baseado no TARGET enviado. A coluna TARGET será o valor da tabela da transportadora."
+            nomeObrigatorio
+            onImportar={importar}
+            carregando={carregando}
+          />
+        )}
       </div>
 
 

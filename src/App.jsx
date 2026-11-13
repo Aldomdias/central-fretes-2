@@ -7,8 +7,7 @@ import ImportacaoPage from './pages/ImportacaoPage';
 import FormatacaoPage from './pages/FormatacaoPage';
 import ImportarTemplatePage from './pages/ImportarTemplatePage';
 import ImportacaoIaTabelasPage from './pages/ImportacaoIaTabelasPage';
-import LotacaoPage from './pages/LotacaoPage';
-import LotacaoCotacaoPage from './pages/LotacaoCotacaoPage';
+import GestaoTabelasLotacaoPage from './pages/GestaoTabelasLotacaoPage';
 import TransgpAuditoriaPage from './pages/TransgpAuditoriaPage';
 import LotacaoOperacaoPage from './pages/LotacaoOperacaoPage';
 import LotacaoAuditoriaPage from './pages/LotacaoAuditoriaPage';
@@ -230,8 +229,8 @@ export default function App() {
     reajustes: <ReajustesPage transportadoras={transportadorasMemo} />,
     'avaliacao-prazos': <AvaliacaoPrazosPage />,
     'prazo-pagamento': <PrazoPagamentoPage />,
-    lotacao: <LotacaoPage />,
-    'lotacao-cotacao': <LotacaoCotacaoPage />,
+    lotacao: <GestaoTabelasLotacaoPage abaInicial="tabelas" podeAcessar={(pagina) => usuarioTemAcesso(sessao, pagina)} />,
+    'lotacao-cotacao': <GestaoTabelasLotacaoPage abaInicial="cotacao" podeAcessar={(pagina) => usuarioTemAcesso(sessao, pagina)} />,
     'lotacao-operacao': <LotacaoOperacaoPage onRespostaConcluida={() => mudarPagina('lotacao-auditoria')} />,
     'lotacao-auditoria': <LotacaoAuditoriaPage />,
     'lotacao-transgp': <TransgpAuditoriaPage />,
