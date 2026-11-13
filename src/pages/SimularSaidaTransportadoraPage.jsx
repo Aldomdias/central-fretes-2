@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import { buscarBaseSimulacaoPorRotasDb, carregarCadastroCnpjTransportadorasDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
@@ -11,6 +11,8 @@ import { aplicarVinculoTransportadora as aplicarVinculoPuro } from '../services/
 import { unificarTransportadorasCtes } from '../utils/unificarTransportadorasCte';
 import { carregarDetalhesNegociacaoParaSimulacao, listarCapasNegociacaoParaSimulacao } from '../services/tabelasNegociacaoService';
 import { converterTabelasNegociacaoParaSimulador, labelTabelaNegociacaoSimulador, marcarDesambiguacaoNegociacoesSimulador } from '../utils/tabelasNegociacaoSimuladorAdapter';
+import { buscarTrackingParaRealizado, enriquecerRealizadoComTracking } from '../services/realizadoTrackingEnrichment';
+import { consumirHandoffSaidaTransportadora, escolherGrupoTransportadora } from '../utils/saidaTransportadoraHandoff';
 import { abrirLaudoSaida, analisarRota, exportarExcelLaudoSaida, RECOMENDACAO_ORIGEM, resumirPorOrigem } from '../utils/laudoSaidaTransportadora';
 
 const LIMITE_MAX_CT = 200000;
@@ -733,6 +735,7 @@ export default function SimularSaidaTransportadoraPage() {
       totalCtes: ctesFiltrados.length,
       totalCtesSemFiltro: simulacao.ctesSimulados.length,
       semIbge: simulacao.semIbge,
+      pesoTrackingInfo: simulacao.pesoTrackingInfo || null,
     };
   }, [simulacao, ctesFiltrados, exclusoes, reajustePct, pctForaEfetivo]);
 
@@ -943,6 +946,55 @@ export default function SimularSaidaTransportadoraPage() {
     });
   }
 
+  // Vindo do Simulador (botão "Simular saída da transportadora"): roda sozinho
+  // carregar período -> escolher transportadora -> marcar a tabela nova -> simular.
+  const autoRef = useRef(null); // { etapa, transportadoras: [nomes], negociacaoId, negociacaoLabel }
+  const [autoAviso, setAutoAviso] = useState('');
+  useEffect(() => {
+    const h = consumirHandoffSaidaTransportadora();
+    if (!h) return;
+    autoRef.current = { etapa: 'carregar', nomes: [h.transportadora].filter(Boolean), negociacaoId: h.negociacaoId || '', negociacaoLabel: h.negociacaoLabel || '' };
+    setCompetencia(''); setDataInicio(h.dataInicio || ''); setDataFim(h.dataFim || ''); setCanal(h.canal || '');
+    setAutoAviso(`Aberto pelo Simulador: ${h.transportadora || 'transportadora'}${h.negociacaoLabel ? ` × ${h.negociacaoLabel}` : ''}${h.dataInicio ? ` · ${h.dataInicio} a ${h.dataFim}` : ''}${h.canal ? ` · ${h.canal}` : ''}.`);
+  }, []);
+  useEffect(() => {
+    const auto = autoRef.current;
+    if (!auto) return;
+    if (auto.etapa === 'carregar' && statusCarga === 'idle' && (dataInicio || dataFim)) {
+      auto.etapa = 'escolher';
+      carregar();
+      return;
+    }
+    if (auto.etapa === 'escolher' && statusCarga === 'erro') { autoRef.current = null; return; }
+    if (auto.etapa === 'escolher' && statusCarga === 'concluido' && base) {
+      const nomesNeg = (capasNeg || []).filter((c) => c.id === auto.negociacaoId).flatMap((c) => [c.transportadora, c.transportadora_base_nome]);
+      const grupo = escolherGrupoTransportadora(transportadoras, [...auto.nomes, ...nomesNeg], norm);
+      if (!grupo) {
+        if (!capasNeg && auto.negociacaoId) { garantirCapasNegociacao(); return; }
+        setAutoAviso((a) => `${a} Não encontrei a transportadora no período — escolha na lista abaixo.`);
+        autoRef.current = null;
+        return;
+      }
+      auto.etapa = 'tabela';
+      setTransportadora(grupo.nome);
+      if (auto.negociacaoId) {
+        setModoReajuste('tabela');
+        setNegSelecionadas(new Set([auto.negociacaoId]));
+        garantirCapasNegociacao();
+      }
+      return;
+    }
+    if (auto.etapa === 'tabela' && transportadora && (!auto.negociacaoId || (capasNeg && negSelecionadas.has(auto.negociacaoId)))) {
+      if (auto.negociacaoId && !(capasNeg || []).some((c) => c.id === auto.negociacaoId)) {
+        setAutoAviso((a) => `${a} A tabela em negociação não está disponível aqui — marque-a manualmente.`);
+        autoRef.current = null;
+        return;
+      }
+      autoRef.current = null;
+      simularSaida();
+    }
+  }, [statusCarga, base, dataInicio, dataFim, transportadoras, transportadora, capasNeg, negSelecionadas]);
+
   async function simularSaida() {
     if (!base || !transportadora) return;
     setStatusSim('carregando'); setErro(''); setSimulacao(null); setExclusoes(new Set()); setRotasAbertas(new Set());
@@ -973,6 +1025,31 @@ export default function SimularSaidaTransportadoraPage() {
       const nomesExcluir = new Set(nomesProprios.flatMap((n) => [norm(n), norm(aplicarVinculoPuro(n, mapaVinculos))]));
       const nomesTabelaProprios = [...new Set([transportadora, ...(grupo?.nomesTabela || [])])];
       if (!ctesDaTransp.length) throw new Error('Nenhum CT-e desta transportadora no recorte carregado.');
+
+      // Mesmo critério do Simulador do realizado: CT-e sem peso usa o peso do
+      // Tracking (o enriquecimento grava em pesoDeclarado, que o Simulador usa
+      // quando o peso do CT-e é 0). Sem isto, esses CT-es eram calculados com
+      // 0 kg (só % NF/mínimo), puxando a tabela nova e as substitutas para baixo.
+      const pesoTrackingInfo = { semPeso: 0, recuperados: 0 };
+      const semPesoCte = ctesDaTransp.filter((c) => !(pesoComoSimuladorRealizado(c) > 0));
+      pesoTrackingInfo.semPeso = semPesoCte.length;
+      if (semPesoCte.length) {
+        setProgresso(`Buscando no Tracking o peso de ${fmtN(semPesoCte.length)} CT-e(s) sem peso...`);
+        const linhasTracking = semPesoCte.map((c) => ({
+          chaveCte: c.chave_cte || '', chaveNfe: c.chave_nfe || '', notaFiscal: c.nota_fiscal || '', numeroCte: c.numero_cte || '',
+          peso: 0, pesoDeclarado: 0,
+        }));
+        try {
+          const mapas = await buscarTrackingParaRealizado(linhasTracking);
+          const enriquecidas = enriquecerRealizadoComTracking(linhasTracking, mapas).linhas || [];
+          const pesoPorCte = new Map();
+          enriquecidas.forEach((l, i) => { if (l.trackingMatch && safeNum(l.pesoDeclarado) > 0) pesoPorCte.set(semPesoCte[i], safeNum(l.pesoDeclarado)); });
+          pesoTrackingInfo.recuperados = pesoPorCte.size;
+          ctesDaTransp = ctesDaTransp.map((c) => (pesoPorCte.has(c) ? { ...c, peso_declarado: pesoPorCte.get(c), peso_origem: 'tracking' } : c));
+        } catch (e) {
+          console.warn('[SimularSaidaTransportadora] falha ao buscar peso no Tracking', e);
+        }
+      }
 
       // Busca só as tabelas de frete das rotas que ESTA transportadora roda —
       // não a base inteira — pra achar quem mais cobre essas mesmas rotas.
@@ -1089,7 +1166,7 @@ export default function SimularSaidaTransportadoraPage() {
       }
 
       setSimulacao({
-        transportadora, variantes: grupo?.variantes || [], ctesSimulados, semIbge, recorte: { competencia, dataInicio, dataFim, canal },
+        transportadora, variantes: grupo?.variantes || [], ctesSimulados, semIbge, pesoTrackingInfo, recorte: { competencia, dataInicio, dataFim, canal },
         tabelaNova: rotulosTabelaNova.length ? { rotulos: rotulosTabelaNova } : null,
       });
       setStatusSim('concluido'); setProgresso('');
@@ -1108,6 +1185,11 @@ export default function SimularSaidaTransportadoraPage() {
         <p>Se esta transportadora saísse hoje, quanto custaria rodar as rotas dela com as melhores substitutas disponíveis — e como isso se compara a aceitar um reajuste.</p>
         <BaseCtesStatus />
       </div>
+      {autoAviso && (
+        <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 16px', margin: '0 0 1rem', fontSize: '0.84rem', color: '#1e3a8a' }}>
+          {autoAviso}
+        </div>
+      )}
 
       {erro && <div className="sim-alert error">{erro}</div>}
 
@@ -1393,6 +1475,15 @@ export default function SimularSaidaTransportadoraPage() {
           {resultado.semIbge > 0 && (
             <div style={{ background: '#fef9c3', border: '1px solid #fde68a', borderRadius: 8, padding: '10px 16px', marginBottom: '1rem', fontSize: '0.84rem', color: '#854d0e' }}>
               {fmtN(resultado.semIbge)} CT-e(s) sem IBGE de origem/destino resolvido — entraram no custo atual sem buscar substituto.
+            </div>
+          )}
+
+          {resultado.pesoTrackingInfo?.semPeso > 0 && (
+            <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 16px', marginBottom: '1rem', fontSize: '0.84rem', color: '#1e3a8a' }}>
+              {fmtN(resultado.pesoTrackingInfo.semPeso)} CT-e(s) vieram sem peso: {fmtN(resultado.pesoTrackingInfo.recuperados)} tiveram o peso buscado no Tracking (mesmo critério do Simulador)
+              {resultado.pesoTrackingInfo.semPeso - resultado.pesoTrackingInfo.recuperados > 0
+                ? <> e <strong>{fmtN(resultado.pesoTrackingInfo.semPeso - resultado.pesoTrackingInfo.recuperados)}</strong> continuam sem peso (calculados só por % NF/mínimo).</>
+                : '.'}
             </div>
           )}
 
