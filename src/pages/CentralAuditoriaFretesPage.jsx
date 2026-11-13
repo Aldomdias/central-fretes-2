@@ -1136,7 +1136,7 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
           {linhaTaxa('TRT', taxas.trt)}
           {linhaTaxa('Suframa', taxas.suframa)}
           {linhaTaxa('Outras', taxas.outras)}
-          {linhaTaxa('Taxa extra', taxas.taxaExtra)}
+          {linhaTaxa('Taxas coringa (total)', taxas.taxaExtra)}
           {taxaExtraDetalhes
             .filter((taxa) => !ocultarZeradas || Number(taxa.valor) > 0)
             .map((taxa, i) => linhaDetalhe(
