@@ -80,6 +80,7 @@ import {
   cubagemTrackingParaCalculo,
 } from '../utils/trackingCubagem';
 import { enriquecerRealizadoComTracking } from '../services/realizadoTrackingEnrichment';
+import { gravarHandoffSaidaTransportadora, urlTelaSaidaTransportadora } from '../utils/saidaTransportadoraHandoff';
 import { resolverPesoCteRealizado } from '../utils/pesoRealizadoSimulador';
 import { cederThread, esperarLeve } from '../utils/cederThread';
 
@@ -5697,6 +5698,25 @@ export default function SimuladorPage({ transportadoras = [] }) {
     }
   };
 
+  // Abre a Simular Saída de Transportadora numa nova aba com o mesmo recorte
+  // desta análise (período, canal, transportadora executada) e a tabela em
+  // negociação já marcada — para ver, no mesmo estudo, o impacto de aceitar o
+  // reajuste e o impacto de trocar a transportadora.
+  const abrirSaidaTransportadoraDaNegociacao = () => {
+    if (!resultadoRealizado?.negociacaoId) return;
+    const filtros = resultadoRealizado.filtros || {};
+    const negociacao = negociacaoResultadoRealizado || {};
+    gravarHandoffSaidaTransportadora({
+      dataInicio: filtros.inicio || inicioRealizado || '',
+      dataFim: filtros.fim || fimRealizado || '',
+      canal: filtros.canal || canalRealizado || negociacao.canal || '',
+      transportadora: filtros.transportadora || transportadoraRealizado || negociacao.transportadora_base_nome || negociacao.transportadora || '',
+      negociacaoId: resultadoRealizado.negociacaoId,
+      negociacaoLabel: resultadoRealizado.negociacaoLabel || negociacao.transportadora || '',
+    });
+    window.open(urlTelaSaidaTransportadora(), '_blank', 'noopener');
+  };
+
   const salvarResultadoNegociacaoRealizado = async () => {
     if (!resultadoRealizado) return;
 
@@ -9662,6 +9682,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
               style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d' }}>
               {salvandoResultadoNegociacao ? 'Salvando...' : '💾 Salvar na negociação'}
             </button>
+            {resultadoRealizado?.negociacaoId ? (
+              <button className="sim-tab" type="button"
+                onClick={abrirSaidaTransportadoraDaNegociacao}
+                disabled={!resultadoRealizado?.ctesAnalisados}
+                title="Abre a Simular Saída de Transportadora numa nova aba, com este período, canal, transportadora e a tabela em negociação já marcados: impacto de aceitar o reajuste x impacto de trocar a transportadora"
+                style={{ background: '#e0f2fe', color: '#0369a1', border: '1px solid #7dd3fc' }}>
+                🚪 Simular saída da transportadora
+              </button>
+            ) : null}
             {!resultadoRealizado?.negociacaoId ? (
               <button className="sim-tab" type="button"
                 onClick={abrirRevisaoCompetitividadeNegociacao}
