@@ -25,7 +25,7 @@ import { exportarExcelFormatado } from '../utils/exportarExcelFormatado';
 const CHAVE_SESSAO = 'cf_diagnostico_faturas_v1';
 const TAM_PAGINA = 100;
 const LOTE_VERIFICACAO = 120;
-const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimentoDe: '', vencimentoAte: '' };
+const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimentoDe: '', vencimentoAte: '', pagamentoDe: '', pagamentoAte: '' };
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const inteiro = (v) => Number(v || 0).toLocaleString('pt-BR');
@@ -211,6 +211,9 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       const venc = String(f?.data_vencimento || l.vencimentoLista || '').slice(0, 10);
       if (filtros.vencimentoDe && (!venc || venc < filtros.vencimentoDe)) return false;
       if (filtros.vencimentoAte && (!venc || venc > filtros.vencimentoAte)) return false;
+      const pag = String(f?.data_pagamento || '').slice(0, 10);
+      if (filtros.pagamentoDe && (!pag || pag < filtros.pagamentoDe)) return false;
+      if (filtros.pagamentoAte && (!pag || pag > filtros.pagamentoAte)) return false;
       return true;
     });
   }, [linhas, filtros]);
@@ -301,7 +304,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
 
   const descricaoFiltros = () => {
     const cards = GRUPOS_DIAGNOSTICO.filter((g) => escolhidos[g.id]).map((g) => [g.titulo, g.cards.find((c) => c.id === escolhidos[g.id])?.rotulo || '']);
-    const campos = [['Busca', filtros.busca], ['Auditor', filtros.auditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)]]
+    const campos = [['Busca', filtros.busca], ['Auditor', filtros.auditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)], ['Pagamento (compensação) de', dataBr(filtros.pagamentoDe)], ['Pagamento (compensação) até', dataBr(filtros.pagamentoAte)]]
       .filter(([, v]) => v && v !== '-');
     return [['Transportadora', transportadora || 'Todas'], ['Números colados', temLista ? String(lista.itens.length) : 'Nenhum'], ...cards, ...campos];
   };
@@ -454,6 +457,8 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               <label className="field">Canal<select value={filtros.canal} onChange={mudarFiltro('canal')}><option value="">Todos</option>{opcoes.canais.map((c) => <option key={c} value={c}>{c}</option>)}</select></label>
               <label className="field">Vencimento de<input type="date" value={filtros.vencimentoDe} onChange={mudarFiltro('vencimentoDe')} /></label>
               <label className="field">Vencimento até<input type="date" value={filtros.vencimentoAte} onChange={mudarFiltro('vencimentoAte')} /></label>
+              <label className="field" title="Data de compensação (pagamento) da fatura no SAP">Pago de<input type="date" value={filtros.pagamentoDe} onChange={mudarFiltro('pagamentoDe')} /></label>
+              <label className="field" title="Data de compensação (pagamento) da fatura no SAP">Pago até<input type="date" value={filtros.pagamentoAte} onChange={mudarFiltro('pagamentoAte')} /></label>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
               <button type="button" className="btn-primary" disabled={!resultado.length || exportando} onClick={exportarFaturas}>Exportar faturas ({inteiro(resultado.length)})</button>

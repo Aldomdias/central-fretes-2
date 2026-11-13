@@ -4,6 +4,7 @@ import { listarTransportadorasCadastro } from '../services/tabelasNegociacaoServ
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { importarRealizadoMensalEnxuto } from '../services/realizadoMensalService';
 import { formatarCnpj, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
+import { registrarImportacao } from '../services/importacoesStatusService';
 
 const normNome = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\b(LTDA|ME|EIRELI|S\/?A|EPP)\b/g, '').replace(/[^A-Z0-9]/g, '');
 const fmt = (n) => Number(n || 0).toLocaleString('pt-BR');
@@ -136,9 +137,12 @@ export default function XmlMassaCard() {
       }
       setResultado(linhas);
       setProgresso('');
+      const novos = linhas.reduce((s, l) => s + (Number(l.novos) || 0), 0);
+      registrarImportacao({ tipo: 'ctes', arquivos, linhas: lido.registros.length, resumo: `XML: ${lido.registros.length} CT-e(s) lidos, ${novos} novo(s) na base` });
     } catch (e) {
       setResultado(linhas);
       setErro(`${e.message || 'Erro ao importar.'}${linhas.length ? ' Competências anteriores já foram gravadas.' : ''}`);
+      registrarImportacao({ tipo: 'ctes', arquivos, status: 'ERRO', resumo: `XML: ${e.message || 'Erro ao importar.'}` });
     } finally {
       setImportando(false);
     }

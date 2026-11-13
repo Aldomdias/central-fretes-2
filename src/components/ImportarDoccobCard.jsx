@@ -3,6 +3,7 @@ import { lerZip } from '../utils/zipLeitor';
 import { consolidarFaturasDoccob, decodificarTextoDoccob, parseDoccobTexto } from '../utils/doccobParser';
 import { analisarFaturasDoccob, importarFaturasDoccob } from '../services/importarFaturasDoccobService';
 import { carregarSessao } from '../utils/authLocal';
+import { registrarImportacao } from '../services/importacoesStatusService';
 
 const fmtMoeda = (n) => Number(n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const fmtData = (iso) => (iso ? iso.split('-').reverse().join('/') : '-');
@@ -45,7 +46,7 @@ export default function ImportarDoccobCard() {
       const { faturas, repetidas } = consolidarFaturasDoccob(textos.map((t) => parseDoccobTexto(t.texto, t.nome)));
       if (!faturas.length) throw new Error('Nenhuma fatura encontrada. Confirme se o arquivo e um DocCob (registros 350/352/353).');
       const { existentes } = await analisarFaturasDoccob(faturas);
-      setLeitura({ faturas, repetidas, arquivos: textos.length, existentes });
+      setLeitura({ faturas, repetidas, arquivos: textos.length, existentes, nomes: files.map((f) => f.name) });
     } catch (e) {
       setErro(e.message || String(e));
     } finally {
@@ -64,10 +65,12 @@ export default function ImportarDoccobCard() {
         onProgresso: (feitas, total) => setProgresso(`Gravando ${feitas} de ${total} fatura(s)...`),
       });
       setResultado(res);
+      registrarImportacao({ tipo: 'doccob', arquivos: leitura.nomes || [], linhas: leitura.faturas.length, resumo: `${leitura.faturas.length} fatura(s) no arquivo` });
       setLeitura(null);
       window.dispatchEvent(new Event('envios-erp-atualizados'));
     } catch (e) {
       setErro(e.message || String(e));
+      registrarImportacao({ tipo: 'doccob', arquivos: leitura.nomes || [], status: 'ERRO', resumo: e.message || String(e) });
     } finally {
       setImportando(false);
       setProgresso('');

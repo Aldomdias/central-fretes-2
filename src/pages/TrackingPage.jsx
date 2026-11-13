@@ -18,6 +18,8 @@ import {
   limparTrackingCompetencia,
 } from '../services/trackingSupabaseService';
 import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
+import { consumirImportacao } from '../utils/importacaoPendente';
+import { registrarImportacao } from '../services/importacoesStatusService';
 
 function formatarNumero(value, casas = 0) {
   return Number(value || 0).toLocaleString('pt-BR', {
@@ -165,9 +167,19 @@ export default function TrackingPage() {
 
   useEffect(() => {
     atualizarTela().catch(() => {});
+    // Arquivo(s) escolhido(s) na Central de importacoes do Dashboard: importa direto.
+    const repassados = consumirImportacao('tracking');
+    if (repassados?.length) {
+      const lista = filtrarPlanilhas(repassados);
+      setArquivos(lista);
+      importarLocal(lista);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function importarLocal() {
+  const arquivosSelecionados = arquivos;
+  async function importarLocal(listaRepassada) {
+    const arquivos = Array.isArray(listaRepassada) ? listaRepassada : arquivosSelecionados;
     if (!arquivos.length) {
       setErro('Selecione um arquivo ou uma pasta com arquivos de Tracking.');
       return;
@@ -203,10 +215,12 @@ export default function TrackingPage() {
         },
       });
       setMensagem(`Importacao local concluida: ${formatarNumero(resultado.total)} linha(s) salvas.${resultado.duplicadosArquivo ? ` Duplicados no arquivo ignorados: ${formatarNumero(resultado.duplicadosArquivo)}.` : ''}`);
+      registrarImportacao({ tipo: 'tracking', arquivos, linhas: resultado.total, resumo: `${formatarNumero(resultado.total)} linha(s) salvas` });
       setArquivos([]);
       await atualizarTela();
     } catch (error) {
       setErro(error.message || 'Erro ao importar Tracking.');
+      registrarImportacao({ tipo: 'tracking', arquivos, status: 'ERRO', resumo: error.message || 'Erro ao importar Tracking.' });
     } finally {
       setCarregando(false);
     }

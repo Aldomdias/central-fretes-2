@@ -1,4 +1,5 @@
 import { buildDashboardStats } from '../data/mockData';
+import PainelImportacoes from '../components/PainelImportacoes';
 
 function formatarDataHora(valor) {
   if (!valor) return 'Ainda nao sincronizado';
@@ -104,6 +105,8 @@ export default function DashboardPage({
           <button className="btn-secondary" onClick={onAbrirFormatacaoTabelas}>Formatar tabelas</button>
         </div>
       </section>
+
+      <PainelImportacoes onMudarPagina={onMudarPagina} />
 
       <section className="dashboard-kpi-grid">
         <div className="dashboard-kpi primary-kpi">

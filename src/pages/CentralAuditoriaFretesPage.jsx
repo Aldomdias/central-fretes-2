@@ -21,6 +21,8 @@ import { montarCorpoEmailLaudo, montarEml, slugArquivoEmail } from '../utils/ema
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 import { carregarRaizesAdicionaisPorTransportadora } from '../services/transportadoraCnpjsService';
 import { lerCteXml } from '../utils/cteXml';
+import { consumirImportacao } from '../utils/importacaoPendente';
+import { registrarImportacao } from '../services/importacoesStatusService';
 import {
   atualizarStatusJornada,
   buscarJornadaPorIdentificadores,
@@ -6864,6 +6866,10 @@ ${portaisLaudo.length ? `
       };
       setUltimaCargaFaturas(resumoCarga);
       localStorage.setItem(ULTIMA_CARGA_FATURAS_KEY, JSON.stringify(resumoCarga));
+      registrarImportacao({
+        tipo: 'faturas-verum', arquivos: [file], linhas: rowsFaturas.length,
+        resumo: `${faturasNovas} nova(s), ${faturasAtualizadas} atualizada(s), ${detalhesSalvos} CT-e(s) vinculado(s)`,
+      });
       setMensagemImportacao(
         `Importacao concluida: ${faturasNovas} nova(s), ${faturasAtualizadas} atualizada(s), ${detalhesSalvos} CT-e(s) vinculado(s), `
         + `${analise.faturasIgnoradas} fatura(s) ignorada(s). `
@@ -6873,6 +6879,7 @@ ${portaisLaudo.length ? `
       const resumoErro = { status: 'ERRO', arquivo: file.name, concluidaEm: new Date().toISOString(), erro: error.message };
       setUltimaCargaFaturas(resumoErro);
       localStorage.setItem(ULTIMA_CARGA_FATURAS_KEY, JSON.stringify(resumoErro));
+      registrarImportacao({ tipo: 'faturas-verum', arquivos: [file], status: 'ERRO', resumo: error.message });
       setMensagemImportacao(`Erro na importacao: ${error.message}`);
     } finally {
       window.dispatchEvent(new Event('envios-erp-atualizados'));
@@ -6880,6 +6887,14 @@ ${portaisLaudo.length ? `
       setProgressoImportacao(null);
     }
   };
+
+  // Arquivo escolhido na Central de importacoes do Dashboard: roda a mesma importacao do botao.
+  useEffect(() => {
+    if (modo !== 'faturas') return;
+    const arquivos = consumirImportacao('faturas-verum');
+    if (arquivos?.length) importarFaturas({ target: { files: arquivos, value: '' } });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <>
@@ -9735,7 +9750,7 @@ function FinanceiroDevolutiva({ state, onState, sessao }) {
   );
 }
 
-function Financeiro({ state, onState }) {
+function Financeiro({ state, onState, financeiroPronto = true }) {
   const sessao = carregarSessao();
   if (sessao?.perfil === 'FINANCEIRO') return <FinanceiroDevolutiva state={state} onState={onState} sessao={sessao} />;
   const pagamentoRef = useRef(null);
@@ -10080,13 +10095,33 @@ function Financeiro({ state, onState }) {
       }
       setResumoPagamentosSap(resumoTotal ? { ...resumoTotal, arquivos: arquivos.length } : null);
       setErroFinanceiro(falhas.length ? `Falha ao processar ${falhas.length} arquivo(s): ${falhas.join(' | ')}` : '');
+      registrarImportacao({
+        tipo: 'sap-pagamentos', arquivos, linhas: resumoTotal?.totalLinhas ?? null,
+        status: resumoTotal ? 'OK' : 'ERRO',
+        resumo: [
+          resumoTotal && `${resumoTotal.pagas || 0} paga(s), ${resumoTotal.partidasLancadas || 0} partida(s) de fatura, ${resumoTotal.lancadasFinanceiro || 0} lançada(s) no financeiro, ${resumoTotal.lancamentosCte || 0} partida(s) de CT-e`,
+          falhas.length && `Falhas: ${falhas.join(' | ')}`,
+        ].filter(Boolean).join(' · '),
+      });
     } catch (error) {
       setErroFinanceiro(error.message || String(error));
+      registrarImportacao({ tipo: 'sap-pagamentos', arquivos, status: 'ERRO', resumo: error.message || String(error) });
     } finally {
       setProcessandoPagamentos(false);
       setProgressoPagamentos(null);
     }
   };
+
+  // Arquivo(s) escolhido(s) na Central de importacoes do Dashboard: abre Pagamentos e importa
+  // quando os dados da Central Financeira terminaram de carregar.
+  useEffect(() => {
+    if (!financeiroPronto) return;
+    const arquivos = consumirImportacao('sap-pagamentos');
+    if (!arquivos?.length) return;
+    setSubtab('pagamentos');
+    importarPagamentos({ target: { files: arquivos, value: '' } });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [financeiroPronto]);
 
   return (
     <>
@@ -10479,12 +10514,14 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   // protocolos/solicitacaoHistorico/pagamentos so a aba Financeiro usa — busca
   // sob demanda na primeira vez que ela abre, em vez de atrasar a tela inicial.
   const [financeiroExtrasCarregados, setFinanceiroExtrasCarregados] = useState(false);
+  const [financeiroExtrasProntos, setFinanceiroExtrasProntos] = useState(false);
   useEffect(() => {
     if (tab !== 'financeiro' || financeiroExtrasCarregados || !state || state.modo !== 'SUPABASE') return;
     setFinanceiroExtrasCarregados(true);
     carregarPlataformaAuditoriaFinanceiro()
       .then((extras) => setState((prev) => (prev ? { ...prev, ...extras } : prev)))
-      .catch((error) => setErro(error.message));
+      .catch((error) => setErro(error.message))
+      .finally(() => setFinanceiroExtrasProntos(true));
   }, [tab, financeiroExtrasCarregados, state]);
 
   const restaurar = () => setState({ ...restaurarDemonstracaoAuditoria(), modo: 'DEMONSTRACAO_LOCAL' });
@@ -10548,7 +10585,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
       {tab === 'auditoria-cte' && <Faturas state={state} onState={setState} modo="auditoria-cte" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />}
       {tab === 'aprovacao' && <AprovacaoGestao state={state} onState={setState} />}
       {tab === 'gestao' && <Gestao state={state} onState={setState} />}
-      {tab === 'financeiro' && <Financeiro state={state} onState={setState} />}
+      {tab === 'financeiro' && <Financeiro state={state} onState={setState} financeiroPronto={financeiroExtrasProntos || state.modo !== 'SUPABASE'} />}
       {faturaOverlay && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 3000, overflow: 'auto', background: '#eef3f9', padding: 16 }}>
           <FaturaDetalhe state={state} fatura={faturaOverlay} onClose={() => setFaturaOverlayId(null)} onState={setState} />

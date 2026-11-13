@@ -4,6 +4,8 @@ import BaseCtesStatus, { invalidarStatusBaseCtes } from '../components/BaseCtesS
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import { parseRealizadoCtesFile } from '../utils/realizadoCtes';
 import { lerCteXml } from '../utils/cteXml';
+import { consumirImportacao } from '../utils/importacaoPendente';
+import { registrarImportacao } from '../services/importacoesStatusService';
 import {
   competenciaPrecisaEnxuta,
   competenciaPrecisaProcessamento,
@@ -2667,6 +2669,10 @@ export default function CtePage({ transportadoras = [] }) {
           + (semCompetencia ? `, ${fmtN(semCompetencia)} CT-e(s) ignorado(s) por falta de data de emissão.` : '.')
         );
         setErro('');
+        registrarImportacao({
+          tipo: 'ctes', arquivos: arquivosDoUpload(), linhas: resultadosPorMes.reduce((t, r) => t + (r.quantidade || 0), 0),
+          resumo: `${tipoArquivoUpload === 'xml' ? 'XML' : 'Planilha'} multi-mês (${modo}): ${meses.length} competência(s)`,
+        });
         return;
       }
 
@@ -2787,16 +2793,37 @@ export default function CtePage({ transportadoras = [] }) {
         );
       }
       setErro('');
+      registrarImportacao({
+        tipo: 'ctes', arquivos: arquivosDoUpload(), linhas: comp?.lidos ?? resposta.statusFinal?.detalhado ?? null,
+        resumo: `${tipoArquivoUpload === 'xml' ? 'XML' : 'Planilha'} ${competenciaUpload} (${modo})${comp ? `: ${fmtN(comp.novos)} novo(s), ${fmtN(comp.jaNaBase)} já na base` : `: ${fmtN(resposta.statusFinal?.detalhado)} CT-e(s) na competência`}`,
+      });
 
       if (filtros.inicio || filtros.fim || filtros.canal || filtros.transportadoraRealizada || filtros.origem || filtros.destino || filtros.ufOrigem || filtros.ufDestino) {
         await buscar(1, filtros);
       }
     } catch (error) {
       setErro(error.message || 'Erro ao importar CT-e.');
+      registrarImportacao({ tipo: 'ctes', arquivos: arquivosDoUpload(), status: 'ERRO', resumo: error.message || 'Erro ao importar CT-e.' });
     } finally {
       setImportando(false);
     }
   }
+
+  function arquivosDoUpload() {
+    return tipoArquivoUpload === 'xml' ? arquivosXmlUpload : [arquivoUpload].filter(Boolean);
+  }
+
+  // Planilha escolhida na Central de importacoes do Dashboard: chega ja carregada aqui; a pessoa
+  // confere competencia / multi-mes e escolhe complementar ou substituir (nao importa sozinho).
+  useEffect(() => {
+    const arquivos = consumirImportacao('ctes-planilha');
+    if (!arquivos?.length) return;
+    setTipoArquivoUpload('planilha');
+    setArquivoUpload(arquivos[0]);
+    setErro('');
+    setFeedback(`Planilha "${arquivos[0].name}" carregada pela Central de importações. Confira a competência (ou marque vários meses) e clique em Complementar / importar novos.`);
+    setTimeout(() => document.getElementById('cte-subir-ctes')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 300);
+  }, []);
 
   async function continuarProcessamentoPendente() {
     if (!competenciaUpload) {
@@ -3211,6 +3238,7 @@ export default function CtePage({ transportadoras = [] }) {
         </div>
       )}
 
+      <div id="cte-subir-ctes" />
       <ExpandCard
         title="Subir / reimportar CT-es"
         subtitle="Use aqui para subir novamente uma competência e preservar valor calculado, diferença, status e dados de conciliação."
