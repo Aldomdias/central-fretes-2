@@ -2,6 +2,8 @@
 // proprio navegador. Os arquivos do motor ficam em /ocr (public), sem depender de CDN.
 
 let promessaWorker = null;
+// Quem quer acompanhar o OCR da pagina atual (0 a 1): o worker e um so, o aviso vai para a leitura da vez.
+let avisarProgresso = null;
 
 async function obterWorker() {
   if (!promessaWorker) {
@@ -14,7 +16,7 @@ async function obterWorker() {
         langPath: `${base}/lang`,
         gzip: true,
         workerBlobURL: false,
-        logger: () => {},
+        logger: (m) => { if (m?.status === 'recognizing text' && avisarProgresso) avisarProgresso(m.progress || 0); },
       });
     })().catch((e) => { promessaWorker = null; throw e; });
   }
@@ -22,7 +24,8 @@ async function obterWorker() {
 }
 
 // Desenha a pagina do PDF (escala 3 = boa leitura) e devolve as linhas de texto reconhecidas.
-export async function ocrDaPagina(pdf, n) {
+// onProgresso(fracao): andamento do reconhecimento (0 a 1), para a tela nao parecer travada.
+export async function ocrDaPagina(pdf, n, onProgresso) {
   const pagina = await pdf.getPage(n);
   const viewport = pagina.getViewport({ scale: 3 });
   const canvas = document.createElement('canvas');
@@ -33,7 +36,9 @@ export async function ocrDaPagina(pdf, n) {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   await pagina.render({ canvasContext: ctx, viewport }).promise;
   const worker = await obterWorker();
-  const { data } = await worker.recognize(canvas);
+  avisarProgresso = onProgresso || null;
+  let data;
+  try { ({ data } = await worker.recognize(canvas)); } finally { avisarProgresso = null; }
   return String(data.text || '').split('\n').filter((l) => l.trim() !== '');
 }
 

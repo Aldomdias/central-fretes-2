@@ -83,6 +83,32 @@ const COLUNAS = [
   { campo: 'vencimento', titulo: 'Vencimento', w: 122, tipo: 'date' },
 ];
 
+// Andamento da leitura dos PDFs: arquivo X de N, pagina, % do OCR, barra geral e tempo estimado.
+function ProgressoPdf({ p }) {
+  const porArquivo = p.paginas ? (Math.max(0, p.pagina - 1) + (p.ocr ? p.pct / 100 : 0)) / p.paginas : 0;
+  const feito = p.total ? Math.min(1, (Math.max(0, p.atual - 1) + porArquivo) / p.total) : 0;
+  const seg = Math.round((Date.now() - p.inicio) / 1000);
+  const tempo = (t) => (t >= 60 ? `${Math.floor(t / 60)}min${String(t % 60).padStart(2, '0')}s` : `${t}s`);
+  const falta = feito > 0.02 ? Math.round((seg / feito) * (1 - feito)) : null;
+  return (
+    <div style={{ padding: 12, borderRadius: 8, background: '#eff6ff', color: '#1e3a8a', border: '1px solid #bfdbfe' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <b>Lendo PDFs: arquivo {fmt(p.atual)} de {fmt(p.total)}</b>
+        <span>{fmt(Math.round(feito * 100))}% · {tempo(seg)}{falta !== null ? ` · falta ~${tempo(falta)}` : ''}</span>
+      </div>
+      <div style={{ height: 8, background: '#dbeafe', borderRadius: 4, margin: '8px 0', overflow: 'hidden' }}>
+        <div style={{ width: `${Math.round(feito * 100)}%`, height: '100%', background: '#2563eb', transition: 'width .3s' }} />
+      </div>
+      <div style={{ fontSize: 12 }}>
+        {p.nome || '...'}
+        {p.paginas ? ` — página ${fmt(p.pagina)} de ${fmt(p.paginas)}` : ''}
+        {p.ocr ? ` — sem texto, lendo por OCR ${fmt(p.pct)}%` : ''}
+        {p.atual > 1 ? ` · até agora: ${fmt(p.lidas)} lida(s)${p.falhas ? `, ${fmt(p.falhas)} com problema` : ''}` : ''}
+      </div>
+    </div>
+  );
+}
+
 export default function LancamentoNfseRobo() {
   const inicial = useMemo(() => ler(CHAVE_LOTE, {}), []);
   const [parametros, setParametros] = useState(carregarParametros);
@@ -92,6 +118,8 @@ export default function LancamentoNfseRobo() {
   const [colado, setColado] = useState('');
   const [erro, setErro] = useState('');
   const [feedback, setFeedback] = useState('');
+  // Andamento da leitura dos PDFs (arquivo/pagina/OCR), para nao parecer travado em lotes grandes.
+  const [progressoPdf, setProgressoPdf] = useState(null);
   const [focar, setFocar] = useState(null);
   const [scriptTela, setScriptTela] = useState(null); // script aberto na tela para copiar
   const refArquivo = useRef(null);
@@ -196,6 +224,31 @@ export default function LancamentoNfseRobo() {
       const copia = { ...atual[i], uid: novoUid(), nf: '' };
       return [...atual.slice(0, i + 1), copia, ...atual.slice(i + 1)];
     });
+  }
+
+  // Uma fatura so para todas as notas do lote (faturas com centenas de notas). Pergunta antes: o normal e
+  // cada nota ter a sua, e quem lanca precisa ter certeza de que todas sao da mesma fatura. Notas que ja tem
+  // MIRO nao mudam.
+  function replicarFatura() {
+    const comMiro = new Set(linhas.filter((l) => l.miro).map((l) => l.uid));
+    const alvo = entradas.filter((e) => !comMiro.has(e.uid));
+    if (!alvo.length) { setErro('Nenhuma nota sem MIRO para preencher a fatura.'); return; }
+    const sugestao = String(alvo.find((e) => String(e.fatura ?? '').trim())?.fatura ?? '').trim();
+    const digitada = window.prompt(`Numero da fatura para as ${fmt(alvo.length)} nota(s) do lote:`, sugestao);
+    if (digitada === null) return;
+    const fatura = String(digitada).trim();
+    if (!fatura) { setErro('Informe o numero da fatura.'); return; }
+    const outras = alvo.filter((e) => { const f = String(e.fatura ?? '').trim(); return f && f !== fatura; }).length;
+    const aviso = [
+      `Tem certeza que TODAS as ${fmt(alvo.length)} nota(s) sao da fatura ${fatura}?`,
+      outras ? `\n${fmt(outras)} nota(s) ja tem outra fatura preenchida e vao ser trocadas para ${fatura}.` : '',
+      comMiro.size ? `\n${fmt(comMiro.size)} nota(s) com MIRO nao mudam.` : '',
+    ].join('');
+    if (!window.confirm(aviso)) return;
+    const uids = new Set(alvo.map((e) => e.uid));
+    setEntradas((atual) => atual.map((e) => (uids.has(e.uid) ? { ...e, fatura } : e)));
+    setErro('');
+    setFeedback(`Fatura ${fatura} aplicada em ${fmt(alvo.length)} nota(s).`);
   }
 
   function removerLinha(uid) {
@@ -317,16 +370,28 @@ export default function LancamentoNfseRobo() {
       const { lerNfsePdf } = await import('../../utils/robos/nfsePdf');
       const { ocrDaPagina, encerrarOcr } = await import('../../utils/robos/nfseOcr');
       let ocrUsado = 0;
+      const inicio = Date.now();
+      const prog = { total: lista.length, atual: 0, nome: '', pagina: 0, paginas: 0, ocr: false, pct: 0, lidas: 0, falhas: 0, inicio };
+      const mostrar = (mud) => { Object.assign(prog, mud); setProgressoPdf({ ...prog }); };
       const ocr = async (pdf, n) => {
         ocrUsado += 1;
-        setFeedback(`Lendo por OCR a pagina ${n} (PDF sem texto)... pode levar alguns segundos por pagina.`);
-        return ocrDaPagina(pdf, n);
+        mostrar({ ocr: true, pct: 0 });
+        let ultimo = 0;
+        return ocrDaPagina(pdf, n, (f) => { const pct = Math.round(f * 100); if (pct - ultimo >= 5 || pct === 100) { ultimo = pct; mostrar({ pct }); } });
       };
       const lidas = [];
       const falhas = [];
-      for (const arq of lista) {
+      let puladas = 0;
+      mostrar({});
+      for (const [i, arq] of lista.entries()) {
+        mostrar({ atual: i + 1, nome: arq.name, pagina: 0, paginas: 0, ocr: false, pct: 0, lidas: lidas.length, falhas: falhas.length });
         try {
-          const { totalPaginas, notas } = await lerNfsePdf(arq, { ocr });
+          const { totalPaginas, notas, ignoradas = [] } = await lerNfsePdf(arq, { ocr, onPagina: (pagina, paginas) => mostrar({ pagina, paginas, ocr: false, pct: 0 }) });
+          // pagina pulada como continuacao da nota anterior: avisa, pode ser uma nota que o OCR nao conseguiu ler
+          ignoradas.filter((g) => g.motivo === 'continuacao').forEach((g) => {
+            puladas += 1;
+            falhas.push({ arquivo: `${arq.name} (pag. ${g.pagina})`, motivo: `Pagina pulada${g.ocr ? ' (lida por OCR)' : ''}: sem numero, CNPJ e valor, tratada como continuacao da nota anterior. Confira se nao e outra nota`, faltando: '', nf: '' });
+          });
           for (const n of notas) {
             const nome = totalPaginas > 1 ? `${arq.name} (pag. ${n.pagina})` : arq.name;
             if (n.semTexto) falhas.push({ arquivo: nome, motivo: 'PDF sem texto (imagem escaneada): digite a nota na grade', faltando: '', nf: '' });
@@ -350,12 +415,13 @@ export default function LancamentoNfseRobo() {
       if (ocrUsado) await encerrarOcr();
       setFalhasPdf(falhas);
       if (novas.length) acrescentar(novas, `${fmt(novas.length)} PDF(s)`);
-      const naoLidas = falhas.filter((f) => !f.motivo.startsWith('Repetida')).length;
-      const repetidas = falhas.length - naoLidas;
-      if (naoLidas) setErro(`${fmt(naoLidas)} PDF(s) nao foram lidos${repetidas ? ` e ${fmt(repetidas)} eram repetidos` : ''}. Baixe o relatorio abaixo para ver quais e por que.`);
-      else if (novas.length) setFeedback(`${alvo ? `Fatura ${daFatura.fatura}: ` : ''}${fmt(novas.length)} nota(s) lida(s) do PDF${repetidas ? ` (${fmt(repetidas)} repetida(s) ignorada(s))` : ''}. Preencha o EscrV (e a Fatura). Cod (IN/IQ) e CFOP (1933AA/2933AA) vieram da nota; confira.${novas.some((n) => n.ocr) ? ' As marcadas com OCR foram lidas por imagem: confira CNPJ e valor.' : ''}`);
+      const repetidas = falhas.filter((f) => f.motivo.startsWith('Repetida')).length;
+      const naoLidas = falhas.length - repetidas - puladas;
+      const avisoPuladas = puladas ? ` ${fmt(puladas)} pagina(s) pulada(s) como continuacao: confira no relatorio abaixo se nao sao notas.` : '';
+      if (naoLidas) setErro(`${fmt(naoLidas)} PDF(s) nao foram lidos${repetidas ? ` e ${fmt(repetidas)} eram repetidos` : ''}.${avisoPuladas} Baixe o relatorio abaixo para ver quais e por que.`);
+      else if (novas.length || puladas) setFeedback(`${alvo ? `Fatura ${daFatura.fatura}: ` : ''}${fmt(novas.length)} nota(s) lida(s) do PDF${repetidas ? ` (${fmt(repetidas)} repetida(s) ignorada(s))` : ''}.${avisoPuladas} Preencha o EscrV (e a Fatura). Cod (IN/IQ) e CFOP (1933AA/2933AA) vieram da nota; confira.${novas.some((n) => n.ocr) ? ' As marcadas com OCR foram lidas por imagem: confira CNPJ e valor.' : ''}`);
     } catch (e) { setErro(e.message || 'Nao consegui ler os PDFs.'); }
-    finally { if (refPdf.current) refPdf.current.value = ''; }
+    finally { setProgressoPdf(null); if (refPdf.current) refPdf.current.value = ''; }
   }
 
   function lerPdfsDaFatura(fatura) {
@@ -520,7 +586,8 @@ export default function LancamentoNfseRobo() {
       <AvisoFila tipo="NFSE" />
       {scriptTela ? <ScriptParaCopiar script={scriptTela.script} nomeArquivo={scriptTela.nome} onFechar={() => setScriptTela(null)} titulo={scriptTela.macro ? 'Código da macro (Excel)' : undefined} passos={scriptTela.macro ? passosMacroExcel(scriptTela.macro) : undefined} /> : null}
       {erro ? <div style={{ padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{erro}</div> : null}
-      {feedback && !erro ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}
+      {progressoPdf ? <ProgressoPdf p={progressoPdf} /> : null}
+      {feedback && !erro && !progressoPdf ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}
 
       <ParametrosLancamentoCard parametros={parametros} onChange={setParametros} onErro={setErro} onFeedback={setFeedback} />
 
@@ -545,6 +612,7 @@ export default function LancamentoNfseRobo() {
               {falhasPdf.length ? <button type="button" className="btn-secondary" onClick={baixarRelatorioPdf} title="Lista os PDFs que nao foram lidos ou eram repetidos, com o motivo">Baixar relatório dos PDFs não lidos ({falhasPdf.length})</button> : null}
               {entradas.length ? <button type="button" className="btn-secondary" onClick={baixarPreenchido} title="Baixa a grade em Excel para completar o que falta (ex.: EscrV) e voltar com Importar arquivo">Baixar planilha preenchida (.xlsx)</button> : null}
               <button type="button" className="btn-secondary" onClick={baixarModelo}>Baixar modelo de importação (.xlsx)</button>
+              {entradas.length ? <button type="button" className="btn-secondary" onClick={replicarFatura} title="Preenche a mesma fatura em todas as notas do lote (pede confirmacao). Para notas de faturas diferentes, preencha uma a uma na grade">Mesma fatura para todas</button> : null}
               {entradas.length ? <button type="button" className="btn-secondary" onClick={limparTudo}>Limpar tudo</button> : null}
               <div className="field" style={{ marginLeft: 'auto' }}>
                 <label>Vencimento padrão</label>

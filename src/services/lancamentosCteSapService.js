@@ -10,12 +10,14 @@ function tabelaAusente(mensagem = '') {
 
 const AVISO_MIGRATION = 'Tabela ctes_lancamentos_sap nao existe: aplique a migration supabase/migrations/20261105_002_ctes_lancamentos_sap.sql.';
 
-// Grava as linhas de CT-e do relatorio SAP. Reimportar nao duplica (chave unica).
+// Grava as linhas de CT-e do relatorio SAP. Reimportar nao duplica (chave unica) e atualiza a linha:
+// a compensacao (documento/data/status) chega depois do lancamento, e e por ela que se ve a partida
+// Fenix no CT-e (ou que o estorno dela ja foi feito).
 export async function salvarLancamentosCteSap(linhas = [], onProgress) {
   if (!isSupabaseConfigured() || !linhas.length) return { enviadas: 0 };
   const client = getSupabaseClient();
   for (let inicio = 0; inicio < linhas.length; inicio += PAGINA) {
-    const { error } = await client.from(TABELA).upsert(linhas.slice(inicio, inicio + PAGINA), { onConflict: 'chave', ignoreDuplicates: true });
+    const { error } = await client.from(TABELA).upsert(linhas.slice(inicio, inicio + PAGINA), { onConflict: 'chave' });
     if (error) {
       if (tabelaAusente(error.message)) return { enviadas: 0, erro: AVISO_MIGRATION };
       throw new Error(`Erro ao salvar lancamentos de CT-e: ${error.message}`);

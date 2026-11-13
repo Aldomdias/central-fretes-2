@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { listarSapSemVinculo, vincularLinhaSapAFatura } from '../services/auditoriaFretesService';
+import { normalizarReferenciaSap } from '../utils/auditoriaFretesDomain';
 import { obterRaizCnpj } from '../utils/cnpj';
+import { carregarGruposRaizTransportadora } from '../services/transportadoraCnpjsService';
 
 const dinheiro = (valor) => Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const dataBr = (valor) => {
@@ -24,17 +26,26 @@ function nomeParecido(a, b) {
 }
 
 // Pontua o quanto uma linha do SAP parece ser o pagamento de uma fatura.
-function pontuar(fatura, linha, raizesDaTransportadora) {
+// mesmaRaiz: raiz da linha SAP e' a da fatura ou de outro CNPJ cadastrado na mesma transportadora
+// (principal, origem ou CNPJ adicional - ex.: TAP EXPRESS faturando, L. J. TRANSPORTES no SAP).
+function mesmoGrupoCnpj(fatura, linha, gruposRaiz) {
+  const raizLinha = obterRaizCnpj(linha.cnpj);
+  const raizFatura = obterRaizCnpj(fatura.cnpj_transportadora);
+  if (!raizLinha || !raizFatura) return false;
+  return raizLinha === raizFatura || (gruposRaiz.get(raizFatura) || []).includes(raizLinha);
+}
+
+function pontuar(fatura, linha, raizesDaTransportadora, gruposRaiz = new Map()) {
   let pontos = 0;
   const motivos = [];
-  if (String(linha.numero_fatura || '').trim().toUpperCase() === String(fatura.numero_fatura || '').trim().toUpperCase()) { pontos += 50; motivos.push('mesmo numero'); }
+  if (normalizarReferenciaSap(linha.numero_fatura).toUpperCase() === String(fatura.numero_fatura || '').trim().toUpperCase()) { pontos += 50; motivos.push('mesmo numero'); }
   const dif = Math.abs(Number(linha.valor_pago || 0) - Number(fatura.valor_fatura || 0));
   if (dif <= 0.01) { pontos += 30; motivos.push('valor igual'); }
   else if (Number(fatura.valor_fatura) > 0 && dif / Number(fatura.valor_fatura) <= 0.05) { pontos += 10; motivos.push('valor proximo'); }
   if (nomeParecido(linha.transportadora_sap, fatura.transportadora)) { pontos += 15; motivos.push('nome parecido'); }
   const raizLinha = obterRaizCnpj(linha.cnpj);
-  const cnpjIgual = Boolean(raizLinha) && raizLinha === obterRaizCnpj(fatura.cnpj_transportadora);
-  if (cnpjIgual) { pontos += 40; motivos.push('mesmo CNPJ'); }
+  const cnpjIgual = mesmoGrupoCnpj(fatura, linha, gruposRaiz);
+  if (cnpjIgual) { pontos += 40; motivos.push(raizLinha === obterRaizCnpj(fatura.cnpj_transportadora) ? 'mesmo CNPJ' : 'CNPJ cadastrado na transportadora'); }
   else if (raizesDaTransportadora.has(raizLinha)) { pontos += 10; motivos.push('CNPJ ja usado pela transportadora'); }
   const nomeIgual = nomeParecido(linha.transportadora_sap, fatura.transportadora);
   return { pontos, motivos, cnpjIgual, nomeIgual };
@@ -53,12 +64,18 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
   const [busca, setBusca] = useState('');
   const [soComSugestao, setSoComSugestao] = useState(true);
   const [buscaManual, setBuscaManual] = useState({});
+  const [gruposRaiz, setGruposRaiz] = useState(new Map());
+  const [autoVinculando, setAutoVinculando] = useState(false);
+  // Roda o vinculo automatico uma vez por carga da fila (sem clique), sem repetir em loop.
+  const autoExecutado = useRef(false);
 
   const carregar = async () => {
     setCarregando(true);
     setErro('');
     try {
+      autoExecutado.current = false;
       setLinhas(await listarSapSemVinculo());
+      try { setGruposRaiz(await carregarGruposRaizTransportadora()); } catch (e) { console.warn('[Vincular SAP] grupos de raiz', e?.message || e); }
     } catch (error) {
       setErro(`${error.message || error} — a migration 20261002_001_sap_linhas_sem_vinculo.sql ja foi aplicada?`);
     } finally {
@@ -94,7 +111,7 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
   const porNumero = useMemo(() => {
     const mapa = new Map();
     for (const l of linhas) {
-      const n = String(l.numero_fatura || '').trim().toUpperCase();
+      const n = normalizarReferenciaSap(l.numero_fatura).toUpperCase();
       mapa.set(n, [...(mapa.get(n) || []), l]);
     }
     return mapa;
@@ -109,10 +126,10 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
       base = linhas.filter((l) => `${l.numero_fatura} ${l.transportadora_sap} ${l.cnpj} ${l.valor_pago} ${l.partida} ${l.lancamento_contabil}`.toLowerCase().includes(manual));
     } else {
       const cents = Math.round(Number(fatura.valor_fatura || 0) * 100);
-      base = [...(porNumero.get(numero) || []), ...linhas.filter((l) => Math.round(Number(l.valor_pago || 0) * 100) === cents && String(l.numero_fatura || '').trim().toUpperCase() !== numero)];
+      base = [...(porNumero.get(numero) || []), ...linhas.filter((l) => Math.round(Number(l.valor_pago || 0) * 100) === cents && normalizarReferenciaSap(l.numero_fatura).toUpperCase() !== numero)];
     }
     return base
-      .map((linha) => ({ linha, ...pontuar(fatura, linha, raizes) }))
+      .map((linha) => ({ linha, ...pontuar(fatura, linha, raizes, gruposRaiz) }))
       .filter((s) => manual || (s.pontos >= 40 && (s.cnpjIgual || s.nomeIgual)))
       .sort((a, b) => b.pontos - a.pontos)
       .slice(0, 5);
@@ -122,10 +139,61 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
     const todas = pendentes.map((fatura) => ({ fatura, itens: sugestoes(fatura) }));
     return soComSugestao ? todas.filter((x) => x.itens.length || buscaManual[x.fatura.id]) : todas;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendentes, linhas, soComSugestao, buscaManual, raizesPorTransportadora]);
+  }, [pendentes, linhas, soComSugestao, buscaManual, raizesPorTransportadora, gruposRaiz]);
+
+  // Mesma regra da conciliacao automatica: numero igual + CNPJ da linha no grupo da transportadora
+  // da fatura + uma unica fatura em aberto candidata. Serve para as linhas que ficaram na fila antes
+  // de o CNPJ adicional ser cadastrado, sem precisar reimportar o relatorio.
+  const paresAutomaticos = useMemo(() => {
+    const abertasPorNumero = new Map();
+    for (const f of state.faturas || []) {
+      if (STATUS_PAGOS.has(f.status)) continue;
+      const n = String(f.numero_fatura || '').trim().toUpperCase();
+      if (n) abertasPorNumero.set(n, [...(abertasPorNumero.get(n) || []), f]);
+    }
+    const pares = [];
+    for (const linha of linhas) {
+      const n = normalizarReferenciaSap(linha.numero_fatura).toUpperCase();
+      const candidatas = (abertasPorNumero.get(n) || []).filter((f) => mesmoGrupoCnpj(f, linha, gruposRaiz));
+      if (candidatas.length === 1) pares.push({ fatura: candidatas[0], linha });
+    }
+    return pares;
+  }, [linhas, state.faturas, gruposRaiz]);
+
+  const vincularAutomaticos = async ({ silencioso = false } = {}) => {
+    if (!paresAutomaticos.length) return;
+    if (!silencioso && !window.confirm(`Vincular ${paresAutomaticos.length} linha(s) do SAP com mesmo numero de fatura e CNPJ cadastrado na transportadora?`)) return;
+    setAutoVinculando(true);
+    setErro('');
+    setMensagem('');
+    let atual = state;
+    const feitas = new Set();
+    try {
+      for (const { fatura, linha } of paresAutomaticos) {
+        const faturaAtual = (atual.faturas || []).find((f) => f.id === fatura.id) || fatura;
+        atual = await vincularLinhaSapAFatura(atual, linha, faturaAtual, usuarioNome);
+        feitas.add(linha.id);
+      }
+      setMensagem(`${feitas.size} linha(s) do SAP vinculada(s) automaticamente (mesmo numero de fatura + CNPJ cadastrado na transportadora).`);
+    } catch (error) {
+      setErro(`${feitas.size} vinculada(s) antes do erro: ${error.message || error}`);
+    } finally {
+      onState(atual);
+      setLinhas((prev) => prev.filter((l) => !feitas.has(l.id)));
+      setAutoVinculando(false);
+    }
+  };
+
+  // Automatico: assim que a fila e os CNPJs da transportadora carregam, vincula o que casa pela regra.
+  useEffect(() => {
+    if (carregando || autoVinculando || autoExecutado.current || !paresAutomaticos.length) return;
+    autoExecutado.current = true;
+    vincularAutomaticos({ silencioso: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carregando, paresAutomaticos]);
 
   const vincular = async (fatura, linha) => {
-    const alerta = obterRaizCnpj(linha.cnpj) && obterRaizCnpj(linha.cnpj) !== obterRaizCnpj(fatura.cnpj_transportadora)
+    const alerta = obterRaizCnpj(linha.cnpj) && !mesmoGrupoCnpj(fatura, linha, gruposRaiz)
       ? `ATENCAO: o CNPJ do SAP (${linha.cnpj}) e diferente do CNPJ da fatura (${fatura.cnpj_transportadora || '-'}).
 
 ` : '';
@@ -156,6 +224,10 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
           </p>
         </div>
         <div className="audit-form-actions">
+          <button className="btn-primary" onClick={() => vincularAutomaticos()} disabled={carregando || autoVinculando || !paresAutomaticos.length}
+            title="Mesmo numero de fatura e CNPJ do SAP cadastrado na transportadora (principal, origem ou CNPJ adicional)">
+            {autoVinculando ? 'Vinculando...' : `Vincular automaticos (${paresAutomaticos.length})`}
+          </button>
           <button className="btn-secondary" onClick={carregar} disabled={carregando}>{carregando ? 'Carregando...' : 'Atualizar'}</button>
           <button className="btn-secondary" onClick={() => setAberto((v) => !v)}>{aberto ? 'Recolher' : 'Expandir'}</button>
         </div>

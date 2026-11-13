@@ -5,9 +5,14 @@ import {
   criarMapaVinculosTransportadoras,
   aplicarVinculoTransportadora as aplicarVinculoTransportadoraPuro,
   normalizarNomeVinculo,
+  expandirTermosBuscaTransportadora as expandirTermosBuscaTransportadoraPuro,
 } from './vinculosTransportadorasPuro.js';
 
 export { criarMapaVinculosTransportadoras, normalizarNomeVinculo };
+
+export function expandirTermosBuscaTransportadora(termo, mapaVinculos) {
+  return expandirTermosBuscaTransportadoraPuro(termo, mapaVinculos, aplicarVinculoTransportadora);
+}
 
 const LOCAL_KEY = 'vinculos-transportadoras';
 const nomesTransportadorasOficiais = new Set();

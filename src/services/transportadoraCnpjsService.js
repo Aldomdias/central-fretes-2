@@ -124,3 +124,60 @@ export async function carregarRaizesAdicionaisPorTransportadora() {
   });
   return mapa;
 }
+
+// Raiz -> todas as raizes da MESMA transportadora (principal, origens e CNPJs
+// adicionais). Usado na conciliacao SAP: a fatura vem com um CNPJ (ex.: TAP) e
+// a partida no SAP com outro do mesmo grupo (ex.: L. J.). Indexar pela raiz
+// evita depender do nome da fatura bater exatamente com o nome do cadastro.
+export async function carregarGruposRaizTransportadora() {
+  const grupos = new Map();
+  if (!isSupabaseConfigured()) return grupos;
+  const [transportadoras, origens, adicionais] = await Promise.all([
+    client().from('transportadoras').select('id,cnpj,cnpj_raiz').limit(20000),
+    client().from('origens').select('transportadora_id,cnpj,cnpj_raiz').limit(50000),
+    client().from('transportadora_cnpjs').select('transportadora_id,cnpj_raiz').eq('ativo', true).limit(20000),
+  ]);
+  const erro = transportadoras.error || origens.error || adicionais.error;
+  if (erro) throw new Error(erro.message || 'Erro ao carregar raizes das transportadoras.');
+  const porId = new Map();
+  const adicionar = (id, valor) => {
+    const raiz = obterRaizCnpj(valor);
+    if (!id || !/^\d{8}$/.test(raiz) || /^0+$/.test(raiz)) return;
+    if (!porId.has(id)) porId.set(id, new Set());
+    porId.get(id).add(raiz);
+  };
+  (transportadoras.data || []).forEach((t) => adicionar(t.id, t.cnpj_raiz || t.cnpj));
+  (origens.data || []).forEach((o) => adicionar(o.transportadora_id, o.cnpj_raiz || o.cnpj));
+  (adicionais.data || []).forEach((a) => adicionar(a.transportadora_id, a.cnpj_raiz));
+  porId.forEach((raizes) => {
+    raizes.forEach((raiz) => {
+      grupos.set(raiz, Array.from(new Set([...(grupos.get(raiz) || []), ...raizes])));
+    });
+  });
+  return grupos;
+}
+
+// Raiz -> transportadora do cadastro dona dela ({ id, nome }): principal, origens e CNPJs adicionais.
+// Usado no Diagnostico para mostrar uma transportadora so, mesmo com nomes/CNPJs diferentes nas faturas.
+export async function carregarCadastroPorRaiz() {
+  const porRaiz = new Map();
+  if (!isSupabaseConfigured()) return porRaiz;
+  const [transportadoras, origens, adicionais] = await Promise.all([
+    client().from('transportadoras').select('id,nome,cnpj,cnpj_raiz').limit(20000),
+    client().from('origens').select('transportadora_id,cnpj,cnpj_raiz').limit(50000),
+    client().from('transportadora_cnpjs').select('transportadora_id,cnpj_raiz').eq('ativo', true).limit(20000),
+  ]);
+  const erro = transportadoras.error || origens.error || adicionais.error;
+  if (erro) throw new Error(erro.message || 'Erro ao carregar o cadastro das transportadoras.');
+  const nomePorId = new Map((transportadoras.data || []).map((t) => [t.id, t.nome]));
+  const adicionar = (id, valor) => {
+    const raiz = obterRaizCnpj(valor);
+    if (!id || !nomePorId.has(id) || !/^\d{8}$/.test(raiz) || /^0+$/.test(raiz) || porRaiz.has(raiz)) return;
+    porRaiz.set(raiz, { id, nome: nomePorId.get(id) });
+  };
+  // Ordem de prioridade se a mesma raiz estiver em dois cadastros: principal, adicional, origem.
+  (transportadoras.data || []).forEach((t) => adicionar(t.id, t.cnpj_raiz || t.cnpj));
+  (adicionais.data || []).forEach((a) => adicionar(a.transportadora_id, a.cnpj_raiz));
+  (origens.data || []).forEach((o) => adicionar(o.transportadora_id, o.cnpj_raiz || o.cnpj));
+  return porRaiz;
+}

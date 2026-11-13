@@ -423,3 +423,13 @@ export function montarLaudosNegociacao(resultado = {}, contexto = {}) {
   };
 }
 import { montarParetoReajuste } from './paretoReajuste.js';
+
+// Older snapshots may contain only email text, or a wrapper with empty dados.
+// Render from the saved simulation summary when the visual payload is incomplete.
+export function recuperarLaudoNegociacao(salvo, gerado, regenerar = false) {
+  const dados = salvo?.dados && typeof salvo.dados === 'object' ? salvo.dados : salvo;
+  const esperado = Number(gerado?.indicadores?.ctesAnalisados || 0);
+  const completo = dados && dados.transportadora && dados.indicadores
+    && Number(dados.indicadores.ctesAnalisados || 0) === esperado;
+  return regenerar || !completo ? gerado : dados;
+}

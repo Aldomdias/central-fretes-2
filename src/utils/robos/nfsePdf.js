@@ -37,6 +37,50 @@ export function itensParaLinhas(itens = []) {
 }
 
 const RE_CNPJ = /(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/;
+
+function cnpjValido(c) {
+  if (!/^\d{14}$/.test(c) || /^(\d)\1+$/.test(c)) return false;
+  const dv = (base) => {
+    let soma = 0;
+    let peso = base.length - 7;
+    for (const ch of base) { soma += Number(ch) * peso; peso = peso === 2 ? 9 : peso - 1; }
+    const r = soma % 11;
+    return r < 2 ? 0 : 11 - r;
+  };
+  return dv(c.slice(0, 12)) === Number(c[12]) && dv(c.slice(0, 13)) === Number(c[13]);
+}
+
+// OCR: CNPJ com letra no lugar de numero ("1O.158.356/0036-3l"), virgula no lugar do ponto ou espacos.
+// So vale se o digito verificador confere, para nao inventar CNPJ a partir de lixo.
+const D_OCR = '[\\dOoDQIl]';
+const RE_CNPJ_OCR = new RegExp(`(?<![\\dOoDQIl])(${D_OCR}{2})\\s?[.,]?\\s?(${D_OCR}{3})\\s?[.,]?\\s?(${D_OCR}{3})\\s?[/|\\\\]?\\s?(${D_OCR}{4})\\s?[-–—~.]?\\s?(${D_OCR}{2})(?![\\dOoDQIl])`, 'g');
+function cnpjsOcr(linha) {
+  const achados = [];
+  for (const m of String(linha).matchAll(RE_CNPJ_OCR)) {
+    const c = m.slice(1, 6).join('').replace(/[OoDQ]/g, '0').replace(/[Il]/g, '1');
+    if (cnpjValido(c)) achados.push(c);
+  }
+  return achados;
+}
+// OCR: primeira data dd/mm/aaaa valida do texto (sem exigir a hora ao lado)
+function dataValidaNoTexto(txt) {
+  for (const m of String(txt).matchAll(/(?<!\d)(\d{2})\/(\d{2})\/(20\d{2})(?!\d)/g)) {
+    const [dia, mes] = [Number(m[1]), Number(m[2])];
+    if (dia >= 1 && dia <= 31 && mes >= 1 && mes <= 12) return m;
+  }
+  return null;
+}
+function cnpjDaLinha(linha, ocr) {
+  const m = String(linha).match(RE_CNPJ);
+  if (m) return m[1].replace(/\D/g, '');
+  return ocr ? (cnpjsOcr(linha)[0] || '') : '';
+}
+
+// OCR: o nome vem grudado com o que esta ao lado (data, lixo). Corta no fim da razao social.
+function cortarNaRazaoSocial(nome) {
+  const m = String(nome).match(/^(.*?\b(?:LTDA|S\.?\s?A|EIRELI|EPP|MEI?)\b\.?)(?=\s|$)/i);
+  return m ? m[1].trim() : String(nome).trim();
+}
 const RE_VALOR = /R\$\s*([\d.]+,\d{2})/;
 const semAcento = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '');
 
@@ -149,7 +193,15 @@ function extrairModeloRps(L, U) {
 
 // Modelo ISS.NET / Nota Control (ex.: Governo do Distrito Federal): blocos "Dados do Prestador de
 // Servico" e "Dados do Tomador de Servicos", valores na linha abaixo dos titulos do "Detalhamento dos Tributos".
-function extrairModeloIssNet(L, U) {
+// O PDF do DF as vezes vem com as letras desenhadas (sem texto) e passa pelo OCR, que le "Vl." como "VI."
+// e "DF" como "DE", junta o nome do prestador com a data de geracao e mistura lixo do QR Code nas linhas.
+const RE_VL_TOTAL = /\bV[LI1|]\.?\s*TOTAL DOS SERVICOS/;
+const RE_VL_LIQUIDO = /\bV[LI1|]\.?\s*LIQUIDO DA NOTA/;
+const UF_VALIDAS = new Set(Object.values(UF_IBGE));
+const RE_RAZAO_SOCIAL = /\b(?:LTDA|S\.?\s?A|EIRELI|EPP|MEI?)\b\.?$/i;
+function extrairModeloIssNet(linhas, U, { ocr = false } = {}) {
+  // OCR troca o zero do dia por letra ("D4/09/2026 20:45:09" = 04/09/2026)
+  const L = linhas.map((l) => l.replace(/(^|\s)[ODoQ](\d\/\d{2}\/20\d{2})/g, '$10$2'));
   const dados = { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null, chave: '', valorLiquido: null, municipioPrestador: '', municipioTomador: '' };
   const todo = L.join('\n');
   const chave = (todo.match(/\b(\d{50})\b/) || [])[1];
@@ -164,7 +216,8 @@ function extrairModeloIssNet(L, U) {
     if (m) dados.numeroNfse = String(Number(m[1]));
   }
   dados.nf = nfComSufixoF(dados.numeroNfse);
-  const d = todo.match(/(\d{2})\/(\d{2})\/(\d{4})\s+\d{2}:\d{2}(?::\d{2})?/);
+  // data de geracao (com hora); se o OCR estragou essa, vale a data de competencia (mesmo dia no ISS.NET)
+  const d = todo.match(/(\d{2})\/(\d{2})\/(\d{4})\s+\d{2}:\d{2}(?::\d{2})?/) || (ocr ? dataValidaNoTexto(todo) : null);
   if (d) dados.dataEmissao = `${d[3]}-${d[2]}-${d[1]}`;
 
   const iPrest = U.findIndex((l) => l.includes('DADOS DO PRESTADOR DE SERVICO'));
@@ -172,12 +225,19 @@ function extrairModeloIssNet(L, U) {
   const fimPrest = iTom > iPrest ? iTom : L.length;
   if (iPrest >= 0) {
     // nome: primeira linha do bloco que nao e titulo nem data (as datas da coluna da direita se intercalam)
+    const candidatos = [];
     for (let k = iPrest + 1; k < fimPrest; k += 1) {
       const t = L[k].split(SEP)[0].trim();
       if (!t || /^(DATA|COD\.|RESPONSAVEL|IDENTIFICACAO)/.test(semAcento(t).toUpperCase()) || /^[\d/: ]+$/.test(t)) continue;
-      dados.transportadora = t;
-      break;
+      // OCR: "NOME LTDA. 10/09/2026 13:29:10 | lixo" -> corta na data; linhas de lixo tem poucas letras
+      let nome = t.replace(/\s*\d{2}\/\d{2}\/\d{4}.*$/, '').replace(/\s*\|.*$/, '').trim();
+      if (ocr) nome = cortarNaRazaoSocial(nome.replace(/\s+\S*\d\S*\s+\d{1,2}:\d{2}.*$/, ''));
+      if ((nome.match(/[A-Za-zÀ-ÿ]/g) || []).length < 8) continue;
+      candidatos.push(nome);
+      if (!ocr) break;
     }
+    // OCR: o lixo do QR Code pode vir antes do nome ("8: ARIANA BATA"); vale a linha com cara de razao social
+    dados.transportadora = candidatos.find((n) => RE_RAZAO_SOCIAL.test(n)) || candidatos[0] || '';
     for (let k = iPrest + 1; k < fimPrest; k += 1) {
       const cnpj = L[k].match(RE_CNPJ);
       if (cnpj && !dados.cnpjTransp) dados.cnpjTransp = cnpj[1].replace(/\D/g, '');
@@ -185,19 +245,27 @@ function extrairModeloIssNet(L, U) {
       if (mun && !dados.municipioPrestador) { dados.municipioPrestador = chaveMunicipio(`${mun[1]}${mun[2]}`); dados.ufPrestador = mun[2].toUpperCase(); }
     }
   }
+  // a chave (IBGE do municipio emissor) vale mais que a UF lida (o OCR troca "DF" por "DE")
+  const ufChave = dados.chave ? UF_IBGE[dados.chave.slice(0, 2)] || '' : '';
+  if (ufChave && dados.ufPrestador !== ufChave) {
+    dados.municipioPrestador = `IBGE${dados.chave.slice(0, 7)}`;
+    dados.ufPrestador = ufChave;
+  } else if (dados.ufPrestador && !UF_VALIDAS.has(dados.ufPrestador)) {
+    dados.municipioPrestador = '';
+    dados.ufPrestador = '';
+  }
   if (iTom >= 0) {
     for (let k = iTom + 1; k < Math.min(iTom + 8, L.length); k += 1) {
-      const cnpj = L[k].match(RE_CNPJ);
-      if (cnpj && !dados.cnpjTomador) dados.cnpjTomador = cnpj[1].replace(/\D/g, '');
+      if (!dados.cnpjTomador) dados.cnpjTomador = cnpjDaLinha(L[k], ocr);
       const mun = L[k].match(/Cidade\s*\/\s*UF\s*:\s*(?:¦\s*)?([^/¦]+?)\s*\/\s*([A-Za-z]{2})\b/i);
-      if (mun && !dados.municipioTomador) { dados.municipioTomador = chaveMunicipio(`${mun[1]}${mun[2]}`); dados.ufTomador = mun[2].toUpperCase(); }
+      if (mun && !dados.municipioTomador && UF_VALIDAS.has(mun[2].toUpperCase())) { dados.municipioTomador = chaveMunicipio(`${mun[1]}${mun[2]}`); dados.ufTomador = mun[2].toUpperCase(); }
     }
   }
 
   // "Vl. Total dos Servicos" e a 1a coluna; "Vl. Liquido da NotaFiscal" e a ultima
-  const iTot = U.findIndex((l) => l.includes('VL. TOTAL DOS SERVICOS'));
+  const iTot = U.findIndex((l) => RE_VL_TOTAL.test(l));
   if (iTot >= 0) { const v = (L[iTot + 1] || '').match(RE_VALOR); if (v) dados.valor = paraNumero(v[1]); }
-  const iLiq = U.findIndex((l) => l.includes('VL. LIQUIDO DA NOTA'));
+  const iLiq = U.findIndex((l) => RE_VL_LIQUIDO.test(l));
   if (iLiq >= 0) { const v = numeros(L[iLiq + 1] || ''); if (v.length) dados.valorLiquido = v[v.length - 1]; }
   aplicarRegrasLancamento(dados);
   return resultado(dados);
@@ -462,7 +530,7 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   const L = linhas.map((l) => String(l ?? ''));
   const U = L.map((l) => semAcento(l).toUpperCase());
   if (U.some((l) => l.includes('RECIBO PROVISORIO DE SERVICOS'))) return extrairModeloRps(L, U);
-  if (U.some((l) => l.includes('DADOS DO TOMADOR DE SERVICO')) && U.some((l) => l.includes('VL. TOTAL DOS SERVICOS'))) return extrairModeloIssNet(L, U);
+  if (U.some((l) => l.includes('DADOS DO TOMADOR DE SERVICO')) && U.some((l) => RE_VL_TOTAL.test(l))) return extrairModeloIssNet(L, U, { ocr });
   const todo = L.join('\n');
   const dados = { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null, chave: '' };
   const faltando = [];
@@ -488,25 +556,35 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   dados.nf =nfComSufixoF(dados.numeroNfse);
 
   // data da emissao da NFS-e: primeira data seguida de hora (a competencia vem sem hora)
-  const d = todo.match(/(\d{2})\/(\d{2})\/(\d{4})\s*,?\s+\d{2}:\d{2}(?::\d{2})?/);
+  const d = todo.match(/(\d{2})\/(\d{2})\/(\d{4})\s*,?\s+\d{2}:\d{2}(?::\d{2})?/) || (ocr ? dataValidaNoTexto(todo) : null);
   if (d) dados.dataEmissao = `${d[3]}-${d[2]}-${d[1]}`;
 
   // prestador (nome e, se faltar a chave, o CNPJ) e tomador (CNPJ)
   const iPrest = U.findIndex((l) => l.includes('PRESTADOR / FORNECEDOR') || /^PRESTADOR D[EO] SERVICO/.test(l.trim()));
-  const iTom = U.findIndex((l) => l.includes('TOMADOR / ADQUIRENTE') || /^TOMADOR D[EO] SERVICO/.test(l.trim()));
+  const iTom = U.findIndex((l) => /TOMADOR\s*[/|\\]\s*ADQUIRENTE/.test(l) || /^TOMADOR D[EO] SERVICO/.test(l.trim()));
   const cnpjApos = (inicio) => {
     if (inicio < 0) return '';
     for (let k = inicio; k < Math.min(inicio + 6, L.length); k += 1) {
-      const m = L[k].match(RE_CNPJ);
-      if (m) return m[1].replace(/\D/g, '');
+      const c = cnpjDaLinha(L[k], ocr);
+      if (c) return c;
     }
     return '';
   };
   if (!dados.cnpjTransp) dados.cnpjTransp = cnpjApos(iPrest);
   dados.cnpjTomador = cnpjApos(iTom);
+  if (ocr && dados.cnpjTomador.length !== 14) {
+    // OCR estragou o titulo do bloco do tomador: vale o 1o CNPJ valido do texto que nao e o do prestador
+    dados.cnpjTomador = L.flatMap((l) => cnpjsOcr(l)).find((c) => c !== dados.cnpjTransp) || dados.cnpjTomador;
+  }
 
   const iNomePrest = U.findIndex((l, k) => k > iPrest && iPrest >= 0 && l.includes('NOME / NOME EMPRESARIAL'));
   if (iNomePrest >= 0 && L[iNomePrest + 1]) dados.transportadora = semEmail(L[iNomePrest + 1].split(SEP)[0].trim());
+  // OCR (sem colunas): o municipio vem grudado no nome ("RB TRANSLOG LTDA Luis Eduardo Magalhaes / BA 29.19553 /")
+  if (/\/\s*[A-Za-z]{2}\s+\d{2}\.?\d{5}/.test(dados.transportadora)) {
+    const t = dados.transportadora;
+    const m = t.match(/^(.*?\b(?:LTDA|S\.?\s?A|EIRELI|EPP|MEI?)\b\.?)\s/i);
+    dados.transportadora = m ? m[1].trim() : t.replace(/\s*\/\s*[A-Za-z]{2}\s+\d{2}\.?\d{5}.*$/, '').trim();
+  }
 
   if (!dados.transportadora && iPrest >= 0) {
     const k = U.findIndex((l, n) => n > iPrest && n < iPrest + 6 && l.includes('RAZAO'));
@@ -570,7 +648,11 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
       if (U[k].includes('NOME / NOME EMPRESARIAL') && L[k + 1]) { // modelo nacional: Nome ¦ Municipio / UF ¦ IBGE / CEP
         const cel = L[k + 1].split(SEP);
         const ibge = (cel[2] || '').split('/')[0].replace(/\D/g, '');
-        return ibge.length >= 6 ? `IBGE${ibge}` : chaveMun(cel[1] || '');
+        if (ibge.length >= 6) return `IBGE${ibge}`;
+        // OCR (sem colunas): "RB TRANSLOG LTDA Luis Eduardo Magalhaes / BA 29.19553 / 47.862-094"
+        const o = cel.length === 1 ? L[k + 1].match(/\/\s*[A-Za-z]{2}\s+(\d{2})\.?(\d{5})\b/) : null;
+        if (o) return `IBGE${o[1]}${o[2]}`;
+        return chaveMun(cel[1] || '');
       }
       if (U[k].trim() === 'ENDERECO' && L[k + 1]) { // modelo de Palmas: ... - CEP: 77023-122 - Palmas - TO
         const a = L[k + 1].match(/-\s*([^-¦]+?)\s*-\s*([A-Za-z]{2})\s*$/);
@@ -610,16 +692,18 @@ async function linhasDaPagina(pdf, n) {
 // Um PDF pode ter varias notas, uma por pagina. Devolve uma leitura por pagina; paginas de
 // continuacao (sem numero, CNPJ nem valor, depois de uma pagina lida) ficam de fora.
 // opcoes.ocr: leitura de texto vindo de OCR; opcoes.ocrPaginas[i]: so a pagina i veio de OCR.
+// opcoes.ignoradas: recebe as paginas puladas (continuacao ou RPS), para a tela avisar e nada sumir calado.
 export function lerPaginas(paginas = [], opcoes = {}) {
+  const ignoradas = Array.isArray(opcoes.ignoradas) ? opcoes.ignoradas : [];
   const notas = [];
   let rps = 0;
   paginas.forEach((linhas, i) => {
     const ocr = Boolean(opcoes.ocr || (opcoes.ocrPaginas || [])[i]);
     const r = { pagina: i + 1, ocr, ...extrairDadosNfse(linhas, { ocr }), semTexto: linhas.length === 0 };
-    if (r.rps) { rps += 1; return; } // RPS (recibo provisorio): ignora, vale so a nota fiscal
+    if (r.rps) { rps += 1; ignoradas.push({ pagina: i + 1, motivo: 'rps' }); return; } // RPS (recibo provisorio): ignora, vale so a nota fiscal
     const vazia = !r.dados.numeroNfse && r.dados.cnpjTransp.length !== 14 && !(r.dados.valor > 0);
     const anteriorOk = notas.some((n) => !n.faltando.length);
-    if (i > 0 && anteriorOk && (r.semTexto || vazia)) return;
+    if (i > 0 && anteriorOk && (r.semTexto || vazia)) { ignoradas.push({ pagina: i + 1, motivo: 'continuacao', ocr }); return; }
     notas.push(r);
   });
   if (!notas.length && rps) notas.push({ pagina: 1, ocr: false, dados: { nf: '', numeroNfse: '', transportadora: '', cnpjTransp: '', cnpjTomador: '', dataEmissao: '', valor: null }, faltando: ['NFS-e (o arquivo so tem RPS)'], semTexto: false });
@@ -627,11 +711,13 @@ export function lerPaginas(paginas = [], opcoes = {}) {
 }
 
 // opcoes.ocr(pdf, n) -> linhas: usado nas paginas sem texto (PDF escaneado ou com letras desenhadas).
-export async function lerNfsePdf(arquivo, { ocr } = {}) {
+// opcoes.onPagina(n, total): avisa a pagina que vai ser lida (progresso na tela).
+export async function lerNfsePdf(arquivo, { ocr, onPagina } = {}) {
   const pdf = await abrirPdf(arquivo);
   const paginas = [];
   const ocrPaginas = [];
   for (let n = 1; n <= pdf.numPages; n += 1) {
+    if (onPagina) onPagina(n, pdf.numPages);
     let linhas = await linhasDaPagina(pdf, n);
     if (!linhas.length && ocr) {
       linhas = await ocr(pdf, n);
@@ -639,5 +725,7 @@ export async function lerNfsePdf(arquivo, { ocr } = {}) {
     }
     paginas.push(linhas);
   }
-  return { totalPaginas: pdf.numPages, notas: lerPaginas(paginas, { ocrPaginas }) };
+  const ignoradas = [];
+  const notas = lerPaginas(paginas, { ocrPaginas, ignoradas });
+  return { totalPaginas: pdf.numPages, notas, ignoradas };
 }

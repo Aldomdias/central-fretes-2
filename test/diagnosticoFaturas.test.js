@@ -1,12 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  criarUnificadorAuditores,
+  etapaFenix,
   faixaDaLinha,
   faixaDiagnostico,
   filtrarPorCards,
+  GRUPOS_DIAGNOSTICO,
   identificacaoSapDoCte,
   montarLinhasDiagnostico,
   parseListaFaturas,
+  previsaoPagamento,
+  situacaoPrevisao,
   proximaAcao,
   resumirCtesFatura,
   situacaoAuditoria,
@@ -190,4 +195,137 @@ test('agrupamento manual: sai do card a enviar quando a fatura recebe partida', 
   assert.equal(filtrarPorCards(linhas, { protocolo: 'manual_agrupadas' })[0].fatura.partida, '200123');
   assert.equal(filtrarPorCards(linhas, { protocolo: 'sem_marcacao' }).length, 1);
   assert.equal(proximaAcao(linhas[0]), 'Aguardar agrupamento manual do financeiro');
+});
+
+test('ajuste Fênix: a enviar -> aguardando -> retorno -> protocolo', () => {
+  const fenix = { total: 1, lancados: 1, nfse: 0, fenix: [{ partida: '5100000001' }] };
+  const limpo = { total: 1, lancados: 1, nfse: 0, fenix: [] };
+  const fat = (extra = {}) => ({ id: 'f1', status: 'PRONTA_PARA_PAGAMENTO', ctes_totais: 1, ctes_auditados: 1, ...extra });
+  const pega = (linha) => GRUPOS_DIAGNOSTICO.find((g) => g.id === 'fenix_ajuste').cards.filter((c) => c.teste(linha)).map((c) => c.id);
+
+  const aEnviar = { fatura: fat(), ctes: fenix };
+  assert.equal(etapaFenix(aEnviar), 'A_ENVIAR');
+  assert.deepEqual(pega(aEnviar), ['fenix_a_enviar']);
+  assert.equal(proximaAcao(aEnviar), 'Pedir estorno da compensação Fênix ao financeiro');
+
+  const enviada = { fatura: fat({ fenix_ajuste_status: 'ENVIADO' }), ctes: fenix };
+  assert.equal(etapaFenix(enviada), 'AGUARDANDO');
+  assert.equal(proximaAcao(enviada), 'Aguardar retorno do financeiro (Fênix)');
+  // Sem o resumo dos CT-es continua aguardando.
+  assert.equal(etapaFenix({ fatura: enviada.fatura }), 'AGUARDANDO');
+
+  // Retorno manual (SAP ainda nao reimportado) ou sozinho (Fenix sumiu do SAP).
+  assert.equal(etapaFenix({ fatura: fat({ fenix_ajuste_status: 'RETORNADO' }), ctes: fenix }), 'RETORNO');
+  const voltou = { fatura: fat({ fenix_ajuste_status: 'ENVIADO' }), ctes: limpo };
+  assert.equal(etapaFenix(voltou), 'RETORNO');
+  assert.deepEqual(pega(voltou), ['fenix_retorno']);
+  assert.equal(proximaAcao(voltou), 'Mandar protocolo (Fênix ajustada)');
+
+  const protocolo = { fatura: fat({ fenix_ajuste_status: 'RETORNADO', agrupamento_manual: true }), ctes: limpo };
+  assert.equal(etapaFenix(protocolo), 'PROTOCOLO');
+  assert.deepEqual(pega(protocolo), ['fenix_protocolo']);
+
+  // Fora do fluxo: sem Fenix e sem marcacao, ou ja paga.
+  assert.equal(etapaFenix({ fatura: fat(), ctes: limpo }), '');
+  assert.equal(etapaFenix({ fatura: fat({ status: 'PAGA', fenix_ajuste_status: 'ENVIADO' }), ctes: fenix }), '');
+});
+
+test('previsão de pagamento: cards, situação e próxima ação', () => {
+  const ref = new Date('2026-11-11T12:00:00');
+  const fat = (extra = {}) => ({ id: 'p1', status: 'PRONTA_PARA_PAGAMENTO', partida: '5100000009', agrupamento_manual: true, ctes_totais: 1, ctes_auditados: 1, data_vencimento: '2026-11-01', ...extra });
+  assert.equal(situacaoPrevisao(fat(), ref), 'SEM_PREVISAO');
+  assert.equal(situacaoPrevisao(fat({ data_previsao_pagamento: '2026-11-12' }), ref), 'PREVISTA');
+  assert.equal(situacaoPrevisao(fat({ data_previsao_pagamento: '2026-11-11' }), ref), 'PREVISTA');
+  assert.equal(situacaoPrevisao(fat({ data_previsao_pagamento: '2026-11-10' }), ref), 'ATRASADA');
+  // Paga: a previsao deixa de valer.
+  assert.equal(previsaoPagamento(fat({ status: 'PAGA', data_previsao_pagamento: '2026-11-12' })), '');
+  const linha = { fatura: fat({ data_previsao_pagamento: '2026-11-12' }), ctes: { total: 1, lancados: 1, nfse: 0, fenix: [] } };
+  assert.equal(proximaAcao(linha), 'Aguardar pagamento (previsto 12/11/2026)');
+  const grupo = GRUPOS_DIAGNOSTICO.find((g) => g.id === 'previsao');
+  const card = (id) => grupo.cards.find((c) => c.id === id).teste;
+  assert.ok(card('protocolo_sem_previsao')({ fatura: fat(), ctes: linha.ctes }));
+  assert.ok(!card('protocolo_sem_previsao')(linha));
+  assert.ok(card('com_previsao')(linha));
+  // Fora do protocolo a previsao nao vale: segue o vencimento.
+  const foraProtocolo = fat({ agrupamento_manual: false, data_previsao_pagamento: '2026-11-12' });
+  assert.equal(previsaoPagamento(foraProtocolo), '');
+  assert.ok(!card('protocolo_sem_previsao')({ fatura: foraProtocolo, ctes: linha.ctes }));
+  assert.equal(proximaAcao({ fatura: foraProtocolo, ctes: linha.ctes }), 'Aguardar pagamento');
+});
+
+test('filtro por auditor: sozinho mostra as em aberto dele; com transportadora ou lista restringe', () => {
+  const faturas = [
+    { id: 'a', numero_fatura: '10', transportadora: 'WM', auditor_nome: 'Ana', status: 'PENDENTE' },
+    { id: 'b', numero_fatura: '11', transportadora: 'WM', auditor_nome: 'Ana', status: 'PAGA' },
+    { id: 'c', numero_fatura: '12', transportadora: 'WM', auditor_nome: 'Bruno', status: 'PENDENTE' },
+    { id: 'd', numero_fatura: '13', transportadora: 'XP', auditor_nome: 'Ana', status: 'CANCELADA' },
+    { id: 'e', numero_fatura: '14', transportadora: 'XP', auditor_nome: '', status: 'PENDENTE' },
+  ];
+  const ids = (ls) => ls.map((l) => l.fatura?.id || l.numero);
+  // Sozinho: as em aberto e as canceladas (estas so aparecem no card "Canceladas").
+  assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, auditor: 'Ana' })), ['a', 'd']);
+  assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, auditor: 'Sem auditor' })), ['e']);
+  assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, transportadora: 'WM', auditor: 'Ana' })), ['a', 'b']);
+  // Visao do gestor: em aberto (e canceladas) de todos os auditores.
+  assert.deepEqual(ids(montarLinhasDiagnostico({ faturas, todos: true })), ['a', 'c', 'd', 'e']);
+  assert.deepEqual(ids(montarLinhasDiagnostico({ faturas })), []);
+  const { itens } = parseListaFaturas('10\n12\n999');
+  assert.deepEqual(ids(montarLinhasDiagnostico({ itens, faturas, auditor: 'Ana' })), ['a', '999']);
+});
+
+test('duplicadas: mesma fatura em dois CNPJs, a paga fica valendo; mesma transportadora em aberto fica a mais antiga', async () => {
+  const { detectarDuplicadas, criarAgrupadorTransportadoras } = await import('../src/utils/diagnosticoFaturas.js');
+  const faturas = [
+    { id: 'paga', numero_fatura: '498', transportadora: 'FLORESTA', cnpj_transportadora: '48733968000153', valor_fatura: 3190.7, data_emissao: '2026-08-04', status: 'PAGA', created_at: '2026-08-13' },
+    { id: 'copia', numero_fatura: '498', transportadora: 'FLORESTA LOGISTICA LTDA', cnpj_transportadora: '22163228000135', valor_fatura: 3190.7, data_emissao: '2026-08-04', status: 'RECEBIDA', created_at: '2026-08-06' },
+    { id: 'a1', numero_fatura: '0010', transportadora: 'ALFA', cnpj_transportadora: '11111111000100', valor_fatura: 100, data_emissao: '2026-09-01', status: 'RECEBIDA', created_at: '2026-09-02' },
+    { id: 'a2', numero_fatura: '10', transportadora: 'ALFA TRANSPORTES', cnpj_transportadora: '11111111000200', valor_fatura: 100, data_emissao: '2026-09-01', status: 'RECEBIDA', created_at: '2026-09-05' },
+    // Mesmo numero/valor/emissao em outra empresa, nenhuma paga: coincidencia, nao marca.
+    { id: 'x1', numero_fatura: '7', transportadora: 'BETA', cnpj_transportadora: '33333333000100', valor_fatura: 50, data_emissao: '2026-09-01', status: 'RECEBIDA' },
+    { id: 'x2', numero_fatura: '7', transportadora: 'GAMA', cnpj_transportadora: '44444444000100', valor_fatura: 50, data_emissao: '2026-09-01', status: 'RECEBIDA' },
+    { id: 'canc', numero_fatura: '10', transportadora: 'ALFA', cnpj_transportadora: '11111111000100', valor_fatura: 100, data_emissao: '2026-09-01', status: 'CANCELADA' },
+  ];
+  const { chaveDaFatura } = criarAgrupadorTransportadoras(faturas);
+  const dup = detectarDuplicadas(faturas, chaveDaFatura);
+  assert.deepEqual([...dup.keys()].sort(), ['a2', 'copia']);
+  assert.equal(dup.get('copia').principal.id, 'paga');
+  assert.equal(dup.get('copia').motivo, 'PAGA_EM_OUTRO_CNPJ');
+  assert.equal(dup.get('a2').principal.id, 'a1');
+});
+
+test('agrupador: nomes e CNPJs do mesmo cadastro viram uma transportadora so', async () => {
+  const { criarAgrupadorTransportadoras } = await import('../src/utils/diagnosticoFaturas.js');
+  const faturas = [
+    { id: '1', transportadora: 'FLORESTA', cnpj_transportadora: '48733968000153' },
+    { id: '2', transportadora: 'FLORESTA LOGISTICA LTDA', cnpj_transportadora: '22163228000135' },
+    { id: '3', transportadora: 'FLORESTA LOGISTICA LTDA - PRUDENTE', cnpj_transportadora: '22163228000488' },
+    { id: '4', transportadora: 'GENEROSO LTDA', cnpj_transportadora: '29453826000100' },
+    { id: '5', transportadora: 'TRANSPORTE GENEROSO', cnpj_transportadora: '29453826000200' },
+    { id: '6', transportadora: 'TRANSPORTE GENEROSO', cnpj_transportadora: '29453826000200' },
+    { id: '7', transportadora: 'SEM CNPJ', cnpj_transportadora: '' },
+  ];
+  const cadastro = new Map([['48733968', { id: 't1', nome: 'FLORESTA' }], ['22163228', { id: 't1', nome: 'FLORESTA' }]]);
+  const { opcoes, filtro } = criarAgrupadorTransportadoras(faturas, cadastro);
+  assert.deepEqual(opcoes.map((o) => o.rotulo), ['FLORESTA', 'SEM CNPJ', 'TRANSPORTE GENEROSO']);
+  assert.deepEqual(faturas.filter(filtro('FLORESTA')).map((f) => f.id), ['1', '2', '3']);
+  // Nome antigo salvo na sessao continua funcionando.
+  assert.deepEqual(faturas.filter(filtro('FLORESTA LOGISTICA LTDA')).map((f) => f.id), ['1', '2', '3']);
+  assert.deepEqual(faturas.filter(filtro('TRANSPORTE GENEROSO')).map((f) => f.id), ['4', '5', '6']);
+});
+
+test('unifica o mesmo auditor gravado com nomes diferentes', () => {
+  const nomes = ['Paulo Ricardo', 'Paulo Ricardo dos Santos', 'Alisson Lucas', 'Alisson Silva', 'Alisson Lucas da Silva', 'Deborah', 'Deborah Winnie Moraes Thomazi', 'Rudieris Rodrigues dos Santos', ''];
+  const faturas = nomes.map((n, i) => ({ id: String(i), auditor_nome: n, status: 'RECEBIDA' }));
+  const u = criarUnificadorAuditores(faturas);
+  assert.deepEqual(u.opcoes, ['Alisson Lucas da Silva', 'Deborah Winnie Moraes Thomazi', 'Paulo Ricardo dos Santos', 'Rudieris Rodrigues dos Santos']);
+  assert.equal(u.canonico('paulo ricardo'), 'Paulo Ricardo dos Santos');
+  assert.equal(u.nome(faturas[8]), 'Sem auditor');
+  const ids = montarLinhasDiagnostico({ faturas, auditor: 'Paulo Ricardo dos Santos', nomeDoAuditor: u.nome }).map((l) => l.fatura.id);
+  assert.deepEqual(ids, ['0', '1']);
+  // Nome curto que cabe em duas pessoas diferentes nao e juntado.
+  assert.deepEqual(criarUnificadorAuditores([{ auditor_nome: 'Ana' }, { auditor_nome: 'Ana Souza' }, { auditor_nome: 'Ana Lima' }]).opcoes, ['Ana', 'Ana Lima', 'Ana Souza']);
+  // Mesmo e-mail junta mesmo sem nome contido; usuario logado e achado pelo e-mail.
+  const porEmail = criarUnificadorAuditores([{ auditor_nome: 'Bia R', auditor_email: 'b@x.com' }, { auditor_nome: 'Bianca Ruzzante', auditor_email: 'B@X.com' }]);
+  assert.deepEqual(porEmail.opcoes, ['Bianca Ruzzante']);
+  assert.equal(porEmail.doUsuario({ email: 'b@x.com' }), 'Bianca Ruzzante');
 });

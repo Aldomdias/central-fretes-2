@@ -60,3 +60,32 @@ export function aplicarVinculoTransportadora(nome, mapaVinculos) {
 export function normalizarNomeVinculo(nome = '') {
   return normalizarChave(nome);
 }
+
+// Expande o termo digitado na busca de transportadora para os nomes originais
+// do CT-e cujo vínculo leva a um nome que contém o termo. Ex.: digitar
+// "MOVIMENTE" também busca "MVT CAMPINAS ..." quando há vínculo MVT -> MOVIMENTE.
+// O próprio termo vem sempre primeiro. Termos que já contêm outro termo da lista
+// são descartados, pois a busca no banco é por "contém" e o menor já os cobre.
+export function expandirTermosBuscaTransportadora(termo, mapaVinculos, aplicarVinculo = aplicarVinculoTransportadora) {
+  const original = String(termo || '').trim();
+  if (!original) return [];
+  const termoNormalizado = normalizarChave(original);
+  if (!termoNormalizado || !mapaVinculos || !mapaVinculos.size) return [original];
+
+  const candidatos = new Set();
+  mapaVinculos.forEach((_destino, nomeCte) => {
+    const nome = String(nomeCte || '').trim().toUpperCase();
+    if (!nome) return;
+    const final = aplicarVinculo(nome, mapaVinculos);
+    if (normalizarChave(final).includes(termoNormalizado)) candidatos.add(nome);
+  });
+
+  const termos = [original.toUpperCase()];
+  [...candidatos]
+    .sort((a, b) => a.length - b.length)
+    .forEach((nome) => {
+      if (!termos.some((t) => nome.includes(t))) termos.push(nome);
+    });
+  termos[0] = original;
+  return termos;
+}

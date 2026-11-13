@@ -60,7 +60,7 @@ import LaudoTransportadoraConsolidadoTemplate from '../components/laudos/LaudoTr
 import LaudoEmailAcoes from '../components/laudos/LaudoEmailAcoes';
 import CampoOrigemMunicipio from '../components/CampoOrigemMunicipio';
 import { laudoConsolidadoPorAudience, LAUDO_AUDIENCE, montarExcelAjusteRotaFaixaConsolidado } from '../utils/laudoTransportadoraConsolidado';
-import { montarLaudosNegociacao } from '../utils/laudosNegociacaoHtml';
+import { montarLaudosNegociacao, recuperarLaudoNegociacao } from '../utils/laudosNegociacaoHtml';
 import { montarLaudosRodadasNegociacao } from '../utils/laudosRodadasNegociacaoHtml';
 import {
   baixarLaudoRodadasEmail,
@@ -209,8 +209,8 @@ function getLaudosTabela(tabela) {
   var regenerarReajuste = getTipoNegociacaoTabela(tabela) === 'REAJUSTE_TABELA_EXISTENTE';
 
   return {
-    executivo: regenerarReajuste ? laudosGerados.executivo : (laudosSalvos.executivo || laudosGerados.executivo),
-    transportador: regenerarReajuste ? laudosGerados.transportador : (laudosSalvos.transportador || laudosGerados.transportador),
+    executivo: recuperarLaudoNegociacao(laudosSalvos.executivo, laudosGerados.executivo, regenerarReajuste),
+    transportador: recuperarLaudoNegociacao(laudosSalvos.transportador, laudosGerados.transportador, regenerarReajuste),
   };
 }
 function getDadosLaudoSalvo(laudo) {
@@ -347,6 +347,7 @@ function getIndicadoresTabela(tabela, simulacaoCanal) {
     rotasParciais: Number(ultimaSim.rotas_parciais || resumo.qtdRotasParciaisSelecionada || 0),
     freteCapturado: Number(ultimaSim.frete_capturado || resumo.freteCapturadoRealizado || 0),
     ctesCapturados: Number(ultimaSim.ctes_capturados || resumo.ctesCapturadosDeOutras || 0),
+    estadosComparacao: Array.isArray(resumo.resumoPorEstado) ? resumo.resumoPorEstado : [],
     estadosGanhadores: Array.isArray(resumo.estadosGanhadoresDestaque) ? resumo.estadosGanhadoresDestaque : [],
     transportadorasPerda: Array.isArray(resumo.transportadorasPerdaDestaque) ? resumo.transportadorasPerdaDestaque : [],
     rotasGanhasDestaque: Array.isArray(resumo.rotasGanhasDestaque) ? resumo.rotasGanhasDestaque : [],
@@ -1778,7 +1779,7 @@ export default function TabelasNegociacaoPage() {
     if (abaNegoc === 'taxas') {
       carregarTaxasNegociacao(selecionada.id);
     }
-    if (abaNegoc === 'rodadas') {
+    if (abaNegoc === 'rodadas' || getResumoTabela(selecionada)._capa) {
       carregarResumoCompletoNegociacaoSelecionada(selecionada.id);
     }
   }, [abaNegoc, selecionada?.id]); // eslint-disable-line
@@ -3640,10 +3641,19 @@ export default function TabelasNegociacaoPage() {
                 <div className="sim-parametros-box">
                   <div className="sim-parametros-header"><div><strong>Resumo por estado</strong></div></div>
                   <div className="sim-cobertura-lista" style={{ marginTop: 10 }}>
-                    {(ind.estadosGanhadores || []).slice(0, 6).map(function(item) {
+                    {ind.isReajuste && ind.estadosComparacao.length ? (
+                      <table className="sim-analise-tabela"><thead><tr><th>UF destino</th><th>CT-es</th><th>Base comparativa</th><th>Proposta</th><th>Impacto</th><th>Reajuste</th></tr></thead><tbody>
+                        {ind.estadosComparacao.map(function(item) {
+                          var base = Number(item.freteRealizado || 0);
+                          var proposta = Number(item.freteSelecionada || 0);
+                          var impacto = proposta - base;
+                          return <tr key={'impacto-uf-' + item.uf}><td>{item.uf}</td><td>{formatNumber(item.ctes, 0)}</td><td>{formatMoney(base)}</td><td>{formatMoney(proposta)}</td><td>{formatMoney(impacto)}</td><td>{base > 0 ? formatPercent(impacto / base * 100) : 'Sem base'}</td></tr>;
+                        })}
+                      </tbody></table>
+                    ) : (ind.estadosGanhadores || []).slice(0, 6).map(function(item) {
                       return <div key={'neg-uf-' + item.uf}><strong>{item.uf}</strong> · {formatNumber(item.ctesGanhas || 0, 0)} ganhos · {formatMoney(item.freteSelecionadaGanhas || 0)} · aderência {formatPercent(item.aderencia || 0)}</div>;
                     })}
-                    {!(ind.estadosGanhadores || []).length ? <div>Sem resumo por UF salvo nesta simulação.</div> : null}
+                    {!(ind.estadosGanhadores || []).length && !(ind.isReajuste && ind.estadosComparacao.length) ? <div>Sem resumo por UF salvo nesta simulação.</div> : null}
                   </div>
                 </div>
                 <div className="sim-parametros-box">

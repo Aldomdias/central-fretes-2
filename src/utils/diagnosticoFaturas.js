@@ -6,6 +6,7 @@ import { obterRaizCnpj, raizCnpjValida } from './cnpj.js';
 import { chaveCasamentoCte, cnpj14, serieDaChave, situacaoLancamentoCte } from './lancamentosCteSap.js';
 import { ehLinhaNfse } from './nfseFatura.js';
 import { parseNumeroPlanilha } from './parseNumeroPlanilha.js';
+import { linhaFenixDoCte } from './termoCorrecaoFenix.js';
 
 export const TOLERANCIA_VALOR_LISTA = 0.05;
 
@@ -92,11 +93,76 @@ export function criarFiltroTransportadora(faturas = [], transportadora = '') {
 const inativa = (f) => ['CANCELADA', 'SUBSTITUIDA'].includes(f.status);
 const linhaDaFatura = (fatura, extra = {}) => ({ id: String(fatura.id), fatura, numero: String(fatura.numero_fatura || ''), repetida: 1, ...extra });
 
+export const nomeAuditor = (f) => String(f?.auditor_nome || '').trim() || 'Sem auditor';
+
+// ---- Auditores: o mesmo auditor gravado com nomes diferentes ("Paulo Ricardo" x "Paulo Ricardo dos Santos") ----
+// Junta pelo e-mail e, depois, o nome curto ao completo quando o curto esta contido nele (mesmo primeiro
+// nome, ignorando da/de/dos) e so existe uma pessoa possivel. Rotulo: o nome mais completo.
+const PARTICULAS = new Set(['da', 'de', 'do', 'das', 'dos', 'e']);
+const tokensNome = (nome) => String(nome || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+  .replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((t) => t && !PARTICULAS.has(t));
+export function criarUnificadorAuditores(faturas = []) {
+  const grafias = new Map(); // chave -> Map(grafia original -> qtd)
+  const emails = new Map(); // chave -> Set(email)
+  faturas.forEach((f) => {
+    const nome = String(f?.auditor_nome || '').trim();
+    const chave = tokensNome(nome).join(' ');
+    if (!chave) return;
+    if (!grafias.has(chave)) { grafias.set(chave, new Map()); emails.set(chave, new Set()); }
+    grafias.get(chave).set(nome, (grafias.get(chave).get(nome) || 0) + 1);
+    const email = String(f.auditor_email || '').trim().toLowerCase();
+    if (email) emails.get(chave).add(email);
+  });
+  const pai = new Map([...grafias.keys()].map((c) => [c, c]));
+  const raiz = (c) => { while (pai.get(c) !== c) c = pai.get(c); return c; };
+  const unir = (a, b) => { const ra = raiz(a); const rb = raiz(b); if (ra !== rb) pai.set(ra, rb); };
+  const porEmail = new Map();
+  emails.forEach((set, c) => set.forEach((e) => { if (porEmail.has(e)) unir(c, porEmail.get(e)); else porEmail.set(e, c); }));
+  // Do mais completo para o mais curto: quando o curto for avaliado, os longos ja estao agrupados.
+  const chaves = [...grafias.keys()].sort((a, b) => b.split(' ').length - a.split(' ').length);
+  chaves.forEach((curto) => {
+    const tc = curto.split(' ');
+    const destinos = new Set(chaves.filter((longo) => {
+      const tl = longo.split(' ');
+      return longo !== curto && tl.length > tc.length && tl[0] === tc[0] && tc.every((t) => tl.includes(t));
+    }).map(raiz));
+    destinos.delete(raiz(curto));
+    if (destinos.size === 1) unir(curto, [...destinos][0]);
+  });
+  const membros = new Map();
+  chaves.forEach((c) => { const r = raiz(c); membros.set(r, [...(membros.get(r) || []), c]); });
+  const rotuloDaChave = new Map();
+  membros.forEach((cs) => {
+    const total = (c) => [...grafias.get(c).values()].reduce((s, n) => s + n, 0);
+    const melhor = [...cs].sort((a, b) => b.split(' ').length - a.split(' ').length || b.length - a.length || total(b) - total(a))[0];
+    const grafia = [...grafias.get(melhor)].sort((a, b) => b[1] - a[1])[0][0];
+    cs.forEach((c) => rotuloDaChave.set(c, grafia));
+  });
+  const canonico = (nome) => rotuloDaChave.get(tokensNome(nome).join(' ')) || String(nome || '').trim() || 'Sem auditor';
+  const porEmailRotulo = new Map([...porEmail].map(([e, c]) => [e, rotuloDaChave.get(c)]));
+  return {
+    nome: (f) => canonico(f?.auditor_nome),
+    canonico,
+    // Nome unificado de quem esta logado (pelo e-mail ou pelo nome).
+    doUsuario: ({ nome, email } = {}) => porEmailRotulo.get(String(email || '').trim().toLowerCase()) || rotuloDaChave.get(tokensNome(nome).join(' ')) || '',
+    opcoes: [...new Set([...rotuloDaChave.values()])].sort((a, b) => a.localeCompare(b, 'pt-BR')),
+    grafiasDe: (rotulo) => [...rotuloDaChave].filter(([, r]) => r === rotulo).flatMap(([c]) => [...grafias.get(c).keys()]),
+  };
+}
+
 // Monta as linhas do diagnostico. Com lista: uma linha por numero colado (mais de uma so se o numero
 // existir em faturas ativas diferentes). Sem lista: todas as faturas da transportadora escolhida.
-export function montarLinhasDiagnostico({ itens = [], faturas = [], transportadora = '' }) {
-  const daTransportadora = criarFiltroTransportadora(faturas, transportadora);
-  if (!itens.length) return transportadora ? faturas.filter(daTransportadora).map((f) => linhaDaFatura(f)) : [];
+// Auditor: so as faturas dele. Escolhido sozinho (ou "todos", visao do gestor), sem lista e sem transportadora, mostra as que
+// ainda esta tratando: nao pagas (protocolo, Fenix, previsao...), mais as canceladas para o card delas.
+export function montarLinhasDiagnostico({ itens = [], faturas = [], transportadora = '', auditor = '', todos = false, filtroTransportadora = null, nomeDoAuditor = nomeAuditor }) {
+  const daTransportadora = filtroTransportadora || criarFiltroTransportadora(faturas, transportadora);
+  const doAuditor = (f) => !auditor || nomeDoAuditor(f) === auditor;
+  if (!itens.length) {
+    if (transportadora) return faturas.filter((f) => daTransportadora(f) && doAuditor(f)).map((f) => linhaDaFatura(f));
+    if (!auditor && !todos) return [];
+    // As canceladas entram tambem: ficam fora da lista e so aparecem no card "Canceladas".
+    return faturas.filter((f) => doAuditor(f) && (inativa(f) || situacaoPagamento(f) === 'ABERTA')).map((f) => linhaDaFatura(f));
+  }
   const indice = new Map();
   faturas.forEach((f) => {
     const n = numeroComparavel(f.numero_fatura);
@@ -108,6 +174,8 @@ export function montarLinhasDiagnostico({ itens = [], faturas = [], transportado
     const semSerie = numeroComparavel(item.numero.replace(/[-/]\d{1,3}$/, ''));
     const candidatas = indice.get(item.comparavel) || indice.get(semSerie) || [];
     const daEscolhida = candidatas.filter(daTransportadora);
+    // Numero de outro auditor sai da lista; o nao localizado fica (nao da para saber de quem e).
+    if (daEscolhida.length && !daEscolhida.some(doAuditor)) return;
     if (!daEscolhida.length) {
       linhas.push({
         id: `lista-${item.comparavel}`, fatura: null, numero: item.numero, valorLista: item.valor, vencimentoLista: item.vencimento, repetida: 0,
@@ -115,14 +183,105 @@ export function montarLinhasDiagnostico({ itens = [], faturas = [], transportado
       });
       return;
     }
-    const ativas = daEscolhida.filter((f) => !inativa(f));
-    const escolhidas = ativas.length ? ativas : daEscolhida;
+    const ativas = daEscolhida.filter((f) => doAuditor(f) && !inativa(f));
+    const escolhidas = ativas.length ? ativas : daEscolhida.filter(doAuditor);
     escolhidas.forEach((fatura) => {
       const diferencaLista = item.valor == null ? null : Number((Number(fatura.valor_fatura || 0) - item.valor).toFixed(2));
       linhas.push(linhaDaFatura(fatura, { numero: String(fatura.numero_fatura || item.numero), valorLista: item.valor, vencimentoLista: item.vencimento, repetida: escolhidas.length, diferencaLista }));
     });
   });
   return linhas;
+}
+
+// ---- Uma transportadora so, mesmo com nomes e CNPJs diferentes nas faturas ----
+// cadastroPorRaiz: Map(raiz -> { id, nome }) do cadastro (CNPJ principal, origens e CNPJs adicionais).
+// Chave da fatura: transportadora do cadastro dona da raiz; sem cadastro, a propria raiz; sem CNPJ, o nome.
+export function criarAgrupadorTransportadoras(faturas = [], cadastroPorRaiz = new Map()) {
+  const chaveBruta = (f) => {
+    const raiz = obterRaizCnpj(f.cnpj_transportadora);
+    if (raizCnpjValida(raiz) && !/^0+$/.test(raiz)) return cadastroPorRaiz.has(raiz) ? `T:${cadastroPorRaiz.get(raiz).id}` : `R:${raiz}`;
+    return '';
+  };
+  // Fatura sem CNPJ vai para o grupo de quem usa o mesmo nome.
+  const chavePorNome = new Map();
+  faturas.forEach((f) => { const c = chaveBruta(f); const n = norm(f.transportadora); if (c && n && !chavePorNome.has(n)) chavePorNome.set(n, c); });
+  const chaveDaFatura = (f) => chaveBruta(f) || chavePorNome.get(norm(f.transportadora)) || `N:${norm(f.transportadora)}`;
+  const nomesPorChave = new Map();
+  const nomeCadastro = new Map([...cadastroPorRaiz.values()].map((t) => [`T:${t.id}`, String(t.nome || '').trim()]));
+  faturas.forEach((f) => {
+    const nome = String(f.transportadora || '').trim();
+    if (!nome) return;
+    const c = chaveDaFatura(f);
+    if (!nomesPorChave.has(c)) nomesPorChave.set(c, new Map());
+    nomesPorChave.get(c).set(nome, (nomesPorChave.get(c).get(nome) || 0) + 1);
+  });
+  const rotulos = new Map();
+  const usados = new Map();
+  nomesPorChave.forEach((nomes, c) => {
+    const maisUsado = [...nomes].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0];
+    const rotulo = nomeCadastro.get(c) || maisUsado;
+    rotulos.set(c, rotulo);
+    usados.set(norm(rotulo), [...(usados.get(norm(rotulo)) || []), c]);
+  });
+  // Dois grupos com o mesmo nome (raizes sem cadastro): diferencia pela raiz.
+  usados.forEach((chaves) => { if (chaves.length > 1) chaves.forEach((c) => { if (c.startsWith('R:')) rotulos.set(c, `${rotulos.get(c)} (${c.slice(2)})`); }); });
+  const opcoes = [...rotulos].map(([chave, rotulo]) => ({ chave, rotulo, nomes: [...nomesPorChave.get(chave).keys()] }))
+    .sort((a, b) => a.rotulo.localeCompare(b.rotulo, 'pt-BR'));
+  const chavePorRotulo = new Map(opcoes.map((o) => [norm(o.rotulo), o.chave]));
+  // Rotulo escolhido (ou nome antigo salvo na sessao) -> filtro das faturas do grupo.
+  const filtro = (rotulo) => {
+    if (!rotulo) return () => true;
+    const chave = chavePorRotulo.get(norm(rotulo)) || opcoes.find((o) => o.nomes.some((n) => norm(n) === norm(rotulo)))?.chave;
+    return chave ? (f) => chaveDaFatura(f) === chave : criarFiltroTransportadora(faturas, rotulo);
+  };
+  return { opcoes, chaveDaFatura, filtro };
+}
+
+// ---- Faturas duplicadas: mesma fatura importada mais de uma vez ----
+// Mesmo numero, mesmo valor (centavos) e mesma emissao, ativas. Fica uma (a principal); as outras sao
+// duplicadas e saem dos totais. Duplicada so quando e da mesma transportadora (mesma chave do agrupador)
+// ou quando a principal ja esta paga (a mesma fatura foi paga em outro CNPJ ainda nao cadastrado).
+const pesoPrincipal = (f) => [
+  String(f.status || '').startsWith('PAGA') ? 1 : 0,
+  f.partida || f.lancamento_financeiro ? 1 : 0,
+  STATUS_LIBERADAS.has(f.status) ? 1 : 0,
+  Number(f.ctes_auditados || 0),
+];
+function compararPrincipal(a, b) {
+  const pa = pesoPrincipal(a);
+  const pb = pesoPrincipal(b);
+  for (let i = 0; i < pa.length; i += 1) if (pa[i] !== pb[i]) return pb[i] - pa[i];
+  return String(a.created_at || '').localeCompare(String(b.created_at || '')) || String(a.id).localeCompare(String(b.id));
+}
+export function detectarDuplicadas(faturas = [], chaveDaFatura = (f) => obterRaizCnpj(f.cnpj_transportadora) || norm(f.transportadora)) {
+  const grupos = new Map();
+  faturas.forEach((f) => {
+    if (inativa(f)) return;
+    const numero = numeroComparavel(f.numero_fatura) || norm(f.numero_fatura);
+    const valor = Math.round(Number(f.valor_fatura || 0) * 100);
+    if (!numero || !valor) return;
+    const k = `${numero}|${valor}|${String(f.data_emissao || '').slice(0, 10)}`;
+    grupos.set(k, [...(grupos.get(k) || []), f]);
+  });
+  const duplicadas = new Map();
+  grupos.forEach((lista) => {
+    if (lista.length < 2) return;
+    const ordenadas = [...lista].sort(compararPrincipal);
+    const pendentes = [...ordenadas];
+    while (pendentes.length) {
+      const principal = pendentes.shift();
+      const paga = String(principal.status || '').startsWith('PAGA');
+      for (let i = pendentes.length - 1; i >= 0; i -= 1) {
+        const f = pendentes[i];
+        const mesma = chaveDaFatura(f) === chaveDaFatura(principal);
+        if (mesma || (paga && !String(f.status || '').startsWith('PAGA'))) {
+          duplicadas.set(f.id, { principal, motivo: mesma ? 'MESMA_TRANSPORTADORA' : 'PAGA_EM_OUTRO_CNPJ' });
+          pendentes.splice(i, 1);
+        }
+      }
+    }
+  });
+  return duplicadas;
 }
 
 const STATUS_LIBERADAS = new Set(['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO', 'ENVIADA_AO_FINANCEIRO', 'TRATADA']);
@@ -183,6 +342,18 @@ export function faixaDaLinha(l, referencia = new Date()) {
 
 export const FAIXAS_A_VENCER = ['HOJE_AMANHA', 'ATE_7', 'MAIS_7'];
 
+// Previsao de pagamento combinada com o financeiro no protocolo (agrupamento manual). Fora do protocolo
+// o prazo e o vencimento. So vale enquanto a fatura esta no protocolo e nao foi paga.
+export const previsaoPagamento = (f) => (f && f.agrupamento_manual && situacaoPagamento(f) === 'ABERTA' ? String(f.data_previsao_pagamento || '').slice(0, 10) : '');
+
+// SEM_PREVISAO, PREVISTA (hoje ou adiante) ou ATRASADA (a data combinada passou e nao pagou).
+export function situacaoPrevisao(f, referencia = new Date()) {
+  const data = previsaoPagamento(f);
+  if (!data) return 'SEM_PREVISAO';
+  const dias = diasAte(data, referencia);
+  return dias != null && dias < 0 ? 'ATRASADA' : 'PREVISTA';
+}
+
 // Identificacao do CT-e no SAP: emitente e serie saem da chave de acesso (e o CNPJ da filial que emitiu).
 export function identificacaoSapDoCte(item = {}) {
   const chave = digitos(item.chave_cte);
@@ -198,7 +369,8 @@ export function identificacaoSapDoCte(item = {}) {
 export function resumirCtesFatura(detalhes = [], lancamentosPorChave = new Map()) {
   const vistos = new Set();
   // itens: todos os CT-es da fatura (com partida, sem partida, NFS-e) para a planilha completa.
-  const resumo = { total: 0, lancados: 0, nfse: 0, itens: [], semPartida: [], valorSemPartida: 0 };
+  // fenix: CT-es compensados pela partida Fenix (compensacao nao paga): travam a escrituracao da fatura.
+  const resumo = { total: 0, lancados: 0, nfse: 0, itens: [], semPartida: [], valorSemPartida: 0, fenix: [], valorFenix: 0 };
   detalhes.forEach((item) => {
     if (item.excluido_da_versao === true) return;
     const unico = digitos(item.chave_cte) || `${digitos(item.numero_cte)}-${item.serie_cte || ''}`;
@@ -207,10 +379,19 @@ export function resumirCtesFatura(detalhes = [], lancamentosPorChave = new Map()
     const base = { numero_cte: item.numero_cte, serie_cte: item.serie_cte, chave_cte: item.chave_cte, valor_frete: Number(item.valor_frete || 0) };
     if (ehLinhaNfse(item)) { resumo.nfse += 1; resumo.itens.push({ ...base, situacao: 'NFSE' }); return; }
     resumo.total += 1;
-    const situacao = situacaoLancamentoCte(lancamentosPorChave.get(chaveCasamentoCte(identificacaoSapDoCte(item))) || []);
+    const linhasSap = lancamentosPorChave.get(chaveCasamentoCte(identificacaoSapDoCte(item))) || [];
+    const situacao = situacaoLancamentoCte(linhasSap);
     if (situacao.lancado) {
       resumo.lancados += 1;
-      resumo.itens.push({ ...base, situacao: 'COM_PARTIDA', lancamento_contabil: situacao.lancamento_contabil, data_lancamento: situacao.data_lancamento, valor_lancado: situacao.valor_lancado });
+      const fenix = linhaFenixDoCte(linhasSap);
+      resumo.itens.push({ ...base, situacao: 'COM_PARTIDA', lancamento_contabil: situacao.lancamento_contabil, data_lancamento: situacao.data_lancamento, valor_lancado: situacao.valor_lancado, fenix: Boolean(fenix) });
+      if (fenix) {
+        resumo.fenix.push({
+          ...base, partida: fenix.lancamento_contabil, documento_compensacao: fenix.documento_compensacao, data_compensacao: fenix.data_compensacao || null,
+          data_lancamento: fenix.data_lancamento || null, montante: Math.abs(Number(fenix.montante || 0)), empresa: fenix.empresa || '', codigo_fornecedor: fenix.codigo_fornecedor || '', fornecedor: fenix.fornecedor || '',
+        });
+        resumo.valorFenix += Number(item.valor_frete || 0);
+      }
       return;
     }
     resumo.itens.push({ ...base, situacao: situacao.estornado ? 'ESTORNADO' : 'SEM_PARTIDA' });
@@ -218,6 +399,7 @@ export function resumirCtesFatura(detalhes = [], lancamentosPorChave = new Map()
     resumo.valorSemPartida += Number(item.valor_frete || 0);
   });
   resumo.valorSemPartida = Number(resumo.valorSemPartida.toFixed(2));
+  resumo.valorFenix = Number(resumo.valorFenix.toFixed(2));
   return resumo;
 }
 
@@ -226,6 +408,24 @@ export function situacaoCtes(resumo) {
   if (!resumo.total) return resumo.nfse ? 'SO_NFSE' : 'SEM_CTES';
   if (resumo.lancados === resumo.total) return 'TODOS';
   return resumo.lancados ? 'PARCIAL' : 'NENHUM';
+}
+
+export const temFenix = (linha) => Boolean(linha?.ctes?.fenix?.length);
+
+// Pedido de estorno da Fenix ao financeiro, antes do protocolo (marcacao feita na tela):
+// A_ENVIAR -> AGUARDANDO (enviada ao financeiro) -> RETORNO (estorno feito: mandar protocolo) -> PROTOCOLO.
+// O retorno vale pela marcacao manual ou sozinho, quando o SAP reimportado ja nao mostra a Fenix.
+export const statusAjusteFenix = (f) => (['ENVIADO', 'RETORNADO'].includes(f?.fenix_ajuste_status) ? f.fenix_ajuste_status : '');
+
+export function etapaFenix(linha) {
+  const f = linha?.fatura;
+  if (!f || inativa(f) || situacaoPagamento(f) !== 'ABERTA') return '';
+  const status = statusAjusteFenix(f);
+  if (!status) return temFenix(linha) ? 'A_ENVIAR' : '';
+  if (agrupamentoManual(f)) return 'PROTOCOLO';
+  if (status === 'RETORNADO') return 'RETORNO';
+  // Sem o resumo dos CT-es ainda nao da para saber se o estorno chegou.
+  return linha.ctes && !temFenix(linha) ? 'RETORNO' : 'AGUARDANDO';
 }
 
 const ROTULO_PAGAMENTO = { PAGA: 'Paga', PAGA_DIVERGENTE: 'Paga c/ divergência', CANCELADA: 'Cancelada' };
@@ -244,17 +444,30 @@ export function textoPagamentoLinha(linha) {
 export function proximaAcao(linha) {
   const f = linha.fatura;
   if (!f) return 'Localizar / importar a fatura';
+  if (linha.duplicada) {
+    const p = linha.duplicada.principal;
+    return `Duplicada: vale a ${p.numero_fatura} de ${p.transportadora || '-'} (${String(p.status || '').startsWith('PAGA') ? 'já paga' : 'em aberto'}). Marcar como substituída`;
+  }
   const auditoria = situacaoAuditoria(f);
   if (auditoria === 'CANCELADA') return 'Nenhuma (cancelada/substituída)';
   if (situacaoPagamento(f) !== 'ABERTA') return 'Nenhuma (paga)';
-  if (agrupamentoManual(f) && !faturaLancada(f)) return 'Aguardar agrupamento manual do financeiro';
+  const fenix = etapaFenix(linha);
+  if (fenix === 'A_ENVIAR') return 'Pedir estorno da compensação Fênix ao financeiro';
+  if (fenix === 'AGUARDANDO') return 'Aguardar retorno do financeiro (Fênix)';
+  if (fenix === 'RETORNO') return 'Mandar protocolo (Fênix ajustada)';
+  if (agrupamentoManual(f) && !faturaLancada(f)) {
+    const previsto = previsaoPagamento(f);
+    return `Aguardar agrupamento manual do financeiro${previsto ? ` (pagamento previsto ${previsto.split('-').reverse().join('/')})` : ''}`;
+  }
   if (situacaoEnvioErp(linha) === 'SEM_PARTIDA') return 'Verificar envio ao ERP (sem partida)';
   if (auditoria === 'NAO_AUDITADA' || auditoria === 'PARCIAL') return 'Auditar';
   if (auditoria === 'AUDITADA') return 'Tratar e liberar';
   if (auditoria === 'FORNECEDOR') return 'Cobrar retorno do fornecedor';
   if (auditoria === 'GESTAO') return 'Aprovar na gestão';
   if (['PARCIAL', 'NENHUM'].includes(situacaoCtes(linha.ctes))) return 'Lançar CT-es sem partida';
-  return faturaLancada(f) ? 'Aguardar pagamento' : 'Lançar a fatura';
+  if (!faturaLancada(f)) return 'Lançar a fatura';
+  const previsao = previsaoPagamento(f);
+  return previsao ? `Aguardar pagamento (previsto ${previsao.split('-').reverse().join('/')})` : 'Aguardar pagamento';
 }
 
 const comFatura = (fn) => (l) => Boolean(l.fatura) && fn(l);
@@ -304,11 +517,31 @@ export const GRUPOS_DIAGNOSTICO = [
     { id: 'nenhum', rotulo: 'Nenhum CT-e lançado', cor: '#9b1111', teste: ctes('NENHUM'), dica: 'Nenhum CT-e da fatura tem partida no SAP.', detalheCtes: true },
     { id: 'sem_ctes', rotulo: 'Sem CT-e / só NFS-e', cor: '#64748b', teste: ctes('SEM_CTES', 'SO_NFSE'), dica: 'Fatura sem CT-e vinculado ou só com NFS-e (não entram no relatório SAP de CT-e).' },
   ] },
+  // Partida Fenix (1501163056): compensacao nao paga em CT-e. A fatura nao escritura ate o financeiro estornar.
+  { id: 'fenix', titulo: 'Partida Fênix (compensação não paga)', cards: [
+    { id: 'com_fenix', rotulo: 'CT-es com a Fênix', cor: '#b91c1c', teste: comFatura((l) => ativa(l) && temFenix(l)), dica: 'Faturas com CT-e compensado pela partida Fênix (1501163056): o financeiro precisa estornar a compensação para a fatura escriturar.', detalheFenix: true },
+    { id: 'sem_fenix', rotulo: 'Sem Fênix', cor: '#64748b', teste: comFatura((l) => ativa(l) && Boolean(l.ctes) && !temFenix(l)), dica: 'Faturas verificadas sem CT-e na partida Fênix.' },
+  ] },
+  // Controle do pedido ao financeiro: a fatura anda de card conforme e marcada na tela.
+  { id: 'fenix_ajuste', titulo: 'Ajuste Fênix no financeiro (antes do protocolo)', cards: [
+    { id: 'fenix_a_enviar', rotulo: 'Fênix a enviar ao financeiro', cor: '#b91c1c', teste: (l) => etapaFenix(l) === 'A_ENVIAR', dica: 'Com CT-e na Fênix e ainda não marcadas como enviadas ao financeiro. Gere o termo, envie e marque "Enviado para ajustar Fênix".', detalheFenix: true },
+    { id: 'fenix_aguardando', rotulo: 'Enviadas, aguardando retorno', cor: '#b78700', teste: (l) => etapaFenix(l) === 'AGUARDANDO', dica: 'Enviadas ao financeiro para estornar a compensação Fênix; aguardando o retorno.', detalheFenix: true },
+    { id: 'fenix_retorno', rotulo: 'Retorno recebido: mandar protocolo', cor: '#315ee7', teste: (l) => etapaFenix(l) === 'RETORNO', dica: 'O financeiro já ajustou (marcado como retorno recebido, ou a Fênix sumiu do relatório SAP reimportado). Falta marcar para protocolo.' },
+    { id: 'fenix_protocolo', rotulo: 'Já no protocolo', cor: '#14733b', teste: (l) => etapaFenix(l) === 'PROTOCOLO', dica: 'Passaram pelo ajuste Fênix e já foram marcadas para protocolo (agrupamento manual).' },
+  ] },
+  // Data combinada com o financeiro para as faturas do protocolo, para repassar a transportadora.
+  { id: 'previsao', titulo: 'Previsão de pagamento (protocolo)', cards: [
+    { id: 'protocolo_sem_previsao', rotulo: 'No protocolo sem previsão', cor: '#9b1111', teste: comFatura((l) => ativa(l) && agrupamentoManual(l.fatura) && situacaoPagamento(l.fatura) === 'ABERTA' && situacaoPrevisao(l.fatura) === 'SEM_PREVISAO'), dica: 'Marcadas para protocolo, não pagas e ainda sem a data alinhada com o financeiro.' },
+    { id: 'com_previsao', rotulo: 'Com previsão', cor: '#04a484', teste: comFatura((l) => ativa(l) && situacaoPrevisao(l.fatura) === 'PREVISTA'), dica: 'No protocolo com pagamento previsto para hoje ou adiante: dá para avisar a transportadora.' },
+    { id: 'previsao_atrasada', rotulo: 'Previsão passou, não paga', cor: '#e67e22', teste: comFatura((l) => ativa(l) && situacaoPrevisao(l.fatura) === 'ATRASADA'), dica: 'A data prevista já passou e a fatura segue sem pagamento: cobrar o financeiro ou atualizar a data.' },
+  ] },
   { id: 'pagamento', titulo: 'Pagamento', cards: [
     { id: 'pagas', rotulo: 'Pagas', cor: '#14733b', teste: pagamento('PAGA'), dica: 'Pagas ou pagas com desconto.' },
     { id: 'pagas_divergentes', rotulo: 'Pagas com divergência', cor: '#b78700', teste: pagamento('PAGA_DIVERGENTE'), dica: 'Valor pago diferente do esperado.' },
     { id: 'abertas', rotulo: 'Não pagas', cor: '#315ee7', teste: pagamento('ABERTA'), dica: 'Ainda sem pagamento. Inclui as não localizadas.' },
     { id: 'canceladas', rotulo: 'Canceladas/substituídas', cor: '#64748b', teste: pagamento('CANCELADA'), dica: 'Canceladas ou substituídas.' },
+    // Mesma fatura importada mais de uma vez: fora dos totais, so aparecem neste card.
+    { id: 'duplicadas', rotulo: 'Duplicadas', cor: '#b45309', teste: (l) => Boolean(l.duplicada), dica: 'Mesma fatura (número, valor e emissão) importada mais de uma vez. Ficam fora dos totais; marque como substituídas.' },
     // Sem card proprio: usado pelo card "Pago" do topo, que soma pagas e pagas com divergencia.
     { id: 'pagas_todas', rotulo: 'Pagas (todas)', cor: '#14733b', oculto: true, teste: comFatura((l) => situacaoPagamento(l.fatura).startsWith('PAGA')), dica: 'Todas as pagas.' },
   ] },
