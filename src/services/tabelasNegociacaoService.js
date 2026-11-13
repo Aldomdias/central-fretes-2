@@ -2832,6 +2832,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
       : null,
     diagnostico: resultado.diagnostico || {},
     analiseReajuste: resultado.analiseReajuste || null,
+    gerencialReajuste: resultado.gerencialReajuste || null,
     gradeFrete: resultado.gradeFrete || null,
 
     // Detalhes por CT-e: base dos agrupamentos do laudo de rodadas

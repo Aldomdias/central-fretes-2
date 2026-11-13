@@ -1,3 +1,4 @@
+import { LaudoGerencialReajuste } from '../components/laudos/LaudoGerencialReajuste';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
@@ -1409,6 +1410,7 @@ export default function TabelasNegociacaoPage() {
       return;
     }
 
+    if (laudo.classList.contains('gerencial-reajuste')) laudo.querySelectorAll('details').forEach(function(node) { node.open = true; });
     var estilos = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
       .map(function(node) { return node.outerHTML; })
       .join('\n');
@@ -3681,6 +3683,7 @@ export default function TabelasNegociacaoPage() {
                     </div>
                   </div>
                   <div className="sim-actions" style={{ marginTop: 12 }}>
+                    <button className="sim-tab" type="button" onClick={() => setLaudoSalvoAberto({ tipo: 'gerencial', dados: selecionada.resultado_simulacao_json || getResumoTabela(selecionada), contexto: selecionada })}>Abrir Laudo Gerencial de Reajuste</button>
                     {laudos.executivo ? (
                       <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'executivo', dados: getDadosLaudoSalvo(laudos.executivo) }); }}>
                         Abrir Laudo Diretoria
@@ -4658,10 +4661,10 @@ export default function TabelasNegociacaoPage() {
               </button>
             </div>
 
-            <LaudoNegociacaoTemplate
-              tipo={laudoSalvoAberto.tipo}
-              dados={laudoSalvoAberto.dados}
-            />
+            {laudoSalvoAberto.tipo === 'gerencial'
+              ? <LaudoGerencialReajuste resultado={laudoSalvoAberto.dados} contexto={laudoSalvoAberto.contexto} />
+              : <LaudoNegociacaoTemplate tipo={laudoSalvoAberto.tipo} dados={laudoSalvoAberto.dados} />}
+
           </div>
         </div>
       ) : null}

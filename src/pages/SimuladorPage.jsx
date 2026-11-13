@@ -1,3 +1,5 @@
+import { criarGerencialReajuste, acumularGerencialReajuste, consolidarGerenciaisReajuste } from '../utils/laudoGerencialReajuste';
+import { LaudoGerencialReajuste } from '../components/laudos/LaudoGerencialReajuste';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { gerarHtmlLaudoProjecaoAderencia, gerarWorkbookTabelaSugerida, planejarAjustesParaAderencia } from '../utils/tabelaSugeridaAderencia';
@@ -3220,6 +3222,7 @@ function consolidarResultadosRealizadoSalvos(analises = []) {
   if (!resultados.length) throw new Error('Nenhum resultado salvo para unificar.');
 
   const base = { ...resultados[0] };
+  base.gerencialReajuste = consolidarGerenciaisReajuste(resultados.map(r => r.gerencialReajuste));
   CAMPOS_SOMA_RESULTADO_SALVO.forEach((campo) => {
     base[campo] = resultados.reduce((acc, item) => acc + numeroConsolidacaoRealizado(item[campo]), 0);
   });
@@ -3332,6 +3335,7 @@ const CAMPOS_ESCALARES_SIMULACAO_REALIZADO = [
 // do período (mesmo no modo parcelas) para dias/meses saírem corretos.
 function criarEstadoSimulacaoRealizado({ rows = [], filtros = {} } = {}) {
   const estado = {
+    gerencialReajuste: criarGerencialReajuste(),
     rotasMap: new Map(),
     cotacaoMap: new Map(),
     transportadorasMap: new Map(),
@@ -3371,6 +3375,7 @@ function serializarEstadoSimulacaoRealizado(estado) {
   CAMPOS_ESCALARES_SIMULACAO_REALIZADO.forEach((campo) => { escalares[campo] = estado[campo]; });
   return JSON.stringify({
     v: 1,
+    gerencialReajuste: estado.gerencialReajuste,
     escalares,
     dias: estado.dias,
     meses: estado.meses,
@@ -3407,6 +3412,7 @@ function desserializarEstadoSimulacaoRealizado(texto) {
   const dados = JSON.parse(texto);
   const estado = criarEstadoSimulacaoRealizado();
   Object.assign(estado, dados.escalares || {});
+  estado.gerencialReajuste = dados.gerencialReajuste || criarGerencialReajuste();
   estado.dias = Number(dados.dias) || 1;
   estado.meses = Number(dados.meses) || 1;
   estado.rotasMap = new Map((dados.rotas || []).map(([chave, rota]) => [chave, { ...rota, vencedores: new Map(rota.vencedores || []) }]));
@@ -3540,7 +3546,14 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     metricaReal.peso += pesoLinha;
     metricaReal.volumes += vol;
 
+    const proprioGerencial = Boolean(filtros.transportadoraBaseRealizado) && transportadoraCompativelSimulador(row.transportadora || '', filtros.transportadoraBaseRealizado);
+    const registrarGerencial = (cotacoes = {}) => acumularGerencialReajuste(estado.gerencialReajuste, {
+      origem, ufOrigem: row.ufOrigem, destino: row.cidadeDestino, ufDestino: row.ufDestino,
+      cte: row.numeroCte, chaveCte: row.chaveCte, proprio: proprioGerencial,
+      realizado: row.valorCte == null ? null : valorCte, compararConcorrentes: Boolean(filtros.compararConcorrentes), ...cotacoes,
+    });
     if (!destino) {
+      registrarGerencial();
       diagnostico.linhasSemIbgeDestino += 1;
       ctesSemTabelaGeral += 1;
       continue;
@@ -3562,6 +3575,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
 
     const vencedor = resultado[0] || null;
     if (!vencedor) {
+      registrarGerencial();
       diagnostico.linhasSemResultado += 1;
       const destinoLabelDiag = `${row.cidadeDestino || ''}/${row.ufDestino || ''} ${destino}`.trim();
       diagnostico.destinosSemResultado.set(destinoLabelDiag, (diagnostico.destinosSemResultado.get(destinoLabelDiag) || 0) + 1);
@@ -3656,6 +3670,14 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
         freteTabelaAtualPropria = numeroRealizado(itemTabelaAtualPropria.total);
       }
     }
+    const precosConcorrentesGerencial = resultado.filter(item => item !== itemSelecionada
+      && !transportadoraCompativelSimulador(item.transportadora, filtros.transportadoraBaseRealizado || transportadoraSelecionada))
+      .map(item => Number(item.total)).filter(v => Number.isFinite(v) && v > 0);
+    registrarGerencial({
+      proposta: itemSelecionada ? Number(itemSelecionada.total) : null,
+      atual: itemTabelaAtualPropria ? Number(itemTabelaAtualPropria.total) : null,
+      concorrente: precosConcorrentesGerencial.length ? Math.min(...precosConcorrentesGerencial) : null,
+    });
     const nomeBaseComparativaNorm = normalizarTransportadoraSimulador(filtros.transportadoraBaseRealizado || transportadoraSelecionada || '');
     const transportadoraLinhaEhBaseComparativa = Boolean(
       nomeBaseComparativaNorm
@@ -4317,6 +4339,7 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
     pareto80Volume,
     ctesDetalhes: ctesDetalhes.sort((a, b) => b.savingSelecionada - a.savingSelecionada || b.diferencaParaVencedor - a.diferencaParaVencedor),
     ctesAjusteRotaExcel,
+    gerencialReajuste: estado.gerencialReajuste,
     ctesDetalhesTotal: ctesAnalisados,
     ctesDetalhesLimitados: ctesAnalisados > ctesDetalhes.length,
     ctesDetalhesLimite: MAX_CTES_DETALHES_REALIZADO,
@@ -7325,6 +7348,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             fim: ctx.fim,
             modo: ctx.modo,
             tipoNegociacao: ehReajusteSelecionado ? 'REAJUSTE_TABELA_EXISTENTE' : tipoNegociacaoSimulador(negociacaoRealizadoAtual),
+            compararConcorrentes: deveCompararConcorrentes,
             compararComProprioRealizado: ehReajusteSelecionado,
             transportadoraBaseRealizado: transportadoraBaseReajuste,
             compararTabelaAtualReajuste,
@@ -7418,6 +7442,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           fim: ctx.fim,
           modo: ctx.modo,
           tipoNegociacao: ehReajusteSelecionado ? 'REAJUSTE_TABELA_EXISTENTE' : tipoNegociacaoSimulador(negociacaoRealizadoAtual),
+          compararConcorrentes: deveCompararConcorrentes,
           compararComProprioRealizado: ehReajusteSelecionado,
           transportadoraBaseRealizado: transportadoraBaseReajuste,
           compararTabelaAtualReajuste,
@@ -7472,6 +7497,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           transportadoraTabelaUsada: nomeTabelaSelecionada,
           tipoNegociacao: ehReajusteSelecionado ? 'REAJUSTE_TABELA_EXISTENTE' : tipoNegociacaoSimulador(negociacaoRealizadoAtual),
           transportadoraBaseRealizado: transportadoraBaseReajuste,
+          compararConcorrentes: deveCompararConcorrentes,
           compararComProprioRealizado: ehReajusteSelecionado,
           compararTabelaAtualReajuste,
           usarTabelaAtualComoBaseRealizado,
@@ -8330,6 +8356,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       return;
     }
 
+    if (laudo.classList.contains('gerencial-reajuste')) laudo.querySelectorAll('details').forEach(node => { node.open = true; });
     const estilos = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
       .map((node) => node.outerHTML)
       .join('\n');
@@ -10916,6 +10943,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 {secaoAberta('laudo') && (
                 <>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                    <button className="sim-tab" type="button" onClick={() => setLaudoVisualAberto('gerencial')}>Laudo gerencial de reajuste</button>
                     {[
                       ['diretoria', 'Diretoria'],
                       ['transportadora', 'Transportadora'],
@@ -11977,10 +12005,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </button>
             </div>
 
-            <LaudoNegociacaoTemplate
-              tipo={laudoVisualAberto}
-              resultado={resultadoRealizado}
-            />
+            {laudoVisualAberto === 'gerencial' ? <LaudoGerencialReajuste resultado={resultadoRealizado} /> : <LaudoNegociacaoTemplate tipo={laudoVisualAberto} resultado={resultadoRealizado} />}
           </div>
         </div>
       )}
