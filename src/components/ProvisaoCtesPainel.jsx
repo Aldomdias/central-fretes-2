@@ -4,7 +4,7 @@ import {
   buscarCtesNaBase, carregarCtesCompetencia, carregarLancamentosPorCnpj, carregarSnapshotProvisao,
   carregarTrackingCompetencia, excluirSnapshotProvisao, listarSnapshotsProvisao, salvarSnapshotProvisao,
 } from '../services/lancamentosCteSapService';
-import { carregarParametrosRemotos } from '../services/robosParametrosService';
+import { carregarParametrosRemotos, salvarPendentesEscrituracao } from '../services/robosParametrosService';
 import { carregarParametros, criarIndices } from '../utils/robos/lancamentoComum';
 import { carregarSessao } from '../utils/authLocal';
 import { montarEml } from '../utils/emailLaudoTransportador';
@@ -207,6 +207,22 @@ export default function ProvisaoCtesPainel() {
       setItens(classificados);
       setForaTomador({ qtd: fora.qtd, valor: fora.valor, porTomador: [...fora.porTomador.values()].sort((a, b) => b.valor - a.valor) });
       setCalculadaPara(competencia);
+      // Fila do robo de Escrituracao: os CT-es nao lancados no SAP desta competencia (substitui a lista anterior).
+      const pendentes = [];
+      const vistos = new Set();
+      classificados.forEach((c) => {
+        const chave = String(c.chave_cte || '').replace(/\D/g, '');
+        if (c.situacao !== 'NAO_LANCADO' || chave.length !== 44 || vistos.has(chave)) return;
+        vistos.add(chave);
+        pendentes.push({ chave, transportadora: c.transportadora || '', numero: numeroSerie(c), valor: r2(Number(c.valor_cte || 0)), emissao: c.data_emissao || '' });
+      });
+      const sessaoFila = carregarSessao?.() || {};
+      const fila = await salvarPendentesEscrituracao(competencia, pendentes, sessaoFila.usuario?.email || sessaoFila.email || sessaoFila.nome || '');
+      setAviso(fila.ok
+        ? (pendentes.length
+          ? `${num(pendentes.length)} CT-e(s) não lançado(s) de ${competenciaBr(competencia)} enviados para a fila do robô de Escrituração (Automação → Escrituração).`
+          : `Nenhum CT-e não lançado em ${competenciaBr(competencia)}: fila do robô de Escrituração limpa para esta competência.`)
+        : `Provisão calculada, mas não consegui gravar a fila do robô de Escrituração: ${fila.motivo}`);
       setCorteMeta('');
       setTransportadora('');
       setVisiveis(PAGINA); setVisiveisNf(PAGINA);

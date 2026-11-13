@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   LOTE_PADRAO,
   PASTA_EXPORTACAO,
@@ -18,9 +18,18 @@ import {
 import { NOME_DADOS_REPROCESSAR, gerarMacroReprocessar, matrizDadosReprocessar } from '../../utils/robos/reprocessarCteMacro';
 import { PLANILHA_ROBO } from '../../utils/robos/sapMacroExcel';
 import { getSupabaseAcessoPublico } from '../../lib/supabaseClient';
+import { carregarSessao } from '../../utils/authLocal';
 import { baixarMatrizXlsx } from '../../utils/robos/lancamentoComum';
 import { BaixarPlanilhaRobo, passosMacroExcel } from './MacroExcel';
 import ScriptParaCopiar from './ScriptParaCopiar';
+import { carregarPendentesEscrituracao } from '../../services/robosParametrosService';
+
+
+// Nome de quem baixou os dados: vai para o "Lancado por" do acompanhamento.
+function usuarioLogado() {
+  const sessao = carregarSessao();
+  return sessao?.nome || sessao?.email || '';
+}
 
 const CHAVE_PARAMS = 'central_fretes_robo_reprocessar_cte_v1';
 
@@ -30,6 +39,17 @@ function lerParams() {
   } catch {
     return {};
   }
+}
+
+function competenciaBr(c) {
+  const [a, m] = String(c || '').split('-');
+  return a && m ? `${m}/${a}` : String(c || '');
+}
+
+function dataHoraBr(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
 }
 
 function fmt(n) {
@@ -54,6 +74,30 @@ export default function ReprocessarCteRobo() {
   const [feedback, setFeedback] = useState('');
   const [macroTela, setMacroTela] = useState(null);
   const inputRef = useRef(null);
+  const [fila, setFila] = useState(null); // pendentes gravados pela Provisao de CT-es
+  const [filaErro, setFilaErro] = useState('');
+
+  async function atualizarFila() {
+    setFilaErro('');
+    const r = await carregarPendentesEscrituracao();
+    if (r.ok) setFila(r.competencias);
+    else { setFila([]); setFilaErro(r.motivo || 'Não consegui ler a fila.'); }
+  }
+  useEffect(() => { atualizarFila(); }, []);
+
+  // Carrega as chaves da fila (uma competencia ou todas), tirando as transportadoras ignoradas.
+  function usarFila(competencias) {
+    const lista = ignorar.split(/[,;]+/).map((t) => t.trim().toUpperCase()).filter(Boolean);
+    const itens = competencias.flatMap((c) => c.itens);
+    const ignoradas = itens.filter((i) => lista.some((t) => String(i.transportadora || '').toUpperCase().includes(t)));
+    const usadas = itens.filter((i) => !ignoradas.includes(i)).map((i) => i.chave);
+    if (!usadas.length) { setErro('Nenhuma chave pendente para carregar.'); return; }
+    setChaves(usadas);
+    setStats({ linhasLidas: itens.length, ignoradasTransportadora: ignoradas.length, semChaveValida: 0, chavesBrutas: usadas.length });
+    setOrigem(`fila da provisão (${competencias.map((c) => competenciaBr(c.competencia)).join(', ')})`);
+    setErro('');
+    setFeedback(`${fmt(usadas.length)} chave(s) pendente(s) da provisão carregada(s)${ignoradas.length ? `; ${fmt(ignoradas.length)} ignorada(s) pela transportadora` : ''}. Agora baixe os dados para o Excel (passo 1).`);
+  }
 
   const iniSap = isoParaSap(dataInicial);
   const fimSap = isoParaSap(dataFinal);
@@ -133,7 +177,7 @@ export default function ReprocessarCteRobo() {
     try {
       salvarParams();
       const lista = ignorar.split(/[,;]+/).map((t) => t.trim()).filter(Boolean);
-      await baixarMatrizXlsx(NOME_DADOS_REPROCESSAR, matrizDadosReprocessar({ chaves: chavesFinais, dataInicial: iniSap, dataFinal: fimSap, lote: loteNum, ignorar: lista, deduplicar, central: getSupabaseAcessoPublico() }));
+      await baixarMatrizXlsx(NOME_DADOS_REPROCESSAR, matrizDadosReprocessar({ chaves: chavesFinais, dataInicial: iniSap, dataFinal: fimSap, lote: loteNum, ignorar: lista, deduplicar, central: getSupabaseAcessoPublico(), usuario: usuarioLogado() }));
       setFeedback(chavesFinais.length
         ? `Dados baixados (${NOME_DADOS_REPROCESSAR}) com ${fmt(chavesFinais.length)} chave(s) em ${fmt(lotes.length)} lote(s). Na planilha do robô, com o SAP logado, clique em Escriturar CT-e e escolha esse arquivo.`
         : `Dados baixados (${NOME_DADOS_REPROCESSAR}). Na planilha do robô, com o SAP logado, clique em Escriturar CT-e e escolha esse arquivo: ela exporta o relatório, tira ${lista.length ? lista.join(', ') : 'as ignoradas'} e reprocessa em lotes de ${fmt(loteNum)}.`);
@@ -158,6 +202,35 @@ export default function ReprocessarCteRobo() {
       ) : null}
       {erro ? <div style={{ padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{erro}</div> : null}
       {feedback && !erro ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}
+
+      <div className="panel-card" style={{ borderLeft: '4px solid #7c3aed' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div className="panel-title" style={{ margin: 0 }}>Pendentes da provisão (não lançados no SAP)</div>
+          <button type="button" className="btn-secondary" onClick={atualizarFila}>Atualizar</button>
+        </div>
+        <p style={{ margin: '4px 0 10px', fontSize: 13 }}>Cada vez que a <b>Provisão de CT-es</b> (Auditoria de fretes → Central financeira → Pagamento) é calculada, os CT-es não lançados daquela competência vêm para cá, substituindo a lista anterior. Carregue as chaves e siga no passo 1: o robô escritura só elas.</p>
+        {filaErro ? <div style={{ padding: 8, borderRadius: 8, background: '#fee2e2', color: '#991b1b', fontSize: 13 }}>{filaErro}</div> : null}
+        {fila === null ? <div style={{ fontSize: 13, color: '#64748b' }}>Carregando…</div> : null}
+        {fila && !fila.length && !filaErro ? <div style={{ fontSize: 13, color: '#64748b' }}>Nenhum pendente. Calcule a provisão para gerar a lista.</div> : null}
+        {fila && fila.length ? (
+          <table className="sim-analise-tabela" style={{ width: '100%' }}>
+            <thead><tr><th>Competência</th><th>CT-es</th><th>Valor</th><th>Gerada em</th><th>Por</th><th /></tr></thead>
+            <tbody>
+              {fila.map((c) => (
+                <tr key={c.competencia}>
+                  <td><strong>{competenciaBr(c.competencia)}</strong></td>
+                  <td>{fmt(c.itens.length)}</td>
+                  <td>{c.itens.reduce((a, i) => a + Number(i.valor || 0), 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                  <td>{dataHoraBr(c.gerado_em)}</td>
+                  <td style={{ fontSize: 12 }}>{c.gerado_por || '-'}</td>
+                  <td><button type="button" className="btn-primary" style={{ padding: '2px 10px' }} onClick={() => usarFila([c])}>Carregar chaves</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
+        {fila && fila.length > 1 ? <div style={{ marginTop: 8 }}><button type="button" className="btn-secondary" onClick={() => usarFila(fila)}>Carregar todas as competências</button></div> : null}
+      </div>
 
       <div className="panel-card">
         <div className="panel-title">Período do relatório</div>
