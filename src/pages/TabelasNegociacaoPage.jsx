@@ -524,6 +524,27 @@ const SUBTIPOS_CANTU = [
   { value: 'B2C_FAIXA_PESO', label: 'B2C — Faixa de Peso' },
   { value: 'B2C_PERCENTUAL', label: 'B2C — Percentual' },
 ];
+function descreverCoringasTaxa(lista) {
+  var itens = Array.isArray(lista) ? lista : [];
+  if (!itens.length) return '-';
+  return itens.map(function(te) {
+    var partes = [];
+    var min = Number(te.min) || 0;
+    var valorKg = Number(te.valorKg ?? te.valor_kg) || 0;
+    var franquia = Number(te.franquiaKg ?? te.franquia_kg) || 0;
+    if (Number(te.pct) > 0) partes.push(Number(te.pct).toLocaleString('pt-BR') + '% NF' + (min > 0 ? ' (mín. ' + formatMoney(min) + ')' : ''));
+    if (Number(te.valor) > 0) partes.push(formatMoney(te.valor) + ' fixo');
+    if (Number(te.valorPorPeso) > 0) partes.push(formatMoney(te.valorPorPeso) + '/' + (Number(te.pesoBase) || 100) + ' kg');
+    if (valorKg > 0) {
+      var minKg = Number(te.pct) > 0 ? 0 : min;
+      partes.push(franquia > 0
+        ? 'até ' + franquia.toLocaleString('pt-BR') + ' kg: ' + formatMoney(minKg) + ' · acima: ' + formatMoney(valorKg) + '/kg (mín. ' + formatMoney(minKg) + ')'
+        : formatMoney(valorKg) + '/kg' + (minKg > 0 ? ' (mín. ' + formatMoney(minKg) + ')' : ''));
+    }
+    return (te.nome || 'Coringa') + ': ' + (partes.join(' + ') || '-');
+  }).join(' | ');
+}
+
 const TAXA_EXTRA_VAZIA = { nome: '', valor: '', pct: '', min: '', valorPorPeso: '', pesoBase: '', valorKg: '', franquiaKg: '' };
 const TAXA_VAZIA = {
   ibge_destino: '', uf_destino: '', cidade_destino: '',
@@ -4227,7 +4248,7 @@ export default function TabelasNegociacaoPage() {
               <div className="sim-analise-tabela-wrap">
                 <table className="sim-analise-tabela">
                   <thead>
-                    <tr><th>IBGE</th><th>Cidade</th><th>UF</th><th>TDA</th><th>TRT</th><th>SUFRAMA</th><th>Outras</th><th>GRIS %</th><th>ADV %</th><th>Ações</th></tr>
+                    <tr><th>IBGE</th><th>Cidade</th><th>UF</th><th>TDA</th><th>TRT</th><th>SUFRAMA</th><th>Outras</th><th>GRIS %</th><th>ADV %</th><th>Coringas</th><th>Ações</th></tr>
                   </thead>
                   <tbody>
                     {taxasDestino.map(function(taxa) {
@@ -4242,6 +4263,7 @@ export default function TabelasNegociacaoPage() {
                           <td>{Number(taxa.outras_taxas) > 0 ? formatMoney(taxa.outras_taxas) : '-'}</td>
                           <td>{Number(taxa.gris) > 0 ? <strong>{Number(taxa.gris).toFixed(4)}%</strong> : <span style={{ color: '#94a3b8', fontSize: 11 }}>geral</span>}</td>
                           <td>{Number(taxa.advalorem) > 0 ? <strong>{Number(taxa.advalorem).toFixed(4)}%</strong> : <span style={{ color: '#94a3b8', fontSize: 11 }}>geral</span>}</td>
+                          <td style={{ fontSize: 12 }}>{descreverCoringasTaxa(taxa.taxas_extras)}</td>
                           <td>
                             <div style={{ display: 'flex', gap: 6 }}>
                               <button className="sim-tab" type="button" onClick={function() { handleEditarTaxa(taxa); }}>Editar</button>
@@ -4251,7 +4273,7 @@ export default function TabelasNegociacaoPage() {
                         </tr>
                       );
                     })}
-                    {!taxasDestino.length ? <tr><td colSpan="11">Nenhuma taxa especial cadastrada. Adicione acima ou importe dos itens salvos.</td></tr> : null}
+                    {!taxasDestino.length ? <tr><td colSpan="12">Nenhuma taxa especial cadastrada. Adicione acima ou importe dos itens salvos.</td></tr> : null}
                   </tbody>
                 </table>
               </div>
