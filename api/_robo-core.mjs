@@ -24219,13 +24219,22 @@ function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 0, peso
     const min = toNumber(te.min);
     const valorPorPeso = toNumber(te.valorPorPeso ?? te.valor_por_peso);
     const pesoBase = toNumber(te.pesoBase ?? te.peso_base ?? te.baseKg ?? te.base_kg);
+    const valorKg = toNumber(te.valorKg ?? te.valor_kg);
+    const franquiaKg = toNumber(te.franquiaKg ?? te.franquia_kg);
     let v = 0;
     let valorPercentual = 0;
     let valorFixo = 0;
     let valorPeso = 0;
+    let valorPorKgTaxa = 0;
     if (pct > 0) {
       valorPercentual = Math.max(toNumber(valorNf) * toPercent(pct), min);
       v += valorPercentual;
+    }
+    if (valorKg > 0) {
+      const minimoKg = pct > 0 ? 0 : min;
+      const peso = toNumber(pesoKg);
+      valorPorKgTaxa = franquiaKg > 0 && peso <= franquiaKg ? minimoKg : Math.max(minimoKg, peso * valorKg);
+      v += valorPorKgTaxa;
     }
     if (valor > 0) {
       valorFixo = valor;
@@ -24236,7 +24245,7 @@ function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 0, peso
       v += valorPeso;
     }
     taxaExtra += v;
-    return { nome: te.nome || "", valor: v, pct, min, valorFixo, valorPorPeso, pesoBase, valorPeso, valorPercentual };
+    return { nome: te.nome || "", valor: v, pct, min, valorFixo, valorPorPeso, pesoBase, valorPeso, valorPercentual, valorKg, franquiaKg, valorPorKgTaxa };
   });
   return {
     adValorem,

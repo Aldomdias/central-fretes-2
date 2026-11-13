@@ -524,7 +524,7 @@ const SUBTIPOS_CANTU = [
   { value: 'B2C_FAIXA_PESO', label: 'B2C — Faixa de Peso' },
   { value: 'B2C_PERCENTUAL', label: 'B2C — Percentual' },
 ];
-const TAXA_EXTRA_VAZIA = { nome: '', valor: '', pct: '', min: '', valorPorPeso: '', pesoBase: '' };
+const TAXA_EXTRA_VAZIA = { nome: '', valor: '', pct: '', min: '', valorPorPeso: '', pesoBase: '', valorKg: '', franquiaKg: '' };
 const TAXA_VAZIA = {
   ibge_destino: '', uf_destino: '', cidade_destino: '',
   tda: '', trt: '', suframa: '', outras_taxas: '',
@@ -853,13 +853,17 @@ function extrairCoringasDaLinha(row) {
     var mBasePeso = col.match(/^(.+)\s+(?:kg\/fracao|Base\s*kg|kg\s*base)$/i);
     var mP = col.match(/^(.+)\s+%\s*NF$/i);
     var mM = col.match(/^(.+)\s+(?:Min|Minimo)$/i);
+    var mRKg = col.match(/^(.+)\s+R\$\s+por\s+kg$/i);
+    var mFranquia = col.match(/^(.+)\s+Franquia\s*kg$/i);
+    if (mRKg) { var nk = mRKg[1].trim(); if (!coringas[nk]) coringas[nk] = { nome: nk }; coringas[nk].valorKg = numeroPlanilha(row[col]); }
+    if (mFranquia) { var nf = mFranquia[1].trim(); if (!coringas[nf]) coringas[nf] = { nome: nf }; coringas[nf].franquiaKg = numeroPlanilha(row[col]); }
     if (mR) { var n = mR[1].trim(); if (!coringas[n]) coringas[n] = { nome: n }; coringas[n].valor = numeroPlanilha(row[col]); }
     if (mRPeso) { var np = mRPeso[1].trim(); if (!coringas[np]) coringas[np] = { nome: np }; coringas[np].valorPorPeso = numeroPlanilha(row[col]); if (/100kg/i.test(col) && !coringas[np].pesoBase) coringas[np].pesoBase = 100; }
     if (mBasePeso) { var nb = mBasePeso[1].trim(); if (!coringas[nb]) coringas[nb] = { nome: nb }; coringas[nb].pesoBase = numeroPlanilha(row[col]); }
     if (mP) { var n2 = mP[1].trim(); if (!coringas[n2]) coringas[n2] = { nome: n2 }; coringas[n2].pct = numeroPlanilha(row[col]); }
     if (mM) { var n3 = mM[1].trim(); if (!coringas[n3]) coringas[n3] = { nome: n3 }; coringas[n3].min = numeroPlanilha(row[col]); }
   });
-  return Object.values(coringas).filter(function(te) { return (te.pct || 0) > 0 || (te.valor || 0) > 0 || (te.valorPorPeso || 0) > 0; });
+  return Object.values(coringas).filter(function(te) { return (te.pct || 0) > 0 || (te.valor || 0) > 0 || (te.valorPorPeso || 0) > 0 || (te.valorKg || 0) > 0; });
 }
 
 function agruparLinhasTaxaDestino(linhas) {
@@ -919,6 +923,8 @@ function exportarTaxasDestinoNegociacao(taxas, nomeTabela) {
       linha[n + ' kg/fracao'] = te ? (te.pesoBase || te.peso_base || '') : '';
       linha[n + ' % NF'] = te ? (te.pct || '') : '';
       linha[n + ' Min'] = te ? (te.min || '') : '';
+      linha[n + ' R$ por kg'] = te ? (te.valorKg || te.valor_kg || '') : '';
+      linha[n + ' Franquia kg'] = te ? (te.franquiaKg || te.franquia_kg || '') : '';
     });
 
     return linha;
@@ -2507,7 +2513,7 @@ export default function TabelasNegociacaoPage() {
       outras_taxas: taxa.outras_taxas || '', gris: taxa.gris || '',
       gris_minimo: taxa.gris_minimo || '', advalorem: taxa.advalorem || '',
       advalorem_minimo: taxa.advalorem_minimo || '', observacao: taxa.observacao || '',
-      taxas_extras: Array.isArray(taxa.taxas_extras) ? taxa.taxas_extras.map(function(te) { return { nome: te.nome || '', valor: te.valor || '', pct: te.pct || '', min: te.min || '', valorPorPeso: te.valorPorPeso || te.valor_por_peso || '', pesoBase: te.pesoBase || te.peso_base || '' }; }) : [],
+      taxas_extras: Array.isArray(taxa.taxas_extras) ? taxa.taxas_extras.map(function(te) { return { nome: te.nome || '', valor: te.valor || '', pct: te.pct || '', min: te.min || '', valorPorPeso: te.valorPorPeso || te.valor_por_peso || '', pesoBase: te.pesoBase || te.peso_base || '', valorKg: te.valorKg || te.valor_kg || '', franquiaKg: te.franquiaKg || te.franquia_kg || '' }; }) : [],
     });
     setAbaNegoc('taxas');
   }
@@ -4186,7 +4192,7 @@ export default function TabelasNegociacaoPage() {
                 <div style={{ marginTop: 12 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                     <strong style={{ fontSize: '0.85rem' }}>Taxas coringa</strong>
-                    <small style={{ color: '#94a3b8' }}>% NF com mínimo, ou valor R$ fixo — pode adicionar quantas quiser</small>
+                    <small style={{ color: '#94a3b8' }}>% NF com mínimo, R$ fixo, R$ por fração, ou R$/kg com franquia (até a franquia cobra o mínimo; acima, o maior entre mínimo e peso x R$/kg) — pode adicionar quantas quiser</small>
                     <button type="button" className="sim-tab" style={{ marginLeft: 'auto', fontSize: '0.78rem', padding: '2px 10px' }}
                       onClick={function() { setNovaTaxa(function(p) { return Object.assign({}, p, { taxas_extras: (p.taxas_extras || []).concat([Object.assign({}, TAXA_EXTRA_VAZIA)]) }); }); }}>
                       + Adicionar coringa
@@ -4196,13 +4202,15 @@ export default function TabelasNegociacaoPage() {
                     function upd(field, val) { setNovaTaxa(function(p) { var arr = (p.taxas_extras || []).slice(); arr[idx] = Object.assign({}, arr[idx], { [field]: val }); return Object.assign({}, p, { taxas_extras: arr }); }); }
                     function rem() { setNovaTaxa(function(p) { var arr = (p.taxas_extras || []).filter(function(_, i) { return i !== idx; }); return Object.assign({}, p, { taxas_extras: arr }); }); }
                     return (
-                      <div key={idx} className="sim-form-grid" style={{ gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 6, alignItems: 'end' }}>
+                      <div key={idx} className="sim-form-grid" style={{ gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 6, alignItems: 'end' }}>
                         <label style={{ margin: 0 }}>Nome<input value={te.nome} onChange={function(e) { upd('nome', e.target.value); }} placeholder="Ex: TRT por destino" /></label>
                         <label style={{ margin: 0 }}>% NF <small style={{ color: '#94a3b8' }}>(prior.)</small><input type="number" step="0.0001" value={te.pct} onChange={function(e) { upd('pct', e.target.value); }} /></label>
                         <label style={{ margin: 0 }}>Mín (R$)<input type="number" step="0.01" value={te.min} onChange={function(e) { upd('min', e.target.value); }} /></label>
                         <label style={{ margin: 0 }}>R$ fixo <small style={{ color: '#94a3b8' }}>(se %=0)</small><input type="number" step="0.01" value={te.valor} onChange={function(e) { upd('valor', e.target.value); }} /></label>
                         <label style={{ margin: 0 }}>R$ por fracao<input type="number" step="0.01" value={te.valorPorPeso} onChange={function(e) { upd('valorPorPeso', e.target.value); }} placeholder="Ex: 8,50" /></label>
                         <label style={{ margin: 0 }}>kg/fracao<input type="number" step="0.001" value={te.pesoBase} onChange={function(e) { upd('pesoBase', e.target.value); }} placeholder="100" /></label>
+                        <label style={{ margin: 0 }}>R$/kg<input type="number" step="0.0001" value={te.valorKg} onChange={function(e) { upd('valorKg', e.target.value); }} placeholder="Ex: 0,20" /></label>
+                        <label style={{ margin: 0 }}>Franquia kg<input type="number" step="0.001" value={te.franquiaKg} onChange={function(e) { upd('franquiaKg', e.target.value); }} placeholder="100" /></label>
                         <button type="button" style={{ background: 'none', border: '1px solid #ef4444', color: '#ef4444', borderRadius: 4, padding: '0 8px', cursor: 'pointer', height: 30, alignSelf: 'end' }} onClick={rem}>✕</button>
                       </div>
                     );
