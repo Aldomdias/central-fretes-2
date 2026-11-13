@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import ReprocessarCteRobo from './robos/ReprocessarCteRobo';
+import CorrecaoSaldoRobo from './robos/CorrecaoSaldoRobo';
 import LancamentoNfseRobo from './robos/LancamentoNfseRobo';
 import LancamentoCteRobo from './robos/LancamentoCteRobo';
 import HistoricoLancamentos from './robos/HistoricoLancamentos';
@@ -8,9 +9,10 @@ import AuditorRobo from './robos/AuditorRobo';
 
 const ROBOS = [
   { chave: 'auditor-faturas', titulo: 'Robô Auditor', descricao: 'Audita as faturas novas das transportadoras da lista: laudo ao transportador se houver desconto, aprovação se estiver correta, sempre com o auditor responsável em cópia. Faturas corretas já vão para a aprovação da gestão; o laudo pode sair por e-mail (manual, automático após o OK do auditor ou direto).', componente: AuditorRobo },
-  { chave: 'reprocessar-cte', titulo: 'Reprocessar CT-e', descricao: 'Exporta os CT-e com erro de saldo do SAP e reprocessa em lotes. Substitui a planilha “Reprocessar Cte”.', componente: ReprocessarCteRobo },
+  { chave: 'reprocessar-cte', titulo: 'Escrituração (Reprocessar CT-e)', descricao: 'Exporta os CT-e com erro do SAP e reprocessa (escritura) em lotes; os que ganham MIRO já entram na base de partidas. Substitui a planilha “Reprocessar Cte”.', componente: ReprocessarCteRobo },
+  { chave: 'correcao-saldo', titulo: 'Correção de saldo', descricao: 'Corrige o valor líquido do pedido dos CT-e com erro de saldo e reprocessa; os que ganham MIRO já entram na base de partidas. Substitui a planilha “Ajuste de saldo”.', componente: CorrecaoSaldoRobo },
   { chave: 'lancamento-nfse', titulo: 'Lançamento NFS-e', descricao: 'Cria o pedido (ME21N) e a MIRO das notas de serviço das transportadoras. Substitui a planilha “Lançamento NFS-e”.', componente: LancamentoNfseRobo },
-  { chave: 'lancamento-cte', titulo: 'Lançamento CT-e', descricao: 'Lê os XMLs dos CT-e, acha o centro de custo no SAP e cria o pedido (ME21N) e a MIRO. Substitui a planilha “Lançamento CT-e”.', componente: LancamentoCteRobo },
+  { chave: 'lancamento-cte', titulo: 'Lançamento CT-e', descricao: 'Lê os XMLs dos CT-e, acha o centro de custo no SAP e cria o pedido (ME21N) e a MIRO; o CT-e com MIRO já entra na base de partidas. Substitui a planilha “Lançamento CT-e”.', componente: LancamentoCteRobo },
   { chave: 'historico-lancamentos', titulo: 'Acompanhamento de lançamentos', descricao: 'Quantas notas e CT-e foram lançados por mês, com o detalhe de cada documento.', componente: HistoricoLancamentos },
 ];
 

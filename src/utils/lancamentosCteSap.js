@@ -70,11 +70,65 @@ export function extrairLancamentosCteSap(rows = [], arquivoOrigem = '') {
   return [...porChave.values()];
 }
 
+// ---------------------------------------------------------------- partidas gravadas pelos robos
+// Quando a Central lanca o CT-e (robo de Lancamento CT-e, Escrituracao/Reprocessar ou Correcao de
+// saldo), a partida entra na mesma tabela sem esperar o relatorio do SAP. Marcada por
+// arquivo_origem "ROBO:<origem>"; quando o relatorio do SAP traz a partida real, a do robo e apagada
+// (e, enquanto as duas existirem, a do robo nao conta: situacaoLancamentoCte).
+export const PREFIXO_ORIGEM_ROBO = 'ROBO:';
+
+export function ehPartidaDoRobo(linha = {}) {
+  return String(linha.arquivo_origem || '').startsWith(PREFIXO_ORIGEM_ROBO);
+}
+
+function hojeIsoLocal() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// { cnpj, numero, serie, documento (MIRO), valor (CT-e, positivo), ... } -> linha de ctes_lancamentos_sap.
+export function partidaDoRobo({ cnpj, numero, serie, documento, valor, origem = 'LANCAMENTO', fornecedor = '', empresa = '', data = '', por = '' }) {
+  const c = cnpj14(cnpj);
+  const n = semZeros(numero);
+  const s = semZeros(serie);
+  const doc = digitos(documento);
+  const v = Math.abs(Number(valor) || 0);
+  if (c.length !== 14 || /^0+$/.test(c) || n === '0' || !doc || !(v > 0)) return null;
+  const montante = -Number(v.toFixed(2));
+  return {
+    chave: `${c}|${n}|${s}|${doc}|${Math.round(montante * 100)}`,
+    cnpj_emitente: c,
+    numero_cte: n,
+    serie_cte: s,
+    referencia: `${n}-${s}`,
+    fornecedor: fornecedor || null,
+    empresa: empresa || null,
+    lancamento_contabil: doc,
+    data_lancamento: /^\d{4}-\d{2}-\d{2}$/.test(String(data)) ? data : hojeIsoLocal(),
+    montante,
+    criado_por: por ? `ROBO CENTRAL (${por})` : 'ROBO CENTRAL',
+    texto: `Lancado pela Central (${origem.toLowerCase()})`,
+    arquivo_origem: `${PREFIXO_ORIGEM_ROBO}${origem}`,
+  };
+}
+
+// Registro do historico dos robos (robos_lancamentos, tipo CTE, documento "numero-serie") -> partida.
+export function partidaDoRegistroRobo(r = {}) {
+  if (r.tipo !== 'CTE' || !r.miro) return null;
+  const m = String(r.documento || '').match(/^0*(\d+)-0*(\d+)$/);
+  if (!m) return null;
+  return partidaDoRobo({ cnpj: r.cnpj_transp, numero: m[1], serie: m[2], documento: r.miro, valor: r.valor, origem: 'LANCAMENTO', fornecedor: r.transportadora || '', empresa: r.empresa || '', por: r.lancado_por || '' });
+}
+
 // Situacao de lancamento de um CT-e a partir das suas linhas no SAP: montante
 // negativo lanca, positivo estorna (MIR4). Vale a data em que o saldo ficou
 // lancado pela ultima vez (estornou e relancou = data do relancamento).
 export function situacaoLancamentoCte(linhas = []) {
-  const ordenadas = [...linhas].sort((a, b) => String(a.data_lancamento || '').localeCompare(String(b.data_lancamento || ''))
+  // Partida gravada pelo robo (lancamento/escrituracao/correcao de saldo feitos pela Central) so vale
+  // ate o relatorio do SAP trazer a partida de verdade desse CT-e; depois disso ela e ignorada.
+  const doSap = linhas.filter((l) => !ehPartidaDoRobo(l));
+  const base = doSap.length ? doSap : linhas;
+  const ordenadas = [...base].sort((a, b) => String(a.data_lancamento || '').localeCompare(String(b.data_lancamento || ''))
     || String(a.lancamento_contabil || '').localeCompare(String(b.lancamento_contabil || '')));
   let saldo = 0;
   let data = null;

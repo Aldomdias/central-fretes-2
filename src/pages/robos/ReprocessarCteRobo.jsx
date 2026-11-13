@@ -15,6 +15,12 @@ import {
   lerArquivoRelatorioSap,
   removerDuplicadas,
 } from '../../utils/robos/reprocessarCte';
+import { NOME_DADOS_REPROCESSAR, gerarMacroReprocessar, matrizDadosReprocessar } from '../../utils/robos/reprocessarCteMacro';
+import { PLANILHA_ROBO } from '../../utils/robos/sapMacroExcel';
+import { getSupabaseAcessoPublico } from '../../lib/supabaseClient';
+import { baixarMatrizXlsx } from '../../utils/robos/lancamentoComum';
+import { BaixarPlanilhaRobo, passosMacroExcel } from './MacroExcel';
+import ScriptParaCopiar from './ScriptParaCopiar';
 
 const CHAVE_PARAMS = 'central_fretes_robo_reprocessar_cte_v1';
 
@@ -46,6 +52,7 @@ export default function ReprocessarCteRobo() {
   const [colado, setColado] = useState('');
   const [erro, setErro] = useState('');
   const [feedback, setFeedback] = useState('');
+  const [macroTela, setMacroTela] = useState(null);
   const inputRef = useRef(null);
 
   const iniSap = isoParaSap(dataInicial);
@@ -120,8 +127,35 @@ export default function ReprocessarCteRobo() {
     } catch (e) { setErro(e.message); }
   }
 
+  // Planilha do robo no Excel: baixa so os dados (periodo, lote, ignoradas e, se carregadas, as chaves).
+  async function baixarDadosMacro() {
+    if (!validarDatas()) return;
+    try {
+      salvarParams();
+      const lista = ignorar.split(/[,;]+/).map((t) => t.trim()).filter(Boolean);
+      await baixarMatrizXlsx(NOME_DADOS_REPROCESSAR, matrizDadosReprocessar({ chaves: chavesFinais, dataInicial: iniSap, dataFinal: fimSap, lote: loteNum, ignorar: lista, deduplicar, central: getSupabaseAcessoPublico() }));
+      setFeedback(chavesFinais.length
+        ? `Dados baixados (${NOME_DADOS_REPROCESSAR}) com ${fmt(chavesFinais.length)} chave(s) em ${fmt(lotes.length)} lote(s). Na planilha do robô, com o SAP logado, clique em Escriturar CT-e e escolha esse arquivo.`
+        : `Dados baixados (${NOME_DADOS_REPROCESSAR}). Na planilha do robô, com o SAP logado, clique em Escriturar CT-e e escolha esse arquivo: ela exporta o relatório, tira ${lista.length ? lista.join(', ') : 'as ignoradas'} e reprocessa em lotes de ${fmt(loteNum)}.`);
+    } catch (e) { setErro(e.message); }
+  }
+
+  function verMacro() {
+    const m = gerarMacroReprocessar();
+    setMacroTela({ script: m.codigo, macro: m.macro });
+  }
+
   return (
     <div style={{ display: 'grid', gap: 16 }}>
+      {macroTela ? (
+        <ScriptParaCopiar
+          script={macroTela.script}
+          nomeArquivo={PLANILHA_ROBO.nome}
+          onFechar={() => setMacroTela(null)}
+          titulo="Código da macro (Excel)"
+          passos={passosMacroExcel(macroTela.macro, PLANILHA_ROBO.nome, <>A cada rodada: baixe <b>Dados para o Excel</b> na Central, abra a planilha do robô com o SAP logado, clique no botão (ou <b>Alt+F8</b> → <code>{macroTela.macro}</code> → Executar) e escolha o arquivo de dados. O log fica em <code>{PASTA_EXPORTACAO}</code>.</>)}
+        />
+      ) : null}
       {erro ? <div style={{ padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{erro}</div> : null}
       {feedback && !erro ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}
 
@@ -139,10 +173,26 @@ export default function ReprocessarCteRobo() {
       <div className="panel-card">
         <div style={passoStyle}>
           <span style={numStyle}>1</span>
-          <div>
-            <div className="panel-title" style={{ margin: 0 }}>Exportar o relatório do SAP</div>
-            <p style={{ margin: '4px 0 10px' }}>Gera o script que abre a transação <b>{TRANSACAO_SAP}</b>, aplica o período, filtra o erro de saldo e exporta para <code>{PASTA_EXPORTACAO}</code> (limpando a pasta antes). Equivale ao botão “1. Executar” da planilha.</p>
-            <button type="button" className="btn-primary" onClick={gerarExportacao}>Baixar script de exportação (.vbs)</button>
+          <div style={{ flex: 1 }}>
+            <div className="panel-title" style={{ margin: 0 }}>Baixar os dados para a planilha do robô</div>
+            <p style={{ margin: '4px 0 10px' }}>Planilha comum (sem código) com o período, o tamanho do lote e as transportadoras ignoradas. Na planilha do robô, <b>▶ Escriturar CT-e</b> faz tudo o que a planilha antiga fazia: abre a <b>{TRANSACAO_SAP}</b>, filtra o erro de saldo, exporta para <code>{PASTA_EXPORTACAO}</code>, tira as transportadoras ignoradas e as chaves repetidas, mostra quantas achou e reprocessa em lotes. No fim, consulta o log de novo e grava na base de partidas da Central cada CT-e que ganhou MIRO (não precisa esperar a importação do relatório do SAP).</p>
+            {chavesFinais.length ? (
+              <div style={{ marginBottom: 10, padding: 8, borderRadius: 8, background: '#fff7ed', color: '#9a3412', fontSize: 13 }}>
+                Vão no arquivo as <b>{fmt(chavesFinais.length)}</b> chave(s) carregadas abaixo ({fmt(lotes.length)} lote(s)): o robô reprocessa só elas, sem exportar o relatório. Para o fluxo completo, clique em <b>Limpar</b> nas chaves.
+              </div>
+            ) : null}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" className="btn-primary" onClick={baixarDadosMacro} title="Planilha comum (sem codigo) para a planilha do robo">Baixar dados para o Excel (.xlsx)</button>
+              <BaixarPlanilhaRobo gerar={gerarMacroReprocessar} />
+            </div>
+            <details style={{ marginTop: 8, fontSize: 13 }}>
+              <summary style={{ cursor: 'pointer', color: '#64748b' }}>Outras opções</summary>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+                <button type="button" className="btn-secondary" onClick={verMacro} title="Para montar ou atualizar a planilha do robo">Código da macro (Excel)</button>
+                <button type="button" className="btn-secondary" onClick={gerarExportacao} title="Alternativa antiga, onde o antivirus deixa rodar .vbs">Script de exportação (.vbs)</button>
+                <button type="button" className="btn-secondary" onClick={gerarReprocessamento} disabled={!chavesFinais.length} title="Alternativa antiga: precisa das chaves carregadas abaixo">Script de reprocessamento (.vbs)</button>
+              </div>
+            </details>
           </div>
         </div>
       </div>
@@ -151,8 +201,8 @@ export default function ReprocessarCteRobo() {
         <div style={passoStyle}>
           <span style={numStyle}>2</span>
           <div style={{ flex: 1 }}>
-            <div className="panel-title" style={{ margin: 0 }}>Carregar as chaves</div>
-            <p style={{ margin: '4px 0 10px' }}>Selecione o arquivo exportado (<code>CT-esErro</code>, .xlsx ou .txt). O robô tira as transportadoras ignoradas e fica só com a “Chave CTe” — o que o Power Query da planilha fazia. Também dá para colar as chaves manualmente.</p>
+            <div className="panel-title" style={{ margin: 0 }}>Opcional: reprocessar só chaves específicas</div>
+            <p style={{ margin: '4px 0 10px' }}>Se já tem as chaves (o arquivo <code>CT-esErro</code> exportado, .xlsx ou .txt, ou uma lista colada), carregue aqui antes de baixar os dados: o robô pula a exportação e reprocessa só essas. Do arquivo exportado, a Central tira as transportadoras ignoradas e fica só com a “Chave CTe”.</p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
               <input ref={inputRef} type="file" accept=".xlsx,.xls,.txt,.csv" onChange={(e) => carregarArquivo(e.target.files?.[0])} />
               {chaves.length ? <button type="button" className="btn-secondary" onClick={limpar}>Limpar</button> : null}
@@ -172,32 +222,19 @@ export default function ReprocessarCteRobo() {
             <div className="summary-card"><span>Repetidas removidas</span><strong>{fmt(deduplicar ? chaves.length - chavesFinais.length : 0)}</strong></div>
           </div>
         ) : null}
-        {chaves.length ? (
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10 }}>
-            <input type="checkbox" checked={deduplicar} onChange={(e) => { setDeduplicar(e.target.checked); salvarParams({ deduplicar: e.target.checked }); }} />
-            Remover chaves repetidas (o relatório traz uma linha por mensagem de erro)
-          </label>
-        ) : null}
-      </div>
-
-      <div className="panel-card">
-        <div style={passoStyle}>
-          <span style={numStyle}>3</span>
-          <div>
-            <div className="panel-title" style={{ margin: 0 }}>Reprocessar no SAP</div>
-            <p style={{ margin: '4px 0 10px' }}>Gera o script que cola cada lote na seleção múltipla, executa e manda reprocessar, e grava um log do andamento. Equivale à macro “Reprocessar”.</p>
-            <button type="button" className="btn-primary" onClick={gerarReprocessamento} disabled={!chavesFinais.length}>Baixar script de reprocessamento (.vbs)</button>
-          </div>
-        </div>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10 }}>
+          <input type="checkbox" checked={deduplicar} onChange={(e) => { setDeduplicar(e.target.checked); salvarParams({ deduplicar: e.target.checked }); }} />
+          Remover chaves repetidas (o relatório traz uma linha por mensagem de erro)
+        </label>
       </div>
 
       <div className="panel-card">
         <div className="panel-title">Como rodar</div>
         <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>
-          <li>Abra o SAP Logon e entre no sistema (o scripting do SAP GUI precisa estar habilitado — o mesmo requisito da planilha).</li>
-          <li>Se o navegador avisar sobre o download do .vbs, escolha “Manter”. Dê dois cliques no arquivo para executar.</li>
-          <li>Se o arquivo abrir no Bloco de Notas ou ficar com nome terminado em <code>.vbs.txt</code>, renomeie para terminar em <code>.vbs</code> (ative “Extensões de nomes de arquivos” na aba Exibir do Explorador).</li>
-          <li>Não mexa no SAP enquanto o script roda. Ao terminar aparece uma mensagem.</li>
+          <li>Preencha o período e clique em <b>Baixar dados para o Excel</b> (passo 1).</li>
+          <li>Com o SAP logado, abra a planilha do robô, clique em <b>▶ Escriturar CT-e</b> e escolha o arquivo baixado. Ela mostra quantas chaves achou e pergunta antes de reprocessar.</li>
+          <li>Não mexa no SAP até a mensagem final. O andamento fica em <code>{PASTA_EXPORTACAO}\log_reprocessar.txt</code>; as partidas gravadas, em <code>partidas_gravadas.csv</code>.</li>
+          <li style={{ color: '#64748b' }}>É a mesma planilha do Lançamento NFS-e/CT-e e da Correção de saldo (um botão para cada). Primeira vez: baixe a <b>Planilha do robô (.xlsm)</b>, salve na sua pasta e, no arquivo, botão direito → Propriedades → marque <b>Desbloquear</b>.</li>
         </ol>
       </div>
     </div>

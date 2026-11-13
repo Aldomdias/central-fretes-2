@@ -711,7 +711,7 @@ export default function LancamentoNfseRobo() {
           <li>Clique em <b>Baixar dados para o Excel</b> (passo 2).</li>
           <li>Com o SAP logado, abra a planilha do robô, clique em <b>▶ Lançar NFS-e</b> e escolha o arquivo baixado. Não mexa no SAP até a mensagem final.</li>
           <li>Pronto: o resultado volta sozinho para a Central. O que falhar aparece em laranja e em “Sem MIRO” com o motivo.</li>
-          <li style={{ color: '#64748b' }}>Primeira vez: baixe a <b>Planilha do robô (.xlsm)</b>, salve na sua pasta e, no arquivo, botão direito → Propriedades → marque <b>Desbloquear</b>.</li>
+          <li style={{ color: '#64748b' }}>É a mesma planilha da Escrituração e da Correção de saldo (um botão para cada). Primeira vez (ou se a planilha avisar que está desatualizada): baixe a <b>Planilha do robô (.xlsm)</b>, salve na sua pasta e, no arquivo, botão direito → Propriedades → marque <b>Desbloquear</b>.</li>
         </ol>
       </div>
     </div>

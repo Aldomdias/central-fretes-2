@@ -49,7 +49,7 @@ async function carregarLancamentos(client, detalhes) {
       const lote = lista.slice(i, i + LOTE_NUMEROS);
       // eslint-disable-next-line no-await-in-loop
       const linhas = await paginarPorId(() => client.from('ctes_lancamentos_sap')
-        .select('id,cnpj_emitente,numero_cte,serie_cte,lancamento_contabil,data_lancamento,montante')
+        .select('id,cnpj_emitente,numero_cte,serie_cte,lancamento_contabil,data_lancamento,montante,arquivo_origem')
         .eq('cnpj_emitente', cnpj).in('numero_cte', lote));
       linhas.forEach((l) => {
         const k = chaveCasamentoCte({ cnpj: l.cnpj_emitente, numero: l.numero_cte, serie: l.serie_cte });
@@ -124,7 +124,7 @@ export async function marcarAgrupamentoManual(ids = [], marcar = true, usuario =
 export async function carregarUltimaImportacaoSap() {
   if (!isSupabaseConfigured()) return null;
   const { data, error } = await getSupabaseClient().from('ctes_lancamentos_sap')
-    .select('data_lancamento').order('data_lancamento', { ascending: false, nullsFirst: false }).limit(1);
+    .select('data_lancamento').or('arquivo_origem.is.null,arquivo_origem.not.like.ROBO*').order('data_lancamento', { ascending: false, nullsFirst: false }).limit(1);
   if (error) return null;
   return data?.[0]?.data_lancamento || null;
 }

@@ -1,5 +1,7 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { chaveRegistro, linhaParaRegistro } from '../utils/robos/historicoLancamentos';
+import { partidaDoRegistroRobo } from '../utils/lancamentosCteSap';
+import { registrarPartidasRobo } from './lancamentosCteSapService';
 
 const TABELA = 'robos_lancamentos';
 const CHAVE_LOCAL = 'central_fretes_robo_lancamentos_local_v1';
@@ -36,7 +38,15 @@ export async function registrarRegistros(lista = [], por = '') {
         .from(TABELA)
         .upsert(registros.map((r) => ({ ...r, lancado_por: r.lancado_por || por || null })), { onConflict: 'tipo,miro,documento', ignoreDuplicates: true })
         .select('id');
-      if (!error) return { ok: true, enviados: registros.length, novos: data?.length ?? 0, onde: 'banco' };
+      if (!error) {
+        // CT-e com MIRO pelo robo: ja entra na base de partidas (sem esperar o relatorio do SAP).
+        let partidas = 0;
+        try {
+          const r = await registrarPartidasRobo(registros.map((x) => partidaDoRegistroRobo({ ...x, lancado_por: x.lancado_por || por || '' })));
+          partidas = r.enviadas || 0;
+        } catch (e) { console.warn('Partidas do robo:', e?.message); }
+        return { ok: true, enviados: registros.length, novos: data?.length ?? 0, onde: 'banco', partidas };
+      }
       if (!tabelaAusente(error.message)) console.warn('Historico de lancamentos:', error.message);
     } catch (e) { console.warn('Historico de lancamentos:', e?.message); }
   }

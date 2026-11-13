@@ -1,5 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { chaveCasamentoCte, cnpj14 } from '../utils/lancamentosCteSap';
+import { PREFIXO_ORIGEM_ROBO, chaveCasamentoCte, cnpj14 } from '../utils/lancamentosCteSap';
 
 const TABELA = 'ctes_lancamentos_sap';
 const PAGINA = 1000;
@@ -22,7 +22,43 @@ export async function salvarLancamentosCteSap(linhas = [], onProgress) {
     }
     onProgress?.({ carregados: Math.min(inicio + PAGINA, linhas.length), total: linhas.length });
   }
-  return { enviadas: linhas.length };
+  let partidasRoboSubstituidas = 0;
+  try { partidasRoboSubstituidas = await apagarPartidasRoboSubstituidas(linhas); } catch (e) { console.warn('Partidas do robo:', e?.message); }
+  return { enviadas: linhas.length, partidasRoboSubstituidas };
+}
+
+// Partidas que a propria Central gravou ao lancar/escriturar/corrigir saldo pelo robo (ver partidaDoRobo).
+// Reenviar nao duplica (chave unica). Sem a tabela: so avisa, o lancamento nao para por isso.
+export async function registrarPartidasRobo(partidas = []) {
+  const lista = partidas.filter(Boolean);
+  if (!isSupabaseConfigured() || !lista.length) return { enviadas: 0 };
+  const client = getSupabaseClient();
+  for (let inicio = 0; inicio < lista.length; inicio += PAGINA) {
+    const { error } = await client.from(TABELA).upsert(lista.slice(inicio, inicio + PAGINA), { onConflict: 'chave', ignoreDuplicates: true });
+    if (error) {
+      if (tabelaAusente(error.message)) return { enviadas: 0, erro: AVISO_MIGRATION };
+      throw new Error(`Erro ao gravar a partida do robo: ${error.message}`);
+    }
+  }
+  return { enviadas: lista.length };
+}
+
+// Relatorio do SAP importado: a partida real substitui a que o robo gravou para o mesmo CT-e
+// (CNPJ + numero + serie). Le so as do robo (poucas) e apaga as que agora tem a do SAP.
+async function apagarPartidasRoboSubstituidas(linhasSap = []) {
+  const doSap = new Set(linhasSap.filter((l) => !String(l.arquivo_origem || '').startsWith(PREFIXO_ORIGEM_ROBO))
+    .map((l) => chaveCasamentoCte({ cnpj: l.cnpj_emitente, numero: l.numero_cte, serie: l.serie_cte })));
+  if (!doSap.size) return 0;
+  const client = getSupabaseClient();
+  const doRobo = await paginarPorId(() => client.from(TABELA)
+    .select('id,cnpj_emitente,numero_cte,serie_cte')
+    .like('arquivo_origem', `${PREFIXO_ORIGEM_ROBO}%`));
+  const apagar = doRobo.filter((l) => doSap.has(chaveCasamentoCte({ cnpj: l.cnpj_emitente, numero: l.numero_cte, serie: l.serie_cte }))).map((l) => l.id);
+  for (let i = 0; i < apagar.length; i += 200) {
+    const { error } = await client.from(TABELA).delete().in('id', apagar.slice(i, i + 200));
+    if (error) throw error;
+  }
+  return apagar.length;
 }
 
 function intervaloCompetencia(competencia) {
@@ -133,7 +169,7 @@ export async function carregarLancamentosPorCnpj(cnpjs = [], competencia, onProg
     let linhas;
     try {
       linhas = await paginarPorId(() => client.from(TABELA)
-        .select('id,cnpj_emitente,numero_cte,serie_cte,lancamento_contabil,data_lancamento,montante,empresa')
+        .select('id,cnpj_emitente,numero_cte,serie_cte,lancamento_contabil,data_lancamento,montante,empresa,arquivo_origem')
         .in('cnpj_emitente', chunk).gte('data_lancamento', inicio));
     } catch (error) {
       if (tabelaAusente(error.message)) throw new Error(AVISO_MIGRATION);
