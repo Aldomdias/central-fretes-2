@@ -161,6 +161,7 @@ function corpoMacro() {
     '    ignorar = Split(UCase(CStr(ws.Cells(1, 6).Value)), ",")',
     '    urlCentral = Trim(CStr(ws.Cells(1, 7).Value))',
     '    chaveCentral = Trim(CStr(ws.Cells(1, 8).Value))',
+    '    usuarioCentral = Trim(CStr(ws.Cells(1, 9).Value))',
     '    If dataIni = "" Then',
     '        wb.Close False',
     '        MsgBox "A planilha de dados nao tem a data inicial.", vbExclamation, ROBO',
@@ -614,13 +615,13 @@ export function gerarMacroSaldo() {
 }
 
 // Linhas da planilha de dados. Datas no formato do SAP (dd.mm.aaaa). Sem chaves = corrige todas as do relatorio.
-export function matrizDadosSaldo({ chaves = [], dataInicial, dataFinal = '', ignorar = [], central = {} }) {
+export function matrizDadosSaldo({ chaves = [], dataInicial, dataFinal = '', ignorar = [], central = {}, usuario = '' }) {
   if (!dataSapValida(dataInicial)) throw new Error('Informe a data inicial.');
   if (dataFinal && !dataSapValida(dataFinal)) throw new Error('Data final invalida.');
   const { versao } = gerarMacroSaldo();
   const listaIgnorar = ignorar.map((t) => semAcento(t).toUpperCase().trim()).filter(Boolean).join(',');
   return [
-    ['chave', '', `macro ${versao}`, dataInicial, dataFinal, listaIgnorar, central.url || '', central.chave || '', '', '', 'saldo'],
+    ['chave', '', `macro ${versao}`, dataInicial, dataFinal, listaIgnorar, central.url || '', central.chave || '', usuario || '', '', 'saldo'],
     ...chaves.map((c) => [String(c)]),
   ];
 }

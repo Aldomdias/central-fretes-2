@@ -102,6 +102,7 @@ function corpoMacro() {
     "    ' endereco e chave publica da Central: para gravar a partida de cada CT-e escriturado",
     '    urlCentral = Trim(CStr(ws.Cells(1, 9).Value))',
     '    chaveCentral = Trim(CStr(ws.Cells(1, 10).Value))',
+    '    usuarioCentral = Trim(CStr(ws.Cells(1, 11).Value))',
     '    If dataIni = "" Then',
     '        wb.Close False',
     '        MsgBox "A planilha de dados nao tem a data inicial.", vbExclamation, ROBO',
@@ -433,14 +434,14 @@ export function gerarMacroReprocessar() {
 
 // Linhas da planilha de dados. dataInicial/dataFinal no formato do SAP (dd.mm.aaaa). Sem chaves = a macro
 // exporta o relatorio e acha as chaves sozinha.
-export function matrizDadosReprocessar({ chaves = [], dataInicial, dataFinal = '', lote = LOTE_PADRAO, ignorar = [], deduplicar = true, central = {} }) {
+export function matrizDadosReprocessar({ chaves = [], dataInicial, dataFinal = '', lote = LOTE_PADRAO, ignorar = [], deduplicar = true, central = {}, usuario = '' }) {
   if (!dataSapValida(dataInicial)) throw new Error('Informe a data inicial.');
   if (dataFinal && !dataSapValida(dataFinal)) throw new Error('Data final invalida.');
   const { versao } = gerarMacroReprocessar();
   const n = Math.max(1, Math.floor(Number(lote)) || LOTE_PADRAO);
   const listaIgnorar = ignorar.map((t) => semAcento(t).toUpperCase().trim()).filter(Boolean).join(',');
   return [
-    ['chave', '', `macro ${versao}`, dataInicial, dataFinal, String(n), listaIgnorar, deduplicar ? 'sim' : 'nao', central.url || '', central.chave || ''],
+    ['chave', '', `macro ${versao}`, dataInicial, dataFinal, String(n), listaIgnorar, deduplicar ? 'sim' : 'nao', central.url || '', central.chave || '', usuario || ''],
     ...chaves.map((c) => [String(c)]),
   ];
 }

@@ -1,7 +1,9 @@
 // Historico de lancamentos dos robos (NFS-e e CT-e): mapeamento das linhas para o registro e
 // agregacao mensal para o acompanhamento ("quantas notas por mes").
 
-export const TIPOS_LANCAMENTO = { NFSE: 'NFS-e', CTE: 'CT-e' };
+// ESCRITURACAO e SALDO: CT-e escriturados pelos robos Escrituracao (Reprocessar CT-e) e Correcao de saldo
+// (gravados direto pela planilha do robo).
+export const TIPOS_LANCAMENTO = { NFSE: 'NFS-e', CTE: 'CT-e', ESCRITURACAO: 'Escrituração', SALDO: 'Correção de saldo' };
 
 function dataOuNulo(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? v : null;
@@ -47,14 +49,17 @@ function mesDe(iso) {
 // registros: [{ tipo, valor, transportadora, lancado_em }] -> uma linha por mes do ano
 export function agregarPorMes(registros = [], ano, tipo = '') {
   const meses = Array.from({ length: 12 }, (_, i) => ({
-    mes: `${ano}-${String(i + 1).padStart(2, '0')}`, nfse: 0, cte: 0, total: 0, valor: 0, transportadoras: new Set(),
+    mes: `${ano}-${String(i + 1).padStart(2, '0')}`, nfse: 0, cte: 0, escrituracao: 0, saldo: 0, total: 0, valor: 0, transportadoras: new Set(),
   }));
   registros.forEach((r) => {
     if (tipo && r.tipo !== tipo) return;
     if (r.miro === '') return; // so pedido: ainda nao e lancamento concluido
     const m = meses.find((x) => x.mes === mesDe(r.lancado_em));
     if (!m) return;
-    if (r.tipo === 'NFSE') m.nfse += 1; else if (r.tipo === 'CTE') m.cte += 1;
+    if (r.tipo === 'NFSE') m.nfse += 1;
+    else if (r.tipo === 'CTE') m.cte += 1;
+    else if (r.tipo === 'ESCRITURACAO') m.escrituracao += 1;
+    else if (r.tipo === 'SALDO') m.saldo += 1;
     m.total += 1;
     m.valor += Number(r.valor) || 0;
     if (r.transportadora) m.transportadoras.add(r.transportadora);

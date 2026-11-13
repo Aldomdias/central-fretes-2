@@ -181,11 +181,11 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
     <div style={{ display: 'grid', gap: 16 }}>
       <div className="panel-card">
         <div className="panel-title">Acompanhamento de lançamentos</div>
-        <p>Cada nota ou CT-e que recebe pedido ou MIRO entra aqui automaticamente (quando você traz o resultado do SAP para a tela). Os que só têm pedido aparecem como “sem MIRO” na lista e não entram na contagem do mês até a MIRO sair.</p>
+        <p>Cada nota ou CT-e que recebe pedido ou MIRO entra aqui automaticamente (quando você traz o resultado do SAP para a tela). Os CT-e escriturados pelos robôs de Escrituração e Correção de saldo entram sozinhos, direto da planilha do robô. Os que só têm pedido aparecem como “sem MIRO” na lista e não entram na contagem do mês até a MIRO sair.</p>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <div className="field"><label>Tipo</label>
             <select value={tipo} onChange={(e) => setTipo(e.target.value)}>
-              <option value="">Todos</option><option value="NFSE">NFS-e</option><option value="CTE">CT-e</option>
+              <option value="">Todos</option><option value="NFSE">NFS-e</option><option value="CTE">CT-e</option><option value="ESCRITURACAO">Escrituração</option><option value="SALDO">Correção de saldo</option>
             </select>
           </div>
           <div className="field"><label>Ano</label>
@@ -266,13 +266,15 @@ export default function HistoricoLancamentos({ onAbrirRobo }) {
         <div className="panel-title">Por mês — {ano}</div>
         {carregando ? <p>Carregando…</p> : (
           <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-            <thead><tr><th style={th}>Mês</th><th style={th}>NFS-e</th><th style={th}>CT-e</th><th style={th}>Total</th><th style={th}>Valor</th><th style={th}>Transportadoras</th><th style={{ ...th, width: '30%' }}></th></tr></thead>
+            <thead><tr><th style={th}>Mês</th><th style={th}>NFS-e</th><th style={th}>CT-e</th><th style={th}>Escrituração</th><th style={th}>Saldo</th><th style={th}>Total</th><th style={th}>Valor</th><th style={th}>Transportadoras</th><th style={{ ...th, width: '30%' }}></th></tr></thead>
             <tbody>
               {meses.map((m, i) => (
                 <tr key={m.mes}>
                   <td style={td}><b>{MESES[i]}</b></td>
                   <td style={td}>{fmt(m.nfse)}</td>
                   <td style={td}>{fmt(m.cte)}</td>
+                  <td style={td}>{fmt(m.escrituracao)}</td>
+                  <td style={td}>{fmt(m.saldo)}</td>
                   <td style={td}><b>{fmt(m.total)}</b></td>
                   <td style={td}>{moeda(m.valor)}</td>
                   <td style={td}>{fmt(m.transportadoras)}</td>

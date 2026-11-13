@@ -4,6 +4,13 @@ import { MACRO_SALDO, NOME_DADOS_SALDO, PASTA_SALDO, gerarMacroSaldo, matrizDado
 import { PLANILHA_ROBO } from '../../utils/robos/sapMacroExcel';
 import { baixarMatrizXlsx } from '../../utils/robos/lancamentoComum';
 import { getSupabaseAcessoPublico } from '../../lib/supabaseClient';
+import { carregarSessao } from '../../utils/authLocal';
+
+// Nome de quem baixou os dados: vai para o "Lancado por" do acompanhamento.
+function usuarioLogado() {
+  const sessao = carregarSessao();
+  return sessao?.nome || sessao?.email || '';
+}
 import { BaixarPlanilhaRobo, passosMacroExcel } from './MacroExcel';
 import ScriptParaCopiar from './ScriptParaCopiar';
 
@@ -66,7 +73,7 @@ export default function CorrecaoSaldoRobo() {
     try {
       salvarParams();
       const lista = ignorar.split(/[,;]+/).map((t) => t.trim()).filter(Boolean);
-      await baixarMatrizXlsx(NOME_DADOS_SALDO, matrizDadosSaldo({ chaves, dataInicial: iniSap, dataFinal: fimSap, ignorar: lista, central: getSupabaseAcessoPublico() }));
+      await baixarMatrizXlsx(NOME_DADOS_SALDO, matrizDadosSaldo({ chaves, dataInicial: iniSap, dataFinal: fimSap, ignorar: lista, central: getSupabaseAcessoPublico(), usuario: usuarioLogado() }));
       setFeedback(`Dados baixados (${NOME_DADOS_SALDO})${chaves.length ? ` com ${fmt(chaves.length)} chave(s)` : ''}. Na planilha do robô, com o SAP logado, clique em Corrigir saldo e escolha esse arquivo.`);
     } catch (e) { setErro(e.message); }
   }
