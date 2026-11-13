@@ -22089,8 +22089,8 @@ var init_authLocal = __esm({
       { chave: "formatacao", label: "Formata\xE7\xE3o de Tabelas", grupo: "Suprimentos" },
       { chave: "importar-template", label: "Importar Template", grupo: "Suprimentos" },
       { chave: "importacao-ia-tabelas", label: "Importa\xE7\xE3o IA de Tabelas", grupo: "Suprimentos" },
-      { chave: "lotacao", label: "Lota\xE7\xE3o Tabelas", grupo: "Lota\xE7\xE3o" },
-      { chave: "lotacao-cotacao", label: "Cota\xE7\xE3o Lota\xE7\xE3o (portal)", grupo: "Lota\xE7\xE3o" },
+      { chave: "lotacao", label: "Gest\xE3o de Tabelas Lota\xE7\xE3o (vigentes)", grupo: "Lota\xE7\xE3o" },
+      { chave: "lotacao-cotacao", label: "Gest\xE3o de Tabelas Lota\xE7\xE3o (cota\xE7\xE3o)", grupo: "Lota\xE7\xE3o" },
       { chave: "lotacao-operacao", label: "Lota\xE7\xE3o Opera\xE7\xE3o", grupo: "Lota\xE7\xE3o" },
       { chave: "lotacao-transgp", label: "Auditoria TransGP (API)", grupo: "Lota\xE7\xE3o" },
       { chave: "lotacao-auditoria", label: "Auditoria Lota\xE7\xE3o", grupo: "Auditoria" },
@@ -23385,6 +23385,7 @@ async function carregarBaseCompletaDb(onProgress = null) {
     cnpjRaiz: transportadora.cnpj_raiz || "",
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || []
   }));
   return _cacheBaseCompleta;
@@ -23602,7 +23603,7 @@ async function fetchTransportadorasByIds(supabase2, ids = []) {
   const chunkSize = 100;
   for (let index = 0; index < uniqueIds.length; index += chunkSize) {
     const chunk = uniqueIds.slice(index, index + chunkSize);
-    const { data, error } = await supabase2.from("transportadoras").select("id, nome, status, cnpj, cnpj_raiz, tde, tde_cnpjs").in("id", chunk);
+    const { data, error } = await supabase2.from("transportadoras").select("*").in("id", chunk);
     if (error) throw error;
     rows.push(...data || []);
   }
@@ -23706,6 +23707,7 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
     cnpjRaiz: transportadora.cnpj_raiz || "",
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
     detalheCarregado: true,
     origens: origensByTransportadora.get(String(transportadora.id)) || []
   })).filter((item) => item.origens.length);
@@ -26675,6 +26677,7 @@ function calcularCteValidadoPelaOperacao(cte = {}, viagem = {}) {
 function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracionado) {
   const pelaTransgp = calcularCtePelaTransgp(cte, contexto);
   if (pelaTransgp) return pelaTransgp;
+  if (canalCategoria2(pick(cte, ["canal", "canal_original"])) === "B2C") return calcularFracionado();
   const porTabela = calcularCtePelaTabelaLotacao(cte, contexto, mapaVinculos);
   if (porTabela && toNumber4(porTabela.valor_calculado) > 0) return porTabela;
   const resultado = porTabela || calcularFracionado();
@@ -26685,7 +26688,7 @@ function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracio
 }
 function cteDeLotacao(cte, contexto, mapaVinculos, porTabela, resultado = null) {
   const canal2 = canalCategoria2(pick(cte, ["canal", "canal_original"]));
-  if (canal2 === "INTERCOMPANY") return false;
+  if (canal2 === "INTERCOMPANY" || canal2 === "B2C") return false;
   if (porTabela) return true;
   if (["SEM_ORIGEM", "SEM_ROTA"].includes(resultado?.status_calculo)) return false;
   if (["LOTACAO", "LOTA\xC7\xC3O"].includes(canal2)) return true;
@@ -26710,6 +26713,7 @@ function localizarTabelaLotacaoContexto(cte = {}, contexto = null, mapaVinculos 
   if (!tabela) return null;
   const totalOrigensFracionado = contexto.origensFracionadoPorNome.get(nomeNorm) ?? contexto.origensFracionadoPorNome.get(normalizeTransportadoraCompare(tabela.nome)) ?? 0;
   const canal2 = canalCategoria2(pick(cte, ["canal", "canal_original"]));
+  if (canal2 === "B2C") return null;
   const somenteLotacao = totalOrigensFracionado === 0;
   const canalLotacao = canal2 === "INTERCOMPANY" || canal2 === "LOTACAO" || canal2 === "LOTA\xC7\xC3O";
   if (!somenteLotacao && !canalLotacao) return null;
@@ -27214,12 +27218,22 @@ function anexarComparativoPesos(resultado, cte, transportadoras, mapaVinculos, t
     }
   };
 }
+function transportadoraAceitaCanalInvertido(resultado, cte, transportadoras, mapaVinculos, transportadoraAlvo) {
+  const nomes = [resultado?.transportadora_tabela, transportadoraAlvo, nomeTransportadoraCte(cte, mapaVinculos)].filter(Boolean);
+  if (!nomes.length) return false;
+  return (transportadoras || []).some((t) => t?.aceitaCanalInvertido && nomes.some((nome) => t.nome === nome || nomeCompativel(t.nome, nome)));
+}
 function anexarCanalCobradoDivergente(resultado, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes = {}) {
-  if (!resultado || resultado.status_calculo !== "CALCULADO" || opcoes.semCanalCruzado) return resultado;
+  if (!resultado || opcoes.semCanalCruzado) return resultado;
+  const aceitaInvertido = transportadoraAceitaCanalInvertido(resultado, cte, transportadoras, mapaVinculos, transportadoraAlvo);
+  const calculado = resultado.status_calculo === "CALCULADO";
+  if (!calculado && !aceitaInvertido) return resultado;
   const valorPago = toNumber4(resultado.valor_cte);
-  const valorCorreto = toNumber4(resultado.valor_calculado);
-  if (!(valorPago > 0) || !(valorCorreto > 0)) return resultado;
-  if (Math.abs(valorPago - valorCorreto) <= TOLERANCIA_CANAL_COBRADO) return resultado;
+  const valorCorreto = calculado ? toNumber4(resultado.valor_calculado) : 0;
+  if (!(valorPago > 0)) return resultado;
+  if (calculado && !(valorCorreto > 0)) return resultado;
+  if (calculado && Math.abs(valorPago - valorCorreto) <= TOLERANCIA_CANAL_COBRADO) return resultado;
+  if (calculado && aceitaInvertido && dentroToleranciaCanalInvertido(valorPago - valorCorreto)) return resultado;
   const canalCte = normalizarCanalResultado(pick(cte, ["canal", "canal_original"]));
   const outroCanal = canalCte === "ATACADO" ? "B2C" : canalCte === "B2C" ? "ATACADO" : "";
   if (!outroCanal) return resultado;
@@ -27229,7 +27243,28 @@ function anexarCanalCobradoDivergente(resultado, cte, transportadoras, mapaVincu
   });
   if (outro?.status_calculo !== "CALCULADO") return resultado;
   const valorOutro = toNumber4(outro.valor_calculado);
-  if (!(valorOutro > 0) || Math.abs(valorOutro - valorCorreto) <= TOLERANCIA_CANAL_COBRADO) return resultado;
+  if (!(valorOutro > 0) || calculado && Math.abs(valorOutro - valorCorreto) <= TOLERANCIA_CANAL_COBRADO) return resultado;
+  if (aceitaInvertido) {
+    if (!dentroToleranciaCanalInvertido(valorPago - valorOutro)) return resultado;
+    const observacao = `Canal invertido aceito: CT-e ${canalCte} calculado pela tabela ${outroCanal} (R$ ${valorOutro.toFixed(2)}), ` + (calculado ? `pela tabela ${canalCte} daria R$ ${valorCorreto.toFixed(2)}.` : `sem c\xE1lculo pela tabela ${canalCte} (${resultado.motivo_sem_calculo || resultado.status_calculo}).`);
+    return {
+      ...outro,
+      // Mantém o canal do CT-e no resultado; só o cálculo vem do outro canal.
+      canal: resultado.canal ?? pick(cte, ["canal", "canal_original"]) ?? null,
+      detalhes_calculo: {
+        ...outro.detalhes_calculo || {},
+        canal_invertido_aceito: {
+          canal_cte: canalCte,
+          canal_calculado: outroCanal,
+          valor_tabela_canal_calculado: valorOutro,
+          valor_tabela_canal_cte: calculado ? valorCorreto : null,
+          status_canal_cte: resultado.status_calculo,
+          observacao
+        }
+      }
+    };
+  }
+  if (!calculado) return resultado;
   if (Math.abs(valorPago - valorOutro) > TOLERANCIA_CANAL_COBRADO) return resultado;
   const aMaior = valorPago > valorCorreto;
   const detOutro = outro.detalhes_calculo || {};
@@ -27792,7 +27827,7 @@ async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
   }
   return { registros, encontrados: ctesUnicos.length, naoEncontrados: Math.max(0, normalizadas.length - ctesUnicos.length) };
 }
-var PAGE_SIZE2, TABELA_CTES, UF_POR_CODIGO_IBGE, _cacheBaseFrete, _cacheBaseFretePorTransportadora, _cacheMapaVinculosTransportadoras, _cacheMapaEquivalenciasOrigem, memoNormalizeText, _cacheOrigensHub, TTL_ORIGENS_HUB_MS, indicesCotacoesPorLista2, _cacheRaizesAdicionaisPorId, _cacheTransgp, SITUACOES_TRANSGP_DECIDIDAS, _cacheFluxoLotacao, STATUS_ADICIONAL_APROVADO, raizDaChaveCte, numeroDoCte, _cacheLookupPorTransportadoras, TOLERANCIA_CANAL_COBRADO;
+var PAGE_SIZE2, TABELA_CTES, UF_POR_CODIGO_IBGE, _cacheBaseFrete, _cacheBaseFretePorTransportadora, _cacheMapaVinculosTransportadoras, _cacheMapaEquivalenciasOrigem, memoNormalizeText, _cacheOrigensHub, TTL_ORIGENS_HUB_MS, indicesCotacoesPorLista2, _cacheRaizesAdicionaisPorId, _cacheTransgp, SITUACOES_TRANSGP_DECIDIDAS, _cacheFluxoLotacao, STATUS_ADICIONAL_APROVADO, raizDaChaveCte, numeroDoCte, _cacheLookupPorTransportadoras, TOLERANCIA_CANAL_COBRADO, TOLERANCIA_CANAL_INVERTIDO, dentroToleranciaCanalInvertido;
 var init_auditoriaCteProcessamentoService = __esm({
   "src/services/auditoriaCteProcessamentoService.js"() {
     "use strict";
@@ -27868,6 +27903,8 @@ var init_auditoriaCteProcessamentoService = __esm({
     };
     _cacheLookupPorTransportadoras = /* @__PURE__ */ new WeakMap();
     TOLERANCIA_CANAL_COBRADO = 0.1;
+    TOLERANCIA_CANAL_INVERTIDO = { acima: 1, abaixo: 5 };
+    dentroToleranciaCanalInvertido = (dif) => Number.isFinite(dif) && dif <= TOLERANCIA_CANAL_INVERTIDO.acima && dif >= -TOLERANCIA_CANAL_INVERTIDO.abaixo;
   }
 });
 

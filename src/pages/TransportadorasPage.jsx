@@ -485,6 +485,44 @@ function TdeSection({ transportadora, store }) {
   );
 }
 
+function CanalInvertidoSection({ transportadora, store }) {
+  const [salvando, setSalvando] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+  const ativo = Boolean(transportadora.aceitaCanalInvertido);
+
+  async function alternar(event) {
+    const novo = event.target.checked;
+    setSalvando(true);
+    setFeedback(null);
+    const resposta = await store.salvarAceitaCanalInvertido?.(transportadora.id, novo);
+    setSalvando(false);
+    if (!resposta?.ok) {
+      setFeedback({ tipo: 'error', texto: resposta?.erro?.message || 'Erro ao salvar.' });
+      return;
+    }
+    setFeedback({ tipo: 'info', texto: novo
+      ? 'Ligado. Resimule o mês na Auditoria CT-e para os CT-es já processados.'
+      : 'Desligado. Resimule o mês na Auditoria CT-e para voltar a apontar a divergência.' });
+  }
+
+  return (
+    <div className="form-card" style={{ marginTop: 12, padding: 16, background: '#f8fafc', borderRadius: 8 }}>
+      <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: store.podeEditarTransportadoras ? 'pointer' : 'default' }}>
+        <input type="checkbox" checked={ativo} disabled={!store.podeEditarTransportadoras || salvando} onChange={alternar} />
+        <strong style={{ fontSize: '0.9rem' }}>Aceitar canal invertido na auditoria (B2C x ATACADO)</strong>
+        {salvando ? <span style={{ fontSize: 12, color: 'var(--muted)' }}>salvando...</span> : null}
+      </label>
+      <p style={{ fontSize: 12, color: 'var(--muted)', margin: '4px 0 0' }}>
+        Para transportadora que atende os dois canais e às vezes recebe o pedido com o canal trocado. Quando o CT-e
+        diverge (ou não calcula) pela tabela do canal dele, a Auditoria recalcula pelo <strong>outro canal</strong>; se o
+        valor pago fechar dentro da tolerância, o CT-e é aceito por esse cálculo (sem laudo) e fica anotado
+        "canal invertido". Se não fechar em nenhum dos dois, segue a divergência normal.
+      </p>
+      {feedback ? <div className={`mini-feedback ${feedback.tipo} top-space`} style={{ marginTop: 8 }}>{feedback.texto}</div> : null}
+    </div>
+  );
+}
+
 const TAXA_ESP_VAZIA = { ibgeDestino: '', tda: '', trt: '', suframa: '', outras: '', gris: '', grisMinimo: '', adVal: '', adValMinimo: '', taxasExtras: [] };
 const CORINGA_VAZIO = { nome: '', valor: '', pct: '', min: '', valorPorPeso: '', pesoBase: '' };
 
@@ -2391,6 +2429,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
         </div>
       ) : null}
       <TdeSection transportadora={transportadora} store={store} />
+      <CanalInvertidoSection transportadora={transportadora} store={store} />
       <CnpjsAdicionaisTransportadoraSection transportadora={transportadora} podeEditar={podeEditar} />
       <LotacaoTransportadoraSection
         transportadora={transportadora}

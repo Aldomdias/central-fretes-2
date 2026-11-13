@@ -825,6 +825,7 @@ export async function carregarBaseCompletaDb(onProgress = null) {
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
   return _cacheBaseCompleta;
@@ -1168,6 +1169,7 @@ export async function carregarBaseFiltradaPorOrigemEDestinosDb(filtroCidades = [
       cnpjRaiz: transportadora.cnpj_raiz || '',
       tde: transportadora.tde ?? 0,
       tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+      aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
       origens: origensByTransportadora.get(String(transportadora.id)) || [],
     }))
     .filter((t) => t.origens.length);
@@ -1300,6 +1302,7 @@ export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [],
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
 }
@@ -1408,6 +1411,7 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
 }
@@ -1723,6 +1727,25 @@ export async function salvarGeneralidadesOrigemDb(origemId, generalidades = {}, 
   }
   invalidarCacheBaseCompletaDb();
   return { atualizadas: 1, origemId: origemIdPersistencia };
+}
+
+// Flag "aceita canal invertido" da transportadora (direto no Supabase). Na
+// Auditoria, CT-e que diverge pelo canal dele é recalculado pelo outro canal
+// (B2C <-> ATACADO) e aceito se o valor pago fechar.
+export async function salvarAceitaCanalInvertidoDb(transportadoraId, aceita) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  if (!UUID_REGEX.test(String(transportadoraId || ''))) throw new Error('Grave a transportadora no Supabase antes de configurar o canal invertido.');
+  const { error } = await ensureClient().from('transportadoras')
+    .update({ aceita_canal_invertido: Boolean(aceita) })
+    .eq('id', transportadoraId);
+  if (error) {
+    if (/aceita_canal_invertido/i.test(error.message || '')) {
+      throw new Error('Rode a migration 20261113_003_transportadoras_aceita_canal_invertido.sql no Supabase antes de usar este flag.');
+    }
+    throw new Error(`Erro ao salvar canal invertido: ${error.message}`);
+  }
+  invalidarCacheBaseCompletaDb();
+  return { ok: true };
 }
 
 // Grava só a configuração de Tabela HUB da origem (direto no Supabase, sem
@@ -2422,7 +2445,7 @@ async function fetchTransportadorasByIds(supabase, ids = []) {
     const chunk = uniqueIds.slice(index, index + chunkSize);
     const { data, error } = await supabase
       .from('transportadoras')
-      .select('id, nome, status, cnpj, cnpj_raiz, tde, tde_cnpjs')
+      .select('*')
       .in('id', chunk);
 
     if (error) throw error;
@@ -2816,6 +2839,7 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
     detalheCarregado: true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   })).filter((item) => item.origens.length);
@@ -3068,7 +3092,7 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
   if (transportadoraId) {
     const response = await supabase
       .from('transportadoras')
-      .select('id, nome, status, cnpj, cnpj_raiz, tde, tde_cnpjs')
+      .select('*')
       .eq('id', transportadoraId)
       .maybeSingle();
 
@@ -3079,7 +3103,7 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
   if (!transportadora && transportadoraNome) {
     const response = await supabase
       .from('transportadoras')
-      .select('id, nome, status, cnpj, cnpj_raiz, tde, tde_cnpjs')
+      .select('*')
       .ilike('nome', transportadoraNome)
       .maybeSingle();
 
@@ -3089,7 +3113,7 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
     if (!transportadora && !transportadoraError) {
       const fallback = await supabase
         .from('transportadoras')
-        .select('id, nome, status, cnpj, cnpj_raiz, tde, tde_cnpjs')
+        .select('*')
         .ilike('nome', `%${transportadoraNome}%`)
         .limit(2);
 
@@ -3133,6 +3157,7 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
     detalheCarregado: true,
     origens: [],
   };

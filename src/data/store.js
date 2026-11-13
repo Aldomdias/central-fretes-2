@@ -15,6 +15,7 @@ import {
   limparSecaoOrigemDb,
   salvarGeneralidadesOrigemDb,
   salvarHubOrigemDb,
+  salvarAceitaCanalInvertidoDb,
   salvarVigenciaTabelaAlternativaDb,
   converterOrigemEmReajusteDb,
   excluirGeneralidadesAlternativaDb,
@@ -979,6 +980,25 @@ export function useFreteStore(sessao = null) {
           detalhe: hubConfig.hub
             ? `Tabela HUB: emissão em ${hubConfig.hubCidadesEmissao.join(', ') || '-'}; vigência ${hubConfig.hubVigenciaInicio || 'sempre'}; transferência ${hubConfig.hubCustoTransferenciaPct}%`
             : 'Desmarcou Tabela HUB',
+        });
+        return { ok: true };
+      },
+      // Flag da transportadora: na Auditoria, CT-e divergente é recalculado pelo
+      // outro canal (B2C <-> ATACADO) e aceito se fechar. Salva direto no Supabase.
+      async salvarAceitaCanalInvertido(transportadoraId, aceita) {
+        if (!podeEditarTransportadoras()) return { ok: false, erro: new Error(ERRO_SEM_PERMISSAO) };
+        try {
+          if (bancoConfigurado()) await salvarAceitaCanalInvertidoDb(transportadoraId, aceita);
+        } catch (error) {
+          return { ok: false, erro: error };
+        }
+        setTransportadoras((prev) =>
+          (prev || []).map((t) => (t.id !== transportadoraId ? t : { ...t, aceitaCanalInvertido: Boolean(aceita) }))
+        );
+        registrarAlteracaoTransportadora(sessao, {
+          tipo: 'aceita_canal_invertido',
+          transportadoraId,
+          detalhe: aceita ? 'Ligou: aceitar canal invertido (B2C x ATACADO) na auditoria' : 'Desligou: aceitar canal invertido na auditoria',
         });
         return { ok: true };
       },

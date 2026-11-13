@@ -589,7 +589,7 @@ function mesclarDetalheComReferenciaAuditoria(item = {}, referenciaCtes = new Ma
     // Canal cobrado divergente (CT-e cobrado pela tabela do outro canal) vira o
     // motivo da linha pro auditor enxergar sem abrir o detalhe.
     motivo_divergencia: amd > 0
-      ? (base.motivo_sem_calculo || base.detalhes_calculo?.canal_cobrado_divergente?.observacao || '')
+      ? (base.motivo_sem_calculo || base.detalhes_calculo?.canal_cobrado_divergente?.observacao || base.detalhes_calculo?.canal_invertido_aceito?.observacao || '')
       : (base.motivo_sem_calculo || item.motivo_divergencia || ''),
   };
 }
@@ -1016,6 +1016,11 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
           {det.canal_cobrado_divergente ? (
             <div style={{ margin: '6px 0', padding: '6px 8px', borderRadius: 6, fontSize: 12, fontWeight: 700, background: det.canal_cobrado_divergente.situacao === 'COBRADO_A_MAIOR' ? '#fef2f2' : '#f0fdf4', color: det.canal_cobrado_divergente.situacao === 'COBRADO_A_MAIOR' ? '#b91c1c' : '#15803d' }}>
               {det.canal_cobrado_divergente.observacao}
+            </div>
+          ) : null}
+          {det.canal_invertido_aceito ? (
+            <div style={{ margin: '6px 0', padding: '6px 8px', borderRadius: 6, fontSize: 12, fontWeight: 700, background: '#eff6ff', color: '#1d4ed8' }}>
+              {det.canal_invertido_aceito.observacao}
             </div>
           ) : null}
           {det.tabela_hub ? linhaDetalhe('Tabela HUB', det.tabela_hub.observacao || `Calculado pela tabela de ${det.tabela_hub.origem_hub}.`, true) : null}

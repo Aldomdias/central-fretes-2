@@ -2124,12 +2124,34 @@ function anexarComparativoPesos(resultado, cte, transportadoras, mapaVinculos, t
 // tabela foi cobrada e se ficou a maior ou a menor que a correta.
 const TOLERANCIA_CANAL_COBRADO = 0.1;
 
+// Flag "aceita canal invertido" no cadastro da transportadora (ex.: WM, que
+// atende B2C e ATACADO e às vezes recebe o pedido com o canal trocado). Com ele
+// ligado, o CT-e que diverge (ou não calcula) pelo canal dele e FECHA pelo
+// outro canal, dentro da mesma tolerância do robô, é aceito por esse cálculo —
+// evita laudo só por causa do canal errado no pedido.
+const TOLERANCIA_CANAL_INVERTIDO = { acima: 1, abaixo: 5 };
+const dentroToleranciaCanalInvertido = (dif) => Number.isFinite(dif)
+  && dif <= TOLERANCIA_CANAL_INVERTIDO.acima && dif >= -TOLERANCIA_CANAL_INVERTIDO.abaixo;
+
+function transportadoraAceitaCanalInvertido(resultado, cte, transportadoras, mapaVinculos, transportadoraAlvo) {
+  const nomes = [resultado?.transportadora_tabela, transportadoraAlvo, nomeTransportadoraCte(cte, mapaVinculos)].filter(Boolean);
+  if (!nomes.length) return false;
+  return (transportadoras || []).some((t) => t?.aceitaCanalInvertido
+    && nomes.some((nome) => t.nome === nome || nomeCompativel(t.nome, nome)));
+}
+
 function anexarCanalCobradoDivergente(resultado, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes = {}) {
-  if (!resultado || resultado.status_calculo !== 'CALCULADO' || opcoes.semCanalCruzado) return resultado;
+  if (!resultado || opcoes.semCanalCruzado) return resultado;
+  const aceitaInvertido = transportadoraAceitaCanalInvertido(resultado, cte, transportadoras, mapaVinculos, transportadoraAlvo);
+  const calculado = resultado.status_calculo === 'CALCULADO';
+  // Sem cálculo pelo canal do CT-e: só tenta o outro canal com o flag ligado.
+  if (!calculado && !aceitaInvertido) return resultado;
   const valorPago = toNumber(resultado.valor_cte);
-  const valorCorreto = toNumber(resultado.valor_calculado);
-  if (!(valorPago > 0) || !(valorCorreto > 0)) return resultado;
-  if (Math.abs(valorPago - valorCorreto) <= TOLERANCIA_CANAL_COBRADO) return resultado;
+  const valorCorreto = calculado ? toNumber(resultado.valor_calculado) : 0;
+  if (!(valorPago > 0)) return resultado;
+  if (calculado && !(valorCorreto > 0)) return resultado;
+  if (calculado && Math.abs(valorPago - valorCorreto) <= TOLERANCIA_CANAL_COBRADO) return resultado;
+  if (calculado && aceitaInvertido && dentroToleranciaCanalInvertido(valorPago - valorCorreto)) return resultado;
 
   const canalCte = normalizarCanalResultado(pick(cte, ['canal', 'canal_original']));
   const outroCanal = canalCte === 'ATACADO' ? 'B2C' : canalCte === 'B2C' ? 'ATACADO' : '';
@@ -2142,7 +2164,31 @@ function anexarCanalCobradoDivergente(resultado, cte, transportadoras, mapaVincu
   if (outro?.status_calculo !== 'CALCULADO') return resultado;
   const valorOutro = toNumber(outro.valor_calculado);
   // Mesmo valor = mesma tabela (origem AMBOS): não há canal trocado a apontar.
-  if (!(valorOutro > 0) || Math.abs(valorOutro - valorCorreto) <= TOLERANCIA_CANAL_COBRADO) return resultado;
+  if (!(valorOutro > 0) || (calculado && Math.abs(valorOutro - valorCorreto) <= TOLERANCIA_CANAL_COBRADO)) return resultado;
+
+  if (aceitaInvertido) {
+    if (!dentroToleranciaCanalInvertido(valorPago - valorOutro)) return resultado;
+    const observacao = `Canal invertido aceito: CT-e ${canalCte} calculado pela tabela ${outroCanal} (R$ ${valorOutro.toFixed(2)}), `
+      + (calculado ? `pela tabela ${canalCte} daria R$ ${valorCorreto.toFixed(2)}.` : `sem cálculo pela tabela ${canalCte} (${resultado.motivo_sem_calculo || resultado.status_calculo}).`);
+    return {
+      ...outro,
+      // Mantém o canal do CT-e no resultado; só o cálculo vem do outro canal.
+      canal: resultado.canal ?? pick(cte, ['canal', 'canal_original']) ?? null,
+      detalhes_calculo: {
+        ...(outro.detalhes_calculo || {}),
+        canal_invertido_aceito: {
+          canal_cte: canalCte,
+          canal_calculado: outroCanal,
+          valor_tabela_canal_calculado: valorOutro,
+          valor_tabela_canal_cte: calculado ? valorCorreto : null,
+          status_canal_cte: resultado.status_calculo,
+          observacao,
+        },
+      },
+    };
+  }
+
+  if (!calculado) return resultado;
   if (Math.abs(valorPago - valorOutro) > TOLERANCIA_CANAL_COBRADO) return resultado;
 
   const aMaior = valorPago > valorCorreto;
