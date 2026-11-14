@@ -12,8 +12,10 @@ function normalizarTaxasExtras(raw) {
       min: Number(te.min) || 0,
       valorPorPeso: Number(te.valorPorPeso ?? te.valor_por_peso) || 0,
       pesoBase: Number(te.pesoBase ?? te.peso_base ?? te.baseKg ?? te.base_kg) || 0,
+      valorKg: Number(te.valorKg ?? te.valor_kg) || 0,
+      franquiaKg: Number(te.franquiaKg ?? te.franquia_kg) || 0,
     }))
-    .filter((te) => te.pct > 0 || te.valor > 0 || te.valorPorPeso > 0);
+    .filter((te) => te.pct > 0 || te.valor > 0 || te.valorPorPeso > 0 || te.valorKg > 0);
 }
 
 function upper(value) {

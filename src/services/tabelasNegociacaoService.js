@@ -95,9 +95,11 @@ function normalizarTaxasExtras(raw) {
         min: Number(te.min) || 0,
         valorPorPeso: Number(te.valorPorPeso ?? te.valor_por_peso) || 0,
         pesoBase: Number(te.pesoBase ?? te.peso_base ?? te.baseKg ?? te.base_kg) || 0,
+        valorKg: Number(te.valorKg ?? te.valor_kg) || 0,
+        franquiaKg: Number(te.franquiaKg ?? te.franquia_kg) || 0,
       };
     })
-    .filter(function(te) { return te.pct > 0 || te.valor > 0 || te.valorPorPeso > 0; });
+    .filter(function(te) { return te.pct > 0 || te.valor > 0 || te.valorPorPeso > 0 || te.valorKg > 0; });
 }
 function numero(value) {
   if (value === null || value === undefined || value === '') return 0;
@@ -2832,6 +2834,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
       : null,
     diagnostico: resultado.diagnostico || {},
     analiseReajuste: resultado.analiseReajuste || null,
+    gerencialReajuste: resultado.gerencialReajuste || null,
     gradeFrete: resultado.gradeFrete || null,
 
     // Detalhes por CT-e: base dos agrupamentos do laudo de rodadas

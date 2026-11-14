@@ -1135,11 +1135,11 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
           {linhaTaxa('TRT', taxas.trt)}
           {linhaTaxa('Suframa', taxas.suframa)}
           {linhaTaxa('Outras', taxas.outras)}
-          {linhaTaxa('Taxa extra', taxas.taxaExtra)}
+          {linhaTaxa('Taxas coringa (total)', taxas.taxaExtra)}
           {taxaExtraDetalhes
             .filter((taxa) => !ocultarZeradas || Number(taxa.valor) > 0)
             .map((taxa, i) => linhaDetalhe(
-              `${taxa.nome || `Extra ${i + 1}`}${Number(taxa.valorPorPeso) > 0 ? ` (${dinheiroMaybe(taxa.valorPorPeso)} / ${Number(taxa.pesoBase) || 100} kg)` : ''}`,
+              `${taxa.nome || `Extra ${i + 1}`}${Number(taxa.valorPorPeso) > 0 ? ` (${dinheiroMaybe(taxa.valorPorPeso)} / ${Number(taxa.pesoBase) || 100} kg)` : ''}${Number(taxa.valorKg) > 0 ? ` (${dinheiroMaybe(taxa.valorKg)}/kg${Number(taxa.franquiaKg) > 0 ? ` acima de ${Number(taxa.franquiaKg)} kg` : ''}${Number(taxa.min) > 0 ? `, mín. ${dinheiroMaybe(taxa.min)}` : ''})` : ''}`,
               dinheiroMaybe(taxa.valor)
             ))}
           {linhaDetalhe('Total taxas', dinheiroMaybe(totalTaxas), true)}

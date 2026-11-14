@@ -1,3 +1,4 @@
+import { LaudoGerencialReajuste } from '../components/laudos/LaudoGerencialReajuste';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
@@ -523,7 +524,28 @@ const SUBTIPOS_CANTU = [
   { value: 'B2C_FAIXA_PESO', label: 'B2C — Faixa de Peso' },
   { value: 'B2C_PERCENTUAL', label: 'B2C — Percentual' },
 ];
-const TAXA_EXTRA_VAZIA = { nome: '', valor: '', pct: '', min: '', valorPorPeso: '', pesoBase: '' };
+function descreverCoringasTaxa(lista) {
+  var itens = Array.isArray(lista) ? lista : [];
+  if (!itens.length) return '-';
+  return itens.map(function(te) {
+    var partes = [];
+    var min = Number(te.min) || 0;
+    var valorKg = Number(te.valorKg ?? te.valor_kg) || 0;
+    var franquia = Number(te.franquiaKg ?? te.franquia_kg) || 0;
+    if (Number(te.pct) > 0) partes.push(Number(te.pct).toLocaleString('pt-BR') + '% NF' + (min > 0 ? ' (mín. ' + formatMoney(min) + ')' : ''));
+    if (Number(te.valor) > 0) partes.push(formatMoney(te.valor) + ' fixo');
+    if (Number(te.valorPorPeso) > 0) partes.push(formatMoney(te.valorPorPeso) + '/' + (Number(te.pesoBase) || 100) + ' kg');
+    if (valorKg > 0) {
+      var minKg = Number(te.pct) > 0 ? 0 : min;
+      partes.push(franquia > 0
+        ? 'até ' + franquia.toLocaleString('pt-BR') + ' kg: ' + formatMoney(minKg) + ' · acima: ' + formatMoney(valorKg) + '/kg (mín. ' + formatMoney(minKg) + ')'
+        : formatMoney(valorKg) + '/kg' + (minKg > 0 ? ' (mín. ' + formatMoney(minKg) + ')' : ''));
+    }
+    return (te.nome || 'Coringa') + ': ' + (partes.join(' + ') || '-');
+  }).join(' | ');
+}
+
+const TAXA_EXTRA_VAZIA = { nome: '', valor: '', pct: '', min: '', valorPorPeso: '', pesoBase: '', valorKg: '', franquiaKg: '' };
 const TAXA_VAZIA = {
   ibge_destino: '', uf_destino: '', cidade_destino: '',
   tda: '', trt: '', suframa: '', outras_taxas: '',
@@ -852,13 +874,17 @@ function extrairCoringasDaLinha(row) {
     var mBasePeso = col.match(/^(.+)\s+(?:kg\/fracao|Base\s*kg|kg\s*base)$/i);
     var mP = col.match(/^(.+)\s+%\s*NF$/i);
     var mM = col.match(/^(.+)\s+(?:Min|Minimo)$/i);
+    var mRKg = col.match(/^(.+)\s+R\$\s+por\s+kg$/i);
+    var mFranquia = col.match(/^(.+)\s+Franquia\s*kg$/i);
+    if (mRKg) { var nk = mRKg[1].trim(); if (!coringas[nk]) coringas[nk] = { nome: nk }; coringas[nk].valorKg = numeroPlanilha(row[col]); }
+    if (mFranquia) { var nf = mFranquia[1].trim(); if (!coringas[nf]) coringas[nf] = { nome: nf }; coringas[nf].franquiaKg = numeroPlanilha(row[col]); }
     if (mR) { var n = mR[1].trim(); if (!coringas[n]) coringas[n] = { nome: n }; coringas[n].valor = numeroPlanilha(row[col]); }
     if (mRPeso) { var np = mRPeso[1].trim(); if (!coringas[np]) coringas[np] = { nome: np }; coringas[np].valorPorPeso = numeroPlanilha(row[col]); if (/100kg/i.test(col) && !coringas[np].pesoBase) coringas[np].pesoBase = 100; }
     if (mBasePeso) { var nb = mBasePeso[1].trim(); if (!coringas[nb]) coringas[nb] = { nome: nb }; coringas[nb].pesoBase = numeroPlanilha(row[col]); }
     if (mP) { var n2 = mP[1].trim(); if (!coringas[n2]) coringas[n2] = { nome: n2 }; coringas[n2].pct = numeroPlanilha(row[col]); }
     if (mM) { var n3 = mM[1].trim(); if (!coringas[n3]) coringas[n3] = { nome: n3 }; coringas[n3].min = numeroPlanilha(row[col]); }
   });
-  return Object.values(coringas).filter(function(te) { return (te.pct || 0) > 0 || (te.valor || 0) > 0 || (te.valorPorPeso || 0) > 0; });
+  return Object.values(coringas).filter(function(te) { return (te.pct || 0) > 0 || (te.valor || 0) > 0 || (te.valorPorPeso || 0) > 0 || (te.valorKg || 0) > 0; });
 }
 
 function agruparLinhasTaxaDestino(linhas) {
@@ -918,6 +944,8 @@ function exportarTaxasDestinoNegociacao(taxas, nomeTabela) {
       linha[n + ' kg/fracao'] = te ? (te.pesoBase || te.peso_base || '') : '';
       linha[n + ' % NF'] = te ? (te.pct || '') : '';
       linha[n + ' Min'] = te ? (te.min || '') : '';
+      linha[n + ' R$ por kg'] = te ? (te.valorKg || te.valor_kg || '') : '';
+      linha[n + ' Franquia kg'] = te ? (te.franquiaKg || te.franquia_kg || '') : '';
     });
 
     return linha;
@@ -953,6 +981,8 @@ function baixarModeloTaxasDestinoNegociacao() {
       'Taxa Extra R$': '',
       'Taxa Extra R$/fracao': '',
       'Taxa Extra kg/fracao': '',
+      'Taxa Extra R$ por kg': '',
+      'Taxa Extra Franquia kg': '',
       'Observacao': 'Primeira coringa desta linha',
     },
     {
@@ -974,6 +1004,8 @@ function baixarModeloTaxasDestinoNegociacao() {
       'Taxa Extra R$': '',
       'Taxa Extra R$/fracao': 8.5,
       'Taxa Extra kg/fracao': 100,
+      'Taxa Extra R$ por kg': '',
+      'Taxa Extra Franquia kg': '',
       'Observacao': 'Valor por fracao de peso no mesmo IBGE',
     },
     {
@@ -995,7 +1027,32 @@ function baixarModeloTaxasDestinoNegociacao() {
       'Taxa Extra R$': '',
       'Taxa Extra R$/fracao': '',
       'Taxa Extra kg/fracao': '',
+      'Taxa Extra R$ por kg': '',
+      'Taxa Extra Franquia kg': '',
       'Observacao': 'Sem coringa - campos vazios ignorados',
+    },
+    {
+      'IBGE Destino': '3131307',
+      'UF Destino': 'MG',
+      'Cidade Destino': 'IPATINGA',
+      'TDA (R$)': '',
+      'TRT (R$)': '',
+      'TDE (R$)': '',
+      'SUFRAMA (R$)': '',
+      'Outras (R$)': '',
+      'GRIS %': '',
+      'GRIS min (R$)': '',
+      'Ad Valorem %': '',
+      'Ad Val min (R$)': '',
+      'Taxa Coringa': 'Coleta/entrega com franquia',
+      'Taxa Extra %': '',
+      'Taxa Extra Min': 20,
+      'Taxa Extra R$': '',
+      'Taxa Extra R$/fracao': '',
+      'Taxa Extra kg/fracao': '',
+      'Taxa Extra R$ por kg': 0.2,
+      'Taxa Extra Franquia kg': 100,
+      'Observacao': 'Ate 100 kg cobra o Min; acima, o maior entre Min e peso x R$ por kg',
     },
   ];
   var ws = XLSX.utils.json_to_sheet(linhas);
@@ -1409,6 +1466,7 @@ export default function TabelasNegociacaoPage() {
       return;
     }
 
+    if (laudo.classList.contains('gerencial-reajuste')) laudo.querySelectorAll('details').forEach(function(node) { node.open = true; });
     var estilos = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
       .map(function(node) { return node.outerHTML; })
       .join('\n');
@@ -2505,7 +2563,7 @@ export default function TabelasNegociacaoPage() {
       outras_taxas: taxa.outras_taxas || '', gris: taxa.gris || '',
       gris_minimo: taxa.gris_minimo || '', advalorem: taxa.advalorem || '',
       advalorem_minimo: taxa.advalorem_minimo || '', observacao: taxa.observacao || '',
-      taxas_extras: Array.isArray(taxa.taxas_extras) ? taxa.taxas_extras.map(function(te) { return { nome: te.nome || '', valor: te.valor || '', pct: te.pct || '', min: te.min || '', valorPorPeso: te.valorPorPeso || te.valor_por_peso || '', pesoBase: te.pesoBase || te.peso_base || '' }; }) : [],
+      taxas_extras: Array.isArray(taxa.taxas_extras) ? taxa.taxas_extras.map(function(te) { return { nome: te.nome || '', valor: te.valor || '', pct: te.pct || '', min: te.min || '', valorPorPeso: te.valorPorPeso || te.valor_por_peso || '', pesoBase: te.pesoBase || te.peso_base || '', valorKg: te.valorKg || te.valor_kg || '', franquiaKg: te.franquiaKg || te.franquia_kg || '' }; }) : [],
     });
     setAbaNegoc('taxas');
   }
@@ -3681,6 +3739,7 @@ export default function TabelasNegociacaoPage() {
                     </div>
                   </div>
                   <div className="sim-actions" style={{ marginTop: 12 }}>
+                    <button className="sim-tab" type="button" onClick={() => setLaudoSalvoAberto({ tipo: 'gerencial', dados: selecionada.resultado_simulacao_json || getResumoTabela(selecionada), contexto: selecionada })}>Abrir Laudo Gerencial de Reajuste</button>
                     {laudos.executivo ? (
                       <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'executivo', dados: getDadosLaudoSalvo(laudos.executivo) }); }}>
                         Abrir Laudo Diretoria
@@ -4183,7 +4242,7 @@ export default function TabelasNegociacaoPage() {
                 <div style={{ marginTop: 12 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                     <strong style={{ fontSize: '0.85rem' }}>Taxas coringa</strong>
-                    <small style={{ color: '#94a3b8' }}>% NF com mínimo, ou valor R$ fixo — pode adicionar quantas quiser</small>
+                    <small style={{ color: '#94a3b8' }}>% NF com mínimo, R$ fixo, R$ por fração, ou R$/kg com franquia (até a franquia cobra o mínimo; acima, o maior entre mínimo e peso x R$/kg) — pode adicionar quantas quiser</small>
                     <button type="button" className="sim-tab" style={{ marginLeft: 'auto', fontSize: '0.78rem', padding: '2px 10px' }}
                       onClick={function() { setNovaTaxa(function(p) { return Object.assign({}, p, { taxas_extras: (p.taxas_extras || []).concat([Object.assign({}, TAXA_EXTRA_VAZIA)]) }); }); }}>
                       + Adicionar coringa
@@ -4193,13 +4252,15 @@ export default function TabelasNegociacaoPage() {
                     function upd(field, val) { setNovaTaxa(function(p) { var arr = (p.taxas_extras || []).slice(); arr[idx] = Object.assign({}, arr[idx], { [field]: val }); return Object.assign({}, p, { taxas_extras: arr }); }); }
                     function rem() { setNovaTaxa(function(p) { var arr = (p.taxas_extras || []).filter(function(_, i) { return i !== idx; }); return Object.assign({}, p, { taxas_extras: arr }); }); }
                     return (
-                      <div key={idx} className="sim-form-grid" style={{ gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 6, alignItems: 'end' }}>
+                      <div key={idx} className="sim-form-grid" style={{ gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 6, alignItems: 'end' }}>
                         <label style={{ margin: 0 }}>Nome<input value={te.nome} onChange={function(e) { upd('nome', e.target.value); }} placeholder="Ex: TRT por destino" /></label>
                         <label style={{ margin: 0 }}>% NF <small style={{ color: '#94a3b8' }}>(prior.)</small><input type="number" step="0.0001" value={te.pct} onChange={function(e) { upd('pct', e.target.value); }} /></label>
                         <label style={{ margin: 0 }}>Mín (R$)<input type="number" step="0.01" value={te.min} onChange={function(e) { upd('min', e.target.value); }} /></label>
                         <label style={{ margin: 0 }}>R$ fixo <small style={{ color: '#94a3b8' }}>(se %=0)</small><input type="number" step="0.01" value={te.valor} onChange={function(e) { upd('valor', e.target.value); }} /></label>
                         <label style={{ margin: 0 }}>R$ por fracao<input type="number" step="0.01" value={te.valorPorPeso} onChange={function(e) { upd('valorPorPeso', e.target.value); }} placeholder="Ex: 8,50" /></label>
                         <label style={{ margin: 0 }}>kg/fracao<input type="number" step="0.001" value={te.pesoBase} onChange={function(e) { upd('pesoBase', e.target.value); }} placeholder="100" /></label>
+                        <label style={{ margin: 0 }}>R$/kg<input type="number" step="0.0001" value={te.valorKg} onChange={function(e) { upd('valorKg', e.target.value); }} placeholder="Ex: 0,20" /></label>
+                        <label style={{ margin: 0 }}>Franquia kg<input type="number" step="0.001" value={te.franquiaKg} onChange={function(e) { upd('franquiaKg', e.target.value); }} placeholder="100" /></label>
                         <button type="button" style={{ background: 'none', border: '1px solid #ef4444', color: '#ef4444', borderRadius: 4, padding: '0 8px', cursor: 'pointer', height: 30, alignSelf: 'end' }} onClick={rem}>✕</button>
                       </div>
                     );
@@ -4216,7 +4277,7 @@ export default function TabelasNegociacaoPage() {
               <div className="sim-analise-tabela-wrap">
                 <table className="sim-analise-tabela">
                   <thead>
-                    <tr><th>IBGE</th><th>Cidade</th><th>UF</th><th>TDA</th><th>TRT</th><th>SUFRAMA</th><th>Outras</th><th>GRIS %</th><th>ADV %</th><th>Ações</th></tr>
+                    <tr><th>IBGE</th><th>Cidade</th><th>UF</th><th>TDA</th><th>TRT</th><th>SUFRAMA</th><th>Outras</th><th>GRIS %</th><th>ADV %</th><th>Coringas</th><th>Ações</th></tr>
                   </thead>
                   <tbody>
                     {taxasDestino.map(function(taxa) {
@@ -4231,6 +4292,7 @@ export default function TabelasNegociacaoPage() {
                           <td>{Number(taxa.outras_taxas) > 0 ? formatMoney(taxa.outras_taxas) : '-'}</td>
                           <td>{Number(taxa.gris) > 0 ? <strong>{Number(taxa.gris).toFixed(4)}%</strong> : <span style={{ color: '#94a3b8', fontSize: 11 }}>geral</span>}</td>
                           <td>{Number(taxa.advalorem) > 0 ? <strong>{Number(taxa.advalorem).toFixed(4)}%</strong> : <span style={{ color: '#94a3b8', fontSize: 11 }}>geral</span>}</td>
+                          <td style={{ fontSize: 12 }}>{descreverCoringasTaxa(taxa.taxas_extras)}</td>
                           <td>
                             <div style={{ display: 'flex', gap: 6 }}>
                               <button className="sim-tab" type="button" onClick={function() { handleEditarTaxa(taxa); }}>Editar</button>
@@ -4240,7 +4302,7 @@ export default function TabelasNegociacaoPage() {
                         </tr>
                       );
                     })}
-                    {!taxasDestino.length ? <tr><td colSpan="11">Nenhuma taxa especial cadastrada. Adicione acima ou importe dos itens salvos.</td></tr> : null}
+                    {!taxasDestino.length ? <tr><td colSpan="12">Nenhuma taxa especial cadastrada. Adicione acima ou importe dos itens salvos.</td></tr> : null}
                   </tbody>
                 </table>
               </div>
@@ -4658,10 +4720,10 @@ export default function TabelasNegociacaoPage() {
               </button>
             </div>
 
-            <LaudoNegociacaoTemplate
-              tipo={laudoSalvoAberto.tipo}
-              dados={laudoSalvoAberto.dados}
-            />
+            {laudoSalvoAberto.tipo === 'gerencial'
+              ? <LaudoGerencialReajuste resultado={laudoSalvoAberto.dados} contexto={laudoSalvoAberto.contexto} />
+              : <LaudoNegociacaoTemplate tipo={laudoSalvoAberto.tipo} dados={laudoSalvoAberto.dados} />}
+
           </div>
         </div>
       ) : null}

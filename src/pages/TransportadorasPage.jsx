@@ -524,7 +524,7 @@ function CanalInvertidoSection({ transportadora, store }) {
 }
 
 const TAXA_ESP_VAZIA = { ibgeDestino: '', tda: '', trt: '', suframa: '', outras: '', gris: '', grisMinimo: '', adVal: '', adValMinimo: '', taxasExtras: [] };
-const CORINGA_VAZIO = { nome: '', valor: '', pct: '', min: '', valorPorPeso: '', pesoBase: '' };
+const CORINGA_VAZIO = { nome: '', valor: '', pct: '', min: '', valorPorPeso: '', pesoBase: '', valorKg: '', franquiaKg: '' };
 
 function formatCoringasTaxa(taxasExtras = []) {
   if (!Array.isArray(taxasExtras) || !taxasExtras.length) return '-';
@@ -534,6 +534,10 @@ function formatCoringasTaxa(taxasExtras = []) {
     if (Number(te.min) > 0) partes.push(`min. ${Number(te.min).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`);
     if (Number(te.valor) > 0) partes.push(`fixo ${Number(te.valor).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`);
     if (Number(te.valorPorPeso || te.valor_por_peso) > 0) partes.push(`${Number(te.valorPorPeso || te.valor_por_peso).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}/${Number(te.pesoBase || te.peso_base) || '?'} kg`);
+    if (Number(te.valorKg || te.valor_kg) > 0) {
+      const franquia = Number(te.franquiaKg || te.franquia_kg) || 0;
+      partes.push(`${Number(te.valorKg || te.valor_kg).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}/kg${franquia > 0 ? ` acima de ${franquia.toLocaleString('pt-BR')} kg` : ''}`);
+    }
     return partes.join(' · ');
   }).join(' | ');
 }
@@ -581,8 +585,8 @@ function TaxasEspeciaisTab({ origem, transportadora, store, grupoTabelaAlternati
   function salvar() {
     if (!form.ibgeDestino) return;
     const taxasExtras = (form.taxasExtras || [])
-      .map((te) => ({ nome: String(te.nome || '').trim(), valor: Number(te.valor) || 0, pct: Number(te.pct) || 0, min: Number(te.min) || 0, valorPorPeso: Number(te.valorPorPeso) || 0, pesoBase: Number(te.pesoBase) || 0 }))
-      .filter((te) => te.pct > 0 || te.valor > 0 || te.valorPorPeso > 0);
+      .map((te) => ({ nome: String(te.nome || '').trim(), valor: Number(te.valor) || 0, pct: Number(te.pct) || 0, min: Number(te.min) || 0, valorPorPeso: Number(te.valorPorPeso) || 0, pesoBase: Number(te.pesoBase) || 0, valorKg: Number(te.valorKg) || 0, franquiaKg: Number(te.franquiaKg) || 0 }))
+      .filter((te) => te.pct > 0 || te.valor > 0 || te.valorPorPeso > 0 || te.valorKg > 0);
     const row = { ...form, taxasExtras, id: editando?.id ?? ('te-' + Date.now()), grupoTabelaAlternativa };
     store.salvarLinha(transportadora.id, origem.id, 'taxasEspeciais', row);
     setForm(TAXA_ESP_VAZIA); setEditando(null);
@@ -590,7 +594,7 @@ function TaxasEspeciaisTab({ origem, transportadora, store, grupoTabelaAlternati
 
   function editar(row) {
     setEditando(row);
-    setForm({ ...row, taxasExtras: (row.taxasExtras || []).map((te) => ({ nome: te.nome || '', valor: te.valor || '', pct: te.pct || '', min: te.min || '', valorPorPeso: te.valorPorPeso || te.valor_por_peso || '', pesoBase: te.pesoBase || te.peso_base || '' })) });
+    setForm({ ...row, taxasExtras: (row.taxasExtras || []).map((te) => ({ nome: te.nome || '', valor: te.valor || '', pct: te.pct || '', min: te.min || '', valorPorPeso: te.valorPorPeso || te.valor_por_peso || '', pesoBase: te.pesoBase || te.peso_base || '', valorKg: te.valorKg || te.valor_kg || '', franquiaKg: te.franquiaKg || te.franquia_kg || '' })) });
   }
 
   async function importarArquivo(event) {
@@ -689,17 +693,19 @@ function TaxasEspeciaisTab({ origem, transportadora, store, grupoTabelaAlternati
         <div style={{ marginTop: 14 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
             <strong style={{ fontSize: '0.85rem' }}>Taxas coringa</strong>
-            <small style={{ color: '#94a3b8' }}>% NF com mínimo, ou valor R$ fixo</small>
+            <small style={{ color: '#94a3b8' }}>% NF com mínimo, R$ fixo, R$ por fração, ou R$/kg com franquia (até a franquia cobra o mínimo; acima, o maior entre mínimo e peso x R$/kg)</small>
             <button type="button" className="btn-secondary" style={{ marginLeft: 'auto', fontSize: '0.78rem', padding: '2px 10px' }} onClick={addCoringa}>+ Adicionar coringa</button>
           </div>
           {(form.taxasExtras || []).map((te, idx) => (
-            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 6, alignItems: 'end' }}>
+            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 6, alignItems: 'end' }}>
               <div className="field" style={{ margin: 0 }}><label>Nome</label><input value={te.nome} onChange={(e) => updCoringa(idx, 'nome', e.target.value)} placeholder="Ex: EMEX" /></div>
               <div className="field" style={{ margin: 0 }}><label>% NF</label><input type="number" step="0.0001" value={te.pct} onChange={(e) => updCoringa(idx, 'pct', e.target.value)} /></div>
               <div className="field" style={{ margin: 0 }}><label>Mín (R$)</label><input type="number" step="0.01" value={te.min} onChange={(e) => updCoringa(idx, 'min', e.target.value)} /></div>
               <div className="field" style={{ margin: 0 }}><label>R$ fixo</label><input type="number" step="0.01" value={te.valor} onChange={(e) => updCoringa(idx, 'valor', e.target.value)} /></div>
               <div className="field" style={{ margin: 0 }}><label>R$ por peso</label><input type="number" step="0.01" value={te.valorPorPeso} onChange={(e) => updCoringa(idx, 'valorPorPeso', e.target.value)} placeholder="Ex: 8,50" /></div>
               <div className="field" style={{ margin: 0 }}><label>Base kg</label><input type="number" step="0.001" value={te.pesoBase} onChange={(e) => updCoringa(idx, 'pesoBase', e.target.value)} placeholder="100" /></div>
+              <div className="field" style={{ margin: 0 }}><label>R$/kg</label><input type="number" step="0.0001" value={te.valorKg} onChange={(e) => updCoringa(idx, 'valorKg', e.target.value)} placeholder="Ex: 0,20" /></div>
+              <div className="field" style={{ margin: 0 }}><label>Franquia kg</label><input type="number" step="0.001" value={te.franquiaKg} onChange={(e) => updCoringa(idx, 'franquiaKg', e.target.value)} placeholder="100" /></div>
               <button type="button" style={{ background: 'none', border: '1px solid #ef4444', color: '#ef4444', borderRadius: 4, padding: '0 8px', cursor: 'pointer', height: 30, alignSelf: 'end' }} onClick={() => remCoringa(idx)}>✕</button>
             </div>
           ))}

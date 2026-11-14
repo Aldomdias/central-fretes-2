@@ -1,3 +1,5 @@
+import { criarGerencialReajuste, acumularGerencialReajuste, consolidarGerenciaisReajuste } from '../utils/laudoGerencialReajuste';
+import { LaudoGerencialReajuste } from '../components/laudos/LaudoGerencialReajuste';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { gerarHtmlLaudoProjecaoAderencia, gerarWorkbookTabelaSugerida, planejarAjustesParaAderencia } from '../utils/tabelaSugeridaAderencia';
@@ -78,6 +80,7 @@ import {
   cubagemTrackingParaCalculo,
 } from '../utils/trackingCubagem';
 import { enriquecerRealizadoComTracking } from '../services/realizadoTrackingEnrichment';
+import { gravarHandoffSaidaTransportadora, urlTelaSaidaTransportadora } from '../utils/saidaTransportadoraHandoff';
 import { resolverPesoCteRealizado } from '../utils/pesoRealizadoSimulador';
 import { cederThread, esperarLeve } from '../utils/cederThread';
 
@@ -1139,6 +1142,7 @@ function ResultadoCard({ item }) {
                 <div key={`taxa-vinculada-${indice}`}>
                   {taxa.nome || `Taxa coringa ${indice + 1}`}: <strong>{formatMoney(taxa.valor)}</strong>
                   {Number(taxa.valorPorPeso) > 0 && <span> ({formatMoney(taxa.valorPorPeso)} / {Number(taxa.pesoBase) || 100} kg)</span>}
+                  {Number(taxa.valorKg) > 0 && <span> ({formatMoney(taxa.valorKg)}/kg{Number(taxa.franquiaKg) > 0 ? ` acima de ${Number(taxa.franquiaKg)} kg` : ''}{Number(taxa.min) > 0 ? `, mín. ${formatMoney(taxa.min)}` : ''})</span>}
                   {Number(taxa.pct) > 0 && <span> ({formatPercent(taxa.pct)} sobre NF)</span>}
                   {Number(taxa.valorFixo) > 0 && <span> (fixo)</span>}
                 </div>
@@ -3220,6 +3224,7 @@ function consolidarResultadosRealizadoSalvos(analises = []) {
   if (!resultados.length) throw new Error('Nenhum resultado salvo para unificar.');
 
   const base = { ...resultados[0] };
+  base.gerencialReajuste = consolidarGerenciaisReajuste(resultados.map(r => r.gerencialReajuste));
   CAMPOS_SOMA_RESULTADO_SALVO.forEach((campo) => {
     base[campo] = resultados.reduce((acc, item) => acc + numeroConsolidacaoRealizado(item[campo]), 0);
   });
@@ -3332,6 +3337,7 @@ const CAMPOS_ESCALARES_SIMULACAO_REALIZADO = [
 // do período (mesmo no modo parcelas) para dias/meses saírem corretos.
 function criarEstadoSimulacaoRealizado({ rows = [], filtros = {} } = {}) {
   const estado = {
+    gerencialReajuste: criarGerencialReajuste(),
     rotasMap: new Map(),
     cotacaoMap: new Map(),
     transportadorasMap: new Map(),
@@ -3371,6 +3377,7 @@ function serializarEstadoSimulacaoRealizado(estado) {
   CAMPOS_ESCALARES_SIMULACAO_REALIZADO.forEach((campo) => { escalares[campo] = estado[campo]; });
   return JSON.stringify({
     v: 1,
+    gerencialReajuste: estado.gerencialReajuste,
     escalares,
     dias: estado.dias,
     meses: estado.meses,
@@ -3407,6 +3414,7 @@ function desserializarEstadoSimulacaoRealizado(texto) {
   const dados = JSON.parse(texto);
   const estado = criarEstadoSimulacaoRealizado();
   Object.assign(estado, dados.escalares || {});
+  estado.gerencialReajuste = dados.gerencialReajuste || criarGerencialReajuste();
   estado.dias = Number(dados.dias) || 1;
   estado.meses = Number(dados.meses) || 1;
   estado.rotasMap = new Map((dados.rotas || []).map(([chave, rota]) => [chave, { ...rota, vencedores: new Map(rota.vencedores || []) }]));
@@ -3540,7 +3548,14 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     metricaReal.peso += pesoLinha;
     metricaReal.volumes += vol;
 
+    const proprioGerencial = Boolean(filtros.transportadoraBaseRealizado) && transportadoraCompativelSimulador(row.transportadora || '', filtros.transportadoraBaseRealizado);
+    const registrarGerencial = (cotacoes = {}) => acumularGerencialReajuste(estado.gerencialReajuste, {
+      origem, ufOrigem: row.ufOrigem, destino: row.cidadeDestino, ufDestino: row.ufDestino,
+      cte: row.numeroCte, chaveCte: row.chaveCte, proprio: proprioGerencial,
+      realizado: row.valorCte == null ? null : valorCte, compararConcorrentes: Boolean(filtros.compararConcorrentes), ...cotacoes,
+    });
     if (!destino) {
+      registrarGerencial();
       diagnostico.linhasSemIbgeDestino += 1;
       ctesSemTabelaGeral += 1;
       continue;
@@ -3562,6 +3577,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
 
     const vencedor = resultado[0] || null;
     if (!vencedor) {
+      registrarGerencial();
       diagnostico.linhasSemResultado += 1;
       const destinoLabelDiag = `${row.cidadeDestino || ''}/${row.ufDestino || ''} ${destino}`.trim();
       diagnostico.destinosSemResultado.set(destinoLabelDiag, (diagnostico.destinosSemResultado.get(destinoLabelDiag) || 0) + 1);
@@ -3656,6 +3672,14 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
         freteTabelaAtualPropria = numeroRealizado(itemTabelaAtualPropria.total);
       }
     }
+    const precosConcorrentesGerencial = resultado.filter(item => item !== itemSelecionada
+      && !transportadoraCompativelSimulador(item.transportadora, filtros.transportadoraBaseRealizado || transportadoraSelecionada))
+      .map(item => Number(item.total)).filter(v => Number.isFinite(v) && v > 0);
+    registrarGerencial({
+      proposta: itemSelecionada ? Number(itemSelecionada.total) : null,
+      atual: itemTabelaAtualPropria ? Number(itemTabelaAtualPropria.total) : null,
+      concorrente: precosConcorrentesGerencial.length ? Math.min(...precosConcorrentesGerencial) : null,
+    });
     const nomeBaseComparativaNorm = normalizarTransportadoraSimulador(filtros.transportadoraBaseRealizado || transportadoraSelecionada || '');
     const transportadoraLinhaEhBaseComparativa = Boolean(
       nomeBaseComparativaNorm
@@ -4317,6 +4341,7 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
     pareto80Volume,
     ctesDetalhes: ctesDetalhes.sort((a, b) => b.savingSelecionada - a.savingSelecionada || b.diferencaParaVencedor - a.diferencaParaVencedor),
     ctesAjusteRotaExcel,
+    gerencialReajuste: estado.gerencialReajuste,
     ctesDetalhesTotal: ctesAnalisados,
     ctesDetalhesLimitados: ctesAnalisados > ctesDetalhes.length,
     ctesDetalhesLimite: MAX_CTES_DETALHES_REALIZADO,
@@ -5671,6 +5696,25 @@ export default function SimuladorPage({ transportadoras = [] }) {
     } catch (error) {
       return { id: '', nome: '', aviso: error.message || 'não foi possível guardar a simulação completa' };
     }
+  };
+
+  // Abre a Simular Saída de Transportadora numa nova aba com o mesmo recorte
+  // desta análise (período, canal, transportadora executada) e a tabela em
+  // negociação já marcada — para ver, no mesmo estudo, o impacto de aceitar o
+  // reajuste e o impacto de trocar a transportadora.
+  const abrirSaidaTransportadoraDaNegociacao = () => {
+    if (!resultadoRealizado?.negociacaoId) return;
+    const filtros = resultadoRealizado.filtros || {};
+    const negociacao = negociacaoResultadoRealizado || {};
+    gravarHandoffSaidaTransportadora({
+      dataInicio: filtros.inicio || inicioRealizado || '',
+      dataFim: filtros.fim || fimRealizado || '',
+      canal: filtros.canal || canalRealizado || negociacao.canal || '',
+      transportadora: filtros.transportadora || transportadoraRealizado || negociacao.transportadora_base_nome || negociacao.transportadora || '',
+      negociacaoId: resultadoRealizado.negociacaoId,
+      negociacaoLabel: resultadoRealizado.negociacaoLabel || negociacao.transportadora || '',
+    });
+    window.open(urlTelaSaidaTransportadora(), '_blank', 'noopener');
   };
 
   const salvarResultadoNegociacaoRealizado = async () => {
@@ -7325,6 +7369,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             fim: ctx.fim,
             modo: ctx.modo,
             tipoNegociacao: ehReajusteSelecionado ? 'REAJUSTE_TABELA_EXISTENTE' : tipoNegociacaoSimulador(negociacaoRealizadoAtual),
+            compararConcorrentes: deveCompararConcorrentes,
             compararComProprioRealizado: ehReajusteSelecionado,
             transportadoraBaseRealizado: transportadoraBaseReajuste,
             compararTabelaAtualReajuste,
@@ -7418,6 +7463,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           fim: ctx.fim,
           modo: ctx.modo,
           tipoNegociacao: ehReajusteSelecionado ? 'REAJUSTE_TABELA_EXISTENTE' : tipoNegociacaoSimulador(negociacaoRealizadoAtual),
+          compararConcorrentes: deveCompararConcorrentes,
           compararComProprioRealizado: ehReajusteSelecionado,
           transportadoraBaseRealizado: transportadoraBaseReajuste,
           compararTabelaAtualReajuste,
@@ -7472,6 +7518,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           transportadoraTabelaUsada: nomeTabelaSelecionada,
           tipoNegociacao: ehReajusteSelecionado ? 'REAJUSTE_TABELA_EXISTENTE' : tipoNegociacaoSimulador(negociacaoRealizadoAtual),
           transportadoraBaseRealizado: transportadoraBaseReajuste,
+          compararConcorrentes: deveCompararConcorrentes,
           compararComProprioRealizado: ehReajusteSelecionado,
           compararTabelaAtualReajuste,
           usarTabelaAtualComoBaseRealizado,
@@ -8330,6 +8377,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       return;
     }
 
+    if (laudo.classList.contains('gerencial-reajuste')) laudo.querySelectorAll('details').forEach(node => { node.open = true; });
     const estilos = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
       .map((node) => node.outerHTML)
       .join('\n');
@@ -9634,6 +9682,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
               style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d' }}>
               {salvandoResultadoNegociacao ? 'Salvando...' : '💾 Salvar na negociação'}
             </button>
+            {resultadoRealizado?.negociacaoId ? (
+              <button className="sim-tab" type="button"
+                onClick={abrirSaidaTransportadoraDaNegociacao}
+                disabled={!resultadoRealizado?.ctesAnalisados}
+                title="Abre a Simular Saída de Transportadora numa nova aba, com este período, canal, transportadora e a tabela em negociação já marcados: impacto de aceitar o reajuste x impacto de trocar a transportadora"
+                style={{ background: '#e0f2fe', color: '#0369a1', border: '1px solid #7dd3fc' }}>
+                🚪 Simular saída da transportadora
+              </button>
+            ) : null}
             {!resultadoRealizado?.negociacaoId ? (
               <button className="sim-tab" type="button"
                 onClick={abrirRevisaoCompetitividadeNegociacao}
@@ -10916,6 +10973,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 {secaoAberta('laudo') && (
                 <>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                    <button className="sim-tab" type="button" onClick={() => setLaudoVisualAberto('gerencial')}>Laudo gerencial de reajuste</button>
                     {[
                       ['diretoria', 'Diretoria'],
                       ['transportadora', 'Transportadora'],
@@ -11634,8 +11692,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 {Number(item.vencedorDetalhes?.taxas?.trt) > 0 && <div>TRT: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.trt)}</strong></div>}
                                                 {Number(item.vencedorDetalhes?.taxas?.suframa) > 0 && <div>Suframa: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.suframa)}</strong></div>}
                                                 {Number(item.vencedorDetalhes?.taxas?.outras) > 0 && <div>Outras: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.outras)}</strong></div>}
-                                                {Number(item.vencedorDetalhes?.taxas?.taxaExtra) > 0 && <div>Taxa extra: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.taxaExtra)}</strong></div>}
-                                                {(Array.isArray(item.vencedorDetalhes?.taxas?.taxasExtrasDetalhes) ? item.vencedorDetalhes?.taxas?.taxasExtrasDetalhes : []).filter((taxa) => Number(taxa?.valor) > 0).map((taxa, indice) => <div key={`item.vencedorDetalhes-coringa-${indice}`}>{taxa.nome || `Taxa coringa ${indice + 1}`}: <strong>{formatMoney(taxa.valor)}</strong>{Number(taxa.valorPorPeso) > 0 && <span style={{ color: '#64748b' }}> ({formatMoney(taxa.valorPorPeso)} / {Number(taxa.pesoBase) || 100} kg)</span>}</div>)}
+                                                {Number(item.vencedorDetalhes?.taxas?.taxaExtra) > 0 && <div>Taxas coringa (total): <strong>{formatMoney(item.vencedorDetalhes?.taxas?.taxaExtra)}</strong></div>}
+                                                {(Array.isArray(item.vencedorDetalhes?.taxas?.taxasExtrasDetalhes) ? item.vencedorDetalhes?.taxas?.taxasExtrasDetalhes : []).filter((taxa) => Number(taxa?.valor) > 0).map((taxa, indice) => <div key={`item.vencedorDetalhes-coringa-${indice}`}><span style={{ color: '#64748b' }}>↳ </span>{taxa.nome || `Taxa coringa ${indice + 1}`}: <strong>{formatMoney(taxa.valor)}</strong>{Number(taxa.valorPorPeso) > 0 && <span style={{ color: '#64748b' }}> ({formatMoney(taxa.valorPorPeso)} / {Number(taxa.pesoBase) || 100} kg)</span>}{Number(taxa.valorKg) > 0 && <span style={{ color: '#64748b' }}> ({formatMoney(taxa.valorKg)}/kg{Number(taxa.franquiaKg) > 0 ? ` acima de ${Number(taxa.franquiaKg)} kg` : ''}{Number(taxa.min) > 0 ? `, mín. ${formatMoney(taxa.min)}` : ''})</span>}</div>)}
                                                 {Number(item.vencedorDetalhes?.frete?.valorEmergencial) > 0 && <div>Taxa emergencial ({formatPercent(item.vencedorDetalhes?.frete?.taxaEmergencialPct)}): <strong>{formatMoney(item.vencedorDetalhes?.frete?.valorEmergencial)}</strong></div>}
                                                 <div>Subtotal: <strong>{formatMoney(item.vencedorDetalhes?.frete?.subtotal)}</strong></div>
                                                 <div>ICMS ({formatPercent(item.vencedorDetalhes?.frete?.aliquotaIcms)}): <strong>{formatMoney(item.vencedorDetalhes?.frete?.icms)}</strong> <span style={{ color: '#64748b' }}>({item.vencedorDetalhes?.frete?.origemAliquotaIcms})</span></div>
@@ -11720,8 +11778,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 {Number(item.tabelaAtualDetalhes?.taxas?.trt) > 0 && <div>TRT: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.trt)}</strong></div>}
                                                 {Number(item.tabelaAtualDetalhes?.taxas?.suframa) > 0 && <div>Suframa: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.suframa)}</strong></div>}
                                                 {Number(item.tabelaAtualDetalhes?.taxas?.outras) > 0 && <div>Outras: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.outras)}</strong></div>}
-                                                {Number(item.tabelaAtualDetalhes?.taxas?.taxaExtra) > 0 && <div>Taxa extra: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.taxaExtra)}</strong></div>}
-                                                {(Array.isArray(item.tabelaAtualDetalhes?.taxas?.taxasExtrasDetalhes) ? item.tabelaAtualDetalhes?.taxas?.taxasExtrasDetalhes : []).filter((taxa) => Number(taxa?.valor) > 0).map((taxa, indice) => <div key={`item.tabelaAtualDetalhes-coringa-${indice}`}>{taxa.nome || `Taxa coringa ${indice + 1}`}: <strong>{formatMoney(taxa.valor)}</strong>{Number(taxa.valorPorPeso) > 0 && <span style={{ color: '#64748b' }}> ({formatMoney(taxa.valorPorPeso)} / {Number(taxa.pesoBase) || 100} kg)</span>}</div>)}
+                                                {Number(item.tabelaAtualDetalhes?.taxas?.taxaExtra) > 0 && <div>Taxas coringa (total): <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.taxaExtra)}</strong></div>}
+                                                {(Array.isArray(item.tabelaAtualDetalhes?.taxas?.taxasExtrasDetalhes) ? item.tabelaAtualDetalhes?.taxas?.taxasExtrasDetalhes : []).filter((taxa) => Number(taxa?.valor) > 0).map((taxa, indice) => <div key={`item.tabelaAtualDetalhes-coringa-${indice}`}><span style={{ color: '#64748b' }}>↳ </span>{taxa.nome || `Taxa coringa ${indice + 1}`}: <strong>{formatMoney(taxa.valor)}</strong>{Number(taxa.valorPorPeso) > 0 && <span style={{ color: '#64748b' }}> ({formatMoney(taxa.valorPorPeso)} / {Number(taxa.pesoBase) || 100} kg)</span>}{Number(taxa.valorKg) > 0 && <span style={{ color: '#64748b' }}> ({formatMoney(taxa.valorKg)}/kg{Number(taxa.franquiaKg) > 0 ? ` acima de ${Number(taxa.franquiaKg)} kg` : ''}{Number(taxa.min) > 0 ? `, mín. ${formatMoney(taxa.min)}` : ''})</span>}</div>)}
                                                 {Number(item.tabelaAtualDetalhes?.frete?.valorEmergencial) > 0 && <div>Taxa emergencial ({formatPercent(item.tabelaAtualDetalhes?.frete?.taxaEmergencialPct)}): <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.valorEmergencial)}</strong></div>}
                                                 <div>Subtotal: <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.subtotal)}</strong></div>
                                                 <div>ICMS ({formatPercent(item.tabelaAtualDetalhes?.frete?.aliquotaIcms)}): <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.icms)}</strong> <span style={{ color: '#64748b' }}>({item.tabelaAtualDetalhes?.frete?.origemAliquotaIcms})</span></div>
@@ -11786,8 +11844,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 {Number(item.selecionadaDetalhes?.taxas?.trt) > 0 && <div>TRT: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.trt)}</strong></div>}
                                                 {Number(item.selecionadaDetalhes?.taxas?.suframa) > 0 && <div>Suframa: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.suframa)}</strong></div>}
                                                 {Number(item.selecionadaDetalhes?.taxas?.outras) > 0 && <div>Outras: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.outras)}</strong></div>}
-                                                {Number(item.selecionadaDetalhes?.taxas?.taxaExtra) > 0 && <div>Taxa extra: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.taxaExtra)}</strong></div>}
-                                                {(Array.isArray(item.selecionadaDetalhes?.taxas?.taxasExtrasDetalhes) ? item.selecionadaDetalhes?.taxas?.taxasExtrasDetalhes : []).filter((taxa) => Number(taxa?.valor) > 0).map((taxa, indice) => <div key={`item.selecionadaDetalhes-coringa-${indice}`}>{taxa.nome || `Taxa coringa ${indice + 1}`}: <strong>{formatMoney(taxa.valor)}</strong>{Number(taxa.valorPorPeso) > 0 && <span style={{ color: '#64748b' }}> ({formatMoney(taxa.valorPorPeso)} / {Number(taxa.pesoBase) || 100} kg)</span>}</div>)}
+                                                {Number(item.selecionadaDetalhes?.taxas?.taxaExtra) > 0 && <div>Taxas coringa (total): <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.taxaExtra)}</strong></div>}
+                                                {(Array.isArray(item.selecionadaDetalhes?.taxas?.taxasExtrasDetalhes) ? item.selecionadaDetalhes?.taxas?.taxasExtrasDetalhes : []).filter((taxa) => Number(taxa?.valor) > 0).map((taxa, indice) => <div key={`item.selecionadaDetalhes-coringa-${indice}`}><span style={{ color: '#64748b' }}>↳ </span>{taxa.nome || `Taxa coringa ${indice + 1}`}: <strong>{formatMoney(taxa.valor)}</strong>{Number(taxa.valorPorPeso) > 0 && <span style={{ color: '#64748b' }}> ({formatMoney(taxa.valorPorPeso)} / {Number(taxa.pesoBase) || 100} kg)</span>}{Number(taxa.valorKg) > 0 && <span style={{ color: '#64748b' }}> ({formatMoney(taxa.valorKg)}/kg{Number(taxa.franquiaKg) > 0 ? ` acima de ${Number(taxa.franquiaKg)} kg` : ''}{Number(taxa.min) > 0 ? `, mín. ${formatMoney(taxa.min)}` : ''})</span>}</div>)}
                                                 {Number(item.selecionadaDetalhes?.frete?.valorEmergencial) > 0 && <div>Taxa emergencial ({formatPercent(item.selecionadaDetalhes?.frete?.taxaEmergencialPct)}): <strong>{formatMoney(item.selecionadaDetalhes?.frete?.valorEmergencial)}</strong></div>}
                                                 <div>Subtotal: <strong>{formatMoney(item.selecionadaDetalhes?.frete?.subtotal)}</strong></div>
                                                 <div>ICMS ({formatPercent(item.selecionadaDetalhes?.frete?.aliquotaIcms)}): <strong>{formatMoney(item.selecionadaDetalhes?.frete?.icms)}</strong></div>
@@ -11977,10 +12035,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </button>
             </div>
 
-            <LaudoNegociacaoTemplate
-              tipo={laudoVisualAberto}
-              resultado={resultadoRealizado}
-            />
+            {laudoVisualAberto === 'gerencial' ? <LaudoGerencialReajuste resultado={resultadoRealizado} /> : <LaudoNegociacaoTemplate tipo={laudoVisualAberto} resultado={resultadoRealizado} />}
           </div>
         </div>
       )}

@@ -32,6 +32,10 @@ export function taxasVerum(taxa = {}) {
     if (numero(extra.pct)) partes.push(`${valor(extra.pct)}% NF`);
     if (numero(extra.valor)) partes.push(`R$ ${valor(extra.valor)} fixo`);
     if (numero(extra.valorPorPeso ?? extra.valor_por_peso)) partes.push(`R$ ${valor(extra.valorPorPeso ?? extra.valor_por_peso)}/${valor(numero(extra.pesoBase ?? extra.peso_base) || 100)} kg`);
+    if (numero(extra.valorKg ?? extra.valor_kg)) {
+      const franquia = numero(extra.franquiaKg ?? extra.franquia_kg);
+      partes.push(`R$ ${valor(extra.valorKg ?? extra.valor_kg)}/kg${franquia ? ` acima de ${valor(franquia)} kg` : ''}`);
+    }
     if (numero(extra.min)) partes.push(`MIN R$ ${valor(extra.min)}`);
     if (partes.length) itens.push({ id: `coringa:${chaveNome(extra.nome)}`, nome: extra.nome || 'Coringa', descricao: `${extra.nome || 'Coringa'} ${partes.join(' + ')}` });
   });
