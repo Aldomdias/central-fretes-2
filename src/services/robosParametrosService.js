@@ -100,3 +100,44 @@ export async function salvarPendentesEscrituracao(competencia, itens = [], por =
     return { ok: false, motivo: e?.message || 'Falha de rede.' };
   }
 }
+
+// Fila da Correcao de saldo, gerada pela planilha do robo de Escrituracao: cada rodada grava uma linha
+// "saldo_pendentes|AAAAMMDDhhmmss" com os CT-e que continuaram sem MIRO por erro de saldo.
+// dados: { origem: 'ESCRITURACAO', itens: [{ chave, transportadora }], descartado_em? }
+const PREFIXO_PENDENTES_SALDO = 'saldo_pendentes|';
+
+export async function carregarPendentesSaldo() {
+  if (!isSupabaseConfigured()) return { ok: false, motivo: 'Supabase nao configurado.' };
+  const supabase = getSupabaseClient();
+  if (!supabase) return { ok: false, motivo: 'Supabase nao configurado.' };
+  try {
+    const { data, error } = await supabase
+      .from(TABELA)
+      .select('chave, dados, atualizado_em, atualizado_por')
+      .like('chave', `${PREFIXO_PENDENTES_SALDO}%`)
+      .order('atualizado_em', { ascending: false })
+      .limit(200);
+    if (error) return { ok: false, motivo: error.message, tabelaAusente: tabelaAusente(error.message) };
+    const rodadas = (data || [])
+      .filter((r) => !r.dados?.descartado_em && Array.isArray(r.dados?.itens) && r.dados.itens.length)
+      .map((r) => ({ chave: r.chave, gerado_em: r.atualizado_em, gerado_por: r.atualizado_por, itens: r.dados.itens }));
+    return { ok: true, rodadas };
+  } catch (e) {
+    return { ok: false, motivo: e?.message || 'Falha de rede.' };
+  }
+}
+
+// Tira a rodada da fila (a tabela nao permite apagar: marca como descartada e esvazia).
+export async function descartarPendentesSaldo(chave, por = '') {
+  if (!String(chave || '').startsWith(PREFIXO_PENDENTES_SALDO)) return { ok: false, motivo: 'Rodada inválida.' };
+  if (!isSupabaseConfigured()) return { ok: false, motivo: 'Supabase nao configurado.' };
+  try {
+    const { error } = await getSupabaseClient().from(TABELA)
+      .update({ dados: { origem: 'ESCRITURACAO', itens: [], descartado_em: new Date().toISOString(), descartado_por: por || null } })
+      .eq('chave', chave);
+    if (error) return { ok: false, motivo: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, motivo: e?.message || 'Falha de rede.' };
+  }
+}

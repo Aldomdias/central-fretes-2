@@ -1,18 +1,25 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { TRANSACAO_SAP, dataSapValida, extrairChavesDeTexto, isoParaSap, removerDuplicadas } from '../../utils/robos/reprocessarCte';
 import { MACRO_SALDO, NOME_DADOS_SALDO, PASTA_SALDO, gerarMacroSaldo, matrizDadosSaldo } from '../../utils/robos/correcaoSaldoMacro';
 import { PLANILHA_ROBO } from '../../utils/robos/sapMacroExcel';
 import { baixarMatrizXlsx } from '../../utils/robos/lancamentoComum';
 import { getSupabaseAcessoPublico } from '../../lib/supabaseClient';
 import { carregarSessao } from '../../utils/authLocal';
+import { carregarPendentesSaldo, descartarPendentesSaldo } from '../../services/robosParametrosService';
+import { BaixarPlanilhaRobo, passosMacroExcel } from './MacroExcel';
+import ScriptParaCopiar from './ScriptParaCopiar';
 
 // Nome de quem baixou os dados: vai para o "Lancado por" do acompanhamento.
 function usuarioLogado() {
   const sessao = carregarSessao();
   return sessao?.nome || sessao?.email || '';
 }
-import { BaixarPlanilhaRobo, passosMacroExcel } from './MacroExcel';
-import ScriptParaCopiar from './ScriptParaCopiar';
+
+function dataHoraBr(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+}
 
 const CHAVE_PARAMS = 'central_fretes_robo_correcao_saldo_v1';
 
@@ -43,6 +50,37 @@ export default function CorrecaoSaldoRobo() {
   const [erro, setErro] = useState('');
   const [feedback, setFeedback] = useState('');
   const [macroTela, setMacroTela] = useState(null);
+  const [fila, setFila] = useState(null); // rodadas da Escrituracao com CT-e parados por erro de saldo
+  const [filaErro, setFilaErro] = useState('');
+  const [origemChaves, setOrigemChaves] = useState('');
+
+  async function atualizarFila() {
+    setFilaErro('');
+    const r = await carregarPendentesSaldo();
+    if (r.ok) setFila(r.rodadas);
+    else { setFila([]); setFilaErro(r.motivo || 'Não consegui ler a fila.'); }
+  }
+  useEffect(() => { atualizarFila(); }, []);
+
+  // Carrega as chaves da fila (uma rodada ou todas), sem repetir e sem as transportadoras ignoradas.
+  function usarFila(rodadas) {
+    const lista = ignorar.split(/[,;]+/).map((t) => t.trim().toUpperCase()).filter(Boolean);
+    const itens = rodadas.flatMap((r) => r.itens);
+    const ignoradas = itens.filter((i) => lista.some((t) => String(i.transportadora || '').toUpperCase().includes(t)));
+    const usadas = removerDuplicadas(itens.filter((i) => !ignoradas.includes(i)).map((i) => i.chave));
+    if (!usadas.length) { setErro('Nenhuma chave pendente para carregar.'); return; }
+    setChaves(usadas);
+    setOrigemChaves(`fila da escrituração (${rodadas.length} rodada${rodadas.length > 1 ? 's' : ''})`);
+    setErro('');
+    setFeedback(`${fmt(usadas.length)} chave(s) com erro de saldo carregada(s) da escrituração${ignoradas.length ? `; ${fmt(ignoradas.length)} ignorada(s) pela transportadora` : ''}. Agora baixe os dados para o Excel (passo 1).`);
+  }
+
+  async function descartar(rodada) {
+    if (!window.confirm(`Tirar da fila os ${fmt(rodada.itens.length)} CT-e desta rodada? Faça isso depois que a correção de saldo deles rodou.`)) return;
+    const r = await descartarPendentesSaldo(rodada.chave, usuarioLogado());
+    if (!r.ok) { setErro(r.motivo || 'Não consegui tirar da fila.'); return; }
+    atualizarFila();
+  }
 
   const iniSap = isoParaSap(dataInicial);
   const fimSap = isoParaSap(dataFinal);
@@ -97,6 +135,37 @@ export default function CorrecaoSaldoRobo() {
       {erro ? <div style={{ padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{erro}</div> : null}
       {feedback && !erro ? <div style={{ padding: 12, borderRadius: 8, background: '#dcfce7', color: '#166534' }}>{feedback}</div> : null}
 
+      <div className="panel-card" style={{ borderLeft: '4px solid #c2410c' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div className="panel-title" style={{ margin: 0 }}>Pendentes da escrituração (erro de saldo)</div>
+          <button type="button" className="btn-secondary" onClick={atualizarFila}>Atualizar</button>
+        </div>
+        <p style={{ margin: '4px 0 10px', fontSize: 13 }}>Cada vez que o robô de <b>Escrituração</b> roda, os CT-e que continuam sem MIRO por <b>erro de saldo</b> vêm para cá. Carregue as chaves, siga no passo 1 e, depois que a correção rodar, tire a rodada da fila.</p>
+        {filaErro ? <div style={{ padding: 8, borderRadius: 8, background: '#fee2e2', color: '#991b1b', fontSize: 13 }}>{filaErro}</div> : null}
+        {fila === null ? <div style={{ fontSize: 13, color: '#64748b' }}>Carregando…</div> : null}
+        {fila && !fila.length && !filaErro ? <div style={{ fontSize: 13, color: '#64748b' }}>Nenhum pendente. Os erros de saldo aparecem aqui depois que o robô de Escrituração rodar.</div> : null}
+        {fila && fila.length ? (
+          <table className="sim-analise-tabela" style={{ width: '100%' }}>
+            <thead><tr><th>Rodada da escrituração</th><th>CT-es</th><th>Transportadoras</th><th>Por</th><th /></tr></thead>
+            <tbody>
+              {fila.map((r) => (
+                <tr key={r.chave}>
+                  <td><strong>{dataHoraBr(r.gerado_em)}</strong></td>
+                  <td>{fmt(r.itens.length)}</td>
+                  <td style={{ fontSize: 12 }}>{[...new Set(r.itens.map((i) => i.transportadora).filter(Boolean))].slice(0, 4).join(', ')}{new Set(r.itens.map((i) => i.transportadora).filter(Boolean)).size > 4 ? '…' : ''}</td>
+                  <td style={{ fontSize: 12 }}>{r.gerado_por || '-'}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <button type="button" className="btn-primary" style={{ padding: '2px 10px' }} onClick={() => usarFila([r])}>Carregar chaves</button>{' '}
+                    <button type="button" className="btn-secondary" style={{ padding: '2px 10px' }} onClick={() => descartar(r)} title="Tirar da fila (depois de corrigir)">Tirar da fila</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
+        {fila && fila.length > 1 ? <div style={{ marginTop: 8 }}><button type="button" className="btn-secondary" onClick={() => usarFila(fila)}>Carregar todas ({fmt(new Set(fila.flatMap((r) => r.itens.map((i) => i.chave))).size)})</button></div> : null}
+      </div>
+
       <div className="panel-card">
         <div className="panel-title">Período do log</div>
         <p>Mesmas datas da tabela “Data inicial / Data final” da planilha Ajuste de saldo. Data final vazia = sem limite superior.</p>
@@ -119,7 +188,7 @@ export default function CorrecaoSaldoRobo() {
             </p>
             {chaves.length ? (
               <div style={{ marginBottom: 10, padding: 8, borderRadius: 8, background: '#fff7ed', color: '#9a3412', fontSize: 13 }}>
-                Vão no arquivo <b>{fmt(chaves.length)}</b> chave(s): o robô corrige só elas. <button type="button" className="btn-secondary" onClick={() => { setChaves([]); setColado(''); }} style={{ marginLeft: 8 }}>Limpar</button>
+                Vão no arquivo <b>{fmt(chaves.length)}</b> chave(s){origemChaves ? ` (${origemChaves})` : ''}: o robô corrige só elas. <button type="button" className="btn-secondary" onClick={() => { setChaves([]); setColado(''); setOrigemChaves(''); }} style={{ marginLeft: 8 }}>Limpar</button>
               </div>
             ) : null}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

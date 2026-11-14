@@ -84,7 +84,7 @@ function corpoMacro() {
     '    semRegistros = False',
     '    If Not ExportarErrosSaldo() Then GoTo Fim',
     '    If semRegistros Then',
-    '        MsgBox "O relatorio da " & TRANSACAO & " nao trouxe nenhum registro no periodo." & vbCrLf & TextoBarraSap(), vbInformation, ROBO',
+    '        MsgBox "O relatorio da " & TRANSACAO & " nao trouxe nenhum registro no periodo " & dataIni & " a " & IIf(dataFim = "", "(sem data final)", dataFim) & "." & vbCrLf & "SAP: " & TextoBarraSap(), vbInformation, ROBO',
     '        GoTo Fim',
     '    End If',
     '    If Not LerErros() Then GoTo Fim',
