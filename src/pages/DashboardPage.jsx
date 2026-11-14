@@ -106,7 +106,7 @@ export default function DashboardPage({
         </div>
       </section>
 
-      <PainelImportacoes onMudarPagina={onMudarPagina} />
+      <PainelImportacoes onMudarPagina={onMudarPagina} transportadoras={transportadoras} />
 
       <section className="dashboard-kpi-grid">
         <div className="dashboard-kpi primary-kpi">

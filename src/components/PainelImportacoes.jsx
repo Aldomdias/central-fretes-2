@@ -1,40 +1,44 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import ImportarDoccobCard from './ImportarDoccobCard';
 import XmlMassaCard from './XmlMassaCard';
+import CentralAuditoriaFretesPage from '../pages/CentralAuditoriaFretesPage';
+import CtePage from '../pages/CtePage';
+import TrackingPage from '../pages/TrackingPage';
 import { carregarStatusImportacoes } from '../services/importacoesStatusService';
-import { agendarImportacao } from '../utils/importacaoPendente';
 import { carregarSessao, usuarioTemAcesso } from '../utils/authLocal';
 
-// Central de importacoes do Dashboard: status de cada carga e atalho para importar
-// sem procurar a tela. As telas originais continuam iguais; daqui:
-//  - "repasse": escolhe o arquivo aqui, abre a tela dona e ela roda a propria rotina;
-//  - "modal": o card de importacao (autossuficiente) abre por cima do Dashboard.
+// Central de importacoes do Dashboard: status de cada carga e a importacao numa janela
+// aqui mesmo, sem trocar de tela. A janela usa o importador da propria tela (modo
+// "so importacao"), com as mesmas opcoes de la (complementar, atualizar, substituir,
+// competencia...). As telas originais continuam iguais.
 const IMPORTACOES = [
   {
-    tipo: 'faturas-verum', titulo: 'Faturas Verum', pagina: 'faturas', modo: 'repasse', accept: '.xlsx,.xls,.csv',
-    descricao: 'Planilha do Verum (abas Faturas e Detalhes). Abre Auditoria > Faturas e importa.', diasOk: 1, diasAtencao: 3,
+    tipo: 'faturas-verum', titulo: 'Faturas Verum', pagina: 'faturas',
+    descricao: 'Planilha do Verum (abas Faturas e Detalhes).', diasOk: 1, diasAtencao: 3,
+    opcoes: [{ rotulo: 'Importar', render: ({ onMudarPagina }) => <CentralAuditoriaFretesPage somenteImportacao="faturas" onMudarPagina={onMudarPagina} /> }],
   },
   {
-    tipo: 'sap-pagamentos', titulo: 'SAP — pagamentos e partidas', pagina: 'financeiro-auditoria', modo: 'repasse', accept: '.xlsx,.xls,.csv', multiplo: true, pasta: true,
-    descricao: 'Exportação SAP (contas a pagar): compensação, partida de fatura e partida de CT-e. Abre Central Financeira > Pagamentos e importa.', diasOk: 1, diasAtencao: 3,
+    tipo: 'sap-pagamentos', titulo: 'SAP — pagamentos e partidas', pagina: 'financeiro-auditoria',
+    descricao: 'Exportação SAP (contas a pagar): compensação, partida de fatura e partida de CT-e. Aceita vários arquivos ou pasta.', diasOk: 1, diasAtencao: 3,
+    opcoes: [{ rotulo: 'Importar', render: ({ onMudarPagina }) => <CentralAuditoriaFretesPage somenteImportacao="sap" onMudarPagina={onMudarPagina} /> }],
   },
   {
-    tipo: 'doccob', titulo: 'DOCCOB', pagina: 'ferramentas', modo: 'modal', componente: ImportarDoccobCard,
+    tipo: 'doccob', titulo: 'DOCCOB', pagina: 'ferramentas',
     descricao: 'Arquivo DocCob (.zip/.txt) do Verum: faturas com CT-es, vencimento e valor.', diasOk: 1, diasAtencao: 3,
+    opcoes: [{ rotulo: 'Importar', render: () => <ImportarDoccobCard /> }],
   },
   {
-    // Planilha: abre CT-e > Subir / reimportar com o arquivo ja carregado (la escolhe competencia e modo).
-    // XML: completa a base direto daqui (so entra o que falta).
-    tipo: 'ctes', titulo: 'CT-es', pagina: 'cte', modo: 'opcoes',
+    tipo: 'ctes', titulo: 'CT-es', pagina: 'cte',
+    descricao: 'Planilha de CT-es (competência, complementar / atualizar / substituir) ou XMLs / pasta inteira.', diasOk: 3, diasAtencao: 7,
     opcoes: [
-      { rotulo: 'Planilha', modo: 'repasse', tipoRepasse: 'ctes-planilha', accept: '.xlsx,.xls,.csv' },
-      { rotulo: 'XML', modo: 'modal', componente: XmlMassaCard, tituloModal: 'XML de CT-e em massa' },
+      { rotulo: 'Planilha', titulo: 'CT-es por planilha', render: ({ transportadoras }) => <CtePage transportadoras={transportadoras} somenteImportacao /> },
+      { rotulo: 'XML', titulo: 'XML de CT-e em massa', render: () => <XmlMassaCard /> },
     ],
-    descricao: 'Planilha de CT-es (a de hoje) ou XMLs/pasta inteira. A planilha abre a tela CT-e já carregada para você confirmar competência e modo.', diasOk: 3, diasAtencao: 7,
   },
   {
-    tipo: 'tracking', titulo: 'Tracking', pagina: 'tracking', modo: 'repasse', accept: '.xlsx,.xls,.xlsm,.csv', multiplo: true, pasta: true,
-    descricao: 'Planilhas de tracking (arquivo ou pasta). Abre a tela Tracking e importa.', diasOk: 3, diasAtencao: 7,
+    tipo: 'tracking', titulo: 'Tracking', pagina: 'tracking',
+    descricao: 'Planilhas de tracking (arquivo ou pasta): complementar só novos ou atualizar existentes.', diasOk: 3, diasAtencao: 7,
+    opcoes: [{ rotulo: 'Importar', render: () => <TrackingPage somenteImportacao /> }],
   },
 ];
 
@@ -77,7 +81,7 @@ const CORES = {
   cinza: { fundo: '#f8fafc', borda: '#e2e8f0', texto: '#475569', ponto: '#94a3b8' },
 };
 
-export default function PainelImportacoes({ onMudarPagina }) {
+export default function PainelImportacoes({ onMudarPagina, transportadoras = [] }) {
   const sessao = carregarSessao();
   const visiveis = useMemo(() => IMPORTACOES.filter((item) => {
     if (!usuarioTemAcesso(sessao, item.pagina)) return false;
@@ -88,7 +92,6 @@ export default function PainelImportacoes({ onMudarPagina }) {
   const [status, setStatus] = useState({ porTipo: {}, origem: '' });
   const [carregando, setCarregando] = useState(true);
   const [modalAberto, setModalAberto] = useState(null);
-  const inputs = useRef({});
 
   const atualizar = useCallback(async () => {
     setCarregando(true);
@@ -108,16 +111,13 @@ export default function PainelImportacoes({ onMudarPagina }) {
 
   if (!visiveis.length) return null;
 
-  const escolheu = (item, files) => {
-    const lista = Array.from(files || []);
-    if (!lista.length) return;
-    agendarImportacao(item.tipoRepasse || item.tipo, lista);
-    if (typeof onMudarPagina === 'function') onMudarPagina(item.pagina);
+  const fecharModal = () => {
+    setModalAberto(null);
+    atualizar();
   };
 
   const situacoes = visiveis.map((item) => situacao(item, status.porTipo[item.tipo]));
   const emDia = situacoes.filter((s) => s.classe === 'ok').length;
-  const ItemModal = modalAberto?.componente;
 
   return (
     <section className="dashboard-workbench">
@@ -162,30 +162,10 @@ export default function PainelImportacoes({ onMudarPagina }) {
                 ))}
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 'auto', flexWrap: 'wrap' }}>
-                {item.modo === 'opcoes' ? (
-                  item.opcoes.map((op, i) => (op.modo === 'modal' ? (
-                    <button key={op.rotulo} type="button" className={i === 0 ? 'btn-primary' : 'btn-secondary'} onClick={() => setModalAberto({ ...op, titulo: op.tituloModal || item.titulo })}>{op.rotulo}</button>
-                  ) : (
-                    <span key={op.rotulo} style={{ display: 'contents' }}>
-                      <button type="button" className={i === 0 ? 'btn-primary' : 'btn-secondary'} onClick={() => inputs.current[`${item.tipo}-${op.rotulo}`]?.click()}>{op.rotulo}</button>
-                      <input ref={(el) => { inputs.current[`${item.tipo}-${op.rotulo}`] = el; }} type="file" accept={op.accept} hidden
-                        onChange={(e) => { const f = e.target.files; escolheu({ ...item, ...op }, f); e.target.value = ''; }} />
-                    </span>
-                  )))
-                ) : item.modo === 'modal' ? (
-                  <button type="button" className="btn-primary" onClick={() => setModalAberto(item)}>Importar</button>
-                ) : (
-                  <>
-                    <button type="button" className="btn-primary" onClick={() => inputs.current[item.tipo]?.click()}>{item.multiplo ? 'Importar arquivo(s)' : 'Importar'}</button>
-                    {item.pasta && <button type="button" className="btn-secondary" onClick={() => inputs.current[`${item.tipo}-pasta`]?.click()}>Pasta</button>}
-                    <input ref={(el) => { inputs.current[item.tipo] = el; }} type="file" accept={item.accept} multiple={Boolean(item.multiplo)} hidden
-                      onChange={(e) => { const f = e.target.files; escolheu(item, f); e.target.value = ''; }} />
-                    {item.pasta && (
-                      <input ref={(el) => { inputs.current[`${item.tipo}-pasta`] = el; }} type="file" webkitdirectory="" directory="" multiple hidden
-                        onChange={(e) => { const f = e.target.files; escolheu(item, f); e.target.value = ''; }} />
-                    )}
-                  </>
-                )}
+                {item.opcoes.map((op, i) => (
+                  <button key={op.rotulo} type="button" className={i === 0 ? 'btn-primary' : 'btn-secondary'}
+                    onClick={() => setModalAberto({ ...op, titulo: op.titulo || item.titulo })}>{op.rotulo}</button>
+                ))}
                 <button type="button" className="btn-secondary" onClick={() => onMudarPagina?.(item.pagina)}>Abrir tela</button>
               </div>
             </div>
@@ -198,15 +178,20 @@ export default function PainelImportacoes({ onMudarPagina }) {
         </small>
       )}
 
-      {ItemModal && (
-        <div role="dialog" aria-modal="true" onClick={() => setModalAberto(null)}
-          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 10000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '5vh 16px', overflowY: 'auto' }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, width: 'min(980px, 100%)', boxShadow: '0 24px 60px rgba(0,0,0,.25)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 20px', borderBottom: '1px solid #e2e8f0' }}>
+      {modalAberto && (
+        <div role="dialog" aria-modal="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 10000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '4vh 16px', overflowY: 'auto' }}>
+          <div style={{ background: 'var(--bg, #f8fafc)', borderRadius: 16, width: 'min(1180px, 100%)', boxShadow: '0 24px 60px rgba(0,0,0,.25)', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '14px 20px', borderBottom: '1px solid #e2e8f0', background: '#fff' }}>
               <strong>Importar — {modalAberto.titulo}</strong>
-              <button type="button" className="btn-secondary" onClick={() => setModalAberto(null)}>Fechar</button>
+              <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                <small style={{ color: '#64748b' }}>Não feche enquanto estiver importando.</small>
+                <button type="button" className="btn-secondary" onClick={fecharModal}>Fechar</button>
+              </span>
             </div>
-            <ItemModal />
+            <div style={{ padding: 16 }}>
+              {modalAberto.render({ onMudarPagina, transportadoras })}
+            </div>
           </div>
         </div>
       )}

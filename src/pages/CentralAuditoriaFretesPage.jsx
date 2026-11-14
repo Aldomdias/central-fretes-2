@@ -21,7 +21,6 @@ import { montarCorpoEmailLaudo, montarEml, slugArquivoEmail } from '../utils/ema
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 import { carregarGruposRaizTransportadora, carregarRaizesAdicionaisPorTransportadora } from '../services/transportadoraCnpjsService';
 import { lerCteXml } from '../utils/cteXml';
-import { consumirImportacao } from '../utils/importacaoPendente';
 import { registrarImportacao } from '../services/importacoesStatusService';
 import {
   atualizarStatusJornada,
@@ -6894,14 +6893,28 @@ ${portaisLaudo.length ? `
     }
   };
 
-  // Arquivo escolhido na Central de importacoes do Dashboard: roda a mesma importacao do botao.
-  useEffect(() => {
-    if (modo !== 'faturas') return;
-    const arquivos = consumirImportacao('faturas-verum');
-    if (arquivos?.length) importarFaturas({ target: { files: arquivos, value: '' } });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
+  // Janela da Central de importacoes (Dashboard): so o importador da planilha Verum.
+  if (modo === 'importacao') {
+    return (
+      <div className="panel-card" style={{ margin: 0 }}>
+        <div className="section-row compact-top">
+          <div>
+            <div className="panel-title">Importar fatura Verum</div>
+            <p>Planilha do Verum com as abas Faturas e Detalhes. Reimportar a mesma fatura atualiza, não duplica. Depois use "Recalcular CT-es" em cada fatura para o status AMD.</p>
+          </div>
+          <div className="actions-right">
+            <button className="btn-primary" disabled={importando} onClick={() => arquivoRef.current?.click()}>
+              {importando ? 'Importando...' : 'Escolher arquivo e importar'}
+            </button>
+            <input ref={arquivoRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={importarFaturas} />
+          </div>
+        </div>
+        <AmdProcessingOverlay ativo={importando} progresso={progressoImportacao} mensagemRodape="Pode levar mais tempo em arquivos com muitas faturas/CT-es e várias transportadoras." />
+        {mensagemImportacao && <div className="hint-box compact">{mensagemImportacao}</div>}
+      </div>
+    );
+  }
   return (
     <>
       {mostrarAuditoriaAvulsa && (
@@ -9756,12 +9769,12 @@ function FinanceiroDevolutiva({ state, onState, sessao }) {
   );
 }
 
-function Financeiro({ state, onState, financeiroPronto = true }) {
+function Financeiro({ state, onState, somenteImportacao = false }) {
   const sessao = carregarSessao();
   if (sessao?.perfil === 'FINANCEIRO') return <FinanceiroDevolutiva state={state} onState={onState} sessao={sessao} />;
   const pagamentoRef = useRef(null);
   const pagamentoPastaRef = useRef(null);
-  const [subtab, setSubtab] = useState('protocolos');
+  const [subtab, setSubtab] = useState(somenteImportacao ? 'pagamentos' : 'protocolos');
   const [faturaId, setFaturaId] = useState('');
   const [canal, setCanal] = useState('VERUM_SAP');
   const [tipo, setTipo] = useState(SOLICITACAO_FINANCEIRA_TIPOS[0]);
@@ -10126,24 +10139,13 @@ function Financeiro({ state, onState, financeiroPronto = true }) {
     }
   };
 
-  // Arquivo(s) escolhido(s) na Central de importacoes do Dashboard: abre Pagamentos e importa
-  // quando os dados da Central Financeira terminaram de carregar.
-  useEffect(() => {
-    if (!financeiroPronto) return;
-    const arquivos = consumirImportacao('sap-pagamentos');
-    if (!arquivos?.length) return;
-    setSubtab('pagamentos');
-    importarPagamentos({ target: { files: arquivos, value: '' } });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [financeiroPronto]);
-
   return (
     <>
-      <div className="tabs-row">
+      {!somenteImportacao && <div className="tabs-row">
         {[
           ['protocolos', 'Protocolos'], ['solicitacoes', 'Solicitacoes e SLA'], ['boletos', 'Boletos'], ['pagamentos', 'Pagamentos'], ['dados-bancarios', 'Dados Bancarios'],
         ].map(([id, label]) => <button key={id} className={`toggle-btn ${subtab === id ? 'active' : ''}`} onClick={() => setSubtab(id)}>{label}</button>)}
-      </div>
+      </div>}
       {erroFinanceiro && <div className="hint-box compact error-text">{erroFinanceiro}</div>}
       {subtab === 'dados-bancarios' && <DadosBancariosTransportadoras sessao={sessao} />}
 
@@ -10372,6 +10374,7 @@ function Financeiro({ state, onState, financeiroPronto = true }) {
               </div>
             )}
           </div>
+          {!somenteImportacao && (<>
           <ProvisaoCtesPainel />
           <VincularPagamentosSap state={state} onState={onState} sessao={sessao} />
           <DesfazerVinculosSap state={state} onState={onState} sessao={sessao} />
@@ -10391,6 +10394,7 @@ function Financeiro({ state, onState, financeiroPronto = true }) {
             })}
             empty="Nenhum relatorio financeiro importado."
           />
+          </>)}
         </>
       )}
     </>
@@ -10413,7 +10417,7 @@ function SimpleTable({ headers, rows, empty = 'Nenhum registro encontrado.' }) {
   );
 }
 
-export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', embedded = false, onMudarPagina, onAbrirTransportadoras, filtroExterno = null }) {
+export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', embedded = false, onMudarPagina, onAbrirTransportadoras, filtroExterno = null, somenteImportacao = '' }) {
   const [tab, setTab] = useState(initialTab);
   const [state, setState] = useState(null);
   const [erro, setErro] = useState('');
@@ -10453,7 +10457,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   // Auditoria abre (o laudo e montado na tela). Uma vez por carga da pagina; o servidor trava contra envio duplo.
   const envioDiretoVerificado = useRef(false);
   useEffect(() => {
-    if (embedded || !state || state.modo !== 'SUPABASE' || envioDiretoVerificado.current) return;
+    if (embedded || somenteImportacao || !state || state.modo !== 'SUPABASE' || envioDiretoVerificado.current) return;
     envioDiretoVerificado.current = true;
     (async () => {
       try {
@@ -10530,7 +10534,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   const [financeiroExtrasCarregados, setFinanceiroExtrasCarregados] = useState(false);
   const [financeiroExtrasProntos, setFinanceiroExtrasProntos] = useState(false);
   useEffect(() => {
-    if (tab !== 'financeiro' || financeiroExtrasCarregados || !state || state.modo !== 'SUPABASE') return;
+    if ((tab !== 'financeiro' && somenteImportacao !== 'sap') || financeiroExtrasCarregados || !state || state.modo !== 'SUPABASE') return;
     setFinanceiroExtrasCarregados(true);
     carregarPlataformaAuditoriaFinanceiro()
       .then((extras) => setState((prev) => (prev ? { ...prev, ...extras } : prev)))
@@ -10541,6 +10545,13 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   const restaurar = () => setState({ ...restaurarDemonstracaoAuditoria(), modo: 'DEMONSTRACAO_LOCAL' });
 
   if (!state) return <div className="panel-card">{erro ? `Erro: ${erro}` : 'Carregando Plataforma de Auditoria de Fretes...'}</div>;
+
+  // Janela da Central de importacoes do Dashboard: so o importador pedido.
+  if (somenteImportacao === 'faturas') return <Faturas state={state} onState={setState} modo="importacao" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />;
+  if (somenteImportacao === 'sap') {
+    if (state.modo === 'SUPABASE' && !financeiroExtrasProntos) return <div className="panel-card">Carregando dados da Central Financeira...</div>;
+    return <Financeiro state={state} onState={setState} somenteImportacao />;
+  }
 
   // Perfil Financeiro (fora da auditoria): modulo proprio, sem as outras abas
   // (Faturas, Gestao etc.) — so o menu ja restringe a pagina, mas essa tela tinha
@@ -10599,7 +10610,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
       {tab === 'auditoria-cte' && <Faturas state={state} onState={setState} modo="auditoria-cte" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />}
       {tab === 'aprovacao' && <AprovacaoGestao state={state} onState={setState} />}
       {tab === 'gestao' && <Gestao state={state} onState={setState} />}
-      {tab === 'financeiro' && <Financeiro state={state} onState={setState} financeiroPronto={financeiroExtrasProntos || state.modo !== 'SUPABASE'} />}
+      {tab === 'financeiro' && <Financeiro state={state} onState={setState} />}
       {faturaOverlay && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 3000, overflow: 'auto', background: '#eef3f9', padding: 16 }}>
           <FaturaDetalhe state={state} fatura={faturaOverlay} onClose={() => setFaturaOverlayId(null)} onState={setState} />

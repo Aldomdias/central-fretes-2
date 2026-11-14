@@ -4,7 +4,6 @@ import BaseCtesStatus, { invalidarStatusBaseCtes } from '../components/BaseCtesS
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import { parseRealizadoCtesFile } from '../utils/realizadoCtes';
 import { lerCteXml } from '../utils/cteXml';
-import { consumirImportacao } from '../utils/importacaoPendente';
 import { registrarImportacao } from '../services/importacoesStatusService';
 import {
   competenciaPrecisaEnxuta,
@@ -2289,7 +2288,7 @@ function ValidacaoUpload({ validacao }) {
   );
 }
 
-export default function CtePage({ transportadoras = [] }) {
+export default function CtePage({ transportadoras = [], somenteImportacao = false }) {
   const [filtros, setFiltros] = useState({
     transportadoraRealizada: '',
     origem: '',
@@ -2458,6 +2457,7 @@ export default function CtePage({ transportadoras = [] }) {
   );
 
   useEffect(() => {
+    if (somenteImportacao) return;
     carregarComparativoMensal();
   }, []);
 
@@ -2881,18 +2881,6 @@ export default function CtePage({ transportadoras = [] }) {
     return tipoArquivoUpload === 'xml' ? arquivosXmlUpload : [arquivoUpload].filter(Boolean);
   }
 
-  // Planilha escolhida na Central de importacoes do Dashboard: chega ja carregada aqui; a pessoa
-  // confere competencia / multi-mes e escolhe complementar ou substituir (nao importa sozinho).
-  useEffect(() => {
-    const arquivos = consumirImportacao('ctes-planilha');
-    if (!arquivos?.length) return;
-    setTipoArquivoUpload('planilha');
-    setArquivoUpload(arquivos[0]);
-    setErro('');
-    setFeedback(`Planilha "${arquivos[0].name}" carregada pela Central de importações. Confira a competência (ou marque vários meses) e clique em Complementar / importar novos.`);
-    setTimeout(() => document.getElementById('cte-subir-ctes')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 300);
-  }, []);
-
   async function continuarProcessamentoPendente() {
     if (!competenciaUpload) {
       setErro('Selecione a competência para continuar o processamento.');
@@ -3242,7 +3230,8 @@ export default function CtePage({ transportadoras = [] }) {
   const fimExibicao = rowsFiltradas ? Math.min(inicioExibicao + rowsFiltradas.length - 1, rowsAnaliseInterativas.length) : 0;
 
   return (
-    <div className="page-shell cte-page">
+    <div className={somenteImportacao ? 'cte-page' : 'page-shell cte-page'}>
+      {!somenteImportacao && <>
       <AmdProcessingOverlay
         ativo={carregando || carregandoAnalise}
         progresso={progressoAnalise || { etapa: 'buscando_ctes', carregados: 0, total: null }}
@@ -3255,6 +3244,7 @@ export default function CtePage({ transportadoras = [] }) {
           <BaseCtesStatus />
         </div>
       </div>
+      </>}
 
       {erro && (
         <div style={{ padding: '10px 14px', background: '#fff1f1', border: '1px solid #efc4c4', borderRadius: 10, color: '#9b2323', fontSize: 13, marginBottom: 12 }}>
@@ -3268,7 +3258,7 @@ export default function CtePage({ transportadoras = [] }) {
         </div>
       )}
 
-      {modalCompetenciaAberto && (
+      {!somenteImportacao && modalCompetenciaAberto && (
         <div className="panel-card" style={{ border: '2px solid #185FA5', marginBottom: 12 }}>
           <div className="section-row compact-top">
             <div>
@@ -3317,7 +3307,6 @@ export default function CtePage({ transportadoras = [] }) {
         </div>
       )}
 
-      <div id="cte-subir-ctes" />
       <ExpandCard
         title="Subir / reimportar CT-es"
         subtitle="Use aqui para subir novamente uma competência e preservar valor calculado, diferença, status e dados de conciliação."
@@ -3729,6 +3718,7 @@ export default function CtePage({ transportadoras = [] }) {
         </ExpandCard>
       ) : null}
 
+      {!somenteImportacao && (<>
       <ExpandCard
         title="Diagnóstico por chave"
         subtitle="Busca na base oficial e no último upload ignorado para explicar por que um CT-e entrou ou ficou de fora."
@@ -4712,6 +4702,7 @@ export default function CtePage({ transportadoras = [] }) {
           </div>
         </>
       )}
+      </>)}
     </div>
   );
 }

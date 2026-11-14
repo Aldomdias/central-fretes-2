@@ -18,7 +18,6 @@ import {
   limparTrackingCompetencia,
 } from '../services/trackingSupabaseService';
 import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
-import { consumirImportacao } from '../utils/importacaoPendente';
 import { registrarImportacao } from '../services/importacoesStatusService';
 
 function formatarNumero(value, casas = 0) {
@@ -97,7 +96,7 @@ function resumirArquivosSelecionados(arquivos = []) {
   return `${arquivos.length} arquivos selecionados: ${nomes}${arquivos.length > 3 ? '...' : ''}`;
 }
 
-export default function TrackingPage() {
+export default function TrackingPage({ somenteImportacao = false } = {}) {
   const [arquivos, setArquivos] = useState([]);
   const [modoImportacao, setModoImportacao] = useState('complementar');
   const [competenciaLimpeza, setCompetenciaLimpeza] = useState('');
@@ -167,19 +166,9 @@ export default function TrackingPage() {
 
   useEffect(() => {
     atualizarTela().catch(() => {});
-    // Arquivo(s) escolhido(s) na Central de importacoes do Dashboard: importa direto.
-    const repassados = consumirImportacao('tracking');
-    if (repassados?.length) {
-      const lista = filtrarPlanilhas(repassados);
-      setArquivos(lista);
-      importarLocal(lista);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const arquivosSelecionados = arquivos;
-  async function importarLocal(listaRepassada) {
-    const arquivos = Array.isArray(listaRepassada) ? listaRepassada : arquivosSelecionados;
+  async function importarLocal() {
     if (!arquivos.length) {
       setErro('Selecione um arquivo ou uma pasta com arquivos de Tracking.');
       return;
@@ -215,12 +204,10 @@ export default function TrackingPage() {
         },
       });
       setMensagem(`Importacao local concluida: ${formatarNumero(resultado.total)} linha(s) salvas.${resultado.duplicadosArquivo ? ` Duplicados no arquivo ignorados: ${formatarNumero(resultado.duplicadosArquivo)}.` : ''}`);
-      registrarImportacao({ tipo: 'tracking', arquivos, linhas: resultado.total, resumo: `${formatarNumero(resultado.total)} linha(s) salvas` });
       setArquivos([]);
       await atualizarTela();
     } catch (error) {
       setErro(error.message || 'Erro ao importar Tracking.');
-      registrarImportacao({ tipo: 'tracking', arquivos, status: 'ERRO', resumo: error.message || 'Erro ao importar Tracking.' });
     } finally {
       setCarregando(false);
     }
@@ -336,10 +323,15 @@ export default function TrackingPage() {
         ? ` Lidos: ${formatarNumero(comp.lidos)} · já na base: ${formatarNumero(comp.jaNaBase)} · novos: ${formatarNumero(comp.novos)}.`
         : '';
       setMensagem(`${resultado.mensagem || 'Tracking enviado ao Supabase.'}${sufixo}`);
+      registrarImportacao({
+        tipo: 'tracking', arquivos: usarLocal ? ['base local'] : arquivos, linhas: resultado.enviados ?? null,
+        resumo: `${modoImportacao === 'complementar' ? 'Complementar' : 'Atualizar + novos'}: ${formatarNumero(resultado.enviados || 0)} linha(s) gravada(s)${comp ? `, ${formatarNumero(comp.novos)} nova(s)` : ''}`,
+      });
       if (!usarLocal) setArquivos([]);
       await atualizarTela();
     } catch (error) {
       setErro(error.message || 'Erro ao enviar Tracking ao Supabase.');
+      registrarImportacao({ tipo: 'tracking', arquivos: usarLocal ? ['base local'] : arquivos, status: 'ERRO', resumo: error.message || 'Erro ao enviar Tracking ao Supabase.' });
     } finally {
       setCarregando(false);
       setProgresso(null);
@@ -429,14 +421,14 @@ export default function TrackingPage() {
   }
 
   return (
-    <div className="page-shell">
-      <div className="page-header">
+    <div className={somenteImportacao ? '' : 'page-shell'}>
+      {!somenteImportacao && <div className="page-header">
         <div className="amd-mini-brand">AMD Log • Tracking</div>
         <h1>Tracking</h1>
         <p>
           Importe a base de notas fiscais/tracking para volumetria e simulação. O envio ao Supabase usa a <strong>chave da NF</strong> como identificador — uma linha por NF — e no modo complementar sobe apenas o que ainda não está na base.
         </p>
-      </div>
+      </div>}
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {mensagem ? <div className="sim-alert info">{mensagem}</div> : null}
@@ -458,7 +450,7 @@ export default function TrackingPage() {
         </section>
       ) : null}
 
-      <section className="panel-card">
+      {!somenteImportacao && <section className="panel-card">
         <div className="panel-title">Limpar competência do Tracking online</div>
         <p>Exclui os registros do mês de emissão da NF, identificado pelo ano e mês na chave NF-e. Inclui duplicados desse mês e preserva as outras competências. Tenha o arquivo completo para reenviar após a limpeza.</p>
         <p className="compact">Registros sem chave NF-e válida não são incluídos nesta limpeza. A base local deste navegador permanece disponível para conferência.</p>
@@ -470,7 +462,7 @@ export default function TrackingPage() {
             Limpar competência online…
           </button>
         </div>
-      </section>
+      </section>}
 
       <section className="panel-card">
         <div className="section-row compact-top">
@@ -480,7 +472,7 @@ export default function TrackingPage() {
           </div>
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={() => atualizarTela({ comFeedback: true })} disabled={carregando || atualizandoResumo}>{atualizandoResumo ? 'Atualizando...' : 'Atualizar resumo'}</button>
-            <button className="btn-danger" type="button" onClick={limparBase} disabled={carregando || !diagnostico.total}>Limpar base local</button>
+            {!somenteImportacao && <button className="btn-danger" type="button" onClick={limparBase} disabled={carregando || !diagnostico.total}>Limpar base local</button>}
           </div>
         </div>
 
@@ -540,6 +532,7 @@ export default function TrackingPage() {
         </div>
       </section>
 
+      {!somenteImportacao && (<>
       <section className="panel-card">
         <div className="section-row compact-top">
           <div>
@@ -680,6 +673,7 @@ export default function TrackingPage() {
           </table>
         </div>
       </section>
+      </>)}
     </div>
   );
 }
