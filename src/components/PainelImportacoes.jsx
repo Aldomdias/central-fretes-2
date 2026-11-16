@@ -30,6 +30,9 @@ const IMPORTACOES = [
   {
     tipo: 'ctes', titulo: 'CT-es', pagina: 'cte',
     descricao: 'Planilha de CT-es (competência, complementar / atualizar / substituir) ou XMLs / pasta inteira.', diasOk: 3, diasAtencao: 7,
+    // Status pela data em que a base recebeu CT-e novo, nao pelo clique em importar:
+    // uma carga complementar sem nenhum CT-e novo nao deixa a base "em dia".
+    statusPelaBase: true,
     opcoes: [
       { rotulo: 'Planilha', titulo: 'CT-es por planilha', render: ({ transportadoras }) => <CtePage transportadoras={transportadoras} somenteImportacao /> },
       { rotulo: 'XML', titulo: 'XML de CT-e em massa', render: () => <XmlMassaCard /> },
@@ -63,9 +66,23 @@ function tempoDesde(ms) {
   return `há ${dias} dia${dias > 1 ? 's' : ''}`;
 }
 
+function refDaBase(status) {
+  return status?.indicadores?.find((i) => i.tipo === 'datahora' && i.valor)?.valor || null;
+}
+
+// A ultima importacao registrada e' mais recente que o ultimo dado novo gravado na base
+// (ex.: carga complementar em que tudo ja estava na base).
+function importacaoSemDadoNovo(item, status) {
+  const base = refDaBase(status);
+  const imp = status?.ultimoOk?.criado_em;
+  if (!item.statusPelaBase || !base || !imp) return false;
+  return new Date(imp).getTime() - new Date(base).getTime() > 60 * 60 * 1000;
+}
+
 // Data de referencia: ultimo registro OK; sem registro, o indicador de data/hora da propria base.
+// Com statusPelaBase, vale a data em que a base recebeu dado novo.
 function situacao(item, status) {
-  const ref = status?.ultimoOk?.criado_em || status?.indicadores?.find((i) => i.tipo === 'datahora' && i.valor)?.valor || null;
+  const ref = (item.statusPelaBase && refDaBase(status)) || status?.ultimoOk?.criado_em || refDaBase(status) || null;
   if (!ref) return { classe: 'cinza', texto: 'Sem registro', ref: null };
   const idade = Date.now() - new Date(ref).getTime();
   const quando = tempoDesde(idade);
@@ -153,6 +170,9 @@ export default function PainelImportacoes({ onMudarPagina, transportadoras = [] 
                   </div>
                 ) : (
                   <div style={{ color: '#64748b' }}>Nenhuma importação registrada por aqui ainda.</div>
+                )}
+                {importacaoSemDadoNovo(item, st) && (
+                  <div style={{ color: '#92400e' }}>Essa importação não trouxe dado novo: a base continua como estava em {dataHora(refDaBase(st))}.</div>
                 )}
                 {ultimoComErro && (
                   <div style={{ color: '#b91c1c' }} title={ultimo.resumo || ''}>Última tentativa com erro em {dataHora(ultimo.criado_em)}{ultimo.resumo ? `: ${ultimo.resumo.slice(0, 120)}` : ''}</div>
