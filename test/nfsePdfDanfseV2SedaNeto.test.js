@@ -154,3 +154,36 @@ test('DANFSe v2.0 J. Seda Neto (OCR): NF 134 com a chave quebrada no topo e inte
   assert.equal(dados.valorLiquido, 87.1);
   comum(dados);
 });
+
+// Variacoes do OCR vistas de uma maquina para outra: o mesmo PDF pode sair com o titulo do valor ilegivel,
+// "R$" lido como "RS" ou a linha do valor perdida. O valor tem que sair mesmo assim.
+const trocar = (linhas, de, para) => linhas.map((l) => (l === de ? para : l));
+const TIT_134 = 'VALOR TOTAL DA NFS-e VALOR DA OPERAÇÃO / SERVIÇO Desconto Incondicionado Desconto Condicionado';
+
+test('DANFSe v2.0 (OCR): "R$" lido como "RS" e titulo com O trocado por zero', () => {
+  let l = trocar(LINHAS_NF134, TIT_134, 'VALOR TOTAL DA NFS-e VAL0R DA OPERAGAO / SERVIÇO Desconto Incondicionado');
+  l = trocar(l, 'R$ 87,10 - -', 'RS 87,10 - -');
+  const { dados, faltando } = extrairDadosNfse(l, { ocr: true });
+  assert.deepEqual(faltando, []);
+  assert.equal(dados.valor, 87.1);
+});
+
+test('DANFSe v2.0 (OCR): titulo ilegivel e linha do valor perdida -> valor = retencoes + liquido', () => {
+  const l = LINHAS_NF130
+    .filter((x) => !x.includes('VALORDAOPERA') && x !== 'R$ 315,99 - -')
+    .map((x) => (x === 'R$0,00 R$315,99 R$3,10 R$315,99' ? 'R$ 1,50 RS 314,49 R$ 3,10 R$315,99' : x));
+  const { dados, faltando } = extrairDadosNfse(l, { ocr: true });
+  assert.deepEqual(faltando, []);
+  assert.equal(dados.valor, 315.99);
+  assert.equal(dados.valorLiquido, 314.49);
+  assert.equal(dados.codImp, 'IN');
+});
+
+test('DANFSe v2.0 (OCR): retencoes "-" na linha do liquido', () => {
+  const l = LINHAS_NF134
+    .filter((x) => x !== TIT_134 && x !== 'R$ 87,10 - -')
+    .map((x) => (x === 'R$ 0,00 R$87,10 R$ 0,86 R$87,10' ? '- R$87,10 R$ 0,86 R$87,10' : x));
+  const { dados, faltando } = extrairDadosNfse(l, { ocr: true });
+  assert.deepEqual(faltando, []);
+  assert.equal(dados.valor, 87.1);
+});
