@@ -9373,6 +9373,16 @@ function AprovacaoGestao({ state, onState }) {
           <button type="button" className="btn-secondary" onClick={() => { setFiltroTransportadora(''); setFiltroSolicitante(''); setFiltroOrigem(''); setFiltroBusca(''); }}>Limpar filtros</button>
         )}
       </div>
+      {ehGestor && qtdRobo > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '6px 0', padding: '8px 12px', background: '#ecfdf3', border: '1px solid #b7e4c7', borderRadius: 10 }}>
+          <strong style={{ color: '#14733b' }}>{qtdRobo} fatura(s) enviadas pelo Robo</strong>
+          <button type="button" className="btn-primary" disabled={processando} onClick={() => {
+            setFiltroOrigem('ROBO');
+            setSelecionadas(pendentesTodas.filter((item) => respostaAuditor(item).robo).map((item) => item.id));
+          }}>Filtrar e selecionar so as do Robo ({qtdRobo})</button>
+          <span style={{ fontSize: 12, color: '#475569' }}>Depois clique em "Aprovar e liberar (sem diferenca)".</span>
+        </div>
+      )}
       {ehGestor && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0' }}>
           {botao('LIBERAR', 'Aprovar e liberar (sem diferenca)', 'btn-primary')}
