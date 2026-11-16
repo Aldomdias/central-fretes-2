@@ -595,8 +595,10 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
     }
   }
 
-  // valor da operacao/servico (= valor bruto da nota): primeiro R$ da linha abaixo do titulo
-  const iVal = U.findIndex((l) => l.includes('VALOR DA OPERACAO'));
+  // valor da operacao/servico (= valor bruto da nota): primeiro R$ da linha abaixo do titulo.
+  // Comparado sem espacos: o OCR do DANFSe v2.0 as vezes gruda o titulo ("VALORDAOPERACAO/SERVICO",
+  // J. Seda Neto de Pouso Alegre).
+  const iVal = U.findIndex((l) => l.replace(/\s+/g, '').includes('VALORDAOPERACAO'));
   if (iVal >= 0) {
     for (let k = iVal + 1; k < Math.min(iVal + 3, L.length); k += 1) {
       const m = L[k].match(RE_VALOR);
