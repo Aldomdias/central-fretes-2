@@ -9323,6 +9323,36 @@ function AprovacaoGestao({ state, onState }) {
   };
 
 
+  // Varre a fila e devolve para "Para revisar" (card "CT-e faltando" do robo) toda fatura com CT-e
+  // nao localizado na base: sem esse CT-e auditado ela nao pode ser aprovada.
+  const [varrendo, setVarrendo] = useState('');
+  const devolverCteFaltando = async () => {
+    if (!pendentesTodas.length) return;
+    if (!window.confirm(`Verificar as ${pendentesTodas.length} fatura(s) da fila e devolver para "Para revisar" as que tem CT-e nao localizado na base?`)) return;
+    setProcessando(true); setMensagem('');
+    const devolvidas = []; const falhas = []; const ids = new Set();
+    try {
+      const { devolverParaRevisaoSeCteFaltando } = await import('../utils/auditoriaRoboCore');
+      const db = getSupabaseClient();
+      for (let i = 0; i < pendentesTodas.length; i += 1) {
+        const f = pendentesTodas[i];
+        setVarrendo(`Verificando ${i + 1} de ${pendentesTodas.length} (fatura ${f.numero_fatura})...`);
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const r = await devolverParaRevisaoSeCteFaltando(db, f, { usuario: `Robo Auditor (varredura por ${usuarioNome})` });
+          if (r.devolvida) { devolvidas.push(`${f.numero_fatura} (${r.faltando} CT-e)`); ids.add(f.id); }
+        } catch (e) { falhas.push(`${f.numero_fatura}: ${e.message || e}`); }
+      }
+    } finally {
+      setVarrendo(''); setProcessando(false);
+    }
+    if (devolvidas.length) {
+      onState({ ...state, faturas: (state.faturas || []).map((f) => (ids.has(f.id) ? { ...f, status: 'COM_DIVERGENCIA' } : f)) });
+      setSelecionadas((prev) => prev.filter((id) => !ids.has(id)));
+    }
+    setMensagem(`${devolvidas.length} fatura(s) com CT-e faltando devolvidas para "Para revisar"${devolvidas.length ? `: ${devolvidas.join(', ')}` : ''}.${falhas.length ? ` Falhou em ${falhas.length}: ${falhas.join('; ')}` : ''}`);
+  };
+
   const totalEscolhido = escolhidas.reduce((acc, item) => acc + valorPendente(item), 0);
   const botao = (tipo, rotulo, classe = 'btn-secondary') => (
     <button type="button" className={classe} disabled={!escolhidas.length || processando} onClick={() => abrirDecisao(tipo)}>{rotulo} ({escolhidas.length})</button>
@@ -9373,6 +9403,15 @@ function AprovacaoGestao({ state, onState }) {
           <button type="button" className="btn-secondary" onClick={() => { setFiltroTransportadora(''); setFiltroSolicitante(''); setFiltroOrigem(''); setFiltroBusca(''); }}>Limpar filtros</button>
         )}
       </div>
+      {ehGestor && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '6px 0' }}>
+          <button type="button" className="btn-secondary" disabled={processando || !pendentesTodas.length} onClick={devolverCteFaltando}
+            title="Fatura com CT-e nao localizado na base nao pode ser aprovada: volta para a auditoria, no card 'CT-e faltando' do robo">
+            Verificar fila: devolver as com CT-e faltando
+          </button>
+          {varrendo && <span style={{ fontSize: 12, color: '#475569' }}>{varrendo}</span>}
+        </div>
+      )}
       {ehGestor && qtdRobo > 0 && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '6px 0', padding: '8px 12px', background: '#ecfdf3', border: '1px solid #b7e4c7', borderRadius: 10 }}>
           <strong style={{ color: '#14733b' }}>{qtdRobo} fatura(s) enviadas pelo Robo</strong>

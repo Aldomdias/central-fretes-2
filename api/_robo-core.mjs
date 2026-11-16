@@ -28527,6 +28527,14 @@ function classificarFatura(resumo, considerarMenor = false) {
   const maior = Number(resumo.maior || 0);
   const menor = Number(resumo.menor || 0);
   const descontar = Number((considerarMenor ? Math.max(0, maior - menor) : maior).toFixed(2));
+  const naoLocalizados = Array.isArray(resumo.naoLocalizados) ? resumo.naoLocalizados : [];
+  if (naoLocalizados.length) {
+    return {
+      decisao: DECISAO.REVISAO_AUDITOR,
+      descontar,
+      motivo: `CT-e nao localizado: ${naoLocalizados.length} de ${resumo.total} CT-e(s) da fatura nao encontrado(s) na base de CT-es, sem calculo (CT-e ${naoLocalizados.slice(0, 10).join(", ")}${naoLocalizados.length > 10 ? "..." : ""}). Importar o XML ou atualizar a base de CT-es e reavaliar. Laudo nao enviado.`
+    };
+  }
   const semNf = Array.isArray(resumo.semNf) ? resumo.semNf : [];
   if (resumo.semNfSuspeito) {
     return {
@@ -28635,7 +28643,15 @@ function deduplicar(lista = []) {
 }
 function mesclar(item, referencia) {
   const base = referencia.get(normalizarChaveCte(item.chave_cte)) || referencia.get(normalizarChaveCte(item.numero_cte));
-  if (!base) return item;
+  if (!base) {
+    return {
+      ...item,
+      fora_da_base: true,
+      calculado_frete: 0,
+      status: "SEM_CALCULO",
+      motivo_sem_calculo: normalizarChaveCte(item.chave_cte).length === 44 ? "CT-e sem resultado na base de auditoria" : ""
+    };
+  }
   const valor = Number(item.valor_frete || base.valor_cte || 0);
   const amd = Number(base.valor_calculado || 0);
   const diferenca = amd > 0 ? Number((valor - amd).toFixed(2)) : Number(item.diferenca || 0);
@@ -28659,7 +28675,7 @@ function mesclar(item, referencia) {
   };
 }
 function aplicarSaldo(item, saldos, referencia) {
-  if (!saldos?.size) return item;
+  if (!saldos?.size || item.fora_da_base) return item;
   const nfe = item.chave_nfe || referencia?.get(normalizarChaveCte(item.chave_cte))?.chave_nfe;
   const saldo = Number(saldos.get(normalizarChaveCte(item.chave_cte)) || saldos.get(normalizarChaveCte(nfe)) || 0);
   if (!(saldo > 0)) return item;
@@ -28694,7 +28710,8 @@ function resumir(lista) {
     if (m) motivos.set(m, (motivos.get(m) || 0) + 1);
   });
   const motivoSemCalculo = [...motivos.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
-  return { motivoSemCalculo, nfse, total, calculados, calculoAmd: Number(calculoAmd.toFixed(2)), semCalculo: total - calculados, divergentes, maior: Number(maior.toFixed(2)), menor: Number(menor.toFixed(2)) };
+  const naoLocalizados = semCalc.filter((i) => !ehLinhaNfse(i) && (i.fora_da_base || normalizarChaveCte(i.chave_cte).length !== 44)).map((i) => i.numero_cte || String(i.chave_cte || "").slice(25, 34) || "?");
+  return { motivoSemCalculo, naoLocalizados, nfse, total, calculados, calculoAmd: Number(calculoAmd.toFixed(2)), semCalculo: total - calculados, divergentes, maior: Number(maior.toFixed(2)), menor: Number(menor.toFixed(2)) };
 }
 async function checagemSemNf() {
   try {
@@ -29033,6 +29050,52 @@ async function enviarFaturaParaGestaoRobo(db, fatura, resumo, { usuario = "Robo 
   if (erroHist) console.warn("[robo] historico nao registrado:", erroHist.message);
   return { enviada: true };
 }
+async function devolverParaRevisaoSeCteFaltando(db, fatura, { usuario = "Robo Auditor" } = {}) {
+  const resumo = resumir(await detalhesExatos(fatura));
+  if (!resumo.naoLocalizados.length) return { devolvida: false };
+  const c = classificarFatura(resumo, Boolean(fatura.auditoria_considerar_menor));
+  const agora = (/* @__PURE__ */ new Date()).toISOString();
+  const { data, error } = await db.from("faturas").update({
+    status: "COM_DIVERGENCIA",
+    ctes_totais: resumo.total,
+    ctes_auditados: resumo.calculados,
+    ctes_sem_calculo: resumo.semCalculo,
+    updated_at: agora
+  }).eq("id", fatura.id).eq("status", "AGUARDANDO_APROVACAO_GESTAO").select("id");
+  if (error) throw new Error(`Devolucao da fatura ${fatura.numero_fatura}: ${error.message}`);
+  if (!data?.length) return { devolvida: false };
+  const { error: erroHist } = await db.from("auditoria_fatura_historico").insert({
+    id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `robo-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    fatura_id: fatura.id,
+    created_at: agora,
+    acao: "STATUS_ALTERADO",
+    status_anterior: "AGUARDANDO_APROVACAO_GESTAO",
+    status_novo: "COM_DIVERGENCIA",
+    descricao: `Retirada da aprovacao da gestao e devolvida para revisao: ${c.motivo}`,
+    usuario_nome: usuario,
+    usuario_email: ""
+  });
+  if (erroHist) console.warn("[robo] historico nao registrado:", erroHist.message);
+  const { error: erroExec } = await upsertExecucoesRobo(db, [{
+    fatura_id: String(fatura.id),
+    numero_fatura: fatura.numero_fatura,
+    transportadora: fatura.transportadora,
+    modo: "SOMBRA",
+    decisao: DECISAO.REVISAO_AUDITOR,
+    motivo: c.motivo,
+    valor_fatura: Number(fatura.valor_fatura || 0),
+    valor_descontar: c.descontar,
+    auditor_nome: fatura.auditor_nome || "",
+    auditor_email: fatura.auditor_email || "",
+    destinatarios: fatura.auditor_email || "",
+    copia: "",
+    acao_executada: false,
+    executado_por: usuario,
+    executado_em: agora
+  }]);
+  if (erroExec) console.warn("[robo] execucao nao registrada:", erroExec.message);
+  return { devolvida: true, motivo: c.motivo, faltando: resumo.naoLocalizados.length };
+}
 async function conferirNfseLancadaRobo(db, fatura, qtdNfse) {
   const bruto = String(fatura.numero_fatura || "").trim();
   const numeros = [.../* @__PURE__ */ new Set([bruto, normalizarNumeroFatura(bruto)])].filter(Boolean);
@@ -29266,6 +29329,7 @@ export {
   conferirNfseLancadaRobo,
   dataEntradaFatura,
   dataInicioRobo,
+  devolverParaRevisaoSeCteFaltando,
   emailDoAuditor,
   sairCacheCalculo as encerrarCacheCalculoRobo,
   enviarFaturaParaGestaoRobo,
