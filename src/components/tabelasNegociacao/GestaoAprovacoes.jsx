@@ -8,6 +8,49 @@ import {
 } from '../../utils/tabelasNegociacaoGestao';
 import { gestaoStyles } from './GestaoStyles';
 
+// Mesma transportadora + origem + canal pode ter mais de uma tabela
+// (ex.: principal "Passeio" e alternativa "Agrícola"). Sem a identificação o
+// gestor não sabe qual card está aprovando — mesma lógica da lista de negociações.
+const chaveGrupo = (t) => [t.transportadora, t.origem_label, t.canal].map((v) => String(v || '').trim().toUpperCase()).join('|');
+
+function contarPorGrupo(lista) {
+  const mapa = new Map();
+  lista.forEach((t) => { const k = chaveGrupo(t); mapa.set(k, (mapa.get(k) || 0) + 1); });
+  return mapa;
+}
+
+function IdentificacaoTabela({ tabela: t, todas = [], qtdNoGrupo = 0 }) {
+  const ehAlternativa = Boolean(t.tabela_alternativa_de);
+  if (t.variante_tabela || ehAlternativa) {
+    const principal = ehAlternativa ? todas.find((x) => String(x.id) === String(t.tabela_alternativa_de)) : null;
+    const nomePrincipal = principal ? (principal.variante_tabela || principal.nome_negociacao || principal.descricao) : '';
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <span
+          title={ehAlternativa ? 'Tabela alternativa (mesma transportadora+origem)' : 'Tabela principal'}
+          style={{ display: 'inline-block', fontSize: 12, fontWeight: 800, padding: '3px 10px', borderRadius: 999, background: ehAlternativa ? '#ede9fe' : '#e0f2fe', color: ehAlternativa ? '#5b21b6' : '#0369a1' }}
+        >
+          {ehAlternativa ? 'Tabela alternativa' : 'Tabela principal'}{t.variante_tabela ? `: ${t.variante_tabela}` : ''}
+        </span>
+        {ehAlternativa && nomePrincipal ? (
+          <span style={{ fontSize: 11, color: '#64748b' }}>alternativa de: {nomePrincipal}</span>
+        ) : null}
+      </span>
+    );
+  }
+  if (qtdNoGrupo > 1) {
+    return (
+      <span
+        title='Há mais de uma tabela desta transportadora nesta origem/canal. Abra a negociação e preencha "Identificação da tabela" (ex.: Agrícola / Passeio) para diferenciá-las.'
+        style={{ display: 'inline-block', fontSize: 12, fontWeight: 800, padding: '3px 10px', borderRadius: 999, background: '#fef3c7', color: '#92400e' }}
+      >
+        {qtdNoGrupo} tabelas desta transportadora nesta origem · sem identificação
+      </span>
+    );
+  }
+  return null;
+}
+
 export default function GestaoAprovacoes({
   tabelas = [],
   sessao = null,
@@ -26,6 +69,8 @@ export default function GestaoAprovacoes({
   const pendentes = filtrarTabelasGestao(tabelas, { aguardandoAprovacao: true }, sessao);
   const aprovadas = filtrarTabelasGestao(tabelas, { statusGestao: 'APROVADA_GESTOR' }, sessao);
   const ehGestor = usuarioEhGestor(sessao);
+  const qtdPendentesGrupo = contarPorGrupo(pendentes);
+  const qtdAprovadasGrupo = contarPorGrupo(aprovadas);
 
   function obs(id) {
     return observacao[id] || '';
@@ -50,12 +95,21 @@ export default function GestaoAprovacoes({
             <div className="sim-parametros-header">
               <div>
                 <strong>{t.transportadora}</strong> · {t.nome_negociacao}
+                <div style={{ marginTop: 6 }}>
+                  <IdentificacaoTabela tabela={t} todas={tabelas} qtdNoGrupo={qtdPendentesGrupo.get(chaveGrupo(t)) || 0} />
+                </div>
                 <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 12 }}>
                   Negociador: {t.negociador_display} · Tipo: {t.is_reajuste ? 'Reajuste' : 'Negociação'} · Canal: {t.canal}
                 </p>
                 <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 12 }}>
                   Origens: {t.origem_label} · Enviada em: {formatarData(t.enviado_aprovacao_em)}
+                  {t.qtd_rotas ? ` · ${Number(t.qtd_rotas).toLocaleString('pt-BR')} rotas` : ''}
                 </p>
+                {t.observacao ? (
+                  <p style={{ margin: '4px 0 0', color: '#334155', fontSize: 12 }}>
+                    Obs. do negociador: {t.observacao}
+                  </p>
+                ) : null}
               </div>
               <div style={{ textAlign: 'right', fontSize: 12 }}>
                 <div>Saving: {formatarMoeda(t.saving_estimado)}</div>
@@ -108,6 +162,9 @@ export default function GestaoAprovacoes({
           <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #e2e8f0', gap: 12, flexWrap: 'wrap' }}>
             <div>
               <strong>{t.transportadora}</strong> · {t.origem_label}
+              <div style={{ margin: '4px 0' }}>
+                <IdentificacaoTabela tabela={t} todas={tabelas} qtdNoGrupo={qtdAprovadasGrupo.get(chaveGrupo(t)) || 0} />
+              </div>
               <div style={{ fontSize: 12, color: '#64748b' }}>Aprovada em {formatarData(t.aprovado_em)} por {t.aprovador_display}</div>
               <div style={{ fontSize: 12, color: '#475569', marginTop: 3 }}>
                 Destino: {t.tipo_negociacao_norm === 'TABELA_LOTACAO' ? 'Transportadoras · Lotação' : `Transportadoras · ${t.canal || 'Tabela oficial'}`}
