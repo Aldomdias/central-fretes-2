@@ -87,6 +87,15 @@ export function classificarFatura(resumo, considerarMenor = false) {
   // CT-e sem a chave da NF: nao pode ser pago (o vinculo com a nota fiscal e obrigatorio). Vale sobre o resto:
   // a fatura nao vai para pagamento e o laudo segue para a transportadora pedindo a retirada desses CT-es
   // (o valor deles entra no desconto, sem contar duas vezes a cobranca acima que ja tinham).
+  // CT-e da fatura nao localizado na base: a fatura nao pode ir para a gestao nem gerar laudo para a
+  // transportadora (o laudo sairia sem esse CT-e auditado). Trava em "Para revisar" (card "CT-e nao localizado").
+  const naoLocalizados = Array.isArray(resumo.naoLocalizados) ? resumo.naoLocalizados : [];
+  if (naoLocalizados.length) {
+    return {
+      decisao: DECISAO.REVISAO_AUDITOR, descontar,
+      motivo: `CT-e nao localizado: ${naoLocalizados.length} de ${resumo.total} CT-e(s) da fatura nao encontrado(s) na base de CT-es, sem calculo (CT-e ${naoLocalizados.slice(0, 10).join(', ')}${naoLocalizados.length > 10 ? '...' : ''}). Importar o XML ou atualizar a base de CT-es e reavaliar. Laudo nao enviado.`,
+    };
+  }
   const semNf = Array.isArray(resumo.semNf) ? resumo.semNf : [];
   // Metade ou mais dos CT-es sem a NF na base: mais provavel a base ter sido importada sem a aba "Notas Fiscais"
   // do que a transportadora ter emitido tudo errado. Nao manda laudo; o auditor confere (e reimporta a base).
