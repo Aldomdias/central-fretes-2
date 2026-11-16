@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { loginCentral, loginComBiometria } from '../utils/authLocal';
-import { biometriaDisponivelNesteDispositivo } from '../services/biometriaService';
+import { biometriaCadastradaNesteDispositivo, biometriaDisponivelNesteDispositivo } from '../services/biometriaService';
 
 export default function LoginPage({ onLogin }) {
   const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
   const [erro, setErro] = useState('');
   const [carregando, setCarregando] = useState(false);
-  const podeUsarBiometria = biometriaDisponivelNesteDispositivo();
+  const podeUsarBiometria = biometriaDisponivelNesteDispositivo() && biometriaCadastradaNesteDispositivo();
 
   const entrar = async () => {
     if (carregando) return;
