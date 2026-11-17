@@ -162,18 +162,25 @@ export async function carregarGruposRaizTransportadora() {
 export async function carregarCadastroPorRaiz() {
   const porRaiz = new Map();
   if (!isSupabaseConfigured()) return porRaiz;
+  const buscarTransportadoras = async () => {
+    const r = await client().from('transportadoras').select('id,nome,cnpj,cnpj_raiz,faz_antecipacao').limit(20000);
+    // Migration do flag de antecipação ainda não aplicada: segue sem a coluna.
+    if (r.error && /faz_antecipacao/i.test(r.error.message || '')) return client().from('transportadoras').select('id,nome,cnpj,cnpj_raiz').limit(20000);
+    return r;
+  };
   const [transportadoras, origens, adicionais] = await Promise.all([
-    client().from('transportadoras').select('id,nome,cnpj,cnpj_raiz').limit(20000),
+    buscarTransportadoras(),
     client().from('origens').select('transportadora_id,cnpj,cnpj_raiz').limit(50000),
     client().from('transportadora_cnpjs').select('transportadora_id,cnpj_raiz').eq('ativo', true).limit(20000),
   ]);
   const erro = transportadoras.error || origens.error || adicionais.error;
   if (erro) throw new Error(erro.message || 'Erro ao carregar o cadastro das transportadoras.');
   const nomePorId = new Map((transportadoras.data || []).map((t) => [t.id, t.nome]));
+  const antecipaPorId = new Map((transportadoras.data || []).map((t) => [t.id, t.faz_antecipacao === true]));
   const adicionar = (id, valor) => {
     const raiz = obterRaizCnpj(valor);
     if (!id || !nomePorId.has(id) || !/^\d{8}$/.test(raiz) || /^0+$/.test(raiz) || porRaiz.has(raiz)) return;
-    porRaiz.set(raiz, { id, nome: nomePorId.get(id) });
+    porRaiz.set(raiz, { id, nome: nomePorId.get(id), fazAntecipacao: antecipaPorId.get(id) === true });
   };
   // Ordem de prioridade se a mesma raiz estiver em dois cadastros: principal, adicional, origem.
   (transportadoras.data || []).forEach((t) => adicionar(t.id, t.cnpj_raiz || t.cnpj));

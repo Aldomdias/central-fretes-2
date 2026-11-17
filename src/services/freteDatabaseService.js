@@ -825,7 +825,7 @@ export async function carregarBaseCompletaDb(onProgress = null) {
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
   return _cacheBaseCompleta;
@@ -1169,7 +1169,7 @@ export async function carregarBaseFiltradaPorOrigemEDestinosDb(filtroCidades = [
       cnpjRaiz: transportadora.cnpj_raiz || '',
       tde: transportadora.tde ?? 0,
       tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-      aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
+      aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
       origens: origensByTransportadora.get(String(transportadora.id)) || [],
     }))
     .filter((t) => t.origens.length);
@@ -1302,7 +1302,7 @@ export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [],
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
 }
@@ -1411,7 +1411,7 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
 }
@@ -1743,6 +1743,24 @@ export async function salvarAceitaCanalInvertidoDb(transportadoraId, aceita) {
       throw new Error('Rode a migration 20261113_003_transportadoras_aceita_canal_invertido.sql no Supabase antes de usar este flag.');
     }
     throw new Error(`Erro ao salvar canal invertido: ${error.message}`);
+  }
+  invalidarCacheBaseCompletaDb();
+  return { ok: true };
+}
+
+// Flag "faz antecipação" da transportadora: no Diagnóstico de faturas aparece o card das
+// faturas aptas à antecipação (mais de 7 dias da emissão e menos de 10 do vencimento).
+export async function salvarFazAntecipacaoDb(transportadoraId, faz) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  if (!UUID_REGEX.test(String(transportadoraId || ''))) throw new Error('Grave a transportadora no Supabase antes de configurar a antecipação.');
+  const { error } = await ensureClient().from('transportadoras')
+    .update({ faz_antecipacao: Boolean(faz) })
+    .eq('id', transportadoraId);
+  if (error) {
+    if (/faz_antecipacao/i.test(error.message || '')) {
+      throw new Error('Rode a migration 20261116_001_transportadoras_faz_antecipacao.sql no Supabase antes de usar este flag.');
+    }
+    throw new Error(`Erro ao salvar antecipação: ${error.message}`);
   }
   invalidarCacheBaseCompletaDb();
   return { ok: true };
@@ -2839,7 +2857,7 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     detalheCarregado: true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   })).filter((item) => item.origens.length);
@@ -3157,7 +3175,7 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     detalheCarregado: true,
     origens: [],
   };

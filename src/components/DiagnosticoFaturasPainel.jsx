@@ -381,9 +381,17 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const canceladasRecorte = useMemo(() => doGrupo(filtradas.filter(ehCancelada)), [filtradas, filtros.grupoTransp, filtros.grupoAuditor, agrupador]); // eslint-disable-line react-hooks/exhaustive-deps
   const duplicadasRecorte = useMemo(() => doGrupo(filtradas.filter((l) => l.duplicada)), [filtradas, filtros.grupoTransp, filtros.grupoAuditor, agrupador]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Card de antecipacao: so com uma transportadora escolhida que tem o flag no cadastro.
+  const fazAntecipacao = useMemo(() => {
+    if (!transportadora) return false;
+    const chave = agrupador.opcoes.find((o) => o.rotulo === transportadora)?.chave || '';
+    return [...cadastroPorRaiz.values()].some((t) => t.fazAntecipacao && `T:${t.id}` === chave);
+  }, [transportadora, agrupador, cadastroPorRaiz]);
+  useEffect(() => { if (!fazAntecipacao && escolhidos.antecipacao) setEscolhidos((e) => ({ ...e, antecipacao: '' })); }, [fazAntecipacao, escolhidos.antecipacao]);
+
   const grupos = useMemo(() => GRUPOS_DIAGNOSTICO
-    .filter((g) => temLista || !g.soComLista)
-    .map((g) => ({ ...g, cards: g.cards.filter((c) => !c.oculto).map((c) => ({ ...c, linhas: { canceladas: canceladasRecorte, duplicadas: duplicadasRecorte }[c.id] || recorte.filter(c.teste) })) })), [recorte, canceladasRecorte, duplicadasRecorte, temLista]);
+    .filter((g) => (temLista || !g.soComLista) && (fazAntecipacao || !g.soAntecipa))
+    .map((g) => ({ ...g, cards: g.cards.filter((c) => !c.oculto).map((c) => ({ ...c, linhas: { canceladas: canceladasRecorte, duplicadas: duplicadasRecorte }[c.id] || recorte.filter(c.teste) })) })), [recorte, canceladasRecorte, duplicadasRecorte, temLista, fazAntecipacao]);
 
   const resultado = useMemo(() => {
     const coluna = COLUNAS.find((c) => c.id === ordem.coluna) || COLUNAS[3];

@@ -523,6 +523,40 @@ function CanalInvertidoSection({ transportadora, store }) {
   );
 }
 
+function AntecipacaoSection({ transportadora, store }) {
+  const [salvando, setSalvando] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+  const ativo = Boolean(transportadora.fazAntecipacao);
+
+  async function alternar(event) {
+    const novo = event.target.checked;
+    setSalvando(true);
+    setFeedback(null);
+    const resposta = await store.salvarFazAntecipacao?.(transportadora.id, novo);
+    setSalvando(false);
+    if (!resposta?.ok) {
+      setFeedback({ tipo: 'error', texto: resposta?.erro?.message || 'Erro ao salvar.' });
+      return;
+    }
+    setFeedback({ tipo: 'info', texto: novo ? 'Ligado. O Diagnóstico mostra o card de antecipação ao escolher esta transportadora.' : 'Desligado.' });
+  }
+
+  return (
+    <div className="form-card" style={{ marginTop: 12, padding: 16, background: '#f8fafc', borderRadius: 8 }}>
+      <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: store.podeEditarTransportadoras ? 'pointer' : 'default' }}>
+        <input type="checkbox" checked={ativo} disabled={!store.podeEditarTransportadoras || salvando} onChange={alternar} />
+        <strong style={{ fontSize: '0.9rem' }}>Transportadora que faz antecipação de faturas</strong>
+        {salvando ? <span style={{ fontSize: 12, color: 'var(--muted)' }}>salvando...</span> : null}
+      </label>
+      <p style={{ fontSize: 12, color: 'var(--muted)', margin: '4px 0 0' }}>
+        No Diagnóstico de faturas, ao escolher esta transportadora aparece o card <strong>Aptas à antecipação</strong>:
+        faturas não pagas com mais de 7 dias da emissão e menos de 10 dias para o vencimento.
+      </p>
+      {feedback ? <div className={`mini-feedback ${feedback.tipo} top-space`} style={{ marginTop: 8 }}>{feedback.texto}</div> : null}
+    </div>
+  );
+}
+
 const TAXA_ESP_VAZIA = { ibgeDestino: '', tda: '', trt: '', suframa: '', outras: '', gris: '', grisMinimo: '', adVal: '', adValMinimo: '', taxasExtras: [] };
 const CORINGA_VAZIO = { nome: '', valor: '', pct: '', min: '', valorPorPeso: '', pesoBase: '', valorKg: '', franquiaKg: '' };
 
@@ -2436,6 +2470,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
       ) : null}
       <TdeSection transportadora={transportadora} store={store} />
       <CanalInvertidoSection transportadora={transportadora} store={store} />
+      <AntecipacaoSection transportadora={transportadora} store={store} />
       <CnpjsAdicionaisTransportadoraSection transportadora={transportadora} podeEditar={podeEditar} />
       <LotacaoTransportadoraSection
         transportadora={transportadora}

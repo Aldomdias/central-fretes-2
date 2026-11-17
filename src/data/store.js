@@ -16,6 +16,7 @@ import {
   salvarGeneralidadesOrigemDb,
   salvarHubOrigemDb,
   salvarAceitaCanalInvertidoDb,
+  salvarFazAntecipacaoDb,
   salvarVigenciaTabelaAlternativaDb,
   converterOrigemEmReajusteDb,
   excluirGeneralidadesAlternativaDb,
@@ -999,6 +1000,24 @@ export function useFreteStore(sessao = null) {
           tipo: 'aceita_canal_invertido',
           transportadoraId,
           detalhe: aceita ? 'Ligou: aceitar canal invertido (B2C x ATACADO) na auditoria' : 'Desligou: aceitar canal invertido na auditoria',
+        });
+        return { ok: true };
+      },
+      // Flag da transportadora: Diagnóstico mostra o card de faturas aptas à antecipação.
+      async salvarFazAntecipacao(transportadoraId, faz) {
+        if (!podeEditarTransportadoras()) return { ok: false, erro: new Error(ERRO_SEM_PERMISSAO) };
+        try {
+          if (bancoConfigurado()) await salvarFazAntecipacaoDb(transportadoraId, faz);
+        } catch (error) {
+          return { ok: false, erro: error };
+        }
+        setTransportadoras((prev) =>
+          (prev || []).map((t) => (t.id !== transportadoraId ? t : { ...t, fazAntecipacao: Boolean(faz) }))
+        );
+        registrarAlteracaoTransportadora(sessao, {
+          tipo: 'faz_antecipacao',
+          transportadoraId,
+          detalhe: faz ? 'Ligou: transportadora faz antecipação de faturas' : 'Desligou: antecipação de faturas',
         });
         return { ok: true };
       },
