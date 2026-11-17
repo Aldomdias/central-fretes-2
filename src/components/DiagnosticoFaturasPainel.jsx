@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarPlataformaAuditoria, reauditarFatura, vincularChavesDetalhesPorNumero } from '../services/auditoriaFretesService';
 import { carregarDetalhesFaturaSupabase } from '../services/lotacaoSupabaseService';
-import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarCanceladas, marcarPrevisaoPagamento, marcarSubstituidasDuplicadas } from '../services/diagnosticoFaturasService';
+import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarCanceladas, marcarEnviadaAntecipacao, marcarPrevisaoPagamento, marcarSubstituidasDuplicadas } from '../services/diagnosticoFaturasService';
 import { carregarCadastroPorRaiz } from '../services/transportadoraCnpjsService';
 import { diasAte } from '../utils/auditoriaFretesDomain';
 import { carregarSessao } from '../utils/authLocal';
@@ -508,6 +508,22 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     } catch (e) { setAviso(`Erro ao marcar: ${e.message || e}`); } finally { setMarcando(false); }
   };
 
+  // Antecipacao: marca as selecionadas como enviadas (saem de "Aptas"); desmarcar devolve.
+  const aplicarEnvioAntecipacao = async (marcar) => {
+    const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l.fatura]));
+    const alvo = selecaoValida.filter((id) => Boolean(porId.get(id)?.antecipacao_enviada) !== marcar);
+    if (!alvo.length) { setAviso(marcar ? 'As selecionadas já estão marcadas como enviadas.' : 'Nenhuma selecionada está marcada como enviada.'); return; }
+    setMarcando(true);
+    setAviso('');
+    try {
+      const sessao = carregarSessao();
+      const gravadas = await marcarEnviadaAntecipacao(alvo, marcar, sessao?.nome || sessao?.email || '');
+      onState((atual) => ({ ...atual, faturas: (atual.faturas || []).map((f) => (gravadas.has(f.id) ? { ...f, ...gravadas.get(f.id) } : f)) }));
+      setSelecionadas(new Set());
+      setAviso(`${inteiro(gravadas.size)} fatura(s) ${marcar ? 'marcada(s) como enviadas para antecipação' : 'devolvida(s) para as aptas'}.`);
+    } catch (e) { setAviso(`Erro ao marcar: ${e.message || e}`); } finally { setMarcando(false); }
+  };
+
   // Cancelar: faturas que nao serao pagas (ex.: vencidas sem tratativa). Saem da lista e vao para o card
   // "Canceladas". Reativar devolve o status que a fatura tinha antes do cancelamento.
   const aplicarCancelamento = async (cancelar) => {
@@ -909,6 +925,15 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                 ? <button type="button" className="btn-primary" style={{ background: '#315ee7', borderColor: '#315ee7' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarCancelamento(false)} title="Volta as selecionadas ao status que tinham antes do cancelamento">{marcando ? 'Gravando...' : 'Reativar selecionadas'}</button>
                 : <button type="button" className="btn-primary" style={{ background: '#64748b', borderColor: '#64748b' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarCancelamento(true)} title="Marca as selecionadas (não pagas) como canceladas: saem da lista e vão para o card 'Canceladas'">{marcando ? 'Gravando...' : 'Cancelar selecionadas'}</button>)}
             </div>
+            {fazAntecipacao && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
+                <span className="compact" style={{ color: '#475569' }} title="Controle do que você já enviou para antecipação. A fatura sai de 'Aptas', fica em 'Enviadas p/ antecipação' e vai para 'Já antecipadas' sozinha quando a Cessão chegar no SAP.">
+                  Antecipação: {inteiro(selecaoValida.length)} selecionada(s)
+                </span>
+                <button type="button" className="btn-primary" style={{ background: '#0f766e', borderColor: '#0f766e' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarEnvioAntecipacao(true)}>{marcando ? 'Gravando...' : 'Enviar para antecipação'}</button>
+                <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando} onClick={() => aplicarEnvioAntecipacao(false)} title="Volta as selecionadas para 'Aptas à antecipação'">Desfazer envio</button>
+              </div>
+            )}
             {temAjusteFenix && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
                 <span className="compact" style={{ color: '#475569' }} title="Controle do pedido de estorno da compensação Fênix ao financeiro. Quando o retorno chegar, marque para protocolo (agrupamento manual) e a fatura vai para 'Já no protocolo'.">
