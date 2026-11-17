@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { carregarPlataformaAuditoria } from '../services/auditoriaFretesService';
+import { carregarPlataformaAuditoria, reauditarFatura, vincularChavesDetalhesPorNumero } from '../services/auditoriaFretesService';
+import { carregarDetalhesFaturaSupabase } from '../services/lotacaoSupabaseService';
 import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarCanceladas, marcarPrevisaoPagamento, marcarSubstituidasDuplicadas } from '../services/diagnosticoFaturasService';
 import { carregarCadastroPorRaiz } from '../services/transportadoraCnpjsService';
 import { diasAte } from '../utils/auditoriaFretesDomain';
@@ -233,6 +234,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const [atualizando, setAtualizando] = useState(false);
   const [selecionadas, setSelecionadas] = useState(() => new Set());
   const [marcando, setMarcando] = useState(false);
+  const [recalculo, setRecalculo] = useState(null);
   const [dataPrevisao, setDataPrevisao] = useState('');
   const [solicitante, setSolicitante] = useState(() => salvo.solicitante || carregarSessao()?.nome || '');
   const [rankingAberto, setRankingAberto] = useState(salvo.rankingAberto ?? true);
@@ -449,6 +451,39 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const todasSelecionadas = idsRecorte.length > 0 && selecaoValida.length === idsRecorte.length;
   const alternarSelecao = (id) => setSelecionadas((atual) => { const n = new Set(atual); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const alternarTodas = () => setSelecionadas(todasSelecionadas ? new Set() : new Set(idsRecorte));
+  // Recalcula os CT-es das faturas selecionadas (mesmo motor do "Recalcular" da fatura: refaz todos os CT-es,
+  // grava em auditoria_cte_resultados) e reaudita a fatura para atualizar valores e divergencias.
+  const recalcularSelecionadas = async () => {
+    const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l.fatura]));
+    const alvo = selecaoValida.map((id) => porId.get(id)).filter(Boolean);
+    if (!alvo.length) return;
+    if (!window.confirm(`Recalcular os CT-es de ${alvo.length} fatura(s)? Pode demorar; mantenha esta tela aberta até terminar.`)) return;
+    setRecalculo({ feitas: 0, total: alvo.length, atual: '', fase: '' });
+    setAviso('');
+    const usuario = carregarSessao()?.nome || carregarSessao()?.email || 'Usuario local';
+    const { apurarFaturaRobo } = await import('../utils/auditoriaRoboCore');
+    let estadoAtual = state;
+    const falhas = [];
+    for (let i = 0; i < alvo.length; i += 1) {
+      const fatura = alvo[i];
+      setRecalculo({ feitas: i, total: alvo.length, atual: `${fatura.numero_fatura} · ${fatura.transportadora}`, fase: 'calculando' });
+      try {
+        await apurarFaturaRobo(fatura, (p) => setRecalculo((a) => (a ? { ...a, fase: p?.fase === 'calculando' ? `calculando ${p.atual}/${p.total}` : (p?.fase || a.fase) } : a)), {
+          recalcularTudo: true,
+          pesoMaisProximo: Boolean(fatura.peso_tracking_mais_proximo),
+        });
+        let detalhes = await carregarDetalhesFaturaSupabase(fatura.id);
+        if (detalhes.some((d) => !d.chave_cte)) detalhes = (await vincularChavesDetalhesPorNumero(fatura, detalhes)).detalhes;
+        estadoAtual = await reauditarFatura(estadoAtual, fatura, detalhes, usuario);
+        onState(estadoAtual);
+      } catch (e) {
+        falhas.push(`${fatura.numero_fatura}: ${String(e?.message || e).slice(0, 100)}`);
+      }
+    }
+    setRecalculo(null);
+    setSelecionadas(new Set());
+    setAviso(`${inteiro(alvo.length - falhas.length)} de ${inteiro(alvo.length)} fatura(s) recalculada(s).${falhas.length ? ` Falhas: ${falhas.slice(0, 5).join(' | ')}` : ''}`);
+  };
   const aplicarAgrupamento = async (marcar) => {
     const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l.fatura]));
     const alvo = selecaoValida.filter((id) => agrupamentoManual(porId.get(id)) !== marcar);
@@ -847,6 +882,15 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               <button type="button" className="btn-primary" style={{ background: '#04a484', borderColor: '#04a484' }} disabled={!selecaoValida.length || !dataPrevisao || marcando} onClick={() => aplicarPrevisao(false)}>{marcando ? 'Gravando...' : 'Gravar previsão'}</button>
               <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando} onClick={() => aplicarPrevisao(true)}>Tirar previsão</button>
               <button type="button" className="btn-secondary" disabled={!comPrevisao.length} onClick={copiarPrevisoes} title="Copia um texto com as faturas do recorte que têm previsão, agrupadas pela data, para mandar à transportadora">Copiar previsões p/ transportadora ({inteiro(comPrevisao.length)})</button>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
+              <span className="compact" style={{ color: '#475569' }} title="Refaz o cálculo AMD de todos os CT-es das faturas selecionadas e atualiza valores e divergências da fatura.">
+                Recálculo dos CT-es: {inteiro(selecaoValida.length)} selecionada(s)
+              </span>
+              <button type="button" className="btn-primary" style={{ background: '#0f766e', borderColor: '#0f766e' }} disabled={!selecaoValida.length || marcando || Boolean(recalculo)} onClick={recalcularSelecionadas}>
+                {recalculo ? `Recalculando ${inteiro(recalculo.feitas + 1)}/${inteiro(recalculo.total)}...` : 'Recalcular CT-es selecionadas'}
+              </button>
+              {recalculo && <span className="compact" style={{ color: '#475569' }}>{recalculo.atual}{recalculo.fase ? ` — ${recalculo.fase}` : ''}</span>}
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
               <span className="compact" style={{ color: '#475569' }} title="Faturas que não serão pagas (ex.: vencidas sem tratativa). Saem da lista e dos totais e ficam no card 'Canceladas'.">
