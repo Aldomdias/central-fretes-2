@@ -903,6 +903,10 @@ export default function TabelaPadraoB2cPage() {
         for (const f of arquivosVerumDaTransportadora(n)) arquivos[f.nome] = f.bytes;
         await new Promise((res) => setTimeout(res, 0));
       }
+      if (!Object.keys(arquivos).length) {
+        setErro(`Nenhum arquivo Verum gerado para ${nomes.join(', ')}: a transportadora ficou sem nenhuma linha com valor nesta geração (0 linhas). Confira se a tabela dela está ativa e sai do CD ${cdEscolhido}.`);
+        return;
+      }
       baixarBlob(zipSync(arquivos), `tabelas-black-b2c-verum-${nomeSeguro(cdEscolhido)}-${new Date().toISOString().slice(0, 10)}.zip`, 'application/zip');
     } catch (e) {
       setErro(`Falha ao gerar arquivos: ${e.message || e}`);

@@ -550,7 +550,7 @@ function AntecipacaoSection({ transportadora, store }) {
       </label>
       <p style={{ fontSize: 12, color: 'var(--muted)', margin: '4px 0 0' }}>
         No Diagnóstico de faturas, ao escolher esta transportadora aparece o card <strong>Aptas à antecipação</strong>:
-        faturas não pagas com mais de 7 dias da emissão e até 10 dias para o vencimento.
+        faturas não pagas com mais de 7 dias da emissão e 10 dias ou mais para o vencimento.
       </p>
       {feedback ? <div className={`mini-feedback ${feedback.tipo} top-space`} style={{ marginTop: 8 }}>{feedback.texto}</div> : null}
     </div>
