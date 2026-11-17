@@ -360,6 +360,7 @@ export default function AuditorRobo() {
     const emailsEnviados = new Set(laudosEmail.map((e) => `${e.transportadora}|${e.executado_em}`)).size;
     const tratadas = lista.filter((e) => e.modo === 'TRATADA_FORA' || resolvidoFora(e) || (!e.acao_executada && [DECISAO.ENVIAR_LAUDO, DECISAO.REVISAO_AUDITOR].includes(e.decisao) && !emAuditoria(e) && !laudosEnviados.includes(e)));
     const causa = { semCalculo: 0, semEntrega: 0, outros: 0 };
+    const naoLocalizado = revisar.filter((e) => String(e.motivo || '').toLowerCase().includes('nao localizado'));
     revisar.forEach((e) => {
       const m = String(e.motivo || '').toLowerCase();
       if (m.includes('sem calculo')) causa.semCalculo += 1;
@@ -380,7 +381,7 @@ export default function AuditorRobo() {
       porTransp.set(e.transportadora, r);
     });
     return {
-      lista, gestao, liberadas, noErp, tratadas, laudosEmail, emailsEnviados, laudos, laudosEnviados, laudosAprovados, laudosOk, revisar, causa, automaticas, ultima, ultimaAuto,
+      lista, gestao, liberadas, noErp, tratadas, laudosEmail, emailsEnviados, laudos, laudosEnviados, laudosAprovados, laudosOk, revisar, naoLocalizado, causa, automaticas, ultima, ultimaAuto,
       valorGestao: soma(gestao, (e) => e.valor_fatura),
       descontarTotal: soma(laudos, (e) => e.valor_descontar),
       reavaliacoes: soma(lista, (e) => Math.max(Number(e.tentativas || 1) - 1, 0)),
@@ -403,6 +404,7 @@ export default function AuditorRobo() {
       laudosAprovados: painel.laudosAprovados,
       laudosEnviados: painel.laudosEnviados,
       revisar: painel.revisar,
+      naoLocalizado: painel.naoLocalizado,
       reavaliacoes: painel.lista.filter((e) => Number(e.tentativas || 1) > 1),
     };
     const base = cardSel && por[cardSel] ? por[cardSel] : painel.lista;
@@ -411,7 +413,7 @@ export default function AuditorRobo() {
   const ROTULO_CARD = {
     analisadas: 'Faturas analisadas', liberadas: 'Aprovadas pela gestao', tratadas: 'Tratadas fora do robo', laudosEmail: 'Laudos enviados por e-mail', novas: 'Novas aguardando', gestao: 'Enviadas para a gestao', laudos: 'Laudos com desconto',
     laudosOk: 'Laudos aguardando seu OK', laudosAprovados: 'Laudos aprovados, a enviar', laudosEnviados: 'Laudos enviados',
-    revisar: 'Para revisar', reavaliacoes: 'Reavaliacoes feitas',
+    revisar: 'Para revisar', naoLocalizado: 'CT-e faltando (nao localizado na base)', reavaliacoes: 'Reavaliacoes feitas',
   };
 
   const resumo = useMemo(() => execucoes.reduce((acc, e) => { acc[e.decisao] = (acc[e.decisao] || 0) + 1; return acc; }, {}), [execucoes]);
@@ -459,6 +461,7 @@ export default function AuditorRobo() {
             ['laudosEmail', 'Laudos enviados por e-mail', painel.laudosEmail.length, `${painel.emailsEnviados} e-mail(s) · ${dinheiro(soma0(painel.laudosEmail))} a descontar`, '#0369a1'],
             ['laudosEnviados', 'Laudos enviados', painel.laudosEnviados.length, `${dinheiro(soma0(painel.laudosEnviados))} a descontar`, '#14733b'],
             ['revisar', 'Para revisar', painel.revisar.length, `${painel.causa.semCalculo} sem calculo · ${painel.causa.semEntrega} sem entrega · ${painel.causa.outros} outros`, '#b91c1c'],
+            ['naoLocalizado', 'CT-e faltando', painel.naoLocalizado.length, 'CT-e da fatura nao localizado na base: travada (sem gestao e sem laudo)', '#7c3aed'],
             ['tratadas', 'Tratadas fora do robo', painel.tratadas.length, 'laudo/revisao ja resolvidos pelo auditor ou gestao', '#64748b'],
             ['reavaliacoes', 'Reavaliacoes feitas', painel.reavaliacoes, 'casos em que o robo voltou a olhar', '#475569'],
           ].map(([id, rotulo, valor, sub, cor]) => {

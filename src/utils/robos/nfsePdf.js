@@ -525,6 +525,17 @@ function completarModeloPrestadorTomador(L, U, dados) {
   }
 }
 
+// Titulo "VALOR DA OPERACAO / SERVICO" ja sem espacos e pontos. O OCR gruda as palavras, le O como 0/Q e
+// C cedilha como C/G ("VALORDAOPERAÇÃO/SERVIÇO", "VAL0R DA OPERAGAO").
+const RE_TIT_VALOR_OPERACAO = /VAL[O0Q]RDA[O0Q]PERA|[O0Q]PERA[CG]A[O0Q]\/?SERV/;
+// OCR: "R$" lido como "RS", "R5", "R§" ou "R $"; decimal com virgula
+const RE_VALOR_OCR = /R\s?[$S5§]\s*(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})(?!\d)/;
+// Celulas de valor de uma linha do DANFSe v2.0: cada "R$ 1,23" vira numero e cada "-" sozinho vira null.
+function celulasDanfseV2(linha) {
+  const re = /R\s?[$S5§]\s*(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})(?!\d)|(?:^|\s)[-–—](?=\s|$)/g;
+  return [...String(linha || '').matchAll(re)].map((m) => (m[1] ? paraNumero(m[1]) : null));
+}
+
 // linhas: saida de itensParaLinhas (ou o texto do PDF dividido por linha).
 export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
   const L = linhas.map((l) => String(l ?? ''));
@@ -595,11 +606,13 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
     }
   }
 
-  // valor da operacao/servico (= valor bruto da nota): primeiro R$ da linha abaixo do titulo
-  const iVal = U.findIndex((l) => l.includes('VALOR DA OPERACAO'));
+  // valor da operacao/servico (= valor bruto da nota): primeiro R$ da linha abaixo do titulo.
+  // Comparado sem espacos: o OCR do DANFSe v2.0 as vezes gruda o titulo ("VALORDAOPERACAO/SERVICO",
+  // J. Seda Neto de Pouso Alegre).
+  const iVal = U.findIndex((l) => RE_TIT_VALOR_OPERACAO.test(l.replace(/[\s.,]+/g, '')));
   if (iVal >= 0) {
     for (let k = iVal + 1; k < Math.min(iVal + 3, L.length); k += 1) {
-      const m = L[k].match(RE_VALOR);
+      const m = L[k].match(ocr ? RE_VALOR_OCR : RE_VALOR);
       if (m) { dados.valor = paraNumero(m[1]); break; }
     }
   }
@@ -634,6 +647,18 @@ export function extrairDadosNfse(linhas = [], { ocr = false } = {}) {
       const alinhado = celulasVal.length === celulasRot.length ? nums(celulasVal[idx]).slice(-1) : [];
       const todos = nums(L[iLiq + 1]);
       dados.valorLiquido = alinhado.length ? alinhado[0] : (todos.length ? todos[todos.length - 1] : null);
+    }
+  }
+
+  // DANFSe v2.0 sem o valor da operacao (OCR estragou o titulo ou a linha do valor): a linha abaixo de
+  // "Total das Retencoes ¦ VALOR LIQUIDO DA NFS-e ¦ Total do IBS/CBS ¦ VALOR LIQUIDO + IBS/CBS" tem as 4 celulas
+  // ("R$" ou "-"); valor da nota = retencoes + liquido.
+  if (!(dados.valor > 0)) {
+    const iRet = U.findIndex((l) => l.includes('TOTAL DAS RETENCOES') && l.includes('IBS/CBS'));
+    const cel = iRet >= 0 ? celulasDanfseV2(L[iRet + 1]) : [];
+    if (cel.length === 4 && cel[1] > 0) {
+      dados.valor = Math.round(((cel[0] || 0) + cel[1]) * 100) / 100;
+      dados.valorLiquido = cel[1];
     }
   }
 
