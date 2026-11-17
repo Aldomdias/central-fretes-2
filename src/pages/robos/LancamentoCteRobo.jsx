@@ -128,6 +128,35 @@ export default function LancamentoCteRobo() {
     setManuais((a) => ({ ...a, [id]: { ...(a[id] || {}), [campo]: valor } }));
   }
 
+  // Mesma fatura para todos os CT-e sem MIRO (com busca ativa, so os que aparecem na lista).
+  function replicarFatura() {
+    const base = termoBusca ? linhasVisiveis : linhas;
+    const alvo = base.filter((l) => !l.miro);
+    const comMiro = base.length - alvo.length;
+    if (!alvo.length) { setErro('Nenhum CT-e sem MIRO para preencher a fatura.'); return; }
+    const sugestao = String(alvo.find((l) => String(l.fatura ?? '').trim())?.fatura ?? '').trim();
+    const escopo = termoBusca ? ` que aparecem na busca "${busca.trim()}"` : ' do lote';
+    const digitada = window.prompt(`Numero da fatura para os ${fmt(alvo.length)} CT-e${escopo}:`, sugestao);
+    if (digitada === null) return;
+    const fatura = String(digitada).trim();
+    if (!fatura) { setErro('Informe o numero da fatura.'); return; }
+    const outras = alvo.filter((l) => { const f = String(l.fatura ?? '').trim(); return f && f !== fatura; }).length;
+    const aviso = [
+      `Tem certeza que TODOS os ${fmt(alvo.length)} CT-e${escopo} sao da fatura ${fatura}?`,
+      outras ? `\n${fmt(outras)} CT-e ja tem outra fatura preenchida e vao ser trocados para ${fatura}.` : '',
+      comMiro ? `\n${fmt(comMiro)} CT-e com MIRO nao mudam.` : '',
+    ].join('');
+    if (!window.confirm(aviso)) return;
+    const ids = alvo.map((l) => l.id);
+    setManuais((a) => {
+      const novo = { ...a };
+      ids.forEach((id) => { novo[id] = { ...(novo[id] || {}), fatura }; });
+      return novo;
+    });
+    setErro('');
+    setFeedback(`Fatura ${fatura} aplicada em ${fmt(alvo.length)} CT-e.`);
+  }
+
   async function importarXmls(lista) {
     const arquivos = Array.from(lista || []).filter((f) => /\.xml$/i.test(f.name));
     if (!arquivos.length) { setErro('Nenhum arquivo .xml encontrado na selecao.'); return; }
@@ -280,9 +309,12 @@ export default function LancamentoCteRobo() {
                   <div className="summary-card"><span>Com pendência</span><strong style={{ color: comErro.length ? '#b91c1c' : undefined }}>{fmt(comErro.length)}</strong></div>
                   <div className="summary-card"><span>Valor bruto</span><strong style={{ fontSize: 15 }}>{moeda(linhas.reduce((s, l) => s + l.bruto, 0))}</strong></div>
                 </div>
-                <div className="field" style={{ marginTop: 10, maxWidth: 220 }}>
-                  <label>Vencimento (todos os CT-e)</label>
-                  <input type="date" min={hojeIso()} value={vencimento} onChange={(e) => setVencimento(naoAntesDeHoje(e.target.value))} title="Nunca antes de hoje" />
+                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginTop: 10 }}>
+                  <div className="field" style={{ maxWidth: 220, margin: 0 }}>
+                    <label>Vencimento (todos os CT-e)</label>
+                    <input type="date" min={hojeIso()} value={vencimento} onChange={(e) => setVencimento(naoAntesDeHoje(e.target.value))} title="Nunca antes de hoje" />
+                  </div>
+                  <button type="button" className="btn-secondary" onClick={replicarFatura} title="Preenche a mesma fatura em todos os CT-e sem MIRO (pede confirmacao). Com a busca ativa, so nos que aparecem na lista. Para faturas diferentes, preencha um a um na tabela">{termoBusca ? 'Mesma fatura para os da busca' : 'Mesma fatura para todos'}</button>
                 </div>
                 <div style={{ marginTop: 10, padding: 10, border: '1px solid #e2e8f0', borderRadius: 8, background: '#f8fafc' }}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>Lançar só alguns CT-e do pacote</div>
