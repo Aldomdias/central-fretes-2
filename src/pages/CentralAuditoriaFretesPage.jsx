@@ -6265,6 +6265,36 @@ ${portaisLaudo.length ? `
       const opts = { ...opcoesLaudoTransportadorLote, transportador: laudoTransportador };
       const blocos = [];
       const detalhesExatosPorFatura = await carregarDetalhesExatosFaturas(faturasSelecionadas.map((item) => item.id));
+      // Trava do envio por e-mail: CT-e sem calculo e fora da base de CT-es (nao localizado) nunca vai em laudo
+      // para a transportadora (o laudo sairia com esse CT-e sem auditar, "0 divergencias"). Na duvida (falha
+      // ao consultar a base) tambem nao envia. O auditor resolve em "Para revisar" e reavalia.
+      if (laudoTransportador && opcoesEnvio.enviarEmail) {
+        const semCalculoLote = faturasSelecionadas.flatMap((fat) => (detalhesExatosPorFatura.get(fat.id) || [])
+          .filter((d) => !(Number(d.calculado_frete || 0) > 0) && !ehLinhaNfse(d))
+          .map((d) => ({ fat, d })));
+        if (semCalculoLote.length) {
+          let refsBase;
+          let erroBase = '';
+          try {
+            refsBase = await buscarReferenciaCtes(semCalculoLote.flatMap(({ d }) => [d.chave_cte, d.numero_cte]), { lancarErro: true });
+          } catch (erroConsulta) {
+            erroBase = erroConsulta?.message || String(erroConsulta);
+          }
+          const foraDaBase = erroBase ? semCalculoLote : semCalculoLote.filter(({ d }) => (
+            normalizarChaveCte(d.chave_cte).length !== 44
+            || !(refsBase.get(normalizarChaveCte(d.chave_cte)) || refsBase.get(normalizarChaveCte(d.numero_cte)))
+          ));
+          if (foraDaBase.length) {
+            const porFatura = new Map();
+            foraDaBase.forEach(({ fat, d }) => porFatura.set(fat.numero_fatura, [...(porFatura.get(fat.numero_fatura) || []), d.numero_cte || String(d.chave_cte || '').slice(25, 34) || '?']));
+            const lista = [...porFatura].map(([numero, ctes]) => `fatura ${numero}: ${ctes.slice(0, 5).join(', ')}${ctes.length > 5 ? '...' : ''}`).join(' | ');
+            const texto = `Laudo NAO enviado: CT-e sem calculo e nao localizado na base (${lista}). ${erroBase ? `Falha ao consultar a base (${erroBase}). ` : ''}Importe o XML / atualize a base de CT-es e use "Reavaliar agora" no robo: a fatura cai em "Para revisar" (CT-e faltando) em vez de gerar laudo.`;
+            setMensagemImportacao(texto);
+            opcoesEnvio.aoConcluir?.({ ok: false, erro: texto });
+            return;
+          }
+        }
+      }
       // CT-es sem vinculo de NF apontados pelo Robo Auditor: entram no laudo do transportador para serem retirados da fatura.
       const semNfPorFatura = new Map();
       if (laudoTransportador) {
