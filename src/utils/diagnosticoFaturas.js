@@ -471,13 +471,13 @@ export function proximaAcao(linha) {
 }
 
 // Apta à antecipação: não paga, ativa, com mais de 7 dias da emissão e menos de 10 dias para o vencimento
-// (vencimento de hoje em diante: fatura já vencida não é mais antecipação).
+// (até 10 dias inclusive, de hoje em diante: fatura já vencida não é mais antecipação).
 export function aptaAntecipacao(f, referencia = new Date()) {
   if (!f || inativa(f) || situacaoPagamento(f) !== 'ABERTA') return false;
   const desdeEmissao = f.data_emissao ? diasAte(f.data_emissao, referencia) : null;
   const ateVencimento = f.data_vencimento ? diasAte(f.data_vencimento, referencia) : null;
   if (desdeEmissao == null || ateVencimento == null) return false;
-  return -desdeEmissao > 7 && ateVencimento >= 0 && ateVencimento < 10;
+  return -desdeEmissao > 7 && ateVencimento >= 0 && ateVencimento <= 10;
 }
 
 const comFatura = (fn) => (l) => Boolean(l.fatura) && fn(l);
@@ -497,7 +497,7 @@ export const GRUPOS_DIAGNOSTICO = [
   ] },
   // So aparece com uma transportadora que faz antecipacao escolhida (flag no cadastro).
   { id: 'antecipacao', titulo: 'Antecipação', soAntecipa: true, cards: [
-    { id: 'aptas_antecipacao', rotulo: 'Aptas à antecipação', cor: '#0f766e', teste: comFatura((l) => aptaAntecipacao(l.fatura)), dica: 'Não pagas com mais de 7 dias da emissão e menos de 10 dias para o vencimento.' },
+    { id: 'aptas_antecipacao', rotulo: 'Aptas à antecipação', cor: '#0f766e', teste: comFatura((l) => aptaAntecipacao(l.fatura)), dica: 'Não pagas com mais de 7 dias da emissão e até 10 dias para o vencimento.' },
   ] },
   { id: 'auditoria', titulo: 'Auditoria', cards: [
     { id: 'nao_auditadas', rotulo: 'Não auditadas', cor: '#9b1111', teste: auditoria('NAO_AUDITADA'), dica: 'Em aberto e nenhum CT-e auditado.' },
