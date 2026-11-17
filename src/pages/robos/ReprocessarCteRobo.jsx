@@ -46,6 +46,15 @@ function competenciaBr(c) {
   return a && m ? `${m}/${a}` : String(c || '');
 }
 
+// Data de emissao da fila (ISO 'AAAA-MM-DD...' ou 'DD/MM/AAAA') -> 'AAAA-MM-DD' (campo date).
+function dataIso(v) {
+  const t = String(v || '').trim();
+  let m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = t.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : '';
+}
+
 function dataHoraBr(iso) {
   if (!iso) return '-';
   const d = new Date(iso);
@@ -90,13 +99,20 @@ export default function ReprocessarCteRobo() {
     const lista = ignorar.split(/[,;]+/).map((t) => t.trim().toUpperCase()).filter(Boolean);
     const itens = competencias.flatMap((c) => c.itens);
     const ignoradas = itens.filter((i) => lista.some((t) => String(i.transportadora || '').toUpperCase().includes(t)));
-    const usadas = itens.filter((i) => !ignoradas.includes(i)).map((i) => i.chave);
+    const itensUsados = itens.filter((i) => !ignoradas.includes(i));
+    const usadas = itensUsados.map((i) => i.chave);
     if (!usadas.length) { setErro('Nenhuma chave pendente para carregar.'); return; }
     setChaves(usadas);
+    // Periodo do relatorio = a partir da emissao mais antiga das chaves (sem data final), para o SAP achar
+    // todas; sem emissao na fila, usa o 1o dia da competencia mais antiga.
+    const emissoes = itensUsados.map((i) => dataIso(i.emissao)).filter(Boolean).sort();
+    const iniCompetencia = competencias.map((c) => `${c.competencia}-01`).filter((d) => /^\d{4}-\d{2}-01$/.test(d)).sort()[0] || '';
+    const novaInicial = emissoes[0] || iniCompetencia;
+    if (novaInicial) { setDataInicial(novaInicial); setDataFinal(''); }
     setStats({ linhasLidas: itens.length, ignoradasTransportadora: ignoradas.length, semChaveValida: 0, chavesBrutas: usadas.length });
     setOrigem(`fila da provisão (${competencias.map((c) => competenciaBr(c.competencia)).join(', ')})`);
     setErro('');
-    setFeedback(`${fmt(usadas.length)} chave(s) pendente(s) da provisão carregada(s)${ignoradas.length ? `; ${fmt(ignoradas.length)} ignorada(s) pela transportadora` : ''}. Agora baixe os dados para o Excel (passo 1).`);
+    setFeedback(`${fmt(usadas.length)} chave(s) pendente(s) da provisão carregada(s)${ignoradas.length ? `; ${fmt(ignoradas.length)} ignorada(s) pela transportadora` : ''}.${novaInicial ? ` Período ajustado: a partir de ${novaInicial.split('-').reverse().join('/')} (emissão mais antiga), sem data final.` : ''} Agora baixe os dados para o Excel (passo 1).`);
   }
 
   const iniSap = isoParaSap(dataInicial);
