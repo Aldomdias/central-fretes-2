@@ -472,8 +472,12 @@ export function proximaAcao(linha) {
 
 // Apta à antecipação: não paga, ativa, com mais de 7 dias da emissão e menos de 10 dias para o vencimento
 // (até 10 dias inclusive, de hoje em diante: fatura já vencida não é mais antecipação).
+// Já antecipada: Atribuição do SAP = "Cessão" (mesmo critério do bloco de antecipação dos boletos), não paga.
+export const faturaAntecipada = (f) => Boolean(f) && /cess/i.test(String(f.atribuicao_sap || '').normalize('NFD').replace(/[̀-ͯ]/g, '')) && situacaoPagamento(f) === 'ABERTA';
+
+// Quem já foi antecipada sai de "aptas" e vai para o card "Já antecipadas".
 export function aptaAntecipacao(f, referencia = new Date()) {
-  if (!f || inativa(f) || situacaoPagamento(f) !== 'ABERTA') return false;
+  if (!f || inativa(f) || situacaoPagamento(f) !== 'ABERTA' || faturaAntecipada(f)) return false;
   const desdeEmissao = f.data_emissao ? diasAte(f.data_emissao, referencia) : null;
   const ateVencimento = f.data_vencimento ? diasAte(f.data_vencimento, referencia) : null;
   if (desdeEmissao == null || ateVencimento == null) return false;
@@ -497,7 +501,8 @@ export const GRUPOS_DIAGNOSTICO = [
   ] },
   // So aparece com uma transportadora que faz antecipacao escolhida (flag no cadastro).
   { id: 'antecipacao', titulo: 'Antecipação', soAntecipa: true, cards: [
-    { id: 'aptas_antecipacao', rotulo: 'Aptas à antecipação', cor: '#0f766e', teste: comFatura((l) => aptaAntecipacao(l.fatura)), dica: 'Não pagas com mais de 7 dias da emissão e até 10 dias para o vencimento.' },
+    { id: 'aptas_antecipacao', rotulo: 'Aptas à antecipação', cor: '#0f766e', teste: comFatura((l) => aptaAntecipacao(l.fatura)), dica: 'Não pagas com mais de 7 dias da emissão e até 10 dias para o vencimento. Quem já foi antecipada (Cessão no SAP) fica só em "Já antecipadas".' },
+    { id: 'ja_antecipadas', rotulo: 'Já antecipadas (cessão)', cor: '#6d28d9', teste: comFatura((l) => ativa(l) && faturaAntecipada(l.fatura)), dica: 'Atribuição "Cessão" no SAP: fatura já antecipada, ainda não paga. Sai daqui sozinha quando o pagamento entrar.' },
   ] },
   { id: 'auditoria', titulo: 'Auditoria', cards: [
     { id: 'nao_auditadas', rotulo: 'Não auditadas', cor: '#9b1111', teste: auditoria('NAO_AUDITADA'), dica: 'Em aberto e nenhum CT-e auditado.' },
