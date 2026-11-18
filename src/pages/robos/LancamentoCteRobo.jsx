@@ -128,6 +128,35 @@ export default function LancamentoCteRobo() {
     setManuais((a) => ({ ...a, [id]: { ...(a[id] || {}), [campo]: valor } }));
   }
 
+  // Uma fatura so para todos os CT-e do lote (faturas com centenas de CT-e). Pergunta antes: o normal e cada
+  // CT-e ter a sua, e quem lanca precisa ter certeza de que todos sao da mesma fatura. CT-e com MIRO nao mudam.
+  // Vale para o lote inteiro (os que sairam com "Manter so estes" ficam de fora); a busca nao limita.
+  function replicarFatura() {
+    const comMiro = linhas.filter((l) => l.miro).length;
+    const alvo = linhas.filter((l) => !l.miro);
+    if (!alvo.length) { setErro('Nenhum CT-e sem MIRO para preencher a fatura.'); return; }
+    const sugestao = String(alvo.find((l) => String(l.fatura ?? '').trim())?.fatura ?? '').trim();
+    const digitada = window.prompt(`Numero da fatura para os ${fmt(alvo.length)} CT-e do lote:`, sugestao);
+    if (digitada === null) return;
+    const fatura = String(digitada).trim();
+    if (!fatura) { setErro('Informe o numero da fatura.'); return; }
+    const outras = alvo.filter((l) => { const f = String(l.fatura ?? '').trim(); return f && f !== fatura; }).length;
+    const aviso = [
+      `Tem certeza que TODOS os ${fmt(alvo.length)} CT-e sao da fatura ${fatura}?`,
+      outras ? `\n${fmt(outras)} CT-e ja tem outra fatura preenchida e vao ser trocados para ${fatura}.` : '',
+      comMiro ? `\n${fmt(comMiro)} CT-e com MIRO nao mudam.` : '',
+    ].join('');
+    if (!window.confirm(aviso)) return;
+    const ids = alvo.map((l) => l.id);
+    setManuais((a) => {
+      const novo = { ...a };
+      ids.forEach((id) => { novo[id] = { ...(novo[id] || {}), fatura }; });
+      return novo;
+    });
+    setErro('');
+    setFeedback(`Fatura ${fatura} aplicada em ${fmt(alvo.length)} CT-e.`);
+  }
+
   async function importarXmls(lista) {
     const arquivos = Array.from(lista || []).filter((f) => /\.xml$/i.test(f.name));
     if (!arquivos.length) { setErro('Nenhum arquivo .xml encontrado na selecao.'); return; }
@@ -295,6 +324,9 @@ export default function LancamentoCteRobo() {
                   <div className="field" style={{ marginTop: 8, maxWidth: 320 }}>
                     <label>Buscar na lista (só mostra, não remove)</label>
                     <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="número, transportadora, fatura, NF…" />
+                  </div>
+                  <div style={{ marginTop: 8 }}>
+                    <button type="button" className="btn-secondary" onClick={replicarFatura} disabled={!linhas.length} title="Preenche a mesma fatura em todos os CT-e do lote (pede confirmação). Para CT-e de faturas diferentes, preencha um a um na tabela">Mesma fatura para todos</button>
                   </div>
                   {termoBusca ? <div style={{ fontSize: 12, color: '#64748b' }}>Mostrando {fmt(linhasVisiveis.length)} de {fmt(linhas.length)} CT-e. O lançamento continua com os {fmt(linhas.length)} do lote.</div> : null}
                 </div>
