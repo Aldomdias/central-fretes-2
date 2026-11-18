@@ -2535,7 +2535,11 @@ async function buscarCtesMesBruto({ supabase, competencia, dataInicio, dataFim, 
   };
 
   const porData = await carregarPorFiltro('data');
-  if (porData.length > 0 || temPeriodo) return porData;
+  if (porData.length > 0 || temPeriodo) {
+    // Marca que a carga foi por data de emissao: o salvar precisa limpar pelo mesmo criterio.
+    porData.faixaDatas = datas;
+    return porData;
+  }
 
   return carregarPorFiltro('competencia');
 }
@@ -2574,14 +2578,32 @@ function calcularResumo(registros = [], competencia = '') {
   };
 }
 
-async function salvarResultadosMes({ supabase, competencia, registros, resumo, onProgress }) {
-  const { error: deleteError } = await supabase
-    .from(TABELA_RESULTADOS)
-    .delete()
-    .eq('competencia', competencia);
-
-  if (deleteError) {
-    throw new Error(`Erro ao limpar resultado anterior: ${deleteError.message}`);
+async function salvarResultadosMes({ supabase, competencia, registros, resumo, onProgress, faixaDatas = null }) {
+  // CT-e emitido num mes mas com competencia de outro (ex.: emitido em out/2026, competencia 2026-11)
+  // e carregado pela data de emissao. Limpar so por competencia apagava os resultados desses CT-es
+  // gravados pelo processamento do outro mes (ficavam "sem calculo"); quando a carga foi por
+  // emissao, limpa pela faixa de emissao + os da competencia sem data (legado).
+  if (faixaDatas) {
+    const delFaixa = await supabase
+      .from(TABELA_RESULTADOS)
+      .delete()
+      .gte('data_emissao', faixaDatas.inicio)
+      .lte('data_emissao', faixaDatas.fim);
+    if (delFaixa.error) throw new Error(`Erro ao limpar resultado anterior: ${delFaixa.error.message}`);
+    const delSemData = await supabase
+      .from(TABELA_RESULTADOS)
+      .delete()
+      .eq('competencia', competencia)
+      .is('data_emissao', null);
+    if (delSemData.error) throw new Error(`Erro ao limpar resultado anterior: ${delSemData.error.message}`);
+  } else {
+    const { error: deleteError } = await supabase
+      .from(TABELA_RESULTADOS)
+      .delete()
+      .eq('competencia', competencia);
+    if (deleteError) {
+      throw new Error(`Erro ao limpar resultado anterior: ${deleteError.message}`);
+    }
   }
 
   for (let index = 0; index < registros.length; index += INSERT_CHUNK) {
@@ -3003,6 +3025,7 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
   }
 
   let ctes = await buscarCtesMesBruto({ supabase, competencia, dataInicio, dataFim, onProgress });
+  const faixaDatasCarga = ctes.faixaDatas || null;
   if (canais?.length) {
     const cSet = new Set(canais);
     ctes = ctes.filter((r) => cSet.has(normalizarCanalResultado(r.canal || r.canal_original)));
@@ -3037,7 +3060,7 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
   // não apagar o restante do mês salvo.
   const temPeriodo = Boolean(dataInicio || dataFim);
   if (!temPeriodo) {
-    await salvarResultadosMes({ supabase, competencia, registros, resumo, onProgress });
+    await salvarResultadosMes({ supabase, competencia, registros, resumo, onProgress, faixaDatas: faixaDatasCarga });
   }
 
   onProgress?.({ etapa: 'concluido', carregados: registros.length, total: registros.length });
