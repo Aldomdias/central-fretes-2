@@ -15,6 +15,7 @@
  * Variaveis: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, RESEND_API_KEY + ALERTA_EMAIL_FROM (ou ALERTA_EMAIL_TOKEN), CRON_SECRET (opcional).
  */
 import { createClient } from '@supabase/supabase-js';
+import * as XLSX from 'xlsx';
 
 export const config = { maxDuration: 300 };
 
@@ -73,7 +74,7 @@ function montarEmail({ cfg, periodo, faturasPeriodo, ctes, valor, janelaDias, ho
     ? `<p>Seu faturamento está cadastrado conosco como <b>${rotulo}</b> e, no período de <b>${dataBr(periodo.inicio)}</b> a <b>${dataBr(periodo.fim)}</b>, <b>não identificamos nenhuma fatura emitida</b> por vocês.</p>`
     : `<p>Seu faturamento está cadastrado conosco como <b>${rotulo}</b>. No período de <b>${dataBr(periodo.inicio)}</b> a <b>${dataBr(periodo.fim)}</b> recebemos a(s) fatura(s): <b>${escapar(faturasPeriodo.map((f) => f.numero_fatura).filter(Boolean).join(', ') || '-')}</b>.<br>Por favor, <b>confirmem se não falta nenhuma</b>, pois identificamos CT-e(s) ainda sem fatura vinculada.</p>`;
   const bloco = ctes.length
-    ? `<p>Levantamos <b>${ctes.length} CT-e(s)</b> emitidos nos últimos ${janelaDias} dias (até ${dataBr(periodo.limiteCte)}) <b>sem fatura vinculada</b>, totalizando <b>${dinheiro(valor)}</b>${ctes.length > 40 ? ` (primeiros 40 abaixo; a lista completa segue em anexo)` : ' (lista abaixo e em anexo)'}:</p>
+    ? `<p>Levantamos <b>${ctes.length} CT-e(s)</b> emitidos nos últimos ${janelaDias} dias (até ${dataBr(periodo.limiteCte)}) <b>sem fatura vinculada</b>, totalizando <b>${dinheiro(valor)}</b>${ctes.length > 40 ? ` (primeiros 40 abaixo; a lista completa, com a chave de cada CT-e, segue em anexo (Excel))` : ' (lista abaixo e em anexo)'}:</p>
 <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;font-size:13px"><thead><tr style="background:#f1f5f9"><th>CT-e</th><th>Emissão</th><th>Valor</th></tr></thead><tbody>${linhas}</tbody></table>`
     : '';
   const html = `<div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a">
@@ -83,12 +84,25 @@ ${bloco}
 <p><b>É obrigatório o envio das faturas correspondentes</b> para que possamos seguir com os pagamentos. Caso contrário, teremos problemas de pagamento.</p>
 <p>Em caso de dúvida ou se alguma fatura já foi enviada, responda este e-mail informando o número da fatura.</p>
 <p style="color:#64748b;font-size:12px">Mensagem automática da Auditoria de Fretes (${dataBr(hoje)}).</p></div>`;
-  const csv = ['numero_cte;chave_cte;data_emissao;valor_cte'].concat(ctes.map((c) => `${c.numero_cte || ''};${c.chave_cte || ''};${dataBr(c.data_emissao)};${String(c.valor_cte ?? '').replace('.', ',')}`)).join('\r\n');
-  return { assunto, html, csv };
+  // Planilha organizada: chave do CT-e como TEXTO (44 digitos; o Excel arredondaria como numero), data real e valor numerico.
+  const cabecalho = ['Número do CT-e', 'Chave do CT-e', 'Data de emissão', 'Valor do CT-e (R$)', 'Dias desde a emissão'];
+  const dados = ctes.map((c) => [String(c.numero_cte || ''), digitos(c.chave_cte) || String(c.chave_cte || ''), dataBr(c.data_emissao),
+    Number(c.valor_cte || 0), Math.floor((new Date(`${hoje}T12:00:00Z`) - new Date(`${String(c.data_emissao).slice(0, 10)}T12:00:00Z`)) / 86400000)]);
+  const ws = XLSX.utils.aoa_to_sheet([cabecalho, ...dados]);
+  dados.forEach((_, i) => {
+    ['A', 'B'].forEach((col) => { const cel = ws[`${col}${i + 2}`]; if (cel) { cel.t = 's'; cel.z = '@'; } });
+    const v = ws[`D${i + 2}`]; if (v) v.z = '#,##0.00';
+  });
+  ws['!cols'] = [{ wch: 16 }, { wch: 48 }, { wch: 16 }, { wch: 20 }, { wch: 20 }];
+  ws['!autofilter'] = { ref: `A1:E${dados.length + 1}` };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'CT-es sem fatura');
+  const xlsx = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+  return { assunto, html, xlsx };
 }
 
 async function enviarEmail({ para, copia, assunto, html, anexoCsv }) {
-  const anexos = anexoCsv ? [{ filename: anexoCsv.nome, content: Buffer.from(`﻿${anexoCsv.conteudo}`, 'utf8').toString('base64') }] : [];
+  const anexos = anexoCsv ? [{ filename: anexoCsv.nome, content: anexoCsv.conteudo }] : [];
   let resposta;
   if (process.env.RESEND_API_KEY) {
     resposta = await fetch('https://api.resend.com/emails', {
@@ -192,8 +206,8 @@ export default async function handler(req, res) {
         if (!para.length) { registro.observacao = 'Sem e-mail do transportador cadastrado (preencha na tela do robo ou no Robo Auditor).'; resultados.push(registro); continue; }
         if (!enviarDeVerdade) { registro.observacao = simular ? 'Simulacao: e-mail nao enviado.' : 'Envio de e-mails desligado na configuracao (modo sombra).'; resultados.push(registro); continue; }
         if (enviadoRecente.has(String(t.id))) { registro.observacao = `Ja avisado nos ultimos ${DIAS_SEM_REENVIO} dias.`; resultados.push(registro); continue; }
-        const { assunto, html, csv } = montarEmail({ cfg: t, periodo, faturasPeriodo, ctes, valor, janelaDias, hoje });
-        await enviarEmail({ para, copia, assunto, html, anexoCsv: ctes.length ? { nome: `ctes-sem-fatura-${hoje}.csv`, conteudo: csv } : null });
+        const { assunto, html, xlsx } = montarEmail({ cfg: t, periodo, faturasPeriodo, ctes, valor, janelaDias, hoje });
+        await enviarEmail({ para, copia, assunto, html, anexoCsv: ctes.length ? { nome: `ctes-sem-fatura-${hoje}.xlsx`, conteudo: xlsx } : null });
         registro.email_enviado = true;
         resultados.push(registro);
       } catch (e) {
