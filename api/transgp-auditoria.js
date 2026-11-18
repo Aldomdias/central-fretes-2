@@ -19,7 +19,8 @@ import { completarFretePelaTabela, FONTE_TABELA_AUTO } from './_freteTabelaFallb
 export const config = { maxDuration: 120 };
 
 const API_PADRAO = 'https://painel-transgp.vercel.app/api/v1/auditoria/fretes';
-const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+// null/vazio da API = "sem informacao" (Number(null) daria 0 e viraria "R$ 0,00" no banco).
+const num = (v) => { if (v === null || v === undefined || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
 const digitos = (v) => String(v ?? '').replace(/\D+/g, '');
 const dataIso = (d) => d.toISOString().slice(0, 10);
 
