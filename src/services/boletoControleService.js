@@ -78,6 +78,40 @@ const MSG_MIGRATION = 'Aplicar a migration 20261026_001_boleto_arquivo_guardado.
 
 const nomeSeguro = (n) => String(n || 'boleto.pdf').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9._-]/g, '_');
 
+export async function hashArquivo(arquivo) {
+  const bytes = await arquivo.arrayBuffer();
+  const hash = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export async function listarVersoesBoletos() {
+  if (!isSupabaseConfigured()) return [];
+  const { data, error } = await getSupabaseClient().from('boleto_arquivo_versoes').select('*').order('created_at', { ascending: false }).limit(10000);
+  if (error) {
+    if (tabelaAusente(error)) return [];
+    throw new Error(`Erro ao carregar versões de boletos: ${error.message}`);
+  }
+  return data || [];
+}
+
+export async function registrarLeituraPasta({ origem = 'PASTA_LOCAL', status = 'SUCESSO', total = 0, novos = 0, repetidos = 0, erro = '', usuario = {} } = {}) {
+  if (!isSupabaseConfigured()) return null;
+  const payload = { origem, status, total_arquivos: total, novos, repetidos, erro: erro || null, executado_por: usuario.nome || usuario.email || null };
+  const { data, error: falha } = await getSupabaseClient().from('boleto_pasta_leituras').insert(payload).select('*').single();
+  if (falha) {
+    if (tabelaAusente(falha)) return null;
+    throw new Error(`Erro ao registrar leitura da pasta: ${falha.message}`);
+  }
+  return data;
+}
+
+export async function carregarUltimaLeituraPasta() {
+  if (!isSupabaseConfigured()) return null;
+  const { data, error } = await getSupabaseClient().from('boleto_pasta_leituras').select('*').eq('status', 'SUCESSO').order('created_at', { ascending: false }).limit(1).maybeSingle();
+  if (error) return null;
+  return data || null;
+}
+
 // itens: [{ fatura, arquivo: File, leitura: {valor, vencimento, linhaDigitavel}, atual: registro do controle (opcional) }].
 // Sobe o PDF, grava a informacao lida e apaga o PDF anterior da fatura (boleto substituido).
 export async function guardarBoletos(itens, { usuario = {} } = {}) {
@@ -86,9 +120,22 @@ export async function guardarBoletos(itens, { usuario = {} } = {}) {
   const agora = new Date().toISOString();
   const guardados = [];
   for (const { fatura, arquivo, leitura, atual } of itens) {
-    const path = `${fatura.id}/${Date.now()}-${nomeSeguro(arquivo.name)}`;
-    const { error: erroUp } = await client.storage.from(BUCKET_BOLETOS).upload(path, arquivo, { upsert: false, contentType: 'application/pdf' });
-    if (erroUp) throw new Error(`Erro ao guardar "${arquivo.name}": ${erroUp.message}. ${MSG_MIGRATION}`);
+    const hash = leitura?.hash || await hashArquivo(arquivo);
+    // A versao e' por (fatura, conteudo): o mesmo PDF pode legitimamente servir a outra fatura.
+    const { data: existente } = await client.from('boleto_arquivo_versoes').select('*').eq('hash_conteudo', hash).eq('fatura_id', String(fatura.id)).maybeSingle();
+    // Repetido de verdade: o controle da fatura ja aponta para esse mesmo arquivo. Nada a fazer (idempotente).
+    if (existente && atual?.boleto_arquivo_path && atual.boleto_arquivo_path === existente.arquivo_path) {
+      guardados.push({ ...existente, repetido: true });
+      continue;
+    }
+    // Conteudo ja guardado para esta fatura, mas o controle foi desfeito ou aponta para outro arquivo: refaz o
+    // controle reaproveitando o PDF existente (sem novo upload e sem nova versao).
+    const reaproveitar = Boolean(existente?.arquivo_path);
+    const path = reaproveitar ? existente.arquivo_path : `${fatura.id}/${Date.now()}-${nomeSeguro(arquivo.name)}`;
+    if (!reaproveitar) {
+      const { error: erroUp } = await client.storage.from(BUCKET_BOLETOS).upload(path, arquivo, { upsert: false, contentType: 'application/pdf' });
+      if (erroUp) throw new Error(`Erro ao guardar "${arquivo.name}": ${erroUp.message}. ${MSG_MIGRATION}`);
+    }
     const registro = {
       fatura_id: String(fatura.id),
       numero_fatura: fatura.numero_fatura || null,
@@ -110,12 +157,21 @@ export async function guardarBoletos(itens, { usuario = {} } = {}) {
     };
     const { error } = await client.from(TABELA).upsert(registro, { onConflict: 'fatura_id' });
     if (error) {
-      await client.storage.from(BUCKET_BOLETOS).remove([path]);
+      if (!reaproveitar) await client.storage.from(BUCKET_BOLETOS).remove([path]);
       throw new Error(`Erro ao salvar o boleto: ${error.message}. ${MSG_MIGRATION}`);
     }
-    if (atual?.boleto_arquivo_path && atual.boleto_arquivo_path !== path) {
-      await client.storage.from(BUCKET_BOLETOS).remove([atual.boleto_arquivo_path]);
-    }
+    if (reaproveitar) { guardados.push(registro); continue; }
+    const versao = {
+      fatura_id: String(fatura.id), hash_conteudo: hash, nome_arquivo: arquivo.name,
+      arquivo_path: path, valor: leitura?.valor ?? null, vencimento: leitura?.vencimento ?? null,
+      linha_digitavel: leitura?.linhaDigitavel ?? null, origem_leitura: leitura?.origemLeitura || null,
+      status_vinculo: 'LOCALIZADO_NA_PASTA', campos_comparados: { referencia: true, valor: true, vencimento: true },
+      candidatos: [], confirmado_manualmente: false, confirmado_por: usuario.nome || usuario.email || null,
+    };
+    const { error: erroVersao } = await client.from('boleto_arquivo_versoes').insert(versao);
+    if (erroVersao && !tabelaAusente(erroVersao)) throw new Error(`Boleto salvo, mas a versão não foi registrada: ${erroVersao.message}`);
+    // O arquivo anterior permanece no histórico de versões. A limpeza ocorre somente após
+    // pagamento confirmado, nunca durante um simples reprocessamento/substituição.
     guardados.push(registro);
   }
   return guardados;

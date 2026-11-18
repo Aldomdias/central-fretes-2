@@ -22,6 +22,14 @@ test('laudo: pago, programado, em tratativa e fora do total', () => {
   assert.equal(itens[2].acao, 'Aguardar retorno do financeiro (Fênix)');
 });
 
+test('laudo exclui estorno SAP confirmado sem relançamento', () => {
+  const { itens, estornadas } = dadosDoLaudo([
+    { numero: '1672373', fatura: fat({ sap_estorno_status: 'ESTORNADA_SEM_RELANÇAMENTO', sap_documento_estorno: '1700013712' }) },
+  ]);
+  assert.equal(estornadas, 1);
+  assert.equal(itens.length, 0);
+});
+
 test('laudo: HTML autonomo, sem texto do usuario quebrando o script', () => {
   const html = gerarHtmlLaudo({
     linhas: [{ numero: '</script><b>9', fatura: fat({ transportadora: 'A & B <x>' }) }],

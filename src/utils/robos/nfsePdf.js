@@ -714,6 +714,18 @@ async function linhasDaPagina(pdf, n) {
   return itensParaLinhas(conteudo.items);
 }
 
+// Leitura generica usada por boletos e outros PDFs. Mantida aqui para compartilhar a mesma
+// configuracao local do pdf.js e evitar dependencias de CDN.
+export async function paginasDoPdf(arquivo) {
+  const pdf = await abrirPdf(arquivo);
+  const paginas = [];
+  for (let n = 1; n <= pdf.numPages; n += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    paginas.push(await linhasDaPagina(pdf, n));
+  }
+  return paginas;
+}
+
 // Um PDF pode ter varias notas, uma por pagina. Devolve uma leitura por pagina; paginas de
 // continuacao (sem numero, CNPJ nem valor, depois de uma pagina lida) ficam de fora.
 // opcoes.ocr: leitura de texto vindo de OCR; opcoes.ocrPaginas[i]: so a pagina i veio de OCR.

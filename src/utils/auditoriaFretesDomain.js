@@ -1,6 +1,7 @@
 import { excelDateToISO } from './auditoriaFretesImport.js';
 import { obterRaizCnpj, raizCnpjValida } from './cnpj.js';
 import { transportadoraTemRaiz } from './vinculoCnpjTransportadora.js';
+import { compararFaturaPagamento, compararReferenciasFatura } from './portalFinanceiroDomain.js';
 
 export const FATURA_STATUS = [
   'RECEBIDA',
@@ -493,6 +494,9 @@ export function mapearPagamentoSap(row = {}) {
     // "Atribuição" do SAP (ex.: "Boleto", "Cessão" = antecipacao). Gravada na fatura, nao em financeiro_pagamentos.
     atribuicao: String(row['Atribuição'] ?? row['Atribuicao'] ?? '').trim() || null,
     origem: 'SAP_EXPORTACAO',
+    empresa: String(row['Empresa'] ?? row['Sociedade'] ?? '').trim(),
+    moeda: String(row['Moeda'] ?? row['Moeda do documento'] ?? 'BRL').trim() || 'BRL',
+    vencimento: excelDateToISO(row['Vencimento'] ?? row['Data base'] ?? row['Data de vencimento']),
   };
 }
 
@@ -535,7 +539,8 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdici
     .map(({ autoReferenciada, ...pagamento }) => pagamento)
     .flatMap((pagamento) => {
       const numero = normalizar(pagamento.numero_fatura);
-      const candidatas = porNumero.get(numero) || [];
+      const exatas = porNumero.get(numero) || [];
+      const candidatas = exatas.length ? exatas : faturas.filter((fatura) => compararReferenciasFatura(fatura.numero_fatura, pagamento.numero_fatura).corresponde);
       if (!candidatas.length) return [{ ...pagamento, resultado: 'NAO_LOCALIZADO' }];
 
       const raizPagamento = obterRaizCnpj(pagamento.cnpj);
@@ -561,6 +566,15 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdici
       }
 
       let alvo = candidatasPorCnpj;
+      if (!exatas.length) {
+        alvo = alvo.filter((fatura) => compararFaturaPagamento(fatura, {
+          ...pagamento,
+          referencia_fatura: pagamento.numero_fatura,
+          pagamento_confirmado: pagamento.compensado,
+          disponivel_para_vinculo: true,
+        }).corresponde);
+        if (!alvo.length) return [{ ...pagamento, resultado: 'DADOS_DIVERGENTES' }];
+      }
       const abertas = alvo.filter((fatura) => !ENCERRADOS.has(fatura.status));
       if (abertas.length) alvo = abertas;
 
@@ -583,6 +597,12 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdici
       if (!alvo.length) return [{ ...pagamento, resultado: 'NAO_LOCALIZADO' }];
 
       return alvo.map((fatura) => {
+      const campos_vinculo = compararFaturaPagamento(fatura, {
+        ...pagamento,
+        referencia_fatura: pagamento.numero_fatura,
+        pagamento_confirmado: pagamento.compensado,
+        disponivel_para_vinculo: true,
+      }).campos;
       const pago = Number(pagamento.valor_pago || 0);
       const esperado = Number(fatura.valor_fatura || 0);
       const diferenca = Number((pago - esperado).toFixed(2));
@@ -594,7 +614,7 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdici
       // Reclassificacao interna: o valor comparado com a fatura nao e'
       // conclusivo (a fatura pode ter sido agrupada com outras nesse
       // documento), entao nao expomos diferenca nem contamos como pago.
-      return { ...resto, fatura_id: fatura.id, resultado, diferenca: resultado === 'LANCADA_FINANCEIRO' ? 0 : diferenca };
+      return { ...resto, fatura_id: fatura.id, resultado, campos_vinculo, diferenca: resultado === 'LANCADA_FINANCEIRO' ? 0 : diferenca };
       });
     });
 }

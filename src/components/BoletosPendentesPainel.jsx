@@ -3,9 +3,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { carregarSessao } from '../utils/authLocal';
 import BoletosEnvioPainel from './BoletosEnvioPainel';
-import { casarBoletosComFaturas, divergenciasBoleto, lerBoletoPdf } from '../utils/boletosPasta';
+import { casarBoletosComFaturas, divergenciasBoleto, lerBoletoIncremental } from '../utils/boletosPasta';
 import {
-  apagarBoletosPagos, confirmarBoletos, desfazerConfirmacaoBoleto, guardarBoletos, listarControleBoletos, STATUS_BOLETO, urlBoletoGuardado,
+  apagarBoletosPagos, carregarUltimaLeituraPasta, confirmarBoletos, desfazerConfirmacaoBoleto, guardarBoletos, hashArquivo, listarControleBoletos, listarVersoesBoletos, registrarLeituraPasta, STATUS_BOLETO, urlBoletoGuardado,
 } from '../services/boletoControleService';
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -34,12 +34,13 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
   const [selecionadas, setSelecionadas] = useState(() => new Set());
   const [salvando, setSalvando] = useState(false);
   const [pasta, setPasta] = useState(null); // { total, casamento } da ultima conferencia da pasta
+  const [ultimaLeitura, setUltimaLeitura] = useState(null);
 
   const recarregar = () => listarControleBoletos()
     .then(({ lista, local: l }) => { setControle(lista); setLocal(l); setErro(''); return lista; })
     .catch((e) => setErro(e.message))
     .finally(() => setCarregando(false));
-  useEffect(() => { recarregar(); }, []);
+  useEffect(() => { recarregar(); carregarUltimaLeituraPasta().then(setUltimaLeitura).catch(() => {}); }, []);
   // Boleto guardado de fatura ja paga: apaga o PDF e mantem a informacao (o servidor tambem faz isso todo dia).
   const limpou = useRef(false);
   useEffect(() => {
@@ -74,6 +75,7 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
     ev.target.value = '';
     if (!arquivos.length) { setErro('Nenhum PDF encontrado na pasta escolhida.'); return; }
     setErro('');
+    try {
     // 1) Casa pelo NOME (rapido, mesmo com milhares de arquivos); 2) so le o conteudo dos que casaram
     // com fatura que ainda aguarda/tem boleto (pagas e outras ficam de fora).
     const arquivoPorNome = new Map(arquivos.map((a) => [a.name, a]));
@@ -81,16 +83,29 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
     const idsEmJogo = new Set([...exigem.map((f) => String(f.id)), ...controle.map((c) => String(c.fatura_id))]);
     const aLer = [...casamento.porFatura].filter(([id]) => idsEmJogo.has(id)).map(([, v]) => v.arquivo);
     const leituras = new Map();
+    const versoesPorHash = new Map((await listarVersoesBoletos().catch(() => [])).map((v) => [v.hash_conteudo, v]));
+    let reaproveitadas = 0;
     for (let i = 0; i < aLer.length; i += 1) {
       setLendo({ feito: i, total: aLer.length, nome: aLer[i] });
-      leituras.set(aLer[i], await lerBoletoPdf(arquivoPorNome.get(aLer[i])));
+      const arquivo = arquivoPorNome.get(aLer[i]);
+      const leit = await lerBoletoIncremental(arquivo, await hashArquivo(arquivo), versoesPorHash);
+      if (leit.reaproveitada) reaproveitadas += 1;
+      leituras.set(aLer[i], leit);
     }
     setLendo(null);
     // Mesma linha digitavel em mais de um arquivo = boleto repetido.
     const porLinha = new Map();
     leituras.forEach((l, nome) => { if (l.linhaDigitavel) porLinha.set(l.linhaDigitavel, [...(porLinha.get(l.linhaDigitavel) || []), nome]); });
     const repetidos = [...porLinha.values()].filter((v) => v.length > 1);
-    setPasta({ total: arquivos.length, lidos: aLer.length, arquivoPorNome, leituras, repetidos, casamento });
+    const resumo = { total: arquivos.length, lidos: aLer.length, reaproveitadas, arquivoPorNome, leituras, repetidos, casamento };
+    setPasta(resumo);
+    const registrada = await registrarLeituraPasta({ total: arquivos.length, novos: aLer.length - reaproveitadas, repetidos: repetidos.length, usuario: { nome: sessao?.nome, email: sessao?.email } });
+    if (registrada) setUltimaLeitura(registrada);
+    } catch (e) {
+      setLendo(null);
+      setErro(`Pasta indisponível ou leitura interrompida: ${e.message || e}. Os vínculos anteriores foram preservados.`);
+      await registrarLeituraPasta({ status: 'FALHA', total: arquivos.length, erro: e.message || String(e), usuario: { nome: sessao?.nome, email: sessao?.email } }).catch(() => {});
+    }
   };
   const achado = (f) => pasta?.casamento.porFatura.get(String(f.id));
   const leitura = (f) => (achado(f) ? pasta.leituras.get(achado(f).arquivo) || null : null);
@@ -245,6 +260,9 @@ export default function BoletosPendentesPainel({ faturas, desde = {}, mostrarAud
             </div>
           )}
           {erro && <div className="hint-box compact" style={{ borderLeft: '4px solid #b91c1c', marginBottom: 8 }}>{erro}</div>}
+          {ultimaLeitura && <div className="hint-box compact" style={{ marginBottom: 8 }}>
+            Última leitura bem-sucedida: <strong>{new Date(ultimaLeitura.created_at).toLocaleString('pt-BR')}</strong> · {ultimaLeitura.total_arquivos} arquivo(s), {ultimaLeitura.novos} novo(s), {ultimaLeitura.repetidos} repetido(s).
+          </div>}
           <BoletosEnvioPainel exigem={exigem} controle={controle} usuario={{ nome: sessao?.nome, email: sessao?.email }} onSalvou={recarregar} onErro={setErro} />
           <div className="hint-box compact" style={{ marginBottom: 8 }}>
             Fatura liberada para pagamento precisa ter o boleto na pasta do financeiro. Quando colocar o boleto na pasta,

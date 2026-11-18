@@ -95,6 +95,7 @@ import {
   atualizarStatusFaturasPagasEmLote,
   marcarFaturasLancadasFinanceiroEmLote,
   gravarAtribuicaoSapFaturas,
+  registrarEstornosSapFaturas,
   vincularNovaFatura,
   registrarHistoricoCarteiraAuditoria,
   listarHistoricoCarteiraAuditoria,
@@ -10051,6 +10052,7 @@ function Financeiro({ state, onState, somenteImportacao = false }) {
         console.warn('[Pagamentos SAP] grupos de raiz nao carregados', error?.message || error);
       }
       const conciliados = conciliarPagamentosSap(stateAtual.faturas, rows, raizesAdicionais);
+      const estornosAvaliados = await registrarEstornosSapFaturas(rows, stateAtual.faturas, sessao?.nome || sessao?.email || 'Importação SAP/HANA');
       const matched = conciliados.filter((item) => item.fatura_id);
       const compensados = matched.filter((item) => item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE');
       const partidas = matched.filter((item) => item.resultado === 'PARTIDA_LANCADA');
@@ -10103,12 +10105,20 @@ function Financeiro({ state, onState, somenteImportacao = false }) {
       if (atribuicoes.size) {
         next = { ...next, faturas: next.faturas.map((f) => (atribuicoes.has(String(f.id)) ? { ...f, atribuicao_sap: atribuicoes.get(String(f.id)) } : f)) };
       }
+      if (estornosAvaliados.size) {
+        next = { ...next, faturas: next.faturas.map((f) => {
+          const e = estornosAvaliados.get(f.id);
+          if (!e || !['ESTORNADA_SEM_RELANÇAMENTO', 'RELANÇADA'].includes(e.status)) return f;
+          return { ...f, sap_estorno_status: e.status, sap_lancamento_original: e.lancamento_original?.documento || null, sap_documento_estorno: e.documento_estorno || null, sap_data_estorno: e.data_estorno || null, sap_motivo_estorno: e.motivo || null, sap_relancamento: e.relancamento?.documento || null };
+        }) };
+      }
       return {
         next,
         resumo: {
           totalLinhas: conciliados.length, pagas: compensados.length, partidasLancadas: partidas.length,
           lancadasFinanceiro: lancadasFinanceiro.length, naoLocalizados, ambiguos, cnpjDivergente, paraVincular: guardadas.salvas || 0,
           lancamentosCte: resultadoCtes.enviadas || 0, erroLancamentosCte: resultadoCtes.erro || '',
+          estornosAvaliados: estornosAvaliados.size,
         },
       };
     }

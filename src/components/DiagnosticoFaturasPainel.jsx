@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarPlataformaAuditoria, reauditarFatura, vincularChavesDetalhesPorNumero } from '../services/auditoriaFretesService';
 import { carregarDetalhesFaturaSupabase } from '../services/lotacaoSupabaseService';
-import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarCanceladas, marcarEnviadaAntecipacao, marcarPrevisaoPagamento, marcarSubstituidasDuplicadas } from '../services/diagnosticoFaturasService';
+import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarCanceladas, marcarEncaminhamentoFinanceiro, marcarEnviadaAntecipacao, marcarPrevisaoPagamento, TIPOS_ENCAMINHAMENTO, marcarSubstituidasDuplicadas } from '../services/diagnosticoFaturasService';
 import { carregarCadastroPorRaiz } from '../services/transportadoraCnpjsService';
 import { diasAte } from '../utils/auditoriaFretesDomain';
 import { carregarSessao } from '../utils/authLocal';
 import {
   agrupamentoManual,
+  montarFilaProtocolo,
+  resultadoAuditoria,
   criarAgrupadorTransportadoras,
   criarUnificadorAuditores,
   detectarDuplicadas,
@@ -32,6 +34,7 @@ import {
 } from '../utils/diagnosticoFaturas';
 import { exportarExcelFormatado } from '../utils/exportarExcelFormatado';
 import { gerarHtmlLaudo } from '../utils/laudoDiagnostico';
+import { conciliarProgramacaoSap, previsaoInicialFinanceiro, situacaoFinanceiro } from '../utils/portalFinanceiroDomain';
 import { gerarTermoDocx, MOTIVO_FENIX, nomeEmpresaSap, partidasDoTermo, PARTIDAS_FENIX, ROTULO_FENIX } from '../utils/termoCorrecaoFenix';
 import modeloTermoUrl from '../assets/modelos/termo-correcao-lancamento.docx?url';
 
@@ -43,6 +46,7 @@ const SEM_TRANSP = '__sem_fatura__';
 // Auditor "todos": visao geral do gestor (faturas em aberto de todos os auditores).
 const TODOS_AUDITORES = '__todos__';
 const TOP_RANKING = 15;
+const ORDEM_GRUPOS = ['localizacao', 'auditoria', 'erp', 'lancamento', 'financeiro', 'pagamento', 'vencimento', 'protocolo', 'previsao', 'ctes', 'fenix', 'fenix_ajuste', 'antecipacao'];
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const ehCancelada = (l) => situacaoPagamentoLinha(l) === 'CANCELADA';
@@ -95,6 +99,7 @@ const COLUNAS = [
   { id: 'valor', titulo: 'Valor', valor: valorDaLinha },
   { id: 'status', titulo: 'Status', valor: (l) => l.fatura?.status || '' },
   { id: 'auditados', titulo: 'Auditados', valor: (l) => Number(l.fatura?.ctes_auditados || 0) },
+  { id: 'resultado_auditoria', titulo: 'Resultado da auditoria', valor: (l) => resultadoAuditoria(l.fatura)?.rotulo || '' },
   { id: 'partida', titulo: 'Partida', valor: (l) => l.fatura?.partida || l.fatura?.lancamento_financeiro || '' },
   { id: 'erp', titulo: 'Enviado ERP', valor: (l) => l.fatura?.data_envio_erp || '' },
   { id: 'ctes', titulo: 'CT-es no SAP', valor: (l) => (l.ctes?.total ? l.ctes.lancados / l.ctes.total : -1) },
@@ -195,6 +200,40 @@ function RankingTransportadoras({ itens, dimensao, onDimensao, filtrosAtivos, ab
   );
 }
 
+const ROTULO_FINANCEIRO = { AGUARDA_ENCAMINHAMENTO: null, ENCAMINHADA_SEM_PREVISAO: 'Encaminhada ao financeiro', ENCAMINHADA_COM_PREVISAO: 'Encaminhada · com previsão', PROGRAMADA: 'Programada pelo financeiro', PAGA: null };
+const ROTULO_CAMPO_VINCULO = { referencia: 'referência', transportadora: 'transportadora', empresa: 'empresa', valor: 'valor', moeda: 'moeda', vencimento: 'vencimento', pagamentoEfetivo: 'pagamento efetivo' };
+
+// Evidencias do Portal Financeiro numa fatura: encaminhamento/programacao, estorno SAP e campos do vinculo do pagamento.
+function EvidenciasFinanceiras({ fatura: f }) {
+  const rotulo = ROTULO_FINANCEIRO[situacaoFinanceiro(f)];
+  const vinculo = f.pagamento_campos_vinculo && typeof f.pagamento_campos_vinculo === 'object' ? f.pagamento_campos_vinculo : null;
+  const estorno = f.sap_estorno_status;
+  if (!rotulo && !vinculo && !estorno) return null;
+  const dataBrCurta = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '');
+  return (
+    <>
+      {rotulo && (
+        <div style={{ fontSize: 11, color: '#315ee7', whiteSpace: 'nowrap' }}
+          title={[TIPOS_ENCAMINHAMENTO[f.encaminhamento_tipo], f.encaminhado_financeiro_por && `por ${f.encaminhado_financeiro_por}`, f.encaminhado_financeiro_em && `em ${dataBrCurta(f.encaminhado_financeiro_em)}`].filter(Boolean).join(' · ')}>
+          {rotulo}
+        </div>
+      )}
+      {estorno === 'ESTORNADA_SEM_RELANÇAMENTO' && (
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#9b1111', whiteSpace: 'nowrap' }} title={`Lançamento ${f.sap_lancamento_original || '-'} anulado pelo documento ${f.sap_documento_estorno || '-'}${f.sap_data_estorno ? ` em ${dataBrCurta(f.sap_data_estorno)}` : ''}${f.sap_motivo_estorno ? ` · ${f.sap_motivo_estorno}` : ''}. Sem relançamento.`}>Estornada no SAP</div>
+      )}
+      {estorno === 'RELANÇADA' && (
+        <div style={{ fontSize: 11, color: '#b45309', whiteSpace: 'nowrap' }} title={`Estorno ${f.sap_documento_estorno || '-'} seguido do relançamento ${f.sap_relancamento || '-'}.`}>Relançada após estorno</div>
+      )}
+      {vinculo && (
+        <div style={{ fontSize: 11, color: '#14733b', whiteSpace: 'nowrap' }}
+          title={`Vínculo com o pagamento SAP por: ${Object.entries(vinculo).filter(([, ok]) => ok).map(([k]) => ROTULO_CAMPO_VINCULO[k] || k).join(', ')}${Object.entries(vinculo).some(([, ok]) => !ok) ? ` · não verificado/divergente: ${Object.entries(vinculo).filter(([, ok]) => !ok).map(([k]) => ROTULO_CAMPO_VINCULO[k] || k).join(', ')}` : ''}`}>
+          Vínculo SAP ✓
+        </div>
+      )}
+    </>
+  );
+}
+
 function CardResumo({ rotulo, valor, detalhe, cor, ativo = false, dica, onClick }) {
   return (
     <button
@@ -236,6 +275,8 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const [marcando, setMarcando] = useState(false);
   const [recalculo, setRecalculo] = useState(null);
   const [dataPrevisao, setDataPrevisao] = useState('');
+  const [programacaoConfirmada, setProgramacaoConfirmada] = useState(false);
+  const [tipoEncaminhamento, setTipoEncaminhamento] = useState('BOLETO_NA_PASTA');
   const [solicitante, setSolicitante] = useState(() => salvo.solicitante || carregarSessao()?.nome || '');
   const [rankingAberto, setRankingAberto] = useState(salvo.rankingAberto ?? true);
   const [criterioRanking, setCriterioRanking] = useState(salvo.criterioRanking || 'valor');
@@ -391,6 +432,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
 
   const grupos = useMemo(() => GRUPOS_DIAGNOSTICO
     .filter((g) => (temLista || !g.soComLista) && (fazAntecipacao || !g.soAntecipa))
+    .sort((a, b) => ORDEM_GRUPOS.indexOf(a.id) - ORDEM_GRUPOS.indexOf(b.id))
     .map((g) => ({ ...g, cards: g.cards.filter((c) => !c.oculto).map((c) => ({ ...c, linhas: { canceladas: canceladasRecorte, duplicadas: duplicadasRecorte }[c.id] || recorte.filter(c.teste) })) })), [recorte, canceladasRecorte, duplicadasRecorte, temLista, fazAntecipacao]);
 
   const resultado = useMemo(() => {
@@ -574,22 +616,93 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   // Previsao de pagamento: grava (ou limpa) a data combinada nas selecionadas que ainda nao foram pagas.
   const aplicarPrevisao = async (limpar = false) => {
     const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l.fatura]));
-    const abertas = selecaoValida.filter((id) => agrupamentoManual(porId.get(id)) && situacaoPagamento(porId.get(id)) === 'ABERTA');
+    const abertas = selecaoValida.filter((id) => (agrupamentoManual(porId.get(id)) || faturaLancada(porId.get(id))) && situacaoPagamento(porId.get(id)) === 'ABERTA');
     const alvo = limpar ? abertas.filter((id) => previsaoPagamento(porId.get(id))) : abertas;
     if (!limpar && !dataPrevisao) { setAviso('Escolha a data prevista de pagamento.'); return; }
-    if (!alvo.length) { setAviso(limpar ? 'Nenhuma selecionada tem previsão de pagamento.' : 'Nenhuma selecionada está no protocolo em aberto. A previsão é só para as marcadas para protocolo; as demais seguem o vencimento.'); return; }
+    if (!alvo.length) { setAviso(limpar ? 'Nenhuma selecionada tem previsão de pagamento.' : 'Nenhuma selecionada está lançada ou no protocolo em aberto.'); return; }
     if (!limpar && (diasAte(dataPrevisao) ?? 0) < 0 && !window.confirm(`A data ${dataBr(dataPrevisao)} já passou. Gravar assim mesmo?`)) return;
     if (limpar && !window.confirm(`Tirar a previsão de pagamento de ${alvo.length} fatura(s)?`)) return;
     setMarcando(true);
     setAviso('');
     try {
       const sessao = carregarSessao();
-      const gravadas = await marcarPrevisaoPagamento(alvo, limpar ? '' : dataPrevisao, sessao?.nome || sessao?.email || '');
+      const gravadas = await marcarPrevisaoPagamento(alvo, limpar ? '' : dataPrevisao, sessao?.nome || sessao?.email || '',
+        limpar ? {} : { origem: programacaoConfirmada ? 'FINANCEIRO' : 'AUDITOR', confirmada: programacaoConfirmada });
       onState((atual) => ({ ...atual, faturas: (atual.faturas || []).map((f) => (gravadas.has(f.id) ? { ...f, ...gravadas.get(f.id) } : f)) }));
       setSelecionadas(new Set());
       const ignoradas = selecaoValida.length - gravadas.size;
       setAviso(`${inteiro(gravadas.size)} fatura(s) ${limpar ? 'sem previsão de pagamento' : `com pagamento previsto para ${dataBr(dataPrevisao)}`}.${ignoradas > 0 ? ` ${inteiro(ignoradas)} selecionada(s) não se aplicavam.` : ''}`);
     } catch (e) { setAviso(`Erro ao gravar a previsão: ${e.message || e}`); } finally { setMarcando(false); }
+  };
+
+  // Encaminhamento ao financeiro: so faturas em aberto ja lancadas ou no protocolo manual.
+  const aplicarEncaminhamento = async () => {
+    const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l.fatura]));
+    const alvo = selecaoValida.filter((id) => situacaoPagamento(porId.get(id)) === 'ABERTA' && (agrupamentoManual(porId.get(id)) || faturaLancada(porId.get(id))));
+    if (!alvo.length) { setAviso('Nenhuma selecionada está lançada ou no protocolo em aberto.'); return; }
+    setMarcando(true); setAviso('');
+    try {
+      const sessao = carregarSessao();
+      const gravadas = await marcarEncaminhamentoFinanceiro(alvo, tipoEncaminhamento, sessao?.nome || sessao?.email || '', { origem: 'DIAGNOSTICO' });
+      onState((atual) => ({ ...atual, faturas: (atual.faturas || []).map((f) => (gravadas.has(f.id) ? { ...f, ...gravadas.get(f.id) } : f)) }));
+      setSelecionadas(new Set());
+      const ignoradas = selecaoValida.length - gravadas.size;
+      setAviso(`${inteiro(gravadas.size)} fatura(s) encaminhada(s) ao financeiro (${TIPOS_ENCAMINHAMENTO[tipoEncaminhamento]}).${ignoradas > 0 ? ` ${inteiro(ignoradas)} selecionada(s) não se aplicavam.` : ''}`);
+    } catch (e) { setAviso(`Erro ao encaminhar: ${e.message || e}`); } finally { setMarcando(false); }
+  };
+
+  // Programacao confirmada pelo SAP/HANA: planilha com Referencia, CNPJ, Data programada (e Valor, se houver).
+  // So atualiza a data vigente (origem SAP_HANA, confirmada); a fatura segue em aberto ate o pagamento efetivo.
+  const importarProgramacaoSap = async (ev) => {
+    const arquivo = ev.target.files?.[0];
+    ev.target.value = '';
+    if (!arquivo) return;
+    setMarcando(true); setAviso('');
+    try {
+      const XLSX = await import('xlsx');
+      const wb = XLSX.read(await arquivo.arrayBuffer(), { type: 'array', cellDates: true });
+      const linhasPlanilha = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '', raw: false, dateNF: 'yyyy-mm-dd' });
+      const todas = (state?.faturas || []);
+      const { aplicar, revisao } = conciliarProgramacaoSap(linhasPlanilha, todas, { abertaFn: (f) => situacaoPagamento(f) === 'ABERTA' });
+      const grupos = new Map();
+      aplicar.forEach((a) => grupos.set(a.data, [...(grupos.get(a.data) || []), a.fatura_id]));
+      if (aplicar.length && !window.confirm(`Aplicar a programação confirmada do SAP/HANA a ${aplicar.length} fatura(s)? ${revisao.length} linha(s) vão para revisão e não serão alteradas.`)) { setMarcando(false); return; }
+      const sessao = carregarSessao();
+      const todasGravadas = new Map();
+      for (const [data, ids] of grupos) {
+        // eslint-disable-next-line no-await-in-loop
+        const gravadas = await marcarPrevisaoPagamento(ids, data, sessao?.nome || sessao?.email || '', { origem: 'SAP_HANA', confirmada: true });
+        gravadas.forEach((campos, id) => todasGravadas.set(id, campos));
+      }
+      if (todasGravadas.size) onState((atual) => ({ ...atual, faturas: (atual.faturas || []).map((f) => (todasGravadas.has(f.id) ? { ...f, ...todasGravadas.get(f.id) } : f)) }));
+      setAviso(`Programação SAP/HANA: ${inteiro(todasGravadas.size)} fatura(s) programada(s); ${inteiro(revisao.length)} linha(s) para revisão${revisao.length ? ` (${[...new Set(revisao.map((r) => r.motivo))].join(', ')})` : ''}.`);
+    } catch (e) { setAviso(`Erro ao importar a programação: ${e.message || e}`); } finally { setMarcando(false); }
+  };
+
+  const usarVencimentosComoPrevisao = async () => {
+    const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l.fatura]));
+    const grupos = new Map();
+    selecaoValida.forEach((id) => {
+      const f = porId.get(id);
+      if (!f || situacaoPagamento(f) !== 'ABERTA' || (!faturaLancada(f) && !agrupamentoManual(f)) || previsaoPagamento(f)) return;
+      const prevista = previsaoInicialFinanceiro(f);
+      if (prevista) grupos.set(prevista, [...(grupos.get(prevista) || []), id]);
+    });
+    const total = [...grupos.values()].reduce((s, ids) => s + ids.length, 0);
+    if (!total) { setAviso('Nenhuma selecionada está no prazo e sem previsão. Faturas vencidas devem receber a data alinhada com o Financeiro ou permanecer sem previsão.'); return; }
+    setMarcando(true); setAviso('');
+    try {
+      const sessao = carregarSessao();
+      const todas = new Map();
+      for (const [prevista, ids] of grupos) {
+        // eslint-disable-next-line no-await-in-loop
+        const gravadas = await marcarPrevisaoPagamento(ids, prevista, sessao?.nome || sessao?.email || '', { origem: 'VENCIMENTO_INICIAL' });
+        gravadas.forEach((campos, id) => todas.set(id, campos));
+      }
+      onState((atual) => ({ ...atual, faturas: (atual.faturas || []).map((f) => (todas.has(f.id) ? { ...f, ...todas.get(f.id) } : f)) }));
+      setSelecionadas(new Set());
+      setAviso(`${inteiro(todas.size)} fatura(s) no prazo receberam o próprio vencimento como previsão inicial.`);
+    } catch (e) { setAviso(`Erro ao aplicar os vencimentos: ${e.message || e}`); } finally { setMarcando(false); }
   };
   // Texto pronto para mandar a transportadora: faturas do recorte com previsao, agrupadas pela data.
   const comPrevisao = useMemo(() => resultado.filter((l) => previsaoPagamento(l.fatura)), [resultado]);
@@ -663,6 +776,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
           { titulo: 'Previsão de pagamento', largura: 12, tipo: 'data' }, { titulo: 'Previsão por', largura: 22 },
           { titulo: 'Valor plataforma', largura: 16, tipo: 'moeda' }, { titulo: 'Valor da lista', largura: 16, tipo: 'moeda' }, { titulo: 'Vencimento da lista', largura: 12, tipo: 'data' },
           { titulo: 'Status', largura: 24 }, { titulo: 'CT-es auditados', largura: 10, tipo: 'inteiro' }, { titulo: 'CT-es totais', largura: 10, tipo: 'inteiro' },
+          { titulo: 'Resultado da auditoria', largura: 24 }, { titulo: 'Diferença apurada', largura: 14, tipo: 'moeda' }, { titulo: 'Motivo principal', largura: 24 },
           { titulo: 'Fatura lançada', largura: 10, tipo: 'centro' }, { titulo: 'Partida', largura: 14 }, { titulo: 'Lançamento financeiro', largura: 14 }, { titulo: 'Enviado ERP', largura: 12, tipo: 'data' }, { titulo: 'Situação envio ERP', largura: 22 },
           { titulo: 'CT-es com partida', largura: 10, tipo: 'inteiro' }, { titulo: 'CT-es sem partida', largura: 10, tipo: 'inteiro' }, { titulo: 'Valor sem partida', largura: 16, tipo: 'moeda' },
           { titulo: 'Pagamento', largura: 18 }, { titulo: 'Data pagamento', largura: 12, tipo: 'data' }, { titulo: 'Valor pago', largura: 16, tipo: 'moeda' }, { titulo: 'Auditor', largura: 26 }, { titulo: 'Próxima ação', largura: 28 }, { titulo: 'Agrupamento manual', largura: 20 }, { titulo: 'Marcado por', largura: 22 },
@@ -675,6 +789,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             String(l.numero), f ? 'Sim' : 'Não', f?.transportadora || '', f?.cnpj_transportadora || '', f?.data_emissao || '', f?.data_vencimento || '', (f?.data_vencimento || l.vencimentoLista) ? diasAte(f?.data_vencimento || l.vencimentoLista) ?? '' : '',
             previsaoPagamento(f), previsaoPagamento(f) ? (f.previsao_pagamento_por || '') : '',
             f ? Number(f.valor_fatura || 0) : '', l.valorLista ?? '', l.vencimentoLista || '', f ? nomeStatus(f.status) : '', f ? Number(f.ctes_auditados || 0) : '', f ? Number(f.ctes_totais || 0) : '',
+            resultadoAuditoria(f)?.rotulo || '', f ? resultadoAuditoria(f).diferenca : '', resultadoAuditoria(f)?.motivo || '',
             f ? (faturaLancada(f) ? 'Sim' : 'Não') : '', f?.partida || '', f?.lancamento_financeiro || '', f?.data_envio_erp || '', f ? ROTULO_ENVIO_ERP[situacaoEnvioErp(l)] : '', l.ctes ? l.ctes.lancados : '', l.ctes ? l.ctes.semPartida.length : '', l.ctes ? l.ctes.valorSemPartida : '',
             textoPagamentoLinha(l), f?.data_pagamento || '', f?.valor_pago != null ? Number(f.valor_pago) : '', f ? l.auditor : '', proximaAcao(l),
             agrupamentoManual(f) ? (faturaLancada(f) ? 'Já agrupada' : 'A enviar') : '', agrupamentoManual(f) ? (f.agrupamento_manual_por || '') : '',
@@ -685,6 +800,35 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
         resumo: descricaoFiltros(),
       });
     } catch (e) { setAviso(`Erro ao exportar: ${e.message || e}`); } finally { setExportando(false); }
+  };
+
+  const exportarFilaProtocolo = async () => {
+    const { fila, resumoPorAuditor } = montarFilaProtocolo(resultado);
+    if (!fila.length) { setAviso('Nenhuma fatura ativa na fila de protocolo deste recorte.'); return; }
+    setExportando(true);
+    try {
+      await exportarExcelFormatado({
+        nomeArquivo: `protocolo-financeiro-${hojeArquivo}.xlsx`, aba: 'Protocolo',
+        colunas: [
+          { titulo: 'Auditor', largura: 26 }, { titulo: 'Fatura', largura: 16 }, { titulo: 'Transportadora', largura: 34 },
+          { titulo: 'Valor', largura: 16, tipo: 'moeda' }, { titulo: 'Vencimento', largura: 12, tipo: 'data' },
+          { titulo: 'Encaminhamento', largura: 24 }, { titulo: 'Responsável', largura: 24 }, { titulo: 'Encaminhado em', largura: 18 },
+          { titulo: 'Previsão vigente', largura: 14, tipo: 'data' }, { titulo: 'Programação confirmada', largura: 14, tipo: 'centro' },
+          { titulo: 'Partida da fatura', largura: 18 }, { titulo: 'Partidas dos CT-es (contingência)', largura: 44 }, { titulo: 'Situação', largura: 28 },
+        ],
+        linhas: fila.map((l) => {
+          const f = l.fatura;
+          const partidasCtes = [...new Set((l.ctes?.itens || []).map((c) => c.lancamento_contabil).filter(Boolean))].join(', ');
+          return [l.auditor, String(f.numero_fatura || ''), f.transportadora || '', Number(f.valor_fatura || 0), f.data_vencimento || '',
+            f.encaminhamento_tipo || (f.encaminhado_financeiro_em ? 'ENCAMINHADO' : 'A_ENCAMINHAR'), f.encaminhado_financeiro_por || '', f.encaminhado_financeiro_em || '',
+            previsaoPagamento(f), f.programacao_confirmada ? 'Sim' : 'Não', f.partida || f.lancamento_financeiro || '',
+            (f.partida || f.lancamento_financeiro) ? '' : partidasCtes, proximaAcao(l)];
+        }),
+        resumo: [...descricaoFiltros(),
+          ['Regra', 'Pagas e estornadas sem relançamento ficam fora; sem partida da fatura exporta as partidas dos CT-es vinculados.'],
+          ...resumoPorAuditor.map((a) => [`Auditor: ${a.auditor}`, `${a.quantidade} fatura(s) · R$ ${a.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`])],
+      });
+    } catch (e) { setAviso(`Erro ao exportar protocolo: ${e.message || e}`); } finally { setExportando(false); }
   };
 
   const ctesSemPartida = useMemo(() => resultado.flatMap((l) => (l.ctes?.semPartida || []).map((c) => ({ l, c }))), [resultado]);
@@ -882,6 +1026,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
               <button type="button" className="btn-primary" disabled={!resultado.length || exportando} onClick={exportarFaturas}>Exportar faturas ({inteiro(resultado.length)})</button>
+              <button type="button" className="btn-primary" style={{ background: '#9153F0', borderColor: '#9153F0' }} disabled={!resultado.length || exportando} onClick={exportarFilaProtocolo}>Exportar fila de protocolo</button>
               <button type="button" className="btn-primary" style={{ background: '#04a484', borderColor: '#04a484' }} disabled={!resultado.some((l) => l.fatura)} onClick={gerarLaudo} title="Laudo visual das faturas do recorte: total, pago, programado no financeiro (protocolo com previsão) e em tratativa. Baixa um HTML que abre no navegador e imprime em PDF.">Gerar laudo</button>
               <button type="button" className="btn-secondary" disabled={!todosCtes.length || exportando || Boolean(progresso)} onClick={exportarTodosCtes} title={progresso ? 'Aguarde a verificação dos CT-es no SAP terminar' : 'Todos os CT-es das faturas do recorte, com a partida de cada um'}>Exportar CT-es ({inteiro(todosCtes.length)})</button>
               <button type="button" className="btn-secondary" disabled={!ctesSemPartida.length || exportando} onClick={exportarCtes}>Exportar CT-es sem partida ({inteiro(ctesSemPartida.length)})</button>
@@ -899,12 +1044,29 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               {aviso && <span className="compact" role="status">{aviso}</span>}
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
+              <span className="compact" style={{ color: '#475569' }} title="Registra que a fatura foi encaminhada ao financeiro (boleto na pasta ou dados bancários). Não é programação nem pagamento.">
+                Encaminhamento ao financeiro: {inteiro(selecaoValida.length)} selecionada(s)
+              </span>
+              <select value={tipoEncaminhamento} onChange={(e) => setTipoEncaminhamento(e.target.value)} aria-label="Tipo de encaminhamento">
+                {Object.entries(TIPOS_ENCAMINHAMENTO).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+              <button type="button" className="btn-primary" style={{ background: '#315ee7', borderColor: '#315ee7' }} disabled={!selecaoValida.length || marcando} onClick={aplicarEncaminhamento}>{marcando ? 'Gravando...' : 'Encaminhar ao financeiro'}</button>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
               <span className="compact" style={{ color: '#475569' }} title="Data alinhada com o financeiro para as faturas marcadas para protocolo. As demais seguem o vencimento. Some quando a fatura é paga.">
                 Previsão de pagamento (protocolo): {inteiro(selecaoValida.length)} selecionada(s)
               </span>
               <input type="date" value={dataPrevisao} onChange={(e) => setDataPrevisao(e.target.value)} aria-label="Data prevista de pagamento" />
+              <label className="compact" style={{ display: 'flex', gap: 4, alignItems: 'center' }} title="Marque só quando o financeiro confirmou a programação. Sem marcar, a data é apenas previsão.">
+                <input type="checkbox" checked={programacaoConfirmada} onChange={(e) => setProgramacaoConfirmada(e.target.checked)} /> Confirmada pelo financeiro
+              </label>
               <button type="button" className="btn-primary" style={{ background: '#04a484', borderColor: '#04a484' }} disabled={!selecaoValida.length || !dataPrevisao || marcando} onClick={() => aplicarPrevisao(false)}>{marcando ? 'Gravando...' : 'Gravar previsão'}</button>
+              <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando} onClick={usarVencimentosComoPrevisao} title="Somente faturas ainda no prazo e sem previsão; vencidas ficam sem previsão até o alinhamento com o Financeiro">Usar vencimentos no prazo</button>
               <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando} onClick={() => aplicarPrevisao(true)}>Tirar previsão</button>
+              <label className="btn-secondary" style={{ cursor: marcando ? 'not-allowed' : 'pointer' }} title="Planilha do SAP/HANA com Referência, CNPJ, Data programada e (opcional) Valor. Só atualiza a data vigente como programação confirmada; a fatura continua em aberto até o pagamento efetivo. Linhas sem CNPJ, ambíguas ou divergentes não são alteradas.">
+                Importar programação SAP/HANA
+                <input type="file" accept=".xlsx,.xls,.csv" hidden disabled={marcando} onChange={importarProgramacaoSap} />
+              </label>
               <button type="button" className="btn-secondary" disabled={!comPrevisao.length} onClick={copiarPrevisoes} title="Copia um texto com as faturas do recorte que têm previsão, agrupadas pela data, para mandar à transportadora">Copiar previsões p/ transportadora ({inteiro(comPrevisao.length)})</button>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
@@ -994,6 +1156,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                         <td>
                           {f ? <button type="button" className="link-button" onClick={(e) => { e.stopPropagation(); abrir(l); }}>{l.numero}</button> : <strong>{l.numero}</strong>}
                           {l.repetida > 1 && <div style={{ fontSize: 11, color: '#b78700' }}>{l.repetida} faturas</div>}
+                          {f && <EvidenciasFinanceiras fatura={f} />}
                           {agrupamentoManual(f) && (
                             <div
                               style={{ fontSize: 11, fontWeight: 700, color: faturaLancada(f) ? '#14733b' : '#9153F0', whiteSpace: 'nowrap' }}
@@ -1013,6 +1176,18 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                         </td>
                         <td>{f ? nomeStatus(f.status) : '-'}</td>
                         <td>{f ? `${Number(f.ctes_auditados || 0)}/${Number(f.ctes_totais || 0)}` : '-'}</td>
+                        <td>{(() => {
+                          const r = resultadoAuditoria(f);
+                          if (!r) return '-';
+                          const cor = { SEM_DIVERGENCIA: '#14733b', COM_DIVERGENCIA: '#9b1111', DIVERGENCIA_EM_TRATATIVA: '#c2410c', DIVERGENCIA_TRATADA: '#0f766e' }[r.resultado] || '#475569';
+                          return (
+                            <span title={`Cobrado ${dinheiro(r.cobrado)} · apurado ${dinheiro(r.apurado)} · diferença ${dinheiro(r.diferenca)}${r.pendentes ? ` · ${r.pendentes} CT-e(s) pendente(s)` : ''}`}>
+                              <span style={{ color: cor, fontWeight: 700 }}>{r.rotulo}</span>
+                              {r.diferenca !== 0 && <div style={{ fontSize: 11, color: '#475569', whiteSpace: 'nowrap' }}>dif. {dinheiro(r.diferenca)}</div>}
+                              {r.motivo && <div style={{ fontSize: 11, color: '#64748b' }}>{r.motivo}</div>}
+                            </span>
+                          );
+                        })()}</td>
                         <td>{f ? (f.partida || f.lancamento_financeiro || (situacao === 'TODOS' ? <span style={{ color: '#b78700' }} title="Todos os CT-es têm partida no SAP, mas não há partida pelo número da fatura.">Nos CT-es</span> : '-')) : '-'}</td>
                         <td style={situacaoEnvioErp(l) === 'SEM_PARTIDA' ? { color: '#9b1111', fontWeight: 700 } : undefined}>{dataBr(f?.data_envio_erp)}</td>
                         <td style={{ color: corCtes, fontWeight: 700 }}>

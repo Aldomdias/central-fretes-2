@@ -73,14 +73,42 @@ export function decodificarBoleto(texto) {
 // Le o PDF (pdfjs, no navegador) e devolve { linhaDigitavel, banco, vencimento, valor } ou { erro }.
 export async function lerBoletoPdf(arquivo) {
   try {
-    const { paginasDoPdf } = await import('./robos/nfsePdf');
+    const { abrirPdf, paginasDoPdf } = await import('./robos/nfsePdf');
     const paginas = await paginasDoPdf(arquivo);
     const texto = paginas.map((l) => l.join('\n')).join('\n');
-    if (!texto.trim()) return { erro: 'PDF sem texto (imagem)' };
-    return decodificarBoleto(texto) || { erro: 'Linha digitavel nao encontrada' };
+    const leitura = decodificarBoleto(texto);
+    if (leitura) return { ...leitura, origemLeitura: 'TEXTO' };
+    // Digitalizacao ou texto sem linha reconhecivel: tenta OCR local nas paginas, sem enviar o
+    // documento para servicos externos.
+    const pdf = await abrirPdf(arquivo);
+    const { ocrDaPagina } = await import('./robos/nfseOcr');
+    const linhasOcr = [];
+    for (let n = 1; n <= pdf.numPages; n += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      linhasOcr.push(...await ocrDaPagina(pdf, n));
+    }
+    return decodificarBoleto(linhasOcr.join('\n'))
+      ? { ...decodificarBoleto(linhasOcr.join('\n')), origemLeitura: 'OCR' }
+      : { erro: texto.trim() ? 'Linha digitável não encontrada após OCR' : 'PDF digitalizado ilegível após OCR', origemLeitura: 'OCR' };
   } catch (e) {
     return { erro: `Falha ao ler PDF: ${e.message}` };
   }
+}
+
+// Leitura incremental: arquivo cujo hash (conteudo) ja tem versao gravada reaproveita valor/vencimento/linha
+// digitavel e nao passa de novo pelo PDF/OCR. Arquivo novo ou alterado e lido normalmente.
+// versoesPorHash: Map(hash -> registro de boleto_arquivo_versoes). leitor: (arquivo) => Promise<leitura>.
+export async function lerBoletoIncremental(arquivo, hash, versoesPorHash = new Map(), leitor = lerBoletoPdf) {
+  const versao = versoesPorHash.get(hash);
+  if (versao && (versao.linha_digitavel || versao.valor != null)) {
+    return {
+      linhaDigitavel: versao.linha_digitavel || null,
+      valor: versao.valor != null ? Number(versao.valor) : null,
+      vencimento: versao.vencimento ? String(versao.vencimento).slice(0, 10) : null,
+      origemLeitura: versao.origem_leitura || 'CACHE', reaproveitada: true, hash,
+    };
+  }
+  return { ...(await leitor(arquivo)), hash };
 }
 
 // Compara o boleto lido com a fatura: [] quando bate, senao lista de divergencias.

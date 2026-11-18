@@ -2,6 +2,7 @@
 // recorte da tela. Resume quanto ja foi pago, quanto esta programado no financeiro (protocolo com
 // previsao de pagamento) e quanto segue em tratativa, agrupado pela proxima acao.
 import { previsaoPagamento, proximaAcao, situacaoPagamento } from './diagnosticoFaturas.js';
+import { estornadaSemRelancamento } from './portalFinanceiroDomain.js';
 
 const inativa = (f) => ['CANCELADA', 'SUBSTITUIDA'].includes(f.status);
 const iso = (v) => (v ? String(v).slice(0, 10) : '');
@@ -13,10 +14,12 @@ export function dadosDoLaudo(linhas = []) {
   const itens = [];
   let canceladas = 0;
   let naoLocalizadas = 0;
+  let estornadas = 0;
   linhas.forEach((l) => {
     const f = l.fatura;
     if (!f) { naoLocalizadas += 1; return; }
     if (inativa(f)) { canceladas += 1; return; }
+    if (estornadaSemRelancamento(f)) { estornadas += 1; return; }
     const valor = Number(f.valor_fatura || 0);
     const paga = situacaoPagamento(f).startsWith('PAGA');
     const prev = previsaoPagamento(f);
@@ -34,7 +37,7 @@ export function dadosDoLaudo(linhas = []) {
       acao: cat === 'PAGA' ? 'Nenhuma (paga)' : cat === 'PROGRAMADA' ? 'Aguardar pagamento' : proximaAcao(l),
     });
   });
-  return { itens, canceladas, naoLocalizadas };
+  return { itens, canceladas, naoLocalizadas, estornadas };
 }
 
 // Roda dentro do HTML gerado (e serializado com toString): so usa os parametros e o DOM.
@@ -251,10 +254,10 @@ footer { font-size: 13px; color: var(--ink-3); }
 
 // HTML completo do laudo. filtros: pares [rotulo, valor] do recorte da tela (vao para o cabecalho).
 export function gerarHtmlLaudo({ linhas = [], titulo = 'Faturas', filtros = [], hoje = new Date() } = {}) {
-  const { itens, canceladas, naoLocalizadas } = dadosDoLaudo(linhas);
+  const { itens, canceladas, naoLocalizadas, estornadas } = dadosDoLaudo(linhas);
   const hojeIso = isoLocal(hoje);
   const hojeBr = hojeIso.split('-').reverse().join('/');
-  const fora = [canceladas && `${canceladas} cancelada(s)/substituída(s)`, naoLocalizadas && `${naoLocalizadas} não localizada(s) na plataforma`].filter(Boolean);
+  const fora = [canceladas && `${canceladas} cancelada(s)/substituída(s)`, estornadas && `${estornadas} estornada(s) no SAP sem relançamento`, naoLocalizadas && `${naoLocalizadas} não localizada(s) na plataforma`].filter(Boolean);
   const filtrosTexto = filtros.filter(([, v]) => v && v !== '-').map(([k, v]) => `${escapar(k)}: ${escapar(v)}`).join(' · ');
   // JSON dentro de <script>: "<" escapado para nenhum texto fechar a tag.
   const json = (v) => JSON.stringify(v).replace(/</g, '\\u003c');

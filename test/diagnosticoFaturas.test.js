@@ -9,6 +9,7 @@ import {
   GRUPOS_DIAGNOSTICO,
   identificacaoSapDoCte,
   montarLinhasDiagnostico,
+  montarFilaProtocolo,
   parseListaFaturas,
   previsaoPagamento,
   situacaoPrevisao,
@@ -245,12 +246,13 @@ test('previsão de pagamento: cards, situação e próxima ação', () => {
   const card = (id) => grupo.cards.find((c) => c.id === id).teste;
   assert.ok(card('protocolo_sem_previsao')({ fatura: fat(), ctes: linha.ctes }));
   assert.ok(!card('protocolo_sem_previsao')(linha));
-  assert.ok(card('com_previsao')(linha));
-  // Fora do protocolo a previsao nao vale: segue o vencimento.
+  // O teste nao pode depender do dia em que a suite roda.
+  assert.ok(card('com_previsao')({ ...linha, fatura: fat({ data_previsao_pagamento: '2099-11-12' }) }));
+  // A previsão do Financeiro também vale fora da contingência manual.
   const foraProtocolo = fat({ agrupamento_manual: false, data_previsao_pagamento: '2026-11-12' });
-  assert.equal(previsaoPagamento(foraProtocolo), '');
+  assert.equal(previsaoPagamento(foraProtocolo), '2026-11-12');
   assert.ok(!card('protocolo_sem_previsao')({ fatura: foraProtocolo, ctes: linha.ctes }));
-  assert.equal(proximaAcao({ fatura: foraProtocolo, ctes: linha.ctes }), 'Aguardar pagamento');
+  assert.equal(proximaAcao({ fatura: foraProtocolo, ctes: linha.ctes }), 'Aguardar pagamento (previsto 12/11/2026)');
 });
 
 test('filtro por auditor: sozinho mostra as em aberto dele; com transportadora ou lista restringe', () => {
@@ -328,4 +330,29 @@ test('unifica o mesmo auditor gravado com nomes diferentes', () => {
   const porEmail = criarUnificadorAuditores([{ auditor_nome: 'Bia R', auditor_email: 'b@x.com' }, { auditor_nome: 'Bianca Ruzzante', auditor_email: 'B@X.com' }]);
   assert.deepEqual(porEmail.opcoes, ['Bianca Ruzzante']);
   assert.equal(porEmail.doUsuario({ email: 'b@x.com' }), 'Bianca Ruzzante');
+});
+
+test('fila de protocolo: por auditor e vencimento, sem pagas, estornadas e duplicadas', () => {
+  const l = (id, auditor, extra = {}) => ({ auditor, fatura: { id, numero_fatura: id, valor_fatura: 100, data_vencimento: '2026-12-01', status: 'ENVIADA_AO_FINANCEIRO', partida: '1900', ...extra } });
+  const { fila, resumoPorAuditor } = montarFilaProtocolo([
+    l('b', 'Zeca', { data_vencimento: '2026-11-30' }), l('a', 'Ana'), l('a', 'Ana'),
+    l('p', 'Ana', { status: 'PAGA' }), l('e', 'Ana', { sap_estorno_status: 'ESTORNADA_SEM_RELANÇAMENTO' }),
+    l('n', 'Ana', { partida: null }), l('m', 'Ana', { partida: null, agrupamento_manual: true }),
+  ]);
+  assert.deepEqual(fila.map((x) => x.fatura.id), ['a', 'm', 'b']);
+  assert.deepEqual(resumoPorAuditor, [{ auditor: 'Ana', quantidade: 2, valor: 200 }, { auditor: 'Zeca', quantidade: 1, valor: 100 }]);
+});
+
+test('cards do Financeiro: só contam fatura ativa em aberto; pagas antigas e canceladas ficam fora do acompanhamento', () => {
+  const grupo = GRUPOS_DIAGNOSTICO.find((g) => g.id === 'financeiro');
+  const teste = (id) => grupo.cards.find((c) => c.id === id).teste;
+  const l = (extra) => ({ fatura: { id: 'x', numero_fatura: '1', valor_fatura: 10, status: 'ENVIADA_AO_FINANCEIRO', partida: '1900', ...extra } });
+  assert.equal(teste('aguarda_encaminhamento')(l({})), true);
+  assert.equal(teste('aguarda_encaminhamento')(l({ status: 'PAGA' })), false, 'paga antiga sem pagamento_confirmado');
+  assert.equal(teste('aguarda_encaminhamento')(l({ status: 'CANCELADA' })), false);
+  assert.equal(teste('aguarda_encaminhamento')(l({ partida: null })), false, 'não lançada');
+  assert.equal(teste('aguarda_encaminhamento')(l({ sap_estorno_status: 'ESTORNADA_SEM_RELANÇAMENTO' })), false);
+  assert.equal(teste('encaminhadas_sem_previsao')(l({ encaminhado_financeiro_em: '2026-11-01', status: 'CANCELADA' })), false);
+  assert.equal(teste('encaminhadas_sem_previsao')(l({ encaminhado_financeiro_em: '2026-11-01' })), true);
+  assert.equal(teste('pagas_financeiro')(l({ status: 'PAGA' })), true, 'paga antiga com partida');
 });

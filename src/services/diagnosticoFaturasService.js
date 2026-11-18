@@ -319,23 +319,54 @@ export async function marcarAjusteFenix(ids = [], acao = 'ENVIADO', usuario = ''
 }
 
 // Previsao de pagamento combinada (data 'AAAA-MM-DD'; vazio limpa). Devolve os campos gravados por id.
-export async function marcarPrevisaoPagamento(ids = [], data = '', usuario = '') {
+export async function marcarPrevisaoPagamento(ids = [], data = '', usuario = '', opcoes = {}) {
   if (!isSupabaseConfigured() || !ids.length) return new Map();
   if (data && !/^\d{4}-\d{2}-\d{2}$/.test(data)) throw new Error(`Data de previsão inválida: ${data}`);
   const client = getSupabaseClient();
   const agora = new Date().toISOString();
+  const origem = String(opcoes.origem || 'AUDITOR').toUpperCase();
+  const confirmada = opcoes.confirmada === true;
+  const anteriores = new Map();
+  for (let i = 0; i < ids.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data: atuais, error } = await client.from('faturas').select('id,data_previsao_pagamento').in('id', ids.slice(i, i + 200));
+    if (error) throw error;
+    (atuais || []).forEach((r) => anteriores.set(r.id, r.data_previsao_pagamento || null));
+  }
   const campos = data
-    ? { data_previsao_pagamento: data, previsao_pagamento_em: agora, previsao_pagamento_por: usuario || null }
-    : { data_previsao_pagamento: null, previsao_pagamento_em: null, previsao_pagamento_por: null };
+    ? { data_previsao_pagamento: data, previsao_pagamento_em: agora, previsao_pagamento_por: usuario || null, programacao_confirmada: confirmada, programacao_confirmada_em: confirmada ? agora : null }
+    : { data_previsao_pagamento: null, previsao_pagamento_em: null, previsao_pagamento_por: null, programacao_confirmada: false, programacao_confirmada_em: null };
   const gravadas = new Map();
   for (let i = 0; i < ids.length; i += 200) {
     // eslint-disable-next-line no-await-in-loop
-    const { data: linhas, error } = await client.from('faturas').update(campos).in('id', ids.slice(i, i + 200)).select('id');
+    let camposGravados = campos;
+    let { data: linhas, error } = await client.from('faturas').update(camposGravados).in('id', ids.slice(i, i + 200)).select('id');
+    // Migration do Portal Financeiro ausente: sem as colunas de programacao a previsao continua valendo.
+    if (error && /programacao_confirmada/.test(error.message || '')) {
+      const { programacao_confirmada, programacao_confirmada_em, ...semProgramacao } = campos;
+      camposGravados = semProgramacao;
+      ({ data: linhas, error } = await client.from('faturas').update(camposGravados).in('id', ids.slice(i, i + 200)).select('id'));
+    }
     if (error) {
       if (/previsao_pagamento/.test(error.message || '')) throw new Error('A migration 20261111_003_faturas_previsao_pagamento.sql ainda não foi aplicada no Supabase.');
       throw error;
     }
-    (linhas || []).forEach((r) => gravadas.set(r.id, campos));
+    (linhas || []).forEach((r) => gravadas.set(r.id, camposGravados));
+  }
+  const alteradas = [...gravadas.keys()].filter((id) => anteriores.get(id) !== (data || null));
+  if (alteradas.length) {
+    const eventos = alteradas.map((id) => ({
+      fatura_id: id, data_anterior: anteriores.get(id), data_nova: data || null,
+      origem, confirmada, usuario_nome: usuario || null, created_at: agora,
+    }));
+    for (let i = 0; i < eventos.length; i += 200) {
+      // eslint-disable-next-line no-await-in-loop
+      const { error } = await client.from('financeiro_previsao_historico').insert(eventos.slice(i, i + 200));
+      if (error) {
+        if (/financeiro_previsao_historico/.test(error.message || '')) throw new Error('A migration do Portal Financeiro ainda não foi aplicada no Supabase.');
+        throw error;
+      }
+    }
   }
   const dataBr = data ? data.split('-').reverse().join('/') : '';
   const historico = [...gravadas.keys()].map((id) => ({
@@ -343,7 +374,7 @@ export async function marcarPrevisaoPagamento(ids = [], data = '', usuario = '')
     fatura_id: id,
     created_at: agora,
     acao: data ? 'PREVISAO_PAGAMENTO_DEFINIDA' : 'PREVISAO_PAGAMENTO_RETIRADA',
-    descricao: data ? `Previsão de pagamento definida para ${dataBr} (tela Diagnóstico).` : 'Previsão de pagamento retirada pela tela Diagnóstico.',
+    descricao: data ? `Previsão de pagamento definida para ${dataBr} (${origem}${confirmada ? ', confirmada' : ''}).` : 'Previsão de pagamento retirada pela tela Diagnóstico.',
     usuario_nome: usuario || null,
     usuario_email: '',
   }));
@@ -351,6 +382,51 @@ export async function marcarPrevisaoPagamento(ids = [], data = '', usuario = '')
     // eslint-disable-next-line no-await-in-loop
     const { error } = await client.from('auditoria_fatura_historico').insert(historico.slice(i, i + 200));
     if (error) { console.warn('Historico da previsao de pagamento nao registrado:', error.message); break; }
+  }
+  return gravadas;
+}
+
+export const TIPOS_ENCAMINHAMENTO = { BOLETO_NA_PASTA: 'Boleto na pasta', DADOS_BANCARIOS: 'Dados bancários' };
+
+// Encaminhamento ao financeiro (evidencia: boleto na pasta ou dados bancarios). Nao e programacao nem pagamento.
+// Devolve os campos gravados por id; o encaminhamento anterior da fatura fica inativo, nunca apagado.
+export async function marcarEncaminhamentoFinanceiro(ids = [], tipo = 'BOLETO_NA_PASTA', usuario = '', evidencia = null) {
+  if (!isSupabaseConfigured() || !ids.length) return new Map();
+  if (!(tipo in TIPOS_ENCAMINHAMENTO)) throw new Error(`Tipo de encaminhamento inválido: ${tipo}`);
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const campos = {
+    encaminhado_financeiro_em: agora, encaminhado_financeiro_por: usuario || null,
+    encaminhamento_tipo: tipo, encaminhamento_evidencia: evidencia,
+  };
+  const gravadas = new Map();
+  for (let i = 0; i < ids.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await client.from('faturas').update(campos).in('id', ids.slice(i, i + 200)).select('id');
+    if (error) {
+      if (/encaminh/.test(error.message || '')) throw new Error('A migration do Portal Financeiro ainda não foi aplicada no Supabase.');
+      throw error;
+    }
+    (data || []).forEach((r) => gravadas.set(r.id, campos));
+  }
+  const ok = [...gravadas.keys()];
+  for (let i = 0; i < ok.length; i += 200) {
+    const lote = ok.slice(i, i + 200);
+    // eslint-disable-next-line no-await-in-loop
+    await client.from('financeiro_encaminhamentos').update({ ativo: false }).in('fatura_id', lote).eq('ativo', true);
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await client.from('financeiro_encaminhamentos').insert(lote.map((id) => ({ fatura_id: id, tipo, responsavel: usuario || 'Usuário', evidencia, ativo: true, created_at: agora })));
+    if (error) throw new Error(`Encaminhamento gravado na fatura, mas o histórico falhou: ${error.message}`);
+  }
+  const historico = ok.map((id) => ({
+    id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `enc-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    fatura_id: id, created_at: agora, acao: 'ENCAMINHADA_FINANCEIRO',
+    descricao: `Encaminhada ao financeiro (${TIPOS_ENCAMINHAMENTO[tipo]}).`, usuario_nome: usuario || null, usuario_email: '',
+  }));
+  for (let i = 0; i < historico.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await client.from('auditoria_fatura_historico').insert(historico.slice(i, i + 200));
+    if (error) { console.warn('Historico do encaminhamento nao registrado:', error.message); break; }
   }
   return gravadas;
 }

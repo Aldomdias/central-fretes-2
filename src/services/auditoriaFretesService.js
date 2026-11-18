@@ -1,11 +1,12 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { urlBaseApp } from '../utils/urlBaseApp';
 import { aplicarReauditoriaDetalhes, ENCERRADOS, gerarProtocolo, isoDate, montarPagamentoVinculado, normalizarChaveCte } from '../utils/auditoriaFretesDomain';
-import { chaveFatura } from '../utils/auditoriaFretesImport';
+import { chaveFatura, excelDateToISO } from '../utils/auditoriaFretesImport';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 import { gerarTokenAleatorio } from './auditoriaCteJornadaService';
 import { carregarSaldosAutorizadosPorChave } from './transporteAutorizacoesService';
 import { buscarTrackingParaRealizado, enriquecerRealizadoComTracking, obterTrackingDaLinha } from './realizadoTrackingEnrichment';
+import { avaliarEstornoSap, compararReferenciasFatura } from '../utils/portalFinanceiroDomain';
 
 const STORAGE_KEY = 'central_fretes_plataforma_auditoria_440_v1';
 
@@ -1467,14 +1468,22 @@ async function pagamentosExistentesDasFaturas(client, faturaIds) {
 export async function salvarPagamentosFinanceirosEmLote(pagamentosConciliados, onProgress) {
   // transportadora/compensado/cnpj sao so pra conciliar e exibir na tela -
   // nao existem em financeiro_pagamentos.
+  // campos_vinculo (evidencia do casamento) vai para a fatura, nao para financeiro_pagamentos:
+  // sai do upsert e volta so no retorno em memoria.
   const doArquivo = new Map();
+  const camposPorChave = new Map();
   for (const item of pagamentosConciliados.filter((p) => p.fatura_id)) {
-    const { transportadora, compensado, cnpj, atribuicao, ...limpo } = item;
+    const { transportadora, compensado, cnpj, atribuicao, campos_vinculo, empresa, moeda, vencimento, ...limpo } = item;
     const chave = chavePagamento(limpo);
     doArquivo.set(chave, mesclarPagamento(doArquivo.get(chave), limpo));
+    if (campos_vinculo) camposPorChave.set(chave, campos_vinculo);
   }
+  const comEvidencia = (item) => {
+    const campos = camposPorChave.get(chavePagamento(item));
+    return campos ? { ...item, campos_vinculo: campos } : item;
+  };
   if (!isSupabaseConfigured() || !doArquivo.size) {
-    return [...doArquivo.values()].map((item) => ({ id: item.id || uid('pag'), ...item }));
+    return [...doArquivo.values()].map((item) => comEvidencia({ id: item.id || uid('pag'), ...item }));
   }
 
   const client = getSupabaseClient();
@@ -1509,7 +1518,7 @@ export async function salvarPagamentosFinanceirosEmLote(pagamentosConciliados, o
     onProgress?.({ carregados: Math.min(inicio + LOTE, paraSalvar.length), total: paraSalvar.length });
   }
   const ids = new Set(faturaIds);
-  return [...finalPorChave.values()].filter((item) => ids.has(item.fatura_id));
+  return [...finalPorChave.values()].filter((item) => ids.has(item.fatura_id)).map(comEvidencia);
 }
 
 // Atualiza em lote o status das faturas cujo pagamento SAP ja compensou
@@ -1539,6 +1548,9 @@ export async function atualizarStatusFaturasPagasEmLote(state, pagamentosCompens
         valor_pago: Number(pagamento.valor_pago || 0),
         data_pagamento: pagamento.data_pagamento,
         partida: pagamento.partida || null,
+        pagamento_confirmado: true,
+        pagamento_confirmado_em: agora,
+        pagamento_campos_vinculo: pagamento.campos_vinculo || null,
         updated_at: agora,
       });
     } else {
@@ -1563,8 +1575,9 @@ export async function atualizarStatusFaturasPagasEmLote(state, pagamentosCompens
 
   for (let inicio = 0; inicio < atualizacoesFatura.length; inicio += 200) {
     const lote = atualizacoesFatura.slice(inicio, inicio + 200);
-    const { error } = await client.from('faturas').upsert(lote, { onConflict: 'id' });
-    if (error) throw new Error(`Erro ao atualizar status das faturas: ${error.message}`);
+    // safeUpsert descarta colunas ainda inexistentes (migration do Portal Financeiro nao aplicada):
+    // a baixa do pagamento nunca pode parar por causa da evidencia nova.
+    try { await safeUpsert('faturas', lote); } catch (error) { throw new Error(`Erro ao atualizar status das faturas: ${error.message}`); }
     onProgress?.({ carregados: Math.min(inicio + 200, atualizacoesFatura.length), total: atualizacoesFatura.length });
   }
   for (let inicio = 0; inicio < historico.length; inicio += 500) {
@@ -1582,6 +1595,77 @@ export async function atualizarStatusFaturasPagasEmLote(state, pagamentosCompens
     faturas: state.faturas.map((fatura) => statusPorFatura.has(fatura.id) ? { ...fatura, ...statusPorFatura.get(fatura.id) } : fatura),
     historico: [...historico, ...(state.historico || [])],
   };
+}
+
+// Avalia estornos por sequência de movimentos da mesma referência. Documento 17 isolado é apenas
+// indício; só grava ESTORNADA_SEM_RELANÇAMENTO quando a origem anulada está explicitamente ligada.
+export async function registrarEstornosSapFaturas(rows = [], faturas = [], usuarioNome = '') {
+  if (!rows.length || !faturas.length) return new Map();
+  const valor = (row, nomes) => nomes.map((n) => row[n]).find((v) => v !== undefined && v !== null && String(v).trim() !== '');
+  const porFatura = new Map();
+  for (const row of rows) {
+    const referencia = valor(row, ['Referência', 'Referencia']);
+    if (!referencia) continue;
+    // Referencia sozinha nao basta (aceita sequencia continua): exige a mesma raiz de CNPJ da linha do SAP
+    // e candidata unica. Sem CNPJ valido na linha, nada e atribuido.
+    const raizLinha = obterRaizCnpj(valor(row, ['Nº ID fiscal 1', 'No ID fiscal 1', 'CNPJ']));
+    if (!raizCnpjValida(raizLinha)) continue;
+    const candidatas = faturas.filter((f) => obterRaizCnpj(f.cnpj_transportadora) === raizLinha
+      && compararReferenciasFatura(f.numero_fatura, referencia).corresponde);
+    if (candidatas.length !== 1) continue;
+    const documento = String(valor(row, ['Lançamento contábil', 'Lancamento contabil', 'Documento']) || '').trim();
+    const original = String(valor(row, ['Documento original', 'Documento estornado', 'Doc.original', 'Anula documento']) || '').trim();
+    const mov = {
+      documento,
+      documento_original: original,
+      anulacao_confirmada: Boolean(original || valor(row, ['Anulação confirmada', 'Estornado por'])),
+      tipo: documento.startsWith('17') ? 'ESTORNO' : documento.startsWith('19') ? 'LANCAMENTO' : 'OUTRO',
+      data: excelDateToISO(valor(row, ['Data de lançamento', 'Dt.lançamento', 'Dt.lçto.cont.'])),
+      motivo: String(valor(row, ['Motivo do estorno', 'Motivo']) || ''),
+      valido: String(valor(row, ['Status', 'Status documento']) || '').toUpperCase() !== 'ESTORNADO',
+    };
+    porFatura.set(candidatas[0].id, [...(porFatura.get(candidatas[0].id) || []), mov]);
+  }
+  const avaliadas = new Map();
+  porFatura.forEach((movimentos, id) => avaliadas.set(id, { ...avaliarEstornoSap(movimentos), movimentos }));
+  if (!isSupabaseConfigured()) return avaliadas;
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  for (const [faturaId, avaliacao] of avaliadas) {
+    if (!['ESTORNADA_SEM_RELANÇAMENTO', 'RELANÇADA'].includes(avaliacao.status)) continue;
+    const patch = {
+      sap_estorno_status: avaliacao.status,
+      sap_lancamento_original: avaliacao.lancamento_original?.documento || null,
+      sap_documento_estorno: avaliacao.documento_estorno || null,
+      sap_data_estorno: avaliacao.data_estorno || null,
+      sap_motivo_estorno: avaliacao.motivo || null,
+      sap_relancamento: avaliacao.relancamento?.documento || null,
+    };
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await client.from('faturas').update(patch).eq('id', faturaId);
+    if (error) {
+      // Migration do Portal Financeiro ausente: a importacao SAP segue sem o estorno (nada e aplicado na tela).
+      if (/sap_|schema cache|column/i.test(error.message || '')) {
+        console.warn('[SAP] Estornos nao gravados (migration 20261118_001 aplicada?):', error.message);
+        return new Map();
+      }
+      throw new Error(`Erro ao registrar estorno SAP: ${error.message}`);
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await client.from('sap_estornos_fatura').upsert({
+      fatura_id: faturaId, lancamento_original: patch.sap_lancamento_original,
+      documento_estorno: patch.sap_documento_estorno, data_estorno: patch.sap_data_estorno,
+      motivo: patch.sap_motivo_estorno, relancamento: patch.sap_relancamento,
+      movimentos: avaliacao.movimentos, created_at: agora,
+    }, { onConflict: 'fatura_id,documento_estorno' });
+    // eslint-disable-next-line no-await-in-loop
+    await client.from('auditoria_fatura_historico').insert({
+      id: uid('hist'), fatura_id: faturaId, acao: avaliacao.status === 'RELANÇADA' ? 'SAP_RELANCAMENTO_CONFIRMADO' : 'SAP_ESTORNO_CONFIRMADO',
+      descricao: avaliacao.status === 'RELANÇADA' ? `Relançamento SAP ${patch.sap_relancamento} após estorno ${patch.sap_documento_estorno}.` : `Estorno SAP ${patch.sap_documento_estorno} confirmou a anulação de ${patch.sap_lancamento_original}.`,
+      usuario_nome: usuarioNome || 'Importação SAP/HANA', created_at: agora,
+    });
+  }
+  return avaliadas;
 }
 
 // Lancamento / partida no financeiro so acontecem depois do envio ao ERP: fatura sem data de envio ao ERP ganha a data
@@ -2065,7 +2149,30 @@ export async function enviarFaturaParaProtocolo(state, fatura, dados, usuario = 
     status: 'ENVIADA_AO_FINANCEIRO',
     canal_envio_financeiro: 'PROTOCOLO_FINANCEIRO',
     protocolo_financeiro_id: payload.id,
+    encaminhado_financeiro_em: payload.enviado_em,
+    encaminhado_financeiro_por: usuario.nome || dados.responsavel_nome || null,
+    encaminhamento_tipo: dados.tipo_envio === 'BOLETO' ? 'BOLETO_NA_PASTA' : 'DADOS_BANCARIOS',
+    encaminhamento_evidencia: {
+      protocolo_id: payload.id,
+      protocolo: payload.protocolo,
+      anexos: (dados.anexos || []).map((a) => ({ nome: a.nome, url: a.url || null })),
+    },
   };
+  // Trilha do encaminhamento: sem a migration do Portal Financeiro a tabela nao existe e o protocolo segue normalmente.
+  try {
+    if (isSupabaseConfigured()) {
+      await getSupabaseClient().from('financeiro_encaminhamentos').update({ ativo: false }).eq('fatura_id', fatura.id).eq('ativo', true);
+    }
+    await inserirHistorico('financeiro_encaminhamentos', {
+      id: uid('fin-enc'), fatura_id: fatura.id,
+      tipo: faturaAtualizada.encaminhamento_tipo,
+      responsavel: faturaAtualizada.encaminhado_financeiro_por || 'Usuario local',
+      evidencia: faturaAtualizada.encaminhamento_evidencia,
+      ativo: true, created_at: payload.enviado_em,
+    });
+  } catch (error) {
+    console.warn('[Protocolo] Encaminhamento nao registrado na trilha (migration 20261118_001 aplicada?):', error?.message || error);
+  }
   const proximoEstado = await atualizarFaturaAuditoria({ ...state, protocolos: [payload, ...(state.protocolos || [])] }, faturaAtualizada, {
     acao: 'ENVIADA_AO_FINANCEIRO',
     status_anterior: fatura.status,

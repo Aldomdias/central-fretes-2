@@ -7,6 +7,7 @@ import { chaveCasamentoCte, cnpj14, serieDaChave, situacaoLancamentoCte } from '
 import { ehLinhaNfse } from './nfseFatura.js';
 import { parseNumeroPlanilha } from './parseNumeroPlanilha.js';
 import { linhaFenixDoCte } from './termoCorrecaoFenix.js';
+import { estornadaSemRelancamento, situacaoFinanceiro } from './portalFinanceiroDomain.js';
 
 export const TOLERANCIA_VALOR_LISTA = 0.05;
 
@@ -299,9 +300,74 @@ export function situacaoAuditoria(f) {
 
 export function situacaoPagamento(f) {
   if (inativa(f)) return 'CANCELADA';
+  if (estornadaSemRelancamento(f)) return 'ESTORNADA';
   if (f.status === 'PAGA_COM_DIVERGENCIA') return 'PAGA_DIVERGENTE';
   return String(f.status || '').startsWith('PAGA') ? 'PAGA' : 'ABERTA';
 }
+
+// Fila de protocolo por auditor: faturas em aberto (nao pagas, nao estornadas, nao canceladas) ja lancadas ou
+// em agrupamento manual. Uma linha por fatura, ordenada por auditor e vencimento; resumo por auditor.
+export function montarFilaProtocolo(linhas = []) {
+  const vistas = new Set();
+  const fila = linhas.filter((l) => {
+    const f = l.fatura;
+    if (!f || situacaoPagamento(f) !== 'ABERTA' || !(faturaLancada(f) || agrupamentoManual(f))) return false;
+    if (vistas.has(f.id)) return false;
+    vistas.add(f.id);
+    return true;
+  }).sort((a, b) => String(a.auditor || '').localeCompare(String(b.auditor || ''), 'pt-BR')
+    || String(a.fatura.data_vencimento || '9999').localeCompare(String(b.fatura.data_vencimento || '9999'))
+    || String(a.fatura.numero_fatura || '').localeCompare(String(b.fatura.numero_fatura || ''), 'pt-BR', { numeric: true }));
+  const porAuditor = new Map();
+  fila.forEach((l) => {
+    const atual = porAuditor.get(l.auditor) || { auditor: l.auditor, quantidade: 0, valor: 0 };
+    atual.quantidade += 1;
+    atual.valor = Number((atual.valor + Number(l.fatura.valor_fatura || 0)).toFixed(2));
+    porAuditor.set(l.auditor, atual);
+  });
+  return { fila, resumoPorAuditor: [...porAuditor.values()] };
+}
+
+const STATUS_DIVERGENCIA_EM_TRATATIVA = new Set(['COM_DIVERGENCIA', 'AGUARDANDO_TRANSPORTADORA', 'AGUARDANDO_NOVA_FATURA', 'AGUARDANDO_APROVACAO_GESTAO']);
+export const ROTULO_RESULTADO_AUDITORIA = {
+  NAO_INICIADA: 'Não iniciada', EM_CONFERENCIA: 'Em conferência', SEM_DIVERGENCIA: 'Sem divergência',
+  COM_DIVERGENCIA: 'Com divergência', DIVERGENCIA_EM_TRATATIVA: 'Divergência em tratativa', DIVERGENCIA_TRATADA: 'Divergência tratada',
+};
+
+// Progresso (CT-es auditados x totais) e resultado da auditoria sao coisas diferentes: uma conferencia concluida
+// pode continuar com divergencia em tratativa. Valores: cobrado = valor da fatura; diferenca = o apurado pela
+// auditoria (campo diferenca ou total a descontar); apurado = cobrado - diferenca.
+export function resultadoAuditoria(f) {
+  if (!f) return null;
+  const totais = Number(f.ctes_totais || 0);
+  const auditados = Number(f.ctes_auditados || 0);
+  const pendentes = Math.max(0, totais - auditados);
+  const cobrado = Number(f.valor_fatura || 0);
+  // Sem conferencia concluida o campo diferenca da fatura nao e' resultado de auditoria (pode vir de importacao):
+  // so vale quando todos os CT-es foram auditados.
+  const concluida = auditados > 0 && pendentes === 0;
+  const diferenca = concluida ? Number(Number(f.diferenca ?? f.auditoria_total_descontar ?? 0).toFixed(2)) : 0;
+  const divergentes = Number(f.ctes_divergentes || 0);
+  const semTabela = Number(f.ctes_sem_tabela || 0);
+  const semCalculo = Number(f.ctes_sem_calculo || 0);
+  const temDivergencia = divergentes > 0 || Math.abs(diferenca) > TOLERANCIA_VALOR_LISTA;
+  const tratada = ['TRATADA', 'LIBERADA_COM_DESCONTO', 'PAGA_COM_DESCONTO', 'PAGA_COM_DIVERGENCIA'].includes(f.status);
+  let resultado;
+  if (!auditados) resultado = 'NAO_INICIADA';
+  else if (pendentes > 0) resultado = 'EM_CONFERENCIA';
+  else if (!temDivergencia) resultado = 'SEM_DIVERGENCIA';
+  else if (tratada) resultado = 'DIVERGENCIA_TRATADA';
+  else if (STATUS_DIVERGENCIA_EM_TRATATIVA.has(f.status) || f.confirmacao_transportador_status === 'ENVIADO') resultado = 'DIVERGENCIA_EM_TRATATIVA';
+  else resultado = 'COM_DIVERGENCIA';
+  const motivo = semTabela > 0 ? `${semTabela} CT-e sem tabela` : semCalculo > 0 ? `${semCalculo} CT-e sem cálculo` : divergentes > 0 ? `${divergentes} CT-e divergente(s)` : '';
+  return { resultado, rotulo: ROTULO_RESULTADO_AUDITORIA[resultado], totais, auditados, pendentes, cobrado, apurado: Number((cobrado - diferenca).toFixed(2)), diferenca, motivo };
+}
+
+// Pagas com desconto: status PAGA_COM_DESCONTO com pagamento confirmado (partida) e valor pago/desconto.
+export const pagaComDesconto = (f) => Boolean(f) && f.status === 'PAGA_COM_DESCONTO' && (f.pagamento_confirmado === true || Boolean(f.partida));
+
+// Fatura ainda em aberto para o acompanhamento financeiro: ativa, nao paga e sem estorno sem relancamento.
+export const emAbertoFinanceiro = (f) => Boolean(f) && !inativa(f) && situacaoPagamento(f) === 'ABERTA';
 
 export const faturaLancada = (f) => Boolean(f.partida || f.lancamento_financeiro || situacaoPagamento(f).startsWith('PAGA'));
 
@@ -323,6 +389,7 @@ export function situacaoEnvioErp(linha) {
 
 // So o que ainda sera pago tem faixa de vencimento.
 export function faixaDiagnostico(f, referencia = new Date()) {
+  if (estornadaSemRelancamento(f)) return 'ESTORNADA';
   if (situacaoPagamento(f) !== 'ABERTA') return 'ENCERRADA';
   const dias = diasAte(f.data_vencimento, referencia);
   if (dias == null) return 'SEM_DATA';
@@ -342,9 +409,9 @@ export function faixaDaLinha(l, referencia = new Date()) {
 
 export const FAIXAS_A_VENCER = ['HOJE_AMANHA', 'ATE_7', 'MAIS_7'];
 
-// Previsao de pagamento combinada com o financeiro no protocolo (agrupamento manual). Fora do protocolo
-// o prazo e o vencimento. So vale enquanto a fatura esta no protocolo e nao foi paga.
-export const previsaoPagamento = (f) => (f && f.agrupamento_manual && situacaoPagamento(f) === 'ABERTA' ? String(f.data_previsao_pagamento || '').slice(0, 10) : '');
+// Previsao vigente do Financeiro. Vale para a fila normal ou para a contingencia manual e nunca
+// comprova pagamento: some apenas quando a confirmacao efetiva encerra a fatura.
+export const previsaoPagamento = (f) => (f && situacaoPagamento(f) === 'ABERTA' ? String(f.data_previsao_pagamento || '').slice(0, 10) : '');
 
 // SEM_PREVISAO, PREVISTA (hoje ou adiante) ou ATRASADA (a data combinada passou e nao pagou).
 export function situacaoPrevisao(f, referencia = new Date()) {
@@ -496,7 +563,7 @@ const ativa = (l) => !inativa(l.fatura);
 
 // Grupos de cards. Dentro do grupo escolhe-se um card; entre grupos os filtros se somam.
 export const GRUPOS_DIAGNOSTICO = [
-  { id: 'localizacao', titulo: 'Na plataforma', soComLista: true, cards: [
+  { id: 'localizacao', titulo: 'Recebimento', soComLista: true, cards: [
     { id: 'localizadas', rotulo: 'Localizadas', cor: '#315ee7', teste: (l) => Boolean(l.fatura), dica: 'Número colado que existe na plataforma.' },
     { id: 'nao_localizadas', rotulo: 'Não localizadas', cor: '#9b1111', teste: (l) => !l.fatura, dica: 'Número colado que não existe na plataforma para esta transportadora.' },
     { id: 'repetidas', rotulo: 'Número repetido', cor: '#b78700', teste: (l) => l.repetida > 1, dica: 'O número existe em mais de uma fatura ativa.' },
@@ -516,16 +583,26 @@ export const GRUPOS_DIAGNOSTICO = [
     { id: 'gestao', rotulo: 'Aguardando gestão', cor: '#9153F0', teste: auditoria('GESTAO'), dica: 'Na aprovacao da gestão.' },
     { id: 'liberadas', rotulo: 'Liberadas', cor: '#04a484', teste: auditoria('LIBERADA'), dica: 'Liberadas, no financeiro ou já pagas.' },
   ] },
-  { id: 'lancamento', titulo: 'Lançamento da fatura', cards: [
-    { id: 'lancadas', rotulo: 'Já lançadas', cor: '#14733b', teste: comFatura((l) => ativa(l) && faturaLancada(l.fatura)), dica: 'Com partida ou lançamento financeiro, ou já paga.' },
-    { id: 'nao_lancadas', rotulo: 'Não lançadas', cor: '#9b1111', teste: comFatura((l) => ativa(l) && !faturaLancada(l.fatura)), dica: 'Sem partida e sem lançamento financeiro.' },
-  ] },
   { id: 'erp', titulo: 'Envio ao ERP', cards: [
     { id: 'enviadas', rotulo: 'Enviadas ao ERP', cor: '#315ee7', teste: comFatura((l) => ativa(l) && enviadaErp(l.fatura)), dica: 'Com data de envio ao ERP.' },
     { id: 'enviadas_sem_partida', rotulo: 'Enviadas sem partida', cor: '#9b1111', teste: comFatura((l) => ativa(l) && situacaoEnvioErp(l) === 'SEM_PARTIDA'), dica: 'Enviadas ao ERP sem partida na fatura e com CT-e sem partida no SAP: possível erro no envio.' },
     { id: 'enviadas_partida_ctes', rotulo: 'Partida só nos CT-es', cor: '#b78700', teste: comFatura((l) => ativa(l) && situacaoEnvioErp(l) === 'PARTIDA_NOS_CTES'), dica: 'Enviadas ao ERP com todos os CT-es lançados no SAP, mas sem partida pelo número da fatura.' },
     { id: 'enviadas_com_partida', rotulo: 'Enviadas com partida', cor: '#14733b', teste: comFatura((l) => ativa(l) && situacaoEnvioErp(l) === 'COM_PARTIDA'), dica: 'Enviadas ao ERP com partida na fatura, lançamento ou já pagas.' },
     { id: 'nao_enviadas', rotulo: 'Não enviadas', cor: '#64748b', teste: comFatura((l) => ativa(l) && !enviadaErp(l.fatura)), dica: 'Sem data de envio ao ERP.' },
+  ] },
+  { id: 'lancamento', titulo: 'Lançamento no SAP', cards: [
+    { id: 'nao_lancadas', rotulo: 'Não lançadas', cor: '#9b1111', teste: comFatura((l) => ativa(l) && !estornadaSemRelancamento(l.fatura) && !faturaLancada(l.fatura)), dica: 'Sem partida e sem lançamento financeiro.' },
+    { id: 'lancadas', rotulo: 'Já lançadas', cor: '#14733b', teste: comFatura((l) => ativa(l) && !estornadaSemRelancamento(l.fatura) && faturaLancada(l.fatura)), dica: 'Lançamento da própria fatura confirmado no SAP.' },
+    { id: 'estornadas_sap', rotulo: 'Estornadas no SAP', cor: '#b91c1c', teste: comFatura((l) => estornadaSemRelancamento(l.fatura)), dica: 'Estorno confirmado, sem relançamento válido. Fica fora de em aberto, vencidas, a vencer e laudo.' },
+  ] },
+  { id: 'financeiro', titulo: 'Financeiro', cards: [
+    // Todos os cards de acompanhamento valem so para fatura ativa e AINDA EM ABERTO (nao paga, nao estornada):
+    // situacaoPagamento ja exclui cancelada/estornada/paga, e as pagas antigas nao tem pagamento_confirmado.
+    { id: 'aguarda_encaminhamento', rotulo: 'Aguardam encaminhamento', cor: '#9b1111', teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && (faturaLancada(l.fatura) || agrupamentoManual(l.fatura)) && situacaoFinanceiro(l.fatura) === 'AGUARDA_ENCAMINHAMENTO'), dica: 'Já lançadas em aberto, ainda sem encaminhamento registrado.' },
+    { id: 'encaminhadas_sem_previsao', rotulo: 'Encaminhadas sem previsão', cor: '#b78700', teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && situacaoFinanceiro(l.fatura) === 'ENCAMINHADA_SEM_PREVISAO'), dica: 'Boleto ou dados bancários encaminhados, sem programação vigente.' },
+    { id: 'encaminhadas_com_previsao', rotulo: 'Encaminhadas com previsão', cor: '#315ee7', teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && situacaoFinanceiro(l.fatura) === 'ENCAMINHADA_COM_PREVISAO'), dica: 'Encaminhadas com previsão ainda não confirmada pelo SAP/HANA.' },
+    { id: 'programadas_financeiro', rotulo: 'Programadas pelo Financeiro', cor: '#9153F0', teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && situacaoFinanceiro(l.fatura) === 'PROGRAMADA'), dica: 'Programação confirmada pelo SAP/HANA; continua em aberto até o pagamento efetivo.' },
+    { id: 'pagas_financeiro', rotulo: 'Pagas', cor: '#14733b', teste: comFatura((l) => ativa(l) && situacaoPagamento(l.fatura).startsWith('PAGA') && (l.fatura.pagamento_confirmado === true || Boolean(l.fatura.partida))), dica: 'Pagamento efetivo confirmado por partida válida (inclui pagas anteriores à confirmação registrada).' },
   ] },
   // Contingencia ate o protocolo funcionar dentro do AMD: marcacao feita na propria tela.
   { id: 'protocolo', titulo: 'Protocolo (contingência)', cards: [
@@ -561,6 +638,7 @@ export const GRUPOS_DIAGNOSTICO = [
   { id: 'pagamento', titulo: 'Pagamento', cards: [
     { id: 'pagas', rotulo: 'Pagas', cor: '#14733b', teste: pagamento('PAGA'), dica: 'Pagas ou pagas com desconto.' },
     { id: 'pagas_divergentes', rotulo: 'Pagas com divergência', cor: '#b78700', teste: pagamento('PAGA_DIVERGENTE'), dica: 'Valor pago diferente do esperado.' },
+    { id: 'pagas_desconto', rotulo: 'Pagas com desconto', cor: '#0f766e', teste: comFatura((l) => ativa(l) && pagaComDesconto(l.fatura)), dica: 'Pagas após liberação com desconto, com pagamento confirmado por partida. Mostra valor pago e desconto no detalhe.' },
     { id: 'abertas', rotulo: 'Não pagas', cor: '#315ee7', teste: pagamento('ABERTA'), dica: 'Ainda sem pagamento. Inclui as não localizadas.' },
     { id: 'canceladas', rotulo: 'Canceladas/substituídas', cor: '#64748b', teste: pagamento('CANCELADA'), dica: 'Canceladas ou substituídas.' },
     // Mesma fatura importada mais de uma vez: fora dos totais, so aparecem neste card.
