@@ -42,24 +42,35 @@ async function paginar(consulta) {
   return todos;
 }
 
-// Chaves/numeros de CT-e que ja estao em alguma fatura (fatura_detalhes).
-async function idsComFatura(db, ctes) {
+// Numero de CT-e sem zeros a esquerda ("000373998" = "373998").
+const numeroCte = (v) => digitos(v).replace(/^0+/, '');
+
+// CT-es que ja estao em alguma fatura (fatura_detalhes). Para NAO cobrar o transportador por CT-e que ja tem fatura:
+// confere pela chave E pelo numero (a fatura pode ter vindo so com o numero, sem a chave); o numero so vale para
+// a mesma transportadora (ou detalhe sem transportadora), porque o mesmo numero se repete entre transportadoras.
+// Retorna chaves "c:<chave>" e "n:<numero>".
+async function idsComFatura(db, ctes, nomesTransportadora) {
   const chaves = [...new Set(ctes.map((c) => digitos(c.chave_cte)).filter(Boolean))];
-  const numeros = [...new Set(ctes.filter((c) => !digitos(c.chave_cte)).map((c) => digitos(c.numero_cte)).filter(Boolean))];
+  const numeros = [...new Set(ctes.map((c) => numeroCte(c.numero_cte)).filter(Boolean))];
   const achados = new Set();
-  const consultar = async (coluna, lista) => {
+  const consultar = async (coluna, lista, aoAchar) => {
     const lotes = [];
     for (let i = 0; i < lista.length; i += 100) lotes.push(lista.slice(i, i + 100));
     for (let i = 0; i < lotes.length; i += 10) {
-      const respostas = await Promise.all(lotes.slice(i, i + 10).map((lote) => db.from('fatura_detalhes').select('chave_cte,numero_cte').in(coluna, lote)));
+      const respostas = await Promise.all(lotes.slice(i, i + 10).map((lote) => db.from('fatura_detalhes').select('fatura_id,chave_cte,numero_cte,transportadora').in(coluna, lote)));
       respostas.forEach(({ data, error }) => {
         if (error) throw new Error(`fatura_detalhes: ${error.message}`);
-        (data || []).forEach((d) => { [digitos(d.chave_cte), digitos(d.numero_cte)].filter(Boolean).forEach((id) => achados.add(id)); });
+        (data || []).forEach(aoAchar);
       });
     }
   };
-  await consultar('chave_cte', chaves);
-  await consultar('numero_cte', numeros);
+  await consultar('chave_cte', chaves, (d) => { const c = digitos(d.chave_cte); if (c) achados.add(`c:${c}`); });
+  // O numero na fatura pode ter zeros a esquerda: busca as duas formas.
+  await consultar('numero_cte', [...new Set([...numeros, ...ctes.map((c) => digitos(c.numero_cte)).filter(Boolean)])], (d) => {
+    const n = numeroCte(d.numero_cte);
+    const nomeDetalhe = norm(d.transportadora);
+    if (n && (!nomeDetalhe || nomesTransportadora.has(nomeDetalhe))) achados.add(`n:${n}`);
+  });
   return achados;
 }
 
@@ -185,8 +196,8 @@ export default async function handler(req, res) {
         const inicioCte = somarDias(hoje, -janelaDias);
         const ctesPeriodo = await paginar((de, ate) => db.from('auditoria_cte_resultados').select('id,chave_cte,numero_cte,data_emissao,valor_cte')
           .in('transportadora', variantes).gte('data_emissao', inicioCte).lte('data_emissao', periodo.limiteCte).order('data_emissao').order('id').range(de, ate));
-        const comFatura = await idsComFatura(db, ctesPeriodo);
-        const ctes = ctesPeriodo.filter((c) => !comFatura.has(digitos(c.chave_cte) || digitos(c.numero_cte)));
+        const comFatura = await idsComFatura(db, ctesPeriodo, new Set(variantes.map(norm)));
+        const ctes = ctesPeriodo.filter((c) => !comFatura.has(`c:${digitos(c.chave_cte)}`) && !comFatura.has(`n:${numeroCte(c.numero_cte)}`));
         const valor = ctes.reduce((s, c) => s + Number(c.valor_cte || 0), 0);
         Object.assign(registro, {
           periodo_inicio: periodo.inicio, periodo_fim: periodo.fim, faturas_no_periodo: faturasPeriodo.length,
