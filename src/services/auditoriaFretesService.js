@@ -2163,8 +2163,9 @@ export async function enviarFaturaParaProtocolo(state, fatura, dados, usuario = 
     if (isSupabaseConfigured()) {
       await getSupabaseClient().from('financeiro_encaminhamentos').update({ ativo: false }).eq('fatura_id', fatura.id).eq('ativo', true);
     }
+    // Sem id: a coluna e' uuid com default gen_random_uuid() (um id de texto geraria erro 22P02).
     await inserirHistorico('financeiro_encaminhamentos', {
-      id: uid('fin-enc'), fatura_id: fatura.id,
+      fatura_id: fatura.id,
       tipo: faturaAtualizada.encaminhamento_tipo,
       responsavel: faturaAtualizada.encaminhado_financeiro_por || 'Usuario local',
       evidencia: faturaAtualizada.encaminhamento_evidencia,

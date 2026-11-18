@@ -1,4 +1,4 @@
-﻿-- Portal Financeiro: evidencias distintas de encaminhamento, programacao, pagamento e estorno.
+-- Portal Financeiro: evidencias distintas de encaminhamento, programacao, pagamento e estorno.
 -- Migration preparada e testada localmente; nao aplicar no projeto hospedado antes da publicacao.
 
 alter table if exists public.faturas

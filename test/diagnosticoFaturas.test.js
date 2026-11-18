@@ -356,3 +356,20 @@ test('cards do Financeiro: só contam fatura ativa em aberto; pagas antigas e ca
   assert.equal(teste('encaminhadas_sem_previsao')(l({ encaminhado_financeiro_em: '2026-11-01' })), true);
   assert.equal(teste('pagas_financeiro')(l({ status: 'PAGA' })), true, 'paga antiga com partida');
 });
+
+test('cards do ERP: enviada sem partida ainda sem resumo de CT-es cai em "Verificando", e a soma fecha', () => {
+  const grupo = GRUPOS_DIAGNOSTICO.find((g) => g.id === 'erp');
+  const card = (id) => grupo.cards.find((c) => c.id === id).teste;
+  const fatura = { id: 'e1', numero_fatura: '9', valor_fatura: 10, status: 'ENVIADA_AO_FINANCEIRO', data_envio_erp: '2026-11-01' };
+  const semResumo = { fatura };
+  const semCtes = { fatura, ctes: { total: 2, lancados: 0, semPartida: [{}, {}] } };
+  const todosCtes = { fatura, ctes: { total: 2, lancados: 2, semPartida: [] } };
+  const comPartida = { fatura: { ...fatura, partida: '1900' } };
+  const ids = ['enviadas_sem_partida', 'enviadas_partida_ctes', 'enviadas_com_partida', 'enviadas_verificando'];
+  const onde = (l) => ids.filter((id) => card(id)(l));
+  assert.deepEqual(onde(semResumo), ['enviadas_verificando']);
+  assert.deepEqual(onde(semCtes), ['enviadas_sem_partida']);
+  assert.deepEqual(onde(todosCtes), ['enviadas_partida_ctes']);
+  assert.deepEqual(onde(comPartida), ['enviadas_com_partida']);
+  [semResumo, semCtes, todosCtes, comPartida].forEach((l) => assert.equal(card('enviadas')(l), true));
+});

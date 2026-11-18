@@ -15,6 +15,7 @@ import {
   etapaFenix,
   FAIXAS_A_VENCER,
   faixaDaLinha,
+  enviadaErp,
   faturaLancada,
   filtrarPorCards,
   GRUPOS_DIAGNOSTICO,
@@ -322,7 +323,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
 
   const faturasBase = useMemo(() => linhasBase.filter((l) => l.fatura).map((l) => l.fatura), [linhasBase]);
   useEffect(() => {
-    const pendentes = faturasBase.filter((f) => cacheCtes.get(String(f.id))?.carimbo !== carimbo(f));
+    // Primeiro as enviadas ao ERP sem partida na fatura: sao as que definem "Enviadas sem partida" e precisam de tratamento.
+    const prioridade = (f) => (enviadaErp(f) && !faturaLancada(f) ? 0 : 1);
+    const pendentes = faturasBase.filter((f) => cacheCtes.get(String(f.id))?.carimbo !== carimbo(f))
+      .sort((a, b) => prioridade(a) - prioridade(b));
     if (!pendentes.length) { setProgresso(null); return undefined; }
     let ativo = true;
     const timer = setTimeout(async () => {

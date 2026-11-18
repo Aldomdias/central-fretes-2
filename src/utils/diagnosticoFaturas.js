@@ -587,6 +587,7 @@ export const GRUPOS_DIAGNOSTICO = [
     { id: 'enviadas', rotulo: 'Enviadas ao ERP', cor: '#315ee7', teste: comFatura((l) => ativa(l) && enviadaErp(l.fatura)), dica: 'Com data de envio ao ERP.' },
     { id: 'enviadas_sem_partida', rotulo: 'Enviadas sem partida', cor: '#9b1111', teste: comFatura((l) => ativa(l) && situacaoEnvioErp(l) === 'SEM_PARTIDA'), dica: 'Enviadas ao ERP sem partida na fatura e com CT-e sem partida no SAP: possível erro no envio.' },
     { id: 'enviadas_partida_ctes', rotulo: 'Partida só nos CT-es', cor: '#b78700', teste: comFatura((l) => ativa(l) && situacaoEnvioErp(l) === 'PARTIDA_NOS_CTES'), dica: 'Enviadas ao ERP com todos os CT-es lançados no SAP, mas sem partida pelo número da fatura.' },
+    { id: 'enviadas_verificando', rotulo: 'Verificando CT-es', cor: '#64748b', teste: comFatura((l) => ativa(l) && situacaoEnvioErp(l) === 'VERIFICANDO'), dica: 'Enviadas ao ERP sem partida na fatura cujos CT-es ainda estão sendo conferidos no SAP. Quando a verificação termina elas passam para "Enviadas sem partida" ou "Partida só nos CT-es" e este card zera.' },
     { id: 'enviadas_com_partida', rotulo: 'Enviadas com partida', cor: '#14733b', teste: comFatura((l) => ativa(l) && situacaoEnvioErp(l) === 'COM_PARTIDA'), dica: 'Enviadas ao ERP com partida na fatura, lançamento ou já pagas.' },
     { id: 'nao_enviadas', rotulo: 'Não enviadas', cor: '#64748b', teste: comFatura((l) => ativa(l) && !enviadaErp(l.fatura)), dica: 'Sem data de envio ao ERP.' },
   ] },
