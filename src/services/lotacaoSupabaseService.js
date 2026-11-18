@@ -1798,13 +1798,24 @@ export async function buscarFaturaExistenteSupabase({ numeroFatura, serieFatura,
 export async function carregarDetalhesFaturaSupabase(faturaId) {
   if (!isSupabaseConfigured()) return [];
   const supabase = ensureClient();
-  const { data, error } = await supabase
-    .from('fatura_detalhes')
-    .select('*')
-    .eq('fatura_id', faturaId)
-    .order('numero_cte');
-  if (error) throw new Error(detalheErroSupabase(error));
-  return data || [];
+  // O PostgREST devolve no maximo 1000 linhas por consulta: pagina ate acabar para
+  // a fatura inteira ser considerada (faturas grandes tem mais de 1000 CT-es).
+  // `id` desempata a ordenacao para a paginacao nao repetir/pular linhas.
+  const PAGINA = 1000;
+  const todos = [];
+  for (let inicio = 0; ; inicio += PAGINA) {
+    const { data, error } = await supabase
+      .from('fatura_detalhes')
+      .select('*')
+      .eq('fatura_id', faturaId)
+      .order('numero_cte')
+      .order('id')
+      .range(inicio, inicio + PAGINA - 1);
+    if (error) throw new Error(detalheErroSupabase(error));
+    todos.push(...(data || []));
+    if ((data || []).length < PAGINA) break;
+  }
+  return todos;
 }
 
 // ============================================================
