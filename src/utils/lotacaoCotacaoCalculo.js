@@ -2,10 +2,14 @@
 // Aliquota: tabela do sistema (tela ICMS UF) e, fora dela, a legislacao.
 const UF_SUL_SUDESTE = new Set(['SP', 'RJ', 'MG', 'PR', 'SC', 'RS']);
 
-// Aliquotas internas de referencia (conferir na tela ICMS UF; a tabela do sistema tem prioridade).
+// Aliquotas internas de ICMS na PRESTACAO DE SERVICO DE TRANSPORTE intermunicipal
+// (frete com inicio e fim na mesma UF). NAO e a aliquota de mercadoria: varios estados
+// tributam o transporte a 12% (SP: RICMS/SP art. 54, I; PR: Lei 11.580 art. 14, II;
+// RS: orientacao da Receita/RS; ES). AL: 20,5% a partir de 01/04/2026.
+// Levantamento 11/2026 -- a tabela do sistema (tela ICMS UF) tem prioridade sobre esta.
 export const ALIQUOTA_INTERNA_UF = {
-  AC: 19, AL: 20, AM: 20, AP: 18, BA: 20.5, CE: 20, DF: 20, ES: 17, GO: 19, MA: 23, MG: 18, MS: 17, MT: 17,
-  PA: 19, PB: 20, PE: 20.5, PI: 22.5, PR: 19.5, RJ: 22, RN: 20, RO: 19.5, RR: 20, RS: 17, SC: 17, SE: 19, SP: 18, TO: 20,
+  AC: 19, AL: 20.5, AM: 20, AP: 18, BA: 20.5, CE: 20, DF: 20, ES: 12, GO: 19, MA: 23, MG: 18, MS: 17, MT: 17,
+  PA: 19, PB: 20, PE: 20.5, PI: 22.5, PR: 12, RJ: 22, RN: 20, RO: 19.5, RR: 20, RS: 12, SC: 17, SE: 19, SP: 12, TO: 20,
 };
 
 const arred = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
