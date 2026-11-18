@@ -11,6 +11,7 @@ import {
   montarLinhasDiagnostico,
   montarFilaProtocolo,
   aptaAntecipacao,
+  tipoDocumentoFatura,
   parseListaFaturas,
   previsaoPagamento,
   situacaoPrevisao,
@@ -386,4 +387,23 @@ test('antecipação: valor mínimo R$ 100, 7+ dias da emissão e 6+ dias até o 
   assert.equal(aptaAntecipacao(f({ atribuicao_sap: 'Cessão' }), hoje), false, 'já antecipada');
   assert.equal(aptaAntecipacao(f({ antecipacao_enviada: true }), hoje), false, 'já enviada');
   assert.equal(aptaAntecipacao(f({ status: 'PAGA' }), hoje), false, 'paga');
+});
+
+test('antecipação: "Aptas" só para fatura só de CT-e; NFS-e tem card próprio; mista não entra em nenhum', () => {
+  const grupo = GRUPOS_DIAGNOSTICO.find((g) => g.cards.some((c) => c.id === 'aptas_antecipacao'));
+  const aptasCte = grupo.cards.find((c) => c.id === 'aptas_antecipacao').teste;
+  const aptasNfse = grupo.cards.find((c) => c.id === 'aptas_antecipacao_nfse').teste;
+  const fatura = { id: 'n', numero_fatura: '1', valor_fatura: 500, status: 'ENVIADA_AO_FINANCEIRO', data_emissao: '2020-01-01', data_vencimento: '2099-01-01' };
+  const linha = (ctes) => ({ fatura, ctes });
+  assert.equal(tipoDocumentoFatura({ total: 3, nfse: 0 }), 'CTE');
+  assert.equal(tipoDocumentoFatura({ total: 0, nfse: 2 }), 'NFSE');
+  assert.equal(tipoDocumentoFatura({ total: 3, nfse: 1 }), 'MISTA');
+  assert.equal(tipoDocumentoFatura({ total: 0, nfse: 0 }), 'SEM_ITENS');
+  assert.equal(tipoDocumentoFatura(undefined), 'VERIFICANDO');
+  assert.deepEqual([aptasCte(linha({ total: 3, nfse: 0 })), aptasNfse(linha({ total: 3, nfse: 0 }))], [true, false]);
+  assert.deepEqual([aptasCte(linha({ total: 0, nfse: 2 })), aptasNfse(linha({ total: 0, nfse: 2 }))], [false, true]);
+  assert.deepEqual([aptasCte(linha({ total: 3, nfse: 1 })), aptasNfse(linha({ total: 3, nfse: 1 }))], [false, false]);
+  assert.deepEqual([aptasCte(linha(undefined)), aptasNfse(linha(undefined))], [false, false]);
+  const pequena = { fatura: { ...fatura, valor_fatura: 50 }, ctes: { total: 1, nfse: 0 } };
+  assert.deepEqual([aptasCte(pequena), aptasNfse(pequena)], [false, false]);
 });

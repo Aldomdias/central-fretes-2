@@ -561,6 +561,17 @@ export function aptaAntecipacao(f, referencia = new Date()) {
   return -desdeEmissao >= ANTECIPACAO_DIAS_MIN_EMISSAO && ateVencimento >= ANTECIPACAO_DIAS_MIN_VENCIMENTO;
 }
 
+// Tipo de documento da fatura pelo resumo dos itens: so CT-e, so NFS-e (nota fiscal de servico), mista ou sem itens.
+// Antes do resumo carregar devolve VERIFICANDO (nao entra em nenhum card de antecipacao ate saber).
+export function tipoDocumentoFatura(resumoCtes) {
+  if (!resumoCtes) return 'VERIFICANDO';
+  const ctes = Number(resumoCtes.total || 0);
+  const nfse = Number(resumoCtes.nfse || 0);
+  if (ctes > 0 && nfse === 0) return 'CTE';
+  if (nfse > 0 && ctes === 0) return 'NFSE';
+  return ctes > 0 ? 'MISTA' : 'SEM_ITENS';
+}
+
 const comFatura = (fn) => (l) => Boolean(l.fatura) && fn(l);
 const auditoria = (...ids) => comFatura((l) => ids.includes(situacaoAuditoria(l.fatura)));
 const pagamento = (id) => (l) => situacaoPagamentoLinha(l) === id;
@@ -578,7 +589,8 @@ export const GRUPOS_DIAGNOSTICO = [
   ] },
   // So aparece com uma transportadora que faz antecipacao escolhida (flag no cadastro).
   { id: 'antecipacao', titulo: 'Antecipação', soAntecipa: true, cards: [
-    { id: 'aptas_antecipacao', rotulo: 'Aptas à antecipação', cor: '#0f766e', teste: comFatura((l) => aptaAntecipacao(l.fatura)), dica: 'Não pagas, de R$ 100 ou mais, com 7 dias ou mais da emissão e 6 dias ou mais para o vencimento. Quem já foi antecipada (Cessão no SAP) fica só em "Já antecipadas".' },
+    { id: 'aptas_antecipacao', rotulo: 'Aptas à antecipação', cor: '#0f766e', teste: comFatura((l) => aptaAntecipacao(l.fatura) && tipoDocumentoFatura(l.ctes) === 'CTE'), dica: 'Faturas só de CT-e, não pagas, de R$ 100 ou mais, com 7 dias ou mais da emissão e 6 dias ou mais para o vencimento. Quem já foi antecipada (Cessão no SAP) fica só em "Já antecipadas".' },
+    { id: 'aptas_antecipacao_nfse', rotulo: 'Aptas — nota fiscal de serviço', cor: '#0e7490', teste: comFatura((l) => aptaAntecipacao(l.fatura) && tipoDocumentoFatura(l.ctes) === 'NFSE'), dica: 'Faturas só de nota fiscal de serviço (NFS-e) que cumpririam as mesmas regras de valor e prazo. Ainda não está definido se NFS-e pode ser antecipada: card só para acompanhamento, separado das aptas de CT-e.' },
     { id: 'enviadas_antecipacao', rotulo: 'Enviadas p/ antecipação', cor: '#b78700', teste: comFatura((l) => ativa(l) && enviadaAntecipacao(l.fatura)), dica: 'Marcadas por você como enviadas para antecipação, aguardando a Cessão no SAP. Quando a Cessão chegar, vão para "Já antecipadas".' },
     { id: 'ja_antecipadas', rotulo: 'Já antecipadas (cessão)', cor: '#6d28d9', teste: comFatura((l) => ativa(l) && faturaAntecipada(l.fatura)), dica: 'Atribuição "Cessão" no SAP: fatura já antecipada, ainda não paga. Sai daqui sozinha quando o pagamento entrar.' },
   ] },
