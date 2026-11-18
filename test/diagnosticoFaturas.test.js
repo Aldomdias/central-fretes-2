@@ -407,3 +407,14 @@ test('antecipação: "Aptas" só para fatura só de CT-e; NFS-e tem card própri
   const pequena = { fatura: { ...fatura, valor_fatura: 50 }, ctes: { total: 1, nfse: 0 } };
   assert.deepEqual([aptasCte(pequena), aptasNfse(pequena)], [false, false]);
 });
+
+test('antecipação: apta ainda sem resumo de itens fica em "verificando tipo" (nunca some dos cards)', () => {
+  const grupo = GRUPOS_DIAGNOSTICO.find((g) => g.cards.some((c) => c.id === 'aptas_antecipacao'));
+  const ids = ['aptas_antecipacao', 'aptas_antecipacao_nfse', 'aptas_antecipacao_verificando'];
+  const onde = (l) => ids.filter((id) => grupo.cards.find((c) => c.id === id).teste(l));
+  const fatura = { id: 'v', numero_fatura: '1', valor_fatura: 500, status: 'ENVIADA_AO_FINANCEIRO', data_emissao: '2020-01-01', data_vencimento: '2099-01-01' };
+  assert.deepEqual(onde({ fatura }), ['aptas_antecipacao_verificando']);
+  assert.deepEqual(onde({ fatura, ctes: { total: 2, nfse: 0 } }), ['aptas_antecipacao']);
+  assert.deepEqual(onde({ fatura, ctes: { total: 0, nfse: 1 } }), ['aptas_antecipacao_nfse']);
+  assert.deepEqual(onde({ fatura: { ...fatura, valor_fatura: 10 } }), []);
+});

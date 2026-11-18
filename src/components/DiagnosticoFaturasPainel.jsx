@@ -15,6 +15,7 @@ import {
   etapaFenix,
   FAIXAS_A_VENCER,
   faixaDaLinha,
+  aptaAntecipacao,
   enviadaErp,
   faturaLancada,
   filtrarPorCards,
@@ -42,6 +43,7 @@ import modeloTermoUrl from '../assets/modelos/termo-correcao-lancamento.docx?url
 const CHAVE_SESSAO = 'cf_diagnostico_faturas_v1';
 const TAM_PAGINA = 100;
 const LOTE_VERIFICACAO = 120;
+const LOTE_PRIORITARIO = 20;
 const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimentoDe: '', vencimentoAte: '', pagamentoDe: '', pagamentoAte: '', grupoTransp: '', grupoAuditor: '' };
 const SEM_TRANSP = '__sem_fatura__';
 // Auditor "todos": visao geral do gestor (faturas em aberto de todos os auditores).
@@ -324,7 +326,8 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const faturasBase = useMemo(() => linhasBase.filter((l) => l.fatura).map((l) => l.fatura), [linhasBase]);
   useEffect(() => {
     // Primeiro as enviadas ao ERP sem partida na fatura: sao as que definem "Enviadas sem partida" e precisam de tratamento.
-    const prioridade = (f) => (enviadaErp(f) && !faturaLancada(f) ? 0 : 1);
+    // Tambem as candidatas a "apta a antecipacao": so da para saber se sao so CT-e (ou NFS-e) depois de conhecer os itens.
+    const prioridade = (f) => ((enviadaErp(f) && !faturaLancada(f)) || aptaAntecipacao(f) ? 0 : 1);
     const pendentes = faturasBase.filter((f) => cacheCtes.get(String(f.id))?.carimbo !== carimbo(f))
       .sort((a, b) => prioridade(a) - prioridade(b));
     if (!pendentes.length) { setProgresso(null); return undefined; }
@@ -332,9 +335,16 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     const timer = setTimeout(async () => {
       try {
         setErroCtes('');
-        for (let i = 0; i < pendentes.length && ativo; i += LOTE_VERIFICACAO) {
-          setProgresso({ feitas: i, total: pendentes.length });
-          const lote = pendentes.slice(i, i + LOTE_VERIFICACAO);
+        // As prioritarias vao em lotes pequenos (resultado aparece logo); o resto, em lotes grandes.
+        const nPrioritarias = pendentes.filter((f) => prioridade(f) === 0).length;
+        const lotes = [];
+        for (let i = 0; i < nPrioritarias; i += LOTE_PRIORITARIO) lotes.push(pendentes.slice(i, Math.min(i + LOTE_PRIORITARIO, nPrioritarias)));
+        for (let i = nPrioritarias; i < pendentes.length; i += LOTE_VERIFICACAO) lotes.push(pendentes.slice(i, i + LOTE_VERIFICACAO));
+        let feitas = 0;
+        for (let n = 0; n < lotes.length && ativo; n += 1) {
+          setProgresso({ feitas, total: pendentes.length });
+          const lote = lotes[n];
+          feitas += lote.length;
           // eslint-disable-next-line no-await-in-loop
           const mapa = await carregarResumoCtesFaturas(lote.map((f) => f.id));
           lote.forEach((f) => cacheCtes.set(String(f.id), { carimbo: carimbo(f), resumo: mapa.get(String(f.id)) }));
