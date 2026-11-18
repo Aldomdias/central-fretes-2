@@ -14,6 +14,7 @@
  * opcional TRANSGP_API_URL e CRON_SECRET (se existir, o cron manda o Bearer; chamada manual tambem precisa).
  */
 import { createClient } from '@supabase/supabase-js';
+import { completarFretePelaTabela, FONTE_TABELA_AUTO } from './_freteTabelaFallback.mjs';
 
 export const config = { maxDuration: 120 };
 
@@ -82,8 +83,8 @@ async function gravarCargasNoFluxo(db, itens) {
   const existentes = new Map();
   for (let i = 0; i < dists.length; i += 200) {
     const lote = dists.slice(i, i + 200);
-    let { data, error } = await db.from('lotacao_cargas').select(`id,origem_registro,${CAMPOS_FLUXO.join(',')}`).in('dist', lote);
-    if (error && /origem_registro/i.test(error.message)) ({ data, error } = await db.from('lotacao_cargas').select(`id,${CAMPOS_FLUXO.join(',')}`).in('dist', lote));
+    let { data, error } = await db.from('lotacao_cargas').select(`id,origem_registro,valor_fonte,${CAMPOS_FLUXO.join(',')}`).in('dist', lote);
+    if (error && /origem_registro|valor_fonte/i.test(error.message)) ({ data, error } = await db.from('lotacao_cargas').select(`id,${CAMPOS_FLUXO.join(',')}`).in('dist', lote));
     if (error) throw new Error(`Fluxo (ler): ${error.message}`);
     (data || []).forEach((row) => { const k = normDist(row.dist); if (!existentes.has(k)) existentes.set(k, row); });
   }
@@ -101,7 +102,13 @@ async function gravarCargasNoFluxo(db, itens) {
     const vazio = (v) => v === null || v === undefined || String(v).trim() === '' || (typeof v === 'number' && v === 0);
     const igual = (a, b) => (typeof b === 'number' ? Math.abs((Number(a) || 0) - b) < 0.005 : String(a ?? '').slice(0, 19) === String(b ?? '').slice(0, 19));
     const update = {};
+    // Frete que a Central calculou pela tabela (TABELA_AUTO): quando a TransGP passa a mandar o contratado, ele vale.
+    if (atual.valor_fonte === FONTE_TABELA_AUTO && campos.frete_transp > 0) {
+      if (!igual(atual.frete_transp, campos.frete_transp)) update.frete_transp = campos.frete_transp;
+      update.valor_fonte = 'TRANSGP';
+    }
     Object.entries(campos).forEach(([campo, valor]) => {
+      if (campo === 'frete_transp' && update.valor_fonte === 'TRANSGP') return;
       if (campo === 'dist' || campo === 'cte') return;
       if (CAMPOS_SIM_NAO.includes(campo)) { if (valor === true && atual[campo] !== true) update[campo] = true; return; }
       if (vazio(valor) || igual(atual[campo], valor)) return;
@@ -229,6 +236,13 @@ export default async function handler(req, res) {
       if (!dados.length || pagina >= (Number(corpo.paginas) || 1)) break;
     }
     const fluxo = await gravarCargasNoFluxo(db, todasDists);
+    // DIST que a TransGP devolveu sem frete (ex.: SEM_TRANSPORTADORA): usa a tabela da transportadora que o fluxo ja tem.
+    const semFrete = [...new Set(todasDists.filter((d) => d.dist && !(num(d.frete?.contratado) > 0)).map((d) => String(d.dist).trim()))];
+    try {
+      fluxo.porTabela = await completarFretePelaTabela(db, semFrete);
+    } catch (e) {
+      fluxo.porTabela = { preenchidas: 0, semRota: 0, avisos: [`Frete por tabela: ${e.message}`.slice(0, 200)] };
+    }
     const avisoFluxo = fluxo.falhas.length ? `Fluxo: ${fluxo.falhas.length} falha(s): ${fluxo.falhas.join(' | ')}`.slice(0, 500) : null;
     await db.from('transgp_auditoria_sync_log').insert({ periodo_de: dataIso(de), periodo_ate: dataIso(ate), dists, ctes: linhas, ok: !avisoFluxo, erro: avisoFluxo });
     return res.status(200).json({ ok: true, de: dataIso(de), ate: dataIso(ate), dists, ctes: linhas, fluxo });

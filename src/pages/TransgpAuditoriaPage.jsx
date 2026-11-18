@@ -168,7 +168,7 @@ export default function TransgpAuditoriaPage() {
       const resp = await fetch('/api/transgp-auditoria?manual=1');
       const corpo = await resp.json().catch(() => ({}));
       if (!resp.ok || !corpo.ok) throw new Error(corpo.erro || `Falha ${resp.status}`);
-      setAviso(`Sincronizado: ${corpo.dists} DISTs, ${corpo.ctes} CT-es. Fluxo: ${corpo.fluxo?.atualizadas || 0} atualizadas, ${corpo.fluxo?.inseridas || 0} novas.`);
+      setAviso(`Sincronizado: ${corpo.dists} DISTs, ${corpo.ctes} CT-es. Fluxo: ${corpo.fluxo?.atualizadas || 0} atualizadas, ${corpo.fluxo?.inseridas || 0} novas. Frete pela tabela: ${corpo.fluxo?.porTabela?.preenchidas || 0} preenchidas, ${corpo.fluxo?.porTabela?.semRota || 0} sem rota na tabela.${corpo.fluxo?.porTabela?.avisos?.length ? ` Aviso: ${corpo.fluxo.porTabela.avisos[0]}` : ''}`);
       await carregar();
     } catch (e) {
       setErro(`Sincronização: ${e.message || e}`);
