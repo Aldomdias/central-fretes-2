@@ -831,10 +831,23 @@ export async function vincularChavesDetalhesPorNumero(fatura, detalhes = []) {
     if (normalizarChaveCte(d.chave_cte)) return d;
     const k = String(Number(String(d.numero_cte || '').replace(/\D/g, '')));
     const candidatos = porNumero.get(k) || [];
-    const unicos = [...new Set(candidatos.map((c) => normalizarChaveCte(c.chave_cte)))];
+    let unicos = [...new Set(candidatos.map((c) => normalizarChaveCte(c.chave_cte)))];
+    // Numero repete entre filiais/series da mesma transportadora (ex.: TAM Rio serie 6 x
+    // Itajai serie 7). A chave traz o CNPJ do emitente (pos. 7-20) e a serie (pos. 23-25):
+    // desempata pelo que a linha da fatura informa.
+    if (unicos.length > 1) {
+      const emissor = String(d.cnpj_emissor || '').replace(/\D/g, '');
+      const serie = String(d.serie_cte ?? '').replace(/\D/g, '');
+      const filtrados = unicos.filter((chave) => (
+        (emissor.length !== 14 || chave.slice(6, 20) === emissor)
+        && (!serie || Number(chave.slice(22, 25)) === Number(serie))
+      ));
+      if (filtrados.length) unicos = filtrados;
+    }
     if (unicos.length !== 1) return d; // sem candidato ou ambiguo: nao chuta
     vinculados += 1;
-    const novo = { ...d, chave_cte: unicos[0], ...(d.chave_nfe ? {} : { chave_nfe: candidatos[0].chave_nfe || d.chave_nfe }) };
+    const escolhido = candidatos.find((c) => normalizarChaveCte(c.chave_cte) === unicos[0]) || candidatos[0];
+    const novo = { ...d, chave_cte: unicos[0], ...(d.chave_nfe ? {} : { chave_nfe: escolhido.chave_nfe || d.chave_nfe }) };
     alterados.push(novo);
     return novo;
   });
