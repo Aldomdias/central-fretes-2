@@ -1603,6 +1603,11 @@ export async function registrarEstornosSapFaturas(rows = [], faturas = [], usuar
   if (!rows.length || !faturas.length) return new Map();
   const valor = (row, nomes) => nomes.map((n) => row[n]).find((v) => v !== undefined && v !== null && String(v).trim() !== '');
   const porFatura = new Map();
+  const faturasPorRaiz = new Map();
+  faturas.forEach((f) => {
+    const raiz = obterRaizCnpj(f.cnpj_transportadora);
+    if (raizCnpjValida(raiz)) faturasPorRaiz.set(raiz, [...(faturasPorRaiz.get(raiz) || []), f]);
+  });
   for (const row of rows) {
     const referencia = valor(row, ['Referência', 'Referencia']);
     if (!referencia) continue;
@@ -1610,8 +1615,8 @@ export async function registrarEstornosSapFaturas(rows = [], faturas = [], usuar
     // e candidata unica. Sem CNPJ valido na linha, nada e atribuido.
     const raizLinha = obterRaizCnpj(valor(row, ['Nº ID fiscal 1', 'No ID fiscal 1', 'CNPJ']));
     if (!raizCnpjValida(raizLinha)) continue;
-    const candidatas = faturas.filter((f) => obterRaizCnpj(f.cnpj_transportadora) === raizLinha
-      && compararReferenciasFatura(f.numero_fatura, referencia).corresponde);
+    // So as faturas dessa raiz (indice montado uma vez): evita varrer todas as faturas a cada linha do relatorio.
+    const candidatas = (faturasPorRaiz.get(raizLinha) || []).filter((f) => compararReferenciasFatura(f.numero_fatura, referencia).corresponde);
     if (candidatas.length !== 1) continue;
     const documento = String(valor(row, ['Lançamento contábil', 'Lancamento contabil', 'Documento']) || '').trim();
     const original = String(valor(row, ['Documento original', 'Documento estornado', 'Doc.original', 'Anula documento']) || '').trim();

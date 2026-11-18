@@ -521,6 +521,23 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdici
   // Orgaos de imposto (retencao) nao sao pagamento de frete.
   const ehOrgaoImposto = (nome) => /\b(RECEITA|FAZENDA|SECRETARIA|PREFEITURA|INSS|TRIBUT)/.test(nomeBase(nome));
 
+  // Indice raiz de CNPJ -> faturas (raiz propria + raizes do grupo da transportadora): a busca flexivel por referencia
+  // so compara a linha do SAP com as faturas daquela transportadora, em vez de varrer todas a cada linha
+  // (relatorio com dezenas de milhares de linhas x milhares de faturas travava a aba).
+  const faturasPorRaiz = new Map();
+  faturas.forEach((fatura) => {
+    const raizes = new Set([
+      obterRaizCnpj(fatura.cnpj_transportadora),
+      ...(raizesAdicionaisPorTransportadora.get(normalizar(fatura.transportadora)) || []),
+      ...(raizesAdicionaisPorTransportadora.get(obterRaizCnpj(fatura.cnpj_transportadora)) || []),
+    ]);
+    raizes.forEach((raiz) => {
+      if (!raizCnpjValida(raiz)) return;
+      if (!faturasPorRaiz.has(raiz)) faturasPorRaiz.set(raiz, []);
+      faturasPorRaiz.get(raiz).push(fatura);
+    });
+  });
+
   const mapeadas = linhasSap.map(mapearPagamentoSap).filter((item) => item.numero_fatura);
   // A "Atribuição" pode vir so na linha espelho (descartada abaixo): passa para as linhas do mesmo lancamento contabil.
   const atribuicaoPorLancamento = new Map();
@@ -540,7 +557,9 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdici
     .flatMap((pagamento) => {
       const numero = normalizar(pagamento.numero_fatura);
       const exatas = porNumero.get(numero) || [];
-      const candidatas = exatas.length ? exatas : faturas.filter((fatura) => compararReferenciasFatura(fatura.numero_fatura, pagamento.numero_fatura).corresponde);
+      const raizLinha = obterRaizCnpj(pagamento.cnpj);
+      const candidatas = exatas.length ? exatas : (raizCnpjValida(raizLinha) ? faturasPorRaiz.get(raizLinha) || [] : [])
+        .filter((fatura) => compararReferenciasFatura(fatura.numero_fatura, pagamento.numero_fatura).corresponde);
       if (!candidatas.length) return [{ ...pagamento, resultado: 'NAO_LOCALIZADO' }];
 
       const raizPagamento = obterRaizCnpj(pagamento.cnpj);

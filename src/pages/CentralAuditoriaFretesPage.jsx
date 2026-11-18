@@ -9879,6 +9879,14 @@ function Financeiro({ state, onState, somenteImportacao = false }) {
   const [erroFinanceiro, setErroFinanceiro] = useState('');
   const [processandoPagamentos, setProcessandoPagamentos] = useState(false);
   const [progressoPagamentos, setProgressoPagamentos] = useState(null);
+  const [segundosPagamentos, setSegundosPagamentos] = useState(0);
+  // Relogio do processamento: mostra que o sistema segue trabalhando mesmo numa etapa longa.
+  useEffect(() => {
+    if (!processandoPagamentos) { setSegundosPagamentos(0); return undefined; }
+    const inicio = Date.now();
+    const timer = setInterval(() => setSegundosPagamentos(Math.floor((Date.now() - inicio) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [processandoPagamentos]);
   const [resumoPagamentosSap, setResumoPagamentosSap] = useState(null);
   const [mensagemPartidas, setMensagemPartidas] = useState('');
   const fatura = state.faturas.find((item) => item.id === faturaId);
@@ -10036,7 +10044,18 @@ function Financeiro({ state, onState, somenteImportacao = false }) {
   // Processa um unico arquivo (SAP ou layout simples) contra o estado atual e
   // devolve o proximo estado + resumo parcial, sem mexer em state React -
   // permite encadear varios arquivos de uma pasta em sequencia.
-  const processarArquivoPagamentos = async (file, stateAtual) => {
+  const processarArquivoPagamentos = async (file, stateAtual, posicao = { indice: 0, total: 1 }) => {
+    // Andamento: texto da etapa + percentual geral (arquivos x etapas). Cede a vez ao navegador antes de cada
+    // passo pesado para a tela redesenhar; sem isso a leitura do Excel e a conciliacao congelam a aba.
+    const avancar = (texto, pct, extra = {}) => {
+      setProgressoPagamentos({
+        etapa: texto, arquivo: file.name, indice: posicao.indice, totalArquivos: posicao.total,
+        percentual: Math.min(99, Math.round(((posicao.indice + Math.min(pct, 100) / 100) / posicao.total) * 100)), ...extra,
+      });
+      return new Promise((resolve) => { setTimeout(resolve, 0); });
+    };
+    const sub = (texto, ini, fim) => (p) => { avancar(texto, p?.total ? ini + (p.carregados / p.total) * (fim - ini) : ini, { carregados: p?.carregados, total: p?.total }); };
+    await avancar('Lendo o arquivo (pode levar alguns segundos em relatórios grandes)', 2);
     const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
     const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: '' });
     const headers = rows.length ? Object.keys(rows[0]) : [];
@@ -10045,13 +10064,16 @@ function Financeiro({ state, onState, somenteImportacao = false }) {
       // Relatorio SAP: cobre a empresa inteira (dezenas de milhares de
       // linhas), so persistimos e mudamos status das faturas que casaram.
       // Chaves: nome da transportadora (cadastro) e raiz do CNPJ (8 digitos) -> raizes do mesmo grupo.
+      await avancar(`Carregando o cadastro de transportadoras (${rows.length.toLocaleString('pt-BR')} linhas lidas)`, 8);
       const raizesAdicionais = await carregarRaizesAdicionaisPorTransportadora();
       try {
         (await carregarGruposRaizTransportadora()).forEach((raizes, raiz) => raizesAdicionais.set(raiz, raizes));
       } catch (error) {
         console.warn('[Pagamentos SAP] grupos de raiz nao carregados', error?.message || error);
       }
+      await avancar(`Conciliando ${rows.length.toLocaleString('pt-BR')} linhas com as faturas`, 15);
       const conciliados = conciliarPagamentosSap(stateAtual.faturas, rows, raizesAdicionais);
+      await avancar('Avaliando estornos do SAP', 28);
       const estornosAvaliados = await registrarEstornosSapFaturas(rows, stateAtual.faturas, sessao?.nome || sessao?.email || 'Importação SAP/HANA');
       const matched = conciliados.filter((item) => item.fatura_id);
       const compensados = matched.filter((item) => item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE');
@@ -10069,6 +10091,7 @@ function Financeiro({ state, onState, somenteImportacao = false }) {
         item.resultado === 'CNPJ_DIVERGENTE' || item.resultado === 'AMBIGUO'
         || (item.resultado === 'NAO_LOCALIZADO' && valoresEmAberto.has(Math.round(Number(item.valor_pago || 0) * 100)))
       ));
+      await avancar(`Guardando ${paraVincular.length.toLocaleString('pt-BR')} linhas para vínculo manual`, 36);
       const guardadas = await salvarSapSemVinculo(paraVincular);
       // Linhas que antes ficaram sem vinculo e agora casaram (ex.: CNPJ adicional cadastrado depois) saem da fila manual.
       await marcarSapSemVinculoResolvidas(matched);
@@ -10076,12 +10099,12 @@ function Financeiro({ state, onState, somenteImportacao = false }) {
       const lancamentosCte = extrairLancamentosCteSap(rows, file.name);
       let resultadoCtes = { enviadas: 0 };
       try {
-        resultadoCtes = await salvarLancamentosCteSap(lancamentosCte, (progresso) => setProgressoPagamentos({ etapa: `salvando_lancamentos_cte (${file.name})`, ...progresso }));
+        resultadoCtes = await salvarLancamentosCteSap(lancamentosCte, sub('Gravando lançamentos de CT-e', 42, 58));
       } catch (error) {
         resultadoCtes = { enviadas: 0, erro: error.message || String(error) };
       }
 
-      const salvos = await salvarPagamentosFinanceirosEmLote(matched, (progresso) => setProgressoPagamentos({ etapa: `salvando_pagamentos (${file.name})`, ...progresso }));
+      const salvos = await salvarPagamentosFinanceirosEmLote(matched, sub('Salvando pagamentos conciliados', 58, 72));
       // Baixa/lancamento a partir do historico consolidado das faturas tocadas
       // (arquivo + banco), pra valer a ultima partida por data e nao so o arquivo.
       const compensadosConsolidados = salvos.filter((item) => item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE');
@@ -10090,7 +10113,7 @@ function Financeiro({ state, onState, somenteImportacao = false }) {
         { ...stateAtual, pagamentos: [...salvos.slice(0, 500), ...stateAtual.pagamentos] },
         compensadosConsolidados,
         sessao?.nome || sessao?.email || 'Usuario local',
-        (progresso) => setProgressoPagamentos({ etapa: `atualizando_faturas (${file.name})`, ...progresso }),
+        sub('Atualizando o status das faturas pagas', 72, 86),
       );
       // Partida lancada sem compensacao ainda (statusComp=2) tambem precisa
       // aparecer marcada na fatura - senao fica invisivel fora da tabela de
@@ -10098,8 +10121,9 @@ function Financeiro({ state, onState, somenteImportacao = false }) {
       next = await marcarFaturasLancadasFinanceiroEmLote(
         next,
         lancadosConsolidados,
-        (progresso) => setProgressoPagamentos({ etapa: `marcando_lancadas_financeiro (${file.name})`, ...progresso }),
+        sub('Marcando as faturas lançadas no financeiro', 86, 94),
       );
+      await avancar('Gravando atribuições do SAP (cessão/boleto)', 96);
       // "Atribuição" do SAP na fatura ("Cessão" = antecipacao: sai de boletos e vai para o card de antecipacao).
       const atribuicoes = await gravarAtribuicaoSapFaturas(matched, next.faturas);
       if (atribuicoes.size) {
@@ -10212,9 +10236,9 @@ function Financeiro({ state, onState, somenteImportacao = false }) {
       const falhas = [];
       for (let indice = 0; indice < arquivos.length; indice += 1) {
         const file = arquivos[indice];
-        setProgressoPagamentos({ etapa: `arquivo ${indice + 1}/${arquivos.length}: ${file.name}` });
+        setProgressoPagamentos({ etapa: 'Iniciando', arquivo: file.name, indice, totalArquivos: arquivos.length, percentual: Math.round((indice / arquivos.length) * 100) });
         try {
-          const { next, resumo } = await processarArquivoPagamentos(file, estadoAtual);
+          const { next, resumo } = await processarArquivoPagamentos(file, estadoAtual, { indice, total: arquivos.length });
           estadoAtual = next;
           resumoTotal = somarResumos(resumoTotal, resumo);
           onState(estadoAtual);
@@ -10457,9 +10481,28 @@ function Financeiro({ state, onState, somenteImportacao = false }) {
             <input ref={pagamentoRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={importarPagamentos} />
             <input ref={pagamentoPastaRef} type="file" webkitdirectory="" directory="" multiple hidden onChange={importarPagamentos} />
             {processandoPagamentos && (
-              <div className="hint-box compact">
-                Processando{progressoPagamentos?.etapa ? `: ${progressoPagamentos.etapa}` : '...'}
-                {progressoPagamentos?.total ? ` (${progressoPagamentos.carregados}/${progressoPagamentos.total})` : ''}
+              <div className="hint-box compact" role="status" aria-live="polite">
+                {progressoPagamentos?.totalArquivos > 0 && (
+                  <div style={{ marginBottom: 6 }}>
+                    <strong>Arquivo {Math.min(progressoPagamentos.indice + 1, progressoPagamentos.totalArquivos)} de {progressoPagamentos.totalArquivos}</strong>
+                    {progressoPagamentos.arquivo ? ` · ${progressoPagamentos.arquivo}` : ''}
+                  </div>
+                )}
+                <div>
+                  {progressoPagamentos?.etapa || 'Processando...'}
+                  {progressoPagamentos?.total ? ` — ${Number(progressoPagamentos.carregados || 0).toLocaleString('pt-BR')} de ${progressoPagamentos.total.toLocaleString('pt-BR')}` : ''}
+                </div>
+                {Number.isFinite(progressoPagamentos?.percentual) && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                    <div style={{ flex: 1, height: 10, background: '#e2e8f0', borderRadius: 6, overflow: 'hidden' }} aria-hidden="true">
+                      <div style={{ width: `${progressoPagamentos.percentual}%`, height: '100%', background: '#315ee7', transition: 'width .3s' }} />
+                    </div>
+                    <strong style={{ minWidth: 40, textAlign: 'right' }}>{progressoPagamentos.percentual}%</strong>
+                  </div>
+                )}
+                <div style={{ marginTop: 4, fontSize: 12, color: '#64748b' }}>
+                  Tempo decorrido: {Math.floor(segundosPagamentos / 60)}min {String(segundosPagamentos % 60).padStart(2, '0')}s · não feche esta janela até terminar.
+                </div>
               </div>
             )}
             {mensagemPartidas && !processandoPagamentos && <div className="hint-box compact">{mensagemPartidas}</div>}
