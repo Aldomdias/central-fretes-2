@@ -85,13 +85,14 @@ function montarEmail({ cfg, periodo, faturasPeriodo, ctes, valor, janelaDias, ho
     ? `<p>Seu faturamento está cadastrado conosco como <b>${rotulo}</b> e, no período de <b>${dataBr(periodo.inicio)}</b> a <b>${dataBr(periodo.fim)}</b>, <b>não identificamos nenhuma fatura emitida</b> por vocês.</p>`
     : `<p>Seu faturamento está cadastrado conosco como <b>${rotulo}</b>. No período de <b>${dataBr(periodo.inicio)}</b> a <b>${dataBr(periodo.fim)}</b> recebemos a(s) fatura(s): <b>${escapar(faturasPeriodo.map((f) => f.numero_fatura).filter(Boolean).join(', ') || '-')}</b>.<br>Por favor, <b>confirmem se não falta nenhuma</b>, pois identificamos CT-e(s) ainda sem fatura vinculada.</p>`;
   const bloco = ctes.length
-    ? `<p>Levantamos <b>${ctes.length} CT-e(s)</b> emitidos nos últimos ${janelaDias} dias (até ${dataBr(periodo.limiteCte)}) <b>sem fatura vinculada</b>, totalizando <b>${dinheiro(valor)}</b>${ctes.length > 40 ? ` (primeiros 40 abaixo; a lista completa, com a chave de cada CT-e, segue em anexo (Excel))` : ' (lista abaixo e em anexo)'}:</p>
+    ? `<p>Levantamos <b>${ctes.length} CT-e(s)</b> emitidos nos últimos ${janelaDias} dias (até ${dataBr(periodo.limiteCte)}) <b>sem fatura vinculada</b>, totalizando <b>${dinheiro(valor)}</b>${ctes.length > 40 ? ` (primeiros 40 abaixo)` : ' (lista abaixo)'}:</p>
 <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;font-size:13px"><thead><tr style="background:#f1f5f9"><th>CT-e</th><th>Emissão</th><th>Valor</th></tr></thead><tbody>${linhas}</tbody></table>`
     : '';
   const html = `<div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a">
 <p>Prezados,</p>
 ${abertura}
 ${bloco}
+<p>Segue em anexo a planilha com <b>duas abas</b>: <i>Faturas do período</i> (as faturas que recebemos) e <i>CT-es sem fatura</i> (com a chave completa de cada CT-e), para a conferência.</p>
 <p><b>É obrigatório o envio das faturas correspondentes</b> para que possamos seguir com os pagamentos. Caso contrário, teremos problemas de pagamento.</p>
 <p>Em caso de dúvida ou se alguma fatura já foi enviada, responda este e-mail informando o número da fatura.</p>
 <p style="color:#64748b;font-size:12px">Mensagem automática da Auditoria de Fretes (${dataBr(hoje)}).</p></div>`;
@@ -107,6 +108,13 @@ ${bloco}
   ws['!cols'] = [{ wch: 16 }, { wch: 48 }, { wch: 16 }, { wch: 20 }, { wch: 20 }];
   ws['!autofilter'] = { ref: `A1:E${dados.length + 1}` };
   const wb = XLSX.utils.book_new();
+  // Aba 1: faturas recebidas no periodo (para o transportador conferir se falta alguma). Aba 2: CT-es sem fatura.
+  const cabFat = ['Número da fatura', 'Série', 'Data de emissão', 'Recebida em', 'Vencimento', 'Valor da fatura (R$)'];
+  const dadosFat = faturasPeriodo.map((f) => [String(f.numero_fatura || ''), String(f.serie_fatura || ''), dataBr(f.data_emissao), dataBr(f.created_at), dataBr(f.data_vencimento), Number(f.valor_fatura || 0)]);
+  const wsFat = XLSX.utils.aoa_to_sheet([cabFat, ...(dadosFat.length ? dadosFat : [['Nenhuma fatura recebida no período', '', '', '', '', '']])]);
+  dadosFat.forEach((_, i) => { const c = wsFat[`A${i + 2}`]; if (c) { c.t = 's'; c.z = '@'; } const v = wsFat[`F${i + 2}`]; if (v) v.z = '#,##0.00'; });
+  wsFat['!cols'] = [{ wch: 22 }, { wch: 8 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 22 }];
+  XLSX.utils.book_append_sheet(wb, wsFat, 'Faturas do período');
   XLSX.utils.book_append_sheet(wb, ws, 'CT-es sem fatura');
   const xlsx = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
   return { assunto, html, xlsx };
@@ -179,7 +187,7 @@ export default async function handler(req, res) {
     const enviadoRecente = new Set((recentes || []).map((r) => String(r.transportadora_id)));
 
     const inicioFaturas = somarDias(hoje, -60);
-    const faturasRecentes = await paginar((de, ate) => db.from('faturas').select('id,transportadora,numero_fatura,data_emissao,created_at')
+    const faturasRecentes = await paginar((de, ate) => db.from('faturas').select('id,transportadora,numero_fatura,serie_fatura,data_emissao,data_vencimento,valor_fatura,status,created_at')
       .gte('created_at', `${inicioFaturas}T00:00:00Z`).order('created_at', { ascending: false }).order('id').range(de, ate));
 
     const resultados = [];
@@ -218,7 +226,7 @@ export default async function handler(req, res) {
         if (!enviarDeVerdade) { registro.observacao = simular ? 'Simulacao: e-mail nao enviado.' : 'Envio de e-mails desligado na configuracao (modo sombra).'; resultados.push(registro); continue; }
         if (enviadoRecente.has(String(t.id))) { registro.observacao = `Ja avisado nos ultimos ${DIAS_SEM_REENVIO} dias.`; resultados.push(registro); continue; }
         const { assunto, html, xlsx } = montarEmail({ cfg: t, periodo, faturasPeriodo, ctes, valor, janelaDias, hoje });
-        await enviarEmail({ para, copia, assunto, html, anexoCsv: ctes.length ? { nome: `ctes-sem-fatura-${hoje}.xlsx`, conteudo: xlsx } : null });
+        await enviarEmail({ para, copia, assunto, html, anexoCsv: { nome: `conferencia-faturas-${hoje}.xlsx`, conteudo: xlsx } });
         registro.email_enviado = true;
         resultados.push(registro);
       } catch (e) {
