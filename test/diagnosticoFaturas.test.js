@@ -10,6 +10,7 @@ import {
   identificacaoSapDoCte,
   montarLinhasDiagnostico,
   montarFilaProtocolo,
+  aptaAntecipacao,
   parseListaFaturas,
   previsaoPagamento,
   situacaoPrevisao,
@@ -372,4 +373,17 @@ test('cards do ERP: enviada sem partida ainda sem resumo de CT-es cai em "Verifi
   assert.deepEqual(onde(todosCtes), ['enviadas_partida_ctes']);
   assert.deepEqual(onde(comPartida), ['enviadas_com_partida']);
   [semResumo, semCtes, todosCtes, comPartida].forEach((l) => assert.equal(card('enviadas')(l), true));
+});
+
+test('antecipação: valor mínimo R$ 100, 7+ dias da emissão e 6+ dias até o vencimento', () => {
+  const hoje = new Date('2026-11-18T12:00:00');
+  const f = (extra) => ({ id: 'a', numero_fatura: '1', valor_fatura: 100, status: 'ENVIADA_AO_FINANCEIRO', data_emissao: '2026-11-11', data_vencimento: '2026-11-24', ...extra });
+  assert.equal(aptaAntecipacao(f({}), hoje), true, 'exatamente 100, 7 dias da emissão e 6 até o vencimento');
+  assert.equal(aptaAntecipacao(f({ valor_fatura: 99.99 }), hoje), false, 'abaixo de R$ 100');
+  assert.equal(aptaAntecipacao(f({ data_emissao: '2026-11-12' }), hoje), false, '6 dias da emissão');
+  assert.equal(aptaAntecipacao(f({ data_vencimento: '2026-11-23' }), hoje), false, '5 dias até o vencimento');
+  assert.equal(aptaAntecipacao(f({ data_vencimento: '2026-11-28' }), hoje), true, '10 dias até o vencimento também vale');
+  assert.equal(aptaAntecipacao(f({ atribuicao_sap: 'Cessão' }), hoje), false, 'já antecipada');
+  assert.equal(aptaAntecipacao(f({ antecipacao_enviada: true }), hoje), false, 'já enviada');
+  assert.equal(aptaAntecipacao(f({ status: 'PAGA' }), hoje), false, 'paga');
 });

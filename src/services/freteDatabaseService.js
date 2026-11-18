@@ -1749,7 +1749,7 @@ export async function salvarAceitaCanalInvertidoDb(transportadoraId, aceita) {
 }
 
 // Flag "faz antecipação" da transportadora: no Diagnóstico de faturas aparece o card das
-// faturas aptas à antecipação (mais de 7 dias da emissão e menos de 10 do vencimento).
+// faturas aptas à antecipação (R$ 100 ou mais, 7 dias ou mais da emissão e 6 dias ou mais até o vencimento).
 export async function salvarFazAntecipacaoDb(transportadoraId, faz) {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
   if (!UUID_REGEX.test(String(transportadoraId || ''))) throw new Error('Grave a transportadora no Supabase antes de configurar a antecipação.');
