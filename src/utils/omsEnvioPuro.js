@@ -62,3 +62,16 @@ export function proximaAcao(envio, agora = Date.now()) {
   }
   return null; // treated, blocked: fim.
 }
+
+export const OPERADOR_ROBO_OMS = Object.freeze({ id: 'robo-auditor', name: 'Robo Auditor' });
+
+export const omsInvoiceIdValido = (id) => /^[0-9a-f]{24}$/i.test(String(id || '').trim());
+
+/** Corpo do lote de 1 fatura (so liberar). O valor aprovado e o valor da fatura, mesmo com desconto. */
+export function montarPayloadLiberacao({ requestId, omsInvoiceId, valorFatura, performedBy }) {
+  return {
+    requestId,
+    ...(performedBy ? { performedBy } : {}),
+    invoices: [{ invoiceId: String(omsInvoiceId).toLowerCase(), approvedChargeValue: Number(Number(valorFatura || 0).toFixed(2)), release: true }],
+  };
+}

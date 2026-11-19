@@ -13,6 +13,7 @@ import { processarCtesPorChave } from '../services/auditoriaCteProcessamentoServ
 import { entrarCacheCalculo, sairCacheCalculo } from '../services/freteDatabaseService';
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { normalizarChaveCte } from './auditoriaFretesDomain';
+import { OPERADOR_ROBO_OMS, montarPayloadLiberacao, omsInvoiceIdValido } from './omsEnvioPuro';
 import { ehLinhaNfse, conferirNfseLancada } from './nfseFatura';
 import { normalizarNumeroFatura } from './robos/historicoLancamentos';
 import { montarCorrecoesCalculoFatura, numeroValorNfAuditoria, numeroPesoAuditoria, escolherMaiorPeso } from './correcoesCalculoFatura';
@@ -523,7 +524,7 @@ export async function conferirNfseLancadaRobo(db, fatura, qtdNfse) {
 // NFS-e lancadas (MIRO) e a soma bate com a fatura: libera para pagamento. A MIRO ja e o lancamento no SAP, entao
 // marca o envio ao ERP (so se vazio) e a fatura segue para o boleto. So age se a fatura ainda estiver em auditoria.
 export async function liberarFaturaNfseRobo(db, fatura, conf, { usuario = 'Robo Auditor', origem = 'automatico' } = {}) {
-  const { data: atual, error: erroLeitura } = await db.from('faturas').select('id,status').eq('id', fatura.id).maybeSingle();
+  const { data: atual, error: erroLeitura } = await db.from('faturas').select('id,status,valor_fatura,oms_invoice_id').eq('id', fatura.id).maybeSingle();
   if (erroLeitura) throw new Error(`Leitura da fatura: ${erroLeitura.message}`);
   if (!atual || !STATUS_ROBO_AUDITA.includes(atual.status)) return { liberada: false, motivo: `Fatura nao esta mais em auditoria (${atual?.status || 'inexistente'}).` };
   const agora = new Date().toISOString();
@@ -545,7 +546,29 @@ export async function liberarFaturaNfseRobo(db, fatura, conf, { usuario = 'Robo 
     usuario_email: '',
   });
   if (erroHist) console.warn('[robo] historico nao registrado:', erroHist.message);
-  return { liberada: true };
+  const oms = await enfileirarLiberacaoOmsRobo(db, atual);
+  return { liberada: true, oms };
+}
+
+// Liberou para pagamento: libera tambem no OMS/SAP (VLOG-3813). So ENFILEIRA o envio em fatura_oms_envios (requestId gravado
+// antes); o cron api/oms-acompanhar envia ao OMS em ate 1 min e acompanha ate o SAP ler. Nunca lanca: falha aqui nao desfaz a liberacao.
+export async function enfileirarLiberacaoOmsRobo(db, fatura) {
+  try {
+    if (!omsInvoiceIdValido(fatura.oms_invoice_id)) return 'sem_id_oms';
+    const { data: existentes } = await db.from('fatura_oms_envios').select('id,status').eq('fatura_id', fatura.id).neq('status', 'recusado').neq('status', 'erro').limit(1);
+    if (existentes?.length) return 'ja_enfileirado';
+    const requestId = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `robo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const payload = montarPayloadLiberacao({ requestId, omsInvoiceId: fatura.oms_invoice_id, valorFatura: fatura.valor_fatura, performedBy: OPERADOR_ROBO_OMS });
+    const { error } = await db.from('fatura_oms_envios').insert({
+      fatura_id: fatura.id, oms_invoice_id: String(fatura.oms_invoice_id).toLowerCase(), request_id: requestId, payload,
+      approved_charge_value: payload.invoices[0].approvedChargeValue, status: 'enviando', tentativas: 0, enviado_por: OPERADOR_ROBO_OMS.name,
+    });
+    if (error) { console.warn('[robo] envio ao OMS nao enfileirado:', error.message); return 'erro_enfileirar'; }
+    return 'enfileirado';
+  } catch (e) {
+    console.warn('[robo] envio ao OMS nao enfileirado:', e?.message);
+    return 'erro_enfileirar';
+  }
 }
 
 // E-mail dos auditores: a fatura/carteira muitas vezes guarda so o NOME. Monta nome -> e-mail
