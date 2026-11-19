@@ -2,7 +2,7 @@
  * Integracao AMD Log -> Verum OMS (tratativa e envio de faturas de frete ao SAP).
  * Contrato: integracao-amd-verum-oms-faturas.md (v1, VLOG-3813).
  *
- * POST /api/oms-faturas   Authorization: Bearer <access_token do usuario logado no Supabase>
+ * POST /api/oms-faturas   Authorization: Bearer <access_token do Supabase> OU, no login legado, usuarioEmail (usuario ativo)
  *   { acao: 'preparar', faturas: [...], performedByName }  -> divide em lotes (1.000 faturas) com requestId; NAO chama o OMS
  *   { acao: 'enviar',   lote: { requestId, invoices }, performedByName }  -> envia UM lote (reenvio = mesmo corpo, mesmo requestId)
  *   { acao: 'lote',     batchId }      -> acompanha o lote
@@ -33,16 +33,26 @@ function clienteOms() {
   return clienteCache;
 }
 
-async function usuarioAutenticado(req) {
-  const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''));
-  if (!m) return null;
+async function usuarioAutenticado(req, body) {
   const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const chave = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !chave) throw new Error('SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY nao configuradas.');
   const db = createClient(url, chave, { auth: { persistSession: false } });
-  const { data, error } = await db.auth.getUser(m[1]);
-  if (error || !data?.user) return null;
-  return data.user;
+
+  // 1) Sessao do Supabase Auth (contas migradas).
+  const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''));
+  if (m) {
+    const { data, error } = await db.auth.getUser(m[1]);
+    if (!error && data?.user) return data.user;
+  }
+  // 2) Login legado do app (sem sessao do Supabase): aceita o e-mail de um usuario ATIVO em usuarios_central.
+  // Identificacao mais fraca (nao prova a senha), igual a dos demais endpoints do app; decisao do responsavel.
+  const email = String(body?.usuarioEmail || '').trim().toLowerCase();
+  if (email) {
+    const { data } = await db.from('usuarios_central').select('id, nome, email, ativo').eq('email', email).maybeSingle();
+    if (data && data.ativo !== false) return { id: String(data.id), user_metadata: { nome: data.nome }, legado: true };
+  }
+  return null;
 }
 
 const limpar = (v, max) => String(v || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max);
@@ -52,10 +62,10 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, erro: 'Metodo nao permitido.' });
 
   try {
-    const user = await usuarioAutenticado(req);
+    const body = corpoDe(req);
+    const user = await usuarioAutenticado(req, body);
     if (!user) return res.status(401).json({ ok: false, erro: 'Sessao invalida. Entre novamente.' });
 
-    const body = corpoDe(req);
     const performedBy = {
       id: limpar(user.id, 64),
       name: limpar(body.performedByName || user.user_metadata?.nome || user.user_metadata?.name, 120),
@@ -71,8 +81,12 @@ export default async function handler(req, res) {
       case 'enviar': {
         if (!performedBy.name) return res.status(400).json({ ok: false, erro: 'Informe o nome do auditor (performedByName).' });
         const lote = body.lote || {};
-        // Sempre o operador autenticado, mesmo que o corpo traga outro.
-        const r = await oms.enviarLote({ requestId: lote.requestId, performedBy, invoices: lote.invoices });
+        // Operador autenticado. Unica excecao: reenvio de um lote ja gravado, que precisa sair IDENTICO (mesmo performedBy),
+        // senao o OMS recusa com REQUEST_ID_REUSED.
+        const pb = body.reenvio === true && lote.performedBy?.id
+          ? { id: limpar(lote.performedBy.id, 64), name: limpar(lote.performedBy.name, 120) || performedBy.name }
+          : performedBy;
+        const r = await oms.enviarLote({ requestId: lote.requestId, performedBy: pb, invoices: lote.invoices });
         return res.status(200).json({ ok: true, ...r });
       }
       case 'lote':
