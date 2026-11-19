@@ -62,6 +62,12 @@ export function parseEnvioErpVerum(row) {
   };
 }
 
+/** Coluna "Id" da planilha de faturas do OMS (24 hex) = invoiceId da integracao com o OMS; vazio se nao for um Id valido. */
+export function lerOmsInvoiceId(row) {
+  const id = texto(row, ['Id', 'ID']).toLowerCase();
+  return /^[0-9a-f]{24}$/.test(id) ? id : '';
+}
+
 export function parseFaturaVerum(row) {
   return {
     // So grava quando o arquivo traz (reimport sem essas colunas nao apaga o que ja existe).

@@ -37,7 +37,10 @@ import {
   detalhesDaFatura,
   parseDetalheFaturaVerum,
   parseFaturaVerum,
+  lerOmsInvoiceId,
 } from '../utils/auditoriaFretesImport';
+import { ROTULO_ENVIO_OMS, atualizarEnvioOms, estadoEnvioOms, listarEnviosOms, liberarFaturaNoOms, liberarNoOmsAposAprovacao } from '../services/omsFaturasEnvioService';
+import { getSupabaseClient as getSupabaseOms } from '../lib/supabaseClient';
 import {
   buscarDetalhesFaturasPorCtesSupabase,
   carregarDetalhesFaturaSupabase,
@@ -1991,6 +1994,13 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [opcoesLaudoTransportador, setOpcoesLaudoTransportador] = useState(() => ({ ...OPCOES_LAUDO_TRANSPORTADOR_PADRAO, mostrarCobrancaMenor: faturaConsideraMenor(fatura) }));
   const [protocoloAberto, setProtocoloAberto] = useState(false);
   const [perguntaProtocolo, setPerguntaProtocolo] = useState(false);
+  const [enviosOms, setEnviosOms] = useState([]);
+  const [atualizandoOms, setAtualizandoOms] = useState(false);
+  useEffect(() => {
+    let vivo = true;
+    if (fatura?.id) listarEnviosOms(fatura.id).then((l) => { if (vivo) setEnviosOms(l); }).catch(() => { if (vivo) setEnviosOms([]); });
+    return () => { vivo = false; };
+  }, [fatura?.id]);
   const toleranciaFatura = carregarToleranciaAuditoria();
   const detalhesOriginais = state.detalhes[fatura.id] || [];
   const detalhes = useMemo(
@@ -2380,6 +2390,14 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       descricaoHistorico: `Liberada para pagamento. Auditoria: ${resumo.total} CT-e(s), ${resumo.divergentes} divergente(s), cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}. Toler�ncia aplicada: +${dinheiro(toleranciaFatura.acima)} / -${dinheiro(toleranciaFatura.abaixo)}.`,
     });
     setMensagemLiberacao('✓ Fatura liberada para pagamento — nao ha cobranca a maior.');
+    // OMS/SAP: o AMD aprovou, entao libera a fatura la tambem. Falha nao desfaz a liberacao acima.
+    try {
+      const r = await liberarFaturaNoOms({ fatura: { ...fatura, valor_fatura: fatura.valor_fatura }, nomeAuditor: sessao?.nome || sessao?.email || 'Auditor' });
+      setMensagemLiberacao(`✓ Fatura liberada para pagamento — nao ha cobranca a maior. ${r.mensagem}`);
+      if (r.envio) setEnviosOms((prev) => [r.envio, ...prev.filter((e) => e.id !== r.envio.id)]);
+    } catch (error) {
+      setMensagemLiberacao(`✓ Fatura liberada para pagamento. ⚠ Envio ao OMS nao feito: ${error.message}`);
+    }
     // Nao abre o protocolo sozinho: protocolo e mais comum quando ha desconto,
     // entao pergunta ao auditor se quer enviar agora.
     setPerguntaProtocolo(true);
@@ -4159,6 +4177,29 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       {mensagemLiberacao && (
         <div className="hint-box compact" style={{ marginTop: 8 }}>{mensagemLiberacao}</div>
       )}
+      {enviosOms[0] && (() => {
+        const envio = enviosOms[0];
+        const estado = estadoEnvioOms(envio);
+        const precisaAcao = envio.status === 'enviando' || envio.status === 'erro';
+        const ok = estado === 'sentToErp' || estado === 'queuedForErp' || estado === 'alreadyReleased';
+        return (
+          <div className="hint-box compact" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', borderColor: ok ? '#86efac' : precisaAcao || estado === 'blocked' || estado === 'recusado' ? '#fca5a5' : undefined }}>
+            <strong>SAP/OMS: {ROTULO_ENVIO_OMS[estado] || estado}</strong>
+            {envio.queued_for_erp_at && <span>na fila desde {new Date(envio.queued_for_erp_at).toLocaleString('pt-BR')}</span>}
+            {(envio.blocking_checks || []).length > 0 && <span>Travas: {envio.blocking_checks.map((c) => c.code).join(', ')}</span>}
+            {envio.erro?.message && <span>{envio.erro.code ? `${envio.erro.code}: ` : ''}{envio.erro.message}</span>}
+            {estado !== 'sentToErp' && estado !== 'recusado' && (
+              <button className="btn-secondary" disabled={atualizandoOms} onClick={async () => {
+                setAtualizandoOms(true);
+                try {
+                  const novo = await atualizarEnvioOms(envio, sessao?.nome || sessao?.email || 'Auditor');
+                  setEnviosOms((prev) => prev.map((e) => (e.id === novo.id ? novo : e)));
+                } catch (error) { setMensagemLiberacao(`OMS: ${error.message}`); } finally { setAtualizandoOms(false); }
+              }}>{envio.status === 'enviando' ? 'Reenviar ao OMS' : 'Atualizar status'}</button>
+            )}
+          </div>
+        );
+      })()}
       {protocoloAberto && (
         <ModalEnviarProtocoloFinanceiro
           state={state}
@@ -6192,6 +6233,7 @@ ${portaisLaudo.length ? `
     try {
       let next = state;
       let enviadasParaAprovacao = 0;
+      const liberadasOms = { total: 0, pendentes: [] };
       // Uma unica carga agrupada garante o mesmo snapshot para todo o lote e
       // evita repetir detalhes + referencia + saldos uma fatura por vez.
       const detalhesExatosLote = tipo === 'liberar'
@@ -6271,10 +6313,16 @@ ${portaisLaudo.length ? `
           };
         }
         next = await atualizarFaturaAuditoria(next, payload, evento);
+        if (tipo === 'liberar') {
+          // So as que ficaram liberadas (as que foram para a gestao so vao ao OMS quando a gestao aprovar).
+          const r = await liberarNoOmsAposAprovacao({ fatura, statusNovo: payload.status, nomeAuditor: sessao?.nome || sessao?.email || 'Auditor' });
+          if (r) { liberadasOms.total += 1; if (!['enviado', 'ja_liberada'].includes(r.resultado)) liberadasOms.pendentes.push(`${fatura.numero_fatura}: ${r.mensagem}`); }
+        }
       }
       onState(next);
       setMensagemImportacao(
         `${faturasSelecionadas.length} fatura(s) atualizada(s) em massa.`
+        + (liberadasOms.total ? ` OMS/SAP: ${liberadasOms.total - liberadasOms.pendentes.length} de ${liberadasOms.total} liberada(s) no OMS.${liberadasOms.pendentes.length ? ` Pendentes: ${liberadasOms.pendentes.slice(0, 5).join(' | ')}` : ''}` : '')
         + (enviadasParaAprovacao ? ` ${enviadasParaAprovacao} foram para aprovacao da gestao por desconto ou auditoria incompleta.` : ''),
       );
     } catch (error) {
@@ -6894,6 +6942,10 @@ ${portaisLaudo.length ? `
             importado_em: new Date().toISOString(),
           });
           if (!resultado?.ok || !resultado.id) return;
+          const omsIdLinha = lerOmsInvoiceId(row);
+          if (omsIdLinha) {
+            try { await getSupabaseOms()?.from('faturas').update({ oms_invoice_id: omsIdLinha }).eq('id', resultado.id); } catch { /* coluna ainda nao criada: importacao segue */ }
+          }
           faturasSalvas += 1;
           if (existenteId) faturasAtualizadas += 1;
           else faturasNovas += 1;
@@ -9399,7 +9451,9 @@ function AprovacaoGestao({ state, onState }) {
               diferenca_calculada: Number(diferencaCalculada.toFixed(2)),
             } : {},
         });
-        resultados.push({ ok: true, nome });
+        // Aprovada e liberada no AMD (inclui a decisao da gestao): libera no OMS/SAP. RECUSAR nao entra (status COM_DIVERGENCIA).
+        const rOms = await liberarNoOmsAposAprovacao({ fatura: { ...fatura, ...campos }, statusNovo, nomeAuditor: usuarioNome });
+        resultados.push({ ok: true, nome, oms: rOms });
       } catch (error) {
         resultados.push({ ok: false, nome: fatura.numero_fatura, erro: error.message || String(error) });
       }
@@ -9409,7 +9463,9 @@ function AprovacaoGestao({ state, onState }) {
     setSelecionadas((prev) => prev.filter((id) => !okIds.includes(id)));
     const falhas = resultados.filter((r) => !r.ok);
     const feitas = resultados.length - falhas.length;
-    setMensagem(`${feitas} fatura(s): ${TITULOS_DECISAO[tipo].toLowerCase()}.${falhas.length ? ` Falhou em ${falhas.map((f) => `${f.nome} (${f.erro})`).join('; ')}` : ''}`);
+    const omsFeitas = resultados.filter((r) => r.ok && r.oms);
+    const omsPendentes = omsFeitas.filter((r) => !['enviado', 'ja_liberada'].includes(r.oms.resultado));
+    setMensagem(`${feitas} fatura(s): ${TITULOS_DECISAO[tipo].toLowerCase()}.${omsFeitas.length ? ` OMS/SAP: ${omsFeitas.length - omsPendentes.length} de ${omsFeitas.length} liberada(s) no OMS.${omsPendentes.length ? ` Pendentes: ${omsPendentes.slice(0, 5).map((r) => `${r.nome} (${r.oms.mensagem})`).join('; ')}` : ''}` : ''}${falhas.length ? ` Falhou em ${falhas.map((f) => `${f.nome} (${f.erro})`).join('; ')}` : ''}`);
     setProcessando(false);
     if (falhas.length) setDecisao((p) => ({ ...p, erro: `Falhou em ${falhas.length} fatura(s): ${falhas.map((f) => `${f.nome} (${f.erro})`).join('; ')}` }));
     else setDecisao(null);

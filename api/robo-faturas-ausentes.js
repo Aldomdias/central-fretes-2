@@ -101,7 +101,7 @@ function montarEmail({ cfg, periodo, faturasPeriodo, ctes, valor, janelaDias, ho
     ? `<p>Seu faturamento está cadastrado conosco como <b>${rotulo}</b> e, no período de <b>${dataBr(periodo.inicio)}</b> a <b>${dataBr(periodo.fim)}</b>, <b>não identificamos nenhuma fatura emitida</b> por vocês.</p>`
     : `<p>Seu faturamento está cadastrado conosco como <b>${rotulo}</b>. No período de <b>${dataBr(periodo.inicio)}</b> a <b>${dataBr(periodo.fim)}</b> recebemos a(s) fatura(s): <b>${escapar(faturasPeriodo.map((f) => f.numero_fatura).filter(Boolean).join(', ') || '-')}</b>.<br>Por favor, <b>confirmem se não falta nenhuma</b>, pois identificamos CT-e(s) ainda sem fatura vinculada.</p>`;
   const bloco = ctes.length
-    ? `<p>Levantamos <b>${ctes.length} CT-e(s)</b> emitidos nos últimos ${janelaDias} dias (até ${dataBr(periodo.limiteCte)}) <b>sem fatura vinculada</b>, totalizando <b>${dinheiro(valor)}</b>${ctes.length > 40 ? ` (primeiros 40 abaixo)` : ' (lista abaixo)'}:</p>
+    ? `<p>Levantamos <b>${ctes.length} CT-e(s)</b> emitidos entre ${dataBr(periodo.inicioCte)} e ${dataBr(periodo.limiteCte)} <b>sem fatura vinculada</b>, totalizando <b>${dinheiro(valor)}</b>${ctes.length > 40 ? ` (primeiros 40 abaixo)` : ' (lista abaixo)'}:</p>
 <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;font-size:13px"><thead><tr style="background:#f1f5f9"><th>CT-e</th><th>Emissão</th><th>Valor</th></tr></thead><tbody>${linhas}</tbody></table>`
     : '';
   const html = `<div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a">
@@ -217,7 +217,9 @@ export default async function handler(req, res) {
         const faturasPeriodo = faturasRecentes.filter((f) => norm(f.transportadora) === nome
           && (String(f.data_emissao || '').slice(0, 10) >= periodo.inicio || String(f.created_at || '').slice(0, 10) >= periodo.inicio));
         const variantes = [...new Set([t.transportadora, ...(vinculos || []).filter((v) => norm(v.nome_tabela) === nome).map((v) => v.nome_cte)].filter(Boolean))];
-        const inicioCte = somarDias(hoje, -janelaDias);
+        // A janela de N dias conta para tras a partir do corte (hoje - periodo), nao a partir de hoje.
+        const inicioCte = somarDias(periodo.limiteCte, -janelaDias);
+        periodo.inicioCte = inicioCte;
         // Base completa de CT-es (realizado_local_ctes): a de resultados da auditoria so tem as transportadoras que a Central calcula.
         const ctesPeriodo = await paginar((de, ate) => db.from('realizado_local_ctes').select('id,chave_cte,numero_cte,data_emissao,valor_cte')
           .in('transportadora', variantes).gte('data_emissao', `${inicioCte}T00:00:00`).lt('data_emissao', `${somarDias(periodo.limiteCte, 1)}T00:00:00`).order('data_emissao').order('id').range(de, ate));
