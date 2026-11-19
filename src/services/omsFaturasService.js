@@ -7,6 +7,7 @@
  * acompanharLote a cada 1 min -> consultarFatura a cada 15 min ate sentToErp (ate 72 h).
  */
 import { getSupabaseClient } from '../lib/supabaseClient';
+import { carregarSessao } from '../utils/authLocal';
 
 export const INTERVALO_LOTE_MS = 60 * 1000;
 export const INTERVALO_SAP_MS = 15 * 60 * 1000;
@@ -20,7 +21,8 @@ async function chamar(corpo) {
   const resp = await fetch('/api/oms-faturas', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    body: JSON.stringify(corpo),
+    // Login legado (sem sessao do Supabase): o servidor identifica pelo e-mail de um usuario ativo.
+    body: JSON.stringify({ ...corpo, usuarioEmail: carregarSessao()?.email || '' }),
   });
   const json = await resp.json().catch(() => ({}));
   if (!resp.ok || json.ok === false) {
@@ -36,8 +38,8 @@ export async function prepararCarga(faturas, performedByName) {
   return (await chamar({ acao: 'preparar', faturas, performedByName })).lotes;
 }
 
-export function enviarLote(lote, performedByName) {
-  return chamar({ acao: 'enviar', lote, performedByName });
+export function enviarLote(lote, performedByName, { reenvio = false } = {}) {
+  return chamar({ acao: 'enviar', lote, performedByName, reenvio });
 }
 
 /** Reenvia o MESMO corpo com o MESMO requestId em 1, 2, 4, 8 e 16 min (timeout/rede/500/503). Outros erros sobem na hora. */

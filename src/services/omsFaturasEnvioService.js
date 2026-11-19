@@ -6,6 +6,10 @@
  */
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { acompanharLote, consultarFatura, enviarLote } from './omsFaturasService';
+import { carregarSessao } from '../utils/authLocal';
+import { camposDoLote } from '../utils/omsEnvioPuro';
+
+export { camposDoLote };
 
 const TABELA = 'fatura_oms_envios';
 
@@ -25,9 +29,10 @@ export function omsInvoiceIdValido(id) {
 }
 
 /** Corpo do lote de 1 fatura (so liberar). performedBy e definido pelo servidor a partir da sessao. */
-export function montarPayloadLiberacao({ requestId, omsInvoiceId, valorFatura }) {
+export function montarPayloadLiberacao({ requestId, omsInvoiceId, valorFatura, performedBy }) {
   return {
     requestId,
+    ...(performedBy ? { performedBy } : {}),
     invoices: [{ invoiceId: String(omsInvoiceId).toLowerCase(), approvedChargeValue: Number(Number(valorFatura || 0).toFixed(2)), release: true }],
   };
 }
@@ -39,24 +44,6 @@ export function estadoEnvioOms(envio) {
   if (envio.outcome) return envio.outcome === 'treated' ? 'enviado' : envio.outcome;
   if (envio.oms_status === 'failed') return 'erro';
   return envio.status || 'enviando';
-}
-
-/** Traduz a fatura do lote (5.2) em colunas do registro. Puro. */
-export function camposDoLote(lote, invoiceId) {
-  const f = (lote?.invoices || []).find((i) => String(i.invoiceId).toLowerCase() === String(invoiceId).toLowerCase());
-  if (!f) return { oms_status: lote?.status || null };
-  return {
-    oms_status: f.status || null,
-    outcome: f.outcome || null,
-    bypassed_checks: f.bypassedChecks || [],
-    blocking_checks: f.blockingChecks || [],
-    queued_for_erp_at: f.queuedForErpAt || null,
-    sent_to_erp: f.sentToErp === true,
-    oms_sent_by: f.sentBy || null,
-    erro: f.error || null,
-    tentativas: f.attempts ?? 0,
-    status: f.status === 'failed' ? 'erro' : 'enviado',
-  };
 }
 
 function db() {
@@ -79,7 +66,7 @@ export async function listarEnviosOms(faturaId) {
 
 async function transmitir(envio, nomeAuditor) {
   try {
-    const r = await enviarLote(envio.payload, nomeAuditor);
+    const r = await enviarLote(envio.payload, nomeAuditor, { reenvio: (envio.tentativas || 0) > 0 });
     return await atualizar(envio.id, { status: 'enviado', batch_id: r.batchId, erro: null, tentativas: (envio.tentativas || 0) + 1 });
   } catch (e) {
     const detalhe = { code: e.code || null, message: e.message, details: e.details || null, acao: e.acao || null };
@@ -112,7 +99,10 @@ export async function liberarFaturaNoOms({ fatura, nomeAuditor }) {
   } catch { /* segue */ }
 
   const requestId = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`);
-  const payload = montarPayloadLiberacao({ requestId, omsInvoiceId, valorFatura: fatura.valor_fatura });
+  // performedBy gravado no corpo: reenvio (inclusive pelo cron) tem de ser identico, senao o OMS responde REQUEST_ID_REUSED.
+  const { data: sessaoAuth } = await db().auth.getSession();
+  const idAuditor = sessaoAuth?.session?.user?.id || carregarSessao()?.id;
+  const payload = montarPayloadLiberacao({ requestId, omsInvoiceId, valorFatura: fatura.valor_fatura, performedBy: idAuditor ? { id: idAuditor, name: String(nomeAuditor || '').slice(0, 120) } : null });
   // requestId gravado ANTES de chamar o OMS.
   const { data: criado, error } = await db().from(TABELA).insert({
     fatura_id: fatura.id, oms_invoice_id: omsInvoiceId, request_id: requestId, payload,
