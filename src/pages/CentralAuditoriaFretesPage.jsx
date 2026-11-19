@@ -39,6 +39,7 @@ import {
   parseFaturaVerum,
   lerOmsInvoiceId,
 } from '../utils/auditoriaFretesImport';
+import { importarIdsOmsDaPlanilha, resumirImportacaoIds } from '../services/omsIdFaturasService';
 import { ROTULO_ENVIO_OMS, atualizarEnvioOms, estadoEnvioOms, listarEnviosOms, liberarFaturaNoOms, liberarNoOmsAposAprovacao } from '../services/omsFaturasEnvioService';
 import { getSupabaseClient as getSupabaseOms } from '../lib/supabaseClient';
 import {
@@ -6831,6 +6832,29 @@ ${portaisLaudo.length ? `
     return <FaturaDetalhe state={state} fatura={faturaAtual} onClose={() => setAberta(null)} onState={onState} />;
   }
 
+  // Importacao SO do Id do OMS: atualiza apenas faturas.oms_invoice_id das faturas que ja existem (nao cria, nao regrava valores/CT-es).
+  const arquivoIdsRef = useRef(null);
+  const importarSoIds = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    event.target.value = '';
+    setImportando(true);
+    setMensagemImportacao('Lendo planilha para importar so o Id do OMS...');
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: false });
+      const nomeFaturas = workbook.SheetNames.find((nome) => nome.toLowerCase().includes('fatura')) || workbook.SheetNames[0];
+      if (!nomeFaturas) throw new Error('Aba de faturas nao encontrada.');
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[nomeFaturas], { defval: '' });
+      const r = await importarIdsOmsDaPlanilha(rows, { aoProgredir: (p) => setMensagemImportacao(`Id do OMS: ${p.etapa === 'buscando' ? 'buscando faturas' : 'gravando'} ${p.feitas}/${p.total}...`) });
+      const exemplos = [...r.pendencias, ...r.falhas].slice(0, 5).map((x) => `${x.numero} (${x.motivo})`).join('; ');
+      setMensagemImportacao(`Id do OMS: ${resumirImportacaoIds(r)}${exemplos ? ` Exemplos: ${exemplos}` : ''}`);
+    } catch (error) {
+      setMensagemImportacao(`Erro ao importar o Id do OMS: ${error.message}`);
+    } finally {
+      setImportando(false);
+    }
+  };
+
   const importarFaturas = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -7541,6 +7565,10 @@ ${portaisLaudo.length ? `
             <button className="btn-secondary" disabled={detectandoCanais} onClick={detectarCanais} title="Varre os CT-es já auditados e grava o canal predominante de cada fatura">
               {detectandoCanais ? `Detectando canais... ${progressoCanais?.carregados ?? ''}` : 'Detectar canais'}
             </button>
+            <button className="btn-secondary" disabled={importando} onClick={() => arquivoIdsRef.current?.click()} title="Atualiza SO o Id do OMS das faturas que ja existem (nao cria fatura nem mexe em valores ou CT-es)">
+              Importar só o Id do OMS
+            </button>
+            <input ref={arquivoIdsRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={importarSoIds} />
             <button className="btn-primary" disabled={importando} onClick={() => arquivoRef.current?.click()}>
               {importando ? 'Importando...' : 'Importar fatura Verum'}
             </button>
