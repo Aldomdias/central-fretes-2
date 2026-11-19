@@ -550,7 +550,7 @@ async function consultarResultadosLote(client, lote, comDetalhes) {
   // sempre (campo leve do JSON): a coluna "Peso Tracking" usa o fator da tabela e nao o x300.
   return client
     .from('auditoria_cte_resultados')
-    .select(`chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at, fator_cubagem:detalhes_calculo->componentes_base->fatorCubagem${comDetalhes ? ', detalhes_calculo' : ''}`)
+    .select(`chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at, fator_cubagem:detalhes_calculo->componentes_base->fatorCubagem, origem_motor:detalhes_calculo->>motor, origem_dist:detalhes_calculo->>dist, origem_tabela:detalhes_calculo->>tabela_nome_aplicada, origem_rota:detalhes_calculo->>rota_nome, origem_cidade:detalhes_calculo->>origem_cidade, origem_destino_cidade:detalhes_calculo->>destino_cidade, origem_transgp_situacao:detalhes_calculo->>transgp_situacao, origem_contratado:detalhes_calculo->>valor_autorizado_viagem, origem_transportadora:detalhes_calculo->>transportadora_tabela${comDetalhes ? ', detalhes_calculo' : ''}`)
     .in('chave_cte', lote);
 }
 
