@@ -218,8 +218,9 @@ export default async function handler(req, res) {
           && (String(f.data_emissao || '').slice(0, 10) >= periodo.inicio || String(f.created_at || '').slice(0, 10) >= periodo.inicio));
         const variantes = [...new Set([t.transportadora, ...(vinculos || []).filter((v) => norm(v.nome_tabela) === nome).map((v) => v.nome_cte)].filter(Boolean))];
         const inicioCte = somarDias(hoje, -janelaDias);
-        const ctesPeriodo = await paginar((de, ate) => db.from('auditoria_cte_resultados').select('id,chave_cte,numero_cte,data_emissao,valor_cte')
-          .in('transportadora', variantes).gte('data_emissao', inicioCte).lte('data_emissao', periodo.limiteCte).order('data_emissao').order('id').range(de, ate));
+        // Base completa de CT-es (realizado_local_ctes): a de resultados da auditoria so tem as transportadoras que a Central calcula.
+        const ctesPeriodo = await paginar((de, ate) => db.from('realizado_local_ctes').select('id,chave_cte,numero_cte,data_emissao,valor_cte')
+          .in('transportadora', variantes).gte('data_emissao', `${inicioCte}T00:00:00`).lt('data_emissao', `${somarDias(periodo.limiteCte, 1)}T00:00:00`).order('data_emissao').order('id').range(de, ate));
         const comFatura = await idsComFatura(db, ctesPeriodo, new Set(variantes.map(norm)));
         const ctes = ctesPeriodo.filter((c) => !comFatura.has(`c:${digitos(c.chave_cte)}`) && !comFatura.has(`n:${numeroCte(c.numero_cte)}`));
         const valor = ctes.reduce((s, c) => s + Number(c.valor_cte || 0), 0);
