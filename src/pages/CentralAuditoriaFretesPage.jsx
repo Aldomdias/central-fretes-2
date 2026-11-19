@@ -674,6 +674,30 @@ function motivoAuditoriaLinha(item = {}, semValorNf = false) {
   if (/sem\s+valor\s+nf|informar\s+chave\s+nf/i.test(motivo)) return '-';
   return nomeStatus(motivo || '-');
 }
+// De onde veio o valor da coluna AMD: DIST (TransGP / fluxo / resposta da Operacao) ou tabela.
+function origemValorAuditoria(item = {}) {
+  if (!Number(item.calculado_frete || 0)) return { txt: '-', title: 'Sem cálculo' };
+  const d = item.detalhes_calculo || {};
+  const dist = String(d.dist || '').trim();
+  switch (d.motor) {
+    case 'transgp_api':
+    {
+      const contratado = Number(d.valor_autorizado_viagem) > 0 ? ` · contratado ${dinheiro(d.valor_autorizado_viagem)}` : ' · sem contratado';
+      return { txt: dist ? `DIST ${dist}` : 'DIST TransGP', sub: `TransGP${contratado}`, title: `Auditoria da TransGP (${d.transgp_situacao || 'situação não informada'}): a DIST decidiu o pagamento. O AMD repete o valor do CT-e (na API: ctes[].valor_total); o frete contratado da DIST é ${Number(d.valor_autorizado_viagem) > 0 ? dinheiro(d.valor_autorizado_viagem) : 'vazio'} e o total cobrado na DIST ${dinheiro(d.valor_cobrado_viagem || 0)}.` };
+    }
+    case 'fluxo_lotacao':
+      return { txt: dist ? `DIST ${dist}` : 'DIST do fluxo', sub: 'Fluxo de lotação', title: 'Valor contratado da DIST no fluxo de lotação (saldo da viagem).' };
+    case 'resposta_operacao_lotacao':
+      return { txt: dist ? `DIST ${dist}` : 'DIST (Operação)', sub: 'Resposta da Operação', title: 'DIST escolhida pela Operação ao responder o questionamento.' };
+    case 'tabela_lotacao':
+      return { txt: 'Tabela', sub: 'Lotação', title: `Tabela de lotação${d.origem_cidade ? `: ${d.origem_cidade} → ${d.destino_cidade || '?'}` : ''}${d.tipo_veiculo ? ` (${d.tipo_veiculo})` : ''}` };
+    case 'simulador_realizado':
+      return { txt: 'Simulador', sub: 'Realizado', title: 'Valor simulado pelo realizado.' };
+    default:
+      return { txt: 'Tabela', sub: 'Frete', title: 'Calculado pela tabela de frete da transportadora (motor padrão).' };
+  }
+}
+
 function resumirDetalhesAuditoria(lista = [], tolerancia = TOLERANCIA_PADRAO) {
   const total = lista.length;
   const calculados = lista.filter((item) => Number(item.calculado_frete || 0) > 0).length;
@@ -3398,7 +3422,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
               }}
             />
           </th>
-          <th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th title="Peso do CT-e (base). Fundo verde = peso usado no calculo.">Peso CT-e</th><th title="Peso calculado pelo Tracking: maior entre peso fisico e cubagem x 300. Vermelho = diverge do peso usado no calculo.">Peso Tracking</th><th>Valor NF</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Saldo autorizado</th><th>Motivo</th><th>Status</th><th>Entrega</th><th title="Partida do CT-e no relatorio SAP importado">Partida SAP</th>
+          <th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th title="Peso do CT-e (base). Fundo verde = peso usado no calculo.">Peso CT-e</th><th title="Peso calculado pelo Tracking: maior entre peso fisico e cubagem x 300. Vermelho = diverge do peso usado no calculo.">Peso Tracking</th><th>Valor NF</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th title="De onde veio o valor do AMD: DIST (TransGP / fluxo / Operação) ou tabela">Origem do valor</th><th>Saldo autorizado</th><th>Motivo</th><th>Status</th><th>Entrega</th><th title="Partida do CT-e no relatorio SAP importado">Partida SAP</th>
         </tr></thead>
         <tbody>
           {lista.map((item) => {
@@ -3469,6 +3493,14 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                   <td style={{ cursor: 'pointer' }} className={Number(item.diferenca_verum || 0) ? 'negativo' : ''} onClick={() => alternarDetalheCte(item)}>{Number(item.calculado_frete_verum || 0) ? dinheiro(item.diferenca_verum) : '-'}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{Number(item.calculado_frete || 0) ? dinheiro(item.calculado_frete) : 'Sem calculo'}</td>
                   <td style={{ cursor: 'pointer' }} className={Number(item.diferenca || 0) ? 'negativo' : ''} onClick={() => alternarDetalheCte(item)}>{dinheiro(item.diferenca)}</td>
+                  {(() => {
+                    const o = origemValorAuditoria(item);
+                    return (
+                      <td style={{ cursor: 'pointer', whiteSpace: 'nowrap', fontSize: 12 }} onClick={() => alternarDetalheCte(item)} title={o.title}>
+                        <strong>{o.txt}</strong>{o.sub && <div style={{ color: '#64748b', fontSize: 11 }}>{o.sub}</div>}
+                      </td>
+                    );
+                  })()}
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)} title="Passe o mouse no valor pra ver quem decidiu e a justificativa">
                     <CelulaSaldoTransporte saldo={saldoTransporteDoCte(item)} decisoes={decisoesTransporteDoItem(decisoesTransporte, [item.chave_cte, item.chave_nfe, referenciaCtes.get(normalizarChaveCte(item.chave_cte))?.chave_nfe])} />
                   </td>
