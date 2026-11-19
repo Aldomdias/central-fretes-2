@@ -65,11 +65,23 @@ async function idsComFatura(db, ctes, nomesTransportadora) {
     }
   };
   await consultar('chave_cte', chaves, (d) => { const c = digitos(d.chave_cte); if (c) achados.add(`c:${c}`); });
-  // O numero na fatura pode ter zeros a esquerda: busca as duas formas.
-  await consultar('numero_cte', [...new Set([...numeros, ...ctes.map((c) => digitos(c.numero_cte)).filter(Boolean)])], (d) => {
+  // O numero na fatura pode ter zeros a esquerda: busca as duas formas. Fatura importada so com o numero fica
+  // "sem localizar o CT-e" (sem chave), mas o CT-e ja esta nela: conta como vinculado. A transportadora da linha
+  // pode vir com outro nome; vale tambem a transportadora da FATURA a que a linha pertence.
+  const porNumero = [];
+  await consultar('numero_cte', [...new Set([...numeros, ...ctes.map((c) => digitos(c.numero_cte)).filter(Boolean)])], (d) => { porNumero.push(d); });
+  const idsFat = [...new Set(porNumero.map((d) => d.fatura_id).filter(Boolean))];
+  const transpDaFatura = new Map();
+  for (let i = 0; i < idsFat.length; i += 100) {
+    const { data, error } = await db.from('faturas').select('id,transportadora').in('id', idsFat.slice(i, i + 100));
+    if (error) throw new Error(`faturas: ${error.message}`);
+    (data || []).forEach((f) => transpDaFatura.set(String(f.id), norm(f.transportadora)));
+  }
+  porNumero.forEach((d) => {
     const n = numeroCte(d.numero_cte);
     const nomeDetalhe = norm(d.transportadora);
-    if (n && (!nomeDetalhe || nomesTransportadora.has(nomeDetalhe))) achados.add(`n:${n}`);
+    const nomeFatura = transpDaFatura.get(String(d.fatura_id)) || '';
+    if (n && (!nomeDetalhe || nomesTransportadora.has(nomeDetalhe) || nomesTransportadora.has(nomeFatura))) achados.add(`n:${n}`);
   });
   return achados;
 }
@@ -212,6 +224,8 @@ export default async function handler(req, res) {
           numeros_faturas: faturasPeriodo.map((f) => f.numero_fatura).filter(Boolean).join(', ').slice(0, 500),
           ctes_sem_fatura: ctes.length, valor_sem_fatura: valor, cte_mais_antigo: ctes[0]?.data_emissao || null,
         });
+        const jaVinculados = ctesPeriodo.length - ctes.length;
+        if (jaVinculados > 0) registro.observacao = `${jaVinculados} CT-e(s) do periodo ja estavam em fatura (conferidos por chave e numero) e ficaram fora do aviso.`;
         const semFatura = faturasPeriodo.length === 0;
         registro.situacao = semFatura ? (ctes.length || ctesPeriodo.length ? 'SEM_FATURA_NO_PERIODO' : 'SEM_CTES') : (ctes.length ? 'CONFERIR_CTES' : 'OK');
         // Sem fatura no periodo e sem nenhum CT-e para faturar: nada a cobrar.
