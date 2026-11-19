@@ -21981,9 +21981,15 @@ function detalheErroSupabase(error) {
 async function carregarDetalhesFaturaSupabase(faturaId) {
   if (!isSupabaseConfigured()) return [];
   const supabase2 = ensureClient();
-  const { data, error } = await supabase2.from("fatura_detalhes").select("*").eq("fatura_id", faturaId).order("numero_cte");
-  if (error) throw new Error(detalheErroSupabase(error));
-  return data || [];
+  const PAGINA = 1e3;
+  const todos = [];
+  for (let inicio = 0; ; inicio += PAGINA) {
+    const { data, error } = await supabase2.from("fatura_detalhes").select("*").eq("fatura_id", faturaId).order("numero_cte").order("id").range(inicio, inicio + PAGINA - 1);
+    if (error) throw new Error(detalheErroSupabase(error));
+    todos.push(...data || []);
+    if ((data || []).length < PAGINA) break;
+  }
+  return todos;
 }
 var COLUNAS_ALOCACAO_LOTACAO, CAMPOS_PROTEGIDOS_OPERACAO;
 var init_lotacaoSupabaseService = __esm({
@@ -22734,7 +22740,7 @@ async function safeUpsert(table, payload) {
   return true;
 }
 async function consultarResultadosLote(client2, lote, comDetalhes) {
-  return client2.from("auditoria_cte_resultados").select(`chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at, fator_cubagem:detalhes_calculo->componentes_base->fatorCubagem${comDetalhes ? ", detalhes_calculo" : ""}`).in("chave_cte", lote);
+  return client2.from("auditoria_cte_resultados").select(`chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_nf, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, updated_at, fator_cubagem:detalhes_calculo->componentes_base->fatorCubagem, origem_motor:detalhes_calculo->>motor, origem_dist:detalhes_calculo->>dist, origem_tabela:detalhes_calculo->>tabela_nome_aplicada, origem_rota:detalhes_calculo->>rota_nome, origem_cidade:detalhes_calculo->>origem_cidade, origem_destino_cidade:detalhes_calculo->>destino_cidade, origem_transgp_situacao:detalhes_calculo->>transgp_situacao, origem_contratado:detalhes_calculo->>valor_autorizado_viagem, origem_transportadora:detalhes_calculo->>transportadora_tabela${comDetalhes ? ", detalhes_calculo" : ""}`).in("chave_cte", lote);
 }
 async function buscarReferenciaCtes(chaves = [], { comDetalhes = false, lancarErro = false } = {}) {
   const referencia = /* @__PURE__ */ new Map();
@@ -22877,10 +22883,17 @@ async function vincularChavesDetalhesPorNumero(fatura, detalhes = []) {
     if (normalizarChaveCte(d.chave_cte)) return d;
     const k = String(Number(String(d.numero_cte || "").replace(/\D/g, "")));
     const candidatos = porNumero.get(k) || [];
-    const unicos = [...new Set(candidatos.map((c) => normalizarChaveCte(c.chave_cte)))];
+    let unicos = [...new Set(candidatos.map((c) => normalizarChaveCte(c.chave_cte)))];
+    if (unicos.length > 1) {
+      const emissor = String(d.cnpj_emissor || "").replace(/\D/g, "");
+      const serie = String(d.serie_cte ?? "").replace(/\D/g, "");
+      const filtrados = unicos.filter((chave) => (emissor.length !== 14 || chave.slice(6, 20) === emissor) && (!serie || Number(chave.slice(22, 25)) === Number(serie)));
+      if (filtrados.length) unicos = filtrados;
+    }
     if (unicos.length !== 1) return d;
     vinculados += 1;
-    const novo = { ...d, chave_cte: unicos[0], ...d.chave_nfe ? {} : { chave_nfe: candidatos[0].chave_nfe || d.chave_nfe } };
+    const escolhido = candidatos.find((c) => normalizarChaveCte(c.chave_cte) === unicos[0]) || candidatos[0];
+    const novo = { ...d, chave_cte: unicos[0], ...d.chave_nfe ? {} : { chave_nfe: escolhido.chave_nfe || d.chave_nfe } };
     alterados.push(novo);
     return novo;
   });
@@ -23386,6 +23399,7 @@ async function carregarBaseCompletaDb(onProgress = null) {
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
     aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
+    fazAntecipacao: transportadora.faz_antecipacao === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || []
   }));
   return _cacheBaseCompleta;
@@ -23708,6 +23722,7 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
     aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
+    fazAntecipacao: transportadora.faz_antecipacao === true,
     detalheCarregado: true,
     origens: origensByTransportadora.get(String(transportadora.id)) || []
   })).filter((item) => item.origens.length);
@@ -28222,6 +28237,24 @@ var init_auditoriaService = __esm({
   }
 });
 
+// src/utils/omsEnvioPuro.js
+function montarPayloadLiberacao({ requestId, omsInvoiceId, valorFatura, performedBy }) {
+  return {
+    requestId,
+    ...performedBy ? { performedBy } : {},
+    invoices: [{ invoiceId: String(omsInvoiceId).toLowerCase(), approvedChargeValue: Number(Number(valorFatura || 0).toFixed(2)), release: true }]
+  };
+}
+var OPERADOR_ROBO_OMS, omsInvoiceIdValido;
+var init_omsEnvioPuro = __esm({
+  "src/utils/omsEnvioPuro.js"() {
+    "use strict";
+    init_define_import_meta_env();
+    OPERADOR_ROBO_OMS = Object.freeze({ id: "robo-auditor", name: "Robo Auditor" });
+    omsInvoiceIdValido = (id) => /^[0-9a-f]{24}$/i.test(String(id || "").trim());
+  }
+});
+
 // src/utils/robos/historicoLancamentos.js
 function registrosVisiveis(registros = []) {
   const comMiro = new Set(registros.filter((r) => r.miro).map((r) => `${r.tipo}|${r.documento}`));
@@ -29105,7 +29138,7 @@ async function conferirNfseLancadaRobo(db, fatura, qtdNfse) {
   return conferirNfseLancada(fatura, qtdNfse, data || []);
 }
 async function liberarFaturaNfseRobo(db, fatura, conf, { usuario = "Robo Auditor", origem = "automatico" } = {}) {
-  const { data: atual, error: erroLeitura } = await db.from("faturas").select("id,status").eq("id", fatura.id).maybeSingle();
+  const { data: atual, error: erroLeitura } = await db.from("faturas").select("id,status,valor_fatura,oms_invoice_id").eq("id", fatura.id).maybeSingle();
   if (erroLeitura) throw new Error(`Leitura da fatura: ${erroLeitura.message}`);
   if (!atual || !STATUS_ROBO_AUDITA.includes(atual.status)) return { liberada: false, motivo: `Fatura nao esta mais em auditoria (${atual?.status || "inexistente"}).` };
   const agora = (/* @__PURE__ */ new Date()).toISOString();
@@ -29131,7 +29164,35 @@ async function liberarFaturaNfseRobo(db, fatura, conf, { usuario = "Robo Auditor
     usuario_email: ""
   });
   if (erroHist) console.warn("[robo] historico nao registrado:", erroHist.message);
-  return { liberada: true };
+  const oms = await enfileirarLiberacaoOmsRobo(db, atual);
+  return { liberada: true, oms };
+}
+async function enfileirarLiberacaoOmsRobo(db, fatura) {
+  try {
+    if (!omsInvoiceIdValido(fatura.oms_invoice_id)) return "sem_id_oms";
+    const { data: existentes } = await db.from("fatura_oms_envios").select("id,status").eq("fatura_id", fatura.id).neq("status", "recusado").neq("status", "erro").limit(1);
+    if (existentes?.length) return "ja_enfileirado";
+    const requestId = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `robo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const payload = montarPayloadLiberacao({ requestId, omsInvoiceId: fatura.oms_invoice_id, valorFatura: fatura.valor_fatura, performedBy: OPERADOR_ROBO_OMS });
+    const { error } = await db.from("fatura_oms_envios").insert({
+      fatura_id: fatura.id,
+      oms_invoice_id: String(fatura.oms_invoice_id).toLowerCase(),
+      request_id: requestId,
+      payload,
+      approved_charge_value: payload.invoices[0].approvedChargeValue,
+      status: "enviando",
+      tentativas: 0,
+      enviado_por: OPERADOR_ROBO_OMS.name
+    });
+    if (error) {
+      console.warn("[robo] envio ao OMS nao enfileirado:", error.message);
+      return "erro_enfileirar";
+    }
+    return "enfileirado";
+  } catch (e) {
+    console.warn("[robo] envio ao OMS nao enfileirado:", e?.message);
+    return "erro_enfileirar";
+  }
 }
 async function carregarEmailsAuditores(db) {
   const contagem = /* @__PURE__ */ new Map();
@@ -29296,6 +29357,7 @@ var init_auditoriaRoboCore = __esm({
     init_freteDatabaseService();
     init_auditoriaService();
     init_auditoriaFretesDomain();
+    init_omsEnvioPuro();
     init_nfseFatura();
     init_historicoLancamentos();
     init_correcoesCalculoFatura();
@@ -29332,6 +29394,7 @@ export {
   devolverParaRevisaoSeCteFaltando,
   emailDoAuditor,
   sairCacheCalculo as encerrarCacheCalculoRobo,
+  enfileirarLiberacaoOmsRobo,
   enviarFaturaParaGestaoRobo,
   entrarCacheCalculo as iniciarCacheCalculoRobo,
   laudoResolvidoFora,

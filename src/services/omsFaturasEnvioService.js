@@ -7,9 +7,9 @@
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { acompanharLote, consultarFatura, enviarLote } from './omsFaturasService';
 import { carregarSessao } from '../utils/authLocal';
-import { camposDoLote } from '../utils/omsEnvioPuro';
+import { camposDoLote, montarPayloadLiberacao, omsInvoiceIdValido } from '../utils/omsEnvioPuro';
 
-export { camposDoLote };
+export { camposDoLote, montarPayloadLiberacao, omsInvoiceIdValido };
 
 const TABELA = 'fatura_oms_envios';
 
@@ -23,19 +23,6 @@ export const ROTULO_ENVIO_OMS = {
   erro: 'Falha no envio ao OMS',
   recusado: 'Recusada pelo OMS',
 };
-
-export function omsInvoiceIdValido(id) {
-  return /^[0-9a-f]{24}$/i.test(String(id || '').trim());
-}
-
-/** Corpo do lote de 1 fatura (so liberar). performedBy e definido pelo servidor a partir da sessao. */
-export function montarPayloadLiberacao({ requestId, omsInvoiceId, valorFatura, performedBy }) {
-  return {
-    requestId,
-    ...(performedBy ? { performedBy } : {}),
-    invoices: [{ invoiceId: String(omsInvoiceId).toLowerCase(), approvedChargeValue: Number(Number(valorFatura || 0).toFixed(2)), release: true }],
-  };
-}
 
 /** Estado exibido ao auditor, a partir do registro gravado. */
 export function estadoEnvioOms(envio) {
