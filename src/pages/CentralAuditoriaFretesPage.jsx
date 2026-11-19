@@ -577,6 +577,16 @@ function mesclarDetalheComReferenciaAuditoria(item = {}, referenciaCtes = new Ma
     // prioriza sempre ele; item.detalhes_calculo costuma ser antigo/vazio
     // (veio da importacao da fatura, sem o calculo detalhado).
     detalhes_calculo: base.detalhes_calculo || item.detalhes_calculo || null,
+    // Campos leves da origem do valor (a listagem nao carrega o detalhe completo).
+    origem_motor: base.origem_motor || item.origem_motor || '',
+    origem_dist: base.origem_dist || item.origem_dist || '',
+    origem_tabela: base.origem_tabela || item.origem_tabela || '',
+    origem_rota: base.origem_rota || item.origem_rota || '',
+    origem_cidade: base.origem_cidade || item.origem_cidade || '',
+    origem_destino_cidade: base.origem_destino_cidade || item.origem_destino_cidade || '',
+    origem_transgp_situacao: base.origem_transgp_situacao || item.origem_transgp_situacao || '',
+    origem_contratado: base.origem_contratado || item.origem_contratado || '',
+    origem_transportadora: base.origem_transportadora || item.origem_transportadora || '',
     calculado_frete_verum: verum || Number(item.calculado_frete_verum || 0),
     diferenca_verum: diferencaVerum,
     calculado_frete: amd,
@@ -674,26 +684,46 @@ function motivoAuditoriaLinha(item = {}, semValorNf = false) {
   return nomeStatus(motivo || '-');
 }
 // De onde veio o valor da coluna AMD: DIST (TransGP / fluxo / resposta da Operacao) ou tabela.
+// A listagem traz so campos leves (origem_*); o detalhe completo, quando existe, tem prioridade.
 function origemValorAuditoria(item = {}) {
   if (!Number(item.calculado_frete || 0)) return { txt: '-', title: 'Sem cálculo' };
-  const d = item.detalhes_calculo || {};
+  const det = item.detalhes_calculo || {};
+  const d = {
+    motor: det.motor || item.origem_motor || '',
+    dist: det.dist || item.origem_dist || '',
+    tabela: det.tabela_nome_aplicada || det.tabela_alternativa_aplicada || item.origem_tabela || '',
+    tabelaId: det.tabela_id_aplicada || '',
+    rota: det.rota_nome || item.origem_rota || '',
+    origem: det.origem_cidade || item.origem_cidade || '',
+    destino: det.destino_cidade || item.origem_destino_cidade || '',
+    situacao: det.transgp_situacao || item.origem_transgp_situacao || '',
+    contratado: det.valor_autorizado_viagem ?? item.origem_contratado ?? '',
+    tipoVeiculo: det.tipo_veiculo || '',
+    transportadora: item.transportadora_tabela || det.transportadora_tabela || item.origem_transportadora || '',
+  };
   const dist = String(d.dist || '').trim();
+  const contratado = Number(d.contratado) > 0 ? dinheiro(d.contratado) : '';
+  const trajeto = [d.origem, d.destino].filter(Boolean).join(' → ');
   switch (d.motor) {
     case 'transgp_api':
-    {
-      const contratado = Number(d.valor_autorizado_viagem) > 0 ? ` · contratado ${dinheiro(d.valor_autorizado_viagem)}` : ' · sem contratado';
-      return { txt: dist ? `DIST ${dist}` : 'DIST TransGP', sub: `TransGP${contratado}`, title: `Auditoria da TransGP (${d.transgp_situacao || 'situação não informada'}): a DIST decidiu o pagamento. O AMD repete o valor do CT-e (na API: ctes[].valor_total); o frete contratado da DIST é ${Number(d.valor_autorizado_viagem) > 0 ? dinheiro(d.valor_autorizado_viagem) : 'vazio'} e o total cobrado na DIST ${dinheiro(d.valor_cobrado_viagem || 0)}.` };
-    }
+      return { txt: dist ? `DIST ${dist}` : 'DIST TransGP', sub: `TransGP · ${contratado ? `contratado ${contratado}` : 'sem contratado'}`, title: `Auditoria da TransGP (${d.situacao || 'situação não informada'}): a DIST decidiu o pagamento. O AMD repete o valor do CT-e; o frete contratado da DIST é ${contratado || 'vazio'}.` };
     case 'fluxo_lotacao':
-      return { txt: dist ? `DIST ${dist}` : 'DIST do fluxo', sub: 'Fluxo de lotação', title: 'Valor contratado da DIST no fluxo de lotação (saldo da viagem).' };
+      return { txt: dist ? `DIST ${dist}` : 'DIST do fluxo', sub: `Fluxo de lotação${contratado ? ` · ${contratado}` : ''}`, title: `Valor da DIST no fluxo de lotação (tabela lotacao_cargas, campo frete da viagem${contratado ? `: ${contratado}` : ''}). Não vem de tabela de frete.${trajeto ? ` Rota: ${trajeto}.` : ''}${d.tipoVeiculo ? ` Veículo: ${d.tipoVeiculo}.` : ''}` };
     case 'resposta_operacao_lotacao':
       return { txt: dist ? `DIST ${dist}` : 'DIST (Operação)', sub: 'Resposta da Operação', title: 'DIST escolhida pela Operação ao responder o questionamento.' };
     case 'tabela_lotacao':
-      return { txt: 'Tabela', sub: 'Lotação', title: `Tabela de lotação${d.origem_cidade ? `: ${d.origem_cidade} → ${d.destino_cidade || '?'}` : ''}${d.tipo_veiculo ? ` (${d.tipo_veiculo})` : ''}` };
+      return { txt: 'Tabela de lotação', sub: trajeto || 'Lotação', title: `Tabela de lotação${trajeto ? `: ${trajeto}` : ''}${d.tipoVeiculo ? ` (${d.tipoVeiculo})` : ''}` };
     case 'simulador_realizado':
       return { txt: 'Simulador', sub: 'Realizado', title: 'Valor simulado pelo realizado.' };
-    default:
-      return { txt: 'Tabela', sub: 'Frete', title: 'Calculado pela tabela de frete da transportadora (motor padrão).' };
+    default: {
+      const tabela = d.tabela || (d.tabelaId ? `Tabela ${d.tabelaId}` : 'Principal');
+      const rota = d.rota || trajeto;
+      return {
+        txt: `Tabela: ${tabela}`,
+        sub: rota ? `Rota: ${rota}` : (d.origem ? `Origem: ${d.origem}` : 'Frete'),
+        title: ['Calculado pela tabela de frete da transportadora.', d.transportadora && `Transportadora: ${d.transportadora}`, `Tabela: ${tabela}`, d.origem && `Origem da tabela: ${d.origem}`, rota && `Rota: ${rota}`].filter(Boolean).join(' | '),
+      };
+    }
   }
 }
 
@@ -3495,7 +3525,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                   {(() => {
                     const o = origemValorAuditoria(item);
                     return (
-                      <td style={{ cursor: 'pointer', whiteSpace: 'nowrap', fontSize: 12 }} onClick={() => alternarDetalheCte(item)} title={o.title}>
+                      <td style={{ cursor: 'pointer', fontSize: 12, maxWidth: 220 }} onClick={() => alternarDetalheCte(item)} title={o.title}>
                         <strong>{o.txt}</strong>{o.sub && <div style={{ color: '#64748b', fontSize: 11 }}>{o.sub}</div>}
                       </td>
                     );
