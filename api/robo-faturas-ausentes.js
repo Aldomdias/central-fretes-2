@@ -53,11 +53,15 @@ async function idsComFatura(db, ctes, nomesTransportadora) {
   const chaves = [...new Set(ctes.map((c) => digitos(c.chave_cte)).filter(Boolean))];
   const numeros = [...new Set(ctes.map((c) => numeroCte(c.numero_cte)).filter(Boolean))];
   const achados = new Set();
-  const consultar = async (coluna, lista, aoAchar) => {
+  const consultar = async (coluna, lista, aoAchar, semChave = false) => {
     const lotes = [];
     for (let i = 0; i < lista.length; i += 100) lotes.push(lista.slice(i, i + 100));
-    for (let i = 0; i < lotes.length; i += 10) {
-      const respostas = await Promise.all(lotes.slice(i, i + 10).map((lote) => db.from('fatura_detalhes').select('fatura_id,chave_cte,numero_cte,transportadora').in(coluna, lote)));
+    for (let i = 0; i < lotes.length; i += 5) {
+      const respostas = await Promise.all(lotes.slice(i, i + 5).map(async (lote) => {
+        const consulta = () => { const q = db.from('fatura_detalhes').select('fatura_id,chave_cte,numero_cte,transportadora').in(coluna, lote); return semChave ? q.eq('chave_cte', '') : q; };
+        const r = await consulta();
+        return r.error ? consulta() : r; // uma nova tentativa antes de desistir
+      }));
       respostas.forEach(({ data, error }) => {
         if (error) throw new Error(`fatura_detalhes: ${error.message}`);
         (data || []).forEach(aoAchar);
@@ -69,7 +73,7 @@ async function idsComFatura(db, ctes, nomesTransportadora) {
   // "sem localizar o CT-e" (sem chave), mas o CT-e ja esta nela: conta como vinculado. A transportadora da linha
   // pode vir com outro nome; vale tambem a transportadora da FATURA a que a linha pertence.
   const porNumero = [];
-  await consultar('numero_cte', [...new Set([...numeros, ...ctes.map((c) => digitos(c.numero_cte)).filter(Boolean)])], (d) => { porNumero.push(d); });
+  await consultar('numero_cte', [...new Set([...numeros, ...ctes.map((c) => digitos(c.numero_cte)).filter(Boolean)])], (d) => { porNumero.push(d); }, true);
   const idsFat = [...new Set(porNumero.map((d) => d.fatura_id).filter(Boolean))];
   const transpDaFatura = new Map();
   for (let i = 0; i < idsFat.length; i += 100) {
