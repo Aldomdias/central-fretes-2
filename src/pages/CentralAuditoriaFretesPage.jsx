@@ -39,6 +39,7 @@ import {
   parseFaturaVerum,
   lerOmsInvoiceId,
 } from '../utils/auditoriaFretesImport';
+import { omsInvoiceIdValido } from '../utils/omsEnvioPuro';
 import { importarIdsOmsDaPlanilha, resumirImportacaoIds } from '../services/omsIdFaturasService';
 import { ROTULO_ENVIO_OMS, atualizarEnvioOms, estadoEnvioOms, listarEnviosOms, liberarFaturaNoOms, liberarNoOmsAposAprovacao } from '../services/omsFaturasEnvioService';
 import { getSupabaseClient as getSupabaseOms } from '../lib/supabaseClient';
@@ -1425,6 +1426,8 @@ const ROTULO_PAGAMENTO = {
 // "Liberada" = passou da auditoria pro fluxo de pagamento. Se isso aconteceu
 // sem 100% dos CT-es auditados, alguem pulou etapa.
 const STATUS_LIBERADAS = new Set(['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO', 'ENVIADA_AO_FINANCEIRO', 'PAGA', 'PAGA_COM_DESCONTO', 'PAGA_COM_DIVERGENCIA']);
+// Fatura em aberto sem o Id do OMS: nao consegue ser liberada no OMS/SAP (importe o Id pela planilha da Verum).
+const semIdOms = (f) => Boolean(f) && !ENCERRADOS.has(f.status) && !String(f.status || '').startsWith('PAGA') && !omsInvoiceIdValido(f.oms_invoice_id);
 // Gerar o laudo pro transportador marca AGUARDANDO_TRANSPORTADORA, exceto
 // quando a fatura ja esta mais adiante no fluxo (reimprimir o laudo nao pode
 // fazer uma fatura ja liberada/paga/cancelada "voltar" de status).
@@ -2336,6 +2339,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   };
 
   const liberarParaPagamento = async () => {
+    if (semIdOms(fatura) && !window.confirm('Esta fatura NÃO tem o Id do OMS: será liberada no AMD, mas NÃO será enviada ao SAP.' + String.fromCharCode(10, 10) + 'Importe o Id pela planilha da Verum (Importar só o Id do OMS) para poder enviar.' + String.fromCharCode(10, 10) + 'Liberar mesmo assim?')) return;
     const resumo = resumirDetalhesAuditoria(detalhes, toleranciaFatura);
     const auditoriaIncompleta = auditoriaEstaIncompleta(resumo);
     // valor_fatura (confiavel) - calculado, nao cobrancaAcima-cobrancaAbaixo:
@@ -4175,6 +4179,11 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
           Enviar para Protocolo
         </button>
       </div>
+      {semIdOms(fatura) && (
+        <div className="hint-box compact" style={{ marginTop: 8, borderColor: '#fca5a5', background: '#fef2f2', color: '#991b1b' }}>
+          <strong>Fatura não apta para enviar ao SAP: sem o Id do OMS.</strong> Ela pode ser liberada no AMD, mas não vai ao OMS. Importe o Id (botão "Importar só o Id do OMS" na lista de faturas, com a planilha da Verum).
+        </div>
+      )}
       {mensagemLiberacao && (
         <div className="hint-box compact" style={{ marginTop: 8 }}>{mensagemLiberacao}</div>
       )}
@@ -7901,7 +7910,7 @@ ${portaisLaudo.length ? `
                 return (
                   <tr key={fatura.id} onClick={() => setAberta(fatura)} style={{ cursor: 'pointer', ...(auditadaCompleta ? { background: '#f0fdf4', borderLeft: '3px solid #16a34a' } : {}), ...(repetida ? { background: '#fff7ed', borderLeft: '4px solid #ea580c' } : {}) }}>
                     <td onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selecionadasIds.includes(fatura.id)} onChange={() => alternarSelecao(fatura.id)} /></td>
-                    <td><strong>{fatura.numero_fatura}</strong>{repetida && <span title={`Esta fatura aparece ${repetida.total}x para a mesma transportadora (mesmo numero e serie). Use "Excluir faturas" para apagar as copias.`} style={{ display: 'inline-block', marginLeft: 6, padding: '1px 6px', borderRadius: 999, background: '#ea580c', color: '#fff', fontSize: 11, fontWeight: 700 }}>REPETIDA ×{repetida.total}</span>}{fatura.ocorrencia_texto && <span title={`Ocorrencia: ${fatura.ocorrencia_texto}`} style={{ marginLeft: 4 }}>📌</span>}</td>
+                    <td><strong>{fatura.numero_fatura}</strong>{repetida && <span title={`Esta fatura aparece ${repetida.total}x para a mesma transportadora (mesmo numero e serie). Use "Excluir faturas" para apagar as copias.`} style={{ display: 'inline-block', marginLeft: 6, padding: '1px 6px', borderRadius: 999, background: '#ea580c', color: '#fff', fontSize: 11, fontWeight: 700 }}>REPETIDA ×{repetida.total}</span>}{semIdOms(fatura) && <span title="Fatura sem o Id do OMS: nao consegue ser enviada ao SAP. Use 'Importar so o Id do OMS' com a planilha da Verum." style={{ display: 'inline-block', marginLeft: 6, padding: '1px 6px', borderRadius: 999, background: '#b91c1c', color: '#fff', fontSize: 11, fontWeight: 700 }}>SEM ID OMS</span>}{fatura.ocorrencia_texto && <span title={`Ocorrencia: ${fatura.ocorrencia_texto}`} style={{ marginLeft: 4 }}>📌</span>}</td>
                     <td>{fatura.transportadora}</td>
                     <td title={resumoOrigensFaturas.get(fatura.id)?.tooltip || 'Origem ainda nao carregada/auditada'}>
                       {resumoOrigensFaturas.get(fatura.id)?.principal || '-'}
