@@ -7,6 +7,7 @@ import { chaveCasamentoCte, cnpj14, serieDaChave, situacaoLancamentoCte } from '
 import { ehLinhaNfse } from './nfseFatura.js';
 import { parseNumeroPlanilha } from './parseNumeroPlanilha.js';
 import { linhaFenixDoCte } from './termoCorrecaoFenix.js';
+import { omsInvoiceIdValido } from './omsEnvioPuro.js';
 
 export const TOLERANCIA_VALOR_LISTA = 0.05;
 
@@ -494,6 +495,9 @@ const faixa = (...ids) => (l) => ids.includes(faixaDaLinha(l));
 const ctes = (...ids) => comFatura((l) => ids.includes(situacaoCtes(l.ctes)));
 const ativa = (l) => !inativa(l.fatura);
 
+// Fatura ativa e ainda nao paga/encerrada sem o Id do OMS: nao consegue ser enviada ao SAP pela integracao.
+export const faturaSemIdOms = (f) => Boolean(f) && !inativa(f) && !String(f.status || '').startsWith('PAGA') && !omsInvoiceIdValido(f.oms_invoice_id);
+
 // Grupos de cards. Dentro do grupo escolhe-se um card; entre grupos os filtros se somam.
 export const GRUPOS_DIAGNOSTICO = [
   { id: 'localizacao', titulo: 'Na plataforma', soComLista: true, cards: [
@@ -515,6 +519,10 @@ export const GRUPOS_DIAGNOSTICO = [
     { id: 'fornecedor', rotulo: 'Aguardando fornecedor', cor: '#b78700', teste: auditoria('FORNECEDOR'), dica: 'Laudo enviado ou aguardando nova fatura.' },
     { id: 'gestao', rotulo: 'Aguardando gestão', cor: '#9153F0', teste: auditoria('GESTAO'), dica: 'Na aprovacao da gestão.' },
     { id: 'liberadas', rotulo: 'Liberadas', cor: '#04a484', teste: auditoria('LIBERADA'), dica: 'Liberadas, no financeiro ou já pagas.' },
+  ] },
+  { id: 'oms', titulo: 'Integração OMS/SAP', cards: [
+    { id: 'sem_id_oms', rotulo: 'Sem Id do OMS', cor: '#b91c1c', teste: comFatura((l) => faturaSemIdOms(l.fatura)), dica: 'Em aberto e sem o Id do OMS: não consegue ser enviada ao SAP. Importe o Id pela planilha da Verum (botão "Importar só o Id do OMS" na lista de faturas).' },
+    { id: 'com_id_oms', rotulo: 'Com Id do OMS', cor: '#14733b', teste: comFatura((l) => ativa(l) && omsInvoiceIdValido(l.fatura.oms_invoice_id)), dica: 'Tem o Id do OMS: pode ser enviada ao SAP ao liberar.' },
   ] },
   { id: 'lancamento', titulo: 'Lançamento da fatura', cards: [
     { id: 'lancadas', rotulo: 'Já lançadas', cor: '#14733b', teste: comFatura((l) => ativa(l) && faturaLancada(l.fatura)), dica: 'Com partida ou lançamento financeiro, ou já paga.' },
