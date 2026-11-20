@@ -21,6 +21,7 @@ import {
   filtrarPorCards,
   GRUPOS_DIAGNOSTICO,
   montarLinhasDiagnostico,
+  faturaSemIdOms,
   parseListaFaturas,
   previsaoPagamento,
   proximaAcao,
@@ -1171,6 +1172,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                           {f ? <button type="button" className="link-button" onClick={(e) => { e.stopPropagation(); abrir(l); }}>{l.numero}</button> : <strong>{l.numero}</strong>}
                           {l.repetida > 1 && <div style={{ fontSize: 11, color: '#b78700' }}>{l.repetida} faturas</div>}
                           {f && <EvidenciasFinanceiras fatura={f} />}
+                          {faturaSemIdOms(f) && <div title="Fatura sem o Id do OMS: nao consegue ser enviada ao SAP. Use 'Importar so o Id do OMS' na lista de faturas." style={{ display: 'inline-block', marginTop: 2, padding: '1px 6px', borderRadius: 999, background: '#b91c1c', color: '#fff', fontSize: 11, fontWeight: 700 }}>SEM ID OMS</div>}
                           {agrupamentoManual(f) && (
                             <div
                               style={{ fontSize: 11, fontWeight: 700, color: faturaLancada(f) ? '#14733b' : '#9153F0', whiteSpace: 'nowrap' }}

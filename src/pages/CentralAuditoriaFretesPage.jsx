@@ -4281,6 +4281,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const mostrarFaturas = modo === 'faturas';
   const sessao = carregarSessao();
   const arquivoRef = useRef(null);
+  // Importacao so do Id do OMS (precisa ficar ANTES do retorno antecipado da fatura aberta: regra dos hooks).
+  const arquivoIdsRef = useRef(null);
   const [filtro, setFiltro] = useState(() => filtrosIniciais?.filtro || '');
   const [filtroFaturasLote, setFiltroFaturasLote] = useState('');
   const [mapaVinculosLaudo, setMapaVinculosLaudo] = useState(null);
@@ -6842,7 +6844,6 @@ ${portaisLaudo.length ? `
   }
 
   // Importacao SO do Id do OMS: atualiza apenas faturas.oms_invoice_id das faturas que ja existem (nao cria, nao regrava valores/CT-es).
-  const arquivoIdsRef = useRef(null);
   const importarSoIds = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
