@@ -38,6 +38,9 @@ import {
   parseDetalheFaturaVerum,
   parseFaturaVerum,
   lerOmsInvoiceId,
+  camposDaReimportacao,
+  faturaJaTratada,
+  planejarCtesReimportacao,
 } from '../utils/auditoriaFretesImport';
 import { omsInvoiceIdValido } from '../utils/omsEnvioPuro';
 import { STATUS_LIBERADAS_OMS } from '../utils/diagnosticoFaturas';
@@ -6916,6 +6919,18 @@ ${portaisLaudo.length ? `
       const r = await importarIdsOmsDaPlanilha(rows, { aoProgredir: (p) => setMensagemImportacao(`Id do OMS: ${p.etapa === 'buscando' ? 'buscando faturas' : 'gravando'} ${p.feitas}/${p.total}...`) });
       const exemplos = [...r.pendencias, ...r.falhas].slice(0, 5).map((x) => `${x.numero} (${x.motivo})`).join('; ');
       setMensagemImportacao(`Id do OMS: ${resumirImportacaoIds(r)}${exemplos ? ` Exemplos: ${exemplos}` : ''}`);
+      // Recarrega as faturas para a lista e o Diagnostico mostrarem o Id novo sem precisar atualizar a pagina.
+      if (r.gravadas > 0) {
+        try {
+          const atualizado = await carregarPlataformaAuditoria();
+          onState({
+            ...atualizado,
+            protocolos: state.protocolos?.length ? state.protocolos : atualizado.protocolos,
+            solicitacaoHistorico: state.solicitacaoHistorico?.length ? state.solicitacaoHistorico : atualizado.solicitacaoHistorico,
+            pagamentos: state.pagamentos?.length ? state.pagamentos : atualizado.pagamentos,
+          });
+        } catch { /* o Id ja foi gravado; aparece ao recarregar a pagina */ }
+      }
     } catch (error) {
       setMensagemImportacao(`Erro ao importar o Id do OMS: ${error.message}`);
     } finally {
@@ -6991,6 +7006,18 @@ ${portaisLaudo.length ? `
       let detalhesSalvos = 0;
       let processadas = 0;
       const detalhesPorFaturaImportada = new Map();
+      let faturasSemMudanca = 0;
+      let faturasPreservadas = 0;
+      let ctesCompletados = 0;
+      // Fatura que ja existe: carrega o registro completo para so completar o que esta vazio.
+      const faturasExistentesCache = new Map();
+      const faturaExistente = async (id) => {
+        if (faturasExistentesCache.has(id)) return faturasExistentesCache.get(id);
+        const { data, error } = await getSupabaseOms().from('faturas').select('*').eq('id', id).maybeSingle();
+        if (error) throw new Error(`Leitura da fatura existente: ${error.message}`);
+        faturasExistentesCache.set(id, data || {});
+        return data || {};
+      };
 
       // Grava varias faturas em paralelo (pool com limite) em vez de uma por
       // vez: cada fatura eh uma ida ao banco (gravar + limpar + gravar CT-es),
@@ -7025,32 +7052,66 @@ ${portaisLaudo.length ? `
             (raizCnpjValida(raizFatura) && mapaAuditorPorRaizCnpj.get(raizFatura))
             || mapaAuditorPorTransportadora.get(normalizarNomeTransportadora(nomeResolvido))
           );
-          const resultado = await salvarFaturaSupabase({
-            ...(existenteId ? { id: existenteId } : {}),
-            ...fatura,
-            ...(existenteId ? {} : { status: fatura.status || 'RECEBIDA' }),
-            ...(auditorDaCarteira || {}),
-            importado_por: sessao?.nome || sessao?.email || '',
-            importado_em: new Date().toISOString(),
-          });
-          if (!resultado?.ok || !resultado.id) return;
+          const db = getSupabaseOms();
           const omsIdLinha = lerOmsInvoiceId(row);
-          if (omsIdLinha) {
-            try { await getSupabaseOms()?.from('faturas').update({ oms_invoice_id: omsIdLinha }).eq('id', resultado.id); } catch { /* coluna ainda nao criada: importacao segue */ }
+          let resultado;
+          let atual = null;
+          if (existenteId) {
+            // Reimportacao SO COMPLETA: nunca sobrescreve a fatura (nem status, calculo ou auditor) e nunca apaga CT-e.
+            // Unica excecao: dados de envio ao ERP (vem do OMS e so complementam).
+            atual = await faturaExistente(existenteId);
+            const campos = camposDaReimportacao(atual, { ...fatura, ...(omsIdLinha ? { oms_invoice_id: omsIdLinha } : {}) }, ['transportadora', 'status']);
+            if (Object.keys(campos).length) {
+              const { error: erroCompletar } = await db.from('faturas').update({ ...campos, updated_at: new Date().toISOString() }).eq('id', existenteId);
+              if (erroCompletar) throw new Error(`Completar fatura ${fatura.numero_fatura}: ${erroCompletar.message}`);
+              faturasAtualizadas += 1;
+            } else {
+              faturasSemMudanca += 1;
+            }
+            resultado = { ok: true, id: existenteId };
+          } else {
+            resultado = await salvarFaturaSupabase({
+              ...fatura,
+              status: fatura.status || 'RECEBIDA',
+              ...(auditorDaCarteira || {}),
+              importado_por: sessao?.nome || sessao?.email || '',
+              importado_em: new Date().toISOString(),
+            });
+            if (!resultado?.ok || !resultado.id) return;
+            if (omsIdLinha) {
+              try { await db?.from('faturas').update({ oms_invoice_id: omsIdLinha }).eq('id', resultado.id); } catch { /* coluna ainda nao criada: importacao segue */ }
+            }
+            faturasNovas += 1;
+            faturasExistentesCache.set(resultado.id, { id: resultado.id, status: 'RECEBIDA', ctes_auditados: 0 });
           }
           faturasSalvas += 1;
-          if (existenteId) faturasAtualizadas += 1;
-          else faturasNovas += 1;
           existentesPorChave.set(chaveExistente, resultado.id);
           if (chaveCnpj) existentesPorChave.set(chaveCnpj, resultado.id);
           const detalhes = detalhesDaFatura(grupos, fatura.numero_fatura, fatura.serie_fatura, fatura.cnpj_transportadora, nomeOriginalFatura)
             .map((item) => parseDetalheFaturaVerum(item, resultado.id, fatura));
           if (detalhes.length) {
-            // Reimportacao: limpa os CT-es antigos da fatura para nao duplicar.
-            if (existenteId) await limparDetalhesFaturaSupabase(existenteId);
-            await salvarDetalhesFaturaSupabase(detalhes);
-            detalhesSalvos += detalhes.length;
-            detalhesPorFaturaImportada.set(resultado.id, detalhes);
+            if (!existenteId) {
+              await salvarDetalhesFaturaSupabase(detalhes);
+              detalhesSalvos += detalhes.length;
+              detalhesPorFaturaImportada.set(resultado.id, detalhes);
+            } else if (faturaJaTratada(atual)) {
+              // Fatura ja tratada: os CT-es ficam exatamente como estao.
+              faturasPreservadas += 1;
+            } else {
+              const { data: gravados, error: erroCtes } = await db.from('fatura_detalhes').select('*').eq('fatura_id', existenteId);
+              if (erroCtes) throw new Error(`CT-es da fatura ${fatura.numero_fatura}: ${erroCtes.message}`);
+              const plano = planejarCtesReimportacao(gravados || [], detalhes);
+              if (plano.inserir.length) {
+                await salvarDetalhesFaturaSupabase(plano.inserir);
+                detalhesSalvos += plano.inserir.length;
+              }
+              for (const item of plano.completar) {
+                // eslint-disable-next-line no-await-in-loop
+                const { error: erroItem } = await db.from('fatura_detalhes').update(item.campos).eq('id', item.id);
+                if (erroItem) throw new Error(`Completar CT-e da fatura ${fatura.numero_fatura}: ${erroItem.message}`);
+              }
+              ctesCompletados += plano.completar.length;
+            }
           }
         })();
         emAndamentoPorChave.set(chaveSerial, execucao);
@@ -7101,19 +7162,23 @@ ${portaisLaudo.length ? `
         recebidas: rowsFaturas.length,
         novas: faturasNovas,
         atualizadas: faturasAtualizadas,
+        semMudanca: faturasSemMudanca,
+        preservadas: faturasPreservadas,
+        ctesCompletados,
         ignoradas: analise.faturasIgnoradas,
         ctesVinculados: detalhesSalvos,
         ctesNaoVinculados: analise.detalhesNaoVinculados,
-        faltamRecalcular: faturasSalvas,
+        faltamRecalcular: faturasNovas,
       };
       setUltimaCargaFaturas(resumoCarga);
       localStorage.setItem(ULTIMA_CARGA_FATURAS_KEY, JSON.stringify(resumoCarga));
       registrarImportacao({
         tipo: 'faturas-verum', arquivos: [file], linhas: rowsFaturas.length,
-        resumo: `${faturasNovas} nova(s), ${faturasAtualizadas} atualizada(s), ${detalhesSalvos} CT-e(s) vinculado(s)`,
+        resumo: `${faturasNovas} nova(s), ${faturasAtualizadas} completada(s), ${faturasPreservadas} tratada(s) preservada(s), ${detalhesSalvos} CT-e(s) novo(s)`,
       });
       setMensagemImportacao(
-        `Importacao concluida: ${faturasNovas} nova(s), ${faturasAtualizadas} atualizada(s), ${detalhesSalvos} CT-e(s) vinculado(s), `
+        `Importacao concluida: ${faturasNovas} nova(s); ${faturasAtualizadas} existente(s) completada(s) so nos campos vazios; ${faturasSemMudanca} sem nada a completar; `
+        + `${faturasPreservadas} ja tratada(s) preservada(s) (CT-es intactos); ${detalhesSalvos} CT-e(s) novo(s), ${ctesCompletados} CT-e(s) completado(s), `
         + `${analise.faturasIgnoradas} fatura(s) ignorada(s). `
         + `Use "Recalcular CT-es" em cada fatura para calcular o status AMD.${alertaVinculo}`,
       );
@@ -7138,7 +7203,7 @@ ${portaisLaudo.length ? `
         <div className="section-row compact-top">
           <div>
             <div className="panel-title">Importar fatura Verum</div>
-            <p>Planilha do Verum com as abas Faturas e Detalhes. Reimportar a mesma fatura atualiza, não duplica. Depois use "Recalcular CT-es" em cada fatura para o status AMD.</p>
+            <p>Planilha do Verum com as abas Faturas e Detalhes. Reimportar uma fatura que já existe só completa campos vazios: nunca sobrescreve nem apaga, e fatura já tratada não é alterada. Depois use "Recalcular CT-es" em cada fatura para o status AMD.</p>
           </div>
           <div className="actions-right">
             <button className="btn-primary" disabled={importando} onClick={() => arquivoRef.current?.click()}>
@@ -7835,7 +7900,8 @@ ${portaisLaudo.length ? `
               <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 8 }}>
                 <span>Recebidas: <strong>{Number(ultimaCargaFaturas.recebidas || 0).toLocaleString('pt-BR')}</strong></span>
                 <span>Novas: <strong>{Number(ultimaCargaFaturas.novas || 0).toLocaleString('pt-BR')}</strong></span>
-                <span>Atualizadas, sem duplicar: <strong>{Number(ultimaCargaFaturas.atualizadas || 0).toLocaleString('pt-BR')}</strong></span>
+                <span title="Faturas que ja existiam: so os campos vazios foram preenchidos. Nada foi sobrescrito.">Completadas (só vazios): <strong>{Number(ultimaCargaFaturas.atualizadas || 0).toLocaleString('pt-BR')}</strong></span>
+                <span title="Faturas ja tratadas: CT-es e valores ficaram exatamente como estavam.">Tratadas preservadas: <strong>{Number(ultimaCargaFaturas.preservadas || 0).toLocaleString('pt-BR')}</strong></span>
                 <span>Ignoradas: <strong>{Number(ultimaCargaFaturas.ignoradas || 0).toLocaleString('pt-BR')}</strong></span>
                 <span>CT-es vinculados: <strong>{Number(ultimaCargaFaturas.ctesVinculados || 0).toLocaleString('pt-BR')}</strong></span>
                 <span style={{ color: ultimaCargaFaturas.ctesNaoVinculados ? '#b45309' : undefined }}>CT-es sem vínculo: <strong>{Number(ultimaCargaFaturas.ctesNaoVinculados || 0).toLocaleString('pt-BR')}</strong></span>

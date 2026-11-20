@@ -63,6 +63,21 @@ export function proximaAcao(envio, agora = Date.now()) {
   return null; // treated, blocked: fim.
 }
 
+/**
+ * Quando o OMS confirma que a fatura entrou na fila do SAP, o envio ao ERP fica registrado na propria fatura
+ * (data_envio_erp, enviado_por, valor_enviado), sem depender de reimportar a planilha. null = ainda nao.
+ */
+export function camposEnvioErpDaFatura(envio = {}, campos = {}) {
+  const outcome = campos.outcome ?? envio.outcome;
+  const quando = campos.queued_for_erp_at ?? envio.queued_for_erp_at;
+  if (!['queuedForErp', 'alreadyReleased'].includes(outcome) || !quando) return null;
+  return {
+    data_envio_erp: quando,
+    enviado_por: campos.oms_sent_by || envio.oms_sent_by || envio.enviado_por || null,
+    ...(envio.approved_charge_value != null ? { valor_enviado: Number(envio.approved_charge_value) } : {}),
+  };
+}
+
 export const OPERADOR_ROBO_OMS = Object.freeze({ id: 'robo-auditor', name: 'Robo Auditor' });
 
 export const omsInvoiceIdValido = (id) => /^[0-9a-f]{24}$/i.test(String(id || '').trim());

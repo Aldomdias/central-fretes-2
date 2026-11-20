@@ -8,7 +8,7 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { criarClienteOms, lerConfigOms, OmsError } from './_omsFreteAudit.mjs';
-import { camposDoLote, proximaAcao, LIMITE_SAP_HORAS } from '../src/utils/omsEnvioPuro.js';
+import { camposDoLote, camposEnvioErpDaFatura, proximaAcao, LIMITE_SAP_HORAS } from '../src/utils/omsEnvioPuro.js';
 
 export const config = { maxDuration: 120 };
 
@@ -60,6 +60,9 @@ export default async function handler(req, res) {
           let campos = camposDoLote(lote, e.oms_invoice_id);
           if (campos.sent_to_erp && !e.sent_to_erp_visto_em) campos.sent_to_erp_visto_em = new Date().toISOString();
           await salvar(e.id, campos);
+          // Entrou na fila do SAP: registra o envio ao ERP na propria fatura (so se ainda nao houver data).
+          const erp = camposEnvioErpDaFatura(e, campos);
+          if (erp) await db.from('faturas').update(erp).eq('id', e.fatura_id).is('data_envio_erp', null);
         } else if (acao === 'consultar_fatura') {
           const s = await oms.consultarFatura(e.oms_invoice_id);
           await salvar(e.id, s.state === 'sentToErp' ? { sent_to_erp: true, sent_to_erp_visto_em: new Date().toISOString() } : {});

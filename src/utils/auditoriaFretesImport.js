@@ -156,6 +156,90 @@ export function chaveFatura(numeroFatura, serieFatura) {
   return `${parteChave(numeroFatura)}::${parteChaveSerie(serieFatura)}`;
 }
 
+// ---------------------------------------------------------------------------
+// Reimportacao SO COMPLETA (pedido do usuario, 20/11/2026): fatura que ja existe nunca e sobrescrita.
+// - fatura: so preenche campo que esta VAZIO no sistema (null/''), nunca troca valor, status, auditor ou calculo;
+// - CT-es de fatura ja tratada (saiu de RECEBIDA ou tem CT-e auditado): nao sao tocados;
+// - CT-es de fatura ainda nao tratada: acrescenta os que faltam e completa campos vazios. Nunca apaga.
+// ---------------------------------------------------------------------------
+const campoVazio = (v) => v === null || v === undefined || (typeof v === 'string' && v.trim() === '');
+
+export function faturaJaTratada(f) {
+  return Boolean(f) && (String(f.status || 'RECEBIDA') !== 'RECEBIDA' || Number(f.ctes_auditados || 0) > 0);
+}
+
+/** Campos de `nova` que podem entrar em `atual` sem sobrescrever nada (so os vazios no sistema). */
+export function camposParaCompletar(atual = {}, nova = {}, ignorar = []) {
+  const campos = {};
+  Object.entries(nova || {}).forEach(([k, v]) => {
+    if (ignorar.includes(k) || campoVazio(v)) return;
+    if (campoVazio(atual?.[k])) campos[k] = v;
+  });
+  return campos;
+}
+
+// Envio ao ERP vem do OMS e so complementa a fatura (nao e trabalho da auditoria): a reimportacao pode
+// atualizar esses campos mesmo em fatura ja tratada, quando o arquivo traz um valor diferente.
+export const CAMPOS_ENVIO_ERP = ['data_envio_erp', 'enviado_por', 'valor_enviado'];
+
+/** Campos a gravar numa fatura que ja existe: completa os vazios e atualiza o envio ao ERP. */
+export function camposDaReimportacao(atual = {}, nova = {}, ignorar = []) {
+  const campos = camposParaCompletar(atual, nova, ignorar);
+  CAMPOS_ENVIO_ERP.forEach((k) => {
+    const v = nova?.[k];
+    if (!campoVazio(v) && String(v) !== String(atual?.[k] ?? '')) campos[k] = v;
+  });
+  return campos;
+}
+
+const IGNORAR_CTE = ['id', 'fatura_id', 'numero_fatura', 'serie_fatura', 'status'];
+const chaveCteDe = (d) => { const c = String(d?.chave_cte || '').replace(/\D/g, ''); return c.length === 44 ? c : ''; };
+const numSerieDe = (d) => `${parteChave(d?.numero_cte)}|${parteChaveSerie(d?.serie_cte)}`;
+const emissorDe = (d) => String(d?.cnpj_emissor || '').replace(/\D/g, '');
+
+/**
+ * CT-es da reimportacao de uma fatura AINDA NAO TRATADA contra os que ja estao gravados.
+ * Casa pela chave de acesso; sem chave, por numero + serie (+ CNPJ emissor quando houver).
+ * Retorna { inserir: [linhas novas], completar: [{ id, campos }] }. Nunca apaga nem sobrescreve.
+ */
+export function planejarCtesReimportacao(existentes = [], novos = []) {
+  const porChave = new Map();
+  const porNumSerie = new Map();
+  existentes.forEach((e) => {
+    const c = chaveCteDe(e);
+    if (c) porChave.set(c, e);
+    const k = numSerieDe(e);
+    porNumSerie.set(k, [...(porNumSerie.get(k) || []), e]);
+  });
+  const acharExistente = (n) => {
+    const c = chaveCteDe(n);
+    if (c && porChave.has(c)) return porChave.get(c);
+    const candidatos = porNumSerie.get(numSerieDe(n)) || [];
+    const emissor = emissorDe(n);
+    const mesmoEmissor = emissor ? candidatos.filter((e) => emissorDe(e) === emissor) : [];
+    if (mesmoEmissor.length === 1) return mesmoEmissor[0];
+    // Sem emissor para desempatar: so casa quando ha um unico CT-e com esse numero/serie.
+    const semEmissorConflitante = candidatos.filter((e) => !emissor || !emissorDe(e) || emissorDe(e) === emissor);
+    return semEmissorConflitante.length === 1 ? semEmissorConflitante[0] : null;
+  };
+  const inserir = [];
+  const completar = [];
+  const vistos = new Set();
+  novos.forEach((n) => {
+    const e = acharExistente(n);
+    if (e) {
+      const campos = camposParaCompletar(e, n, IGNORAR_CTE);
+      if (Object.keys(campos).length) completar.push({ id: e.id, campos });
+      return;
+    }
+    const k = chaveCteDe(n) || `${numSerieDe(n)}|${emissorDe(n)}`;
+    if (vistos.has(k)) return;
+    vistos.add(k);
+    inserir.push(n);
+  });
+  return { inserir, completar };
+}
+
 // Identifica a transportadora pelo CNPJ (raiz) quando disponível — imune a
 // nome digitado diferente entre a aba Faturas e a aba Detalhes — e cai pro
 // nome normalizado só quando não há CNPJ. Sem isso, duas transportadoras

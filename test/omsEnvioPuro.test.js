@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { proximaAcao, camposDoLote } from '../src/utils/omsEnvioPuro.js';
+import { proximaAcao, camposDoLote, camposEnvioErpDaFatura } from '../src/utils/omsEnvioPuro.js';
 
 const base = Date.parse('2026-11-19T12:00:00Z');
 const min = (n) => new Date(base - n * 60000).toISOString();
@@ -40,4 +40,12 @@ test('camposDoLote traduz a fatura do lote', () => {
   const c = camposDoLote({ status: 'done', invoices: [{ invoiceId: 'ABC', status: 'done', outcome: 'queuedForErp', sentToErp: false, attempts: 1, bypassedChecks: [{ code: 'X' }] }] }, 'abc');
   assert.deepEqual([c.oms_status, c.outcome, c.sent_to_erp, c.status, c.tentativas], ['done', 'queuedForErp', false, 'enviado', 1]);
   assert.equal(camposDoLote({ status: 'processing', invoices: [] }, 'abc').oms_status, 'processing');
+});
+
+test('fila do SAP confirmada registra o envio ao ERP na fatura', () => {
+  const envio = { enviado_por: 'Ana', approved_charge_value: 113.17 };
+  assert.deepEqual(camposEnvioErpDaFatura(envio, { outcome: 'queuedForErp', queued_for_erp_at: '2026-11-20T14:00:00Z', oms_sent_by: 'amd-log: Ana' }),
+    { data_envio_erp: '2026-11-20T14:00:00Z', enviado_por: 'amd-log: Ana', valor_enviado: 113.17 });
+  assert.equal(camposEnvioErpDaFatura(envio, { outcome: 'blocked' }), null);
+  assert.equal(camposEnvioErpDaFatura(envio, { outcome: 'queuedForErp' }), null);
 });

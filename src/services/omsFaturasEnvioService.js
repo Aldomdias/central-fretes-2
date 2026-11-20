@@ -9,7 +9,7 @@ import { acompanharLote, consultarFatura, enviarLote } from './omsFaturasService
 import { carregarSessao } from '../utils/authLocal';
 import { carregarResumoCtesFaturas } from './diagnosticoFaturasService';
 import { aptidaoEnvioSap } from '../utils/diagnosticoFaturas';
-import { camposDoLote, montarPayloadLiberacao, omsInvoiceIdValido } from '../utils/omsEnvioPuro';
+import { camposDoLote, camposEnvioErpDaFatura, montarPayloadLiberacao, omsInvoiceIdValido } from '../utils/omsEnvioPuro';
 
 export { camposDoLote, montarPayloadLiberacao, omsInvoiceIdValido };
 
@@ -132,7 +132,13 @@ export async function atualizarEnvioOms(envio, nomeAuditor) {
   } else if (campos.sent_to_erp && !envio.sent_to_erp_visto_em) {
     campos = { ...campos, sent_to_erp_visto_em: new Date().toISOString() };
   }
-  return atualizar(envio.id, campos);
+  const salvo = await atualizar(envio.id, campos);
+  // Entrou na fila do SAP: registra o envio ao ERP na propria fatura (so se ainda nao houver data).
+  const erp = camposEnvioErpDaFatura(envio, campos);
+  if (erp) {
+    try { await db().from('faturas').update(erp).eq('id', envio.fatura_id).is('data_envio_erp', null); } catch { /* o cron registra no proximo ciclo */ }
+  }
+  return salvo;
 }
 
 export const STATUS_LIBERADOS_AMD = new Set(['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO']);
