@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarPlataformaAuditoria, reauditarFatura, vincularChavesDetalhesPorNumero } from '../services/auditoriaFretesService';
 import { carregarDetalhesFaturaSupabase } from '../services/lotacaoSupabaseService';
-import { carregarEnviosOmsPorFatura } from '../services/omsFaturasEnvioService';
+import { carregarEnviosOmsPorFatura, liberarFaturaNoOms } from '../services/omsFaturasEnvioService';
 import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarCanceladas, marcarEncaminhamentoFinanceiro, marcarEnviadaAntecipacao, marcarPrevisaoPagamento, TIPOS_ENCAMINHAMENTO, marcarSubstituidasDuplicadas } from '../services/diagnosticoFaturasService';
 import { carregarCadastroPorRaiz } from '../services/transportadoraCnpjsService';
 import { diasAte } from '../utils/auditoriaFretesDomain';
@@ -23,6 +23,7 @@ import {
   GRUPOS_DIAGNOSTICO,
   montarLinhasDiagnostico,
   faturaSemIdOms,
+  situacaoAuditoria,
   aptidaoEnvioSap,
   ROTULO_OMS,
   situacaoOms,
@@ -262,7 +263,7 @@ function CardResumo({ rotulo, valor, detalhe, cor, ativo = false, dica, onClick 
 
 // Tela gerencial: cola uma lista de faturas (ou escolhe a transportadora) e ve o raio-x na hora.
 // A fatura abre por cima desta tela (onAbrirFatura), entao fechar volta exatamente aqui.
-export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura }) {
+export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura, liberarEmLote, conferirCobranca }) {
   const salvo = useMemo(lerSessao, []);
   const [texto, setTexto] = useState(salvo.texto || '');
   const [transportadora, setTransportadora] = useState(salvo.transportadora || '');
@@ -521,6 +522,65 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   // Selecao para marcar agrupamento manual: so faturas que existem na plataforma e estao no recorte.
   const idsRecorte = useMemo(() => resultado.filter((l) => l.fatura).map((l) => l.fatura.id), [resultado]);
   const selecaoValida = idsRecorte.filter((id) => selecionadas.has(id));
+
+  // Liberacao para pagamento e envio ao OMS em massa, com as MESMAS regras da lista de faturas
+  // (liberarEmLote/conferirCobranca vem da pagina). Ja liberadas, pagas, canceladas ou na gestao ficam de fora.
+  const [liberacaoLote, setLiberacaoLote] = useState(null);
+  const [processandoLote, setProcessandoLote] = useState('');
+  const faturasSelecionadasObj = () => selecaoValida.map((id) => (state.faturas || []).find((f) => f.id === id)).filter(Boolean);
+  const aptasLiberar = () => faturasSelecionadasObj().filter((f) => ['NAO_AUDITADA', 'PARCIAL', 'AUDITADA', 'FORNECEDOR'].includes(situacaoAuditoria(f)));
+  const abrirLiberacaoLote = async () => {
+    const alvo = aptasLiberar();
+    const fora = selecaoValida.length - alvo.length;
+    if (!alvo.length) { setAviso('Nenhuma das selecionadas pode ser liberada (já liberadas, pagas, canceladas ou aguardando a gestão).'); return; }
+    setProcessandoLote('Conferindo os valores exatos antes da liberação...');
+    try {
+      const { comCobranca } = await conferirCobranca(alvo);
+      setLiberacaoLote({ alvo, fora, comCobranca, descontar: '', motivo: '', observacao: '', erro: '' });
+    } catch (e) {
+      setAviso(`Não foi possível conferir os valores para liberar: ${e.message || e}`);
+    } finally { setProcessandoLote(''); }
+  };
+  const confirmarLiberacaoLote = async () => {
+    const { alvo, comCobranca, descontar, motivo, observacao } = liberacaoLote;
+    const exige = comCobranca.length > 0;
+    if (exige && !descontar) { setLiberacaoLote((p) => ({ ...p, erro: 'Responda se o valor será descontado (Sim ou Não).' })); return; }
+    if (exige && descontar === 'NAO' && String(motivo).trim().length < 10) { setLiberacaoLote((p) => ({ ...p, erro: 'Informe o motivo de não descontar (mínimo 10 caracteres).' })); return; }
+    const texto = [
+      descontar ? `[DESCONTO: ${descontar === 'SIM' ? 'SIM' : 'NAO'}]` : '',
+      descontar === 'NAO' ? `Motivo de nao descontar: ${String(motivo).trim()}.` : '',
+      String(observacao).trim() ? `Obs.: ${String(observacao).trim()}` : '',
+    ].filter(Boolean).join(' ');
+    setLiberacaoLote(null);
+    setProcessandoLote(`Liberando ${alvo.length} fatura(s)...`);
+    try {
+      const r = await liberarEmLote(alvo, texto, (p) => setProcessandoLote(`Liberando ${p.carregados}/${p.total}...`));
+      onState(r.next);
+      setAviso(r.mensagem);
+      setRecarga((v) => v + 1);
+    } catch (e) {
+      setAviso(`Erro ao liberar: ${e.message || e}`);
+    } finally { setProcessandoLote(''); }
+  };
+  const enviarOmsLote = async () => {
+    const alvo = linhas.filter((l) => l.fatura && selecionadas.has(l.fatura.id) && ['APTA', 'ERRO', 'BLOQUEADA_PARTIDA'].includes(situacaoOms(l)));
+    if (!alvo.length) { setAviso('Nenhuma selecionada está liberada e pendente de envio ao OMS (Apta, Bloqueada por partida ou com Erro).'); return; }
+    if (!window.confirm(`Enviar ${alvo.length} fatura(s) ao OMS/SAP? Cada uma é conferida antes (Id, partidas dos CT-es e situação no OMS).`)) return;
+    const nome = carregarSessao()?.nome || carregarSessao()?.email || 'Auditor';
+    const res = { enviadas: 0, pendentes: [] };
+    for (let i = 0; i < alvo.length; i += 1) {
+      const f = alvo[i].fatura;
+      setProcessandoLote(`Enviando ao OMS ${i + 1}/${alvo.length}: ${f.numero_fatura}`);
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const r = await liberarFaturaNoOms({ fatura: f, nomeAuditor: nome });
+        if (['enviado', 'ja_liberada'].includes(r.resultado)) res.enviadas += 1; else res.pendentes.push(`${f.numero_fatura}: ${r.mensagem}`);
+      } catch (e) { res.pendentes.push(`${f.numero_fatura}: ${e.message || e}`); }
+    }
+    setProcessandoLote('');
+    setAviso(`OMS/SAP: ${res.enviadas} de ${alvo.length} enviada(s).${res.pendentes.length ? ` Não enviadas: ${res.pendentes.slice(0, 5).join(' | ')}${res.pendentes.length > 5 ? ` (+${res.pendentes.length - 5})` : ''}` : ''}`);
+    setRecarga((v) => v + 1);
+  };
   const todasSelecionadas = idsRecorte.length > 0 && selecaoValida.length === idsRecorte.length;
   const alternarSelecao = (id) => setSelecionadas((atual) => { const n = new Set(atual); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const alternarTodas = () => setSelecionadas(todasSelecionadas ? new Set() : new Set(idsRecorte));
@@ -1094,6 +1154,39 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               </label>
               <button type="button" className="btn-secondary" disabled={!comPrevisao.length} onClick={copiarPrevisoes} title="Copia um texto com as faturas do recorte que têm previsão, agrupadas pela data, para mandar à transportadora">Copiar previsões p/ transportadora ({inteiro(comPrevisao.length)})</button>
             </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
+              <span className="compact" style={{ color: '#475569' }} title="Mesmas regras da lista de faturas: sem cobrança a maior e com a auditoria completa libera para pagamento (e vai ao OMS/SAP); senão vai para a aprovação da gestão.">
+                Liberação: {inteiro(selecaoValida.length)} selecionada(s)
+              </span>
+              <button type="button" className="btn-primary" disabled={!selecaoValida.length || marcando || Boolean(processandoLote) || !liberarEmLote} onClick={abrirLiberacaoLote}>Liberar para pagamento</button>
+              <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando || Boolean(processandoLote)} onClick={enviarOmsLote} title="Envia ao OMS/SAP as selecionadas já liberadas que ainda não foram (Apta, Bloqueada por partida ou com Erro). Cada uma é conferida antes.">Enviar ao OMS</button>
+              {processandoLote && <span className="compact" style={{ color: '#475569' }}>{processandoLote}</span>}
+            </div>
+            {liberacaoLote && (
+              <div className="hint-box compact" style={{ marginTop: 8, borderColor: '#93c5fd', background: '#eff6ff' }}>
+                <p style={{ margin: '0 0 6px' }}>
+                  <strong>Liberar {inteiro(liberacaoLote.alvo.length)} fatura(s) para pagamento.</strong>
+                  {liberacaoLote.fora ? ` ${inteiro(liberacaoLote.fora)} selecionada(s) ficam de fora (já liberadas, pagas, canceladas ou na gestão).` : ''}
+                </p>
+                {liberacaoLote.comCobranca.length > 0
+                  ? <p style={{ margin: '0 0 6px' }}><strong>{inteiro(liberacaoLote.comCobranca.length)}</strong> com cobrança a maior vão para a aprovação da gestão, com a sua resposta. As demais são liberadas direto.</p>
+                  : <p style={{ margin: '0 0 6px' }}>Nenhuma com cobrança a maior: serão liberadas para pagamento (auditoria incompleta vai para a gestão).</p>}
+                {liberacaoLote.comCobranca.length > 0 && (
+                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+                    <span>Esse valor de diferença será descontado? *</span>
+                    <label><input type="radio" checked={liberacaoLote.descontar === 'SIM'} onChange={() => setLiberacaoLote((p) => ({ ...p, descontar: 'SIM', erro: '' }))} /> Sim</label>
+                    <label><input type="radio" checked={liberacaoLote.descontar === 'NAO'} onChange={() => setLiberacaoLote((p) => ({ ...p, descontar: 'NAO', erro: '' }))} /> Não</label>
+                    {liberacaoLote.descontar === 'NAO' && <input style={{ flex: '1 1 260px' }} placeholder="Motivo de não descontar (mín. 10 caracteres)" value={liberacaoLote.motivo} onChange={(e) => setLiberacaoLote((p) => ({ ...p, motivo: e.target.value, erro: '' }))} />}
+                  </div>
+                )}
+                <input style={{ width: '100%', marginBottom: 6 }} placeholder="Observação (opcional)" value={liberacaoLote.observacao} onChange={(e) => setLiberacaoLote((p) => ({ ...p, observacao: e.target.value }))} />
+                {liberacaoLote.erro && <p className="error-text" style={{ margin: '0 0 6px' }}>{liberacaoLote.erro}</p>}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button type="button" className="btn-secondary" onClick={() => setLiberacaoLote(null)}>Cancelar</button>
+                  <button type="button" className="btn-primary" onClick={confirmarLiberacaoLote}>Confirmar liberação</button>
+                </div>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
               <span className="compact" style={{ color: '#475569' }} title="Refaz o cálculo AMD de todos os CT-es das faturas selecionadas e atualiza valores e divergências da fatura.">
                 Recálculo dos CT-es: {inteiro(selecaoValida.length)} selecionada(s)

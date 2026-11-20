@@ -1948,6 +1948,99 @@ ${blocos || '<section>Nenhuma fatura na janela/filtros selecionados.</section>'}
   );
 }
 
+// Liberacao em lote para pagamento (lista de faturas e Diagnostico usam esta MESMA regra): sem cobranca a maior e com a
+// auditoria completa vai para PRONTA_PARA_PAGAMENTO (e segue ao OMS/SAP, com a trava de partidas); senao vai para
+// AGUARDANDO_APROVACAO_GESTAO e so vai ao OMS quando a gestao aprovar. respostaAuditor = respostas do questionario.
+export async function liberarFaturasEmLote({ state, faturas = [], respostaAuditor = '', sessao, aoProgredir = () => {} }) {
+  let next = state;
+  let enviadasParaAprovacao = 0;
+  const liberadasOms = { total: 0, pendentes: [] };
+  // Uma unica carga agrupada garante o mesmo snapshot para todo o lote e
+  // evita repetir detalhes + referencia + saldos uma fatura por vez.
+  const detalhesExatosLote = await carregarDetalhesExatosFaturas(faturas.map((item) => item.id));
+  for (let i = 0; i < faturas.length; i += 1) {
+    const fatura = next.faturas.find((item) => item.id === faturas[i].id) || faturas[i];
+    aoProgredir({ etapa: 'atualizando_faturas_lote', carregados: i + 1, total: faturas.length });
+    let payload = { ...fatura };
+    let evento = {
+      acao: 'EDICAO_EM_MASSA',
+      descricao: 'Fatura atualizada em massa.',
+      usuario_nome: sessao?.nome || sessao?.email || 'Usuario local',
+      usuario_email: sessao?.email || '',
+    };
+    const detalhesFatura = detalhesExatosLote.get(fatura.id) || [];
+    const resumo = resumirDetalhesAuditoria(detalhesFatura, carregarToleranciaAuditoria());
+    // valor_fatura (confiavel) - calculado, nao cobrancaAcima-cobrancaAbaixo:
+    // essas duas dependem da soma do valor_frete por CT-e, que fica errada
+    // quando algum CT-e veio com valor_frete zerado/incompleto no arquivo.
+    const saldo = Number((Number(fatura.valor_fatura || 0) - resumo.calculoAmd).toFixed(2));
+    // Em lote nao da pra perguntar item a item se o desconto vai ser
+    // aplicado — quem nao fecha (saldo acima da tolerancia) vai direto
+    // pra aprovacao da gestao em vez de liberar com a divergencia solta.
+    // Desconto = cobranca a MAIOR por CT-e (o saldo liquido pode ser negativo e esconder CT-es cobrados a mais);
+    // so abate a cobranca a menor se a fatura foi marcada para considera-la.
+    const descontoDevido = descontoConformeEscolha(resumo.cobrancaAcima, resumo.cobrancaAbaixo, faturaConsideraMenor(fatura));
+    // A escolha de considerar a menor altera o valor, mas nao cria uma
+    // aprovacao sem valor: desconto final zero libera normalmente.
+    const cobrancaMenor = Number(resumo.cobrancaAbaixo.toFixed(2));
+    const auditoriaIncompleta = auditoriaEstaIncompleta(resumo);
+    const precisaAprovacao = auditoriaIncompleta || descontoDevido > TOLERANCIA_DESCONTO_PENDENTE;
+    const statusNovo = precisaAprovacao ? 'AGUARDANDO_APROVACAO_GESTAO' : 'PRONTA_PARA_PAGAMENTO';
+    if (precisaAprovacao) enviadasParaAprovacao += 1;
+    payload = {
+      ...payload,
+      status: statusNovo,
+      valor_calculado: Number(resumo.calculoAmd.toFixed(2)),
+      diferenca: saldo,
+      valor_recuperado: descontoDevido,
+      ctes_totais: resumo.total || payload.ctes_totais,
+      ctes_auditados: resumo.calculados,
+      ctes_divergentes: resumo.divergentes,
+      ctes_sem_calculo: resumo.semCalculo,
+      auditoria_cobranca_acima: Number(resumo.cobrancaAcima.toFixed(2)),
+      auditoria_cobranca_abaixo: Number(resumo.cobrancaAbaixo.toFixed(2)),
+      auditoria_total_descontar: descontoDevido,
+      desconto_aplicado_confirmado: !precisaAprovacao,
+      desconto_pendente_valor: precisaAprovacao && !auditoriaIncompleta ? descontoDevido : 0,
+      ...(precisaAprovacao ? {
+        observacao_aprovacao: auditoriaIncompleta
+          ? `[AUDITORIA INCOMPLETA] ${resumo.semCalculo} de ${resumo.total} CT-e(s) sem calculo.${respostaAuditor ? ` ${respostaAuditor}` : ''}`
+          : respostaAuditor,
+      } : {}),
+    };
+    evento = {
+      ...evento,
+      acao: precisaAprovacao ? 'ENVIADA_APROVACAO_GESTAO_EM_MASSA' : 'LIBERACAO_PAGAMENTO_EM_MASSA',
+      status_anterior: fatura.status,
+      status_novo: statusNovo,
+      descricao: precisaAprovacao
+        ? (auditoriaIncompleta
+          ? `Enviada para aprovacao da gestao (liberacao em massa): auditoria incompleta, com ${resumo.semCalculo} de ${resumo.total} CT-e(s) sem calculo. A liberacao para pagamento exige decisao da gestao.`
+          : `Enviada para aprovacao da gestao (liberacao em massa): valor a descontar de ${dinheiro(descontoDevido)}${faturaConsideraMenor(fatura) && cobrancaMenor > 0 ? `, ja abatendo cobranca a menor de ${dinheiro(cobrancaMenor)}` : ''}.${respostaAuditor ? ` ${respostaAuditor}` : ''}`)
+        : `Liberada em massa para pagamento. Cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}.`,
+    };
+    next = await atualizarFaturaAuditoria(next, payload, evento);
+    // So as que ficaram liberadas (as que foram para a gestao so vao ao OMS quando a gestao aprovar).
+    const r = await liberarNoOmsAposAprovacao({ fatura, statusNovo: payload.status, nomeAuditor: sessao?.nome || sessao?.email || 'Auditor' });
+    if (r) { liberadasOms.total += 1; if (!['enviado', 'ja_liberada'].includes(r.resultado)) liberadasOms.pendentes.push(`${fatura.numero_fatura}: ${r.mensagem}`); }
+  }
+  const mensagem = `${faturas.length} fatura(s) processada(s).`
+    + (faturas.length - enviadasParaAprovacao ? ` ${faturas.length - enviadasParaAprovacao} liberada(s) para pagamento.` : '')
+    + (enviadasParaAprovacao ? ` ${enviadasParaAprovacao} foram para aprovacao da gestao por desconto ou auditoria incompleta.` : '')
+    + (liberadasOms.total ? ` OMS/SAP: ${liberadasOms.total - liberadasOms.pendentes.length} de ${liberadasOms.total} liberada(s) no OMS.${liberadasOms.pendentes.length ? ` Pendentes: ${liberadasOms.pendentes.slice(0, 5).join(' | ')}` : ''}` : '');
+  return { next, mensagem, enviadasParaAprovacao, liberadasOms };
+}
+
+// Faturas do lote com cobranca a maior (vao para a gestao): o questionario de desconto e obrigatorio para elas.
+export async function conferirCobrancaAMaiorLote(faturas = []) {
+  const resumos = await resumirFaturasExato(faturas.map((item) => item.id));
+  const comCobranca = faturas.filter((item) => {
+    const exato = resumos.get(item.id);
+    return exato && descontoConformeEscolha(exato.maior, exato.menor, faturaConsideraMenor(item)) > TOLERANCIA_DESCONTO_PENDENTE;
+  });
+  return { resumos, comCobranca };
+}
+
 function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const sessao = carregarSessao();
   const detalheRef = useRef(null);
@@ -6254,18 +6347,28 @@ ${portaisLaudo.length ? `
 
   const atualizarFaturasEmMassa = async (tipo, respostaAuditor = '') => {
     if (!faturasSelecionadas.length) return;
+    if (tipo === 'liberar') {
+      // Mesmas regras do Diagnostico: a logica fica em liberarFaturasEmLote.
+      setMensagemImportacao('');
+      setRecalculandoLote(true);
+      setProgressoLote(null);
+      try {
+        const r = await liberarFaturasEmLote({ state, faturas: faturasSelecionadas, respostaAuditor, sessao, aoProgredir: setProgressoLote });
+        onState(r.next);
+        setMensagemImportacao(r.mensagem);
+      } catch (error) {
+        setMensagemImportacao(`Erro na edicao em massa: ${error.message}`);
+      } finally {
+        setRecalculandoLote(false);
+        setProgressoLote(null);
+      }
+      return;
+    }
     setMensagemImportacao('');
     setRecalculandoLote(true);
     setProgressoLote(null);
     try {
       let next = state;
-      let enviadasParaAprovacao = 0;
-      const liberadasOms = { total: 0, pendentes: [] };
-      // Uma unica carga agrupada garante o mesmo snapshot para todo o lote e
-      // evita repetir detalhes + referencia + saldos uma fatura por vez.
-      const detalhesExatosLote = tipo === 'liberar'
-        ? await carregarDetalhesExatosFaturas(faturasSelecionadas.map((item) => item.id))
-        : new Map();
       for (let i = 0; i < faturasSelecionadas.length; i += 1) {
         const fatura = next.faturas.find((item) => item.id === faturasSelecionadas[i].id) || faturasSelecionadas[i];
         setProgressoLote({ etapa: 'atualizando_faturas_lote', carregados: i + 1, total: faturasSelecionadas.length });
@@ -6286,71 +6389,11 @@ ${portaisLaudo.length ? `
           payload = { ...payload, status: statusLote };
           evento = { ...evento, acao: 'STATUS_EM_MASSA', status_anterior: fatura.status, status_novo: statusLote, descricao: `Status aplicado em massa: ${nomeStatus(statusLote)}.` };
         }
-        if (tipo === 'liberar') {
-          const detalhesFatura = detalhesExatosLote.get(fatura.id) || [];
-          const resumo = resumirDetalhesAuditoria(detalhesFatura, carregarToleranciaAuditoria());
-          // valor_fatura (confiavel) - calculado, nao cobrancaAcima-cobrancaAbaixo:
-          // essas duas dependem da soma do valor_frete por CT-e, que fica errada
-          // quando algum CT-e veio com valor_frete zerado/incompleto no arquivo.
-          const saldo = Number((Number(fatura.valor_fatura || 0) - resumo.calculoAmd).toFixed(2));
-          // Em lote nao da pra perguntar item a item se o desconto vai ser
-          // aplicado — quem nao fecha (saldo acima da tolerancia) vai direto
-          // pra aprovacao da gestao em vez de liberar com a divergencia solta.
-          // Desconto = cobranca a MAIOR por CT-e (o saldo liquido pode ser negativo e esconder CT-es cobrados a mais);
-          // so abate a cobranca a menor se a fatura foi marcada para considera-la.
-          const descontoDevido = descontoConformeEscolha(resumo.cobrancaAcima, resumo.cobrancaAbaixo, faturaConsideraMenor(fatura));
-          // A escolha de considerar a menor altera o valor, mas nao cria uma
-          // aprovacao sem valor: desconto final zero libera normalmente.
-          const cobrancaMenor = Number(resumo.cobrancaAbaixo.toFixed(2));
-          const auditoriaIncompleta = auditoriaEstaIncompleta(resumo);
-          const precisaAprovacao = auditoriaIncompleta || descontoDevido > TOLERANCIA_DESCONTO_PENDENTE;
-          const statusNovo = precisaAprovacao ? 'AGUARDANDO_APROVACAO_GESTAO' : 'PRONTA_PARA_PAGAMENTO';
-          if (precisaAprovacao) enviadasParaAprovacao += 1;
-          payload = {
-            ...payload,
-            status: statusNovo,
-            valor_calculado: Number(resumo.calculoAmd.toFixed(2)),
-            diferenca: saldo,
-            valor_recuperado: descontoDevido,
-            ctes_totais: resumo.total || payload.ctes_totais,
-            ctes_auditados: resumo.calculados,
-            ctes_divergentes: resumo.divergentes,
-            ctes_sem_calculo: resumo.semCalculo,
-            auditoria_cobranca_acima: Number(resumo.cobrancaAcima.toFixed(2)),
-            auditoria_cobranca_abaixo: Number(resumo.cobrancaAbaixo.toFixed(2)),
-            auditoria_total_descontar: descontoDevido,
-            desconto_aplicado_confirmado: !precisaAprovacao,
-            desconto_pendente_valor: precisaAprovacao && !auditoriaIncompleta ? descontoDevido : 0,
-            ...(precisaAprovacao ? {
-              observacao_aprovacao: auditoriaIncompleta
-                ? `[AUDITORIA INCOMPLETA] ${resumo.semCalculo} de ${resumo.total} CT-e(s) sem calculo.${respostaAuditor ? ` ${respostaAuditor}` : ''}`
-                : respostaAuditor,
-            } : {}),
-          };
-          evento = {
-            ...evento,
-            acao: precisaAprovacao ? 'ENVIADA_APROVACAO_GESTAO_EM_MASSA' : 'LIBERACAO_PAGAMENTO_EM_MASSA',
-            status_anterior: fatura.status,
-            status_novo: statusNovo,
-            descricao: precisaAprovacao
-              ? (auditoriaIncompleta
-                ? `Enviada para aprovacao da gestao (liberacao em massa): auditoria incompleta, com ${resumo.semCalculo} de ${resumo.total} CT-e(s) sem calculo. A liberacao para pagamento exige decisao da gestao.`
-                : `Enviada para aprovacao da gestao (liberacao em massa): valor a descontar de ${dinheiro(descontoDevido)}${faturaConsideraMenor(fatura) && cobrancaMenor > 0 ? `, ja abatendo cobranca a menor de ${dinheiro(cobrancaMenor)}` : ''}.${respostaAuditor ? ` ${respostaAuditor}` : ''}`)
-              : `Liberada em massa para pagamento. Cobran�a acima ${dinheiro(resumo.cobrancaAcima)}, cobran�a abaixo ${dinheiro(resumo.cobrancaAbaixo)}, saldo a descontar ${dinheiro(Math.max(saldo, 0))}.`,
-          };
-        }
         next = await atualizarFaturaAuditoria(next, payload, evento);
-        if (tipo === 'liberar') {
-          // So as que ficaram liberadas (as que foram para a gestao so vao ao OMS quando a gestao aprovar).
-          const r = await liberarNoOmsAposAprovacao({ fatura, statusNovo: payload.status, nomeAuditor: sessao?.nome || sessao?.email || 'Auditor' });
-          if (r) { liberadasOms.total += 1; if (!['enviado', 'ja_liberada'].includes(r.resultado)) liberadasOms.pendentes.push(`${fatura.numero_fatura}: ${r.mensagem}`); }
-        }
       }
       onState(next);
       setMensagemImportacao(
-        `${faturasSelecionadas.length} fatura(s) atualizada(s) em massa.`
-        + (liberadasOms.total ? ` OMS/SAP: ${liberadasOms.total - liberadasOms.pendentes.length} de ${liberadasOms.total} liberada(s) no OMS.${liberadasOms.pendentes.length ? ` Pendentes: ${liberadasOms.pendentes.slice(0, 5).join(' | ')}` : ''}` : '')
-        + (enviadasParaAprovacao ? ` ${enviadasParaAprovacao} foram para aprovacao da gestao por desconto ou auditoria incompleta.` : ''),
+        `${faturasSelecionadas.length} fatura(s) atualizada(s) em massa.`,
       );
     } catch (error) {
       setMensagemImportacao(`Erro na edicao em massa: ${error.message}`);
@@ -10906,7 +10949,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
       {tab === 'meu-painel' && <MeuPainelAuditor state={state} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onEnviarEmailLaudo={enviarLaudosPorEmailRobo} />}
       {tab === 'robo' && <RoboAuditoriaPainel state={state} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onAbrirConsolidado={(transportadora, fats) => irParaFaturasComFiltro({ filtro: transportadora, selecionarIds: fats.map((f) => f.id), acaoAuto: 'laudo-transportador-lote' })} onEnviarEmail={enviarLaudosPorEmailRobo} resultadosEmail={resultadosEmailRobo} onLimparResultadosEmail={() => setResultadosEmailRobo([])} />}
       {tab === 'dashboard' && <Dashboard state={state} />}
-      {tab === 'diagnostico' && <DiagnosticoFaturasPainel state={state} onState={setState} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} />}
+      {tab === 'diagnostico' && <DiagnosticoFaturasPainel state={state} onState={setState} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} liberarEmLote={(faturas, resposta, aoProgredir) => liberarFaturasEmLote({ state, faturas, respostaAuditor: resposta, sessao: carregarSessao(), aoProgredir })} conferirCobranca={conferirCobrancaAMaiorLote} />}
       {tab === 'painel' && (
         <PainelAcompanhamento
           state={state}
