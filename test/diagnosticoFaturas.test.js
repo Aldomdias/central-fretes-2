@@ -418,3 +418,29 @@ test('antecipação: apta ainda sem resumo de itens fica em "verificando tipo" (
   assert.deepEqual(onde({ fatura, ctes: { total: 0, nfse: 1 } }), ['aptas_antecipacao_nfse']);
   assert.deepEqual(onde({ fatura: { ...fatura, valor_fatura: 10 } }), []);
 });
+
+test('envio ao SAP pelo OMS: so com todas as partidas e sem compensacao', async () => {
+  const { aptidaoEnvioSap, situacaoOms } = await import('../src/utils/diagnosticoFaturas.js');
+  const resumo = (extra) => ({ total: 2, lancados: 2, nfse: 0, semPartida: [], compensados: [], ...extra });
+  assert.equal(aptidaoEnvioSap(resumo()).apta, true);
+  assert.equal(aptidaoEnvioSap(null).apta, false);
+  assert.equal(aptidaoEnvioSap({ total: 0, nfse: 0 }).apta, false);
+  assert.equal(aptidaoEnvioSap({ total: 0, nfse: 2, semPartida: [], compensados: [] }).apta, true);
+  const sem = aptidaoEnvioSap(resumo({ semPartida: [{ numero_cte: '11' }, { numero_cte: '12', estornado: true }] }));
+  assert.equal(sem.apta, false);
+  assert.match(sem.mensagem, /sem partida: 11/);
+  assert.match(sem.mensagem, /partida estornada: 12/);
+  const comp = aptidaoEnvioSap(resumo({ compensados: [{ numero_cte: '13', fenix: true }, { numero_cte: '14', documento_compensacao: '999' }] }));
+  assert.match(comp.mensagem, /Fênix: 13/);
+  assert.match(comp.mensagem, /partida compensada: 14/);
+
+  const f = (extra) => ({ id: 'f', status: 'PRONTA_PARA_PAGAMENTO', oms_invoice_id: '6566f0a1b2c3d4e5f6a7b8c9', ...extra });
+  assert.equal(situacaoOms({ fatura: f(), ctes: resumo() }), 'APTA');
+  assert.equal(situacaoOms({ fatura: f(), ctes: resumo({ semPartida: [{ numero_cte: '1' }] }) }), 'BLOQUEADA_PARTIDA');
+  assert.equal(situacaoOms({ fatura: f({ oms_invoice_id: null }), ctes: resumo() }), 'SEM_ID');
+  assert.equal(situacaoOms({ fatura: f({ status: 'RECEBIDA' }), ctes: resumo() }), 'NAO_LIBERADA');
+  assert.equal(situacaoOms({ fatura: f(), ctes: resumo(), oms: { status: 'enviado', outcome: 'queuedForErp' } }), 'FILA');
+  assert.equal(situacaoOms({ fatura: f(), oms: { status: 'enviado', sent_to_erp: true } }), 'ENVIADA');
+  assert.equal(situacaoOms({ fatura: f(), oms: { status: 'recusado' } }), 'ERRO');
+  assert.equal(situacaoOms({ fatura: f(), oms: { status: 'enviando' } }), 'AGUARDANDO');
+});

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { carregarPlataformaAuditoria, reauditarFatura, vincularChavesDetalhesPorNumero } from '../services/auditoriaFretesService';
 import { carregarDetalhesFaturaSupabase } from '../services/lotacaoSupabaseService';
+import { carregarEnviosOmsPorFatura } from '../services/omsFaturasEnvioService';
 import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarCanceladas, marcarEncaminhamentoFinanceiro, marcarEnviadaAntecipacao, marcarPrevisaoPagamento, TIPOS_ENCAMINHAMENTO, marcarSubstituidasDuplicadas } from '../services/diagnosticoFaturasService';
 import { carregarCadastroPorRaiz } from '../services/transportadoraCnpjsService';
 import { diasAte } from '../utils/auditoriaFretesDomain';
@@ -22,6 +23,9 @@ import {
   GRUPOS_DIAGNOSTICO,
   montarLinhasDiagnostico,
   faturaSemIdOms,
+  aptidaoEnvioSap,
+  ROTULO_OMS,
+  situacaoOms,
   parseListaFaturas,
   previsaoPagamento,
   proximaAcao,
@@ -107,6 +111,7 @@ const COLUNAS = [
   { id: 'partida', titulo: 'Partida', valor: (l) => l.fatura?.partida || l.fatura?.lancamento_financeiro || '' },
   { id: 'erp', titulo: 'Enviado ERP', valor: (l) => l.fatura?.data_envio_erp || '' },
   { id: 'ctes', titulo: 'CT-es no SAP', valor: (l) => (l.ctes?.total ? l.ctes.lancados / l.ctes.total : -1) },
+  { id: 'oms', titulo: 'OMS/SAP', valor: (l) => ROTULO_OMS[situacaoOms(l)] || '' },
   { id: 'pagamento', titulo: 'Pagamento', valor: textoPagamentoLinha },
   { id: 'auditor', titulo: 'Auditor', valor: (l) => l.auditor || '' },
   { id: 'acao', titulo: 'Próxima ação', valor: proximaAcao },
@@ -348,7 +353,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
           feitas += lote.length;
           // eslint-disable-next-line no-await-in-loop
           const mapa = await carregarResumoCtesFaturas(lote.map((f) => f.id));
-          lote.forEach((f) => cacheCtes.set(String(f.id), { carimbo: carimbo(f), resumo: mapa.get(String(f.id)) }));
+          // Ultimo envio ao OMS de cada fatura (sem a tabela/permissao: segue sem a coluna OMS).
+          // eslint-disable-next-line no-await-in-loop
+          const envios = await carregarEnviosOmsPorFatura(lote.map((f) => f.id)).catch(() => new Map());
+          lote.forEach((f) => cacheCtes.set(String(f.id), { carimbo: carimbo(f), resumo: mapa.get(String(f.id)), oms: envios.get(String(f.id)) || null }));
           if (ativo) setVersaoCtes((v) => v + 1);
         }
         if (ativo) setProgresso(null);
@@ -360,7 +368,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   }, [faturasBase, recarga]);
 
   const linhas = useMemo(
-    () => linhasBase.map((l) => (l.fatura ? { ...l, ctes: cacheCtes.get(String(l.fatura.id))?.resumo, duplicada: duplicadas.get(l.fatura.id), auditor: unificador.nome(l.fatura) } : l)),
+    () => linhasBase.map((l) => (l.fatura ? { ...l, ctes: cacheCtes.get(String(l.fatura.id))?.resumo, oms: cacheCtes.get(String(l.fatura.id))?.oms, duplicada: duplicadas.get(l.fatura.id), auditor: unificador.nome(l.fatura) } : l)),
     [linhasBase, versaoCtes, duplicadas, unificador],
   );
 
@@ -794,6 +802,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
           { titulo: 'Resultado da auditoria', largura: 24 }, { titulo: 'Diferença apurada', largura: 14, tipo: 'moeda' }, { titulo: 'Motivo principal', largura: 24 },
           { titulo: 'Fatura lançada', largura: 10, tipo: 'centro' }, { titulo: 'Partida', largura: 14 }, { titulo: 'Lançamento financeiro', largura: 14 }, { titulo: 'Enviado ERP', largura: 12, tipo: 'data' }, { titulo: 'Situação envio ERP', largura: 22 },
           { titulo: 'CT-es com partida', largura: 10, tipo: 'inteiro' }, { titulo: 'CT-es sem partida', largura: 10, tipo: 'inteiro' }, { titulo: 'Valor sem partida', largura: 16, tipo: 'moeda' },
+          { titulo: 'Id do OMS', largura: 26 }, { titulo: 'Situação OMS/SAP', largura: 26 }, { titulo: 'Pendência para o SAP', largura: 50 },
           { titulo: 'Pagamento', largura: 18 }, { titulo: 'Data pagamento', largura: 12, tipo: 'data' }, { titulo: 'Valor pago', largura: 16, tipo: 'moeda' }, { titulo: 'Auditor', largura: 26 }, { titulo: 'Próxima ação', largura: 28 }, { titulo: 'Agrupamento manual', largura: 20 }, { titulo: 'Marcado por', largura: 22 },
           { titulo: 'Ajuste Fênix', largura: 30 }, { titulo: 'Enviado Fênix em', largura: 12, tipo: 'data' }, { titulo: 'Enviado Fênix por', largura: 22 }, { titulo: 'Retorno Fênix em', largura: 12, tipo: 'data' }, { titulo: 'Observação', largura: 34 },
         ],
@@ -806,6 +815,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             f ? Number(f.valor_fatura || 0) : '', l.valorLista ?? '', l.vencimentoLista || '', f ? nomeStatus(f.status) : '', f ? Number(f.ctes_auditados || 0) : '', f ? Number(f.ctes_totais || 0) : '',
             resultadoAuditoria(f)?.rotulo || '', f ? resultadoAuditoria(f).diferenca : '', resultadoAuditoria(f)?.motivo || '',
             f ? (faturaLancada(f) ? 'Sim' : 'Não') : '', f?.partida || '', f?.lancamento_financeiro || '', f?.data_envio_erp || '', f ? ROTULO_ENVIO_ERP[situacaoEnvioErp(l)] : '', l.ctes ? l.ctes.lancados : '', l.ctes ? l.ctes.semPartida.length : '', l.ctes ? l.ctes.valorSemPartida : '',
+            f?.oms_invoice_id || '', ROTULO_OMS[situacaoOms(l)] || '', situacaoOms(l) === 'BLOQUEADA_PARTIDA' ? aptidaoEnvioSap(l.ctes).mensagem : '',
             textoPagamentoLinha(l), f?.data_pagamento || '', f?.valor_pago != null ? Number(f.valor_pago) : '', f ? l.auditor : '', proximaAcao(l),
             agrupamentoManual(f) ? (faturaLancada(f) ? 'Já agrupada' : 'A enviar') : '', agrupamentoManual(f) ? (f.agrupamento_manual_por || '') : '',
             ROTULO_ETAPA_FENIX[etapaFenix(l)] || '', f?.fenix_enviado_em ? String(f.fenix_enviado_em).slice(0, 10) : '', f?.fenix_enviado_por || '', f?.fenix_retorno_em ? String(f.fenix_retorno_em).slice(0, 10) : '',
@@ -1215,6 +1225,15 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                             </div>
                           )}
                         </td>
+                        <td>{(() => {
+                          const so = situacaoOms(l);
+                          if (!so) return '-';
+                          const cor = { ENVIADA: '#14733b', FILA: '#0f766e', AGUARDANDO: '#b78700', APTA: '#315ee7', BLOQUEADA_PARTIDA: '#c2410c', ERRO: '#9b1111', SEM_ID: '#b91c1c' }[so] || '#64748b';
+                          const dica = so === 'BLOQUEADA_PARTIDA' ? aptidaoEnvioSap(l.ctes).mensagem
+                            : so === 'ERRO' ? [l.oms?.erro?.code, l.oms?.erro?.message, ...(l.oms?.blocking_checks || []).map((c) => c.code)].filter(Boolean).join(' · ')
+                              : so === 'FILA' && l.oms?.queued_for_erp_at ? `Na fila desde ${dataBr(l.oms.queued_for_erp_at)}` : undefined;
+                          return <span style={{ color: cor, fontWeight: 700, whiteSpace: 'nowrap' }} title={dica}>{ROTULO_OMS[so]}</span>;
+                        })()}</td>
                         <td style={{ color: COR_PAGAMENTO[textoPagamentoLinha(l)], fontWeight: 600 }}>{textoPagamentoLinha(l)}</td>
                         <td title={f && f.auditor_nome && f.auditor_nome.trim() !== l.auditor ? `Gravado como: ${f.auditor_nome}` : undefined}>{f ? l.auditor : '-'}</td>
                         <td>{proximaAcao(l)}</td>

@@ -438,7 +438,8 @@ export function resumirCtesFatura(detalhes = [], lancamentosPorChave = new Map()
   const vistos = new Set();
   // itens: todos os CT-es da fatura (com partida, sem partida, NFS-e) para a planilha completa.
   // fenix: CT-es compensados pela partida Fenix (compensacao nao paga): travam a escrituracao da fatura.
-  const resumo = { total: 0, lancados: 0, nfse: 0, itens: [], semPartida: [], valorSemPartida: 0, fenix: [], valorFenix: 0 };
+  // compensados: CT-es com partida lancada que ja tem documento de compensacao (Fenix ou qualquer outro): travam o envio ao SAP pelo OMS.
+  const resumo = { total: 0, lancados: 0, nfse: 0, itens: [], semPartida: [], valorSemPartida: 0, fenix: [], valorFenix: 0, compensados: [] };
   detalhes.forEach((item) => {
     if (item.excluido_da_versao === true) return;
     const unico = digitos(item.chave_cte) || `${digitos(item.numero_cte)}-${item.serie_cte || ''}`;
@@ -452,6 +453,8 @@ export function resumirCtesFatura(detalhes = [], lancamentosPorChave = new Map()
     if (situacao.lancado) {
       resumo.lancados += 1;
       const fenix = linhaFenixDoCte(linhasSap);
+      const compensada = linhasSap.find((l) => Number(l.montante || 0) < 0 && String(l.documento_compensacao || '').trim());
+      if (compensada) resumo.compensados.push({ ...base, partida: compensada.lancamento_contabil, documento_compensacao: compensada.documento_compensacao, data_compensacao: compensada.data_compensacao || null, fenix: Boolean(fenix) });
       resumo.itens.push({ ...base, situacao: 'COM_PARTIDA', lancamento_contabil: situacao.lancamento_contabil, data_lancamento: situacao.data_lancamento, valor_lancado: situacao.valor_lancado, fenix: Boolean(fenix) });
       if (fenix) {
         resumo.fenix.push({
@@ -469,6 +472,45 @@ export function resumirCtesFatura(detalhes = [], lancamentosPorChave = new Map()
   resumo.valorSemPartida = Number(resumo.valorSemPartida.toFixed(2));
   resumo.valorFenix = Number(resumo.valorFenix.toFixed(2));
   return resumo;
+}
+
+// Envio ao SAP pelo OMS (VLOG-3813): so com TODOS os CT-es com partida no SAP e nenhuma partida compensada
+// (Fenix ou qualquer compensacao). NFS-e nao tem partida de CT-e (vale a MIRO): nao entra na conta.
+export function aptidaoEnvioSap(resumo) {
+  if (!resumo) return { apta: false, verificado: false, pendentes: [], mensagem: 'CT-es ainda nao conferidos no SAP.' };
+  if (!resumo.total && !resumo.nfse) return { apta: false, verificado: true, pendentes: [], mensagem: 'fatura sem CT-es vinculados.' };
+  const pendentes = [
+    ...(resumo.semPartida || []).map((c) => ({ ...c, motivo: c.estornado ? 'partida estornada' : 'sem partida' })),
+    ...(resumo.compensados || []).map((c) => ({ ...c, motivo: c.fenix ? 'partida compensada pela Fênix' : 'partida compensada' })),
+  ];
+  if (!pendentes.length) return { apta: true, verificado: true, pendentes, mensagem: '' };
+  const grupos = new Map();
+  pendentes.forEach((c) => grupos.set(c.motivo, [...(grupos.get(c.motivo) || []), c.numero_cte || c.chave_cte]));
+  const texto = [...grupos].map(([motivo, nums]) => `${nums.length} CT-e(s) com ${motivo}: ${nums.slice(0, 15).join(', ')}${nums.length > 15 ? ` +${nums.length - 15}` : ''}`).join('; ');
+  return { apta: false, verificado: true, pendentes, mensagem: texto };
+}
+
+// Situacao da fatura na integracao com o OMS/SAP, a partir do ultimo envio (l.oms) e do resumo dos CT-es (l.ctes).
+export const STATUS_LIBERADAS_OMS = new Set(['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO', 'ENVIADA_AO_FINANCEIRO']);
+export const ROTULO_OMS = {
+  SEM_ID: 'Sem Id do OMS', NAO_LIBERADA: 'Não liberada', VERIFICANDO: 'Conferindo partidas', BLOQUEADA_PARTIDA: 'Bloqueada (partida)',
+  APTA: 'Apta, não enviada', AGUARDANDO: 'Aguardando OMS', FILA: 'Na fila do SAP', ENVIADA: 'Enviada ao SAP', ERRO: 'Erro/recusada no OMS', PAGA: 'Paga',
+};
+export function situacaoOms(l) {
+  const f = l?.fatura;
+  if (!f || inativa(f)) return '';
+  const e = l.oms;
+  if (e) {
+    if (e.sent_to_erp) return 'ENVIADA';
+    if (e.outcome === 'queuedForErp' || e.outcome === 'alreadyReleased') return 'FILA';
+    if (e.outcome === 'blocked' || ['recusado', 'erro'].includes(e.status) || e.oms_status === 'failed') return 'ERRO';
+    if (['enviando', 'enviado'].includes(e.status)) return 'AGUARDANDO';
+  }
+  if (String(f.status || '').startsWith('PAGA')) return 'PAGA';
+  if (!omsInvoiceIdValido(f.oms_invoice_id)) return 'SEM_ID';
+  if (!STATUS_LIBERADAS_OMS.has(f.status)) return 'NAO_LIBERADA';
+  if (!l.ctes) return 'VERIFICANDO';
+  return aptidaoEnvioSap(l.ctes).apta ? 'APTA' : 'BLOQUEADA_PARTIDA';
 }
 
 export function situacaoCtes(resumo) {
@@ -609,6 +651,12 @@ export const GRUPOS_DIAGNOSTICO = [
   ] },
   { id: 'oms', titulo: 'Integração OMS/SAP', cards: [
     { id: 'sem_id_oms', rotulo: 'Sem Id do OMS', cor: '#b91c1c', teste: comFatura((l) => faturaSemIdOms(l.fatura)), dica: 'Em aberto e sem o Id do OMS: não consegue ser enviada ao SAP. Importe o Id pela planilha da Verum (botão "Importar só o Id do OMS" na lista de faturas).' },
+    { id: 'oms_bloqueadas', rotulo: 'Liberadas, bloqueadas por partida', cor: '#c2410c', teste: (l) => situacaoOms(l) === 'BLOQUEADA_PARTIDA', dica: 'Liberadas no AMD, mas com CT-e sem partida no SAP ou com partida compensada (Fênix ou outra): não vão ao OMS até corrigir.' },
+    { id: 'oms_aptas', rotulo: 'Liberadas, aptas e não enviadas', cor: '#315ee7', teste: (l) => situacaoOms(l) === 'APTA', dica: 'Liberadas, com Id e todas as partidas em ordem, mas sem envio ao OMS: abra e use "Enviar ao OMS".' },
+    { id: 'oms_aguardando', rotulo: 'Aguardando OMS', cor: '#b78700', teste: (l) => situacaoOms(l) === 'AGUARDANDO', dica: 'Enviadas, aguardando o OMS aceitar e processar.' },
+    { id: 'oms_fila', rotulo: 'Na fila do SAP', cor: '#0f766e', teste: (l) => situacaoOms(l) === 'FILA', dica: 'O OMS liberou: aguardando o SAP ler a fatura.' },
+    { id: 'oms_enviadas', rotulo: 'Enviadas ao SAP', cor: '#14733b', teste: (l) => situacaoOms(l) === 'ENVIADA', dica: 'O SAP já leu a fatura.' },
+    { id: 'oms_erro', rotulo: 'Erro/recusadas no OMS', cor: '#9b1111', teste: (l) => situacaoOms(l) === 'ERRO', dica: 'Recusadas pelo OMS, bloqueadas por trava do OMS ou com falha: abra a fatura para ver o motivo.' },
     { id: 'com_id_oms', rotulo: 'Com Id do OMS', cor: '#14733b', teste: comFatura((l) => ativa(l) && omsInvoiceIdValido(l.fatura.oms_invoice_id)), dica: 'Tem o Id do OMS: pode ser enviada ao SAP ao liberar.' },
   ] },
   { id: 'erp', titulo: 'Envio ao ERP', cards: [

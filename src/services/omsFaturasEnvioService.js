@@ -7,6 +7,8 @@
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { acompanharLote, consultarFatura, enviarLote } from './omsFaturasService';
 import { carregarSessao } from '../utils/authLocal';
+import { carregarResumoCtesFaturas } from './diagnosticoFaturasService';
+import { aptidaoEnvioSap } from '../utils/diagnosticoFaturas';
 import { camposDoLote, montarPayloadLiberacao, omsInvoiceIdValido } from '../utils/omsEnvioPuro';
 
 export { camposDoLote, montarPayloadLiberacao, omsInvoiceIdValido };
@@ -66,13 +68,26 @@ async function transmitir(envio, nomeAuditor) {
 
 /**
  * Libera a fatura no OMS. Retorna { resultado, envio?, mensagem }.
- * resultado: sem_id | ja_liberada | bloqueada | enviado | pendente | recusado
+ * resultado: sem_id | sem_partida | ja_liberada | bloqueada | enviado | pendente | recusado
  */
 export async function liberarFaturaNoOms({ fatura, nomeAuditor }) {
   if (!omsInvoiceIdValido(fatura?.oms_invoice_id)) {
     return { resultado: 'sem_id', mensagem: 'Fatura sem Id do OMS: reimporte a planilha de faturas da Verum (coluna "Id") para enviar ao SAP.' };
   }
   const omsInvoiceId = String(fatura.oms_invoice_id).toLowerCase();
+
+  // Trava do AMD: so vai ao SAP com TODOS os CT-es com partida e nenhuma partida compensada (Fenix ou outra).
+  // Sem conseguir conferir, nao envia (melhor reenviar depois do que mandar sem partida).
+  let aptidao;
+  try {
+    const resumo = (await carregarResumoCtesFaturas([fatura.id])).get(String(fatura.id));
+    aptidao = aptidaoEnvioSap(resumo);
+  } catch (e) {
+    return { resultado: 'sem_partida', pendentes: [], mensagem: `Não enviada ao OMS: não foi possível conferir as partidas dos CT-es (${e.message}). Use "Enviar ao OMS" depois.` };
+  }
+  if (!aptidao.apta) {
+    return { resultado: 'sem_partida', pendentes: aptidao.pendentes, mensagem: `Não enviada ao OMS: ${aptidao.mensagem} Atualize no SAP e use "Enviar ao OMS" na fatura.` };
+  }
 
   // Situacao antes de liberar (5.3). Falha na consulta nao impede o envio: o lote tem as mesmas travas.
   try {
@@ -135,4 +150,19 @@ export async function liberarNoOmsAposAprovacao({ fatura, statusNovo, nomeAudito
   } catch (e) {
     return { resultado: 'erro', mensagem: `Envio ao OMS nao feito: ${e.message}` };
   }
+}
+
+/** Ultimo envio ao OMS de cada fatura: Map(faturaId -> envio). Usado pelo Diagnostico. */
+export async function carregarEnviosOmsPorFatura(faturaIds = []) {
+  const mapa = new Map();
+  const ids = [...new Set(faturaIds.map(String))];
+  if (!ids.length) return mapa;
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data, error } = await db().from(TABELA)
+      .select('fatura_id,status,oms_status,outcome,sent_to_erp,queued_for_erp_at,blocking_checks,erro,created_at')
+      .in('fatura_id', ids.slice(i, i + 200)).order('created_at', { ascending: false });
+    if (error) throw new Error(`Envios ao OMS: ${error.message}`);
+    (data || []).forEach((e) => { if (!mapa.has(String(e.fatura_id))) mapa.set(String(e.fatura_id), e); });
+  }
+  return mapa;
 }

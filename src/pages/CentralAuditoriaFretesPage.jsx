@@ -40,6 +40,7 @@ import {
   lerOmsInvoiceId,
 } from '../utils/auditoriaFretesImport';
 import { omsInvoiceIdValido } from '../utils/omsEnvioPuro';
+import { STATUS_LIBERADAS_OMS } from '../utils/diagnosticoFaturas';
 import { importarIdsOmsDaPlanilha, resumirImportacaoIds } from '../services/omsIdFaturasService';
 import { ROTULO_ENVIO_OMS, atualizarEnvioOms, estadoEnvioOms, listarEnviosOms, liberarFaturaNoOms, liberarNoOmsAposAprovacao } from '../services/omsFaturasEnvioService';
 import { getSupabaseClient as getSupabaseOms } from '../lib/supabaseClient';
@@ -4186,6 +4187,20 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       )}
       {mensagemLiberacao && (
         <div className="hint-box compact" style={{ marginTop: 8 }}>{mensagemLiberacao}</div>
+      )}
+      {STATUS_LIBERADAS_OMS.has(fatura.status) && omsInvoiceIdValido(fatura.oms_invoice_id)
+        && (!enviosOms[0] || ['recusado', 'erro'].includes(enviosOms[0].status) || enviosOms[0].outcome === 'blocked') && (
+        <div className="hint-box compact" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span>{enviosOms[0] ? 'O último envio ao OMS não foi aceito.' : 'Fatura liberada e ainda não enviada ao OMS/SAP.'} O envio só sai com todos os CT-es com partida no SAP e sem compensação.</span>
+          <button className="btn-secondary" disabled={atualizandoOms} onClick={async () => {
+            setAtualizandoOms(true);
+            try {
+              const r = await liberarFaturaNoOms({ fatura, nomeAuditor: sessao?.nome || sessao?.email || 'Auditor' });
+              setMensagemLiberacao(`OMS/SAP: ${r.mensagem}`);
+              if (r.envio) setEnviosOms((prev) => [r.envio, ...prev.filter((e) => e.id !== r.envio.id)]);
+            } catch (error) { setMensagemLiberacao(`OMS/SAP: ${error.message}`); } finally { setAtualizandoOms(false); }
+          }}>{atualizandoOms ? 'Conferindo partidas...' : 'Enviar ao OMS'}</button>
+        </div>
       )}
       {enviosOms[0] && (() => {
         const envio = enviosOms[0];
