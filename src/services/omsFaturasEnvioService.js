@@ -9,7 +9,7 @@ import { acompanharLote, consultarFatura, enviarLote } from './omsFaturasService
 import { carregarSessao } from '../utils/authLocal';
 import { carregarResumoCtesFaturas } from './diagnosticoFaturasService';
 import { aptidaoEnvioSap } from '../utils/diagnosticoFaturas';
-import { camposDoLote, camposEnvioErpDaFatura, montarPayloadLiberacao, omsInvoiceIdValido } from '../utils/omsEnvioPuro';
+import { camposDoLote, camposEnvioErpDaFatura, explicarTravasOms, montarPayloadLiberacao, omsInvoiceIdValido } from '../utils/omsEnvioPuro';
 
 export { camposDoLote, montarPayloadLiberacao, omsInvoiceIdValido };
 
@@ -45,6 +45,24 @@ async function atualizar(id, campos) {
   const { data, error } = await db().from(TABELA).update({ ...campos, updated_at: new Date().toISOString() }).eq('id', id).select('*').single();
   if (error) throw new Error(`Registro do envio ao OMS: ${error.message}`);
   return data;
+}
+
+/** Outras faturas (nao canceladas) com algum CT-e (mesma chave) desta fatura: quem ja cobrou o CT-e. */
+export async function faturasComMesmoCte(faturaId) {
+  const { data: meus, error } = await db().from('fatura_detalhes').select('chave_cte,numero_cte').eq('fatura_id', faturaId).eq('excluido_da_versao', false);
+  if (error) throw new Error(`CT-es da fatura: ${error.message}`);
+  const chaves = [...new Set((meus || []).map((d) => String(d.chave_cte || '').replace(/\D/g, '')).filter((c) => c.length === 44))];
+  if (!chaves.length) return [];
+  const numeroPorChave = new Map((meus || []).map((d) => [String(d.chave_cte || '').replace(/\D/g, ''), d.numero_cte]));
+  const { data: outros, error: e2 } = await db().from('fatura_detalhes').select('fatura_id,chave_cte').in('chave_cte', chaves).neq('fatura_id', faturaId).eq('excluido_da_versao', false);
+  if (e2) throw new Error(`CT-es em outras faturas: ${e2.message}`);
+  const ids = [...new Set((outros || []).map((o) => o.fatura_id))];
+  if (!ids.length) return [];
+  const { data: faturas } = await db().from('faturas').select('id,numero_fatura,status,transportadora,valor_fatura,data_pagamento').in('id', ids);
+  return (faturas || []).filter((f) => !['CANCELADA', 'SUBSTITUIDA'].includes(f.status)).map((f) => ({
+    ...f,
+    ctes: [...new Set((outros || []).filter((o) => o.fatura_id === f.id).map((o) => numeroPorChave.get(String(o.chave_cte || '').replace(/\D/g, '')) || o.chave_cte))],
+  }));
 }
 
 export async function listarEnviosOms(faturaId) {
@@ -95,7 +113,9 @@ export async function liberarFaturaNoOms({ fatura, nomeAuditor }) {
     if (s.state === 'queuedForErp' || s.state === 'sentToErp') return { resultado: 'ja_liberada', mensagem: s.state === 'sentToErp' ? 'OMS: fatura já enviada ao SAP.' : 'OMS: fatura já está na fila do SAP.' };
     if (s.state === 'blocked') {
       const codes = (s.blockingChecks || []).map((c) => c.code).join(', ');
-      return { resultado: 'bloqueada', mensagem: `OMS: liberação bloqueada (${codes || 'trava dura'}). Resolva no OMS e envie de novo.` };
+      const explicacoes = explicarTravasOms(s.blockingChecks || []);
+      const duplicadas = explicacoes.some((x) => x.codigo === 'CTE_ALREADY_BILLED') ? await faturasComMesmoCte(fatura.id).catch(() => []) : [];
+      return { resultado: 'bloqueada', explicacoes, duplicadas, mensagem: `OMS: liberação bloqueada (${codes || 'trava dura'}). Resolva no OMS e envie de novo.` };
     }
     if (s.state === 'processing') return { resultado: 'pendente', mensagem: 'OMS: fatura ainda em processamento em outro lote. Tente de novo em 1 minuto.' };
   } catch { /* segue */ }

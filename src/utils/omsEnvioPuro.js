@@ -90,3 +90,30 @@ export function montarPayloadLiberacao({ requestId, omsInvoiceId, valorFatura, p
     invoices: [{ invoiceId: String(omsInvoiceId).toLowerCase(), approvedChargeValue: Number(Number(valorFatura || 0).toFixed(2)), release: true }],
   };
 }
+
+// Travas duras do OMS explicadas para o auditor: o que aconteceu e o que fazer (nao adianta reenviar).
+const EXPLICACAO_TRAVA_OMS = {
+  CTE_ALREADY_BILLED: {
+    titulo: 'CT-e já cobrado em outra fatura',
+    explicacao: 'O OMS recusou porque pelo menos um CT-e desta fatura já foi cobrado em outra fatura. Reenviar não resolve: é uma trava do OMS.',
+    acao: 'Confira a outra fatura (abaixo, quando localizada). Se for cobrança em duplicidade, retire o CT-e desta fatura ou devolva/conteste a fatura com a transportadora. Não pague o CT-e duas vezes.',
+  },
+  CTE_WITHOUT_KEY: {
+    titulo: 'CT-e sem chave no OMS',
+    explicacao: 'O OMS não achou a chave (44 dígitos) de algum CT-e desta fatura.',
+    acao: 'Corrija a chave do CT-e (reimporte a fatura da Verum ou ajuste o CT-e) e envie de novo.',
+  },
+};
+
+/** Lista de { codigo, titulo, explicacao, acao } para os codigos de trava (strings ou { code }). */
+export function explicarTravasOms(travas = []) {
+  const codigos = [...new Set((travas || []).map((t) => String(t?.code || t || '').trim()).filter(Boolean))];
+  return codigos.map((codigo) => ({
+    codigo,
+    ...(EXPLICACAO_TRAVA_OMS[codigo] || {
+      titulo: `Trava do OMS: ${codigo}`,
+      explicacao: 'O OMS bloqueou a liberação desta fatura.',
+      acao: 'Resolva a pendência no OMS (veja o código acima) e envie de novo.',
+    }),
+  }));
+}

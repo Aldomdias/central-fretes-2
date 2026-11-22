@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { carregarPlataformaAuditoria, reauditarFatura, vincularChavesDetalhesPorNumero } from '../services/auditoriaFretesService';
 import { carregarDetalhesFaturaSupabase } from '../services/lotacaoSupabaseService';
 import { carregarEnviosOmsPorFatura, liberarFaturaNoOms } from '../services/omsFaturasEnvioService';
+import AlertaBloqueioOms from './AlertaBloqueioOms';
 import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarCanceladas, marcarEncaminhamentoFinanceiro, marcarEnviadaAntecipacao, marcarPrevisaoPagamento, TIPOS_ENCAMINHAMENTO, marcarSubstituidasDuplicadas } from '../services/diagnosticoFaturasService';
 import { carregarCadastroPorRaiz } from '../services/transportadoraCnpjsService';
 import { diasAte } from '../utils/auditoriaFretesDomain';
@@ -285,6 +286,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const [ultimaSap, setUltimaSap] = useState(null);
   const [ultimaAberta, setUltimaAberta] = useState(null);
   const [aviso, setAviso] = useState('');
+  const [alertaOms, setAlertaOms] = useState([]);
   const [exportando, setExportando] = useState(false);
   const [atualizando, setAtualizando] = useState(false);
   const [selecionadas, setSelecionadas] = useState(() => new Set());
@@ -594,17 +596,23 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     if (!alvo.length) { setAviso('Nenhuma selecionada está liberada e pendente de envio ao OMS (Apta, Bloqueada por partida ou com Erro).'); return; }
     if (!window.confirm(`Enviar ${alvo.length} fatura(s) ao OMS/SAP? Cada uma é conferida antes (Id, partidas dos CT-es e situação no OMS).`)) return;
     const nome = carregarSessao()?.nome || carregarSessao()?.email || 'Auditor';
-    const res = { enviadas: 0, pendentes: [] };
+    const res = { enviadas: 0, pendentes: [], bloqueios: [] };
+    setAlertaOms([]);
     for (let i = 0; i < alvo.length; i += 1) {
       const f = alvo[i].fatura;
       setProcessandoLote(`Enviando ao OMS ${i + 1}/${alvo.length}: ${f.numero_fatura}`);
       try {
         // eslint-disable-next-line no-await-in-loop
         const r = await liberarFaturaNoOms({ fatura: f, nomeAuditor: nome });
-        if (['enviado', 'ja_liberada'].includes(r.resultado)) res.enviadas += 1; else res.pendentes.push(`${f.numero_fatura}: ${r.mensagem}`);
+        if (['enviado', 'ja_liberada'].includes(r.resultado)) res.enviadas += 1;
+        else {
+          res.pendentes.push(`${f.numero_fatura}: ${r.mensagem}`);
+          if (r.resultado === 'bloqueada' && r.explicacoes?.length) res.bloqueios.push({ numero: f.numero_fatura, explicacoes: r.explicacoes, duplicadas: r.duplicadas || [] });
+        }
       } catch (e) { res.pendentes.push(`${f.numero_fatura}: ${e.message || e}`); }
     }
     setProcessandoLote('');
+    setAlertaOms(res.bloqueios);
     setAviso(`OMS/SAP: ${res.enviadas} de ${alvo.length} enviada(s).${res.pendentes.length ? ` Não enviadas: ${res.pendentes.slice(0, 5).join(' | ')}${res.pendentes.length > 5 ? ` (+${res.pendentes.length - 5})` : ''}` : ''}`);
     setRecarga((v) => v + 1);
   };
@@ -1154,6 +1162,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando} onClick={() => aplicarAgrupamento(false)}>Desmarcar</button>
               {selecaoValida.length > 0 && <button type="button" className="btn-secondary" onClick={() => setSelecionadas(new Set())}>Limpar seleção</button>}
               {aviso && <span className="compact" role="status">{aviso}</span>}
+              {alertaOms.length > 0 && <div style={{ flexBasis: '100%' }}><AlertaBloqueioOms itens={alertaOms} onFechar={() => setAlertaOms([])} /></div>}
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
               <span className="compact" style={{ color: '#475569' }} title="Registra que a fatura foi encaminhada ao financeiro (boleto na pasta ou dados bancários). Não é programação nem pagamento.">

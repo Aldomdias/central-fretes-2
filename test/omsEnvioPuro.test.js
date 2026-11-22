@@ -49,3 +49,14 @@ test('fila do SAP confirmada registra o envio ao ERP na fatura', () => {
   assert.equal(camposEnvioErpDaFatura(envio, { outcome: 'blocked' }), null);
   assert.equal(camposEnvioErpDaFatura(envio, { outcome: 'queuedForErp' }), null);
 });
+
+test('explicarTravasOms: CTE_ALREADY_BILLED traz explicacao e o que fazer; codigo desconhecido tem texto generico', async () => {
+  const { explicarTravasOms } = await import('../src/utils/omsEnvioPuro.js');
+  const [a] = explicarTravasOms([{ code: 'CTE_ALREADY_BILLED' }, { code: 'CTE_ALREADY_BILLED' }]);
+  assert.equal(a.codigo, 'CTE_ALREADY_BILLED');
+  assert.match(a.titulo, /já cobrado/);
+  assert.match(a.acao, /duplicidade/);
+  const [b] = explicarTravasOms(['OUTRA_TRAVA']);
+  assert.match(b.titulo, /OUTRA_TRAVA/);
+  assert.deepEqual(explicarTravasOms([]), []);
+});

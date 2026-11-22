@@ -45,7 +45,9 @@ import {
 import { omsInvoiceIdValido } from '../utils/omsEnvioPuro';
 import { STATUS_LIBERADAS_OMS } from '../utils/diagnosticoFaturas';
 import { importarIdsOmsDaPlanilha, resumirImportacaoIds } from '../services/omsIdFaturasService';
-import { ROTULO_ENVIO_OMS, atualizarEnvioOms, estadoEnvioOms, listarEnviosOms, liberarFaturaNoOms, liberarNoOmsAposAprovacao } from '../services/omsFaturasEnvioService';
+import { ROTULO_ENVIO_OMS, atualizarEnvioOms, estadoEnvioOms, faturasComMesmoCte, listarEnviosOms, liberarFaturaNoOms, liberarNoOmsAposAprovacao } from '../services/omsFaturasEnvioService';
+import AlertaBloqueioOms from '../components/AlertaBloqueioOms';
+import { explicarTravasOms } from '../utils/omsEnvioPuro';
 import { getSupabaseClient as getSupabaseOms } from '../lib/supabaseClient';
 import {
   buscarDetalhesFaturasPorCtesSupabase,
@@ -2097,6 +2099,21 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [perguntaProtocolo, setPerguntaProtocolo] = useState(false);
   const [enviosOms, setEnviosOms] = useState([]);
   const [atualizandoOms, setAtualizandoOms] = useState(false);
+  // Bloqueio do OMS explicado ao auditor (trava do ultimo envio ou resultado do envio recem feito).
+  const [bloqueioOms, setBloqueioOms] = useState(null);
+  const ultimoEnvioOms = enviosOms[0];
+  useEffect(() => {
+    const travas = ultimoEnvioOms?.outcome === 'blocked' || ultimoEnvioOms?.status === 'recusado' ? (ultimoEnvioOms.blocking_checks || []) : [];
+    const explicacoes = explicarTravasOms(travas);
+    if (!explicacoes.length || !fatura?.id) { setBloqueioOms(null); return undefined; }
+    let ativo = true;
+    const base = { numero: fatura.numero_fatura, explicacoes, duplicadas: [] };
+    setBloqueioOms(base);
+    if (explicacoes.some((x) => x.codigo === 'CTE_ALREADY_BILLED')) {
+      faturasComMesmoCte(fatura.id).then((duplicadas) => { if (ativo) setBloqueioOms({ ...base, duplicadas }); }).catch(() => {});
+    }
+    return () => { ativo = false; };
+  }, [ultimoEnvioOms, fatura?.id, fatura?.numero_fatura]);
   useEffect(() => {
     let vivo = true;
     if (fatura?.id) listarEnviosOms(fatura.id).then((l) => { if (vivo) setEnviosOms(l); }).catch(() => { if (vivo) setEnviosOms([]); });
@@ -2497,6 +2514,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       const r = await liberarFaturaNoOms({ fatura: { ...fatura, valor_fatura: fatura.valor_fatura }, nomeAuditor: sessao?.nome || sessao?.email || 'Auditor' });
       setMensagemLiberacao(`✓ Fatura liberada para pagamento — nao ha cobranca a maior. ${r.mensagem}`);
       if (r.envio) setEnviosOms((prev) => [r.envio, ...prev.filter((e) => e.id !== r.envio.id)]);
+      if (r.resultado === 'bloqueada' && r.explicacoes?.length) setBloqueioOms({ numero: fatura.numero_fatura, explicacoes: r.explicacoes, duplicadas: r.duplicadas || [] });
     } catch (error) {
       setMensagemLiberacao(`✓ Fatura liberada para pagamento. ⚠ Envio ao OMS nao feito: ${error.message}`);
     }
@@ -4284,6 +4302,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       {mensagemLiberacao && (
         <div className="hint-box compact" style={{ marginTop: 8 }}>{mensagemLiberacao}</div>
       )}
+      {bloqueioOms && <AlertaBloqueioOms itens={[bloqueioOms]} onFechar={() => setBloqueioOms(null)} />}
       {STATUS_LIBERADAS_OMS.has(fatura.status) && omsInvoiceIdValido(fatura.oms_invoice_id)
         && (!enviosOms[0] || ['recusado', 'erro'].includes(enviosOms[0].status) || enviosOms[0].outcome === 'blocked') && (
         <div className="hint-box compact" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -4294,6 +4313,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
               const r = await liberarFaturaNoOms({ fatura, nomeAuditor: sessao?.nome || sessao?.email || 'Auditor' });
               setMensagemLiberacao(`OMS/SAP: ${r.mensagem}`);
               if (r.envio) setEnviosOms((prev) => [r.envio, ...prev.filter((e) => e.id !== r.envio.id)]);
+              if (r.resultado === 'bloqueada' && r.explicacoes?.length) setBloqueioOms({ numero: fatura.numero_fatura, explicacoes: r.explicacoes, duplicadas: r.duplicadas || [] });
             } catch (error) { setMensagemLiberacao(`OMS/SAP: ${error.message}`); } finally { setAtualizandoOms(false); }
           }}>{atualizandoOms ? 'Conferindo partidas...' : 'Enviar ao OMS'}</button>
         </div>
