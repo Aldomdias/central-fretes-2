@@ -448,3 +448,12 @@ test('envio ao SAP pelo OMS: so com todas as partidas e sem compensacao', async 
   assert.equal(situacaoOms({ fatura: f({ lancamento_financeiro: true }), ctes: resumo({ semPartida: [{ numero_cte: '1' }] }) }), 'LANCADA');
   assert.equal(situacaoOms({ fatura: f({ partida: '1900000001' }), oms: { status: 'enviado', sent_to_erp: true } }), 'ENVIADA');
 });
+
+test('CNPJ do emissor invalido (lixo da importacao) cai para o CNPJ da transportadora', async () => {
+  const { identificacaoSapDoCte, cnpjValido } = await import('../src/utils/diagnosticoFaturas.js');
+  assert.equal(cnpjValido('00000000013713'), false);
+  assert.equal(cnpjValido('03011765000115'), true);
+  const id = identificacaoSapDoCte({ chave_cte: '', numero_cte: '4705872', serie_cte: '2', cnpj_emissor: '00000000013713', cnpj_transportadora: '03011765000115' });
+  assert.equal(id.cnpj, '03011765000115');
+  assert.equal(id.numero, '4705872');
+});

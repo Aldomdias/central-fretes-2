@@ -423,11 +423,25 @@ export function situacaoPrevisao(f, referencia = new Date()) {
 }
 
 // Identificacao do CT-e no SAP: emitente e serie saem da chave de acesso (e o CNPJ da filial que emitiu).
+// CNPJ com digitos verificadores corretos. Importacoes sem chave gravaram lixo em cnpj_emissor (ex.: 00000000013713):
+// nesse caso o CT-e vale pelo CNPJ da transportadora, senao nunca casa com a partida do SAP.
+export function cnpjValido(valor) {
+  const d = digitos(valor);
+  if (d.length !== 14 || /^(\d)+$/.test(d)) return false;
+  const dv = (base) => {
+    let soma = 0; let peso = base.length - 7;
+    for (const n of base) { soma += Number(n) * peso; peso = peso === 2 ? 9 : peso - 1; }
+    const r = soma % 11;
+    return r < 2 ? 0 : 11 - r;
+  };
+  return dv(d.slice(0, 12)) === Number(d[12]) && dv(d.slice(0, 13)) === Number(d[13]);
+}
+
 export function identificacaoSapDoCte(item = {}) {
   const chave = digitos(item.chave_cte);
   const temChave = chave.length === 44;
   return {
-    cnpj: cnpj14(temChave ? chave.slice(6, 20) : (item.cnpj_emissor || item.cnpj_transportadora)),
+    cnpj: cnpj14(temChave ? chave.slice(6, 20) : (cnpjValido(item.cnpj_emissor) ? item.cnpj_emissor : item.cnpj_transportadora)),
     numero: String(Number(digitos(item.numero_cte) || (temChave ? chave.slice(25, 34) : 0))),
     serie: temChave ? serieDaChave(chave) : String(Number(digitos(item.serie_cte) || 0)),
   };
