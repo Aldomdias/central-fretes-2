@@ -37,7 +37,13 @@ function etapaDe(e, f, boletoIds) {
   if (laudoResolvidoFora(e, f)) return faturaPaga(f) ? 'concluida' : 'tratada';
   if (e.acao_executada && e.decisao === DECISAO.ENVIAR_LAUDO) return 'transportadora';
   if (e.acao_executada) {
-    if (!LIBERADAS.has(f.status)) return ['CANCELADA', 'SUBSTITUIDA'].includes(f.status) ? null : 'gestao';
+    if (!LIBERADAS.has(f.status)) {
+      if (['CANCELADA', 'SUBSTITUIDA'].includes(f.status)) return null;
+      if (f.status === 'AGUARDANDO_APROVACAO_GESTAO') return 'gestao';
+      // A gestao recusou ou a fatura foi reauditada: voltou para a auditoria e NAO esta mais na fila da gestao.
+      if (['AGUARDANDO_TRANSPORTADORA', 'AGUARDANDO_NOVA_FATURA'].includes(f.status)) return 'transportadora';
+      return STATUS_ROBO_AUDITA.includes(f.status) ? 'revisar' : 'tratada';
+    }
     // Paga: ERP e boleto ja passaram (pagamento so sai com os dois).
     if (faturaPaga(f)) return 'concluida';
     if (!f.data_envio_erp) return 'erp';
