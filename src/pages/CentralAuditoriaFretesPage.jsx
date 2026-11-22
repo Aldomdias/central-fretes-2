@@ -4396,6 +4396,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const arquivoIdsRef = useRef(null);
   const [filtro, setFiltro] = useState(() => filtrosIniciais?.filtro || '');
   const [filtroFaturasLote, setFiltroFaturasLote] = useState('');
+  const [numerosCopiados, setNumerosCopiados] = useState('');
   const [mapaVinculosLaudo, setMapaVinculosLaudo] = useState(null);
   const [versaoExclusoes, setVersaoExclusoes] = useState(0);
   const [status, setStatus] = useState(() => filtrosIniciais?.status || '');
@@ -6168,6 +6169,14 @@ ${portaisLaudo.length ? `
 
   // Exporta, em Excel formatado (tabela com filtro, cabecalho colorido, valores em R$),
   // todas as faturas que passam pelos filtros atuais (nao so a pagina visivel).
+  // Copia so os numeros das faturas do filtro atual (uma por linha), para colar em planilha/Diagnostico sem exportar.
+  const copiarNumerosFaturas = async () => {
+    try {
+      await navigator.clipboard.writeText(lista.map((f) => f.numero_fatura || f.numero || '').filter(Boolean).join('\n'));
+      setNumerosCopiados(`${lista.length} copiado(s)!`);
+    } catch { setNumerosCopiados('Não foi possível copiar'); }
+    setTimeout(() => setNumerosCopiados(''), 2500);
+  };
   const exportarFaturasFiltradas = async () => {
     if (!lista.length) return;
     const { default: XS } = await import('xlsx-js-style');
@@ -8015,6 +8024,10 @@ ${portaisLaudo.length ? `
           <button className="btn-secondary audit-small-button" disabled={!lista.length} onClick={exportarFaturasFiltradas}
             title="Exporta para Excel formatado todas as faturas do filtro atual (todas as páginas)">
             Exportar filtradas ({lista.length})
+          </button>
+          <button className="btn-secondary audit-small-button" disabled={!lista.length} onClick={copiarNumerosFaturas}
+            title="Copia os números das faturas do filtro atual (todas as páginas), um por linha">
+            {numerosCopiados || `Copiar números (${lista.length})`}
           </button>
         </div>
         {totalPaginasFaturas > 1 && (

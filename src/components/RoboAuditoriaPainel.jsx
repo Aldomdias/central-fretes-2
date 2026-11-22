@@ -106,6 +106,7 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
   const [etapaSel, setEtapaSel] = useState('');
   const [auditorSel, setAuditorSel] = useState('');
   const [busca, setBusca] = useState('');
+  const [numerosCopiados, setNumerosCopiados] = useState('');
   const [motivoSel, setMotivoSel] = useState('');
   const [busy, setBusy] = useState(false);
   const [reavaliando, setReavaliando] = useState('');
@@ -562,6 +563,16 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
           <button type="button" className="btn-secondary audit-small-button" disabled={!visiveis.length || exportando} onClick={exportarExcel}
             title="Baixa um Excel formatado com as faturas que estao na lista (respeita os filtros de etapa, auditor e busca).">
             {exportando ? 'Gerando Excel...' : `Exportar Excel (${visiveis.length})`}
+          </button>
+          <button type="button" className="btn-secondary audit-small-button" disabled={!visiveis.length} title="Copia os números das faturas da lista (respeita os filtros), um por linha."
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(visiveis.map((l) => l.f.numero_fatura || '').filter(Boolean).join('\n'));
+                setNumerosCopiados(`${visiveis.length} copiado(s)!`);
+              } catch { setNumerosCopiados('Não foi possível copiar'); }
+              setTimeout(() => setNumerosCopiados(''), 2500);
+            }}>
+            {numerosCopiados || `Copiar números (${visiveis.length})`}
           </button>
           <button type="button" className="btn-secondary audit-small-button" disabled={Boolean(lote)} onClick={recarregar}>Atualizar</button>
         </div>
