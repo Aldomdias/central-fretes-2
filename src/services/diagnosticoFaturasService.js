@@ -24,14 +24,29 @@ async function paginarPorId(montar) {
   }
 }
 
+// Roda fn em todos os itens, ate "limite" ao mesmo tempo, devolvendo os resultados na ordem. A espera
+// destas telas e quase toda de rede: consultas uma apos a outra deixavam os cards lentos.
+const LIMITE_PARALELO = 4;
+async function emParalelo(itens, fn, limite = LIMITE_PARALELO) {
+  const resultados = new Array(itens.length);
+  let proximo = 0;
+  const trabalhador = async () => {
+    while (proximo < itens.length) {
+      const i = proximo;
+      proximo += 1;
+      // eslint-disable-next-line no-await-in-loop
+      resultados[i] = await fn(itens[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limite, itens.length) }, trabalhador));
+  return resultados;
+}
+
 async function carregarDetalhes(client, faturaIds) {
-  const detalhes = [];
-  for (let i = 0; i < faturaIds.length; i += LOTE_FATURAS) {
-    const lote = faturaIds.slice(i, i + LOTE_FATURAS);
-    // eslint-disable-next-line no-await-in-loop
-    detalhes.push(...await paginarPorId(() => client.from('fatura_detalhes').select(COLUNAS_DETALHE).in('fatura_id', lote)));
-  }
-  return detalhes;
+  const lotes = [];
+  for (let i = 0; i < faturaIds.length; i += LOTE_FATURAS) lotes.push(faturaIds.slice(i, i + LOTE_FATURAS));
+  const partes = await emParalelo(lotes, (lote) => paginarPorId(() => client.from('fatura_detalhes').select(COLUNAS_DETALHE).in('fatura_id', lote)));
+  return partes.flat();
 }
 
 const COLUNAS_LANCAMENTO = 'id,cnpj_emitente,numero_cte,serie_cte,lancamento_contabil,data_lancamento,montante,documento_compensacao,data_compensacao,empresa,codigo_fornecedor,fornecedor,arquivo_origem';
@@ -53,12 +68,9 @@ export function limparCacheGruposCnpj() { cacheGrupos = null; }
 
 async function buscarEmLotes(numeros, montar) {
   const lista = [...numeros];
-  const linhas = [];
-  for (let i = 0; i < lista.length; i += LOTE_NUMEROS) {
-    // eslint-disable-next-line no-await-in-loop
-    linhas.push(...await paginarPorId(() => montar(lista.slice(i, i + LOTE_NUMEROS))));
-  }
-  return linhas;
+  const lotes = [];
+  for (let i = 0; i < lista.length; i += LOTE_NUMEROS) lotes.push(lista.slice(i, i + LOTE_NUMEROS));
+  return (await emParalelo(lotes, (lote) => paginarPorId(() => montar(lote)))).flat();
 }
 
 async function carregarLancamentos(client, detalhes) {
@@ -73,14 +85,11 @@ async function carregarLancamentos(client, detalhes) {
     numerosPorCnpj.get(id.cnpj).add(id.numero);
   });
   const porChave = new Map();
-  for (const [cnpj, numeros] of numerosPorCnpj) {
-    // eslint-disable-next-line no-await-in-loop
-    const linhas = await buscarEmLotes(numeros, (lote) => client.from('ctes_lancamentos_sap').select(COLUNAS_LANCAMENTO).eq('cnpj_emitente', cnpj).in('numero_cte', lote));
-    linhas.forEach((l) => {
-      const k = chaveCasamentoCte({ cnpj: l.cnpj_emitente, numero: l.numero_cte, serie: l.serie_cte });
-      porChave.set(k, [...(porChave.get(k) || []), l]);
-    });
-  }
+  const porCnpj = await emParalelo([...numerosPorCnpj], ([cnpj, numeros]) => buscarEmLotes(numeros, (lote) => client.from('ctes_lancamentos_sap').select(COLUNAS_LANCAMENTO).eq('cnpj_emitente', cnpj).in('numero_cte', lote)));
+  porCnpj.flat().forEach((l) => {
+    const k = chaveCasamentoCte({ cnpj: l.cnpj_emitente, numero: l.numero_cte, serie: l.serie_cte });
+    porChave.set(k, [...(porChave.get(k) || []), l]);
+  });
 
   // Sem lancamento no CNPJ do CT-e: procura nas outras empresas/filiais do grupo da transportadora.
   const faltam = ctes.filter((c) => !porChave.has(chaveCasamentoCte(c)));
@@ -95,14 +104,15 @@ async function carregarLancamentos(client, detalhes) {
     });
   });
   const porRaizNumero = new Map();
-  for (const [raiz, numeros] of numerosPorRaiz) {
-    // eslint-disable-next-line no-await-in-loop
-    const linhas = await buscarEmLotes(numeros, (lote) => client.from('ctes_lancamentos_sap').select(COLUNAS_LANCAMENTO).like('cnpj_emitente', `${raiz}%`).in('numero_cte', lote));
+  const entradasRaiz = [...numerosPorRaiz];
+  const porRaiz = await emParalelo(entradasRaiz, ([raiz, numeros]) => buscarEmLotes(numeros, (lote) => client.from('ctes_lancamentos_sap').select(COLUNAS_LANCAMENTO).like('cnpj_emitente', `${raiz}%`).in('numero_cte', lote)));
+  porRaiz.forEach((linhas, idx) => {
+    const raiz = entradasRaiz[idx][0];
     linhas.forEach((l) => {
       const k = `${raiz}|${Number(l.numero_cte)}`;
       porRaizNumero.set(k, [...(porRaizNumero.get(k) || []), l]);
     });
-  }
+  });
   faltam.forEach((c) => {
     const raiz = c.cnpj.slice(0, 8);
     const candidatas = [...new Set([raiz, ...(grupos.get(raiz) || [])])].flatMap((r) => porRaizNumero.get(`${r}|${Number(c.numero)}`) || []);

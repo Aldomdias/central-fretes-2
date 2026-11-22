@@ -50,6 +50,7 @@ const CHAVE_SESSAO = 'cf_diagnostico_faturas_v1';
 const TAM_PAGINA = 100;
 const LOTE_VERIFICACAO = 120;
 const LOTE_PRIORITARIO = 20;
+const PARALELO_LOTES = 3;
 const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimentoDe: '', vencimentoAte: '', pagamentoDe: '', pagamentoAte: '', grupoTransp: '', grupoAuditor: '' };
 const SEM_TRANSP = '__sem_fatura__';
 // Auditor "todos": visao geral do gestor (faturas em aberto de todos os auditores).
@@ -77,6 +78,8 @@ const ROTULO_ENVIO_ERP = { NAO_ENVIADA: 'Não enviada', COM_PARTIDA: 'Enviada co
 
 // Fica fora do componente para sobreviver a troca de aba; a versao da fatura (updated_at) invalida o item.
 const cacheCtes = new Map();
+// Ultimo envio ao OMS por fatura (null = sem envio). Carregado de uma vez, sem esperar as partidas dos CT-es.
+const cacheOms = new Map();
 
 function lerSessao() {
   try { return JSON.parse(sessionStorage.getItem(CHAVE_SESSAO) || '{}'); } catch { return {}; }
@@ -348,18 +351,23 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
         for (let i = 0; i < nPrioritarias; i += LOTE_PRIORITARIO) lotes.push(pendentes.slice(i, Math.min(i + LOTE_PRIORITARIO, nPrioritarias)));
         for (let i = nPrioritarias; i < pendentes.length; i += LOTE_VERIFICACAO) lotes.push(pendentes.slice(i, i + LOTE_VERIFICACAO));
         let feitas = 0;
-        for (let n = 0; n < lotes.length && ativo; n += 1) {
-          setProgresso({ feitas, total: pendentes.length });
-          const lote = lotes[n];
-          feitas += lote.length;
-          // eslint-disable-next-line no-await-in-loop
-          const mapa = await carregarResumoCtesFaturas(lote.map((f) => f.id));
-          // Ultimo envio ao OMS de cada fatura (sem a tabela/permissao: segue sem a coluna OMS).
-          // eslint-disable-next-line no-await-in-loop
-          const envios = await carregarEnviosOmsPorFatura(lote.map((f) => f.id)).catch(() => new Map());
-          lote.forEach((f) => cacheCtes.set(String(f.id), { carimbo: carimbo(f), resumo: mapa.get(String(f.id)), oms: envios.get(String(f.id)) || null }));
-          if (ativo) setVersaoCtes((v) => v + 1);
-        }
+        // Lotes em paralelo (poucos por vez): a espera era quase toda de rede, um lote depois do outro.
+        let proximo = 0;
+        const trabalhador = async () => {
+          while (ativo && proximo < lotes.length) {
+            const lote = lotes[proximo];
+            proximo += 1;
+            // eslint-disable-next-line no-await-in-loop
+            const mapa = await carregarResumoCtesFaturas(lote.map((f) => f.id));
+            if (!ativo) return;
+            lote.forEach((f) => cacheCtes.set(String(f.id), { carimbo: carimbo(f), resumo: mapa.get(String(f.id)) }));
+            feitas += lote.length;
+            setProgresso({ feitas, total: pendentes.length });
+            setVersaoCtes((v) => v + 1);
+          }
+        };
+        setProgresso({ feitas: 0, total: pendentes.length });
+        await Promise.all(Array.from({ length: Math.min(PARALELO_LOTES, lotes.length) }, trabalhador));
         if (ativo) setProgresso(null);
       } catch (e) {
         if (ativo) { setErroCtes(e.message || String(e)); setProgresso(null); }
@@ -368,9 +376,24 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     return () => { ativo = false; clearTimeout(timer); };
   }, [faturasBase, recarga]);
 
+  // Situacao no OMS: vem de uma tabela leve, carregada de uma vez (nao depende da conferencia de partidas, que e lenta).
+  const [versaoOms, setVersaoOms] = useState(0);
+  useEffect(() => {
+    // "Atualizar"/envio ao OMS (recarga) busca de novo: o ultimo envio pode ter mudado.
+    if (cacheOms.recarga !== recarga) { cacheOms.clear(); cacheOms.recarga = recarga; }
+    const faltam = faturasBase.filter((f) => !cacheOms.has(String(f.id))).map((f) => f.id);
+    if (!faltam.length) return undefined;
+    let ativo = true;
+    carregarEnviosOmsPorFatura(faltam).catch(() => new Map()).then((envios) => {
+      faltam.forEach((id) => cacheOms.set(String(id), envios.get(String(id)) || null));
+      if (ativo) setVersaoOms((v) => v + 1);
+    });
+    return () => { ativo = false; };
+  }, [faturasBase, recarga]);
+
   const linhas = useMemo(
-    () => linhasBase.map((l) => (l.fatura ? { ...l, ctes: cacheCtes.get(String(l.fatura.id))?.resumo, oms: cacheCtes.get(String(l.fatura.id))?.oms, duplicada: duplicadas.get(l.fatura.id), auditor: unificador.nome(l.fatura) } : l)),
-    [linhasBase, versaoCtes, duplicadas, unificador],
+    () => linhasBase.map((l) => (l.fatura ? { ...l, ctes: cacheCtes.get(String(l.fatura.id))?.resumo, oms: cacheOms.get(String(l.fatura.id)) || null, duplicada: duplicadas.get(l.fatura.id), auditor: unificador.nome(l.fatura) } : l)),
+    [linhasBase, versaoCtes, versaoOms, duplicadas, unificador],
   );
 
   const opcoes = useMemo(() => {
@@ -512,6 +535,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     try {
       const { faturas } = await carregarPlataformaAuditoria();
       cacheCtes.clear();
+      cacheOms.clear();
       limparCacheGruposCnpj();
       onState((atual) => ({ ...atual, faturas }));
       setVersaoCtes((v) => v + 1);
