@@ -1267,10 +1267,15 @@ function faturaNaJanelaVencimento(fatura, preset) {
 // Fatura 100% auditada: todos os CT-es vinculados já passaram pelo cálculo
 // (auditados >= totais, com pelo menos 1 CT-e). Não exige "sem divergência" —
 // só que o resultado já é definitivo, não tem mais nada pendente de cálculo.
-function faturaTotalmenteAuditada(fatura) {
-  const totais = Number(fatura.ctes_totais || 0);
-  const auditados = Number(fatura.ctes_auditados || 0);
-  return totais > 0 && auditados >= totais;
+// Com a contagem exata (a mesma da tela da fatura, de resumirFaturasExato) o numero gravado na fatura, que pode estar
+// velho, deixa de valer: "100% auditada" na capa so aparece se a tela da fatura tambem mostra tudo calculado.
+function contagemAuditoria(fatura, exato) {
+  if (exato) return { total: Number(exato.total || 0), calculados: Number(exato.calculados || 0), exata: true };
+  return { total: Number(fatura.ctes_totais || 0), calculados: Number(fatura.ctes_auditados || 0), exata: false };
+}
+function faturaTotalmenteAuditada(fatura, exato = null) {
+  const { total, calculados } = contagemAuditoria(fatura, exato);
+  return total > 0 && calculados >= total;
 }
 
 function situacaoPagamentoFatura(fatura) {
@@ -4736,7 +4741,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     canal: (fatura) => !canalFiltro || fatura.canal === canalFiltro,
     auditor: (fatura) => !auditorFiltro || fatura.auditor_nome === auditorFiltro,
     transportadora: (fatura) => !transportadoraFiltroFatura || fatura.transportadora === transportadoraFiltroFatura,
-    somenteAuditadas: (fatura) => !somenteAuditadas || (somenteAuditadas === 'completa' ? faturaTotalmenteAuditada(fatura) : !faturaTotalmenteAuditada(fatura)),
+    somenteAuditadas: (fatura) => !somenteAuditadas || (somenteAuditadas === 'completa' ? faturaTotalmenteAuditada(fatura, entregaDe(fatura)) : !faturaTotalmenteAuditada(fatura, entregaDe(fatura))),
     desconto: (fatura) => {
       if (!filtroDesconto) return true;
       const ent = entregaDe(fatura);
@@ -6227,7 +6232,7 @@ ${portaisLaudo.length ? `
         numero(fatura.valor_fatura),
         numero(fatura.ctes_auditados || fatura.ctes_vinculados),
         numero(fatura.ctes_totais),
-        faturaTotalmenteAuditada(fatura) ? 'Sim' : 'Não',
+        faturaTotalmenteAuditada(fatura, ent) ? 'Sim' : 'Não',
         ent ? numero(ent.maior) : '',
         ent ? numero(ent.menor) : '',
         ent ? numero(descontoConformeEscolha(ent.maior, ent.menor, considera)) : '',
@@ -8063,7 +8068,10 @@ ${portaisLaudo.length ? `
             <thead><tr><th><input type="checkbox" checked={todasFiltradasSelecionadas} disabled={!lista.length} onChange={alternarSelecaoFiltradas} title="Selecionar/desmarcar todas as faturas filtradas (todas as paginas)" /></th><th>Fatura</th><th>Transportadora</th><th>Origem</th><th>Vencimento</th><th>Valor</th><th>CT-es</th><th>Divergencia</th><th title="Cobranca a maior dos CT-es, no mesmo calculo da tela da fatura">A descontar</th><th title="Entrega dos CT-es (tracking). Use Verificar entregas para preencher.">Entrega</th><th>Auditor</th><th>Status</th><th>Pagamento</th><th>Fornecedor</th><th></th></tr></thead>
             <tbody>
               {listaPaginada.map((fatura) => {
-                const auditadaCompleta = faturaTotalmenteAuditada(fatura);
+                const exataAud = entregaDe(fatura);
+                const contagemAud = contagemAuditoria(fatura, exataAud);
+                const auditadaCompleta = Boolean(exataAud) && faturaTotalmenteAuditada(fatura, exataAud);
+                const faltaCalculo = Boolean(exataAud) && contagemAud.total > 0 && contagemAud.calculados < contagemAud.total;
                 const repetida = repetidasPorId.get(fatura.id);
                 return (
                   <tr key={fatura.id} onClick={() => setAberta(fatura)} style={{ cursor: 'pointer', ...(auditadaCompleta ? { background: '#f0fdf4', borderLeft: '3px solid #16a34a' } : {}), ...(repetida ? { background: '#fff7ed', borderLeft: '4px solid #ea580c' } : {}) }}>
@@ -8079,8 +8087,10 @@ ${portaisLaudo.length ? `
                     <td style={{ color: corAlerta(fatura), fontWeight: 700 }}>{dataBr(fatura.data_vencimento)}<small className="audit-days">{diasAte(fatura.data_vencimento)} dia(s)</small></td>
                     <td>{dinheiro(fatura.valor_fatura)}</td>
                     <td>
-                      {fatura.ctes_auditados || fatura.ctes_vinculados || 0}/{fatura.ctes_totais || 0}
+                      {exataAud ? `${contagemAud.calculados}/${contagemAud.total}` : `${fatura.ctes_auditados || fatura.ctes_vinculados || 0}/${fatura.ctes_totais || 0}`}
                       {auditadaCompleta && <small style={{ display: 'block', color: '#16a34a', fontWeight: 700 }}>100% auditada</small>}
+                      {faltaCalculo && <small style={{ display: 'block', color: '#b91c1c', fontWeight: 700 }} title="Há CT-es sem cálculo na tela da fatura (não localizados ou sem tabela). Use Recalcular CT-es para localizar e calcular.">{contagemAud.total - contagemAud.calculados} sem cálculo — recalcular</small>}
+                      {!exataAud && Number(fatura.ctes_totais || 0) > 0 && Number(fatura.ctes_auditados || 0) >= Number(fatura.ctes_totais || 0) && <small style={{ display: 'block', color: '#94a3b8' }}>conferindo…</small>}
                     </td>
                     <td>
                       {(() => {

@@ -25,6 +25,7 @@ import {
   montarLinhasDiagnostico,
   faturaSemIdOms,
   situacaoAuditoria,
+  sobreporAuditoriaExata,
   aptidaoEnvioSap,
   ROTULO_OMS,
   situacaoOms,
@@ -84,6 +85,17 @@ const ROTULO_ENVIO_ERP = { NAO_ENVIADA: 'Não enviada', COM_PARTIDA: 'Enviada co
 const cacheCtes = new Map();
 // Ultimo envio ao OMS por fatura (null = sem envio). Carregado de uma vez, sem esperar as partidas dos CT-es.
 const cacheOms = new Map();
+// Contagem exata de CT-es calculados (mesma da tela da fatura), so das faturas que dizem estar 100% auditadas.
+const cacheAuditoria = new Map();
+const STATUS_SEM_CONFERENCIA = new Set(['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO', 'ENVIADA_AO_FINANCEIRO', 'TRATADA', 'AGUARDANDO_APROVACAO_GESTAO', 'AGUARDANDO_TRANSPORTADORA', 'AGUARDANDO_NOVA_FATURA', 'CANCELADA', 'SUBSTITUIDA']);
+const diz100 = (f) => Number(f.ctes_totais || 0) > 0 && Number(f.ctes_auditados || 0) >= Number(f.ctes_totais || 0) && !String(f.status || '').startsWith('PAGA') && !STATUS_SEM_CONFERENCIA.has(f.status);
+const stampAuditoria = (f) => `${f.updated_at || ''}|${f.ctes_totais}|${f.ctes_auditados}`;
+// Fatura que diz 100% auditada: so conta com a contagem exata; enquanto nao conferida, fica 'verificando'.
+function auditoriaDaLinha(f) {
+  if (!diz100(f)) return f;
+  const exato = cacheAuditoria.get(String(f.id));
+  return exato && exato.stamp === stampAuditoria(f) ? sobreporAuditoriaExata(f, exato) : { ...f, ctes_conferidos: false };
+}
 
 function lerSessao() {
   try { return JSON.parse(sessionStorage.getItem(CHAVE_SESSAO) || '{}'); } catch { return {}; }
@@ -383,6 +395,27 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
 
   // Situacao no OMS: vem de uma tabela leve, carregada de uma vez (nao depende da conferencia de partidas, que e lenta).
   const [versaoOms, setVersaoOms] = useState(0);
+  // "100% auditada" so vale com a contagem exata dos CT-es (a gravada na fatura pode estar velha): confere as que dizem 100%.
+  const [versaoAud, setVersaoAud] = useState(0);
+  useEffect(() => {
+    const faltam = faturasBase.filter((f) => diz100(f) && cacheAuditoria.get(String(f.id))?.stamp !== stampAuditoria(f));
+    if (!faltam.length) return undefined;
+    let ativo = true;
+    (async () => {
+      try {
+        const { resumirFaturasExato } = await import('../pages/CentralAuditoriaFretesPage');
+        for (let i = 0; i < faltam.length && ativo; i += 20) {
+          const lote = faltam.slice(i, i + 20);
+          // eslint-disable-next-line no-await-in-loop
+          const mapa = await resumirFaturasExato(lote.map((f) => f.id));
+          lote.forEach((f) => { const r = mapa.get(f.id); if (r) cacheAuditoria.set(String(f.id), { stamp: stampAuditoria(f), total: r.total, calculados: r.calculados }); });
+          if (ativo) setVersaoAud((v) => v + 1);
+        }
+      } catch (e) { console.warn('[Diagnostico] contagem exata de CT-es auditados', e?.message || e); }
+    })();
+    return () => { ativo = false; };
+  }, [faturasBase, recarga]);
+
   useEffect(() => {
     // "Atualizar"/envio ao OMS (recarga) busca de novo: o ultimo envio pode ter mudado.
     if (cacheOms.recarga !== recarga) { cacheOms.clear(); cacheOms.recarga = recarga; }
@@ -397,8 +430,8 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   }, [faturasBase, recarga]);
 
   const linhas = useMemo(
-    () => linhasBase.map((l) => (l.fatura ? { ...l, ctes: cacheCtes.get(String(l.fatura.id))?.resumo, oms: cacheOms.get(String(l.fatura.id)) || null, duplicada: duplicadas.get(l.fatura.id), auditor: unificador.nome(l.fatura) } : l)),
-    [linhasBase, versaoCtes, versaoOms, duplicadas, unificador],
+    () => linhasBase.map((l) => (l.fatura ? { ...l, fatura: auditoriaDaLinha(l.fatura), ctes: cacheCtes.get(String(l.fatura.id))?.resumo, oms: cacheOms.get(String(l.fatura.id)) || null, duplicada: duplicadas.get(l.fatura.id), auditor: unificador.nome(l.fatura) } : l)),
+    [linhasBase, versaoCtes, versaoOms, versaoAud, duplicadas, unificador],
   );
 
   const opcoes = useMemo(() => {
@@ -541,6 +574,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       const { faturas } = await carregarPlataformaAuditoria();
       cacheCtes.clear();
       cacheOms.clear();
+      cacheAuditoria.clear();
       limparCacheGruposCnpj();
       onState((atual) => ({ ...atual, faturas }));
       setVersaoCtes((v) => v + 1);

@@ -288,6 +288,14 @@ export function detectarDuplicadas(faturas = [], chaveDaFatura = (f) => obterRai
 
 const STATUS_LIBERADAS = new Set(['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO', 'ENVIADA_AO_FINANCEIRO', 'TRATADA']);
 
+// Auditoria "exata": os numeros gravados na fatura (ctes_auditados) podem estar velhos; a tela da fatura conta os CT-es
+// de verdade (calculados = com calculo > 0). exato = { total, calculados } de resumirFaturasExato. Lista (Faturas) e
+// Diagnostico usam esta sobreposicao para mostrar o MESMO numero da tela da fatura.
+export function sobreporAuditoriaExata(f, exato) {
+  if (!f || !exato) return f;
+  return { ...f, ctes_totais: Number(exato.total || 0), ctes_auditados: Number(exato.calculados || 0), ctes_conferidos: true };
+}
+
 export function situacaoAuditoria(f) {
   if (inativa(f)) return 'CANCELADA';
   if (String(f.status || '').startsWith('PAGA') || STATUS_LIBERADAS.has(f.status)) return 'LIBERADA';
@@ -295,7 +303,8 @@ export function situacaoAuditoria(f) {
   if (['AGUARDANDO_TRANSPORTADORA', 'AGUARDANDO_NOVA_FATURA'].includes(f.status) || f.confirmacao_transportador_status === 'ENVIADO') return 'FORNECEDOR';
   const total = Number(f.ctes_totais || 0);
   const auditados = Number(f.ctes_auditados || 0);
-  if (total > 0 && auditados >= total) return 'AUDITADA';
+  // Marcada como conferida pela contagem exata? Se a fatura diz "completa" mas ainda nao foi conferida, nao afirma.
+  if (total > 0 && auditados >= total) return f.ctes_conferidos === false ? 'VERIFICANDO' : 'AUDITADA';
   return auditados > 0 ? 'PARCIAL' : 'NAO_AUDITADA';
 }
 

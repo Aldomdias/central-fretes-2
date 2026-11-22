@@ -457,3 +457,14 @@ test('CNPJ do emissor invalido (lixo da importacao) cai para o CNPJ da transport
   assert.equal(id.cnpj, '03011765000115');
   assert.equal(id.numero, '4705872');
 });
+
+test('auditoria exata: 100% gravado na fatura nao vale sem a contagem exata dos CT-es', async () => {
+  const { situacaoAuditoria, sobreporAuditoriaExata } = await import('../src/utils/diagnosticoFaturas.js');
+  const f = { id: 'x', status: 'COM_DIVERGENCIA', ctes_totais: 10, ctes_auditados: 10 };
+  assert.equal(situacaoAuditoria(f), 'AUDITADA'); // sem conferencia (outros usos): como antes
+  assert.equal(situacaoAuditoria({ ...f, ctes_conferidos: false }), 'VERIFICANDO');
+  // a tela da fatura conta 0 de 10 calculados: a capa tem que dizer isso
+  assert.equal(situacaoAuditoria(sobreporAuditoriaExata(f, { total: 10, calculados: 0 })), 'NAO_AUDITADA');
+  assert.equal(situacaoAuditoria(sobreporAuditoriaExata(f, { total: 10, calculados: 4 })), 'PARCIAL');
+  assert.equal(situacaoAuditoria(sobreporAuditoriaExata(f, { total: 10, calculados: 10 })), 'AUDITADA');
+});
