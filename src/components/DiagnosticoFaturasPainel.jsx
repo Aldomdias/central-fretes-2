@@ -1084,6 +1084,19 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     } catch (e) { setAviso(`Erro ao gerar o laudo: ${e.message || e}`); }
   };
 
+  // Numeros dos CT-es das faturas do recorte no formato numero-serie (ex.: 1234-1), um por linha, sem repetir.
+  const copiarNumerosCtes = async () => {
+    const numeros = [...new Set(todosCtes.map(({ c }) => {
+      const num = String(c.numero_cte ?? '').replace(/\D/g, '').replace(/^0+(?=\d)/, '');
+      const serie = String(c.serie_cte ?? '').replace(/\D/g, '').replace(/^0+(?=\d)/, '');
+      return num ? (serie !== '' ? `${num}-${serie}` : num) : '';
+    }).filter(Boolean))];
+    try {
+      await navigator.clipboard.writeText(numeros.join('\n'));
+      setAviso(`${inteiro(numeros.length)} CT-e(s) copiado(s) (número-série).`);
+    } catch { setAviso('O navegador não permitiu copiar.'); }
+  };
+
   const copiarNumeros = async () => {
     try {
       await navigator.clipboard.writeText(resultado.map((l) => l.numero).join('\n'));
@@ -1184,6 +1197,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               <button type="button" className="btn-primary" style={{ background: '#04a484', borderColor: '#04a484' }} disabled={!resultado.some((l) => l.fatura)} onClick={gerarLaudo} title="Laudo visual das faturas do recorte: total, pago, programado no financeiro (protocolo com previsão) e em tratativa. Baixa um HTML que abre no navegador e imprime em PDF.">Gerar laudo</button>
               <button type="button" className="btn-secondary" disabled={!todosCtes.length || exportando || Boolean(progresso)} onClick={exportarTodosCtes} title={progresso ? 'Aguarde a verificação dos CT-es no SAP terminar' : 'Todos os CT-es das faturas do recorte, com a partida de cada um'}>Exportar CT-es ({inteiro(todosCtes.length)})</button>
               <button type="button" className="btn-secondary" disabled={!ctesSemPartida.length || exportando} onClick={exportarCtes}>Exportar CT-es sem partida ({inteiro(ctesSemPartida.length)})</button>
+              <button type="button" className="btn-secondary" disabled={!todosCtes.length || Boolean(progresso)} onClick={copiarNumerosCtes} title={progresso ? 'Aguarde a verificação dos CT-es terminar' : 'Copia os números dos CT-es das faturas da lista, no formato número-série (ex.: 1234-1), um por linha'}>Copiar CT-es ({inteiro(todosCtes.length)})</button>
               <button type="button" className="btn-secondary" disabled={!resultado.length} onClick={copiarNumeros}>Copiar números</button>
               <button type="button" className="btn-secondary" disabled={Boolean(progresso) || atualizando} onClick={atualizarDados} title="Busca de novo as faturas, os CT-es e as partidas no banco">{atualizando ? 'Atualizando...' : '↻ Atualizar dados'}</button>
               {temFiltro && <button type="button" className="btn-secondary" onClick={limparFiltros}>Limpar filtros</button>}
