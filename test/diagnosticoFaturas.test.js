@@ -468,3 +468,14 @@ test('auditoria exata: 100% gravado na fatura nao vale sem a contagem exata dos 
   assert.equal(situacaoAuditoria(sobreporAuditoriaExata(f, { total: 10, calculados: 4 })), 'PARCIAL');
   assert.equal(situacaoAuditoria(sobreporAuditoriaExata(f, { total: 10, calculados: 10 })), 'AUDITADA');
 });
+
+test('ja enviada ao SAP: fila/enviada pelo OMS ou com data de envio ao ERP', async () => {
+  const { jaEnviadaAoSap } = await import('../src/utils/diagnosticoFaturas.js');
+  const f = (extra) => ({ id: 'f', status: 'PRONTA_PARA_PAGAMENTO', oms_invoice_id: '6566f0a1b2c3d4e5f6a7b8c9', ...extra });
+  assert.equal(jaEnviadaAoSap({ fatura: f(), oms: { status: 'enviado', sent_to_erp: true } }), true);
+  assert.equal(jaEnviadaAoSap({ fatura: f(), oms: { status: 'enviado', outcome: 'queuedForErp' } }), true);
+  assert.equal(jaEnviadaAoSap({ fatura: f({ data_envio_erp: '2026-11-20' }) }), true);
+  assert.equal(jaEnviadaAoSap({ fatura: f(), oms: { status: 'recusado' } }), false);
+  assert.equal(jaEnviadaAoSap({ fatura: f({ status: 'RECEBIDA' }) }), false);
+  assert.equal(jaEnviadaAoSap({ numero: '1' }), false);
+});

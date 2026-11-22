@@ -21981,13 +21981,13 @@ function detalheErroSupabase(error) {
 async function carregarDetalhesFaturaSupabase(faturaId) {
   if (!isSupabaseConfigured()) return [];
   const supabase2 = ensureClient();
-  const PAGINA = 1e3;
+  const PAGINA2 = 1e3;
   const todos = [];
-  for (let inicio = 0; ; inicio += PAGINA) {
-    const { data, error } = await supabase2.from("fatura_detalhes").select("*").eq("fatura_id", faturaId).order("numero_cte").order("id").range(inicio, inicio + PAGINA - 1);
+  for (let inicio = 0; ; inicio += PAGINA2) {
+    const { data, error } = await supabase2.from("fatura_detalhes").select("*").eq("fatura_id", faturaId).order("numero_cte").order("id").range(inicio, inicio + PAGINA2 - 1);
     if (error) throw new Error(detalheErroSupabase(error));
     todos.push(...data || []);
-    if ((data || []).length < PAGINA) break;
+    if ((data || []).length < PAGINA2) break;
   }
   return todos;
 }
@@ -22042,7 +22042,34 @@ var init_vinculoCnpjTransportadora = __esm({
   }
 });
 
+// src/utils/portalFinanceiroDomain.js
+function situacaoFinanceiro(f = {}) {
+  if (String(f.status || "").startsWith("PAGA") && f.pagamento_confirmado === true) return "PAGA";
+  if (!f.encaminhado_financeiro_em) return "AGUARDA_ENCAMINHAMENTO";
+  if (f.programacao_confirmada === true && f.data_previsao_pagamento) return "PROGRAMADA";
+  return f.data_previsao_pagamento ? "ENCAMINHADA_COM_PREVISAO" : "ENCAMINHADA_SEM_PREVISAO";
+}
+var estornadaSemRelancamento;
+var init_portalFinanceiroDomain = __esm({
+  "src/utils/portalFinanceiroDomain.js"() {
+    "use strict";
+    init_define_import_meta_env();
+    init_parseNumeroPlanilha();
+    estornadaSemRelancamento = (f) => f?.sap_estorno_status === "ESTORNADA_SEM_RELAN\xC7AMENTO";
+  }
+});
+
 // src/utils/auditoriaFretesDomain.js
+function isoDate(date = /* @__PURE__ */ new Date()) {
+  return new Date(date).toISOString().slice(0, 10);
+}
+function diasAte(data, referencia = /* @__PURE__ */ new Date()) {
+  if (!data) return null;
+  const alvo = /* @__PURE__ */ new Date(`${String(data).slice(0, 10)}T12:00:00`);
+  const base = /* @__PURE__ */ new Date(`${isoDate(referencia)}T12:00:00`);
+  if (Number.isNaN(alvo.getTime())) return null;
+  return Math.ceil((alvo.getTime() - base.getTime()) / 864e5);
+}
 function normalizarChaveCte(chave) {
   return String(chave || "").replace(/\D/g, "");
 }
@@ -22053,6 +22080,7 @@ var init_auditoriaFretesDomain = __esm({
     init_auditoriaFretesImport();
     init_cnpj();
     init_vinculoCnpjTransportadora();
+    init_portalFinanceiroDomain();
   }
 });
 
@@ -22913,6 +22941,7 @@ var init_auditoriaFretesService = __esm({
     init_auditoriaCteJornadaService();
     init_transporteAutorizacoesService();
     init_realizadoTrackingEnrichment();
+    init_portalFinanceiroDomain();
     CAMPOS_OPCIONAIS_FATURA = [
       "auditoria_cobranca_acima",
       "auditoria_cobranca_abaixo",
@@ -23079,6 +23108,33 @@ async function carregarRaizesAdicionaisPorId() {
     mapa.set(item.transportadora_id, [...mapa.get(item.transportadora_id) || [], item.cnpj_raiz]);
   });
   return mapa;
+}
+async function carregarGruposRaizTransportadora() {
+  const grupos = /* @__PURE__ */ new Map();
+  if (!isSupabaseConfigured()) return grupos;
+  const [transportadoras, origens, adicionais] = await Promise.all([
+    client().from("transportadoras").select("id,cnpj,cnpj_raiz").limit(2e4),
+    client().from("origens").select("transportadora_id,cnpj,cnpj_raiz").limit(5e4),
+    client().from("transportadora_cnpjs").select("transportadora_id,cnpj_raiz").eq("ativo", true).limit(2e4)
+  ]);
+  const erro = transportadoras.error || origens.error || adicionais.error;
+  if (erro) throw new Error(erro.message || "Erro ao carregar raizes das transportadoras.");
+  const porId = /* @__PURE__ */ new Map();
+  const adicionar = (id, valor) => {
+    const raiz2 = obterRaizCnpj(valor);
+    if (!id || !/^\d{8}$/.test(raiz2) || /^0+$/.test(raiz2)) return;
+    if (!porId.has(id)) porId.set(id, /* @__PURE__ */ new Set());
+    porId.get(id).add(raiz2);
+  };
+  (transportadoras.data || []).forEach((t) => adicionar(t.id, t.cnpj_raiz || t.cnpj));
+  (origens.data || []).forEach((o) => adicionar(o.transportadora_id, o.cnpj_raiz || o.cnpj));
+  (adicionais.data || []).forEach((a) => adicionar(a.transportadora_id, a.cnpj_raiz));
+  porId.forEach((raizes) => {
+    raizes.forEach((raiz2) => {
+      grupos.set(raiz2, Array.from(/* @__PURE__ */ new Set([...grupos.get(raiz2) || [], ...raizes])));
+    });
+  });
+  return grupos;
 }
 var init_transportadoraCnpjsService = __esm({
   "src/services/transportadoraCnpjsService.js"() {
@@ -23901,8 +23957,8 @@ function normalizeMunicipioIbgeRow(row = {}) {
     const chave = String(key || "").toLowerCase();
     const texto = String(value ?? "").trim();
     if (!ibge && /ibge|cod|codigo/.test(chave)) {
-      const digitos = texto.replace(/\D/g, "");
-      if (digitos.length >= 7) ibge = digitos.slice(0, 7);
+      const digitos4 = texto.replace(/\D/g, "");
+      if (digitos4.length >= 7) ibge = digitos4.slice(0, 7);
     }
     if (!cidade && /cidade|municip|munic|nome/.test(chave) && texto && !/^\d+$/.test(texto)) {
       cidade = texto;
@@ -25845,14 +25901,14 @@ function pickDigits(row = {}, keys = [], maxLength = 7) {
   return "";
 }
 function cnpjDaChaveNfe(chaveNfe) {
-  const digitos = onlyDigits(chaveNfe);
-  if (digitos.length !== 44) return "";
-  return digitos.slice(6, 20);
+  const digitos4 = onlyDigits(chaveNfe);
+  if (digitos4.length !== 44) return "";
+  return digitos4.slice(6, 20);
 }
 function serieDaChaveCte(chaveCte) {
-  const digitos = onlyDigits(chaveCte);
-  if (digitos.length !== 44) return "";
-  return digitos.slice(22, 25);
+  const digitos4 = onlyDigits(chaveCte);
+  if (digitos4.length !== 44) return "";
+  return digitos4.slice(22, 25);
 }
 async function carregarMapaVinculosAuditoria() {
   if (_cacheMapaVinculosTransportadoras) return _cacheMapaVinculosTransportadoras;
@@ -26588,16 +26644,16 @@ function localizarViagemFluxoLotacao(cte = {}, contexto = null, mapaVinculos = n
   const porRota = distintas.filter((c) => normalizeCompare2(c.destino) === destino || normalizeCompare2(c.origem) === origem);
   return porRota.length === 1 ? porRota[0] : null;
 }
-async function prepararFluxoLotacaoParaCtes(supabase2, contexto = null, ctes = [], mapaVinculos = null) {
+async function prepararFluxoLotacaoParaCtes(supabase2, contexto = null, ctes2 = [], mapaVinculos = null) {
   if (!contexto?.fluxo?.porNumeroCte?.size) return;
   const valores = contexto.valoresCteFluxo || /* @__PURE__ */ new Map();
   const pendentes2 = /* @__PURE__ */ new Map();
-  (ctes || []).forEach((cte) => {
+  (ctes2 || []).forEach((cte) => {
     const raiz2 = raizDaChaveCte(cte);
     const numero4 = numeroDoCte(cte);
     if (raiz2 && numero4) valores.set(`${raiz2}|${numero4}`, { valor: toNumber4(pick(cte, ["valor_cte", "valorCte", "valor_frete", "frete"])), emissao: dataEmissaoIsoCte(cte) });
   });
-  (ctes || []).forEach((cte) => {
+  (ctes2 || []).forEach((cte) => {
     const raiz2 = raizDaChaveCte(cte);
     const viagem = raiz2 ? localizarViagemFluxoLotacao(cte, contexto, mapaVinculos) : null;
     (viagem?.numerosCte || []).forEach((numero4) => {
@@ -27544,7 +27600,7 @@ function processarCteSemChecagemCanal(cte, transportadoras = [], mapaVinculos = 
     });
   }
 }
-async function enriquecerCtesComTrackingAoVivo(ctes = [], onProgress) {
+async function enriquecerCtesComTrackingAoVivo(ctes2 = [], onProgress) {
   const withTimeout = (promise, ms, label) => Promise.race([
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} excedeu ${Math.round(ms / 1e3)}s`)), ms))
@@ -27556,12 +27612,12 @@ async function enriquecerCtesComTrackingAoVivo(ctes = [], onProgress) {
     pesoDeclarado: toNumber4(pick(cte, ["peso_declarado", "pesoDeclarado", "peso"])),
     documentoDestinatario: pickDigits(cte, ["documento_destinatario", "documentoDestinatario", "cnpj_destinatario"], 14)
   });
-  const total = ctes.length;
+  const total = ctes2.length;
   const tamanhoLote = 200;
   const concorrenciaMaxima = 4;
   const lotes = [];
-  for (let inicio = 0; inicio < ctes.length; inicio += tamanhoLote) {
-    lotes.push(ctes.slice(inicio, inicio + tamanhoLote));
+  for (let inicio = 0; inicio < ctes2.length; inicio += tamanhoLote) {
+    lotes.push(ctes2.slice(inicio, inicio + tamanhoLote));
   }
   const resultadoPorLote = new Array(lotes.length);
   let carregados = 0;
@@ -27632,15 +27688,15 @@ async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
   verificarCancelamento();
   await precarregarEquivalenciasOrigemAuditoria();
   verificarCancelamento();
-  const ctes = [];
+  const ctes2 = [];
   for (let inicio = 0; inicio < chavesCte.length; inicio += 200) {
     verificarCancelamento();
     const lote = chavesCte.slice(inicio, inicio + 200);
     const { data, error } = await supabase2.from(TABELA_CTES).select("*").in("chave_cte", lote);
     if (error) throw new Error(`Erro ao buscar CT-es por chave: ${error.message}`);
     verificarCancelamento();
-    ctes.push(...data || []);
-    onProgress?.({ etapa: "buscando_ctes", carregados: ctes.length, total: normalizadas.length });
+    ctes2.push(...data || []);
+    onProgress?.({ etapa: "buscando_ctes", carregados: ctes2.length, total: normalizadas.length });
   }
   for (let inicio = 0; inicio < numerosCte.length; inicio += 200) {
     verificarCancelamento();
@@ -27648,11 +27704,11 @@ async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
     const { data, error } = await supabase2.from(TABELA_CTES).select("*").in("numero_cte", lote);
     if (error) throw new Error(`Erro ao buscar CT-es por numero: ${error.message}`);
     verificarCancelamento();
-    ctes.push(...data || []);
-    onProgress?.({ etapa: "buscando_ctes", carregados: ctes.length, total: normalizadas.length });
+    ctes2.push(...data || []);
+    onProgress?.({ etapa: "buscando_ctes", carregados: ctes2.length, total: normalizadas.length });
   }
   const vistos = /* @__PURE__ */ new Set();
-  const ctesUnicos = ctes.filter((cte) => {
+  const ctesUnicos = ctes2.filter((cte) => {
     const chave = pick(cte, ["chave_cte", "chaveCte", "chave"]) || pick(cte, ["numero_cte", "numeroCte", "cte", "nro_cte"]) || pick(cte, ["id"]);
     if (!chave || vistos.has(chave)) return false;
     vistos.add(chave);
@@ -28237,21 +28293,57 @@ var init_auditoriaService = __esm({
   }
 });
 
-// src/utils/omsEnvioPuro.js
-function montarPayloadLiberacao({ requestId, omsInvoiceId, valorFatura, performedBy }) {
-  return {
-    requestId,
-    ...performedBy ? { performedBy } : {},
-    invoices: [{ invoiceId: String(omsInvoiceId).toLowerCase(), approvedChargeValue: Number(Number(valorFatura || 0).toFixed(2)), release: true }]
-  };
+// src/utils/lancamentosCteSap.js
+function cnpj14(v) {
+  const d = digitos(v);
+  return d ? d.padStart(14, "0") : "";
 }
-var OPERADOR_ROBO_OMS, omsInvoiceIdValido;
-var init_omsEnvioPuro = __esm({
-  "src/utils/omsEnvioPuro.js"() {
+function serieDaChave(chave) {
+  const d = digitos(chave);
+  return d.length === 44 ? String(Number(d.slice(22, 25))) : "";
+}
+function chaveCasamentoCte({ cnpj, numero: numero4, serie }) {
+  return `${cnpj14(cnpj)}|${semZeros(numero4)}|${semZeros(serie)}`;
+}
+function ehPartidaDoRobo(linha = {}) {
+  return String(linha.arquivo_origem || "").startsWith(PREFIXO_ORIGEM_ROBO);
+}
+function casarLancamentoPeloGrupo(cte = {}, linhas = []) {
+  const valor = Number(cte.valor || 0);
+  if (!(valor > 0)) return [];
+  const porCnpj = /* @__PURE__ */ new Map();
+  linhas.filter((l) => semZeros(l.numero_cte) === semZeros(cte.numero) && semZeros(l.serie_cte) === semZeros(cte.serie)).forEach((l) => porCnpj.set(cnpj14(l.cnpj_emitente), [...porCnpj.get(cnpj14(l.cnpj_emitente)) || [], l]));
+  const servem = [...porCnpj.values()].filter((grupo) => grupo.some((l) => Number(l.montante || 0) < 0 && Math.abs(Math.abs(Number(l.montante)) - valor) <= TOLERANCIA_GRUPO(valor)));
+  return servem.length === 1 ? servem[0] : [];
+}
+function situacaoLancamentoCte(linhas = []) {
+  const doSap = linhas.filter((l) => !ehPartidaDoRobo(l));
+  const base = doSap.length ? doSap : linhas;
+  const ordenadas = [...base].sort((a, b) => String(a.data_lancamento || "").localeCompare(String(b.data_lancamento || "")) || String(a.lancamento_contabil || "").localeCompare(String(b.lancamento_contabil || "")));
+  let saldo = 0;
+  let data = null;
+  let documento = null;
+  for (const l of ordenadas) {
+    const antes = saldo;
+    saldo = Number((saldo + Number(l.montante || 0)).toFixed(2));
+    if (saldo < -4e-3 && antes >= -4e-3) {
+      data = l.data_lancamento;
+      documento = l.lancamento_contabil;
+    }
+  }
+  const lancado = saldo < -4e-3;
+  return { lancado, estornado: !lancado && ordenadas.length > 0, data_lancamento: lancado ? data : null, lancamento_contabil: lancado ? documento : null, valor_lancado: lancado ? Math.abs(saldo) : 0 };
+}
+var digitos, semZeros, PREFIXO_ORIGEM_ROBO, TOLERANCIA_GRUPO;
+var init_lancamentosCteSap = __esm({
+  "src/utils/lancamentosCteSap.js"() {
     "use strict";
     init_define_import_meta_env();
-    OPERADOR_ROBO_OMS = Object.freeze({ id: "robo-auditor", name: "Robo Auditor" });
-    omsInvoiceIdValido = (id) => /^[0-9a-f]{24}$/i.test(String(id || "").trim());
+    init_auditoriaFretesImport();
+    digitos = (v) => String(v ?? "").replace(/\D/g, "");
+    semZeros = (v) => String(Number(digitos(v) || 0));
+    PREFIXO_ORIGEM_ROBO = "ROBO:";
+    TOLERANCIA_GRUPO = (valor) => Math.max(1, Math.abs(valor) * 0.02);
   }
 });
 
@@ -28334,6 +28426,501 @@ var init_nfseFatura = __esm({
     init_historicoLancamentos();
     TOLERANCIA_NFSE_LANCADA = 0.05;
     brl = (v) => `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
+  }
+});
+
+// src/utils/zipLeitor.js
+var init_zipLeitor = __esm({
+  "src/utils/zipLeitor.js"() {
+    "use strict";
+    init_define_import_meta_env();
+  }
+});
+
+// src/utils/termoCorrecaoFenix.js
+function linhaFenixDoCte(linhas = []) {
+  return linhas.find((l) => ehCompensacaoFenix(l.documento_compensacao) && Number(l.montante || 0) < 0) || null;
+}
+var PARTIDAS_FENIX, EMPRESAS_SAP, digitos2, semZeros2, ehCompensacaoFenix;
+var init_termoCorrecaoFenix = __esm({
+  "src/utils/termoCorrecaoFenix.js"() {
+    "use strict";
+    init_define_import_meta_env();
+    init_zipLeitor();
+    PARTIDAS_FENIX = Object.freeze(["1501163056"]);
+    EMPRESAS_SAP = Object.freeze({ 1420: "CPX DISTRIBUIDORA SA" });
+    digitos2 = (v) => String(v ?? "").replace(/\D/g, "");
+    semZeros2 = (v) => digitos2(v).replace(/^0+(?=\d)/, "");
+    ehCompensacaoFenix = (documento) => Boolean(documento) && PARTIDAS_FENIX.includes(semZeros2(documento));
+  }
+});
+
+// src/utils/omsEnvioPuro.js
+function montarPayloadLiberacao({ requestId, omsInvoiceId, valorFatura, performedBy }) {
+  return {
+    requestId,
+    ...performedBy ? { performedBy } : {},
+    invoices: [{ invoiceId: String(omsInvoiceId).toLowerCase(), approvedChargeValue: Number(Number(valorFatura || 0).toFixed(2)), release: true }]
+  };
+}
+var OPERADOR_ROBO_OMS, omsInvoiceIdValido;
+var init_omsEnvioPuro = __esm({
+  "src/utils/omsEnvioPuro.js"() {
+    "use strict";
+    init_define_import_meta_env();
+    OPERADOR_ROBO_OMS = Object.freeze({ id: "robo-auditor", name: "Robo Auditor" });
+    omsInvoiceIdValido = (id) => /^[0-9a-f]{24}$/i.test(String(id || "").trim());
+  }
+});
+
+// src/utils/diagnosticoFaturas.js
+function situacaoAuditoria(f) {
+  if (inativa(f)) return "CANCELADA";
+  if (String(f.status || "").startsWith("PAGA") || STATUS_LIBERADAS.has(f.status)) return "LIBERADA";
+  if (f.status === "AGUARDANDO_APROVACAO_GESTAO") return "GESTAO";
+  if (["AGUARDANDO_TRANSPORTADORA", "AGUARDANDO_NOVA_FATURA"].includes(f.status) || f.confirmacao_transportador_status === "ENVIADO") return "FORNECEDOR";
+  const total = Number(f.ctes_totais || 0);
+  const auditados = Number(f.ctes_auditados || 0);
+  if (total > 0 && auditados >= total) return f.ctes_conferidos === false ? "VERIFICANDO" : "AUDITADA";
+  return auditados > 0 ? "PARCIAL" : "NAO_AUDITADA";
+}
+function situacaoPagamento(f) {
+  if (inativa(f)) return "CANCELADA";
+  if (estornadaSemRelancamento(f)) return "ESTORNADA";
+  if (f.status === "PAGA_COM_DIVERGENCIA") return "PAGA_DIVERGENTE";
+  return String(f.status || "").startsWith("PAGA") ? "PAGA" : "ABERTA";
+}
+function situacaoEnvioErp(linha) {
+  const f = linha.fatura;
+  if (!f) return "";
+  if (!enviadaErp(f)) return "NAO_ENVIADA";
+  if (faturaLancada(f)) return "COM_PARTIDA";
+  const ctes2 = situacaoCtes(linha.ctes);
+  if (ctes2 === "VERIFICANDO") return "VERIFICANDO";
+  return ctes2 === "TODOS" ? "PARTIDA_NOS_CTES" : "SEM_PARTIDA";
+}
+function faixaDiagnostico(f, referencia = /* @__PURE__ */ new Date()) {
+  if (estornadaSemRelancamento(f)) return "ESTORNADA";
+  if (situacaoPagamento(f) !== "ABERTA") return "ENCERRADA";
+  const dias = diasAte(f.data_vencimento, referencia);
+  if (dias == null) return "SEM_DATA";
+  if (dias < 0) return "VENCIDA";
+  if (dias <= 1) return "HOJE_AMANHA";
+  return dias <= 7 ? "ATE_7" : "MAIS_7";
+}
+function faixaDaLinha(l, referencia = /* @__PURE__ */ new Date()) {
+  if (l.fatura) return faixaDiagnostico(l.fatura, referencia);
+  return l.vencimentoLista ? faixaDiagnostico({ data_vencimento: l.vencimentoLista }, referencia) : "NAO_LOCALIZADA";
+}
+function situacaoPrevisao(f, referencia = /* @__PURE__ */ new Date()) {
+  const data = previsaoPagamento(f);
+  if (!data) return "SEM_PREVISAO";
+  const dias = diasAte(data, referencia);
+  return dias != null && dias < 0 ? "ATRASADA" : "PREVISTA";
+}
+function cnpjValido(valor) {
+  const d = digitos3(valor);
+  if (d.length !== 14 || /^(\d)+$/.test(d)) return false;
+  const dv = (base) => {
+    let soma = 0;
+    let peso = base.length - 7;
+    for (const n of base) {
+      soma += Number(n) * peso;
+      peso = peso === 2 ? 9 : peso - 1;
+    }
+    const r = soma % 11;
+    return r < 2 ? 0 : 11 - r;
+  };
+  return dv(d.slice(0, 12)) === Number(d[12]) && dv(d.slice(0, 13)) === Number(d[13]);
+}
+function identificacaoSapDoCte(item = {}) {
+  const chave = digitos3(item.chave_cte);
+  const temChave = chave.length === 44;
+  return {
+    cnpj: cnpj14(temChave ? chave.slice(6, 20) : cnpjValido(item.cnpj_emissor) ? item.cnpj_emissor : item.cnpj_transportadora),
+    numero: String(Number(digitos3(item.numero_cte) || (temChave ? chave.slice(25, 34) : 0))),
+    serie: temChave ? serieDaChave(chave) : String(Number(digitos3(item.serie_cte) || 0))
+  };
+}
+function resumirCtesFatura(detalhes = [], lancamentosPorChave = /* @__PURE__ */ new Map()) {
+  const vistos = /* @__PURE__ */ new Set();
+  const resumo = { total: 0, lancados: 0, nfse: 0, itens: [], semPartida: [], valorSemPartida: 0, fenix: [], valorFenix: 0, compensados: [] };
+  detalhes.forEach((item) => {
+    if (item.excluido_da_versao === true) return;
+    const unico = digitos3(item.chave_cte) || `${digitos3(item.numero_cte)}-${item.serie_cte || ""}`;
+    if (vistos.has(unico)) return;
+    vistos.add(unico);
+    const base = { numero_cte: item.numero_cte, serie_cte: item.serie_cte, chave_cte: item.chave_cte, valor_frete: Number(item.valor_frete || 0) };
+    if (ehLinhaNfse(item)) {
+      resumo.nfse += 1;
+      resumo.itens.push({ ...base, situacao: "NFSE" });
+      return;
+    }
+    resumo.total += 1;
+    const linhasSap = lancamentosPorChave.get(chaveCasamentoCte(identificacaoSapDoCte(item))) || [];
+    const situacao = situacaoLancamentoCte(linhasSap);
+    if (situacao.lancado) {
+      resumo.lancados += 1;
+      const fenix = linhaFenixDoCte(linhasSap);
+      const compensada = linhasSap.find((l) => Number(l.montante || 0) < 0 && String(l.documento_compensacao || "").trim());
+      if (compensada) resumo.compensados.push({ ...base, partida: compensada.lancamento_contabil, documento_compensacao: compensada.documento_compensacao, data_compensacao: compensada.data_compensacao || null, fenix: Boolean(fenix) });
+      resumo.itens.push({ ...base, situacao: "COM_PARTIDA", lancamento_contabil: situacao.lancamento_contabil, data_lancamento: situacao.data_lancamento, valor_lancado: situacao.valor_lancado, fenix: Boolean(fenix) });
+      if (fenix) {
+        resumo.fenix.push({
+          ...base,
+          partida: fenix.lancamento_contabil,
+          documento_compensacao: fenix.documento_compensacao,
+          data_compensacao: fenix.data_compensacao || null,
+          data_lancamento: fenix.data_lancamento || null,
+          montante: Math.abs(Number(fenix.montante || 0)),
+          empresa: fenix.empresa || "",
+          codigo_fornecedor: fenix.codigo_fornecedor || "",
+          fornecedor: fenix.fornecedor || ""
+        });
+        resumo.valorFenix += Number(item.valor_frete || 0);
+      }
+      return;
+    }
+    resumo.itens.push({ ...base, situacao: situacao.estornado ? "ESTORNADO" : "SEM_PARTIDA" });
+    resumo.semPartida.push({ ...base, estornado: situacao.estornado });
+    resumo.valorSemPartida += Number(item.valor_frete || 0);
+  });
+  resumo.valorSemPartida = Number(resumo.valorSemPartida.toFixed(2));
+  resumo.valorFenix = Number(resumo.valorFenix.toFixed(2));
+  return resumo;
+}
+function aptidaoEnvioSap(resumo) {
+  if (!resumo) return { apta: false, verificado: false, pendentes: [], mensagem: "CT-es ainda nao conferidos no SAP." };
+  if (!resumo.total && !resumo.nfse) return { apta: false, verificado: true, pendentes: [], mensagem: "fatura sem CT-es vinculados." };
+  const pendentes2 = [
+    ...(resumo.semPartida || []).map((c) => ({ ...c, motivo: c.estornado ? "partida estornada" : "sem partida" })),
+    ...(resumo.compensados || []).map((c) => ({ ...c, motivo: c.fenix ? "partida compensada pela F\xEAnix" : "partida compensada" }))
+  ];
+  if (!pendentes2.length) return { apta: true, verificado: true, pendentes: pendentes2, mensagem: "" };
+  const grupos = /* @__PURE__ */ new Map();
+  pendentes2.forEach((c) => grupos.set(c.motivo, [...grupos.get(c.motivo) || [], c.numero_cte || c.chave_cte]));
+  const texto = [...grupos].map(([motivo, nums]) => `${nums.length} CT-e(s) com ${motivo}: ${nums.slice(0, 15).join(", ")}${nums.length > 15 ? ` +${nums.length - 15}` : ""}`).join("; ");
+  return { apta: false, verificado: true, pendentes: pendentes2, mensagem: texto };
+}
+function situacaoOms(l) {
+  const f = l?.fatura;
+  if (!f || inativa(f)) return "";
+  const e = l.oms;
+  if (faturaLancada(f) && !String(f.status || "").startsWith("PAGA") && !e?.sent_to_erp) return "LANCADA";
+  if (e) {
+    if (e.sent_to_erp) return "ENVIADA";
+    if (e.outcome === "queuedForErp" || e.outcome === "alreadyReleased") return "FILA";
+    if (e.outcome === "blocked" || ["recusado", "erro"].includes(e.status) || e.oms_status === "failed") return "ERRO";
+    if (["enviando", "enviado"].includes(e.status)) return "AGUARDANDO";
+  }
+  if (String(f.status || "").startsWith("PAGA")) return "PAGA";
+  if (!omsInvoiceIdValido(f.oms_invoice_id)) return "SEM_ID";
+  if (!STATUS_LIBERADAS_OMS.has(f.status)) return "NAO_LIBERADA";
+  if (!l.ctes) return "VERIFICANDO";
+  return aptidaoEnvioSap(l.ctes).apta ? "APTA" : "BLOQUEADA_PARTIDA";
+}
+function situacaoCtes(resumo) {
+  if (!resumo) return "VERIFICANDO";
+  if (!resumo.total) return resumo.nfse ? "SO_NFSE" : "SEM_CTES";
+  if (resumo.lancados === resumo.total) return "TODOS";
+  return resumo.lancados ? "PARCIAL" : "NENHUM";
+}
+function etapaFenix(linha) {
+  const f = linha?.fatura;
+  if (!f || inativa(f) || situacaoPagamento(f) !== "ABERTA") return "";
+  const status = statusAjusteFenix(f);
+  if (!status) return temFenix(linha) ? "A_ENVIAR" : "";
+  if (agrupamentoManual(f)) return "PROTOCOLO";
+  if (status === "RETORNADO") return "RETORNO";
+  return linha.ctes && !temFenix(linha) ? "RETORNO" : "AGUARDANDO";
+}
+function aptaAntecipacao(f, referencia = /* @__PURE__ */ new Date()) {
+  if (!f || inativa(f) || situacaoPagamento(f) !== "ABERTA" || faturaAntecipada(f) || f.antecipacao_enviada) return false;
+  if (Number(f.valor_fatura || 0) < ANTECIPACAO_VALOR_MINIMO) return false;
+  const desdeEmissao = f.data_emissao ? diasAte(f.data_emissao, referencia) : null;
+  const ateVencimento = f.data_vencimento ? diasAte(f.data_vencimento, referencia) : null;
+  if (desdeEmissao == null || ateVencimento == null) return false;
+  return -desdeEmissao >= ANTECIPACAO_DIAS_MIN_EMISSAO && ateVencimento >= ANTECIPACAO_DIAS_MIN_VENCIMENTO;
+}
+function tipoDocumentoFatura(resumoCtes) {
+  if (!resumoCtes) return "VERIFICANDO";
+  const ctes2 = Number(resumoCtes.total || 0);
+  const nfse = Number(resumoCtes.nfse || 0);
+  if (ctes2 > 0 && nfse === 0) return "CTE";
+  if (nfse > 0 && ctes2 === 0) return "NFSE";
+  return ctes2 > 0 ? "MISTA" : "SEM_ITENS";
+}
+var TOLERANCIA_VALOR_LISTA, digitos3, inativa, STATUS_LIBERADAS, pagaComDesconto, emAbertoFinanceiro, faturaLancada, enviadaErp, agrupamentoManual, situacaoPagamentoLinha, FAIXAS_A_VENCER, previsaoPagamento, STATUS_LIBERADAS_OMS, temFenix, statusAjusteFenix, faturaAntecipada, enviadaAntecipacao, ANTECIPACAO_VALOR_MINIMO, ANTECIPACAO_DIAS_MIN_EMISSAO, ANTECIPACAO_DIAS_MIN_VENCIMENTO, comFatura, auditoria, pagamento, faixa, ctes, ativa, faturaSemIdOms, GRUPOS_DIAGNOSTICO;
+var init_diagnosticoFaturas = __esm({
+  "src/utils/diagnosticoFaturas.js"() {
+    "use strict";
+    init_define_import_meta_env();
+    init_auditoriaFretesDomain();
+    init_cnpj();
+    init_lancamentosCteSap();
+    init_nfseFatura();
+    init_parseNumeroPlanilha();
+    init_termoCorrecaoFenix();
+    init_portalFinanceiroDomain();
+    init_omsEnvioPuro();
+    TOLERANCIA_VALOR_LISTA = 0.05;
+    digitos3 = (v) => String(v ?? "").replace(/\D/g, "");
+    inativa = (f) => ["CANCELADA", "SUBSTITUIDA"].includes(f.status);
+    STATUS_LIBERADAS = /* @__PURE__ */ new Set(["PRONTA_PARA_PAGAMENTO", "LIBERADA_COM_DESCONTO", "ENVIADA_AO_FINANCEIRO", "TRATADA"]);
+    pagaComDesconto = (f) => Boolean(f) && f.status === "PAGA_COM_DESCONTO" && (f.pagamento_confirmado === true || Boolean(f.partida));
+    emAbertoFinanceiro = (f) => Boolean(f) && !inativa(f) && situacaoPagamento(f) === "ABERTA";
+    faturaLancada = (f) => Boolean(f.partida || f.lancamento_financeiro || situacaoPagamento(f).startsWith("PAGA"));
+    enviadaErp = (f) => Boolean(f.data_envio_erp);
+    agrupamentoManual = (f) => Boolean(f?.agrupamento_manual);
+    situacaoPagamentoLinha = (l) => l.fatura ? situacaoPagamento(l.fatura) : "ABERTA";
+    FAIXAS_A_VENCER = ["HOJE_AMANHA", "ATE_7", "MAIS_7"];
+    previsaoPagamento = (f) => f && situacaoPagamento(f) === "ABERTA" ? String(f.data_previsao_pagamento || "").slice(0, 10) : "";
+    STATUS_LIBERADAS_OMS = /* @__PURE__ */ new Set(["PRONTA_PARA_PAGAMENTO", "LIBERADA_COM_DESCONTO", "ENVIADA_AO_FINANCEIRO"]);
+    temFenix = (linha) => Boolean(linha?.ctes?.fenix?.length);
+    statusAjusteFenix = (f) => ["ENVIADO", "RETORNADO"].includes(f?.fenix_ajuste_status) ? f.fenix_ajuste_status : "";
+    faturaAntecipada = (f) => Boolean(f) && /cess/i.test(String(f.atribuicao_sap || "").normalize("NFD").replace(/[̀-ͯ]/g, "")) && situacaoPagamento(f) === "ABERTA";
+    enviadaAntecipacao = (f) => Boolean(f?.antecipacao_enviada) && !faturaAntecipada(f) && situacaoPagamento(f) === "ABERTA";
+    ANTECIPACAO_VALOR_MINIMO = 100;
+    ANTECIPACAO_DIAS_MIN_EMISSAO = 7;
+    ANTECIPACAO_DIAS_MIN_VENCIMENTO = 6;
+    comFatura = (fn) => (l) => Boolean(l.fatura) && fn(l);
+    auditoria = (...ids) => comFatura((l) => ids.includes(situacaoAuditoria(l.fatura)));
+    pagamento = (id) => (l) => situacaoPagamentoLinha(l) === id;
+    faixa = (...ids) => (l) => ids.includes(faixaDaLinha(l));
+    ctes = (...ids) => comFatura((l) => ids.includes(situacaoCtes(l.ctes)));
+    ativa = (l) => !inativa(l.fatura);
+    faturaSemIdOms = (f) => Boolean(f) && !inativa(f) && !String(f.status || "").startsWith("PAGA") && !omsInvoiceIdValido(f.oms_invoice_id);
+    GRUPOS_DIAGNOSTICO = [
+      { id: "localizacao", titulo: "Recebimento", soComLista: true, cards: [
+        { id: "localizadas", rotulo: "Localizadas", cor: "#315ee7", teste: (l) => Boolean(l.fatura), dica: "N\xFAmero colado que existe na plataforma." },
+        { id: "nao_localizadas", rotulo: "N\xE3o localizadas", cor: "#9b1111", teste: (l) => !l.fatura, dica: "N\xFAmero colado que n\xE3o existe na plataforma para esta transportadora." },
+        { id: "repetidas", rotulo: "N\xFAmero repetido", cor: "#b78700", teste: (l) => l.repetida > 1, dica: "O n\xFAmero existe em mais de uma fatura ativa." },
+        { id: "valor_difere", rotulo: "Valor difere da lista", cor: "#e67e22", teste: (l) => l.diferencaLista != null && Math.abs(l.diferencaLista) > TOLERANCIA_VALOR_LISTA, dica: "Valor da plataforma diferente do valor colado na lista." }
+      ] },
+      // So aparece com uma transportadora que faz antecipacao escolhida (flag no cadastro).
+      { id: "antecipacao", titulo: "Antecipa\xE7\xE3o", soAntecipa: true, cards: [
+        { id: "aptas_antecipacao", rotulo: "Aptas \xE0 antecipa\xE7\xE3o", cor: "#0f766e", teste: comFatura((l) => aptaAntecipacao(l.fatura) && tipoDocumentoFatura(l.ctes) === "CTE"), dica: 'Faturas s\xF3 de CT-e, n\xE3o pagas, de R$ 100 ou mais, com 7 dias ou mais da emiss\xE3o e 6 dias ou mais para o vencimento. Quem j\xE1 foi antecipada (Cess\xE3o no SAP) fica s\xF3 em "J\xE1 antecipadas".' },
+        { id: "aptas_antecipacao_nfse", rotulo: "Aptas \u2014 nota fiscal de servi\xE7o", cor: "#0e7490", teste: comFatura((l) => aptaAntecipacao(l.fatura) && tipoDocumentoFatura(l.ctes) === "NFSE"), dica: "Faturas s\xF3 de nota fiscal de servi\xE7o (NFS-e) que cumpririam as mesmas regras de valor e prazo. Ainda n\xE3o est\xE1 definido se NFS-e pode ser antecipada: card s\xF3 para acompanhamento, separado das aptas de CT-e." },
+        { id: "aptas_antecipacao_verificando", rotulo: "Aptas \u2014 verificando tipo", cor: "#64748b", teste: comFatura((l) => aptaAntecipacao(l.fatura) && tipoDocumentoFatura(l.ctes) === "VERIFICANDO"), dica: "Cumprem valor e prazo, mas os itens da fatura ainda est\xE3o sendo conferidos para saber se \xE9 s\xF3 CT-e ou nota fiscal de servi\xE7o. Quando a verifica\xE7\xE3o termina passam para um dos dois cards de aptas e este zera." },
+        { id: "enviadas_antecipacao", rotulo: "Enviadas p/ antecipa\xE7\xE3o", cor: "#b78700", teste: comFatura((l) => ativa(l) && enviadaAntecipacao(l.fatura)), dica: 'Marcadas por voc\xEA como enviadas para antecipa\xE7\xE3o, aguardando a Cess\xE3o no SAP. Quando a Cess\xE3o chegar, v\xE3o para "J\xE1 antecipadas".' },
+        { id: "ja_antecipadas", rotulo: "J\xE1 antecipadas (cess\xE3o)", cor: "#6d28d9", teste: comFatura((l) => ativa(l) && faturaAntecipada(l.fatura)), dica: 'Atribui\xE7\xE3o "Cess\xE3o" no SAP: fatura j\xE1 antecipada, ainda n\xE3o paga. Sai daqui sozinha quando o pagamento entrar.' }
+      ] },
+      { id: "auditoria", titulo: "Auditoria", cards: [
+        { id: "nao_auditadas", rotulo: "N\xE3o auditadas", cor: "#9b1111", teste: auditoria("NAO_AUDITADA"), dica: "Em aberto e nenhum CT-e auditado." },
+        { id: "parciais", rotulo: "Parcialmente auditadas", cor: "#e67e22", teste: auditoria("PARCIAL"), dica: "Em aberto com parte dos CT-es auditados." },
+        { id: "auditadas", rotulo: "Auditadas, falta liberar", cor: "#315ee7", teste: auditoria("AUDITADA"), dica: "Todos os CT-es auditados, ainda sem libera\xE7\xE3o." },
+        { id: "fornecedor", rotulo: "Aguardando fornecedor", cor: "#b78700", teste: auditoria("FORNECEDOR"), dica: "Laudo enviado ou aguardando nova fatura." },
+        { id: "gestao", rotulo: "Aguardando gest\xE3o", cor: "#9153F0", teste: auditoria("GESTAO"), dica: "Na aprovacao da gest\xE3o." },
+        { id: "liberadas", rotulo: "Liberadas", cor: "#04a484", teste: auditoria("LIBERADA"), dica: "Liberadas, no financeiro ou j\xE1 pagas." }
+      ] },
+      { id: "oms", titulo: "Integra\xE7\xE3o OMS/SAP", cards: [
+        { id: "sem_id_oms", rotulo: "Sem Id do OMS", cor: "#b91c1c", teste: comFatura((l) => faturaSemIdOms(l.fatura)), dica: 'Em aberto e sem o Id do OMS: n\xE3o consegue ser enviada ao SAP. Importe o Id pela planilha da Verum (bot\xE3o "Importar s\xF3 o Id do OMS" na lista de faturas).' },
+        { id: "oms_bloqueadas", rotulo: "Liberadas, bloqueadas por partida", cor: "#c2410c", teste: (l) => situacaoOms(l) === "BLOQUEADA_PARTIDA", dica: "Liberadas no AMD, mas com CT-e sem partida no SAP ou com partida compensada (F\xEAnix ou outra): n\xE3o v\xE3o ao OMS at\xE9 corrigir." },
+        { id: "oms_aptas", rotulo: "Liberadas, aptas e n\xE3o enviadas", cor: "#315ee7", teste: (l) => situacaoOms(l) === "APTA", dica: 'Liberadas, com Id e todas as partidas em ordem, mas sem envio ao OMS: abra e use "Enviar ao OMS".' },
+        { id: "oms_aguardando", rotulo: "Aguardando OMS", cor: "#b78700", teste: (l) => situacaoOms(l) === "AGUARDANDO", dica: "Enviadas, aguardando o OMS aceitar e processar." },
+        { id: "oms_fila", rotulo: "Na fila do SAP", cor: "#0f766e", teste: (l) => situacaoOms(l) === "FILA", dica: "O OMS liberou: aguardando o SAP ler a fatura." },
+        { id: "oms_enviadas", rotulo: "Enviadas ao SAP", cor: "#14733b", teste: (l) => situacaoOms(l) === "ENVIADA", dica: "O SAP j\xE1 leu a fatura." },
+        { id: "oms_lancadas", rotulo: "J\xE1 lan\xE7adas no SAP", cor: "#64748b", teste: (l) => situacaoOms(l) === "LANCADA", dica: "J\xE1 t\xEAm partida/lan\xE7amento na fatura: passaram da fase de envio ao OMS e n\xE3o aparecem como aptas nem bloqueadas." },
+        { id: "oms_erro", rotulo: "Erro/recusadas no OMS", cor: "#9b1111", teste: (l) => situacaoOms(l) === "ERRO", dica: "Recusadas pelo OMS, bloqueadas por trava do OMS ou com falha: abra a fatura para ver o motivo." },
+        { id: "com_id_oms", rotulo: "Com Id do OMS", cor: "#14733b", teste: comFatura((l) => ativa(l) && omsInvoiceIdValido(l.fatura.oms_invoice_id)), dica: "Tem o Id do OMS: pode ser enviada ao SAP ao liberar." }
+      ] },
+      { id: "erp", titulo: "Envio ao ERP", cards: [
+        { id: "enviadas", rotulo: "Enviadas ao ERP", cor: "#315ee7", teste: comFatura((l) => ativa(l) && enviadaErp(l.fatura)), dica: "Com data de envio ao ERP." },
+        { id: "enviadas_sem_partida", rotulo: "Enviadas sem partida", cor: "#9b1111", teste: comFatura((l) => ativa(l) && situacaoEnvioErp(l) === "SEM_PARTIDA"), dica: "Enviadas ao ERP sem partida na fatura e com CT-e sem partida no SAP: poss\xEDvel erro no envio." },
+        { id: "enviadas_partida_ctes", rotulo: "Partida s\xF3 nos CT-es", cor: "#b78700", teste: comFatura((l) => ativa(l) && situacaoEnvioErp(l) === "PARTIDA_NOS_CTES"), dica: "Enviadas ao ERP com todos os CT-es lan\xE7ados no SAP, mas sem partida pelo n\xFAmero da fatura." },
+        { id: "enviadas_verificando", rotulo: "Verificando CT-es", cor: "#64748b", teste: comFatura((l) => ativa(l) && situacaoEnvioErp(l) === "VERIFICANDO"), dica: 'Enviadas ao ERP sem partida na fatura cujos CT-es ainda est\xE3o sendo conferidos no SAP. Quando a verifica\xE7\xE3o termina elas passam para "Enviadas sem partida" ou "Partida s\xF3 nos CT-es" e este card zera.' },
+        { id: "enviadas_com_partida", rotulo: "Enviadas com partida", cor: "#14733b", teste: comFatura((l) => ativa(l) && situacaoEnvioErp(l) === "COM_PARTIDA"), dica: "Enviadas ao ERP com partida na fatura, lan\xE7amento ou j\xE1 pagas." },
+        { id: "nao_enviadas", rotulo: "N\xE3o enviadas", cor: "#64748b", teste: comFatura((l) => ativa(l) && !enviadaErp(l.fatura)), dica: "Sem data de envio ao ERP." }
+      ] },
+      { id: "lancamento", titulo: "Lan\xE7amento no SAP", cards: [
+        { id: "nao_lancadas", rotulo: "N\xE3o lan\xE7adas", cor: "#9b1111", teste: comFatura((l) => ativa(l) && !estornadaSemRelancamento(l.fatura) && !faturaLancada(l.fatura)), dica: "Sem partida e sem lan\xE7amento financeiro." },
+        { id: "lancadas", rotulo: "J\xE1 lan\xE7adas", cor: "#14733b", teste: comFatura((l) => ativa(l) && !estornadaSemRelancamento(l.fatura) && faturaLancada(l.fatura)), dica: "Lan\xE7amento da pr\xF3pria fatura confirmado no SAP." },
+        { id: "estornadas_sap", rotulo: "Estornadas no SAP", cor: "#b91c1c", teste: comFatura((l) => estornadaSemRelancamento(l.fatura)), dica: "Estorno confirmado, sem relan\xE7amento v\xE1lido. Fica fora de em aberto, vencidas, a vencer e laudo." }
+      ] },
+      { id: "financeiro", titulo: "Financeiro", cards: [
+        // Todos os cards de acompanhamento valem so para fatura ativa e AINDA EM ABERTO (nao paga, nao estornada):
+        // situacaoPagamento ja exclui cancelada/estornada/paga, e as pagas antigas nao tem pagamento_confirmado.
+        { id: "aguarda_encaminhamento", rotulo: "Aguardam encaminhamento", cor: "#9b1111", teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && (faturaLancada(l.fatura) || agrupamentoManual(l.fatura)) && situacaoFinanceiro(l.fatura) === "AGUARDA_ENCAMINHAMENTO"), dica: "J\xE1 lan\xE7adas em aberto, ainda sem encaminhamento registrado." },
+        { id: "encaminhadas_sem_previsao", rotulo: "Encaminhadas sem previs\xE3o", cor: "#b78700", teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && situacaoFinanceiro(l.fatura) === "ENCAMINHADA_SEM_PREVISAO"), dica: "Boleto ou dados banc\xE1rios encaminhados, sem programa\xE7\xE3o vigente." },
+        { id: "encaminhadas_com_previsao", rotulo: "Encaminhadas com previs\xE3o", cor: "#315ee7", teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && situacaoFinanceiro(l.fatura) === "ENCAMINHADA_COM_PREVISAO"), dica: "Encaminhadas com previs\xE3o ainda n\xE3o confirmada pelo SAP/HANA." },
+        { id: "programadas_financeiro", rotulo: "Programadas pelo Financeiro", cor: "#9153F0", teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && situacaoFinanceiro(l.fatura) === "PROGRAMADA"), dica: "Programa\xE7\xE3o confirmada pelo SAP/HANA; continua em aberto at\xE9 o pagamento efetivo." },
+        { id: "pagas_financeiro", rotulo: "Pagas", cor: "#14733b", teste: comFatura((l) => ativa(l) && situacaoPagamento(l.fatura).startsWith("PAGA") && (l.fatura.pagamento_confirmado === true || Boolean(l.fatura.partida))), dica: "Pagamento efetivo confirmado por partida v\xE1lida (inclui pagas anteriores \xE0 confirma\xE7\xE3o registrada)." }
+      ] },
+      // Contingencia ate o protocolo funcionar dentro do AMD: marcacao feita na propria tela.
+      { id: "protocolo", titulo: "Protocolo (conting\xEAncia)", cards: [
+        // Sai do card "a agrupar" sozinha quando a fatura recebe partida (o financeiro ja agrupou).
+        { id: "manual_a_agrupar", rotulo: "Agrupamento manual a enviar", cor: "#9153F0", teste: comFatura((l) => ativa(l) && agrupamentoManual(l.fatura) && !faturaLancada(l.fatura)), dica: "Marcadas para protocolo por agrupamento manual (fora do AMD) e ainda sem partida na fatura." },
+        { id: "manual_agrupadas", rotulo: "J\xE1 agrupadas pelo financeiro", cor: "#14733b", teste: comFatura((l) => agrupamentoManual(l.fatura) && faturaLancada(l.fatura)), dica: "Marcadas para agrupamento manual que j\xE1 receberam partida, lan\xE7amento ou pagamento." },
+        { id: "sem_marcacao", rotulo: "Sem marca\xE7\xE3o", cor: "#64748b", teste: comFatura((l) => ativa(l) && !agrupamentoManual(l.fatura)), dica: "Seguem o fluxo normal do AMD." }
+      ] },
+      { id: "ctes", titulo: "CT-es no SAP", cards: [
+        { id: "todos", rotulo: "Todos os CT-es lan\xE7ados", cor: "#14733b", teste: ctes("TODOS"), dica: "Todos os CT-es da fatura tem partida pr\xF3pria no SAP." },
+        { id: "sem_partida", rotulo: "Com CT-e sem partida", cor: "#e67e22", teste: ctes("PARCIAL", "NENHUM"), dica: "Pelo menos um CT-e da fatura sem partida no SAP.", detalheCtes: true },
+        { id: "nenhum", rotulo: "Nenhum CT-e lan\xE7ado", cor: "#9b1111", teste: ctes("NENHUM"), dica: "Nenhum CT-e da fatura tem partida no SAP.", detalheCtes: true },
+        { id: "sem_ctes", rotulo: "Sem CT-e / s\xF3 NFS-e", cor: "#64748b", teste: ctes("SEM_CTES", "SO_NFSE"), dica: "Fatura sem CT-e vinculado ou s\xF3 com NFS-e (n\xE3o entram no relat\xF3rio SAP de CT-e)." }
+      ] },
+      // Partida Fenix (1501163056): compensacao nao paga em CT-e. A fatura nao escritura ate o financeiro estornar.
+      { id: "fenix", titulo: "Partida F\xEAnix (compensa\xE7\xE3o n\xE3o paga)", cards: [
+        { id: "com_fenix", rotulo: "CT-es com a F\xEAnix", cor: "#b91c1c", teste: comFatura((l) => ativa(l) && temFenix(l)), dica: "Faturas com CT-e compensado pela partida F\xEAnix (1501163056): o financeiro precisa estornar a compensa\xE7\xE3o para a fatura escriturar.", detalheFenix: true },
+        { id: "sem_fenix", rotulo: "Sem F\xEAnix", cor: "#64748b", teste: comFatura((l) => ativa(l) && Boolean(l.ctes) && !temFenix(l)), dica: "Faturas verificadas sem CT-e na partida F\xEAnix." }
+      ] },
+      // Controle do pedido ao financeiro: a fatura anda de card conforme e marcada na tela.
+      { id: "fenix_ajuste", titulo: "Ajuste F\xEAnix no financeiro (antes do protocolo)", cards: [
+        { id: "fenix_a_enviar", rotulo: "F\xEAnix a enviar ao financeiro", cor: "#b91c1c", teste: (l) => etapaFenix(l) === "A_ENVIAR", dica: 'Com CT-e na F\xEAnix e ainda n\xE3o marcadas como enviadas ao financeiro. Gere o termo, envie e marque "Enviado para ajustar F\xEAnix".', detalheFenix: true },
+        { id: "fenix_aguardando", rotulo: "Enviadas, aguardando retorno", cor: "#b78700", teste: (l) => etapaFenix(l) === "AGUARDANDO", dica: "Enviadas ao financeiro para estornar a compensa\xE7\xE3o F\xEAnix; aguardando o retorno.", detalheFenix: true },
+        { id: "fenix_retorno", rotulo: "Retorno recebido: mandar protocolo", cor: "#315ee7", teste: (l) => etapaFenix(l) === "RETORNO", dica: "O financeiro j\xE1 ajustou (marcado como retorno recebido, ou a F\xEAnix sumiu do relat\xF3rio SAP reimportado). Falta marcar para protocolo." },
+        { id: "fenix_protocolo", rotulo: "J\xE1 no protocolo", cor: "#14733b", teste: (l) => etapaFenix(l) === "PROTOCOLO", dica: "Passaram pelo ajuste F\xEAnix e j\xE1 foram marcadas para protocolo (agrupamento manual)." }
+      ] },
+      // Data combinada com o financeiro para as faturas do protocolo, para repassar a transportadora.
+      { id: "previsao", titulo: "Previs\xE3o de pagamento (protocolo)", cards: [
+        { id: "protocolo_sem_previsao", rotulo: "No protocolo sem previs\xE3o", cor: "#9b1111", teste: comFatura((l) => ativa(l) && agrupamentoManual(l.fatura) && situacaoPagamento(l.fatura) === "ABERTA" && situacaoPrevisao(l.fatura) === "SEM_PREVISAO"), dica: "Marcadas para protocolo, n\xE3o pagas e ainda sem a data alinhada com o financeiro." },
+        { id: "com_previsao", rotulo: "Com previs\xE3o", cor: "#04a484", teste: comFatura((l) => ativa(l) && situacaoPrevisao(l.fatura) === "PREVISTA"), dica: "No protocolo com pagamento previsto para hoje ou adiante: d\xE1 para avisar a transportadora." },
+        { id: "previsao_atrasada", rotulo: "Previs\xE3o passou, n\xE3o paga", cor: "#e67e22", teste: comFatura((l) => ativa(l) && situacaoPrevisao(l.fatura) === "ATRASADA"), dica: "A data prevista j\xE1 passou e a fatura segue sem pagamento: cobrar o financeiro ou atualizar a data." }
+      ] },
+      { id: "pagamento", titulo: "Pagamento", cards: [
+        { id: "pagas", rotulo: "Pagas", cor: "#14733b", teste: pagamento("PAGA"), dica: "Pagas ou pagas com desconto." },
+        { id: "pagas_divergentes", rotulo: "Pagas com diverg\xEAncia", cor: "#b78700", teste: pagamento("PAGA_DIVERGENTE"), dica: "Valor pago diferente do esperado." },
+        { id: "pagas_desconto", rotulo: "Pagas com desconto", cor: "#0f766e", teste: comFatura((l) => ativa(l) && pagaComDesconto(l.fatura)), dica: "Pagas ap\xF3s libera\xE7\xE3o com desconto, com pagamento confirmado por partida. Mostra valor pago e desconto no detalhe." },
+        { id: "abertas", rotulo: "N\xE3o pagas", cor: "#315ee7", teste: pagamento("ABERTA"), dica: "Ainda sem pagamento. Inclui as n\xE3o localizadas." },
+        { id: "canceladas", rotulo: "Canceladas/substitu\xEDdas", cor: "#64748b", teste: pagamento("CANCELADA"), dica: "Canceladas ou substitu\xEDdas." },
+        // Mesma fatura importada mais de uma vez: fora dos totais, so aparecem neste card.
+        { id: "duplicadas", rotulo: "Duplicadas", cor: "#b45309", teste: (l) => Boolean(l.duplicada), dica: "Mesma fatura (n\xFAmero, valor e emiss\xE3o) importada mais de uma vez. Ficam fora dos totais; marque como substitu\xEDdas." },
+        // Sem card proprio: usado pelo card "Pago" do topo, que soma pagas e pagas com divergencia.
+        { id: "pagas_todas", rotulo: "Pagas (todas)", cor: "#14733b", oculto: true, teste: comFatura((l) => situacaoPagamento(l.fatura).startsWith("PAGA")), dica: "Todas as pagas." }
+      ] },
+      { id: "vencimento", titulo: "Vencimento (n\xE3o pagas)", cards: [
+        { id: "vencidas", rotulo: "Vencidas", cor: "#9b1111", teste: faixa("VENCIDA"), dica: "N\xE3o pagas com vencimento passado. Nas n\xE3o localizadas vale o vencimento da lista." },
+        { id: "a_vencer", rotulo: "A vencer", cor: "#e67e22", teste: faixa(...FAIXAS_A_VENCER), dica: "N\xE3o pagas que ainda v\xE3o vencer. Nas n\xE3o localizadas vale o vencimento da lista." },
+        { id: "hoje_amanha", rotulo: "Hoje / amanh\xE3", cor: "#cf2f2f", teste: faixa("HOJE_AMANHA"), dica: "N\xE3o pagas vencendo hoje ou amanh\xE3." },
+        { id: "ate_7", rotulo: "2 a 7 dias", cor: "#e67e22", teste: faixa("ATE_7"), dica: "N\xE3o pagas vencendo em 2 a 7 dias." },
+        { id: "mais_7", rotulo: "Mais de 7 dias", cor: "#04a484", teste: faixa("MAIS_7"), dica: "N\xE3o pagas vencendo em mais de 7 dias." },
+        { id: "sem_data", rotulo: "Sem vencimento", cor: "#64748b", teste: faixa("SEM_DATA"), dica: "N\xE3o pagas sem data de vencimento." }
+      ] }
+    ];
+  }
+});
+
+// src/services/diagnosticoFaturasService.js
+async function paginarPorId(montar) {
+  const todos = [];
+  let ultimo = null;
+  for (; ; ) {
+    let q = montar().order("id").limit(PAGINA);
+    if (ultimo) q = q.gt("id", ultimo);
+    const { data, error } = await q;
+    if (error) throw error;
+    todos.push(...data || []);
+    if ((data || []).length < PAGINA) return todos;
+    ultimo = data[data.length - 1].id;
+  }
+}
+async function emParalelo(itens, fn, limite = LIMITE_PARALELO) {
+  const resultados = new Array(itens.length);
+  let proximo = 0;
+  const trabalhador = async () => {
+    while (proximo < itens.length) {
+      const i = proximo;
+      proximo += 1;
+      resultados[i] = await fn(itens[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limite, itens.length) }, trabalhador));
+  return resultados;
+}
+async function carregarDetalhes(client2, faturaIds) {
+  const lotes = [];
+  for (let i = 0; i < faturaIds.length; i += LOTE_FATURAS) lotes.push(faturaIds.slice(i, i + LOTE_FATURAS));
+  const partes = await emParalelo(lotes, (lote) => paginarPorId(() => client2.from("fatura_detalhes").select(COLUNAS_DETALHE).in("fatura_id", lote)));
+  return partes.flat();
+}
+async function gruposRaiz() {
+  if (cacheGrupos && Date.now() - cacheGrupos.em < 5 * 60 * 1e3) return cacheGrupos.grupos;
+  try {
+    cacheGrupos = { em: Date.now(), grupos: await carregarGruposRaizTransportadora() };
+  } catch (e) {
+    console.warn("[Diagnostico] grupos de CNPJ nao carregados", e?.message || e);
+    cacheGrupos = { em: Date.now(), grupos: /* @__PURE__ */ new Map() };
+  }
+  return cacheGrupos.grupos;
+}
+async function buscarEmLotes(numeros, montar) {
+  const lista = [...numeros];
+  const lotes = [];
+  for (let i = 0; i < lista.length; i += LOTE_NUMEROS) lotes.push(lista.slice(i, i + LOTE_NUMEROS));
+  return (await emParalelo(lotes, (lote) => paginarPorId(() => montar(lote)))).flat();
+}
+async function carregarLancamentos(client2, detalhes) {
+  const ctes2 = [];
+  const numerosPorCnpj = /* @__PURE__ */ new Map();
+  detalhes.forEach((item) => {
+    if (item.excluido_da_versao === true || ehLinhaNfse(item)) return;
+    const id = identificacaoSapDoCte(item);
+    if (!id.cnpj || id.numero === "0") return;
+    ctes2.push({ ...id, valor: Number(item.valor_frete || 0) });
+    if (!numerosPorCnpj.has(id.cnpj)) numerosPorCnpj.set(id.cnpj, /* @__PURE__ */ new Set());
+    numerosPorCnpj.get(id.cnpj).add(id.numero);
+  });
+  const porChave = /* @__PURE__ */ new Map();
+  const porCnpj = await emParalelo([...numerosPorCnpj], ([cnpj, numeros]) => buscarEmLotes(numeros, (lote) => client2.from("ctes_lancamentos_sap").select(COLUNAS_LANCAMENTO).eq("cnpj_emitente", cnpj).in("numero_cte", lote)));
+  porCnpj.flat().forEach((l) => {
+    const k = chaveCasamentoCte({ cnpj: l.cnpj_emitente, numero: l.numero_cte, serie: l.serie_cte });
+    porChave.set(k, [...porChave.get(k) || [], l]);
+  });
+  const faltam = ctes2.filter((c) => !porChave.has(chaveCasamentoCte(c)));
+  if (!faltam.length) return porChave;
+  const grupos = await gruposRaiz();
+  const numerosPorRaiz = /* @__PURE__ */ new Map();
+  faltam.forEach((c) => {
+    const raiz2 = c.cnpj.slice(0, 8);
+    (/* @__PURE__ */ new Set([raiz2, ...grupos.get(raiz2) || []])).forEach((r) => {
+      if (!numerosPorRaiz.has(r)) numerosPorRaiz.set(r, /* @__PURE__ */ new Set());
+      numerosPorRaiz.get(r).add(c.numero);
+    });
+  });
+  const porRaizNumero = /* @__PURE__ */ new Map();
+  const entradasRaiz = [...numerosPorRaiz];
+  const porRaiz = await emParalelo(entradasRaiz, ([raiz2, numeros]) => buscarEmLotes(numeros, (lote) => client2.from("ctes_lancamentos_sap").select(COLUNAS_LANCAMENTO).like("cnpj_emitente", `${raiz2}%`).in("numero_cte", lote)));
+  porRaiz.forEach((linhas, idx) => {
+    const raiz2 = entradasRaiz[idx][0];
+    linhas.forEach((l) => {
+      const k = `${raiz2}|${Number(l.numero_cte)}`;
+      porRaizNumero.set(k, [...porRaizNumero.get(k) || [], l]);
+    });
+  });
+  faltam.forEach((c) => {
+    const raiz2 = c.cnpj.slice(0, 8);
+    const candidatas = [.../* @__PURE__ */ new Set([raiz2, ...grupos.get(raiz2) || []])].flatMap((r) => porRaizNumero.get(`${r}|${Number(c.numero)}`) || []);
+    const casadas = casarLancamentoPeloGrupo(c, candidatas);
+    if (casadas.length) porChave.set(chaveCasamentoCte(c), casadas);
+  });
+  return porChave;
+}
+async function carregarResumoCtesFaturas(faturaIds = []) {
+  if (!isSupabaseConfigured() || !faturaIds.length) return /* @__PURE__ */ new Map();
+  const client2 = getSupabaseClient();
+  const detalhes = await carregarDetalhes(client2, faturaIds);
+  const lancamentos = await carregarLancamentos(client2, detalhes);
+  const porFatura = new Map(faturaIds.map((id) => [String(id), []]));
+  detalhes.forEach((d) => porFatura.get(String(d.fatura_id))?.push(d));
+  return new Map([...porFatura].map(([id, lista]) => [id, resumirCtesFatura(lista, lancamentos)]));
+}
+var PAGINA, LOTE_FATURAS, LOTE_NUMEROS, COLUNAS_DETALHE, LIMITE_PARALELO, COLUNAS_LANCAMENTO, cacheGrupos;
+var init_diagnosticoFaturasService = __esm({
+  "src/services/diagnosticoFaturasService.js"() {
+    "use strict";
+    init_define_import_meta_env();
+    init_supabaseClient();
+    init_diagnosticoFaturas();
+    init_lancamentosCteSap();
+    init_transportadoraCnpjsService();
+    init_nfseFatura();
+    PAGINA = 1e3;
+    LOTE_FATURAS = 40;
+    LOTE_NUMEROS = 200;
+    COLUNAS_DETALHE = "id,fatura_id,chave_cte,numero_cte,serie_cte,cnpj_emissor,cnpj_transportadora,valor_frete,excluido_da_versao";
+    LIMITE_PARALELO = 4;
+    COLUNAS_LANCAMENTO = "id,cnpj_emitente,numero_cte,serie_cte,lancamento_contabil,data_lancamento,montante,documento_compensacao,data_compensacao,empresa,codigo_fornecedor,fornecedor,arquivo_origem";
+    cacheGrupos = null;
   }
 });
 
@@ -29289,6 +29876,18 @@ async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = /* @__PUR
   if (!calcular && c.decisao === DECISAO.REVISAO_AUDITOR && resumo.semCalculo > 0) {
     motivo += ' Calculo pendente: o robo online nao calcula CT-es; rode "Executar agora" na tela do robo ou abra a fatura.';
   }
+  if (c.decisao === DECISAO.ENVIAR_APROVACAO && !modoNfse) {
+    try {
+      const apt = aptidaoEnvioSap((await carregarResumoCtesFaturas([f.id])).get(String(f.id)));
+      if (!apt.apta) {
+        c = { ...c, decisao: DECISAO.REVISAO_AUDITOR };
+        motivo = `${MOTIVO_SEM_PARTIDA_SAP}: ${apt.mensagem}`;
+      }
+    } catch (e) {
+      c = { ...c, decisao: DECISAO.REVISAO_AUDITOR };
+      motivo = `${MOTIVO_SEM_PARTIDA_SAP}: nao foi possivel conferir (${String(e?.message || e).slice(0, 120)}).`;
+    }
+  }
   if (c.decisao === DECISAO.ENVIAR_APROVACAO) {
     const r = await enviarFaturaParaGestaoRobo(db, f, resumo, { origem });
     enviada = r.enviada;
@@ -29344,7 +29943,7 @@ function escolherPesoMaisProximo(registrosCte = [], registrosTracking = []) {
   const porChave = new Map(registrosTracking.map((r) => [normalizarChaveCte(r.chave_cte), r]));
   return registrosCte.map((r) => escolherMaiorPeso(r, porChave.get(normalizarChaveCte(r.chave_cte))).registro);
 }
-var TOLERANCIA, dentroDaTolerancia, soDigitosNf, SEM_NF_VAZIO, SEM_NF_EMISSAO_DESDE_AAMM, emitidoParaConferirNf, JUSTIFICATIVA_CONTINGENCIA, brl2, dataBr, normalizarNomeAuditor;
+var TOLERANCIA, dentroDaTolerancia, soDigitosNf, SEM_NF_VAZIO, SEM_NF_EMISSAO_DESDE_AAMM, emitidoParaConferirNf, JUSTIFICATIVA_CONTINGENCIA, brl2, dataBr, MOTIVO_SEM_PARTIDA_SAP, normalizarNomeAuditor;
 var init_auditoriaRoboCore = __esm({
   "src/utils/auditoriaRoboCore.js"() {
     init_define_import_meta_env();
@@ -29357,6 +29956,8 @@ var init_auditoriaRoboCore = __esm({
     init_freteDatabaseService();
     init_auditoriaService();
     init_auditoriaFretesDomain();
+    init_diagnosticoFaturas();
+    init_diagnosticoFaturasService();
     init_omsEnvioPuro();
     init_nfseFatura();
     init_historicoLancamentos();
@@ -29374,12 +29975,14 @@ var init_auditoriaRoboCore = __esm({
       const t = String(v || "").slice(0, 10);
       return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t.split("-").reverse().join("/") : "";
     };
+    MOTIVO_SEM_PARTIDA_SAP = "CT-e sem partida no SAP";
     normalizarNomeAuditor = (v) => String(v || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase().replace(/\s+/g, " ");
   }
 });
 init_auditoriaRoboCore();
 export {
   DECISAO,
+  MOTIVO_SEM_PARTIDA_SAP,
   ROBO_DATA_INICIO,
   SEM_NF_EMISSAO_DESDE_AAMM,
   STATUS_ROBO_AUDITA,

@@ -24,6 +24,7 @@ import {
   GRUPOS_DIAGNOSTICO,
   montarLinhasDiagnostico,
   faturaSemIdOms,
+  jaEnviadaAoSap,
   situacaoAuditoria,
   sobreporAuditoriaExata,
   aptidaoEnvioSap,
@@ -53,7 +54,7 @@ const TAM_PAGINA = 100;
 const LOTE_VERIFICACAO = 120;
 const LOTE_PRIORITARIO = 20;
 const PARALELO_LOTES = 3;
-const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimentoDe: '', vencimentoAte: '', pagamentoDe: '', pagamentoAte: '', grupoTransp: '', grupoAuditor: '' };
+const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimentoDe: '', vencimentoAte: '', pagamentoDe: '', pagamentoAte: '', grupoTransp: '', grupoAuditor: '', ocultarEnviadasSap: false };
 const SEM_TRANSP = '__sem_fatura__';
 // Auditor "todos": visao geral do gestor (faturas em aberto de todos os auditores).
 const TODOS_AUDITORES = '__todos__';
@@ -282,7 +283,7 @@ function CardResumo({ rotulo, valor, detalhe, cor, ativo = false, dica, onClick 
 
 // Tela gerencial: cola uma lista de faturas (ou escolhe a transportadora) e ve o raio-x na hora.
 // A fatura abre por cima desta tela (onAbrirFatura), entao fechar volta exatamente aqui.
-export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura, onAbrirFaturas, liberarEmLote, conferirCobranca }) {
+export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura, onAbrirFaturas, onImportarSap, versaoImportSap = 0, liberarEmLote, conferirCobranca }) {
   const salvo = useMemo(lerSessao, []);
   const [texto, setTexto] = useState(salvo.texto || '');
   const [transportadora, setTransportadora] = useState(salvo.transportadora || '');
@@ -460,6 +461,8 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       const pag = String(f?.data_pagamento || '').slice(0, 10);
       if (filtros.pagamentoDe && (!pag || pag < filtros.pagamentoDe)) return false;
       if (filtros.pagamentoAte && (!pag || pag > filtros.pagamentoAte)) return false;
+      // Tira da lista (e dos cards/totais) o que ja foi para o SAP.
+      if (filtros.ocultarEnviadasSap && jaEnviadaAoSap(l)) return false;
       return true;
     });
   }, [linhas, filtros, filtroAuditor]);
@@ -589,6 +592,13 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   // Liberacao para pagamento e envio ao OMS em massa, com as MESMAS regras da lista de faturas
   // (liberarEmLote/conferirCobranca vem da pagina). Ja liberadas, pagas, canceladas ou na gestao ficam de fora.
   const [liberacaoLote, setLiberacaoLote] = useState(null);
+  // Voltou do importador SAP: reconfere as partidas dos CT-es sem esperar o cache vencer.
+  useEffect(() => {
+    if (!versaoImportSap) return;
+    limparCacheGruposCnpj();
+    cacheCtes.clear();
+    setRecarga((v) => v + 1);
+  }, [versaoImportSap]);
   const [processandoLote, setProcessandoLote] = useState('');
   const faturasSelecionadasObj = () => selecaoValida.map((id) => (state.faturas || []).find((f) => f.id === id)).filter(Boolean);
   const aptasLiberar = () => faturasSelecionadasObj().filter((f) => ['NAO_AUDITADA', 'PARCIAL', 'AUDITADA', 'FORNECEDOR'].includes(situacaoAuditoria(f)));
@@ -910,7 +920,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
 
   const descricaoFiltros = () => {
     const cards = GRUPOS_DIAGNOSTICO.filter((g) => escolhidos[g.id]).map((g) => [g.titulo, g.cards.find((c) => c.id === escolhidos[g.id])?.rotulo || '']);
-    const campos = [['Busca', filtros.busca], ['Auditor', filtroAuditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)], ['Pagamento (compensação) de', dataBr(filtros.pagamentoDe)], ['Pagamento (compensação) até', dataBr(filtros.pagamentoAte)], ['Transportadora (ranking)', filtros.grupoTransp ? rotuloTransp(filtros.grupoTransp) : ''], ['Auditor (ranking)', filtros.grupoAuditor === SEM_TRANSP ? 'Não localizadas' : filtros.grupoAuditor]]
+    const campos = [['Busca', filtros.busca], ['Auditor', filtroAuditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)], ['Pagamento (compensação) de', dataBr(filtros.pagamentoDe)], ['Pagamento (compensação) até', dataBr(filtros.pagamentoAte)], ['Transportadora (ranking)', filtros.grupoTransp ? rotuloTransp(filtros.grupoTransp) : ''], ['Auditor (ranking)', filtros.grupoAuditor === SEM_TRANSP ? 'Não localizadas' : filtros.grupoAuditor], ['Ocultando já enviadas ao SAP', filtros.ocultarEnviadasSap ? 'Sim' : '']]
       .filter(([, v]) => v && v !== '-');
     return [['Transportadora', transportadora || 'Todas'], ['Auditor', auditorEscolhido || 'Todos'], ['Números colados', temLista ? String(lista.itens.length) : 'Nenhum'], ...cards, ...campos];
   };
@@ -1189,6 +1199,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               <label className="field">Vencimento de<input type="date" value={filtros.vencimentoDe} onChange={mudarFiltro('vencimentoDe')} /></label>
               <label className="field">Vencimento até<input type="date" value={filtros.vencimentoAte} onChange={mudarFiltro('vencimentoAte')} /></label>
               <label className="field" title="Data de compensação (pagamento) da fatura no SAP">Pago de<input type="date" value={filtros.pagamentoDe} onChange={mudarFiltro('pagamentoDe')} /></label>
+              <label className="field" title="Tira da lista, dos cards e dos totais as faturas que já foram para o SAP: na fila do SAP ou enviadas pelo OMS, ou com data de envio ao ERP." style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'end', paddingBottom: 6 }}>
+                <input type="checkbox" checked={Boolean(filtros.ocultarEnviadasSap)} onChange={(e) => setFiltros((atual) => ({ ...atual, ocultarEnviadasSap: e.target.checked }))} style={{ width: 'auto' }} />
+                Ocultar já enviadas ao SAP
+              </label>
               <label className="field" title="Data de compensação (pagamento) da fatura no SAP">Pago até<input type="date" value={filtros.pagamentoAte} onChange={mudarFiltro('pagamentoAte')} /></label>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
@@ -1246,6 +1260,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                 Abrir em Faturas ({inteiro(selecaoValida.length || idsRecorte.length)}{selecaoValida.length ? ' selecionadas' : ' do filtro'})
               </button>
               <button type="button" className="btn-primary" disabled={!selecaoValida.length || marcando || Boolean(processandoLote) || !liberarEmLote} onClick={abrirLiberacaoLote}>Liberar para pagamento</button>
+              <button type="button" className="btn-secondary" disabled={!onImportarSap} onClick={() => onImportarSap()} title="Mesmo importador do Financeiro (exportação SAP/HANA de contas a pagar: compensação, partida de fatura e de CT-e). Abre aqui por cima; ao fechar, o Diagnóstico reconfere as partidas.">Importar SAP (faturas e CT-es)</button>
               <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando || Boolean(processandoLote)} onClick={enviarOmsLote} title="Envia ao OMS/SAP as selecionadas já liberadas que ainda não foram (Apta, Bloqueada por partida ou com Erro). Cada uma é conferida antes.">Enviar ao OMS</button>
               {processandoLote && <span className="compact" style={{ color: '#475569' }}>{processandoLote}</span>}
             </div>

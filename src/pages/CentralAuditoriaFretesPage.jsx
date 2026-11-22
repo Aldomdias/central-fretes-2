@@ -43,7 +43,8 @@ import {
   planejarCtesReimportacao,
 } from '../utils/auditoriaFretesImport';
 import { omsInvoiceIdValido } from '../utils/omsEnvioPuro';
-import { STATUS_LIBERADAS_OMS } from '../utils/diagnosticoFaturas';
+import { STATUS_LIBERADAS_OMS, aptidaoEnvioSap } from '../utils/diagnosticoFaturas';
+import { carregarResumoCtesFaturas } from '../services/diagnosticoFaturasService';
 import { importarIdsOmsDaPlanilha, resumirImportacaoIds } from '../services/omsIdFaturasService';
 import { ROTULO_ENVIO_OMS, atualizarEnvioOms, estadoEnvioOms, faturasComMesmoCte, listarEnviosOms, liberarFaturaNoOms, liberarNoOmsAposAprovacao } from '../services/omsFaturasEnvioService';
 import AlertaBloqueioOms from '../components/AlertaBloqueioOms';
@@ -1961,7 +1962,25 @@ ${blocos || '<section>Nenhuma fatura na janela/filtros selecionados.</section>'}
 // Liberacao em lote para pagamento (lista de faturas e Diagnostico usam esta MESMA regra): sem cobranca a maior e com a
 // auditoria completa vai para PRONTA_PARA_PAGAMENTO (e segue ao OMS/SAP, com a trava de partidas); senao vai para
 // AGUARDANDO_APROVACAO_GESTAO e so vai ao OMS quando a gestao aprovar. respostaAuditor = respostas do questionario.
-export async function liberarFaturasEmLote({ state, faturas = [], respostaAuditor = '', sessao, aoProgredir = () => {} }) {
+// Trava do AMD (pedido do usuario, 22/11/2026): a fatura so segue para liberacao (pagamento OU aprovacao da gestao)
+// com TODOS os CT-es com partida no SAP e nenhuma partida compensada (Fenix ou outra). NFS-e nao entra na conta.
+// Identifica ANTES de aprovar, e nao so na hora do envio ao OMS. Map(faturaId -> { apta, mensagem, pendentes }).
+export async function conferirPartidasParaLiberar(faturas = []) {
+  const mapa = await carregarResumoCtesFaturas(faturas.map((f) => f.id));
+  return new Map(faturas.map((f) => [f.id, aptidaoEnvioSap(mapa.get(String(f.id)))]));
+}
+
+export async function liberarFaturasEmLote({ state, faturas: faturasEntrada = [], respostaAuditor = '', sessao, aoProgredir = () => {} }) {
+  const aptidoes = await conferirPartidasParaLiberar(faturasEntrada);
+  const bloqueadasPartida = faturasEntrada.filter((f) => !aptidoes.get(f.id)?.apta)
+    .map((f) => ({ fatura: f, mensagem: aptidoes.get(f.id)?.mensagem || 'CT-es sem partida no SAP.' }));
+  const faturas = faturasEntrada.filter((f) => aptidoes.get(f.id)?.apta);
+  const textoBloqueadas = bloqueadasPartida.length
+    ? ` NÃO liberadas (${bloqueadasPartida.length}) por CT-e sem partida no SAP: ${bloqueadasPartida.slice(0, 5).map((b) => `${b.fatura.numero_fatura} (${b.mensagem})`).join(' | ')}${bloqueadasPartida.length > 5 ? ` +${bloqueadasPartida.length - 5}` : ''}. Lance/atualize as partidas no SAP e libere de novo.`
+    : '';
+  if (!faturas.length) {
+    return { next: state, mensagem: `Nenhuma fatura liberada.${textoBloqueadas}`, enviadasParaAprovacao: 0, liberadasOms: { total: 0, pendentes: [] }, bloqueadasPartida };
+  }
   let next = state;
   let enviadasParaAprovacao = 0;
   const liberadasOms = { total: 0, pendentes: [] };
@@ -2038,7 +2057,7 @@ export async function liberarFaturasEmLote({ state, faturas = [], respostaAudito
     + (faturas.length - enviadasParaAprovacao ? ` ${faturas.length - enviadasParaAprovacao} liberada(s) para pagamento.` : '')
     + (enviadasParaAprovacao ? ` ${enviadasParaAprovacao} foram para aprovacao da gestao por desconto ou auditoria incompleta.` : '')
     + (liberadasOms.total ? ` OMS/SAP: ${liberadasOms.total - liberadasOms.pendentes.length} de ${liberadasOms.total} liberada(s) no OMS.${liberadasOms.pendentes.length ? ` Pendentes: ${liberadasOms.pendentes.slice(0, 5).join(' | ')}` : ''}` : '');
-  return { next, mensagem, enviadasParaAprovacao, liberadasOms };
+  return { next, mensagem: `${mensagem}${textoBloqueadas}`, enviadasParaAprovacao, liberadasOms, bloqueadasPartida };
 }
 
 // Faturas do lote com cobranca a maior (vao para a gestao): o questionario de desconto e obrigatorio para elas.
@@ -2458,6 +2477,19 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   };
 
   const liberarParaPagamento = async () => {
+    // Trava de partida ANTES de liberar ou mandar para a gestao.
+    try {
+      setMensagemLiberacao('Conferindo as partidas dos CT-es no SAP...');
+      const apt = (await conferirPartidasParaLiberar([fatura])).get(fatura.id);
+      if (!apt?.apta) {
+        setMensagemLiberacao(`🚫 Não liberada: ${apt?.mensagem || 'CT-es sem partida no SAP.'} A fatura só segue (para pagamento ou para a gestão) com todos os CT-es com partida no SAP e sem compensação. Lance/atualize as partidas e tente de novo.`);
+        return;
+      }
+      setMensagemLiberacao('');
+    } catch (error) {
+      setMensagemLiberacao(`🚫 Não foi possível conferir as partidas dos CT-es no SAP (${error.message}). Tente de novo.`);
+      return;
+    }
     if (semIdOms(fatura) && !window.confirm('Esta fatura NÃO tem o Id do OMS: será liberada no AMD, mas NÃO será enviada ao SAP.' + String.fromCharCode(10, 10) + 'Importe o Id pela planilha da Verum (Importar só o Id do OMS) para poder enviar.' + String.fromCharCode(10, 10) + 'Liberar mesmo assim?')) return;
     const resumo = resumirDetalhesAuditoria(detalhes, toleranciaFatura);
     const auditoriaIncompleta = auditoriaEstaIncompleta(resumo);
@@ -9541,8 +9573,20 @@ function AprovacaoGestao({ state, onState }) {
     setDecisao((p) => ({ ...p, erro: '' }));
     const resultados = [];
     let proximo = state;
+    // Trava de partida: aprovar (qualquer decisao que libera) so com todos os CT-es com partida no SAP.
+    let aptidoesGestao = new Map();
+    if (tipo !== 'RECUSAR') {
+      try { aptidoesGestao = await conferirPartidasParaLiberar(escolhidas); } catch (error) {
+        setProcessando(false);
+        setDecisao((p) => ({ ...p, erro: `Não foi possível conferir as partidas dos CT-es no SAP (${error.message}). Tente de novo.` }));
+        return;
+      }
+    }
     for (const fatura of escolhidas) {
       try {
+        if (tipo !== 'RECUSAR' && !aptidoesGestao.get(fatura.id)?.apta) {
+          throw new Error(`não liberada — ${aptidoesGestao.get(fatura.id)?.mensagem || 'CT-es sem partida no SAP'}. Devolva ao auditor ou aguarde as partidas`);
+        }
         const nome = fatura.numero_fatura;
         // A fila pode ter sido aberta antes de um recalculo ou autorizacao de
         // saldo. Reconfere os CT-es no momento da decisao para nao aprovar o
@@ -10957,6 +11001,21 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   const [faturaOverlayId, setFaturaOverlayId] = useState(null);
   const faturaOverlay = faturaOverlayId && state ? state.faturas.find((f) => String(f.id) === String(faturaOverlayId)) : null;
 
+  // Importador "SAP - pagamentos e partidas" aberto por cima do Diagnostico (o original continua no Financeiro).
+  const [importSapAberto, setImportSapAberto] = useState(false);
+  const [versaoImportSap, setVersaoImportSap] = useState(0);
+  const fecharImportSap = () => { setImportSapAberto(false); setVersaoImportSap((v) => v + 1); };
+  useEffect(() => {
+    if (!importSapAberto) return undefined;
+    const aoTeclar = (ev) => {
+      if (ev.key !== 'Escape') return;
+      if (ev.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(ev.target.tagName)) return;
+      fecharImportSap();
+    };
+    window.addEventListener('keydown', aoTeclar);
+    return () => window.removeEventListener('keydown', aoTeclar);
+  }, [importSapAberto]);
+
   // Recorte do Diagnostico aberto na lista de Faturas, por cima (ESC ou Fechar volta ao Diagnostico como estava).
   const [recorteFaturas, setRecorteFaturas] = useState(null); // { ids: Set, chave, total }
   const stateRecorte = useMemo(() => (recorteFaturas && state
@@ -11032,13 +11091,13 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   const [financeiroExtrasCarregados, setFinanceiroExtrasCarregados] = useState(false);
   const [financeiroExtrasProntos, setFinanceiroExtrasProntos] = useState(false);
   useEffect(() => {
-    if ((tab !== 'financeiro' && somenteImportacao !== 'sap') || financeiroExtrasCarregados || !state || state.modo !== 'SUPABASE') return;
+    if ((tab !== 'financeiro' && somenteImportacao !== 'sap' && !importSapAberto) || financeiroExtrasCarregados || !state || state.modo !== 'SUPABASE') return;
     setFinanceiroExtrasCarregados(true);
     carregarPlataformaAuditoriaFinanceiro()
       .then((extras) => setState((prev) => (prev ? { ...prev, ...extras } : prev)))
       .catch((error) => setErro(error.message))
       .finally(() => setFinanceiroExtrasProntos(true));
-  }, [tab, financeiroExtrasCarregados, state]);
+  }, [tab, financeiroExtrasCarregados, state, importSapAberto]);
 
   const restaurar = () => setState({ ...restaurarDemonstracaoAuditoria(), modo: 'DEMONSTRACAO_LOCAL' });
 
@@ -11088,7 +11147,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
       {tab === 'meu-painel' && <MeuPainelAuditor state={state} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onEnviarEmailLaudo={enviarLaudosPorEmailRobo} />}
       {tab === 'robo' && <RoboAuditoriaPainel state={state} onState={setState} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onAbrirConsolidado={(transportadora, fats) => irParaFaturasComFiltro({ filtro: transportadora, selecionarIds: fats.map((f) => f.id), acaoAuto: 'laudo-transportador-lote' })} onEnviarEmail={enviarLaudosPorEmailRobo} resultadosEmail={resultadosEmailRobo} onLimparResultadosEmail={() => setResultadosEmailRobo([])} />}
       {tab === 'dashboard' && <Dashboard state={state} />}
-      {tab === 'diagnostico' && <DiagnosticoFaturasPainel state={state} onState={setState} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onAbrirFaturas={(ids) => setRecorteFaturas({ ids: new Set(ids), chave: Date.now() })} liberarEmLote={(faturas, resposta, aoProgredir) => liberarFaturasEmLote({ state, faturas, respostaAuditor: resposta, sessao: carregarSessao(), aoProgredir })} conferirCobranca={conferirCobrancaAMaiorLote} />}
+      {tab === 'diagnostico' && <DiagnosticoFaturasPainel state={state} onState={setState} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onAbrirFaturas={(ids) => setRecorteFaturas({ ids: new Set(ids), chave: Date.now() })} onImportarSap={() => setImportSapAberto(true)} versaoImportSap={versaoImportSap} liberarEmLote={(faturas, resposta, aoProgredir) => liberarFaturasEmLote({ state, faturas, respostaAuditor: resposta, sessao: carregarSessao(), aoProgredir })} conferirCobranca={conferirCobrancaAMaiorLote} />}
       {tab === 'painel' && (
         <PainelAcompanhamento
           state={state}
@@ -11109,6 +11168,17 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
       {tab === 'aprovacao' && <AprovacaoGestao state={state} onState={setState} />}
       {tab === 'gestao' && <Gestao state={state} onState={setState} />}
       {tab === 'financeiro' && <Financeiro state={state} onState={setState} />}
+      {importSapAberto && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 2950, overflow: 'auto', background: '#eef3f9', padding: 16 }}>
+          <div className="panel-card" style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: 10 }}>
+            <span><strong>Importar SAP — pagamentos e partidas</strong> (o mesmo importador do Financeiro). ESC ou Fechar volta ao Diagnóstico, que reconfere as partidas.</span>
+            <button type="button" className="btn-secondary" onClick={fecharImportSap}>Fechar e voltar ao Diagnóstico</button>
+          </div>
+          {state.modo === 'SUPABASE' && !financeiroExtrasProntos
+            ? <div className="panel-card">Carregando dados da Central Financeira...</div>
+            : <Financeiro state={state} onState={setState} somenteImportacao />}
+        </div>
+      )}
       {recorteFaturas && stateRecorte && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 2900, overflow: 'auto', background: '#eef3f9', padding: 16 }}>
           <div className="panel-card" style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: 10 }}>

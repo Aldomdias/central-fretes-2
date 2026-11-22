@@ -13,6 +13,8 @@ import { processarCtesPorChave } from '../services/auditoriaCteProcessamentoServ
 import { entrarCacheCalculo, sairCacheCalculo } from '../services/freteDatabaseService';
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { normalizarChaveCte } from './auditoriaFretesDomain';
+import { aptidaoEnvioSap } from './diagnosticoFaturas';
+import { carregarResumoCtesFaturas } from '../services/diagnosticoFaturasService';
 import { OPERADOR_ROBO_OMS, montarPayloadLiberacao, omsInvoiceIdValido } from './omsEnvioPuro';
 import { ehLinhaNfse, conferirNfseLancada } from './nfseFatura';
 import { normalizarNumeroFatura } from './robos/historicoLancamentos';
@@ -445,6 +447,8 @@ function aguardarOperacaoLotacao(c, resumo) {
 // identificada como "via robo" no historico. Mesmos campos que a tela grava ao enviar para a
 // gestao (so colunas que existem em `faturas`). So age se a fatura ainda estiver em auditoria.
 // db = cliente supabase (navegador: getSupabaseClient(); nuvem: cliente service role).
+export const MOTIVO_SEM_PARTIDA_SAP = 'CT-e sem partida no SAP';
+
 export async function enviarFaturaParaGestaoRobo(db, fatura, resumo, { usuario = 'Robo Auditor', origem = 'automatico' } = {}) {
   const { data: atual, error: erroLeitura } = await db.from('faturas').select('id,status').eq('id', fatura.id).maybeSingle();
   if (erroLeitura) throw new Error(`Leitura da fatura: ${erroLeitura.message}`);
@@ -661,6 +665,16 @@ export async function analisarFaturaRobo(db, f, { cfg = {}, emailsAuditores = ne
   }
   if (!calcular && c.decisao === DECISAO.REVISAO_AUDITOR && resumo.semCalculo > 0) {
     motivo += ' Calculo pendente: o robo online nao calcula CT-es; rode "Executar agora" na tela do robo ou abra a fatura.';
+  }
+  // Trava do AMD: o robo so manda para a gestao com TODOS os CT-es com partida no SAP (e sem compensacao).
+  if (c.decisao === DECISAO.ENVIAR_APROVACAO && !modoNfse) {
+    try {
+      const apt = aptidaoEnvioSap((await carregarResumoCtesFaturas([f.id])).get(String(f.id)));
+      if (!apt.apta) { c = { ...c, decisao: DECISAO.REVISAO_AUDITOR }; motivo = `${MOTIVO_SEM_PARTIDA_SAP}: ${apt.mensagem}`; }
+    } catch (e) {
+      c = { ...c, decisao: DECISAO.REVISAO_AUDITOR };
+      motivo = `${MOTIVO_SEM_PARTIDA_SAP}: nao foi possivel conferir (${String(e?.message || e).slice(0, 120)}).`;
+    }
   }
   if (c.decisao === DECISAO.ENVIAR_APROVACAO) {
     const r = await enviarFaturaParaGestaoRobo(db, f, resumo, { origem });

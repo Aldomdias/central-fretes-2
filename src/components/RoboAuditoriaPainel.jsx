@@ -70,6 +70,7 @@ async function carregarExecucoes() {
 // Tipo de problema de uma fatura "Para revisar", lido do motivo gravado pelo robo (auditorRoboService.classificarFatura).
 const TIPOS_REVISAO = [
   { id: 'sem_nf', rotulo: 'CT-e sem vinculo de NF', cor: '#dc2626', dica: 'CT-e sem a chave da NF dentro dele (base de CT-es/XML; tracking nao vale): nao pode ser pago. O laudo pedindo a retirada e um CT-e novo ja nasce aprovado: sai sozinho se a transportadora estiver em e-mail automatico/envio direto; se for manual, o auditor envia.' },
+  { id: 'sem_partida', rotulo: 'CT-e sem partida no SAP', cor: '#c2410c', dica: 'Auditoria ok, mas ha CT-e sem partida no SAP (ou com partida compensada): so vai para a gestao depois de lancado/atualizado.' },
   { id: 'entrega', rotulo: 'So entrega', cor: '#b45309', dica: 'Calculo ok; falta comprovar a entrega de CT-e(s).' },
   { id: 'nao_localizado', rotulo: 'Sem calculo — CT-e nao localizado', cor: '#7c3aed', dica: 'CT-e sem chave, nao encontrado na base por numero/CNPJ.' },
   { id: 'nfse', rotulo: 'Nota fiscal de servico (NFS-e)', cor: '#0f766e', dica: 'Fatura com NFS-e (nao e CT-e): o robo nunca audita, conferir manualmente.' },
@@ -97,6 +98,7 @@ function tipoTratada(e = {}) {
 function tipoRevisao(motivo) {
   const m = String(motivo || '').toLowerCase();
   if (m.includes(MOTIVO_SEM_NF.toLowerCase())) return 'sem_nf';
+  if (m.startsWith('ct-e sem partida no sap')) return 'sem_partida';
   // "NFS-e: ..." (so falta NFS-e) ou motivo antigo "(NFS-e (serie X) nao localizado...)".
   if (m.startsWith('nfs-e') || m.includes('(nfs-e')) return 'nfse';
   if (m.includes('nao localizado')) return 'nao_localizado';

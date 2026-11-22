@@ -538,6 +538,9 @@ export function situacaoOms(l) {
   return aptidaoEnvioSap(l.ctes).apta ? 'APTA' : 'BLOQUEADA_PARTIDA';
 }
 
+// Ja foi para o SAP: na fila ou lida pelo SAP via OMS, ou com data de envio ao ERP (envio manual pelo Verum).
+export const jaEnviadaAoSap = (l) => Boolean(l?.fatura) && (['FILA', 'ENVIADA'].includes(situacaoOms(l)) || enviadaErp(l.fatura));
+
 export function situacaoCtes(resumo) {
   if (!resumo) return 'VERIFICANDO';
   if (!resumo.total) return resumo.nfse ? 'SO_NFSE' : 'SEM_CTES';
