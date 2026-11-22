@@ -11056,7 +11056,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
         {TABS.map(([id, label]) => <button key={id} className={`toggle-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>{label}</button>)}
       </div>
       {tab === 'meu-painel' && <MeuPainelAuditor state={state} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onEnviarEmailLaudo={enviarLaudosPorEmailRobo} />}
-      {tab === 'robo' && <RoboAuditoriaPainel state={state} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onAbrirConsolidado={(transportadora, fats) => irParaFaturasComFiltro({ filtro: transportadora, selecionarIds: fats.map((f) => f.id), acaoAuto: 'laudo-transportador-lote' })} onEnviarEmail={enviarLaudosPorEmailRobo} resultadosEmail={resultadosEmailRobo} onLimparResultadosEmail={() => setResultadosEmailRobo([])} />}
+      {tab === 'robo' && <RoboAuditoriaPainel state={state} onState={setState} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onAbrirConsolidado={(transportadora, fats) => irParaFaturasComFiltro({ filtro: transportadora, selecionarIds: fats.map((f) => f.id), acaoAuto: 'laudo-transportador-lote' })} onEnviarEmail={enviarLaudosPorEmailRobo} resultadosEmail={resultadosEmailRobo} onLimparResultadosEmail={() => setResultadosEmailRobo([])} />}
       {tab === 'dashboard' && <Dashboard state={state} />}
       {tab === 'diagnostico' && <DiagnosticoFaturasPainel state={state} onState={setState} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} liberarEmLote={(faturas, resposta, aoProgredir) => liberarFaturasEmLote({ state, faturas, respostaAuditor: resposta, sessao: carregarSessao(), aoProgredir })} conferirCobranca={conferirCobrancaAMaiorLote} />}
       {tab === 'painel' && (

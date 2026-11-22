@@ -4,6 +4,7 @@ import RoboProgressoAmd from './RoboProgressoAmd';
 import { exportarExcelFormatado } from '../utils/exportarExcelFormatado';
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { listarControleBoletos } from '../services/boletoControleService';
+import { carregarPlataformaAuditoria } from '../services/auditoriaFretesService';
 import { aprovarLaudosRobo, DECISAO, gravarPreferenciaPesoMaisProximo, lerPreferenciaPesoMaisProximo, listarRoboTransportadoras, STATUS_ROBO_AUDITA, desfazerAprovacaoLaudoRobo, marcarLaudoEnviadoRobo, reavaliarFaturaRobo, buscarTodasPaginas, laudoResolvidoFora, faturaPaga, faturaEmAntecipacao, ctesSemNfDe, MOTIVO_SEM_NF } from '../services/auditorRoboService';
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -98,7 +99,7 @@ function tipoRevisao(motivo) {
   return 'outros';
 }
 
-export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConsolidado, onEnviarEmail, resultadosEmail = [], onLimparResultadosEmail }) {
+export default function RoboAuditoriaPainel({ state, onState, onAbrirFatura, onAbrirConsolidado, onEnviarEmail, resultadosEmail = [], onLimparResultadosEmail }) {
   const sessao = carregarSessao();
   const [execucoes, setExecucoes] = useState(null);
   const [boletoIds, setBoletoIds] = useState(new Set());
@@ -107,6 +108,8 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
   const [auditorSel, setAuditorSel] = useState('');
   const [busca, setBusca] = useState('');
   const [numerosCopiados, setNumerosCopiados] = useState('');
+  const [atualizadoEm, setAtualizadoEm] = useState(null);
+  const [atualizando, setAtualizando] = useState(false);
   const [motivoSel, setMotivoSel] = useState('');
   const [busy, setBusy] = useState(false);
   const [reavaliando, setReavaliando] = useState('');
@@ -119,13 +122,22 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
   const cfgDe = (nome) => cfgs.find((c) => String(c.transportadora || '').trim().toLowerCase() === String(nome || '').trim().toLowerCase());
   const parar = useRef(false);
 
+  // Os cards cruzam as execucoes do robo com as FATURAS da tela: recarregar so as execucoes deixava status velho
+  // (fatura ja liberada/paga/recalculada ainda contada na etapa antiga). Agora recarrega as duas.
   const recarregar = async () => {
+    setAtualizando(true);
     try {
-      const [ex, { lista }] = await Promise.all([carregarExecucoes(), listarControleBoletos()]);
+      const [ex, { lista }, plataforma] = await Promise.all([
+        carregarExecucoes(),
+        listarControleBoletos(),
+        onState ? carregarPlataformaAuditoria().catch((e) => { console.warn('[Robo] faturas nao recarregadas', e?.message || e); return null; }) : Promise.resolve(null),
+      ]);
       setExecucoes(ex);
       setBoletoIds(new Set(lista.map((c) => String(c.fatura_id))));
+      if (plataforma?.faturas) onState((atual) => ({ ...atual, faturas: plataforma.faturas }));
+      setAtualizadoEm(new Date());
       setErro('');
-    } catch (e) { setErro(e.message); setExecucoes([]); }
+    } catch (e) { setErro(e.message); setExecucoes([]); } finally { setAtualizando(false); }
   };
   useEffect(() => { recarregar(); }, [resultadosEmail.length]);
 
@@ -574,7 +586,8 @@ export default function RoboAuditoriaPainel({ state, onAbrirFatura, onAbrirConso
             }}>
             {numerosCopiados || `Copiar números (${visiveis.length})`}
           </button>
-          <button type="button" className="btn-secondary audit-small-button" disabled={Boolean(lote)} onClick={recarregar}>Atualizar</button>
+          <button type="button" className="btn-secondary audit-small-button" disabled={Boolean(lote) || atualizando} onClick={recarregar}>{atualizando ? 'Atualizando...' : 'Atualizar'}</button>
+          {atualizadoEm && <span className="compact" style={{ color: '#64748b' }} title="Hora da última leitura das execuções do robô e das faturas.">atualizado às {atualizadoEm.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>}
         </div>
         <div className="sim-analise-tabela-wrap" style={{ maxHeight: 520, overflowY: 'auto' }}>
           <table className="sim-analise-tabela">
