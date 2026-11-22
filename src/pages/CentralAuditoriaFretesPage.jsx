@@ -10957,6 +10957,36 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   const [faturaOverlayId, setFaturaOverlayId] = useState(null);
   const faturaOverlay = faturaOverlayId && state ? state.faturas.find((f) => String(f.id) === String(faturaOverlayId)) : null;
 
+  // Recorte do Diagnostico aberto na lista de Faturas, por cima (ESC ou Fechar volta ao Diagnostico como estava).
+  const [recorteFaturas, setRecorteFaturas] = useState(null); // { ids: Set, chave, total }
+  const stateRecorte = useMemo(() => (recorteFaturas && state
+    ? { ...state, faturas: state.faturas.filter((f) => recorteFaturas.ids.has(f.id)) }
+    : null), [recorteFaturas, state]);
+  // A lista trabalha so com o recorte: o que ela devolver e mesclado de volta na lista completa (por id),
+  // sem perder as faturas que ficaram fora do recorte.
+  const onStateRecorte = (arg) => setState((prev) => {
+    const base = { ...prev, faturas: prev.faturas.filter((f) => recorteFaturas?.ids.has(f.id)) };
+    const next = typeof arg === 'function' ? arg(base) : arg;
+    if (!next) return prev;
+    const porId = new Map((next.faturas || []).map((f) => [f.id, f]));
+    const faturas = prev.faturas.map((f) => porId.get(f.id) || f);
+    const conhecidas = new Set(prev.faturas.map((f) => f.id));
+    (next.faturas || []).forEach((f) => { if (!conhecidas.has(f.id)) faturas.push(f); });
+    return { ...next, faturas };
+  });
+  useEffect(() => {
+    if (!recorteFaturas) return undefined;
+    const aoTeclar = (ev) => {
+      if (ev.key !== 'Escape' || faturaOverlayId) return;
+      const alvo = ev.target;
+      // Nao fecha enquanto digita num campo.
+      if (alvo && ['INPUT', 'TEXTAREA', 'SELECT'].includes(alvo.tagName)) return;
+      setRecorteFaturas(null);
+    };
+    window.addEventListener('keydown', aoTeclar);
+    return () => window.removeEventListener('keydown', aoTeclar);
+  }, [recorteFaturas, faturaOverlayId]);
+
   const irParaFaturasComFiltro = (filtros) => {
     setFiltrosIniciaisFaturas({ chave: Date.now(), ...filtros });
     setTab('faturas');
@@ -11058,7 +11088,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
       {tab === 'meu-painel' && <MeuPainelAuditor state={state} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onEnviarEmailLaudo={enviarLaudosPorEmailRobo} />}
       {tab === 'robo' && <RoboAuditoriaPainel state={state} onState={setState} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onAbrirConsolidado={(transportadora, fats) => irParaFaturasComFiltro({ filtro: transportadora, selecionarIds: fats.map((f) => f.id), acaoAuto: 'laudo-transportador-lote' })} onEnviarEmail={enviarLaudosPorEmailRobo} resultadosEmail={resultadosEmailRobo} onLimparResultadosEmail={() => setResultadosEmailRobo([])} />}
       {tab === 'dashboard' && <Dashboard state={state} />}
-      {tab === 'diagnostico' && <DiagnosticoFaturasPainel state={state} onState={setState} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} liberarEmLote={(faturas, resposta, aoProgredir) => liberarFaturasEmLote({ state, faturas, respostaAuditor: resposta, sessao: carregarSessao(), aoProgredir })} conferirCobranca={conferirCobrancaAMaiorLote} />}
+      {tab === 'diagnostico' && <DiagnosticoFaturasPainel state={state} onState={setState} onAbrirFatura={(f) => setFaturaOverlayId(f.id)} onAbrirFaturas={(ids) => setRecorteFaturas({ ids: new Set(ids), chave: Date.now() })} liberarEmLote={(faturas, resposta, aoProgredir) => liberarFaturasEmLote({ state, faturas, respostaAuditor: resposta, sessao: carregarSessao(), aoProgredir })} conferirCobranca={conferirCobrancaAMaiorLote} />}
       {tab === 'painel' && (
         <PainelAcompanhamento
           state={state}
@@ -11079,6 +11109,15 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
       {tab === 'aprovacao' && <AprovacaoGestao state={state} onState={setState} />}
       {tab === 'gestao' && <Gestao state={state} onState={setState} />}
       {tab === 'financeiro' && <Financeiro state={state} onState={setState} />}
+      {recorteFaturas && stateRecorte && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 2900, overflow: 'auto', background: '#eef3f9', padding: 16 }}>
+          <div className="panel-card" style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: 10 }}>
+            <span><strong>Faturas do Diagnóstico</strong> — {stateRecorte.faturas.length} fatura(s) do recorte. Tudo o que fizer aqui vale para a fatura; ESC ou Fechar volta ao Diagnóstico.</span>
+            <button type="button" className="btn-secondary" onClick={() => setRecorteFaturas(null)}>Fechar e voltar ao Diagnóstico</button>
+          </div>
+          <Faturas key={recorteFaturas.chave} state={stateRecorte} onState={onStateRecorte} modo="faturas" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} filtrosIniciais={{ chave: recorteFaturas.chave, visao: 'todas' }} />
+        </div>
+      )}
       {faturaOverlay && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 3000, overflow: 'auto', background: '#eef3f9', padding: 16 }}>
           <FaturaDetalhe state={state} fatura={faturaOverlay} onClose={() => setFaturaOverlayId(null)} onState={setState} />

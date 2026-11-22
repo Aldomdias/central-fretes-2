@@ -282,7 +282,7 @@ function CardResumo({ rotulo, valor, detalhe, cor, ativo = false, dica, onClick 
 
 // Tela gerencial: cola uma lista de faturas (ou escolhe a transportadora) e ve o raio-x na hora.
 // A fatura abre por cima desta tela (onAbrirFatura), entao fechar volta exatamente aqui.
-export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura, liberarEmLote, conferirCobranca }) {
+export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura, onAbrirFaturas, liberarEmLote, conferirCobranca }) {
   const salvo = useMemo(lerSessao, []);
   const [texto, setTexto] = useState(salvo.texto || '');
   const [transportadora, setTransportadora] = useState(salvo.transportadora || '');
@@ -1242,6 +1242,9 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               <span className="compact" style={{ color: '#475569' }} title="Mesmas regras da lista de faturas: sem cobrança a maior e com a auditoria completa libera para pagamento (e vai ao OMS/SAP); senão vai para a aprovação da gestão.">
                 Liberação: {inteiro(selecaoValida.length)} selecionada(s)
               </span>
+              <button type="button" className="btn-primary" style={{ background: '#1f3a5f', borderColor: '#1f3a5f' }} disabled={!idsRecorte.length || !onAbrirFaturas} onClick={() => onAbrirFaturas(selecaoValida.length ? selecaoValida : idsRecorte)} title="Abre a lista de Faturas (cards, filtros, auditoria, recalcular, liberar) só com estas faturas. ESC ou Fechar volta ao Diagnóstico como estava.">
+                Abrir em Faturas ({inteiro(selecaoValida.length || idsRecorte.length)}{selecaoValida.length ? ' selecionadas' : ' do filtro'})
+              </button>
               <button type="button" className="btn-primary" disabled={!selecaoValida.length || marcando || Boolean(processandoLote) || !liberarEmLote} onClick={abrirLiberacaoLote}>Liberar para pagamento</button>
               <button type="button" className="btn-secondary" disabled={!selecaoValida.length || marcando || Boolean(processandoLote)} onClick={enviarOmsLote} title="Envia ao OMS/SAP as selecionadas já liberadas que ainda não foram (Apta, Bloqueada por partida ou com Erro). Cada uma é conferida antes.">Enviar ao OMS</button>
               {processandoLote && <span className="compact" style={{ color: '#475569' }}>{processandoLote}</span>}
