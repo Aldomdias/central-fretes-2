@@ -38,7 +38,8 @@ export default defineConfig({
         // busca o HTML atual na hospedagem.
         navigateFallbackDenylist: [/./],
         runtimeCaching: [],
-        maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+        // O bundle principal passou de 6 MiB (6,29 MB em 22/11/2026) e o build da Vercel falhava: limite em 8 MiB.
+        maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         // motor do OCR (/public/ocr) e baixado so quando algum PDF sem texto e lido: fora do precache
         globIgnores: ["ocr/**"],
       },
