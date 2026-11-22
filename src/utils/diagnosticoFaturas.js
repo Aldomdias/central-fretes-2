@@ -494,12 +494,14 @@ export function aptidaoEnvioSap(resumo) {
 export const STATUS_LIBERADAS_OMS = new Set(['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO', 'ENVIADA_AO_FINANCEIRO']);
 export const ROTULO_OMS = {
   SEM_ID: 'Sem Id do OMS', NAO_LIBERADA: 'Não liberada', VERIFICANDO: 'Conferindo partidas', BLOQUEADA_PARTIDA: 'Bloqueada (partida)',
-  APTA: 'Apta, não enviada', AGUARDANDO: 'Aguardando OMS', FILA: 'Na fila do SAP', ENVIADA: 'Enviada ao SAP', ERRO: 'Erro/recusada no OMS', PAGA: 'Paga',
+  LANCADA: 'Já lançada no SAP', APTA: 'Apta, não enviada', AGUARDANDO: 'Aguardando OMS', FILA: 'Na fila do SAP', ENVIADA: 'Enviada ao SAP', ERRO: 'Erro/recusada no OMS', PAGA: 'Paga',
 };
 export function situacaoOms(l) {
   const f = l?.fatura;
   if (!f || inativa(f)) return '';
   const e = l.oms;
+  // Ja lancada (partida/lancamento na fatura): passou da fase de envio ao OMS, nao e apta nem bloqueada.
+  if (faturaLancada(f) && !String(f.status || '').startsWith('PAGA') && !e?.sent_to_erp) return 'LANCADA';
   if (e) {
     if (e.sent_to_erp) return 'ENVIADA';
     if (e.outcome === 'queuedForErp' || e.outcome === 'alreadyReleased') return 'FILA';
@@ -656,6 +658,7 @@ export const GRUPOS_DIAGNOSTICO = [
     { id: 'oms_aguardando', rotulo: 'Aguardando OMS', cor: '#b78700', teste: (l) => situacaoOms(l) === 'AGUARDANDO', dica: 'Enviadas, aguardando o OMS aceitar e processar.' },
     { id: 'oms_fila', rotulo: 'Na fila do SAP', cor: '#0f766e', teste: (l) => situacaoOms(l) === 'FILA', dica: 'O OMS liberou: aguardando o SAP ler a fatura.' },
     { id: 'oms_enviadas', rotulo: 'Enviadas ao SAP', cor: '#14733b', teste: (l) => situacaoOms(l) === 'ENVIADA', dica: 'O SAP já leu a fatura.' },
+    { id: 'oms_lancadas', rotulo: 'Já lançadas no SAP', cor: '#64748b', teste: (l) => situacaoOms(l) === 'LANCADA', dica: 'Já têm partida/lançamento na fatura: passaram da fase de envio ao OMS e não aparecem como aptas nem bloqueadas.' },
     { id: 'oms_erro', rotulo: 'Erro/recusadas no OMS', cor: '#9b1111', teste: (l) => situacaoOms(l) === 'ERRO', dica: 'Recusadas pelo OMS, bloqueadas por trava do OMS ou com falha: abra a fatura para ver o motivo.' },
     { id: 'com_id_oms', rotulo: 'Com Id do OMS', cor: '#14733b', teste: comFatura((l) => ativa(l) && omsInvoiceIdValido(l.fatura.oms_invoice_id)), dica: 'Tem o Id do OMS: pode ser enviada ao SAP ao liberar.' },
   ] },

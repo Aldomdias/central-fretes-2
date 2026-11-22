@@ -443,4 +443,8 @@ test('envio ao SAP pelo OMS: so com todas as partidas e sem compensacao', async 
   assert.equal(situacaoOms({ fatura: f(), oms: { status: 'enviado', sent_to_erp: true } }), 'ENVIADA');
   assert.equal(situacaoOms({ fatura: f(), oms: { status: 'recusado' } }), 'ERRO');
   assert.equal(situacaoOms({ fatura: f(), oms: { status: 'enviando' } }), 'AGUARDANDO');
+  // Ja lancada na fatura: nao e apta nem bloqueada (nem com Fenix).
+  assert.equal(situacaoOms({ fatura: f({ partida: '1900000001' }), ctes: resumo() }), 'LANCADA');
+  assert.equal(situacaoOms({ fatura: f({ lancamento_financeiro: true }), ctes: resumo({ semPartida: [{ numero_cte: '1' }] }) }), 'LANCADA');
+  assert.equal(situacaoOms({ fatura: f({ partida: '1900000001' }), oms: { status: 'enviado', sent_to_erp: true } }), 'ENVIADA');
 });
