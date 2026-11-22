@@ -70,6 +70,9 @@ const semZeros = (v) => String(v ?? '').trim().replace(/^0+(?=\d)/, '');
 const cteSap = (c) => { const n = semZeros(c.numero_cte); const s = semZeros(c.serie_cte); return n && s ? `${n}-${s}` : n; };
 const nomeStatus = (s) => String(s || '-').replaceAll('_', ' ');
 const carimbo = (f) => f.updated_at || '';
+// Partida no SAP muda sem mexer na fatura (importacao do relatorio/robo): o cache vale poucos minutos, nao a sessao toda.
+const VALIDADE_CACHE_CTES = 2 * 60 * 1000;
+const cteAtual = (entrada, f) => Boolean(entrada) && entrada.carimbo === carimbo(f) && Date.now() - (entrada.em || 0) < VALIDADE_CACHE_CTES;
 const COR_PAGAMENTO = { Paga: '#14733b', 'Paga c/ divergência': '#b78700', 'Lançada, não paga': '#315ee7', 'Lançada nos CT-es, não paga': '#b78700', 'Não lançada': '#9b1111' };
 const ROTULO_SITUACAO_CTE = { COM_PARTIDA: 'Com partida', SEM_PARTIDA: 'Sem partida', ESTORNADO: 'Estornado no SAP', NFSE: 'NFS-e (fora do SAP CT-e)' };
 const ROTULO_ETAPA_FENIX = { A_ENVIAR: 'A enviar ao financeiro', AGUARDANDO: 'Enviada, aguardando retorno', RETORNO: 'Retorno recebido: mandar protocolo', PROTOCOLO: 'Já no protocolo' };
@@ -338,7 +341,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     // Primeiro as enviadas ao ERP sem partida na fatura: sao as que definem "Enviadas sem partida" e precisam de tratamento.
     // Tambem as candidatas a "apta a antecipacao": so da para saber se sao so CT-e (ou NFS-e) depois de conhecer os itens.
     const prioridade = (f) => ((enviadaErp(f) && !faturaLancada(f)) || aptaAntecipacao(f) ? 0 : 1);
-    const pendentes = faturasBase.filter((f) => cacheCtes.get(String(f.id))?.carimbo !== carimbo(f))
+    const pendentes = faturasBase.filter((f) => !cteAtual(cacheCtes.get(String(f.id)), f))
       .sort((a, b) => prioridade(a) - prioridade(b));
     if (!pendentes.length) { setProgresso(null); return undefined; }
     let ativo = true;
@@ -360,7 +363,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             // eslint-disable-next-line no-await-in-loop
             const mapa = await carregarResumoCtesFaturas(lote.map((f) => f.id));
             if (!ativo) return;
-            lote.forEach((f) => cacheCtes.set(String(f.id), { carimbo: carimbo(f), resumo: mapa.get(String(f.id)) }));
+            lote.forEach((f) => cacheCtes.set(String(f.id), { carimbo: carimbo(f), em: Date.now(), resumo: mapa.get(String(f.id)) }));
             feitas += lote.length;
             setProgresso({ feitas, total: pendentes.length });
             setVersaoCtes((v) => v + 1);
