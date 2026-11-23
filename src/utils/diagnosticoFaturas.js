@@ -538,6 +538,25 @@ export function situacaoOms(l) {
   return aptidaoEnvioSap(l.ctes).apta ? 'APTA' : 'BLOQUEADA_PARTIDA';
 }
 
+// Data (dia local, AAAA-MM-DD, horario de Brasilia) do ultimo envio ao OMS da fatura.
+export function dataLocalIso(valor, timeZone = 'America/Sao_Paulo') {
+  if (!valor) return '';
+  const d = new Date(valor);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('sv-SE', { timeZone });
+}
+export const dataEnvioOms = (l) => dataLocalIso(l?.oms?.created_at);
+
+// Resultado do ultimo envio ao OMS: FOI (OMS liberou: fila do SAP ou ja lida pelo SAP), NAO_FOI (recusado,
+// bloqueado por trava do OMS ou falha) ou AGUARDANDO (enviado, sem resposta final ainda). '' = sem envio.
+export const ROTULO_RESULTADO_ENVIO_OMS = { FOI: 'Foi para o SAP', AGUARDANDO: 'Aguardando o OMS', NAO_FOI: 'Não foi (erro/recusa)' };
+export function resultadoEnvioOms(envio) {
+  if (!envio) return '';
+  if (envio.sent_to_erp || envio.outcome === 'queuedForErp' || envio.outcome === 'alreadyReleased') return 'FOI';
+  if (envio.outcome === 'blocked' || ['recusado', 'erro'].includes(envio.status) || envio.oms_status === 'failed') return 'NAO_FOI';
+  return 'AGUARDANDO';
+}
+
 // Ja foi para o SAP: na fila ou lida pelo SAP via OMS, ou com data de envio ao ERP (envio manual pelo Verum).
 export const jaEnviadaAoSap = (l) => Boolean(l?.fatura) && (['FILA', 'ENVIADA'].includes(situacaoOms(l)) || enviadaErp(l.fatura));
 
@@ -677,15 +696,16 @@ export const GRUPOS_DIAGNOSTICO = [
     { id: 'gestao', rotulo: 'Aguardando gestão', cor: '#9153F0', teste: auditoria('GESTAO'), dica: 'Na aprovacao da gestão.' },
     { id: 'liberadas', rotulo: 'Liberadas', cor: '#04a484', teste: auditoria('LIBERADA'), dica: 'Liberadas, no financeiro ou já pagas.' },
   ] },
-  { id: 'oms', titulo: 'Integração OMS/SAP', cards: [
-    { id: 'sem_id_oms', rotulo: 'Sem Id do OMS', cor: '#b91c1c', teste: comFatura((l) => faturaSemIdOms(l.fatura)), dica: 'Em aberto e sem o Id do OMS: não consegue ser enviada ao SAP. Importe o Id pela planilha da Verum (botão "Importar só o Id do OMS" na lista de faturas).' },
-    { id: 'oms_bloqueadas', rotulo: 'Liberadas, bloqueadas por partida', cor: '#c2410c', teste: (l) => situacaoOms(l) === 'BLOQUEADA_PARTIDA', dica: 'Liberadas no AMD, mas com CT-e sem partida no SAP ou com partida compensada (Fênix ou outra): não vão ao OMS até corrigir.' },
-    { id: 'oms_aptas', rotulo: 'Liberadas, aptas e não enviadas', cor: '#315ee7', teste: (l) => situacaoOms(l) === 'APTA', dica: 'Liberadas, com Id e todas as partidas em ordem, mas sem envio ao OMS: abra e use "Enviar ao OMS".' },
-    { id: 'oms_aguardando', rotulo: 'Aguardando OMS', cor: '#b78700', teste: (l) => situacaoOms(l) === 'AGUARDANDO', dica: 'Enviadas, aguardando o OMS aceitar e processar.' },
-    { id: 'oms_fila', rotulo: 'Na fila do SAP', cor: '#0f766e', teste: (l) => situacaoOms(l) === 'FILA', dica: 'O OMS liberou: aguardando o SAP ler a fatura.' },
-    { id: 'oms_enviadas', rotulo: 'Enviadas ao SAP', cor: '#14733b', teste: (l) => situacaoOms(l) === 'ENVIADA', dica: 'O SAP já leu a fatura.' },
+  // Na ordem do fluxo: o que falta enviar, o que foi enviado e esta pendente, o que foi e o que voltou com erro.
+  { id: 'oms', titulo: 'Integração OMS/SAP (situação atual, qualquer data)', cards: [
+    { id: 'oms_aptas', rotulo: 'A enviar: aptas', cor: '#315ee7', teste: (l) => situacaoOms(l) === 'APTA', dica: 'Liberadas, com Id e todas as partidas em ordem, mas ainda sem envio ao OMS: selecione e use "Enviar ao OMS".' },
+    { id: 'oms_bloqueadas', rotulo: 'A enviar: bloqueadas por partida', cor: '#c2410c', teste: (l) => situacaoOms(l) === 'BLOQUEADA_PARTIDA', dica: 'Liberadas no AMD, mas com CT-e sem partida no SAP ou com partida compensada (Fênix ou outra): não vão ao OMS até corrigir.' },
+    { id: 'sem_id_oms', rotulo: 'A enviar: sem Id do OMS', cor: '#b91c1c', teste: comFatura((l) => faturaSemIdOms(l.fatura)), dica: 'Em aberto e sem o Id do OMS: não consegue ser enviada ao SAP. Importe o Id pela planilha da Verum (botão "Importar só o Id do OMS" na lista de faturas).' },
+    { id: 'oms_aguardando', rotulo: 'Enviadas: aguardando o OMS', cor: '#b78700', teste: (l) => situacaoOms(l) === 'AGUARDANDO', dica: 'Enviadas, aguardando o OMS aceitar e processar.' },
+    { id: 'oms_fila', rotulo: 'Foram: na fila do SAP', cor: '#0f766e', teste: (l) => situacaoOms(l) === 'FILA', dica: 'O OMS liberou: aguardando o SAP ler a fatura.' },
+    { id: 'oms_enviadas', rotulo: 'Foram: SAP já leu', cor: '#14733b', teste: (l) => situacaoOms(l) === 'ENVIADA', dica: 'O SAP já leu a fatura.' },
+    { id: 'oms_erro', rotulo: 'Não foram: erro/recusa no OMS', cor: '#9b1111', teste: (l) => situacaoOms(l) === 'ERRO', dica: 'Recusadas pelo OMS, bloqueadas por trava do OMS ou com falha: abra a fatura para ver o motivo.' },
     { id: 'oms_lancadas', rotulo: 'Já lançadas no SAP', cor: '#64748b', teste: (l) => situacaoOms(l) === 'LANCADA', dica: 'Já têm partida/lançamento na fatura: passaram da fase de envio ao OMS e não aparecem como aptas nem bloqueadas.' },
-    { id: 'oms_erro', rotulo: 'Erro/recusadas no OMS', cor: '#9b1111', teste: (l) => situacaoOms(l) === 'ERRO', dica: 'Recusadas pelo OMS, bloqueadas por trava do OMS ou com falha: abra a fatura para ver o motivo.' },
     { id: 'com_id_oms', rotulo: 'Com Id do OMS', cor: '#14733b', teste: comFatura((l) => ativa(l) && omsInvoiceIdValido(l.fatura.oms_invoice_id)), dica: 'Tem o Id do OMS: pode ser enviada ao SAP ao liberar.' },
   ] },
   { id: 'erp', titulo: 'Envio ao ERP', cards: [

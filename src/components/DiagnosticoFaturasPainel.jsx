@@ -28,7 +28,11 @@ import {
   situacaoAuditoria,
   sobreporAuditoriaExata,
   aptidaoEnvioSap,
+  dataEnvioOms,
+  dataLocalIso,
+  resultadoEnvioOms,
   ROTULO_OMS,
+  ROTULO_RESULTADO_ENVIO_OMS,
   situacaoOms,
   parseListaFaturas,
   previsaoPagamento,
@@ -54,7 +58,7 @@ const TAM_PAGINA = 100;
 const LOTE_VERIFICACAO = 120;
 const LOTE_PRIORITARIO = 20;
 const PARALELO_LOTES = 3;
-const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimentoDe: '', vencimentoAte: '', pagamentoDe: '', pagamentoAte: '', grupoTransp: '', grupoAuditor: '', ocultarEnviadasSap: false };
+const FILTROS_VAZIOS = { busca: '', auditor: '', status: '', canal: '', vencimentoDe: '', vencimentoAte: '', pagamentoDe: '', pagamentoAte: '', grupoTransp: '', grupoAuditor: '', ocultarEnviadasSap: false, omsEnvioDe: '', omsEnvioAte: '', omsResultado: '' };
 const SEM_TRANSP = '__sem_fatura__';
 // Auditor "todos": visao geral do gestor (faturas em aberto de todos os auditores).
 const TODOS_AUDITORES = '__todos__';
@@ -68,6 +72,9 @@ const ehOculta = (l) => ehCancelada(l) || Boolean(l.duplicada);
 const CARDS_OCULTAS = ['canceladas', 'duplicadas'];
 const inteiro = (v) => Number(v || 0).toLocaleString('pt-BR');
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
+const dataHoraBr = (v) => { const d = v ? new Date(v) : null; return d && !Number.isNaN(d.getTime()) ? d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''; };
+const somarDias = (iso, dias) => { const d = new Date(`${iso}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + dias); return d.toISOString().slice(0, 10); };
+const COR_RESULTADO_OMS = { FOI: '#14733b', AGUARDANDO: '#b78700', NAO_FOI: '#9b1111' };
 // CT-e no formato de pesquisa do SAP: numero-serie, sem zeros a esquerda (ex.: 1234-1).
 const semZeros = (v) => String(v ?? '').trim().replace(/^0+(?=\d)/, '');
 const cteSap = (c) => { const n = semZeros(c.numero_cte); const s = semZeros(c.serie_cte); return n && s ? `${n}-${s}` : n; };
@@ -444,28 +451,72 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     };
   }, [linhas]);
 
-  const filtradas = useMemo(() => {
+  // Filtros de campo. "ignorarEnvioOms": base do quadro de envios ao OMS (ele mesmo escolhe o periodo e o resultado).
+  const passaFiltros = (l, { ignorarEnvioOms = false } = {}) => {
+    const f = l.fatura;
     const termos = filtros.busca.toLowerCase().split(/\s+/).filter(Boolean);
-    return linhas.filter((l) => {
-      const f = l.fatura;
-      if (termos.length) {
-        const alvo = `${l.numero} ${f?.transportadora || ''} ${f?.auditor_nome || ''} ${l.auditor || ''}`.toLowerCase();
-        if (!termos.every((t) => alvo.includes(t))) return false;
-      }
-      if (filtroAuditor && (!f || l.auditor !== filtroAuditor)) return false;
-      if (filtros.status && f?.status !== filtros.status) return false;
-      if (filtros.canal && f?.canal !== filtros.canal) return false;
-      const venc = String(f?.data_vencimento || l.vencimentoLista || '').slice(0, 10);
-      if (filtros.vencimentoDe && (!venc || venc < filtros.vencimentoDe)) return false;
-      if (filtros.vencimentoAte && (!venc || venc > filtros.vencimentoAte)) return false;
-      const pag = String(f?.data_pagamento || '').slice(0, 10);
-      if (filtros.pagamentoDe && (!pag || pag < filtros.pagamentoDe)) return false;
-      if (filtros.pagamentoAte && (!pag || pag > filtros.pagamentoAte)) return false;
-      // Tira da lista (e dos cards/totais) o que ja foi para o SAP.
-      if (filtros.ocultarEnviadasSap && jaEnviadaAoSap(l)) return false;
-      return true;
+    if (termos.length) {
+      const alvo = `${l.numero} ${f?.transportadora || ''} ${f?.auditor_nome || ''} ${l.auditor || ''}`.toLowerCase();
+      if (!termos.every((t) => alvo.includes(t))) return false;
+    }
+    if (filtroAuditor && (!f || l.auditor !== filtroAuditor)) return false;
+    if (filtros.status && f?.status !== filtros.status) return false;
+    if (filtros.canal && f?.canal !== filtros.canal) return false;
+    const venc = String(f?.data_vencimento || l.vencimentoLista || '').slice(0, 10);
+    if (filtros.vencimentoDe && (!venc || venc < filtros.vencimentoDe)) return false;
+    if (filtros.vencimentoAte && (!venc || venc > filtros.vencimentoAte)) return false;
+    const pag = String(f?.data_pagamento || '').slice(0, 10);
+    if (filtros.pagamentoDe && (!pag || pag < filtros.pagamentoDe)) return false;
+    if (filtros.pagamentoAte && (!pag || pag > filtros.pagamentoAte)) return false;
+    if (ignorarEnvioOms) return true;
+    // Data do envio ao OMS (ultimo envio da fatura, dia de Brasilia) e resultado desse envio.
+    if (filtros.omsEnvioDe || filtros.omsEnvioAte) {
+      const env = dataEnvioOms(l);
+      if (!env) return false;
+      if (filtros.omsEnvioDe && env < filtros.omsEnvioDe) return false;
+      if (filtros.omsEnvioAte && env > filtros.omsEnvioAte) return false;
+    }
+    if (filtros.omsResultado && resultadoEnvioOms(l.oms) !== filtros.omsResultado) return false;
+    // Tira da lista (e dos cards/totais) o que ja foi para o SAP.
+    if (filtros.ocultarEnviadasSap && jaEnviadaAoSap(l)) return false;
+    return true;
+  };
+  const filtradas = useMemo(() => linhas.filter((l) => passaFiltros(l)), [linhas, filtros, filtroAuditor]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Quadro "Envios ao OMS": o que foi enviado no periodo (padrao: hoje) e quantos foram ou nao para o SAP.
+  const hojeIso = dataLocalIso(new Date());
+  const periodoOms = filtros.omsEnvioDe || filtros.omsEnvioAte
+    ? { de: filtros.omsEnvioDe, ate: filtros.omsEnvioAte }
+    : { de: hojeIso, ate: hojeIso };
+  const periodoOmsAtivo = Boolean(filtros.omsEnvioDe || filtros.omsEnvioAte);
+  const envioOms = useMemo(() => {
+    const noPeriodo = linhas.filter((l) => {
+      if (!l.fatura || ehOculta(l) || !passaFiltros(l, { ignorarEnvioOms: true })) return false;
+      const env = dataEnvioOms(l);
+      return Boolean(env) && (!periodoOms.de || env >= periodoOms.de) && (!periodoOms.ate || env <= periodoOms.ate);
     });
-  }, [linhas, filtros, filtroAuditor]);
+    const soma = (ls) => ({ qtd: ls.length, valor: ls.reduce((s, l) => s + valorDaLinha(l), 0) });
+    const por = (r) => soma(noPeriodo.filter((l) => resultadoEnvioOms(l.oms) === r));
+    const pendentes = linhas.filter((l) => l.fatura && !ehOculta(l) && passaFiltros(l, { ignorarEnvioOms: true }));
+    return {
+      total: soma(noPeriodo), FOI: por('FOI'), AGUARDANDO: por('AGUARDANDO'), NAO_FOI: por('NAO_FOI'),
+      aptas: pendentes.filter((l) => situacaoOms(l) === 'APTA').length,
+      bloqueadas: pendentes.filter((l) => situacaoOms(l) === 'BLOQUEADA_PARTIDA').length,
+    };
+  }, [linhas, filtros, filtroAuditor, periodoOms.de, periodoOms.ate]); // eslint-disable-line react-hooks/exhaustive-deps
+  const textoPeriodoOms = (() => {
+    const { de, ate } = periodoOms;
+    if (de && de === ate) return de === hojeIso ? 'hoje' : de === somarDias(hojeIso, -1) ? 'ontem' : `em ${dataBr(de)}`;
+    if (de && ate) return `de ${dataBr(de)} a ${dataBr(ate)}`;
+    return de ? `desde ${dataBr(de)}` : `até ${dataBr(ate)}`;
+  })();
+  // Escolhe o periodo do envio (e opcionalmente o resultado). Tira o card do grupo OMS para nao somar dois filtros parecidos.
+  const filtrarEnvioOms = (de, ate, resultado = '') => {
+    setEscolhidos((atual) => ({ ...atual, oms: '' }));
+    setFiltros((atual) => ({ ...atual, omsEnvioDe: de, omsEnvioAte: ate, omsResultado: resultado, ocultarEnviadasSap: false }));
+    setPagina(1);
+  };
+  const limparEnvioOms = () => setFiltros((atual) => ({ ...atual, omsEnvioDe: '', omsEnvioAte: '', omsResultado: '' }));
 
   // Canceladas/substituidas ficam fora da lista, dos cards e dos totais: so aparecem clicando no card
   // "Canceladas" (ou filtrando o status cancelada/substituida).
@@ -920,7 +971,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
 
   const descricaoFiltros = () => {
     const cards = GRUPOS_DIAGNOSTICO.filter((g) => escolhidos[g.id]).map((g) => [g.titulo, g.cards.find((c) => c.id === escolhidos[g.id])?.rotulo || '']);
-    const campos = [['Busca', filtros.busca], ['Auditor', filtroAuditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)], ['Pagamento (compensação) de', dataBr(filtros.pagamentoDe)], ['Pagamento (compensação) até', dataBr(filtros.pagamentoAte)], ['Transportadora (ranking)', filtros.grupoTransp ? rotuloTransp(filtros.grupoTransp) : ''], ['Auditor (ranking)', filtros.grupoAuditor === SEM_TRANSP ? 'Não localizadas' : filtros.grupoAuditor], ['Ocultando já enviadas ao SAP', filtros.ocultarEnviadasSap ? 'Sim' : '']]
+    const campos = [['Busca', filtros.busca], ['Auditor', filtroAuditor], ['Status', nomeStatus(filtros.status)], ['Canal', filtros.canal], ['Vencimento de', dataBr(filtros.vencimentoDe)], ['Vencimento até', dataBr(filtros.vencimentoAte)], ['Pagamento (compensação) de', dataBr(filtros.pagamentoDe)], ['Pagamento (compensação) até', dataBr(filtros.pagamentoAte)], ['Transportadora (ranking)', filtros.grupoTransp ? rotuloTransp(filtros.grupoTransp) : ''], ['Auditor (ranking)', filtros.grupoAuditor === SEM_TRANSP ? 'Não localizadas' : filtros.grupoAuditor], ['Ocultando já enviadas ao SAP', filtros.ocultarEnviadasSap ? 'Sim' : ''], ['Enviada ao OMS de', filtros.omsEnvioDe ? dataBr(filtros.omsEnvioDe) : ''], ['Enviada ao OMS até', filtros.omsEnvioAte ? dataBr(filtros.omsEnvioAte) : ''], ['Resultado do envio ao OMS', ROTULO_RESULTADO_ENVIO_OMS[filtros.omsResultado] || '']]
       .filter(([, v]) => v && v !== '-');
     return [['Transportadora', transportadora || 'Todas'], ['Auditor', auditorEscolhido || 'Todos'], ['Números colados', temLista ? String(lista.itens.length) : 'Nenhum'], ...cards, ...campos];
   };
@@ -941,7 +992,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
           { titulo: 'Resultado da auditoria', largura: 24 }, { titulo: 'Diferença apurada', largura: 14, tipo: 'moeda' }, { titulo: 'Motivo principal', largura: 24 },
           { titulo: 'Fatura lançada', largura: 10, tipo: 'centro' }, { titulo: 'Partida', largura: 14 }, { titulo: 'Lançamento financeiro', largura: 14 }, { titulo: 'Enviado ERP', largura: 12, tipo: 'data' }, { titulo: 'Situação envio ERP', largura: 22 },
           { titulo: 'CT-es com partida', largura: 10, tipo: 'inteiro' }, { titulo: 'CT-es sem partida', largura: 10, tipo: 'inteiro' }, { titulo: 'Valor sem partida', largura: 16, tipo: 'moeda' },
-          { titulo: 'Id do OMS', largura: 26 }, { titulo: 'Situação OMS/SAP', largura: 26 }, { titulo: 'Pendência para o SAP', largura: 50 },
+          { titulo: 'Id do OMS', largura: 26 }, { titulo: 'Situação OMS/SAP', largura: 26 }, { titulo: 'Enviada ao OMS em', largura: 18 }, { titulo: 'Enviada ao OMS por', largura: 22 }, { titulo: 'Resultado do envio OMS', largura: 22 }, { titulo: 'Pendência para o SAP', largura: 50 },
           { titulo: 'Pagamento', largura: 18 }, { titulo: 'Data pagamento', largura: 12, tipo: 'data' }, { titulo: 'Valor pago', largura: 16, tipo: 'moeda' }, { titulo: 'Auditor', largura: 26 }, { titulo: 'Próxima ação', largura: 28 }, { titulo: 'Agrupamento manual', largura: 20 }, { titulo: 'Marcado por', largura: 22 },
           { titulo: 'Ajuste Fênix', largura: 30 }, { titulo: 'Enviado Fênix em', largura: 12, tipo: 'data' }, { titulo: 'Enviado Fênix por', largura: 22 }, { titulo: 'Retorno Fênix em', largura: 12, tipo: 'data' }, { titulo: 'Observação', largura: 34 },
         ],
@@ -954,7 +1005,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             f ? Number(f.valor_fatura || 0) : '', l.valorLista ?? '', l.vencimentoLista || '', f ? nomeStatus(f.status) : '', f ? Number(f.ctes_auditados || 0) : '', f ? Number(f.ctes_totais || 0) : '',
             resultadoAuditoria(f)?.rotulo || '', f ? resultadoAuditoria(f).diferenca : '', resultadoAuditoria(f)?.motivo || '',
             f ? (faturaLancada(f) ? 'Sim' : 'Não') : '', f?.partida || '', f?.lancamento_financeiro || '', f?.data_envio_erp || '', f ? ROTULO_ENVIO_ERP[situacaoEnvioErp(l)] : '', l.ctes ? l.ctes.lancados : '', l.ctes ? l.ctes.semPartida.length : '', l.ctes ? l.ctes.valorSemPartida : '',
-            f?.oms_invoice_id || '', ROTULO_OMS[situacaoOms(l)] || '', situacaoOms(l) === 'BLOQUEADA_PARTIDA' ? aptidaoEnvioSap(l.ctes).mensagem : '',
+            f?.oms_invoice_id || '', ROTULO_OMS[situacaoOms(l)] || '', dataHoraBr(l.oms?.created_at), l.oms?.enviado_por || '', ROTULO_RESULTADO_ENVIO_OMS[resultadoEnvioOms(l.oms)] || '', situacaoOms(l) === 'BLOQUEADA_PARTIDA' ? aptidaoEnvioSap(l.ctes).mensagem : '',
             textoPagamentoLinha(l), f?.data_pagamento || '', f?.valor_pago != null ? Number(f.valor_pago) : '', f ? l.auditor : '', proximaAcao(l),
             agrupamentoManual(f) ? (faturaLancada(f) ? 'Já agrupada' : 'A enviar') : '', agrupamentoManual(f) ? (f.agrupamento_manual_por || '') : '',
             ROTULO_ETAPA_FENIX[etapaFenix(l)] || '', f?.fenix_enviado_em ? String(f.fenix_enviado_em).slice(0, 10) : '', f?.fenix_enviado_por || '', f?.fenix_retorno_em ? String(f.fenix_retorno_em).slice(0, 10) : '',
@@ -1181,6 +1232,40 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
 
           </div>
 
+          <section className="panel-card" style={{ marginBottom: 14, borderLeft: '4px solid #0f766e' }} aria-label="Envios ao OMS por data">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+              <strong style={{ color: '#071d49' }}>Envios ao OMS {textoPeriodoOms}</strong>
+              <span className="compact" style={{ color: '#475569' }}>Data do envio:</span>
+              {[['Hoje', hojeIso, hojeIso], ['Ontem', somarDias(hojeIso, -1), somarDias(hojeIso, -1)], ['Últimos 7 dias', somarDias(hojeIso, -6), hojeIso]].map(([rotulo, de, ate]) => (
+                <button key={rotulo} type="button" className={periodoOmsAtivo && filtros.omsEnvioDe === de && filtros.omsEnvioAte === ate ? 'btn-primary' : 'btn-secondary'} onClick={() => filtrarEnvioOms(de, ate, filtros.omsResultado)}>{rotulo}</button>
+              ))}
+              <label className="compact" style={{ display: 'flex', gap: 4, alignItems: 'center' }}>Dia
+                <input type="date" value={periodoOmsAtivo && filtros.omsEnvioDe === filtros.omsEnvioAte ? filtros.omsEnvioDe : ''} onChange={(e) => (e.target.value ? filtrarEnvioOms(e.target.value, e.target.value, filtros.omsResultado) : limparEnvioOms())} aria-label="Dia do envio ao OMS" />
+              </label>
+              {(periodoOmsAtivo || filtros.omsResultado) && <button type="button" className="btn-secondary" onClick={limparEnvioOms}>× Tirar filtro de envio</button>}
+            </div>
+            <div className="summary-strip audit-summary-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
+              <CardResumo rotulo={`Enviadas ${textoPeriodoOms}`} valor={inteiro(envioOms.total.qtd)} detalhe={dinheiro(envioOms.total.valor)} cor="#071d49" ativo={periodoOmsAtivo && !filtros.omsResultado} dica={`Faturas enviadas ao OMS ${textoPeriodoOms} (último envio de cada fatura). Clique para ver na lista.`} onClick={() => filtrarEnvioOms(periodoOms.de, periodoOms.ate, '')} />
+              {['FOI', 'AGUARDANDO', 'NAO_FOI'].map((r) => (
+                <CardResumo
+                  key={r}
+                  rotulo={ROTULO_RESULTADO_ENVIO_OMS[r]}
+                  valor={inteiro(envioOms[r].qtd)}
+                  detalhe={`${envioOms.total.qtd ? `${Math.round((envioOms[r].qtd / envioOms.total.qtd) * 100)}% · ` : ''}${dinheiro(envioOms[r].valor)}`}
+                  cor={COR_RESULTADO_OMS[r]}
+                  ativo={periodoOmsAtivo && filtros.omsResultado === r}
+                  dica={{ FOI: 'O OMS liberou: na fila do SAP ou o SAP já leu.', AGUARDANDO: 'Enviadas, ainda sem resposta final do OMS. Use "Atualizar dados" depois de alguns minutos.', NAO_FOI: 'Recusadas, bloqueadas por trava do OMS ou com falha: abra a fatura para ver o motivo e reenviar.' }[r] + ' Clique para ver na lista.'}
+                  onClick={() => filtrarEnvioOms(periodoOms.de, periodoOms.ate, periodoOmsAtivo && filtros.omsResultado === r ? '' : r)}
+                />
+              ))}
+            </div>
+            <div className="compact" style={{ marginTop: 8, color: '#475569', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span>Ainda não enviadas (qualquer data):</span>
+              <button type="button" className="btn-secondary" disabled={!envioOms.aptas} onClick={() => { limparEnvioOms(); setEscolhidos((a) => ({ ...a, oms: 'oms_aptas' })); }} title="Liberadas, com Id e partidas em ordem: prontas para Enviar ao OMS">{inteiro(envioOms.aptas)} apta(s)</button>
+              <button type="button" className="btn-secondary" disabled={!envioOms.bloqueadas} onClick={() => { limparEnvioOms(); setEscolhidos((a) => ({ ...a, oms: 'oms_bloqueadas' })); }} title="Liberadas, mas com CT-e sem partida ou com partida compensada: não vão ao OMS até corrigir">{inteiro(envioOms.bloqueadas)} bloqueada(s) por partida</button>
+            </div>
+          </section>
+
           {grupos.map((g) => (
             <section key={g.id} style={{ marginBottom: 12 }}>
               <h3 style={{ fontSize: 13, margin: '0 0 6px', color: '#475569' }}>{g.titulo}</h3>
@@ -1199,11 +1284,14 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               <label className="field">Vencimento de<input type="date" value={filtros.vencimentoDe} onChange={mudarFiltro('vencimentoDe')} /></label>
               <label className="field">Vencimento até<input type="date" value={filtros.vencimentoAte} onChange={mudarFiltro('vencimentoAte')} /></label>
               <label className="field" title="Data de compensação (pagamento) da fatura no SAP">Pago de<input type="date" value={filtros.pagamentoDe} onChange={mudarFiltro('pagamentoDe')} /></label>
+              <label className="field" title="Data de compensação (pagamento) da fatura no SAP">Pago até<input type="date" value={filtros.pagamentoAte} onChange={mudarFiltro('pagamentoAte')} /></label>
+              <label className="field" title="Dia em que a fatura foi enviada ao OMS (último envio, horário de Brasília)">Enviada ao OMS de<input type="date" value={filtros.omsEnvioDe} onChange={mudarFiltro('omsEnvioDe')} /></label>
+              <label className="field" title="Dia em que a fatura foi enviada ao OMS (último envio, horário de Brasília)">Enviada ao OMS até<input type="date" value={filtros.omsEnvioAte} onChange={mudarFiltro('omsEnvioAte')} /></label>
+              <label className="field">Resultado do envio OMS<select value={filtros.omsResultado} onChange={mudarFiltro('omsResultado')}><option value="">Todos</option>{Object.entries(ROTULO_RESULTADO_ENVIO_OMS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
               <label className="field" title="Tira da lista, dos cards e dos totais as faturas que já foram para o SAP: na fila do SAP ou enviadas pelo OMS, ou com data de envio ao ERP." style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'end', paddingBottom: 6 }}>
                 <input type="checkbox" checked={Boolean(filtros.ocultarEnviadasSap)} onChange={(e) => setFiltros((atual) => ({ ...atual, ocultarEnviadasSap: e.target.checked }))} style={{ width: 'auto' }} />
                 Ocultar já enviadas ao SAP
               </label>
-              <label className="field" title="Data de compensação (pagamento) da fatura no SAP">Pago até<input type="date" value={filtros.pagamentoAte} onChange={mudarFiltro('pagamentoAte')} /></label>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
               <button type="button" className="btn-primary" disabled={!resultado.length || exportando} onClick={exportarFaturas}>Exportar faturas ({inteiro(resultado.length)})</button>
@@ -1427,7 +1515,12 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                           const dica = so === 'BLOQUEADA_PARTIDA' ? aptidaoEnvioSap(l.ctes).mensagem
                             : so === 'ERRO' ? [l.oms?.erro?.code, l.oms?.erro?.message, ...(l.oms?.blocking_checks || []).map((c) => c.code)].filter(Boolean).join(' · ')
                               : so === 'FILA' && l.oms?.queued_for_erp_at ? `Na fila desde ${dataBr(l.oms.queued_for_erp_at)}` : undefined;
-                          return <span style={{ color: cor, fontWeight: 700, whiteSpace: 'nowrap' }} title={dica}>{ROTULO_OMS[so]}</span>;
+                          return (
+                            <span title={dica}>
+                              <span style={{ color: cor, fontWeight: 700, whiteSpace: 'nowrap' }}>{ROTULO_OMS[so]}</span>
+                              {l.oms?.created_at && <div style={{ fontSize: 11, color: '#64748b', whiteSpace: 'nowrap' }} title={l.oms.enviado_por ? `Enviada por ${l.oms.enviado_por}` : undefined}>enviada {dataHoraBr(l.oms.created_at)}</div>}
+                            </span>
+                          );
                         })()}</td>
                         <td style={{ color: COR_PAGAMENTO[textoPagamentoLinha(l)], fontWeight: 600 }}>{textoPagamentoLinha(l)}</td>
                         <td title={f && f.auditor_nome && f.auditor_nome.trim() !== l.auditor ? `Gravado como: ${f.auditor_nome}` : undefined}>{f ? l.auditor : '-'}</td>
