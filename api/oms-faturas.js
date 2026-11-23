@@ -95,6 +95,11 @@ export default async function handler(req, res) {
       case 'fatura':
         if (!body.invoiceId) return res.status(400).json({ ok: false, erro: 'Informe invoiceId.' });
         return res.status(200).json({ ok: true, fatura: await oms.consultarFatura(String(body.invoiceId)) });
+      case 'ctes': {
+        // XML original em Base64 (nunca logado). Repetir = mesmo corpo, mesmo requestId.
+        const r = await oms.enviarCtes({ requestId: body.requestId, invoiceId: body.invoiceId, ctes: body.ctes });
+        return res.status(200).json({ ok: true, ...r });
+      }
       case 'motivos':
         return res.status(200).json({ ok: true, motivos: await oms.listarMotivos() });
       default:

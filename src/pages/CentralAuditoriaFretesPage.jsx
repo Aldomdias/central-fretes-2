@@ -45,6 +45,7 @@ import {
 import { omsInvoiceIdValido } from '../utils/omsEnvioPuro';
 import { STATUS_LIBERADAS_OMS, aptidaoEnvioSap } from '../utils/diagnosticoFaturas';
 import { carregarResumoCtesFaturas } from '../services/diagnosticoFaturasService';
+import OmsCtesFaltantesPanel from '../components/OmsCtesFaltantesPanel';
 import { importarIdsOmsDaPlanilha, resumirImportacaoIds } from '../services/omsIdFaturasService';
 import { ROTULO_ENVIO_OMS, atualizarEnvioOms, estadoEnvioOms, faturasComMesmoCte, listarEnviosOms, liberarFaturaNoOms, liberarNoOmsAposAprovacao } from '../services/omsFaturasEnvioService';
 import AlertaBloqueioOms from '../components/AlertaBloqueioOms';
@@ -4354,6 +4355,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
             } catch (error) { setMensagemLiberacao(`OMS/SAP: ${error.message}`); } finally { setAtualizandoOms(false); }
           }}>{atualizandoOms ? 'Conferindo partidas...' : 'Enviar ao OMS'}</button>
         </div>
+      )}
+      {omsInvoiceIdValido(fatura.oms_invoice_id) && !ENCERRADOS.has(fatura.status) && (
+        <OmsCtesFaltantesPanel key={fatura.oms_invoice_id} invoiceId={fatura.oms_invoice_id} />
       )}
       {enviosOms[0] && (() => {
         const envio = enviosOms[0];

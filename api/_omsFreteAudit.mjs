@@ -53,6 +53,7 @@ export class OmsError extends Error {
     if (this.retryable) return 'reenviar_mesmo_requestId';
     if (this.status === 401) return 'alertar_credencial';
     if (this.status === 403) return 'avisar_verum';
+    if (this.code === 'CAPTURE_MODE_UNSUPPORTED') return 'avisar_verum';
     if (this.code === 'ALREADY_PROCESSED') return 'nada_a_fazer';
     if (this.code === 'INVOICE_BUSY') return 'aguardar_outro_lote';
     if (this.code === 'REQUEST_ID_REUSED') return 'gerar_novo_requestId';
@@ -145,6 +146,53 @@ export function validarLote(payload) {
   });
   if (totalCtes > LIMITES.CTES_POR_LOTE) erros.push(`ctes: maximo ${LIMITES.CTES_POR_LOTE} por lote (TOO_MANY_CTE_INSTRUCTIONS)`);
   return erros;
+}
+
+// ---------------------------------------------------------------------------
+// Envio de XML de CT-e (contrato AMD-Log-envio-de-XML-de-CTe-ao-OMS)
+// ---------------------------------------------------------------------------
+export const LIMITES_XML = Object.freeze({ XMLS_POR_CHAMADA: 50, BYTES_POR_XML: 1024 * 1024, BYTES_CORPO: 20 * 1024 * 1024 });
+const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/** Bytes aproximados de um Base64 (sem decodificar). */
+export function bytesDeBase64(b64) {
+  const s = soTexto(b64);
+  const pad = s.endsWith('==') ? 2 : s.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((s.length * 3) / 4) - pad);
+}
+
+export function validarEnvioCtes(payload) {
+  const erros = [];
+  if (!payload || typeof payload !== 'object') return ['corpo invalido'];
+  const rid = soTexto(payload.requestId);
+  if (!rid || rid.length > LIMITES.REQUEST_ID_MAX) erros.push(`requestId: obrigatorio, ate ${LIMITES.REQUEST_ID_MAX} caracteres`);
+  if (!/^[0-9a-fA-F]{24}$/.test(soTexto(payload.invoiceId).trim())) erros.push('invoiceId: 24 caracteres hexadecimais');
+  const ctes = payload.ctes;
+  if (!Array.isArray(ctes) || !ctes.length) { erros.push('ctes: de 1 a 50 itens'); return erros; }
+  if (ctes.length > LIMITES_XML.XMLS_POR_CHAMADA) erros.push(`ctes: maximo ${LIMITES_XML.XMLS_POR_CHAMADA} por chamada`);
+  let total = 0;
+  ctes.forEach((c, i) => {
+    const x = soTexto(c?.xml);
+    if (!x || !BASE64_RE.test(x)) { erros.push(`ctes[${i}].xml: Base64 obrigatorio`); return; }
+    const n = bytesDeBase64(x);
+    total += x.length;
+    if (n > LIMITES_XML.BYTES_POR_XML) erros.push(`ctes[${i}].xml: acima de 1 MB (TOO_LARGE)`);
+  });
+  if (total > LIMITES_XML.BYTES_CORPO) erros.push('ctes: corpo acima de 20 MB; divida em mais chamadas');
+  return erros;
+}
+
+/** Divide XMLs (Base64) em chamadas de ate 50 itens e `maxCorpoBytes` (padrao 3 MB: limite de corpo da Vercel e menor que o da Verum). */
+export function dividirXmls(xmls, { maxCorpoBytes = 3 * 1024 * 1024 } = {}) {
+  const grupos = [];
+  let atual = []; let bytes = 0;
+  for (const xml of xmls) {
+    const n = soTexto(xml).length;
+    if (atual.length && (atual.length >= LIMITES_XML.XMLS_POR_CHAMADA || bytes + n > maxCorpoBytes)) { grupos.push(atual); atual = []; bytes = 0; }
+    atual.push(xml); bytes += n;
+  }
+  if (atual.length) grupos.push(atual);
+  return grupos;
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +315,21 @@ export function criarClienteOms({ baseUrl, clientId, clientSecret, fetchImpl = g
       const erros = validarLote(payload);
       if (erros.length) throw new OmsError({ status: 400, code: 'INVALID_REQUEST', message: 'Lote invalido antes do envio.', details: { erros } });
       const r = await api('POST', '/verumoms/api/v1/logistic/freight-audit/batches', { corpo: payload, timeoutMs: TIMEOUT_ENVIO_MS });
+      return { aceitoAgora: r.status === 202, reenvioIdempotente: r.status === 200, ...(r.corpo || {}) };
+    },
+
+    /**
+     * Envio de XML de CT-e / cancelamento (contrato AMD-Log-envio-de-XML-de-CTe-ao-OMS, v1).
+     * 202 = aceito; 200 = mesmo requestId/corpo (replayed). O resultado vale POR XML (`ctes[].status/code`).
+     * Nunca loga nem devolve o conteudo do XML.
+     */
+    async enviarCtes(payload) {
+      const erros = validarEnvioCtes(payload);
+      if (erros.length) throw new OmsError({ status: 400, code: 'INVALID_REQUEST', message: 'Envio de XML invalido antes da chamada.', details: { erros } });
+      const r = await api('POST', '/verumoms/api/v1/logistic/freight-audit/ctes', {
+        corpo: { requestId: payload.requestId, invoiceId: payload.invoiceId, ctes: payload.ctes.map((c) => ({ xml: c.xml })) },
+        timeoutMs: TIMEOUT_ENVIO_MS,
+      });
       return { aceitoAgora: r.status === 202, reenvioIdempotente: r.status === 200, ...(r.corpo || {}) };
     },
 
