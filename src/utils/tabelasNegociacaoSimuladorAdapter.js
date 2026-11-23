@@ -573,7 +573,9 @@ function adicionarRotaECotacao({ origensMap, tabela, item, rota, generalidades, 
   };
   const origem = adicionarOrigem(origensMap, tabela, origemInfo, generalidades, taxas);
 
-  const rotaKey = [rota.ibgeDestino, rota.nomeRota].join('|');
+  // A faixa de CEP entra na chave: o mesmo IBGE pode ter várias faixas de CEP
+  // (comum no B2C) e cada uma precisa virar uma linha própria na rota/Verum.
+  const rotaKey = [rota.ibgeDestino, rota.nomeRota, rota.cepInicial || '', rota.cepFinal || ''].join('|');
   if (!origem.__rotaKeysVistas.has(rotaKey)) {
     origem.__rotaKeysVistas.add(rotaKey);
     origem.rotas.push({
