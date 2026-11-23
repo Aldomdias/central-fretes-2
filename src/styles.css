@@ -3507,3 +3507,4 @@ button:disabled { opacity: 0.58; cursor: not-allowed; }
 .robo-transp-modo--direto { border-color: #14733b; color: #14733b; font-weight: 700; background: #f0fdf4; }
 .robo-transp-modo--auto { border-color: #2563eb; color: #1d4ed8; }
 .robo-transp-ativo { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+.tracking-od-filtros{display:grid;grid-template-columns:repeat(2,minmax(200px,320px));gap:12px;padding:14px 20px;border-bottom:1px solid var(--border)}@media(max-width:560px){.tracking-od-filtros{grid-template-columns:1fr}}

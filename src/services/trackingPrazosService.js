@@ -1,5 +1,14 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
+export async function carregarPrazosOrigemDestino({ dias = 90, transportadora = '' } = {}) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado para consultar os prazos do Tracking.');
+  const { data, error } = await getSupabaseClient().rpc('rpc_tracking_prazos_origem_destino', {
+    p_dias_historico: Number(dias) || 90, p_transportadora: transportadora || null,
+  });
+  if (error) throw new Error(`Não foi possível carregar origem × destino: ${error.message}`);
+  return data?.linhas || [];
+}
+
 export async function carregarAcompanhamentoPrazos({ dias = 90, transportadora = '', status = '', limite = 200 } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado para consultar os prazos do Tracking.');
   const { data, error } = await getSupabaseClient().rpc('rpc_tracking_acompanhamento_prazos', {
