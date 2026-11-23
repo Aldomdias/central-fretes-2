@@ -185,7 +185,7 @@ export async function carregarEnviosOmsPorFatura(faturaIds = []) {
   if (!ids.length) return mapa;
   for (let i = 0; i < ids.length; i += 200) {
     const { data, error } = await db().from(TABELA)
-      .select('fatura_id,status,oms_status,outcome,sent_to_erp,queued_for_erp_at,blocking_checks,erro,created_at')
+      .select('fatura_id,status,oms_status,outcome,sent_to_erp,queued_for_erp_at,blocking_checks,erro,created_at,enviado_por')
       .in('fatura_id', ids.slice(i, i + 200)).order('created_at', { ascending: false });
     if (error) throw new Error(`Envios ao OMS: ${error.message}`);
     (data || []).forEach((e) => { if (!mapa.has(String(e.fatura_id))) mapa.set(String(e.fatura_id), e); });

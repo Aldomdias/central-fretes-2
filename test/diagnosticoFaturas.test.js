@@ -479,3 +479,19 @@ test('ja enviada ao SAP: fila/enviada pelo OMS ou com data de envio ao ERP', asy
   assert.equal(jaEnviadaAoSap({ fatura: f({ status: 'RECEBIDA' }) }), false);
   assert.equal(jaEnviadaAoSap({ numero: '1' }), false);
 });
+
+test('envio ao OMS: resultado e data local do envio', async () => {
+  const { resultadoEnvioOms, dataLocalIso, dataEnvioOms } = await import('../src/utils/diagnosticoFaturas.js');
+  assert.equal(resultadoEnvioOms(null), '');
+  assert.equal(resultadoEnvioOms({ status: 'enviado', outcome: 'queuedForErp' }), 'FOI');
+  assert.equal(resultadoEnvioOms({ status: 'enviado', outcome: 'alreadyReleased' }), 'FOI');
+  assert.equal(resultadoEnvioOms({ status: 'enviado', sent_to_erp: true }), 'FOI');
+  assert.equal(resultadoEnvioOms({ status: 'recusado' }), 'NAO_FOI');
+  assert.equal(resultadoEnvioOms({ status: 'enviado', outcome: 'blocked' }), 'NAO_FOI');
+  assert.equal(resultadoEnvioOms({ status: 'enviado', oms_status: 'failed' }), 'NAO_FOI');
+  assert.equal(resultadoEnvioOms({ status: 'enviando' }), 'AGUARDANDO');
+  // 01:30 UTC de 24/11 ainda e 23/11 em Brasilia.
+  assert.equal(dataLocalIso('2026-11-24T01:30:00Z'), '2026-11-23');
+  assert.equal(dataEnvioOms({ oms: { created_at: '2026-11-23T15:00:00Z' } }), '2026-11-23');
+  assert.equal(dataEnvioOms({ oms: null }), '');
+});
