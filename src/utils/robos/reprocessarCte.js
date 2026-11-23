@@ -156,6 +156,25 @@ function abrirTransacaoVbs() {
 }
 
 // Script 1 — equivale ao botao "1. Executar" (macro RelatorioChaves) ate a exportacao.
+// Periodo da ZMMCTE_PED_LOG. Sem data final, escolhe "maior ou igual" nas opcoes de selecao (F2): com so a
+// data inicial o SAP filtra SO aquele dia e nao acha os CT-e dos outros dias.
+function periodoVbs(dataInicial, dataFinal) {
+  const opcoes = 'session.findById("wnd[1]/usr/cntlOPTION_CONTAINER/shellcont/shell")';
+  return [
+    `session.findById("wnd[0]/usr/ctxtS_DATA-LOW").Text = ${vbsStr(dataInicial)}`,
+    ...(dataFinal
+      ? [`session.findById("wnd[0]/usr/ctxtS_DATA-HIGH").Text = ${vbsStr(dataFinal)}`]
+      : [
+        'session.findById("wnd[0]/usr/ctxtS_DATA-HIGH").Text = ""',
+        'session.findById("wnd[0]/usr/ctxtS_DATA-LOW").SetFocus',
+        'session.findById("wnd[0]").sendVKey 2',
+        `${opcoes}.currentCellRow = 1`,
+        `${opcoes}.selectedRows = "1"`,
+        `${opcoes}.doubleClickCurrentCell`,
+      ]),
+  ];
+}
+
 export function gerarScriptExportacaoVbs({ dataInicial, dataFinal = '', pasta = PASTA_EXPORTACAO, nomeArquivo = NOME_ARQUIVO_EXPORTACAO } = {}) {
   if (!dataSapValida(dataInicial)) throw new Error('Informe a data inicial.');
   if (dataFinal && !dataSapValida(dataFinal)) throw new Error('Data final invalida.');
@@ -182,19 +201,9 @@ export function gerarScriptExportacaoVbs({ dataInicial, dataFinal = '', pasta = 
     'On Error GoTo 0',
     '',
     ...abrirTransacaoVbs(),
-    `session.findById("wnd[0]/usr/ctxtS_DATA-LOW").Text = ${vbsStr(dataInicial)}`,
     'session.findById("wnd[0]/usr/chkP_ERRO").Selected = False',
     'session.findById("wnd[0]/usr/chkP_TODE").Selected = True',
-    ...(dataFinal
-      ? [`session.findById("wnd[0]/usr/ctxtS_DATA-HIGH").Text = ${vbsStr(dataFinal)}`]
-      : [
-        // Sem data final: "opcoes de selecao" (F2) escolhendo a 1a opcao, como na macro.
-        'session.findById("wnd[0]/usr/ctxtS_DATA-HIGH").Text = ""',
-        'session.findById("wnd[0]").sendVKey 2',
-        'session.findById("wnd[1]/usr/cntlOPTION_CONTAINER/shellcont/shell").currentCellRow = 1',
-        'session.findById("wnd[1]/usr/cntlOPTION_CONTAINER/shellcont/shell").selectedRows = "1"',
-        'session.findById("wnd[1]/usr/cntlOPTION_CONTAINER/shellcont/shell").doubleClickCurrentCell',
-      ]),
+    ...periodoVbs(dataInicial, dataFinal),
     '',
     "' Executa o relatorio",
     'session.findById("wnd[0]/tbar[1]/btn[8]").press',
@@ -260,8 +269,7 @@ export function gerarScriptReprocessarVbs({ chaves = [], dataInicial, dataFinal 
     '',
     'ok = 0 : falhas = 0',
     ...abrirTransacaoVbs(),
-    `session.findById("wnd[0]/usr/ctxtS_DATA-LOW").Text = ${vbsStr(dataInicial)}`,
-    `session.findById("wnd[0]/usr/ctxtS_DATA-HIGH").Text = ${vbsStr(dataFinal)}`,
+    ...periodoVbs(dataInicial, dataFinal),
     '',
     `For i = 0 To ${lotes.length - 1}`,
     '    On Error Resume Next',

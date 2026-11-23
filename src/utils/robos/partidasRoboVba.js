@@ -9,6 +9,7 @@
 
 const GRADE = 'wnd[0]/usr/cntlGRID1/shellcont/shell/shellcont[1]/shell';
 const EXPORT = 'wnd[1]/usr/ssubSUB_CONFIGURATION:SAPLSALV_GUI_CUL_EXPORT_AS:0512';
+const OPCOES = 'wnd[1]/usr/cntlOPTION_CONTAINER/shellcont/shell';
 export const ARQ_SITUACAO = 'SituacaoCTe';
 
 export function declaracoesPartidasVba() {
@@ -21,6 +22,22 @@ export function declaracoesPartidasVba() {
 export function rotinasPartidasVba() {
   const s = (id) => `session.findById("${id}")`;
   return [
+    "' Periodo da ZMMCTE_PED_LOG. Sem data final, troca a opcao para \"maior ou igual\": com so a data inicial",
+    "' preenchida o SAP filtra SO aquele dia e nao acha os CT-e dos outros dias.",
+    'Private Sub PreencherPeriodo()',
+    `    ${s('wnd[0]/usr/ctxtS_DATA-LOW')}.Text = dataIni`,
+    '    If dataFim <> "" Then',
+    `        ${s('wnd[0]/usr/ctxtS_DATA-HIGH')}.Text = dataFim`,
+    '    Else',
+    `        ${s('wnd[0]/usr/ctxtS_DATA-HIGH')}.Text = ""`,
+    `        ${s('wnd[0]/usr/ctxtS_DATA-LOW')}.SetFocus`,
+    `        ${s('wnd[0]')}.sendVKey 2`,
+    `        ${s(OPCOES)}.currentCellRow = 1`,
+    `        ${s(OPCOES)}.selectedRows = "1"`,
+    `        ${s(OPCOES)}.doubleClickCurrentCell`,
+    '    End If',
+    'End Sub',
+    '',
     "' Consulta de novo o log so das chaves trabalhadas e grava a partida de quem ganhou documento de MIRO.",
     "' valoresReserva: Dictionary chave -> valor do CT-e (usado quando a base da Central nao tem o CT-e).",
     'Private Sub GravarPartidas(lista, n, valoresReserva, origem)',
@@ -238,8 +255,7 @@ export function rotinasPartidasVba() {
     '    On Error GoTo Falhou',
     '    passoS = "abrir a transacao"',
     '    AbrirTransacao',
-    `    ${s('wnd[0]/usr/ctxtS_DATA-LOW')}.Text = dataIni`,
-    `    ${s('wnd[0]/usr/ctxtS_DATA-HIGH')}.Text = dataFim`,
+    '    PreencherPeriodo',
     '    passoS = "colar as chaves"',
     '    Copiar txt',
     `    ${s('wnd[0]/usr/btn%_S_CHAVE_%_APP_%-VALU_PUSH')}.press`,

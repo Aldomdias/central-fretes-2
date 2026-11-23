@@ -34,7 +34,6 @@ function assinatura(texto) {
 const FILTRO = 'wnd[1]/usr/subSUB_CONFIGURATION:SAPLSALV_CUL_FILTER_CRITERIA:0600';
 const EXPORT = 'wnd[1]/usr/ssubSUB_CONFIGURATION:SAPLSALV_GUI_CUL_EXPORT_AS:0512';
 const GRADE = 'wnd[0]/usr/cntlGRID1/shellcont/shell/shellcont[1]/shell';
-const OPCOES = 'wnd[1]/usr/cntlOPTION_CONTAINER/shellcont/shell';
 const DYN = 'wnd[2]/usr/ssub%_SUBSCREEN_FREESEL:SAPLSSEL:1105/ctxt%%DYN001-LOW';
 
 function corpoMacro() {
@@ -185,18 +184,9 @@ function corpoMacro() {
     '    passo = "abrir a transacao"',
     '    AbrirTransacao',
     '    passo = "periodo"',
-    `    ${s('wnd[0]/usr/ctxtS_DATA-LOW')}.Text = dataIni`,
     `    ${s('wnd[0]/usr/chkP_ERRO')}.Selected = False`,
     `    ${s('wnd[0]/usr/chkP_TODE')}.Selected = True`,
-    '    If dataFim <> "" Then',
-    `        ${s('wnd[0]/usr/ctxtS_DATA-HIGH')}.Text = dataFim`,
-    '    Else',
-    `        ${s('wnd[0]/usr/ctxtS_DATA-HIGH')}.Text = ""`,
-    `        ${s('wnd[0]')}.sendVKey 2`,
-    `        ${s(OPCOES)}.currentCellRow = 1`,
-    `        ${s(OPCOES)}.selectedRows = "1"`,
-    `        ${s(OPCOES)}.doubleClickCurrentCell`,
-    '    End If',
+    '    PreencherPeriodo',
     '    passo = "executar o relatorio"',
     `    ${s('wnd[0]/tbar[1]/btn[8]')}.press`,
     "    ' sem grade = o relatorio nao trouxe nada no periodo",
@@ -349,8 +339,7 @@ function corpoMacro() {
     '    Registrar "reprocessando " & nChaves & " chave(s) em " & nLotes & " lote(s)"',
     '    On Error Resume Next',
     '    AbrirTransacao',
-    `    ${s('wnd[0]/usr/ctxtS_DATA-LOW')}.Text = dataIni`,
-    `    ${s('wnd[0]/usr/ctxtS_DATA-HIGH')}.Text = dataFim`,
+    '    PreencherPeriodo',
     '    If Err.Number <> 0 Then',
     '        Registrar "ERRO ao abrir a transacao: " & Err.Description',
     '        MsgBox "Falhou ao abrir a " & TRANSACAO & ": " & Err.Description, vbCritical, ROBO',
@@ -391,8 +380,7 @@ function corpoMacro() {
     '            Err.Clear',
     "            ' volta para a tela de selecao para o proximo lote",
     '            AbrirTransacao',
-    `            ${s('wnd[0]/usr/ctxtS_DATA-LOW')}.Text = dataIni`,
-    `            ${s('wnd[0]/usr/ctxtS_DATA-HIGH')}.Text = dataFim`,
+    '            PreencherPeriodo',
     '            Err.Clear',
     '        Else',
     '            ok = ok + 1',
