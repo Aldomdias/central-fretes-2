@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { buscarCnpjRaizesPorNome } from '../services/lotacaoCotacaoService';
+import { CDS_B2C } from '../utils/tabelaPadraoB2c';
 import {
-  cancelarConviteFracionado, carregarRespostasFracionado, excluirConviteFracionado, gerarConviteFracionado,
+  cancelarConviteFracionado, carregarAtendimentoFracionado, carregarRespostasFracionado, excluirConviteFracionado, gerarConviteFracionado,
   linkConviteFracionado, listarConvitesFracionado, listarEnviosFracionado, reabrirConviteFracionado, renovarConviteFracionado,
 } from '../services/fracionadoCotacaoService';
 import {
   CANAIS_FRACIONADO, FAIXAS_PADRAO_FRACIONADO, MODALIDADES_FRACIONADO, REGIOES_FRACIONADO, UFS_FRACIONADO,
-  baixarExcelFracionado, canaisDoConviteFracionado, faixasDoConviteFracionado, parseFaixasFracionado,
+  baixarExcelFracionado, canaisDoConviteFracionado, faixasDoConviteFracionado, origensDoConviteFracionado, parseFaixasFracionado,
 } from '../utils/fracionadoModelo';
 
 const dataBr = (v) => (v ? new Date(v).toLocaleDateString('pt-BR') : '-');
@@ -38,11 +39,16 @@ function Kpi({ titulo, valor, cor, ativo, onClick }) {
   );
 }
 
-function PreviaResposta({ convite, respostas }) {
+function PreviaResposta({ convite, respostas, atendimento }) {
   const canais = canaisDoConviteFracionado(convite);
+  const origens = origensDoConviteFracionado(convite);
   const [canal, setCanal] = useState(canais[0]);
+  const [origem, setOrigem] = useState(origens[0]);
   const pct = convite.modalidade !== 'FAIXA_PESO';
-  const doCanal = respostas.filter((r) => r.canal === canal);
+  const doCanal = respostas.filter((r) => r.canal === canal && (r.origem || '') === origem);
+  const cidades = atendimento.filter((a) => a.canal === canal && (a.origem || '') === origem);
+  const cidadesOk = cidades.filter((a) => a.regiao && a.prazo_dias);
+  const prazoMedio = cidadesOk.length ? cidadesOk.reduce((t, a) => t + Number(a.prazo_dias), 0) / cidadesOk.length : null;
   const g = convite.dados_gerais?.[canal] || {};
   const ufs = new Set(doCanal.map((r) => r.uf_destino));
   const faixas = faixasDoConviteFracionado(convite, canal);
@@ -58,6 +64,14 @@ function PreviaResposta({ convite, respostas }) {
           {canais.map((c) => <button key={c} style={{ ...btnSec, background: c === canal ? '#185FA5' : '#fff', color: c === canal ? '#fff' : '#185FA5' }} onClick={() => setCanal(c)}>{CANAIS_FRACIONADO[c]}</button>)}
         </div>
       )}
+      {origens.length > 1 && (
+        <label style={{ ...lbl, width: 260, marginBottom: 8 }}>Origem
+          <select style={inp} value={origem} onChange={(e) => setOrigem(e.target.value)}>{origens.map((o) => <option key={o} value={o}>{o}</option>)}</select>
+        </label>
+      )}
+      <div style={{ fontSize: 13, marginBottom: 6 }}>
+        <b>{cidadesOk.length}</b> cidades atendidas (com região e prazo) em <b>{new Set(cidadesOk.map((a) => a.uf)).size}</b> UFs{prazoMedio ? <> · prazo médio <b>{prazoMedio.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</b> dias</> : null}
+      </div>
       <div style={{ fontSize: 13, marginBottom: 8 }}>
         <b>{doCanal.length}</b> células · <b>{ufs.size}</b> de {UFS_FRACIONADO.length} UFs ·
         {' '}Prazo {g.prazo ?? '-'} d · GRIS {num(g.gris) || '-'}% · Ad valorem {num(g.advalorem) || '-'}% (mín. R$ {num(g.advalorem_min) || '-'}) · Pedágio {num(g.pedagio) || '-'} · TAS {num(g.tas) || '-'} · TDA {num(g.tda) || '-'} ·
@@ -110,7 +124,7 @@ export default function FracionadoPortalPage() {
 
   const [transportadora, setTransportadora] = useState('');
   const [campanha, setCampanha] = useState('');
-  const [origem, setOrigem] = useState('');
+  const [origensTxt, setOrigensTxt] = useState('');
   const [canal, setCanal] = useState('AMBOS');
   const [modalidade, setModalidade] = useState('PERCENTUAL');
   const [faixasTxt, setFaixasTxt] = useState({ ...FAIXAS_PADRAO_FRACIONADO });
@@ -118,7 +132,7 @@ export default function FracionadoPortalPage() {
   const [ultimo, setUltimo] = useState(null);
 
   const [aberto, setAberto] = useState(null);
-  const [detalhe, setDetalhe] = useState({ respostas: [], envios: [] });
+  const [detalhe, setDetalhe] = useState({ respostas: [], atendimento: [], envios: [] });
 
   const aviso = (texto, tipo = 'ok') => setMsg({ tipo, texto });
 
@@ -148,7 +162,7 @@ export default function FracionadoPortalPage() {
     try {
       const cnpjRaizes = await buscarCnpjRaizesPorNome(transportadora.trim());
       const cv = await gerarConviteFracionado({
-        transportadora: transportadora.trim(), campanha: campanha.trim(), origem: origem.trim(), canal, modalidade, faixas: faixasTxt, dias, cnpjRaizes,
+        transportadora: transportadora.trim(), campanha: campanha.trim(), origens: Array.from(new Set(origensTxt.split(/[\n;]/).map((x) => x.trim()).filter(Boolean))), canal, modalidade, faixas: faixasTxt, dias, cnpjRaizes,
       });
       setUltimo(cv);
       setTransportadora('');
@@ -176,16 +190,18 @@ export default function FracionadoPortalPage() {
     if (aberto?.id === cv.id) { setAberto(null); return; }
     setOcupado(true);
     try {
-      const [respostas, envios] = await Promise.all([carregarRespostasFracionado(cv.id), listarEnviosFracionado(cv.id)]);
-      setDetalhe({ respostas, envios });
+      const [respostas, atendimento, envios] = await Promise.all([carregarRespostasFracionado(cv.id), carregarAtendimentoFracionado(cv.id), listarEnviosFracionado(cv.id)]);
+      setDetalhe({ respostas, atendimento, envios });
       setAberto(cv);
     } catch (e) { aviso(e.message, 'erro'); } finally { setOcupado(false); }
   };
 
-  const exportar = async (cv, canalExp) => {
+  const exportar = async (cv, canalExp, origemExp) => {
     try {
-      const respostas = aberto?.id === cv.id ? detalhe.respostas : await carregarRespostasFracionado(cv.id);
-      await baixarExcelFracionado({ convite: cv, canal: canalExp, respostas });
+      const usa = aberto?.id === cv.id;
+      const respostas = usa ? detalhe.respostas : await carregarRespostasFracionado(cv.id);
+      const atendimento = usa ? detalhe.atendimento : await carregarAtendimentoFracionado(cv.id);
+      await baixarExcelFracionado({ convite: cv, canal: canalExp, origem: origemExp, respostas, atendimento });
     } catch (e) { aviso(`Erro ao exportar: ${e.message}`, 'erro'); }
   };
 
@@ -214,8 +230,12 @@ export default function FracionadoPortalPage() {
               {Object.entries(MODALIDADES_FRACIONADO).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
           </label>
-          <label style={lbl}>Origem / CD (opcional)
-            <input style={inp} value={origem} onChange={(e) => setOrigem(e.target.value)} placeholder="ex.: Itajaí/SC" />
+          <label style={{ ...lbl, gridColumn: 'span 2' }}>Origens / CDs (opcional — uma por linha ou separadas por ;)
+            <textarea style={{ ...inp, minHeight: 54 }} value={origensTxt} onChange={(e) => setOrigensTxt(e.target.value)} placeholder={'Itajaí/SC\nSerra/ES'} />
+            <span style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button type="button" style={btnSec} onClick={() => setOrigensTxt(CDS_B2C.map((cd) => `${cd.label}/${cd.uf}`).join('\n'))}>Usar todos os CDs B2C</button>
+              <small style={{ fontWeight: 400, color: '#64748b' }}>O transportador filtra por origem e preenche a tabela de cada uma. Vazio = tabela única.</small>
+            </span>
           </label>
           <label style={lbl}>Campanha / rótulo (opcional)
             <input style={inp} value={campanha} onChange={(e) => setCampanha(e.target.value)} placeholder="ex.: Reajuste 2027" />
@@ -266,7 +286,7 @@ export default function FracionadoPortalPage() {
                     <td style={{ ...td, fontWeight: 700 }}>{cv.transportadora}</td>
                     <td style={td}>{CANAIS_FRACIONADO[cv.canal] || cv.canal}</td>
                     <td style={td}>{MODALIDADES_FRACIONADO[cv.modalidade] || cv.modalidade}</td>
-                    <td style={td}>{cv.origem || '-'}</td>
+                    <td style={td}>{origensDoConviteFracionado(cv).filter(Boolean).join(', ') || '-'}</td>
                     <td style={td}>{cv.campanha || '-'}</td>
                     <td style={td}><span style={{ background: STATUS_COR[st], color: '#fff', borderRadius: 99, padding: '2px 9px', fontSize: 11, fontWeight: 700 }}>{STATUS_TXT[st]}</span></td>
                     <td style={td}>{dataBr(cv.expira_em)}</td>
@@ -297,12 +317,12 @@ export default function FracionadoPortalPage() {
         <div style={card}>
           <h2 style={h2}>{aberto.transportadora} — {CANAIS_FRACIONADO[aberto.canal]} · {MODALIDADES_FRACIONADO[aberto.modalidade]}</h2>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '8px 0' }}>
-            {canaisDoConviteFracionado(aberto).map((c) => (
-              <button key={c} style={btn} onClick={() => exportar(aberto, c)}>⬇ Excel padrão — {CANAIS_FRACIONADO[c]}</button>
-            ))}
+            {canaisDoConviteFracionado(aberto).flatMap((c) => origensDoConviteFracionado(aberto).map((o) => (
+              <button key={`${c}|${o}`} style={btn} onClick={() => exportar(aberto, c, o)}>⬇ Excel padrão — {CANAIS_FRACIONADO[c]}{o ? ` / ${o}` : ''}</button>
+            )))}
           </div>
-          <small style={{ color: '#64748b' }}>O Excel exportado segue o modelo padrão (FICHA DE CADASTRO + TABELA) e pode ser importado em Importar Template.</small>
-          <PreviaResposta key={aberto.id} convite={aberto} respostas={detalhe.respostas} />
+          <small style={{ color: '#64748b' }}>O Excel exportado segue o modelo padrão (FICHA DE CADASTRO + TABELA + ATENDIMENTO) e pode ser importado em Importar Template.</small>
+          <PreviaResposta key={aberto.id} convite={aberto} respostas={detalhe.respostas} atendimento={detalhe.atendimento} />
           <h3 style={{ margin: '16px 0 4px', fontSize: 15, color: '#06183d' }}>Histórico de envios</h3>
           {detalhe.envios.length ? (
             <table style={{ borderCollapse: 'collapse' }}>

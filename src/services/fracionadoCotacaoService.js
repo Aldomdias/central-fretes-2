@@ -12,15 +12,15 @@ function client() {
 
 function erroMigration(error) {
   if (/does not exist|schema cache|relation/i.test(error?.message || '')) {
-    return new Error('Aplique a migration 20261123_001_fracionado_portal.sql no Supabase.');
+    return new Error('Aplique as migrations 20261123_001_fracionado_portal.sql e 20261123_002_fracionado_atendimento.sql no Supabase.');
   }
   return error;
 }
 
-export async function gerarConviteFracionado({ transportadora, campanha, origem, canal, modalidade, faixas, dias = 5, cnpjRaizes = [], criadoPor }) {
+export async function gerarConviteFracionado({ transportadora, campanha, origens = [], canal, modalidade, faixas, dias = 5, cnpjRaizes = [], criadoPor }) {
   const expira = new Date(Date.now() + Number(dias || 5) * 86400000).toISOString();
   const { data, error } = await client().from('fracionado_convites').insert({
-    transportadora, campanha: campanha || null, origem: origem || null, canal, modalidade,
+    transportadora, campanha: campanha || null, origens: origens.length ? origens : null, origem: origens[0] || null, canal, modalidade,
     faixas: modalidade === 'FAIXA_PESO' ? faixas : null, cnpj_raizes: cnpjRaizes, expira_em: expira, criado_por: criadoPor || null,
   }).select().single();
   if (error) throw erroMigration(error);
@@ -37,6 +37,17 @@ export async function carregarRespostasFracionado(conviteId) {
   const out = [];
   for (let from = 0; ; from += 1000) {
     const { data, error } = await client().from('fracionado_respostas').select('*').eq('convite_id', conviteId).order('id').range(from, from + 999);
+    if (error) throw error;
+    out.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return out;
+}
+
+export async function carregarAtendimentoFracionado(conviteId) {
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await client().from('fracionado_atendimento').select('*').eq('convite_id', conviteId).order('id').range(from, from + 999);
     if (error) throw error;
     out.push(...(data || []));
     if (!data || data.length < 1000) break;

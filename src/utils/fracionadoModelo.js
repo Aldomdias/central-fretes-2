@@ -42,65 +42,29 @@ export function faixasDoConviteFracionado(convite, canal) {
   return f.length ? f : parseFaixasFracionado(FAIXAS_PADRAO_FRACIONADO[canal]);
 }
 
-const n = (v) => (v === null || v === undefined || v === '' ? '' : Number(v));
+export function origensDoConviteFracionado(convite) {
+  const l = Array.isArray(convite?.origens) ? convite.origens.map((x) => String(x || '').trim()).filter(Boolean) : [];
+  return l.length ? l : [String(convite?.origem || '').trim()];
+}
 
-// Gera (e baixa) o Excel de UM canal no layout padrao. respostas = linhas de fracionado_respostas do canal.
-export async function baixarExcelFracionado({ convite, canal, respostas }) {
+// Gera (e baixa) o Excel de UM canal e UMA origem no layout padrao (FICHA + TABELA + ATENDIMENTO).
+// respostas / atendimento = linhas de fracionado_respostas / fracionado_atendimento do convite.
+export async function baixarExcelFracionado({ convite, canal, origem = '', respostas, atendimento }) {
   const { default: XS } = await import('xlsx-js-style');
-  const pct = convite.modalidade !== 'FAIXA_PESO';
-  const g = convite.dados_gerais?.[canal] || {};
-  const R = REGIOES_FRACIONADO;
-  const faixas = faixasDoConviteFracionado(convite, canal);
+  const { montarPlanilhaFracionado } = await import('../../api/_fracionadoExcel.mjs');
   const mapa = new Map();
-  (respostas || []).filter((r) => r.canal === canal).forEach((r) => mapa.set(`${r.uf_destino}|${r.regiao}|${r.faixa || ''}`, r));
-
-  const ficha = [
-    ['FICHA DE CADASTRO', ''], ['Transportadora', convite.transportadora], ['CNPJ', convite.respondente_cnpj || ''],
-    ['Canal', canal], ['Origem', convite.origem || ''], ['Prazo médio (dias)', g.prazo ?? ''], ['GRIS (%)', g.gris ?? ''],
-    ['Ad valorem mínimo (R$)', g.advalorem_min ?? ''], ['Ad valorem (%)', g.advalorem ?? ''], ['Pedágio (R$)', g.pedagio ?? ''],
-    ['TAS (R$)', g.tas ?? ''], ['TDA (R$)', g.tda ?? ''], ['ICMS incluso nos valores (SIM ou NAO)', g.icms_incluso || ''], ['Vigência a partir de', g.vigencia || ''],
-  ];
-  const aoa = [];
-  const merges = [];
-  let cols;
-  if (pct) {
-    const r0 = ['']; const r1 = ['ESTADO DESTINO'];
-    R.forEach((r, i) => { r0.push(r, ''); r1.push('FRETE (%)', 'MÍNIMO (R$)'); merges.push({ s: { r: 0, c: 1 + i * 2 }, e: { r: 0, c: 2 + i * 2 } }); });
-    aoa.push(r0, r1, []);
-    UFS_FRACIONADO.forEach((uf) => {
-      const row = [uf];
-      R.forEach((r) => { const x = mapa.get(`${uf}|${r}|`); row.push(n(x?.frete_percentual), n(x?.frete_minimo)); });
-      aoa.push(row);
-    });
-    cols = [{ wch: 16 }, ...R.flatMap(() => [{ wch: 12 }, { wch: 13 }])];
-  } else {
-    const r0 = ['', '']; const r1 = ['ESTADO DESTINO', 'FAIXA PESO'];
-    R.forEach((r, i) => { r0.push(r, '', ''); r1.push('FRETE (R$)', 'AD VALOREM (%)', 'AD VALOREM MÍNIMO (R$)'); merges.push({ s: { r: 0, c: 2 + i * 3 }, e: { r: 0, c: 4 + i * 3 } }); });
-    aoa.push(r0, r1);
-    UFS_FRACIONADO.forEach((uf) => faixas.forEach((f) => {
-      const row = [uf, f.label];
-      R.forEach((r) => {
-        const x = mapa.get(`${uf}|${r}|${f.label}`);
-        row.push(n(x?.frete_valor), f.max == null ? '' : n(g.advalorem), f.max == null ? '' : n(g.advalorem_min));
-      });
-      aoa.push(row);
-    }));
-    cols = [{ wch: 16 }, { wch: 20 }, ...R.flatMap(() => [{ wch: 12 }, { wch: 14 }, { wch: 16 }])];
-  }
-  const ws = XS.utils.aoa_to_sheet(aoa);
-  const wf = XS.utils.aoa_to_sheet(ficha);
-  ws['!merges'] = merges; ws['!cols'] = cols; wf['!cols'] = [{ wch: 38 }, { wch: 30 }];
-  const hd = { font: { bold: true, color: { rgb: 'FFFFFF' } }, fill: { patternType: 'solid', fgColor: { rgb: '1E3A5F' } }, alignment: { horizontal: 'center', vertical: 'center', wrapText: true } };
-  for (let r = 0; r < 2; r += 1) for (let c = 0; c < cols.length; c += 1) {
-    const a = XS.utils.encode_cell({ r, c });
-    if (!ws[a]) ws[a] = { t: 's', v: '' };
-    ws[a].s = hd;
-  }
-  ficha.forEach((_, q) => { const a = XS.utils.encode_cell({ r: q, c: 0 }); if (wf[a]) wf[a].s = { font: { bold: true } }; });
-  ws['!views'] = [{ state: 'frozen', xSplit: pct ? 1 : 2, ySplit: 2 }];
-  const wb = XS.utils.book_new();
-  XS.utils.book_append_sheet(wb, wf, 'FICHA DE CADASTRO');
-  XS.utils.book_append_sheet(wb, ws, 'TABELA');
-  const nome = String(convite.transportadora || 'transportadora').replace(/[^a-z0-9]+/gi, '-');
-  XS.writeFile(wb, `tabela-fracionado-${pct ? 'percentual' : 'faixa-peso'}-${canal.toLowerCase()}-${nome}.xlsx`);
+  (respostas || []).filter((r) => r.canal === canal && (r.origem || '') === origem)
+    .forEach((r) => mapa.set(`${r.uf_destino}|${r.regiao}|${r.faixa || ''}`, r));
+  const cidades = (atendimento || []).filter((a) => a.canal === canal && (a.origem || '') === origem)
+    .sort((a, b) => (a.uf === b.uf ? a.cidade.localeCompare(b.cidade, 'pt-BR') : a.uf.localeCompare(b.uf)))
+    .map((a) => ({ ibge: a.ibge, uf: a.uf, cidade: a.cidade, regiao: a.regiao || '', prazo: a.prazo_dias, tda: a.tda, trt: a.trt, suframa: a.suframa, outras: a.outras_taxas }));
+  const pct = convite.modalidade !== 'FAIXA_PESO';
+  const wb = montarPlanilhaFracionado(XS, {
+    transportadora: convite.transportadora, cnpj: convite.respondente_cnpj || '', canal, origem, modalidade: convite.modalidade,
+    faixas: faixasDoConviteFracionado(convite, canal), ufs: UFS_FRACIONADO, regioes: REGIOES_FRACIONADO,
+    gerais: convite.dados_gerais?.[canal] || {}, cidades,
+    valor: (uf, rg, fl) => { const x = mapa.get(`${uf}|${rg}|${fl}`); return x ? { p: x.frete_percentual, m: x.frete_minimo, v: x.frete_valor } : null; },
+  });
+  const slug = (t) => String(t || '').replace(/[^a-z0-9]+/gi, '-');
+  XS.writeFile(wb, `tabela-fracionado-${pct ? 'percentual' : 'faixa-peso'}-${canal.toLowerCase()}${origem ? `-${slug(origem)}` : ''}-${slug(convite.transportadora)}.xlsx`);
 }
