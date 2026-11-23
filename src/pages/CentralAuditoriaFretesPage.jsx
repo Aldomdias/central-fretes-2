@@ -46,6 +46,7 @@ import { omsInvoiceIdValido } from '../utils/omsEnvioPuro';
 import { STATUS_LIBERADAS_OMS, aptidaoEnvioSap } from '../utils/diagnosticoFaturas';
 import { carregarResumoCtesFaturas } from '../services/diagnosticoFaturasService';
 import OmsCtesFaltantesPanel from '../components/OmsCtesFaltantesPanel';
+import { guardarXmlsOriginais, montarRegistroXml } from '../services/cteXmlOriginalService';
 import { importarIdsOmsDaPlanilha, resumirImportacaoIds } from '../services/omsIdFaturasService';
 import { ROTULO_ENVIO_OMS, atualizarEnvioOms, estadoEnvioOms, faturasComMesmoCte, listarEnviosOms, liberarFaturaNoOms, liberarNoOmsAposAprovacao } from '../services/omsFaturasEnvioService';
 import AlertaBloqueioOms from '../components/AlertaBloqueioOms';
@@ -3263,6 +3264,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         && !window.confirm(`O XML é do CT-e ${cte.numero_cte}, mas a linha é do CT-e ${item.numero_cte}. Importar mesmo assim?`)) return;
       const canal = String(item.canal || fatura.canal || '').trim();
       const gravado = await importarCteXmlNaBase(cte, { canal: /^(ATACADO|B2C|AMBOS)$/i.test(canal) ? canal.toUpperCase() : '' });
+      // Guarda o arquivo ORIGINAL (bytes intactos) para enviar depois ao OMS; falha aqui nao desfaz a importacao.
+      montarRegistroXml(arquivo, cte).then((r) => guardarXmlsOriginais([r])).catch(() => {});
       if (!item.chave_cte) await atualizarDetalheManual(item, { chave_cte: cte.chave_cte });
       const nova = await buscarReferenciaCtes([cte.chave_cte, cte.numero_cte], { lancarErro: true });
       setReferenciaCtes((atual) => {

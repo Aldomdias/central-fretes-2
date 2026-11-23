@@ -495,3 +495,13 @@ test('envio ao OMS: resultado e data local do envio', async () => {
   assert.equal(dataEnvioOms({ oms: { created_at: '2026-11-23T15:00:00Z' } }), '2026-11-23');
   assert.equal(dataEnvioOms({ oms: null }), '');
 });
+
+test('resultado do envio OMS: erro/recusa com fatura ja lancada (partida) conta como "Foi"', async () => {
+  const { resultadoEnvioOms } = await import('../src/utils/diagnosticoFaturas.js');
+  const erro = { status: 'recusado' };
+  assert.equal(resultadoEnvioOms(erro), 'NAO_FOI');
+  assert.equal(resultadoEnvioOms(erro, { partida: '1900001234' }), 'FOI');
+  assert.equal(resultadoEnvioOms(erro, { data_envio_erp: '2026-11-20' }), 'FOI');
+  assert.equal(resultadoEnvioOms(erro, { status: 'EM_ABERTO' }), 'NAO_FOI');
+  assert.equal(resultadoEnvioOms(null, { partida: '1' }), '');
+});

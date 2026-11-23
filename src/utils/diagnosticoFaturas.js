@@ -550,9 +550,12 @@ export const dataEnvioOms = (l) => dataLocalIso(l?.oms?.created_at);
 // Resultado do ultimo envio ao OMS: FOI (OMS liberou: fila do SAP ou ja lida pelo SAP), NAO_FOI (recusado,
 // bloqueado por trava do OMS ou falha) ou AGUARDANDO (enviado, sem resposta final ainda). '' = sem envio.
 export const ROTULO_RESULTADO_ENVIO_OMS = { FOI: 'Foi para o SAP', AGUARDANDO: 'Aguardando o OMS', NAO_FOI: 'Não foi (erro/recusa)' };
-export function resultadoEnvioOms(envio) {
+// Com a fatura: se o SAP ja trouxe partida/lancamento (ou ha data de envio ao ERP), ela foi lancada mesmo que o
+// ultimo envio tenha ficado com erro/recusa/sem resposta (ex.: lancada por outro caminho): conta como FOI.
+export function resultadoEnvioOms(envio, fatura = null) {
   if (!envio) return '';
   if (envio.sent_to_erp || envio.outcome === 'queuedForErp' || envio.outcome === 'alreadyReleased') return 'FOI';
+  if (fatura && (faturaLancada(fatura) || enviadaErp(fatura))) return 'FOI';
   if (envio.outcome === 'blocked' || ['recusado', 'erro'].includes(envio.status) || envio.oms_status === 'failed') return 'NAO_FOI';
   return 'AGUARDANDO';
 }

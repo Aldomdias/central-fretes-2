@@ -4,6 +4,7 @@ import BaseCtesStatus, { invalidarStatusBaseCtes } from '../components/BaseCtesS
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import { parseRealizadoCtesFile } from '../utils/realizadoCtes';
 import { lerCteXml } from '../utils/cteXml';
+import { guardarXmlsOriginais, montarRegistroXml } from '../services/cteXmlOriginalService';
 import { registrarImportacao } from '../services/importacoesStatusService';
 import {
   competenciaPrecisaEnxuta,
@@ -2396,6 +2397,7 @@ export default function CtePage({ transportadoras = [], somenteImportacao = fals
     if (!transportadoraXml) throw new Error('Selecione a transportadora dos XMLs.');
     const lidos = [];
     const falhas = [];
+    const paraGuardar = [];
     for (let index = 0; index < arquivosXmlUpload.length; index += 1) {
       const arquivo = arquivosXmlUpload[index];
       setProgressoUpload({
@@ -2405,6 +2407,7 @@ export default function CtePage({ transportadoras = [], somenteImportacao = fals
       });
       try {
         const row = lerCteXml(await arquivo.text(), arquivo.name);
+        try { paraGuardar.push(await montarRegistroXml(arquivo, row)); } catch { /* sem guardar o original */ }
         lidos.push({
           ...row,
           transportadora: transportadoraXml.nome,
@@ -2416,6 +2419,8 @@ export default function CtePage({ transportadoras = [], somenteImportacao = fals
     }
     setFalhasXmlUpload(falhas);
     if (!lidos.length) throw new Error('Nenhum XML de CT-e válido foi encontrado no lote.');
+    // Guarda os XMLs ORIGINAIS (bytes intactos) para enviar depois ao OMS; best-effort.
+    guardarXmlsOriginais(paraGuardar).catch(() => {});
     const registros = aplicarPoliticaBaseCte(lidos, opcoesPoliticaCte);
     const aceitos = new Set(registros.map((row) => row.chave_cte || row.chaveCte));
     const ignorados = lidos.filter((row) => !aceitos.has(row.chave_cte || row.chaveCte));

@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { consultarCtesFaltantes, enviarArquivosCte } from '../services/omsFaturasService';
+import { consultarCtesFaltantes, enviarArquivosCte, enviarItensXml } from '../services/omsFaturasService';
+import { buscarXmlsParaLinhas, marcarEnviadosAoOms } from '../services/cteXmlOriginalService';
 
 const ROTULO_IMPORT = { queued: 'na fila', processing: 'processando', imported: 'gravado', failed: 'falhou' };
 const ROTULO_ENVIO = { queued: 'na fila do OMS', alreadyExists: 'OMS já tem (ok)', rejected: 'recusado', erro: 'erro na chamada' };
@@ -35,6 +36,21 @@ export default function OmsCtesFaltantesPanel({ invoiceId }) {
     } catch (e) { setMsg(`OMS: ${e.message}`); } finally { setOcupado(false); }
   }
 
+  async function enviarGuardados() {
+    setOcupado(true); setResultado([]); setMsg('Procurando XMLs guardados na base...');
+    try {
+      const achados = await buscarXmlsParaLinhas(faltantes || []);
+      if (!achados.length) { setMsg('Nenhum XML guardado casa com as linhas sem CT-e. Envie os arquivos manualmente.'); return; }
+      const itens = achados.map((a) => ({ nome: a.nome_arquivo || a.chave_cte, chave: a.chave_cte, xml: a.xml_base64 }));
+      const r = await enviarItensXml(invoiceId, itens, { aoProgredir: (n, t) => setMsg(`Enviados ${n} de ${t}...`) });
+      setResultado(r);
+      await marcarEnviadosAoOms(r.filter((x) => x.status === 'queued' || x.status === 'alreadyExists').map((x) => x.chave).filter(Boolean));
+      const rec = r.filter((x) => x.status === 'rejected' || x.status === 'erro').length;
+      setMsg(`${achados.length} XML(s) guardado(s) enviado(s)${rec ? `; ${rec} não aceito(s), veja o motivo abaixo` : ''}. Atualize a lista para acompanhar a gravação.`);
+      await atualizar();
+    } catch (e) { setMsg(`OMS: ${e.message}`); } finally { setOcupado(false); }
+  }
+
   return (
     <div className="hint-box compact" style={{ marginTop: 8 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -51,6 +67,7 @@ export default function OmsCtesFaltantesPanel({ invoiceId }) {
               Enviar XMLs originais
               <input type="file" accept=".xml,text/xml,application/xml" multiple disabled={ocupado} onChange={enviar} style={{ display: 'none' }} />
             </label>
+            <button className="btn-primary" disabled={ocupado || !faltantes?.length} onClick={enviarGuardados} title="Usa os XMLs originais guardados quando o CT-e foi importado na base">Enviar XMLs guardados</button>
             {estado && <span>Situação da fatura no OMS: {estado}</span>}
           </div>
           <p style={{ margin: '0 0 8px', fontSize: 12 }}>

@@ -476,7 +476,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       if (filtros.omsEnvioDe && env < filtros.omsEnvioDe) return false;
       if (filtros.omsEnvioAte && env > filtros.omsEnvioAte) return false;
     }
-    if (filtros.omsResultado && resultadoEnvioOms(l.oms) !== filtros.omsResultado) return false;
+    if (filtros.omsResultado && resultadoEnvioOms(l.oms, l.fatura) !== filtros.omsResultado) return false;
     // Tira da lista (e dos cards/totais) o que ja foi para o SAP.
     if (filtros.ocultarEnviadasSap && jaEnviadaAoSap(l)) return false;
     return true;
@@ -496,7 +496,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       return Boolean(env) && (!periodoOms.de || env >= periodoOms.de) && (!periodoOms.ate || env <= periodoOms.ate);
     });
     const soma = (ls) => ({ qtd: ls.length, valor: ls.reduce((s, l) => s + valorDaLinha(l), 0) });
-    const por = (r) => soma(noPeriodo.filter((l) => resultadoEnvioOms(l.oms) === r));
+    const por = (r) => soma(noPeriodo.filter((l) => resultadoEnvioOms(l.oms, l.fatura) === r));
     const pendentes = linhas.filter((l) => l.fatura && !ehOculta(l) && passaFiltros(l, { ignorarEnvioOms: true }));
     return {
       total: soma(noPeriodo), FOI: por('FOI'), AGUARDANDO: por('AGUARDANDO'), NAO_FOI: por('NAO_FOI'),
@@ -1005,7 +1005,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             f ? Number(f.valor_fatura || 0) : '', l.valorLista ?? '', l.vencimentoLista || '', f ? nomeStatus(f.status) : '', f ? Number(f.ctes_auditados || 0) : '', f ? Number(f.ctes_totais || 0) : '',
             resultadoAuditoria(f)?.rotulo || '', f ? resultadoAuditoria(f).diferenca : '', resultadoAuditoria(f)?.motivo || '',
             f ? (faturaLancada(f) ? 'Sim' : 'Não') : '', f?.partida || '', f?.lancamento_financeiro || '', f?.data_envio_erp || '', f ? ROTULO_ENVIO_ERP[situacaoEnvioErp(l)] : '', l.ctes ? l.ctes.lancados : '', l.ctes ? l.ctes.semPartida.length : '', l.ctes ? l.ctes.valorSemPartida : '',
-            f?.oms_invoice_id || '', ROTULO_OMS[situacaoOms(l)] || '', dataHoraBr(l.oms?.created_at), l.oms?.enviado_por || '', ROTULO_RESULTADO_ENVIO_OMS[resultadoEnvioOms(l.oms)] || '', situacaoOms(l) === 'BLOQUEADA_PARTIDA' ? aptidaoEnvioSap(l.ctes).mensagem : '',
+            f?.oms_invoice_id || '', ROTULO_OMS[situacaoOms(l)] || '', dataHoraBr(l.oms?.created_at), l.oms?.enviado_por || '', ROTULO_RESULTADO_ENVIO_OMS[resultadoEnvioOms(l.oms, l.fatura)] || '', situacaoOms(l) === 'BLOQUEADA_PARTIDA' ? aptidaoEnvioSap(l.ctes).mensagem : '',
             textoPagamentoLinha(l), f?.data_pagamento || '', f?.valor_pago != null ? Number(f.valor_pago) : '', f ? l.auditor : '', proximaAcao(l),
             agrupamentoManual(f) ? (faturaLancada(f) ? 'Já agrupada' : 'A enviar') : '', agrupamentoManual(f) ? (f.agrupamento_manual_por || '') : '',
             ROTULO_ETAPA_FENIX[etapaFenix(l)] || '', f?.fenix_enviado_em ? String(f.fenix_enviado_em).slice(0, 10) : '', f?.fenix_enviado_por || '', f?.fenix_retorno_em ? String(f.fenix_retorno_em).slice(0, 10) : '',

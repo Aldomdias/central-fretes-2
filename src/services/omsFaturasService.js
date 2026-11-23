@@ -94,6 +94,11 @@ export function enviarCtesXml({ invoiceId, xmls, requestId = crypto.randomUUID()
 export async function enviarArquivosCte(invoiceId, arquivos, { aoProgredir } = {}) {
   const itens = [];
   for (const a of arquivos) itens.push({ nome: a.name, xml: await arquivoParaBase64(a) });
+  return enviarItensXml(invoiceId, itens, { aoProgredir });
+}
+
+/** Mesmo envio, para XMLs ja em Base64 (ex.: guardados na base): itens = [{ nome, xml, ...extra }]. */
+export async function enviarItensXml(invoiceId, itens, { aoProgredir } = {}) {
   const grupos = [];
   let atual = []; let bytes = 0;
   for (const it of itens) {
@@ -108,10 +113,10 @@ export async function enviarArquivosCte(invoiceId, arquivos, { aoProgredir } = {
       const r = await enviarCtesXml({ invoiceId, xmls: g.map((x) => x.xml) });
       g.forEach((x, i) => {
         const c = (r.ctes || []).find((y) => y.index === i) || {};
-        saida.push({ nome: x.nome, status: c.status || 'erro', code: c.code || null, message: c.message || null, cteKey: c.cteKey || null });
+        saida.push({ nome: x.nome, chave: x.chave || null, status: c.status || 'erro', code: c.code || null, message: c.message || null, cteKey: c.cteKey || null });
       });
     } catch (e) {
-      g.forEach((x) => saida.push({ nome: x.nome, status: 'erro', code: e.code || null, message: e.message, cteKey: null }));
+      g.forEach((x) => saida.push({ nome: x.nome, chave: x.chave || null, status: 'erro', code: e.code || null, message: e.message, cteKey: null }));
     }
     aoProgredir?.(saida.length, itens.length);
   }
