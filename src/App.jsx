@@ -8,6 +8,7 @@ import FormatacaoPage from './pages/FormatacaoPage';
 import ImportarTemplatePage from './pages/ImportarTemplatePage';
 import ImportacaoIaTabelasPage from './pages/ImportacaoIaTabelasPage';
 import GestaoTabelasLotacaoPage from './pages/GestaoTabelasLotacaoPage';
+import FracionadoPortalPage from './pages/FracionadoPortalPage';
 import TransgpAuditoriaPage from './pages/TransgpAuditoriaPage';
 import LotacaoOperacaoPage from './pages/LotacaoOperacaoPage';
 import LotacaoAuditoriaPage from './pages/LotacaoAuditoriaPage';
@@ -67,7 +68,7 @@ const PAGINAS_PERMITIDAS = [
   'dashboard', 'conceito-app', 'simulador', 'simulador-reversa', 'tabelas-negociacao', 'cte', 'cte-origem-destino', 'auditoria-cte', 'tracking', 'tracking-prazos',
   'torre-controle', 'reajustes', 'avaliacao-prazos', 'importacao', 'formatacao', 'importar-template',
   'importacao-ia-tabelas',
-  'lotacao', 'lotacao-cotacao', 'lotacao-operacao', 'lotacao-transgp', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
+  'lotacao', 'lotacao-cotacao', 'fracionado-portal', 'lotacao-operacao', 'lotacao-transgp', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
   'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'prazo-pagamento',
   'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'tabela-padrao-b2c', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
   'icms-uf', 'auditoria-ecommerce', 'usuarios-ativos',
@@ -231,6 +232,7 @@ export default function App() {
     'prazo-pagamento': <PrazoPagamentoPage />,
     lotacao: <GestaoTabelasLotacaoPage abaInicial="tabelas" podeAcessar={(pagina) => usuarioTemAcesso(sessao, pagina)} />,
     'lotacao-cotacao': <GestaoTabelasLotacaoPage abaInicial="cotacao" podeAcessar={(pagina) => usuarioTemAcesso(sessao, pagina)} />,
+    'fracionado-portal': <FracionadoPortalPage />,
     'lotacao-operacao': <LotacaoOperacaoPage onRespostaConcluida={() => mudarPagina('lotacao-auditoria')} />,
     'lotacao-auditoria': <LotacaoAuditoriaPage />,
     'lotacao-transgp': <TransgpAuditoriaPage />,

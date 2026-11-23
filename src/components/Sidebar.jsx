@@ -16,6 +16,7 @@ export const MENU_GRUPOS = [
       { chave: 'simulador-reversa', label: 'Simulador Reversa' },
       { chave: 'produtos-catalogo', label: 'Catalogo de produtos' },
       { chave: 'tabelas-negociacao', label: 'Negociacoes' },
+      { chave: 'fracionado-portal', label: 'Portal tabelas fracionado' },
       { chave: 'reajustes', label: 'Reajustes' },
       { chave: 'perda-realizado', label: 'Perda por transportadora' },
       { chave: 'oportunidade-origem', label: 'Oportunidade por origem' },
