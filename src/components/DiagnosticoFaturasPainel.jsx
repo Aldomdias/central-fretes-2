@@ -1239,8 +1239,11 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               {[['Hoje', hojeIso, hojeIso], ['Ontem', somarDias(hojeIso, -1), somarDias(hojeIso, -1)], ['Últimos 7 dias', somarDias(hojeIso, -6), hojeIso]].map(([rotulo, de, ate]) => (
                 <button key={rotulo} type="button" className={periodoOmsAtivo && filtros.omsEnvioDe === de && filtros.omsEnvioAte === ate ? 'btn-primary' : 'btn-secondary'} onClick={() => filtrarEnvioOms(de, ate, filtros.omsResultado)}>{rotulo}</button>
               ))}
-              <label className="compact" style={{ display: 'flex', gap: 4, alignItems: 'center' }}>Dia
-                <input type="date" value={periodoOmsAtivo && filtros.omsEnvioDe === filtros.omsEnvioAte ? filtros.omsEnvioDe : ''} onChange={(e) => (e.target.value ? filtrarEnvioOms(e.target.value, e.target.value, filtros.omsResultado) : limparEnvioOms())} aria-label="Dia do envio ao OMS" />
+              <label className="compact" style={{ display: 'flex', gap: 4, alignItems: 'center' }} title="Envios a partir deste dia (pode deixar o 'até' vazio)">De
+                <input type="date" value={filtros.omsEnvioDe} max={filtros.omsEnvioAte || undefined} onChange={(e) => filtrarEnvioOms(e.target.value, filtros.omsEnvioAte, filtros.omsResultado)} aria-label="Enviada ao OMS a partir de" />
+              </label>
+              <label className="compact" style={{ display: 'flex', gap: 4, alignItems: 'center' }} title="Envios até este dia (pode deixar o 'de' vazio)">até
+                <input type="date" value={filtros.omsEnvioAte} min={filtros.omsEnvioDe || undefined} onChange={(e) => filtrarEnvioOms(filtros.omsEnvioDe, e.target.value, filtros.omsResultado)} aria-label="Enviada ao OMS até" />
               </label>
               {(periodoOmsAtivo || filtros.omsResultado) && <button type="button" className="btn-secondary" onClick={limparEnvioOms}>× Tirar filtro de envio</button>}
             </div>
