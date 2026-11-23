@@ -24,12 +24,17 @@ export const ROTULO_ENVIO_OMS = {
   blocked: 'Bloqueada no OMS',
   erro: 'Falha no envio ao OMS',
   recusado: 'Recusada pelo OMS',
+  naoEnviado: 'Não enviada ao OMS',
 };
+
+/** Registro de tentativa barrada antes de chamar o OMS (sem Id, partida, trava, ja liberada): nao tem corpo para reenviar. */
+export const envioSemTransmissao = (envio) => String(envio?.request_id || '').startsWith('pre-');
 
 /** Estado exibido ao auditor, a partir do registro gravado. */
 export function estadoEnvioOms(envio) {
   if (!envio) return null;
   if (envio.sent_to_erp) return 'sentToErp';
+  if (envioSemTransmissao(envio) && envio.status === 'recusado' && !envio.outcome) return 'naoEnviado';
   if (envio.outcome) return envio.outcome === 'treated' ? 'enviado' : envio.outcome;
   if (envio.oms_status === 'failed') return 'erro';
   return envio.status || 'enviando';
@@ -85,12 +90,50 @@ async function transmitir(envio, nomeAuditor) {
 }
 
 /**
+ * Registra uma tentativa que parou ANTES de chamar o OMS (sem Id, partidas pendentes, trava do OMS, ja liberada...).
+ * Sem esse registro a fatura sumia do quadro "Envios ao OMS" do Diagnostico e o erro nao aparecia para tratar.
+ * status 'recusado' (ou 'enviado' sem lote, quando ja liberada) fica fora do cron de reenvio (proximaAcao = null)
+ * e da trava do robo. Nunca lanca: falha ao registrar nao muda o resultado do envio.
+ */
+async function registrarTentativaSemEnvio({ fatura, nomeAuditor, status = 'recusado', erro = null, outcome = null, sentToErp = false }) {
+  try {
+    const sufixo = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const agora = new Date().toISOString();
+    const { data, error } = await db().from(TABELA).insert({
+      fatura_id: fatura.id,
+      oms_invoice_id: String(fatura.oms_invoice_id || '').toLowerCase(),
+      request_id: `pre-${sufixo}`,
+      payload: {},
+      approved_charge_value: Number(fatura.valor_fatura || 0) || null,
+      status,
+      oms_status: outcome ? 'done' : null,
+      outcome,
+      blocking_checks: erro?.blockingChecks || null,
+      sent_to_erp: sentToErp,
+      sent_to_erp_visto_em: sentToErp ? agora : null,
+      queued_for_erp_at: outcome === 'alreadyReleased' && !sentToErp ? agora : null,
+      erro: erro ? { code: erro.code || null, message: erro.message || null, acao: 'Corrija e use "Enviar ao OMS" de novo.' } : null,
+      enviado_por: nomeAuditor || null,
+    }).select('*').single();
+    if (error) throw error;
+    return data;
+  } catch (e) {
+    console.warn('[oms] tentativa sem envio nao registrada:', e?.message || e);
+    return null;
+  }
+}
+
+/**
  * Libera a fatura no OMS. Retorna { resultado, envio?, mensagem }.
  * resultado: sem_id | sem_partida | ja_liberada | bloqueada | enviado | pendente | recusado
+ * Toda tentativa fica registrada em fatura_oms_envios (inclusive as barradas antes do OMS), para aparecer no Diagnostico.
  */
 export async function liberarFaturaNoOms({ fatura, nomeAuditor }) {
+  const registrar = (campos) => registrarTentativaSemEnvio({ fatura, nomeAuditor, ...campos });
   if (!omsInvoiceIdValido(fatura?.oms_invoice_id)) {
-    return { resultado: 'sem_id', mensagem: 'Fatura sem Id do OMS: reimporte a planilha de faturas da Verum (coluna "Id") para enviar ao SAP.' };
+    const mensagem = 'Fatura sem Id do OMS: reimporte a planilha de faturas da Verum (coluna "Id") para enviar ao SAP.';
+    const envio = await registrar({ erro: { code: 'SEM_ID_OMS', message: mensagem } });
+    return { resultado: 'sem_id', envio, mensagem };
   }
   const omsInvoiceId = String(fatura.oms_invoice_id).toLowerCase();
 
@@ -101,23 +144,37 @@ export async function liberarFaturaNoOms({ fatura, nomeAuditor }) {
     const resumo = (await carregarResumoCtesFaturas([fatura.id])).get(String(fatura.id));
     aptidao = aptidaoEnvioSap(resumo);
   } catch (e) {
-    return { resultado: 'sem_partida', pendentes: [], mensagem: `Não enviada ao OMS: não foi possível conferir as partidas dos CT-es (${e.message}). Use "Enviar ao OMS" depois.` };
+    const mensagem = `Não enviada ao OMS: não foi possível conferir as partidas dos CT-es (${e.message}). Use "Enviar ao OMS" depois.`;
+    const envio = await registrar({ erro: { code: 'PARTIDAS_NAO_CONFERIDAS', message: mensagem } });
+    return { resultado: 'sem_partida', envio, pendentes: [], mensagem };
   }
   if (!aptidao.apta) {
-    return { resultado: 'sem_partida', pendentes: aptidao.pendentes, mensagem: `Não enviada ao OMS: ${aptidao.mensagem} Atualize no SAP e use "Enviar ao OMS" na fatura.` };
+    const mensagem = `Não enviada ao OMS: ${aptidao.mensagem} Atualize no SAP e use "Enviar ao OMS" na fatura.`;
+    const envio = await registrar({ erro: { code: 'PARTIDA_PENDENTE', message: mensagem } });
+    return { resultado: 'sem_partida', envio, pendentes: aptidao.pendentes, mensagem };
   }
 
   // Situacao antes de liberar (5.3). Falha na consulta nao impede o envio: o lote tem as mesmas travas.
   try {
     const s = await consultarFatura(omsInvoiceId);
-    if (s.state === 'queuedForErp' || s.state === 'sentToErp') return { resultado: 'ja_liberada', mensagem: s.state === 'sentToErp' ? 'OMS: fatura já enviada ao SAP.' : 'OMS: fatura já está na fila do SAP.' };
+    if (s.state === 'queuedForErp' || s.state === 'sentToErp') {
+      const enviada = s.state === 'sentToErp';
+      const envio = await registrar({ status: 'enviado', outcome: 'alreadyReleased', sentToErp: enviada });
+      return { resultado: 'ja_liberada', envio, mensagem: enviada ? 'OMS: fatura já enviada ao SAP.' : 'OMS: fatura já está na fila do SAP.' };
+    }
     if (s.state === 'blocked') {
       const codes = (s.blockingChecks || []).map((c) => c.code).join(', ');
       const explicacoes = explicarTravasOms(s.blockingChecks || []);
       const duplicadas = explicacoes.some((x) => x.codigo === 'CTE_ALREADY_BILLED') ? await faturasComMesmoCte(fatura.id).catch(() => []) : [];
-      return { resultado: 'bloqueada', explicacoes, duplicadas, mensagem: `OMS: liberação bloqueada (${codes || 'trava dura'}). Resolva no OMS e envie de novo.` };
+      const mensagem = `OMS: liberação bloqueada (${codes || 'trava dura'}). Resolva no OMS e envie de novo.`;
+      const envio = await registrar({ outcome: 'blocked', erro: { code: 'BLOQUEADA_NO_OMS', message: mensagem, blockingChecks: s.blockingChecks || [] } });
+      return { resultado: 'bloqueada', envio, explicacoes, duplicadas, mensagem };
     }
-    if (s.state === 'processing') return { resultado: 'pendente', mensagem: 'OMS: fatura ainda em processamento em outro lote. Tente de novo em 1 minuto.' };
+    if (s.state === 'processing') {
+      const mensagem = 'OMS: fatura ainda em processamento em outro lote. Tente de novo em 1 minuto.';
+      const envio = await registrar({ erro: { code: 'OMS_PROCESSANDO', message: mensagem } });
+      return { resultado: 'pendente', envio, mensagem };
+    }
   } catch { /* segue */ }
 
   const requestId = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -140,6 +197,12 @@ export async function liberarFaturaNoOms({ fatura, nomeAuditor }) {
 
 /** Reenvia (mesmo corpo/requestId) ou, se ja aceito, atualiza pelo lote e pela situacao da fatura. */
 export async function atualizarEnvioOms(envio, nomeAuditor) {
+  // Tentativa barrada antes do OMS: nao ha corpo para reenviar. Se ja estava liberada, so confere se o SAP leu.
+  if (envioSemTransmissao(envio)) {
+    if (envio.outcome !== 'alreadyReleased' || envio.sent_to_erp || !envio.oms_invoice_id) return envio;
+    const s = await consultarFatura(envio.oms_invoice_id);
+    return s.state === 'sentToErp' ? atualizar(envio.id, { sent_to_erp: true, sent_to_erp_visto_em: new Date().toISOString() }) : envio;
+  }
   if (!envio.batch_id) return transmitir(envio, nomeAuditor);
   const lote = await acompanharLote(envio.batch_id);
   let campos = camposDoLote(lote, envio.oms_invoice_id);
@@ -183,12 +246,19 @@ export async function carregarEnviosOmsPorFatura(faturaIds = []) {
   const mapa = new Map();
   const ids = [...new Set(faturaIds.map(String))];
   if (!ids.length) return mapa;
+  // Pagina dentro de cada bloco: com reenvios, 200 faturas passam facil do limite de 1000 linhas do Supabase
+  // e o envio mais recente de parte delas ficava de fora (fatura sumia do quadro de envios).
+  const PAGINA = 1000;
   for (let i = 0; i < ids.length; i += 200) {
-    const { data, error } = await db().from(TABELA)
-      .select('fatura_id,status,oms_status,outcome,sent_to_erp,queued_for_erp_at,blocking_checks,erro,created_at,enviado_por')
-      .in('fatura_id', ids.slice(i, i + 200)).order('created_at', { ascending: false });
-    if (error) throw new Error(`Envios ao OMS: ${error.message}`);
-    (data || []).forEach((e) => { if (!mapa.has(String(e.fatura_id))) mapa.set(String(e.fatura_id), e); });
+    for (let de = 0; ; de += PAGINA) {
+      const { data, error } = await db().from(TABELA)
+        .select('fatura_id,status,oms_status,outcome,sent_to_erp,queued_for_erp_at,blocking_checks,erro,created_at,enviado_por')
+        .in('fatura_id', ids.slice(i, i + 200)).order('created_at', { ascending: false }).order('id', { ascending: true })
+        .range(de, de + PAGINA - 1);
+      if (error) throw new Error(`Envios ao OMS: ${error.message}`);
+      (data || []).forEach((e) => { if (!mapa.has(String(e.fatura_id))) mapa.set(String(e.fatura_id), e); });
+      if (!data || data.length < PAGINA) break;
+    }
   }
   return mapa;
 }

@@ -46,7 +46,7 @@ import { omsInvoiceIdValido } from '../utils/omsEnvioPuro';
 import { STATUS_LIBERADAS_OMS, aptidaoEnvioSap } from '../utils/diagnosticoFaturas';
 import { carregarResumoCtesFaturas } from '../services/diagnosticoFaturasService';
 import { importarIdsOmsDaPlanilha, resumirImportacaoIds } from '../services/omsIdFaturasService';
-import { ROTULO_ENVIO_OMS, atualizarEnvioOms, estadoEnvioOms, faturasComMesmoCte, listarEnviosOms, liberarFaturaNoOms, liberarNoOmsAposAprovacao } from '../services/omsFaturasEnvioService';
+import { ROTULO_ENVIO_OMS, atualizarEnvioOms, envioSemTransmissao, estadoEnvioOms, faturasComMesmoCte, listarEnviosOms, liberarFaturaNoOms, liberarNoOmsAposAprovacao } from '../services/omsFaturasEnvioService';
 import AlertaBloqueioOms from '../components/AlertaBloqueioOms';
 import { explicarTravasOms } from '../utils/omsEnvioPuro';
 import { getSupabaseClient as getSupabaseOms } from '../lib/supabaseClient';
@@ -4361,12 +4361,12 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         const precisaAcao = envio.status === 'enviando' || envio.status === 'erro';
         const ok = estado === 'sentToErp' || estado === 'queuedForErp' || estado === 'alreadyReleased';
         return (
-          <div className="hint-box compact" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', borderColor: ok ? '#86efac' : precisaAcao || estado === 'blocked' || estado === 'recusado' ? '#fca5a5' : undefined }}>
+          <div className="hint-box compact" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', borderColor: ok ? '#86efac' : precisaAcao || estado === 'blocked' || estado === 'recusado' || estado === 'naoEnviado' ? '#fca5a5' : undefined }}>
             <strong>SAP/OMS: {ROTULO_ENVIO_OMS[estado] || estado}</strong>
             {envio.queued_for_erp_at && <span>na fila desde {new Date(envio.queued_for_erp_at).toLocaleString('pt-BR')}</span>}
             {(envio.blocking_checks || []).length > 0 && <span>Travas: {envio.blocking_checks.map((c) => c.code).join(', ')}</span>}
             {envio.erro?.message && <span>{envio.erro.code ? `${envio.erro.code}: ` : ''}{envio.erro.message}</span>}
-            {estado !== 'sentToErp' && estado !== 'recusado' && (
+            {estado !== 'sentToErp' && estado !== 'recusado' && estado !== 'naoEnviado' && (!envioSemTransmissao(envio) || estado === 'alreadyReleased') && (
               <button className="btn-secondary" disabled={atualizandoOms} onClick={async () => {
                 setAtualizandoOms(true);
                 try {
