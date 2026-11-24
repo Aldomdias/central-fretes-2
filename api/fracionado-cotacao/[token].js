@@ -117,8 +117,104 @@ function origensDoConvite(convite) {
   return [String(convite.origem || '').replace(/[|]/g, '/').trim()];
 }
 
+// ---- Volumetria (base de CT-es, sem transportadora e sem valor de frete) ----------
+// ATACADO = 3 meses fechados anteriores; B2C = 1 mes fechado anterior (base muito maior).
+const MESES_VOLUMETRIA = { B2C: 1, ATACADO: 3 };
+const COLUNAS_CTE_VOLUMETRIA = 'data_emissao,canal,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem,valor_nf,qtd_volumes';
+
+function periodoVolumetria(canal) {
+  const n = MESES_VOLUMETRIA[canal] || 1;
+  const hoje = new Date(Date.now() - 3 * 60 * 60 * 1000); // horario de Brasilia
+  const ano = hoje.getUTCFullYear();
+  const mes = hoje.getUTCMonth();
+  const iso = (d) => d.toISOString().slice(0, 10);
+  return { inicio: iso(new Date(Date.UTC(ano, mes - n, 1))), fim: iso(new Date(Date.UTC(ano, mes, 0))), meses: n };
+}
+
+const semAcento = (v) => String(v ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+
+// Mesma regra de canal da base de CT-es (realizadoLocalDb.normalizeCanalParaMalha)
+function canalDaBase(v) {
+  const c = semAcento(v);
+  if (!c) return '';
+  if (c.includes('A DEFINIR') || c.includes('SEM TABELA') || c.includes('SEM VINCULO')) return 'A DEFINIR';
+  if (c.includes('INTERCOMPANY')) return 'INTERCOMPANY';
+  if (c.includes('REVERSA')) return 'REVERSA';
+  if (['ATACADO', 'B2B'].some((i) => c === i || c.includes(i))) return 'ATACADO';
+  if (['B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA', 'CARREFOUR', 'CANTU PNEUS', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET', 'BRADESCO SHOP', 'ITAU SHOP', 'SHOPEE', '99', 'MUSTANG', 'LIVELO', 'COOPERA', 'MARKETPLACE', 'MARKET PLACE', 'ECOMMERCE', 'E COMMERCE']
+    .some((i) => c === i || c.includes(i))) return 'B2C';
+  return c;
+}
+
+// "Itajai/SC" -> { cidade: 'ITAJAI', uf: 'SC' }
+function parseOrigemVolumetria(texto) {
+  const t = String(texto || '').trim();
+  const m = t.match(/^(.*?)\s*[/\-,]\s*([A-Za-z]{2})$/);
+  if (m && UFS.includes(m[2].toUpperCase())) return { cidade: semAcento(m[1]), uf: m[2].toUpperCase() };
+  return { cidade: semAcento(t), uf: '' };
+}
+
+function faixaDoPeso(faixas, peso) {
+  let achada = null;
+  for (const f of faixas) { if (peso >= f.min && (f.max == null || peso < f.max)) achada = f; }
+  return achada ? achada.label : (faixas.length ? faixas[faixas.length - 1].label : '');
+}
+
+async function volumetriaDoDia(supabase, { canal, dia, origens, ufsDestino, faixas }) {
+  const proximo = new Date(Date.parse(`${dia}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+  const ufsOrigem = origens.length && origens.every((o) => o.uf) ? Array.from(new Set(origens.map((o) => o.uf))) : [];
+  const mk = () => {
+    let q = supabase.from('realizado_local_ctes').select(COLUNAS_CTE_VOLUMETRIA).gte('data_emissao', dia).lt('data_emissao', proximo);
+    if (ufsOrigem.length) q = q.in('uf_origem', ufsOrigem);
+    if (ufsDestino.length) q = q.in('uf_destino', ufsDestino);
+    return q.order('data_emissao', { ascending: true }).order('id', { ascending: true });
+  };
+  const mapa = new Map();
+  let lidas = 0;
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  for (let pag = 0; pag < 200; pag += 4) {
+    const respostas = await Promise.all([0, 1, 2, 3].map((i) => mk().range((pag + i) * 1000, (pag + i) * 1000 + 999)));
+    let acabou = false;
+    for (const r of respostas) {
+      if (r.error) throw r.error;
+      const dados = r.data || [];
+      lidas += dados.length;
+      if (dados.length < 1000) acabou = true;
+      for (const row of dados) {
+        if (canalDaBase(row.canal) !== canal) continue;
+        const cidO = semAcento(row.cidade_origem);
+        const ufO = String(row.uf_origem || '').toUpperCase();
+        if (origens.length && !origens.some((o) => (!o.uf || o.uf === ufO) && (!o.cidade || cidO === o.cidade || cidO.includes(o.cidade)))) continue;
+        const peso = Math.max(num(row.peso), num(row.peso_declarado), num(row.peso_cubado));
+        const faixa = faixaDoPeso(faixas, peso);
+        const ibgeO = String(row.ibge_origem || '').replace(/\D/g, '').slice(0, 7);
+        const ibgeD = String(row.ibge_destino || '').replace(/\D/g, '').slice(0, 7);
+        const chave = [row.cidade_origem, ufO, ibgeO, row.cidade_destino, row.uf_destino, ibgeD, faixa].join('|');
+        let it = mapa.get(chave);
+        if (!it) {
+          it = [String(row.cidade_origem || ''), ufO, ibgeO, String(row.cidade_destino || ''), String(row.uf_destino || '').toUpperCase(), ibgeD, faixa, 0, 0, 0, 0, 0, 0, 0, 0];
+          mapa.set(chave, it);
+        }
+        const vol = num(row.qtd_volumes);
+        it[7] += 1;
+        it[8] += vol;
+        it[9] += num(row.peso);
+        it[10] += num(row.peso_declarado);
+        it[11] += num(row.peso_cubado);
+        it[12] += peso;
+        it[13] += num(row.cubagem) * (vol > 0 ? vol : 1);
+        it[14] += num(row.valor_nf);
+      }
+    }
+    if (acabou) break;
+  }
+  const r3 = (n) => Math.round(n * 1000) / 1000;
+  return { r: [...mapa.values()].map((it) => it.map((v, i) => (i >= 9 ? r3(v) : v))), n: lidas };
+}
+
 function configDoConvite(convite) {
   return {
+    periodos: Object.fromEntries(canaisDoConvite(convite).map((c) => [c, periodoVolumetria(c)])),
     canais: canaisDoConvite(convite),
     modalidade: convite.modalidade === 'FAIXA_PESO' ? 'FAIXA_PESO' : convite.modalidade === 'PROPRIA' ? 'PROPRIA' : 'PERCENTUAL',
     faixas: faixasDoConvite(convite),
@@ -231,6 +327,7 @@ ${cancelado ? '<div class="msg erro">Este link foi cancelado. Solicite um novo l
 var TOKEN=${JSON.stringify(convite.token)},NOME=${JSON.stringify(convite.transportadora)};
 ${montarPlanilhaFracionado.toString()}
 var CFG=null,ACESSO='',ST={},CANAL='',ORI=0,VISAO='tabela',UFSEL='',FUF='',CNPJ='',MUN=[],MUNIDX={},FREG='',FBUSCA='',FSEM=false;
+var VOLABERTO=false,VOLORI={},VOLUF='',VOLBUSY=false;
 var GER=[['prazo','Prazo de pagamento (dias)'],['gris','GRIS (%)'],['advalorem','Ad valorem (%)'],['advalorem_min','Ad valorem mínimo (R$)'],['pedagio','Pedágio (R$)'],['tas','TAS (R$)']];
 var COLS_A=[['tda','TDA (R$)'],['trt','TRT (R$)'],['suf','Suframa (R$)'],['out','Outras taxas (R$)']];
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -246,7 +343,7 @@ function identificar(){var b=document.getElementById('btnId');document.getElemen
   var cnpj=document.getElementById('cnpj').value,nome=document.getElementById('nome').value.trim(),email=document.getElementById('email').value.trim();
   if(!nome||!email||cnpj.replace(/\\D/g,'').length!==14){document.getElementById('erroId').innerHTML='<div class="msg erro">Informe CNPJ (14 dígitos), nome e e-mail.</div>';return}
   b.disabled=true;api({acao:'identificar',cnpj:cnpj,nome:nome,email:email}).then(function(j){
-    ACESSO=j.acesso;CFG=j.config;CNPJ=cnpj;ST={};
+    ACESSO=j.acesso;CFG=j.config;CNPJ=cnpj;ST={};VOLORI={};CFG.origens.forEach(function(o,i){VOLORI[i]=true});
     CFG.canais.forEach(function(c){ST[c]={g:Object.assign({},(j.gerais||{})[c]||{}),c:{},a:{},f:[]}});
     (j.anexos||[]).forEach(function(a){if(ST[a.canal])ST[a.canal].f.push(a)});
     (j.linhas||[]).forEach(function(l){var s=ST[l.canal],oi=CFG.origens.indexOf(l.origem||'');if(!s||oi<0)return;var fi='';
@@ -274,6 +371,7 @@ function render(){if(!CFG)return;if(CFG.modalidade==='PROPRIA'){renderPropria();
   if(CFG.origens.length>1)h+='<label class="fl">Origem <select onchange="ORI=Number(this.value);render()">'+CFG.origens.map(function(o,i){return '<option value="'+i+'"'+(i===ORI?' selected':'')+'>'+esc(o)+'</option>'}).join('')+'</select></label><button class="sec" onclick="copiarOrigem()">Copiar esta origem para as demais</button>';
   else if(CFG.origens[0])h+='<span class="fl">Origem: '+esc(CFG.origens[0])+'</span>';
   h+='<button class="'+(VISAO==='tabela'?'':'sec')+'" onclick="setVisao(\\'tabela\\')">1. Tabela de frete</button><button class="'+(VISAO==='cidades'?'':'sec')+'" onclick="setVisao(\\'cidades\\')">2. Atendimento (cidades, região e prazo)</button></div>';
+  h+=blocoVol();
   h+='<div class="ferr"><button class="sec" onclick="baixarModelo()">⬇ Baixar modelo (Excel) — '+nomeCanal(CANAL)+(CFG.origens.length>1?' / '+esc(oriNome(ORI)):'')+'</button><button class="sec" onclick="document.getElementById(\\'arq\\').click()">⬆ Importar planilha preenchida</button><input type="file" id="arq" accept=".xlsx,.xls,.csv" style="display:none" onchange="importar(this)"><span id="resumo" class="fl"></span></div>';
   if(VISAO==='tabela'){
     h+='<div class="ger">'+GER.map(function(g){return '<div><label>'+g[1]+'</label><input data-g="'+g[0]+'" value="'+esc(s.g[g[0]]||'')+'" inputmode="decimal"></div>'}).join('')
@@ -292,6 +390,7 @@ function render(){if(!CFG)return;if(CFG.modalidade==='PROPRIA'){renderPropria();
   resumo()}
 function renderPropria(){abas();var s=ST[CANAL],h='';
   h+='<div class="msg aviso"><b>Atenção:</b> as generalidades informadas aqui serão <b>avaliadas pelo time de suprimentos</b> para definir se entram ou não no nosso escopo. O envio não garante a aceitação das condições.</div>';
+  h+=blocoVol();
   h+='<div class="taxas"><b>1. Anexe a sua tabela de frete — '+nomeCanal(CANAL)+'</b><br><small style="color:#64748b">Excel, CSV, PDF, Word ou ZIP · até 3 MB por arquivo.</small><div style="margin:8px 0">';
   if(!s.f.length)h+='<div style="color:#64748b;font-size:14px">Nenhum arquivo anexado ainda.</div>';
   s.f.forEach(function(a,i){h+='<div class="lin">📎 <b>'+esc(a.nome)+'</b> <span style="color:#64748b">('+Math.max(1,Math.round((a.tamanho||0)/1024))+' KB)</span><button class="x" onclick="removerAnexo('+i+')">Remover</button></div>'});
@@ -305,6 +404,37 @@ function renderPropria(){abas();var s=ST[CANAL],h='';
   c.oninput=function(ev){var t=ev.target;if(t.getAttribute('data-g')){ST[CANAL].g[t.getAttribute('data-g')]=t.value;return}
     var kt=t.getAttribute('data-t');if(kt!==null&&kt!==undefined){var tx=ST[CANAL].g.taxas||(ST[CANAL].g.taxas=[]);var ti=Number(kt);if(tx[ti])tx[ti][t.getAttribute('data-f')]=t.value}};
   resumo()}
+// ---- Volumetria (so volumes/peso/cubagem; sem transportadora e sem valor de frete) ----
+function fmtDia(d){var p=String(d).split('-');return p[2]+'/'+p[1]+'/'+p[0]}
+function blocoVol(){var p=CFG.periodos&&CFG.periodos[CANAL];if(!p)return '';
+  var h='<div class="ferr"><button class="sec" onclick="VOLABERTO=!VOLABERTO;render()">📊 Volumetria '+nomeCanal(CANAL)+' ('+fmtDia(p.inicio)+' a '+fmtDia(p.fim)+')'+(VOLABERTO?' ▴':' ▾')+'</button></div>';
+  if(!VOLABERTO)return h;
+  h+='<div class="taxas"><b>Volumetria '+nomeCanal(CANAL)+'</b> <span style="color:#64748b;font-size:13px">Últimos '+p.meses+' mês(es) fechado(s): '+fmtDia(p.inicio)+' a '+fmtDia(p.fim)+'. Traz notas, volumes, peso e cubagem por origem, destino e faixa de peso. Não traz transportadora nem valor de frete.</span>';
+  var nomeadas=CFG.origens.filter(function(o){return o});
+  if(nomeadas.length)h+='<div class="lin"><b>Origens:</b> '+CFG.origens.map(function(o,i){return o?'<label class="fl" style="font-weight:normal"><input type="checkbox" style="width:auto" onchange="VOLORI['+i+']=this.checked"'+(VOLORI[i]?' checked':'')+'> '+esc(o)+'</label>':''}).join(' ')+'<span style="color:#64748b;font-size:13px">(nenhuma marcada = todas as origens deste convite)</span></div>';
+  h+='<div class="lin"><b>UFs de destino:</b> <input placeholder="Ex.: SP, MG, RJ (vazio = todas)" value="'+esc(VOLUF)+'" oninput="VOLUF=this.value" style="width:300px"></div>';
+  h+='<div class="lin"><button onclick="baixarVol()"'+(VOLBUSY?' disabled':'')+'>⬇ Baixar volumetria '+nomeCanal(CANAL)+' (Excel)</button><span id="volst" class="fl"></span></div></div>';
+  return h}
+function volSt(t,erro){var e=document.getElementById('volst');if(e){e.textContent=t;e.style.color=erro?'#b91c1c':'#334155'}}
+function baixarVol(){if(VOLBUSY)return;if(!window.XLSX){alert('Não foi possível carregar o recurso de Excel. Verifique sua conexão.');return}
+  var canal=CANAL,p=CFG.periodos[canal],oris=[];CFG.origens.forEach(function(o,i){if(o&&VOLORI[i])oris.push(o)});
+  var ufs=VOLUF.toUpperCase().split(/[^A-Z]+/).filter(function(u){return CFG.ufs.indexOf(u)>=0});
+  var dias=[];for(var d=new Date(p.inicio+'T00:00:00Z');d.toISOString().slice(0,10)<=p.fim;d=new Date(d.getTime()+864e5))dias.push(d.toISOString().slice(0,10));
+  var agg={},feitos=0,lidas=0,fila=dias.slice(),falha=null;VOLBUSY=true;volSt('Gerando… 0 de '+dias.length+' dias');
+  function dia(){if(falha||!fila.length)return Promise.resolve();var dt=fila.shift();
+    function tenta(n){return api({acao:'volumetria',acesso:ACESSO,canal:canal,dia:dt,origens:oris,ufs:ufs}).catch(function(e){if(n<2)return tenta(n+1);falha=e;throw e})}
+    return tenta(0).then(function(j){lidas+=j.n;j.r.forEach(function(r){var k=r.slice(0,7).join('|'),a=agg[k];if(!a)agg[k]=r.slice();else for(var q=7;q<15;q++)a[q]+=r[q]});feitos++;volSt('Gerando… '+feitos+' de '+dias.length+' dias ('+lidas.toLocaleString('pt-BR')+' CT-es lidos)');return dia()})}
+  Promise.all([dia(),dia(),dia()]).then(function(){VOLBUSY=false;if(falha)return;
+    var linhas=Object.keys(agg).map(function(k){return agg[k]}).sort(function(a,b){return (a[4]+a[3]).localeCompare(b[4]+b[3])||String(a[6]).localeCompare(String(b[6]))});
+    if(!linhas.length){volSt('Nenhuma nota encontrada para os filtros no período.',true);return}
+    var rows=linhas.map(function(r){var n=r[7]||1;return{Canal:nomeCanal(canal),Faixa_Peso:r[6],Notas:r[7],Volumes:r[8],Peso_Real:r[9],Peso_Declarado:r[10],Peso_Cubado:r[11],Peso_Considerado:r[12],Cubagem_Total_m3:r[13],Valor_NF:r[14],Origem:r[0],UF_Origem:r[1],Destino:r[3],UF_Destino:r[4],IBGE_Origem:r[2],IBGE_Destino:r[5],Media_Peso_Nota:Math.round(r[12]/n*100)/100,Media_Volumes_Nota:Math.round(r[8]/n*100)/100,Media_Cubagem_Nota:Math.round(r[13]/n*1000)/1000,Media_Valor_NF_Nota:Math.round(r[14]/n*100)/100}});
+    var wb=XLSX.utils.book_new(),ws=XLSX.utils.json_to_sheet(rows);ws['!cols']=Object.keys(rows[0]).map(function(h){return{wch:Math.min(Math.max(h.length+3,12),30)}});ws['!autofilter']={ref:ws['!ref']};
+    XLSX.utils.book_append_sheet(wb,ws,'Volumetria');
+    var tot=rows.reduce(function(s,r){return s+r.Notas},0);
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet([{Canal:nomeCanal(canal),Periodo_Inicial:p.inicio,Periodo_Final:p.fim,Origens:oris.length?oris.join(' | '):(CFG.origens.filter(function(o){return o}).join(' | ')||'Todas'),UFs_Destino:ufs.length?ufs.join(', '):'Todas',Notas:tot,Linhas:rows.length,Regra_Peso:'Peso_Considerado = maior entre peso real, declarado e cubado (define a faixa)',Regra_Cubagem:'Cubagem_Total_m3 = cubagem x volumes',Regra_Valor_NF:'Valor_NF = valor da nota fiscal'}]),'Resumo');
+    XLSX.writeFile(wb,'volumetria-'+canal.toLowerCase()+'-'+p.inicio.slice(0,7)+'-a-'+p.fim.slice(0,7)+'.xlsx');
+    volSt('Pronto: '+tot.toLocaleString('pt-BR')+' notas em '+rows.length.toLocaleString('pt-BR')+' linhas. Arquivo baixado.')
+  }).catch(function(e){VOLBUSY=false;falha=e;volSt('Erro: '+e.message,true)})}
 function anexar(inp){var fs=Array.prototype.slice.call(inp.files||[]),canal=CANAL,m=document.getElementById('msgTab');inp.value='';m.innerHTML='';
   fs.forEach(function(f){
     if(f.size>3*1024*1024){m.innerHTML+='<div class="msg erro">'+esc(f.name)+' passa de 3 MB. Compacte (ZIP) ou divida o arquivo.</div>';return}
@@ -539,6 +669,22 @@ export default async function handler(req, res) {
       if (!acessoValido(token, body.acesso, segredo)) return enviarJson(res, 401, { erro: 'Sessão expirada. Recarregue a página e se identifique novamente.' });
       const mun = await carregarMunicipios(supabase);
       return enviarJson(res, 200, { m: mun.map((m) => [m.i, m.u, m.c]) });
+    }
+
+    if (body.acao === 'volumetria') {
+      if (!acessoValido(token, body.acesso, segredo)) return enviarJson(res, 401, { erro: 'Sessão expirada. Recarregue a página e se identifique novamente.' });
+      const canal = String(body.canal || '');
+      if (!config.canais.includes(canal)) return enviarJson(res, 400, { erro: 'Canal inválido.' });
+      const per = periodoVolumetria(canal);
+      const dia = String(body.dia || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dia) || dia < per.inicio || dia > per.fim) return enviarJson(res, 400, { erro: 'Dia fora do período da volumetria.' });
+      // so as origens do convite; nada marcado = todas as do convite
+      const doConvite = config.origens.filter(Boolean);
+      const marcadas = (Array.isArray(body.origens) ? body.origens : []).map(String).filter((o) => doConvite.includes(o));
+      const alvo = (marcadas.length ? marcadas : doConvite).map(parseOrigemVolumetria);
+      const ufsDestino = (Array.isArray(body.ufs) ? body.ufs : []).map((u) => String(u).toUpperCase()).filter((u) => UFS.includes(u));
+      const out = await volumetriaDoDia(supabase, { canal, dia, origens: alvo, ufsDestino, faixas: config.faixas[canal] || [] });
+      return enviarJson(res, 200, out);
     }
 
     if (body.acao === 'anexar') {
