@@ -9,7 +9,6 @@ export default function RotasB2cExportPage() {
   const [erro, setErro] = useState('');
   const [transportadora, setTransportadora] = useState('');
   const [origemFiltro, setOrigemFiltro] = useState('');
-  const [somenteVigentes, setSomenteVigentes] = useState(true);
   const [agrupar, setAgrupar] = useState(true);
   const [progresso, setProgresso] = useState(null);
   const [exportando, setExportando] = useState(false);
@@ -44,7 +43,7 @@ export default function RotasB2cExportPage() {
     setResultado(null);
     setProgresso({ etapa: 'Iniciando…', feitas: 0, total: selecionadas.length, linhas: 0 });
     try {
-      const { linhas, semIbge } = await exportarRotasB2cDb({ origens: selecionadas, somenteVigentes, agrupar, onProgress: setProgresso });
+      const { linhas, semIbge } = await exportarRotasB2cDb({ origens: selecionadas, agrupar, onProgress: setProgresso });
       const data = new Date().toISOString().slice(0, 10);
       const sufixo = [transportadora, origemFiltro].filter(Boolean).join('-').replace(/[^\w-]+/g, '_');
       baixarCsvRotasB2c(linhas, agrupar, `rotas-b2c${sufixo ? `-${sufixo}` : ''}-${data}`);
@@ -98,13 +97,6 @@ export default function RotasB2cExportPage() {
               <option value="municipio">1 linha por município de destino</option>
               <option value="cep">Detalhado por faixa de CEP</option>
             </select>
-          </div>
-          <div className="field">
-            <label>&nbsp;</label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 400 }}>
-              <input type="checkbox" checked={somenteVigentes} onChange={(e) => setSomenteVigentes(e.target.checked)} disabled={exportando} />
-              Somente rotas vigentes hoje
-            </label>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
