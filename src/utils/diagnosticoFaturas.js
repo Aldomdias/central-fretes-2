@@ -457,18 +457,24 @@ export function identificacaoSapDoCte(item = {}) {
 }
 
 // Resumo dos CT-es de uma fatura contra as linhas SAP (Map chaveCasamento -> linhas).
-export function resumirCtesFatura(detalhes = [], lancamentosPorChave = new Map()) {
+export function resumirCtesFatura(detalhes = [], lancamentosPorChave = new Map(), comprasPorChave = null) {
   const vistos = new Set();
   // itens: todos os CT-es da fatura (com partida, sem partida, NFS-e) para a planilha completa.
   // fenix: CT-es compensados pela partida Fenix (compensacao nao paga): travam a escrituracao da fatura.
   // compensados: CT-es com partida lancada que ja tem documento de compensacao (Fenix ou qualquer outro): travam o envio ao SAP pelo OMS.
-  const resumo = { total: 0, lancados: 0, nfse: 0, itens: [], semPartida: [], valorSemPartida: 0, fenix: [], valorFenix: 0, compensados: [] };
+  // compras: CT-es cujo remetente (expedidor) e fornecedor de compras. null = cadastro nao carregado (verificando).
+  const resumo = { total: 0, lancados: 0, nfse: 0, itens: [], semPartida: [], valorSemPartida: 0, fenix: [], valorFenix: 0, compensados: [], compras: comprasPorChave ? [] : null, valorCompras: 0 };
   detalhes.forEach((item) => {
     if (item.excluido_da_versao === true) return;
     const unico = digitos(item.chave_cte) || `${digitos(item.numero_cte)}-${item.serie_cte || ''}`;
     if (vistos.has(unico)) return;
     vistos.add(unico);
     const base = { numero_cte: item.numero_cte, serie_cte: item.serie_cte, chave_cte: item.chave_cte, valor_frete: Number(item.valor_frete || 0) };
+    const fornecedorCompra = comprasPorChave?.get(digitos(item.chave_cte));
+    if (fornecedorCompra) {
+      resumo.compras.push({ ...base, cnpj_fornecedor: fornecedorCompra.cnpj, fornecedor: fornecedorCompra.nome, codigo_fornecedor: fornecedorCompra.codigo, fornecedor_ativo: fornecedorCompra.ativo });
+      resumo.valorCompras += base.valor_frete;
+    }
     if (ehLinhaNfse(item)) { resumo.nfse += 1; resumo.itens.push({ ...base, situacao: 'NFSE' }); return; }
     resumo.total += 1;
     const linhasSap = lancamentosPorChave.get(chaveCasamentoCte(identificacaoSapDoCte(item))) || [];
@@ -494,6 +500,7 @@ export function resumirCtesFatura(detalhes = [], lancamentosPorChave = new Map()
   });
   resumo.valorSemPartida = Number(resumo.valorSemPartida.toFixed(2));
   resumo.valorFenix = Number(resumo.valorFenix.toFixed(2));
+  resumo.valorCompras = Number(resumo.valorCompras.toFixed(2));
   return resumo;
 }
 
@@ -671,6 +678,12 @@ const pagamento = (id) => (l) => situacaoPagamentoLinha(l) === id;
 const faixa = (...ids) => (l) => ids.includes(faixaDaLinha(l));
 const ctes = (...ids) => comFatura((l) => ids.includes(situacaoCtes(l.ctes)));
 const ativa = (l) => !inativa(l.fatura);
+// Compras (fornecedores): COM = algum CT-e com remetente de fornecedor; SEM = verificada sem; VERIFICANDO = CT-es ou cadastro ainda nao carregados.
+export function situacaoCompras(l) {
+  if (!l.fatura) return 'SEM_FATURA';
+  if (!l.ctes || !Array.isArray(l.ctes.compras)) return 'VERIFICANDO';
+  return l.ctes.compras.length ? 'COM' : 'SEM';
+}
 
 // Fatura ativa e ainda nao paga/encerrada sem o Id do OMS: nao consegue ser enviada ao SAP pela integracao.
 export const faturaSemIdOms = (f) => Boolean(f) && !inativa(f) && !String(f.status || '').startsWith('PAGA') && !omsInvoiceIdValido(f.oms_invoice_id);
@@ -739,6 +752,12 @@ export const GRUPOS_DIAGNOSTICO = [
     { id: 'manual_a_agrupar', rotulo: 'Agrupamento manual a enviar', cor: '#9153F0', teste: comFatura((l) => ativa(l) && agrupamentoManual(l.fatura) && !faturaLancada(l.fatura)), dica: 'Marcadas para protocolo por agrupamento manual (fora do AMD) e ainda sem partida na fatura.' },
     { id: 'manual_agrupadas', rotulo: 'Já agrupadas pelo financeiro', cor: '#14733b', teste: comFatura((l) => agrupamentoManual(l.fatura) && faturaLancada(l.fatura)), dica: 'Marcadas para agrupamento manual que já receberam partida, lançamento ou pagamento.' },
     { id: 'sem_marcacao', rotulo: 'Sem marcação', cor: '#64748b', teste: comFatura((l) => ativa(l) && !agrupamentoManual(l.fatura)), dica: 'Seguem o fluxo normal do AMD.' },
+  ] },
+  // Operacao de compras: o expedidor/remetente do CT-e e um fornecedor cadastrado (botao "Fornecedores de compras").
+  { id: 'compras', titulo: 'Compras (CT-e de fornecedor)', cards: [
+    { id: 'com_compras', rotulo: 'Com CT-e de fornecedor', cor: '#7c3aed', teste: comFatura((l) => ativa(l) && situacaoCompras(l) === 'COM'), dica: 'Faturas com pelo menos um CT-e cujo remetente (expedidor) é um fornecedor de compras cadastrado. Mostra quantos CT-es e o valor de frete deles.', detalheCompras: true },
+    { id: 'sem_compras', rotulo: 'Sem fornecedor de compras', cor: '#64748b', teste: comFatura((l) => ativa(l) && situacaoCompras(l) === 'SEM'), dica: 'Faturas verificadas sem nenhum CT-e de fornecedor de compras.' },
+    { id: 'compras_verificando', rotulo: 'Verificando', cor: '#94a3b8', teste: comFatura((l) => ativa(l) && situacaoCompras(l) === 'VERIFICANDO'), dica: 'CT-es ainda sendo conferidos (ou cadastro de fornecedores indisponível: migration 20261124_002 pendente). Zera quando a verificação termina.' },
   ] },
   { id: 'ctes', titulo: 'CT-es no SAP', cards: [
     { id: 'todos', rotulo: 'Todos os CT-es lançados', cor: '#14733b', teste: ctes('TODOS'), dica: 'Todos os CT-es da fatura tem partida própria no SAP.' },

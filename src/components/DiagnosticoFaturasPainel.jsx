@@ -5,6 +5,8 @@ import { carregarEnviosOmsPorFatura, liberarFaturaNoOms } from '../services/omsF
 import AlertaBloqueioOms from './AlertaBloqueioOms';
 import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarCanceladas, marcarEncaminhamentoFinanceiro, marcarEnviadaAntecipacao, marcarPrevisaoPagamento, TIPOS_ENCAMINHAMENTO, marcarSubstituidasDuplicadas } from '../services/diagnosticoFaturasService';
 import { carregarCadastroPorRaiz } from '../services/transportadoraCnpjsService';
+import { aoMudarFornecedoresCompras, formatarCnpj } from '../services/fornecedoresComprasService';
+import FornecedoresComprasCadastro from './FornecedoresComprasCadastro';
 import { diasAte } from '../utils/auditoriaFretesDomain';
 import { carregarSessao } from '../utils/authLocal';
 import {
@@ -63,7 +65,7 @@ const SEM_TRANSP = '__sem_fatura__';
 // Auditor "todos": visao geral do gestor (faturas em aberto de todos os auditores).
 const TODOS_AUDITORES = '__todos__';
 const TOP_RANKING = 15;
-const ORDEM_GRUPOS = ['localizacao', 'auditoria', 'erp', 'lancamento', 'financeiro', 'pagamento', 'vencimento', 'protocolo', 'previsao', 'ctes', 'fenix', 'fenix_ajuste', 'antecipacao'];
+const ORDEM_GRUPOS = ['localizacao', 'auditoria', 'erp', 'lancamento', 'financeiro', 'pagamento', 'vencimento', 'protocolo', 'previsao', 'ctes', 'fenix', 'fenix_ajuste', 'antecipacao', 'compras'];
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const ehCancelada = (l) => situacaoPagamentoLinha(l) === 'CANCELADA';
@@ -147,11 +149,11 @@ const COLUNAS = [
 
 function CardFiltro({ card, grupo, linhas, ativo, onClick }) {
   const qtd = linhas.length;
-  const porCte = card.detalheCtes || card.detalheFenix;
-  const listaCtes = (l) => (card.detalheFenix ? l.ctes?.fenix : l.ctes?.semPartida) || [];
+  const porCte = card.detalheCtes || card.detalheFenix || card.detalheCompras;
+  const listaCtes = (l) => (card.detalheCompras ? l.ctes?.compras : card.detalheFenix ? l.ctes?.fenix : l.ctes?.semPartida) || [];
   const totalCtes = porCte ? linhas.reduce((s, l) => s + listaCtes(l).length, 0) : 0;
   const valor = porCte
-    ? linhas.reduce((s, l) => s + Number((card.detalheFenix ? l.ctes?.valorFenix : l.ctes?.valorSemPartida) || 0), 0)
+    ? linhas.reduce((s, l) => s + Number((card.detalheCompras ? l.ctes?.valorCompras : card.detalheFenix ? l.ctes?.valorFenix : l.ctes?.valorSemPartida) || 0), 0)
     : linhas.reduce((s, l) => s + valorDaLinha(l), 0);
   const zerado = !qtd && !ativo;
   return (
@@ -319,6 +321,9 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const [rankingAberto, setRankingAberto] = useState(salvo.rankingAberto ?? true);
   const [criterioRanking, setCriterioRanking] = useState(salvo.criterioRanking || 'valor');
   const [dimensaoRanking, setDimensaoRanking] = useState(salvo.dimensaoRanking || 'transp');
+  const [cadastroComprasAberto, setCadastroComprasAberto] = useState(false);
+  // Fornecedor de compras incluido/alterado: reconfere os CT-es ja no mesmo ciclo (sem esperar o cache vencer).
+  useEffect(() => aoMudarFornecedoresCompras(() => { cacheCtes.clear(); setRecarga((v) => v + 1); }), []);
 
   useEffect(() => {
     try { sessionStorage.setItem(CHAVE_SESSAO, JSON.stringify({ texto, transportadora, auditor, escolhidos, filtros, ordem, solicitante, rankingAberto, criterioRanking, dimensaoRanking })); } catch { /* sem sessionStorage: so nao lembra */ }
@@ -1085,6 +1090,28 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       });
     } catch (e) { setAviso(`Erro ao exportar: ${e.message || e}`); } finally { setExportando(false); }
   };
+  // Compras: CT-es do recorte com remetente (expedidor) de fornecedor cadastrado.
+  const ctesCompras = useMemo(() => resultado.flatMap((l) => (l.ctes?.compras || []).map((c) => ({ l, c }))), [resultado]);
+  const exportarCtesCompras = async () => {
+    setExportando(true);
+    try {
+      await exportarExcelFormatado({
+        nomeArquivo: `ctes-compras-fornecedores-${hojeArquivo}.xlsx`,
+        aba: 'CT-es de compras',
+        colunas: [
+          { titulo: 'Fatura', largura: 14 }, { titulo: 'Transportadora', largura: 34 }, { titulo: 'Status fatura', largura: 22 }, { titulo: 'Vencimento fatura', largura: 12, tipo: 'data' }, { titulo: 'Valor fatura', largura: 16, tipo: 'moeda' },
+          { titulo: 'Número CT-e', largura: 14 }, { titulo: 'Série', largura: 8, tipo: 'centro' }, { titulo: 'Chave CT-e', largura: 48 }, { titulo: 'Valor frete', largura: 16, tipo: 'moeda' },
+          { titulo: 'Cód. fornecedor', largura: 14, tipo: 'centro' }, { titulo: 'Fornecedor', largura: 28 }, { titulo: 'CNPJ fornecedor (expedidor)', largura: 20 }, { titulo: 'Status fornecedor', largura: 12, tipo: 'centro' }, { titulo: 'Auditor', largura: 26 },
+        ],
+        linhas: ctesCompras.map(({ l, c }) => [
+          String(l.numero), l.fatura.transportadora || '', nomeStatus(l.fatura.status), l.fatura.data_vencimento || '', Number(l.fatura.valor_fatura || 0),
+          String(c.numero_cte || ''), String(c.serie_cte || ''), String(c.chave_cte || ''), c.valor_frete,
+          c.codigo_fornecedor || '', c.fornecedor || '', formatarCnpj(c.cnpj_fornecedor), c.fornecedor_ativo ? 'Ativo' : 'Inativo', l.auditor || '',
+        ]),
+        resumo: descricaoFiltros(),
+      });
+    } catch (e) { setAviso(`Erro ao exportar: ${e.message || e}`); } finally { setExportando(false); }
+  };
   // Partida Fenix: CT-es do recorte compensados pela 1501163056, no formato do termo enviado ao financeiro.
   const ctesFenix = useMemo(() => resultado.flatMap((l) => (l.ctes?.fenix || []).map((c) => ({ ...c, numero_fatura: String(l.numero), transportadora: l.fatura.transportadora || '' }))), [resultado]);
   const partidasFenix = useMemo(() => partidasDoTermo(ctesFenix), [ctesFenix]);
@@ -1302,7 +1329,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
 
           {grupos.map((g) => (
             <section key={g.id} style={{ marginBottom: 12 }}>
-              <h3 style={{ fontSize: 13, margin: '0 0 6px', color: '#475569' }}>{g.titulo}</h3>
+              <h3 style={{ fontSize: 13, margin: '0 0 6px', color: '#475569', display: 'flex', gap: 8, alignItems: 'center' }}>
+                {g.titulo}
+                {g.id === 'compras' && <button type="button" className="btn-secondary" style={{ fontSize: 11, padding: '2px 8px' }} onClick={() => setCadastroComprasAberto(true)}>+ Fornecedores de compras</button>}
+              </h3>
               <div className="summary-strip audit-summary-grid">
                 {g.cards.map((c) => <CardFiltro key={c.id} card={c} grupo={g.id} linhas={c.linhas} ativo={escolhidos[g.id] === c.id} onClick={() => alternarCard(g.id, c.id)} />)}
               </div>
@@ -1333,6 +1363,8 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               <button type="button" className="btn-primary" style={{ background: '#04a484', borderColor: '#04a484' }} disabled={!resultado.some((l) => l.fatura)} onClick={gerarLaudo} title="Laudo visual das faturas do recorte: total, pago, programado no financeiro (protocolo com previsão) e em tratativa. Baixa um HTML que abre no navegador e imprime em PDF.">Gerar laudo</button>
               <button type="button" className="btn-secondary" disabled={!todosCtes.length || exportando || Boolean(progresso)} onClick={exportarTodosCtes} title={progresso ? 'Aguarde a verificação dos CT-es no SAP terminar' : 'Todos os CT-es das faturas do recorte, com a partida de cada um'}>Exportar CT-es ({inteiro(todosCtes.length)})</button>
               <button type="button" className="btn-secondary" disabled={!ctesSemPartida.length || exportando} onClick={exportarCtes}>Exportar CT-es sem partida ({inteiro(ctesSemPartida.length)})</button>
+              <button type="button" className="btn-secondary" disabled={!ctesCompras.length || exportando} onClick={exportarCtesCompras} title="CT-es do recorte cujo remetente (expedidor) é fornecedor de compras">Exportar CT-es de compras ({inteiro(ctesCompras.length)})</button>
+              <button type="button" className="btn-secondary" onClick={() => setCadastroComprasAberto(true)} title="Lista de CNPJs de fornecedores usada no card Compras">Fornecedores de compras</button>
               <button type="button" className="btn-secondary" disabled={!todosCtes.length || Boolean(progresso)} onClick={copiarNumerosCtes} title={progresso ? 'Aguarde a verificação dos CT-es terminar' : 'Copia os números dos CT-es das faturas da lista, no formato número-série (ex.: 1234-1), um por linha'}>Copiar CT-es ({inteiro(todosCtes.length)})</button>
               <button type="button" className="btn-secondary" disabled={!resultado.length} onClick={copiarNumeros}>Copiar números</button>
               <button type="button" className="btn-secondary" disabled={Boolean(progresso) || atualizando} onClick={atualizarDados} title="Busca de novo as faturas, os CT-es e as partidas no banco">{atualizando ? 'Atualizando...' : '↻ Atualizar dados'}</button>
@@ -1576,6 +1608,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
           </div>
         </>
       )}
+      {cadastroComprasAberto && <FornecedoresComprasCadastro modal onFechar={() => setCadastroComprasAberto(false)} />}
     </>
   );
 }

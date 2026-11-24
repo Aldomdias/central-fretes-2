@@ -4,6 +4,7 @@ import { ImportarFluxoCard } from './LotacaoOperacaoPage';
 import { carregarVinculosTransportadoras, salvarVinculosTransportadoras, removerVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import XmlMassaCard from '../components/XmlMassaCard';
 import ImportarDoccobCard from '../components/ImportarDoccobCard';
+import FornecedoresComprasCadastro from '../components/FornecedoresComprasCadastro';
 import SlaAuditoriaConfig from '../components/SlaAuditoriaConfig';
 import FilaProcessamentoConfig from '../components/FilaProcessamentoConfig';
 import { carregarSessao, PERFIS_USUARIO } from '../utils/authLocal';
@@ -1707,6 +1708,18 @@ export default function FerramentasPage({ transportadoras = [] }) {
           <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='excecoes-origem'?'△':'▽'}</span>
         </button>
         {abaAberta === 'excecoes-origem' && <ExcecoesOrigemCard transportadoras={transportadoras} />}
+      </div>
+
+      {/* Fornecedores de compras (expedidor do CT-e) */}
+      <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
+        <button type="button" onClick={() => toggleAba('fornecedores-compras')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='fornecedores-compras'?'1px solid var(--border-soft)':'none'}}>
+          <div>
+            <div className="panel-title" style={{margin:0}}>🛞 Fornecedores de compras</div>
+            <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>CNPJs do expedidor nas operações de compras; usado no card Compras do Diagnóstico de faturas</div>
+          </div>
+          <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='fornecedores-compras'?'△':'▽'}</span>
+        </button>
+        {abaAberta === 'fornecedores-compras' && <FornecedoresComprasCadastro />}
       </div>
 
       {/* Pendencias de canal */}
