@@ -154,6 +154,19 @@ function termoBuscaLike(valor = '') {
   return String(valor || '').trim().replace(/[%*,()]/g, ' ');
 }
 
+// Cidade com ou sem acento: troca vogais e "c" (com ou sem acento) pelo curinga
+// "_" do LIKE, assim "Itajai" casa com "ITAJAÍ" e "São Paulo" com "SAO PAULO".
+// Funciona tanto no ilike do PostgREST quanto no like da RPC (sem migration).
+function padraoCidadeSemAcento(valor = '') {
+  const texto = termoBuscaLike(valor);
+  if (!texto) return '';
+  return texto
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[_%]/g, ' ')
+    .replace(/[aeioucAEIOUC]/g, '_');
+}
+
 function somenteDigitosChave(valor = '') {
   return String(valor || '').replace(/\D/g, '');
 }
@@ -660,8 +673,8 @@ function aplicarFiltros(query, filtros = {}, opcoes = {}) {
   // Prefixos preservam o uso de indice. O curinga no inicio fazia o banco
   // varrer a tabela inteira mesmo com transportadora, origem e periodo.
   if (filtros.transportadoraRealizada) query = query.ilike('transportadora', `${filtros.transportadoraRealizada}%`);
-  if (filtros.origem) query = query.ilike('cidade_origem', `${filtros.origem}%`);
-  if (filtros.destino) query = query.ilike('cidade_destino', `${filtros.destino}%`);
+  if (filtros.origem) query = query.ilike('cidade_origem', `${padraoCidadeSemAcento(filtros.origem)}%`);
+  if (filtros.destino) query = query.ilike('cidade_destino', `${padraoCidadeSemAcento(filtros.destino)}%`);
   if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
   if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
   // Antes o canal era aplicado apenas no navegador, depois de baixar todo o
@@ -693,8 +706,8 @@ function aplicarFiltroCanalNormalizado(rows = [], filtros = {}) {
 async function consultarCtesOtimizado(supabase, filtros, limite, offset = 0) {
   return supabase.rpc('buscar_realizado_local_ctes_otimizado', {
     p_transportadora: filtros.transportadoraRealizada || '',
-    p_origem: filtros.origem || '',
-    p_destino: filtros.destino || '',
+    p_origem: padraoCidadeSemAcento(filtros.origem),
+    p_destino: padraoCidadeSemAcento(filtros.destino),
     p_canal: filtros.canal || '',
     p_uf_origem: filtros.ufOrigem || '',
     p_uf_destino: filtros.ufDestino || '',
