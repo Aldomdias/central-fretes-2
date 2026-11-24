@@ -10,7 +10,7 @@ export const FAIXAS_PADRAO_FRACIONADO = {
   ATACADO: '0-10, 10-20, 20-30, 30-50, 50-70, 70-100, 100-150, 150-200, 200-300, 300-500, 500-1000, 1000+',
 };
 export const CANAIS_FRACIONADO = { B2C: 'B2C', ATACADO: 'Atacado', AMBOS: 'B2C + Atacado' };
-export const MODALIDADES_FRACIONADO = { PERCENTUAL: 'Frete percentual', FAIXA_PESO: 'Frete por faixa de peso' };
+export const MODALIDADES_FRACIONADO = { PERCENTUAL: 'Frete percentual', FAIXA_PESO: 'Frete por faixa de peso', PROPRIA: 'Tabela própria (anexo + generalidades)' };
 
 // "0-2, 2-5, 100+" -> [{min,max,label}] (max null = faixa aberta, R$/kg excedente). [] se invalido.
 export function parseFaixasFracionado(texto) {

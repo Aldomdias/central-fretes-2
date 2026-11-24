@@ -13,7 +13,7 @@
  * Modelo padrao (mesmo layout dos templates Cantu importados em "Importar Template"):
  *   PERCENTUAL : UF destino x regiao (CAPITAL, INTERIOR 1..9, METROPOLITANA) -> frete % + minimo R$
  *   FAIXA_PESO : UF destino x faixa de peso x regiao -> frete R$ (faixa aberta = R$/kg excedente)
- * Dados gerais por canal: prazo, GRIS, ad valorem (+ minimo), pedagio, TAS, TDA, ICMS incluso, vigencia.
+ * Dados gerais por canal: prazo de pagamento, GRIS, ad valorem (+ minimo), pedagio, TAS, taxas adicionais, ICMS incluso, vigencia (TDA e por cidade, no atendimento).
  */
 import { createClient } from '@supabase/supabase-js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -26,7 +26,9 @@ const FAIXAS_PADRAO = {
   B2C: '0-2, 2-5, 5-10, 10-20, 20-30, 30-50, 50-100, 100+',
   ATACADO: '0-10, 10-20, 20-30, 30-50, 50-70, 70-100, 100-150, 150-200, 200-300, 300-500, 500-1000, 1000+',
 };
-const CHAVES_GERAIS = ['prazo', 'gris', 'advalorem', 'advalorem_min', 'pedagio', 'tas', 'tda', 'icms_incluso', 'vigencia'];
+const EXT_ANEXO = ['xlsx', 'xls', 'csv', 'pdf', 'doc', 'docx', 'zip'];
+const MAX_ANEXO_B64 = 4300000;
+const CHAVES_GERAIS = ['generalidades', 'prazo', 'gris', 'advalorem', 'advalorem_min', 'pedagio', 'tas', 'icms_incluso', 'vigencia'];
 
 function getClient() {
   const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -118,7 +120,7 @@ function origensDoConvite(convite) {
 function configDoConvite(convite) {
   return {
     canais: canaisDoConvite(convite),
-    modalidade: convite.modalidade === 'FAIXA_PESO' ? 'FAIXA_PESO' : 'PERCENTUAL',
+    modalidade: convite.modalidade === 'FAIXA_PESO' ? 'FAIXA_PESO' : convite.modalidade === 'PROPRIA' ? 'PROPRIA' : 'PERCENTUAL',
     faixas: faixasDoConvite(convite),
     ufs: UFS,
     regioes: REGIOES,
@@ -178,7 +180,7 @@ function paginaErro(titulo, detalhe) {
 function paginaPortal({ convite }) {
   const cancelado = convite.status === 'CANCELADO';
   const canaisTxt = canaisDoConvite(convite).map((c) => (c === 'ATACADO' ? 'Atacado' : 'B2C')).join(' + ');
-  const modTxt = convite.modalidade === 'FAIXA_PESO' ? 'Frete por faixa de peso' : 'Frete percentual';
+  const modTxt = convite.modalidade === 'FAIXA_PESO' ? 'Frete por faixa de peso' : convite.modalidade === 'PROPRIA' ? 'Tabela própria do transportador' : 'Frete percentual';
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>Tabela de frete fracionado — ${esc(convite.transportadora)}</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
@@ -204,6 +206,8 @@ th.sub{background:#b45309;top:34px;font-size:12px}
 td{padding:4px;border-bottom:1px solid #e2e8f0;background:#fff}td.fixo{font-weight:bold;background:#f1f5f9;position:sticky;left:0;z-index:1;padding:6px 10px;white-space:nowrap}
 td input{width:96px;padding:7px 8px;font-size:14px;text-align:right;border:2px solid #fcd34d;background:#fffbeb}
 td input.cheio{background:#ecfdf3;border-color:#86efac}
+select.fora{background:#fed7aa;border:2px solid #ea580c;color:#9a3412;font-weight:bold}
+.taxas{padding:12px;background:#f8fafc;border:2px solid #cbd5e1;border-radius:10px;margin:0 0 12px}.taxas .lin{display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap}.taxas input,.taxas select{width:auto}.taxas button.x{background:#fff;color:#b91c1c;border:2px solid #b91c1c;padding:6px 12px}
 .barra{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:14px 0 0;position:sticky;bottom:0;background:#fff;padding:12px 0;border-top:2px solid #e2e8f0}
 .fl{font-size:14px;font-weight:bold;color:#334155;display:flex;align-items:center;gap:6px;margin:0}.fl select{width:auto;min-width:200px}
 @media(max-width:700px){.corpo,header{padding:14px}}
@@ -227,7 +231,7 @@ ${cancelado ? '<div class="msg erro">Este link foi cancelado. Solicite um novo l
 var TOKEN=${JSON.stringify(convite.token)},NOME=${JSON.stringify(convite.transportadora)};
 ${montarPlanilhaFracionado.toString()}
 var CFG=null,ACESSO='',ST={},CANAL='',ORI=0,VISAO='tabela',UFSEL='',FUF='',CNPJ='',MUN=[],MUNIDX={},FREG='',FBUSCA='',FSEM=false;
-var GER=[['prazo','Prazo médio (dias)'],['gris','GRIS (%)'],['advalorem','Ad valorem (%)'],['advalorem_min','Ad valorem mínimo (R$)'],['pedagio','Pedágio (R$)'],['tas','TAS (R$)'],['tda','TDA (R$)']];
+var GER=[['prazo','Prazo de pagamento (dias)'],['gris','GRIS (%)'],['advalorem','Ad valorem (%)'],['advalorem_min','Ad valorem mínimo (R$)'],['pedagio','Pedágio (R$)'],['tas','TAS (R$)']];
 var COLS_A=[['tda','TDA (R$)'],['trt','TRT (R$)'],['suf','Suframa (R$)'],['out','Outras taxas (R$)']];
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function sa(s){return String(s==null?'':s).normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().trim()}
@@ -243,18 +247,20 @@ function identificar(){var b=document.getElementById('btnId');document.getElemen
   if(!nome||!email||cnpj.replace(/\\D/g,'').length!==14){document.getElementById('erroId').innerHTML='<div class="msg erro">Informe CNPJ (14 dígitos), nome e e-mail.</div>';return}
   b.disabled=true;api({acao:'identificar',cnpj:cnpj,nome:nome,email:email}).then(function(j){
     ACESSO=j.acesso;CFG=j.config;CNPJ=cnpj;ST={};
-    CFG.canais.forEach(function(c){ST[c]={g:Object.assign({},(j.gerais||{})[c]||{}),c:{},a:{}}});
+    CFG.canais.forEach(function(c){ST[c]={g:Object.assign({},(j.gerais||{})[c]||{}),c:{},a:{},f:[]}});
+    (j.anexos||[]).forEach(function(a){if(ST[a.canal])ST[a.canal].f.push(a)});
     (j.linhas||[]).forEach(function(l){var s=ST[l.canal],oi=CFG.origens.indexOf(l.origem||'');if(!s||oi<0)return;var fi='';
       if(CFG.modalidade==='FAIXA_PESO'){fi=-1;(CFG.faixas[l.canal]||[]).forEach(function(f,i){if(f.label===l.faixa)fi=i});if(fi<0)return}
       s.c[oi+'|'+l.uf_destino+'|'+l.regiao+'|'+fi]={v:fmtIn(l.frete_valor),p:fmtIn(l.frete_percentual),m:fmtIn(l.frete_minimo)}});
     (j.atendimento||[]).forEach(function(a){var s=ST[a.canal],oi=CFG.origens.indexOf(a.origem||'');if(!s||oi<0)return;
       s.a[oi+'|'+a.ibge]={r:a.regiao||'',p:fmtIn(a.prazo_dias),tda:fmtIn(a.tda),trt:fmtIn(a.trt),suf:fmtIn(a.suframa),out:fmtIn(a.outras_taxas)}});
     document.getElementById('telaId').style.display='none';montar(j.status);
+    if(CFG.modalidade==='PROPRIA')return;
     api({acao:'municipios',acesso:ACESSO}).then(function(m){MUN=m.m.map(function(x){return{i:x[0],u:x[1],c:x[2],n:sa(x[2])}});MUN.forEach(function(x){MUNIDX[x.i]=x});render()}).catch(function(e){document.getElementById('msgTab').innerHTML='<div class="msg erro">Não consegui carregar a lista de cidades: '+esc(e.message)+'</div>'})
   }).catch(function(e){document.getElementById('erroId').innerHTML='<div class="msg erro">'+esc(e.message)+'</div>';b.disabled=false})}
 function montar(status){var t=document.getElementById('telaTab');t.style.display='block';CANAL=CFG.canais[0];UFSEL=CFG.ufs[0];ORI=0;
   var pct=CFG.modalidade==='PERCENTUAL';
-  var h='<div class="regra"><b>Como preencher (2 passos por canal'+(CFG.origens.length>1?' e por origem':'')+')</b><br>• <b>1. Tabela de frete:</b> '+(pct?'informe, por <b>UF de destino</b> e <b>região</b> (Capital, Interior 1 a 9, Metropolitana), o <b>frete em % sobre o valor da NF</b> e o <b>mínimo em R$</b>.':'escolha a <b>UF de destino</b> e informe o <b>frete em R$</b> de cada <b>faixa de peso</b> por <b>região</b>. Na última linha (faixa aberta) informe o <b>R$ por kg excedente</b>.')+'<br>• <b>2. Atendimento:</b> para cada <b>cidade de destino</b> informe a <b>região (rota)</b> a que ela pertence e o <b>prazo de entrega</b> em dias (TDA, TRT, Suframa e outras taxas são opcionais). Cidades sem prazo são consideradas não atendidas. Use os filtros de UF, busca e região, e o botão para aplicar região/prazo a várias cidades de uma vez.<br>• Preencha os <b>dados gerais</b> (prazo, GRIS, ad valorem, pedágio, TAS, TDA) e informe se os valores <b>já incluem ICMS</b>.'+(CFG.origens.length>1?'<br>• Use o filtro <b>Origem</b> para preencher cada origem; <b>Copiar esta origem para as demais</b> vale se a tabela for igual.':'')+'<br>• Prefere o Excel? <b>Baixe o modelo</b> (da origem e do canal selecionados), preencha e <b>importe</b> de volta. Clique em <b>Salvar rascunho</b> para continuar depois e em <b>Enviar tabela</b> quando concluir.</div>'
+  var h=(CFG.modalidade==='PROPRIA'?'<div class="regra"><b>Como funciona</b><br>• <b>Anexe a sua tabela de frete</b> (Excel, CSV, PDF, Word ou ZIP) e descreva as <b>generalidades</b>: taxas, restrições, regras de cobrança, prazos e o que mais for relevante.<br>• As generalidades serão <b>avaliadas pelo time de suprimentos</b> para definir se entram ou não no nosso escopo.<br>• Clique em <b>Salvar rascunho</b> para continuar depois e em <b>Enviar</b> quando concluir.</div>':'<div class="regra"><b>Como preencher (2 passos por canal'+(CFG.origens.length>1?' e por origem':'')+')</b><br>• <b>1. Tabela de frete:</b> '+(pct?'informe, por <b>UF de destino</b> e <b>região</b> (Capital, Interior 1 a 9, Metropolitana), o <b>frete em % sobre o valor da NF</b> e o <b>mínimo em R$</b>.':'escolha a <b>UF de destino</b> e informe o <b>frete em R$</b> de cada <b>faixa de peso</b> por <b>região</b>. Na última linha (faixa aberta) informe o <b>R$ por kg excedente</b>.')+'<br>• <b>2. Atendimento:</b> para cada <b>cidade de destino</b> informe a <b>região (rota)</b> a que ela pertence e o <b>prazo de entrega</b> em dias (TDA, TRT, Suframa e outras taxas são opcionais). A lista de regiões mostra primeiro as que você preencheu na tabela; se escolher outra, o campo fica <b style="color:#ea580c">laranja</b>. Cidades sem prazo são consideradas não atendidas. Use os filtros de UF, busca e região, e o botão para aplicar região/prazo a várias cidades de uma vez.<br>• Preencha os <b>dados gerais</b> (prazo de pagamento, GRIS, ad valorem, pedágio, TAS), inclua outras <b>taxas</b> em <b>+ Incluir taxa</b> e informe se os valores <b>já incluem ICMS</b>. A TDA é por rota final e fica no passo 2 (Atendimento).'+(CFG.origens.length>1?'<br>• Use o filtro <b>Origem</b> para preencher cada origem; <b>Copiar esta origem para as demais</b> vale se a tabela for igual.':'')+'<br>• Prefere o Excel? <b>Baixe o modelo</b> (da origem e do canal selecionados), preencha e <b>importe</b> de volta. Clique em <b>Salvar rascunho</b> para continuar depois e em <b>Enviar tabela</b> quando concluir.</div>')
   +(status==='ENVIADO'?'<div class="msg ok">Você já enviou esta tabela. Se alterar valores, clique em enviar novamente para atualizar.</div>':'')
   +'<div class="abas" id="abas"></div><div id="msgTab"></div><div id="conteudo"></div>'
   +'<div class="barra"><button class="sec" onclick="enviar(false)">Salvar rascunho</button><button onclick="enviar(true)">Enviar tabela</button><span id="cont"></span></div>';
@@ -263,7 +269,7 @@ function abas(){var a=document.getElementById('abas');if(CFG.canais.length<2){a.
   a.innerHTML=CFG.canais.map(function(c){return '<button class="'+(c===CANAL?'on':'')+'" onclick="setCanal(\\''+c+'\\')">'+nomeCanal(c)+'</button>'}).join('')}
 function setCanal(c){CANAL=c;render()}
 function setVisao(v){VISAO=v;render()}
-function render(){if(!CFG)return;abas();var s=ST[CANAL],h='';
+function render(){if(!CFG)return;if(CFG.modalidade==='PROPRIA'){renderPropria();return}abas();var s=ST[CANAL],h='';
   h+='<div class="ferr">';
   if(CFG.origens.length>1)h+='<label class="fl">Origem <select onchange="ORI=Number(this.value);render()">'+CFG.origens.map(function(o,i){return '<option value="'+i+'"'+(i===ORI?' selected':'')+'>'+esc(o)+'</option>'}).join('')+'</select></label><button class="sec" onclick="copiarOrigem()">Copiar esta origem para as demais</button>';
   else if(CFG.origens[0])h+='<span class="fl">Origem: '+esc(CFG.origens[0])+'</span>';
@@ -273,15 +279,51 @@ function render(){if(!CFG)return;abas();var s=ST[CANAL],h='';
     h+='<div class="ger">'+GER.map(function(g){return '<div><label>'+g[1]+'</label><input data-g="'+g[0]+'" value="'+esc(s.g[g[0]]||'')+'" inputmode="decimal"></div>'}).join('')
       +'<div><label>Valores já incluem ICMS?</label><select data-g="icms_incluso"><option value="">Selecione…</option><option value="SIM"'+(s.g.icms_incluso==='SIM'?' selected':'')+'>Sim, já incluem</option><option value="NAO"'+(s.g.icms_incluso==='NAO'?' selected':'')+'>Não, ICMS por fora</option></select></div>'
       +'<div><label>Vigência a partir de</label><input type="date" data-g="vigencia" value="'+esc(s.g.vigencia||'')+'"></div></div>';
+    h+=blocoTaxas(s);
     h+=CFG.modalidade==='PERCENTUAL'?gradePct():gradeFaixa();
   }else h+=viewCidades();
   var c=document.getElementById('conteudo');c.innerHTML=h;
   c.oninput=function(ev){var t=ev.target;if(t.getAttribute('data-g')){ST[CANAL].g[t.getAttribute('data-g')]=t.value;return}
-    var ka=t.getAttribute('data-a');if(ka){var xa=ST[CANAL].a[ka]||(ST[CANAL].a[ka]={});xa[t.getAttribute('data-f')]=t.value;if(t.tagName==='INPUT')t.className=t.value?'cheio':'';resumo();return}
+    var kt=t.getAttribute('data-t');if(kt!==null&&kt!==undefined){var tx=ST[CANAL].g.taxas||(ST[CANAL].g.taxas=[]);var ti=Number(kt);if(tx[ti])tx[ti][t.getAttribute('data-f')]=t.value;return}
+    var ka=t.getAttribute('data-a');if(ka){var xa=ST[CANAL].a[ka]||(ST[CANAL].a[ka]={});xa[t.getAttribute('data-f')]=t.value;if(t.tagName==='INPUT')t.className=t.value?'cheio':'';else if(t.getAttribute('data-f')==='r'){var rt0=regTab(UFSEL);t.className=(t.value&&rt0&&!rt0[t.value])?'fora':''}resumo();return}
     var k=t.getAttribute('data-k');if(!k)return;var f=t.getAttribute('data-f'),x=ST[CANAL].c[k]||(ST[CANAL].c[k]={});x[f]=t.value;t.className=t.value?'cheio':'';resumo()};
   c.onchange=function(ev){var t=ev.target;if(t.getAttribute('data-g'))ST[CANAL].g[t.getAttribute('data-g')]=t.value;else if(t.getAttribute('data-a'))c.oninput(ev)};
   if(VISAO==='cidades')filtraCidades();
   resumo()}
+function renderPropria(){abas();var s=ST[CANAL],h='';
+  h+='<div class="msg aviso"><b>Atenção:</b> as generalidades informadas aqui serão <b>avaliadas pelo time de suprimentos</b> para definir se entram ou não no nosso escopo. O envio não garante a aceitação das condições.</div>';
+  h+='<div class="taxas"><b>1. Anexe a sua tabela de frete — '+nomeCanal(CANAL)+'</b><br><small style="color:#64748b">Excel, CSV, PDF, Word ou ZIP · até 3 MB por arquivo.</small><div style="margin:8px 0">';
+  if(!s.f.length)h+='<div style="color:#64748b;font-size:14px">Nenhum arquivo anexado ainda.</div>';
+  s.f.forEach(function(a,i){h+='<div class="lin">📎 <b>'+esc(a.nome)+'</b> <span style="color:#64748b">('+Math.max(1,Math.round((a.tamanho||0)/1024))+' KB)</span><button class="x" onclick="removerAnexo('+i+')">Remover</button></div>'});
+  h+='</div><input type="file" id="arqp" multiple accept=".xlsx,.xls,.csv,.pdf,.doc,.docx,.zip" onchange="anexar(this)" style="max-width:420px"></div>';
+  h+='<div class="ger"><div><label>Prazo de pagamento (dias)</label><input data-g="prazo" value="'+esc(s.g.prazo||'')+'" inputmode="decimal"></div>'
+    +'<div><label>Valores já incluem ICMS?</label><select data-g="icms_incluso"><option value="">Selecione…</option><option value="SIM"'+(s.g.icms_incluso==='SIM'?' selected':'')+'>Sim, já incluem</option><option value="NAO"'+(s.g.icms_incluso==='NAO'?' selected':'')+'>Não, ICMS por fora</option></select></div>'
+    +'<div><label>Vigência a partir de</label><input type="date" data-g="vigencia" value="'+esc(s.g.vigencia||'')+'"></div></div>';
+  h+=blocoTaxas(s);
+  h+='<div class="taxas"><b>2. Generalidades</b><br><small style="color:#64748b">Descreva condições da sua tabela: taxas e regras de cobrança, restrições de atendimento, mínimos, prazos, reajustes, exceções.</small><textarea data-g="generalidades" rows="9" style="width:100%;margin-top:8px;padding:10px;border:2px solid #fcd34d;border-radius:8px;font-size:15px;font-family:inherit">'+esc(s.g.generalidades||'')+'</textarea></div>';
+  var c=document.getElementById('conteudo');c.innerHTML=h;
+  c.oninput=function(ev){var t=ev.target;if(t.getAttribute('data-g')){ST[CANAL].g[t.getAttribute('data-g')]=t.value;return}
+    var kt=t.getAttribute('data-t');if(kt!==null&&kt!==undefined){var tx=ST[CANAL].g.taxas||(ST[CANAL].g.taxas=[]);var ti=Number(kt);if(tx[ti])tx[ti][t.getAttribute('data-f')]=t.value}};
+  resumo()}
+function anexar(inp){var fs=Array.prototype.slice.call(inp.files||[]),canal=CANAL,m=document.getElementById('msgTab');inp.value='';m.innerHTML='';
+  fs.forEach(function(f){
+    if(f.size>3*1024*1024){m.innerHTML+='<div class="msg erro">'+esc(f.name)+' passa de 3 MB. Compacte (ZIP) ou divida o arquivo.</div>';return}
+    var rd=new FileReader();rd.onload=function(ev){var b64=String(ev.target.result).split(',')[1]||'';
+      api({acao:'anexar',acesso:ACESSO,canal:canal,nome:f.name,tipo:f.type,dados:b64}).then(function(j){ST[canal].f.push(j.anexo);render();m.innerHTML+='<div class="msg ok">'+esc(f.name)+' anexado.</div>'})
+        .catch(function(e){m.innerHTML+='<div class="msg erro">'+esc(f.name)+': '+esc(e.message)+'</div>'})};
+    rd.readAsDataURL(f)})}
+function removerAnexo(i){var a=ST[CANAL].f[i];if(!a||!confirm('Remover o arquivo '+a.nome+'?'))return;
+  api({acao:'remover_anexo',acesso:ACESSO,id:a.id}).then(function(){ST[CANAL].f.splice(i,1);render()}).catch(function(e){document.getElementById('msgTab').innerHTML='<div class="msg erro">'+esc(e.message)+'</div>'})}
+function blocoTaxas(s){var tx=s.g.taxas||[];
+  var h='<div class="taxas"><b>Taxas adicionais</b> <span style="color:#64748b;font-size:13px">(TRT, Suframa, reentrega, agendamento… A TDA é por rota final e fica no passo 2.)</span><datalist id="dlTaxas"><option value="TRT"><option value="Suframa"><option value="TDA"><option value="Reentrega"><option value="Agendamento"><option value="Taxa de despacho"><option value="Paletização"><option value="Devolução"></datalist>';
+  tx.forEach(function(x,i){h+='<div class="lin"><input list="dlTaxas" data-t="'+i+'" data-f="n" placeholder="Nome da taxa" value="'+esc(x.n||'')+'" style="width:230px"><input data-t="'+i+'" data-f="v" placeholder="Valor" inputmode="decimal" value="'+esc(x.v||'')+'" style="width:110px"><select data-t="'+i+'" data-f="u"><option value="R$"'+(x.u==='R$'||!x.u?' selected':'')+'>R$ por CT-e</option><option value="%"'+(x.u==='%'?' selected':'')+'>% sobre a NF</option><option value="R$/KG"'+(x.u==='R$/KG'?' selected':'')+'>R$ por kg</option></select><button class="x" onclick="delTaxa('+i+')">Remover</button></div>'});
+  return h+'<button class="sec" onclick="addTaxa()">+ Incluir taxa</button></div>'}
+function addTaxa(){var g=ST[CANAL].g;(g.taxas||(g.taxas=[])).push({n:'',v:'',u:'R$'});render()}
+function delTaxa(i){var g=ST[CANAL].g;if(g.taxas)g.taxas.splice(i,1);render()}
+function regTab(uf){var s=ST[CANAL],o={},n=0,pre=ORI+'|'+uf+'|';Object.keys(s.c).forEach(function(k){if(k.indexOf(pre)===0&&cheio(s.c[k])){var r=k.split('|')[2];if(!o[r]){o[r]=1;n++}}});return n?o:null}
+function regOpts(sel,rt){function op(r){return '<option value="'+r+'"'+(sel===r?' selected':'')+'>'+r+'</option>'}
+  if(!rt)return '<option value=""></option>'+CFG.regioes.map(op).join('');
+  return '<option value=""></option><optgroup label="Na sua tabela">'+CFG.regioes.filter(function(r){return rt[r]}).map(op).join('')+'</optgroup><optgroup label="Sem valor na tabela (atenção)">'+CFG.regioes.filter(function(r){return !rt[r]}).map(op).join('')+'</optgroup>'}
 function gradePct(){var s=ST[CANAL],R=CFG.regioes;
   var h='<div class="ferr"><label class="fl">UF destino <select onchange="FUF=this.value;render()"><option value="">Todas as UFs</option>'+CFG.ufs.map(function(u){return '<option value="'+u+'"'+(u===FUF?' selected':'')+'>'+u+(ufTem(u)?' ✔':'')+'</option>'}).join('')+'</select></label></div>';
   h+='<div class="tw"><table><thead><tr><th rowspan="2" style="left:0;z-index:3">UF destino</th>'+R.map(function(r){return '<th colspan="2">'+r+'</th>'}).join('')+'</tr><tr>'+R.map(function(){return '<th class="sub">Frete (%)</th><th class="sub">Mínimo (R$)</th>'}).join('')+'</tr></thead><tbody>';
@@ -306,14 +348,15 @@ function copiarOrigem(){if(!confirm('Copiar a tabela e o atendimento da origem "
 // ---- Atendimento por cidade ----
 function viewCidades(){var s=ST[CANAL];if(!MUN.length)return '<div class="msg info">Carregando a lista de cidades…</div>';
   var ufs={};MUN.forEach(function(m){ufs[m.u]=1});var lista=CFG.ufs.filter(function(u){return ufs[u]});if(lista.indexOf(UFSEL)<0)UFSEL=lista[0];
-  var h='<div class="ferr"><label class="fl">UF destino <select onchange="UFSEL=this.value;FBUSCA=\\'\\';FREG=\\'\\';render()">'+lista.map(function(u){return '<option value="'+u+'"'+(u===UFSEL?' selected':'')+'>'+u+'</option>'}).join('')+'</select></label>'
+  var rt=regTab(UFSEL),nfora=0;MUN.forEach(function(m){if(m.u===UFSEL){var xr=(s.a[ORI+'|'+m.i]||{}).r;if(xr&&rt&&!rt[xr])nfora++}});
+  var h=(rt?'<div class="msg '+(nfora?'aviso':'info')+'">Regiões preenchidas na sua tabela para '+UFSEL+': <b>'+Object.keys(rt).join(', ')+'</b>.'+(nfora?' <b>'+nfora+' cidade(s)</b> estão com região sem valor na tabela (campo laranja).':'')+'</div>':'<div class="msg info">Você ainda não preencheu a tabela de frete da UF '+UFSEL+'. Preencha o passo 1 para a lista mostrar só as suas regiões.</div>')+'<div class="ferr"><label class="fl">UF destino <select onchange="UFSEL=this.value;FBUSCA=\\'\\';FREG=\\'\\';render()">'+lista.map(function(u){return '<option value="'+u+'"'+(u===UFSEL?' selected':'')+'>'+u+'</option>'}).join('')+'</select></label>'
     +'<input type="text" id="fbusca" placeholder="Buscar cidade…" value="'+esc(FBUSCA)+'" oninput="FBUSCA=this.value;filtraCidades()" style="width:220px">'
     +'<label class="fl">Região <select id="freg" onchange="FREG=this.value;filtraCidades()"><option value="">Todas</option><option value="__SEM">Sem região</option>'+CFG.regioes.map(function(r){return '<option value="'+r+'"'+(r===FREG?' selected':'')+'>'+r+'</option>'}).join('')+'</select></label>'
     +'<label class="fl"><input type="checkbox" id="fsem" style="width:auto"'+(FSEM?' checked':'')+' onchange="FSEM=this.checked;filtraCidades()"> só sem prazo</label><span id="ncid" class="fl"></span></div>';
-  h+='<div class="ferr"><b>Aplicar às cidades visíveis (só campos vazios):</b><select id="bkreg" style="width:auto"><option value="">Região…</option>'+CFG.regioes.map(function(r){return '<option value="'+r+'">'+r+'</option>'}).join('')+'</select><input id="bkpz" placeholder="Prazo (dias)" inputmode="numeric" style="width:130px"><button class="sec" onclick="aplicarLote()">Aplicar</button></div>';
+  h+='<div class="ferr"><b>Aplicar às cidades visíveis (só campos vazios):</b><select id="bkreg" style="width:auto">'+regOpts('',rt)+'</select><input id="bkpz" placeholder="Prazo (dias)" inputmode="numeric" style="width:130px"><button class="sec" onclick="aplicarLote()">Aplicar</button></div>';
   h+='<div class="tw"><table><thead><tr><th style="left:0;z-index:3">IBGE</th><th>Cidade</th><th class="sub">Região (rota)</th><th class="sub">Prazo (dias)</th>'+COLS_A.map(function(c){return '<th class="sub">'+c[1]+'</th>'}).join('')+'</tr></thead><tbody>';
   MUN.forEach(function(m){if(m.u!==UFSEL)return;var k=ORI+'|'+m.i,x=s.a[k]||{};
-    h+='<tr data-i="'+m.i+'" data-n="'+esc(m.n)+'"><td class="fixo">'+m.i+'</td><td style="white-space:nowrap;font-weight:bold;padding:4px 10px">'+esc(m.c)+'</td><td><select data-a="'+k+'" data-f="r" style="width:130px">'+'<option value=""></option>'+CFG.regioes.map(function(r){return '<option value="'+r+'"'+(x.r===r?' selected':'')+'>'+r+'</option>'}).join('')+'</select></td>'
+    h+='<tr data-i="'+m.i+'" data-n="'+esc(m.n)+'"><td class="fixo">'+m.i+'</td><td style="white-space:nowrap;font-weight:bold;padding:4px 10px">'+esc(m.c)+'</td><td><select data-a="'+k+'" data-f="r" class="'+(x.r&&rt&&!rt[x.r]?'fora':'')+'" style="width:140px">'+regOpts(x.r,rt)+'</select></td>'
       +'<td><input data-a="'+k+'" data-f="p" class="'+(x.p?'cheio':'')+'" value="'+esc(x.p||'')+'" inputmode="numeric" style="width:80px"></td>'
       +COLS_A.map(function(c){return '<td><input data-a="'+k+'" data-f="'+c[0]+'" class="'+(x[c[0]]?'cheio':'')+'" value="'+esc(x[c[0]]||'')+'" inputmode="decimal"></td>'}).join('')+'</tr>'});
   return h+'</tbody></table></div>'}
@@ -330,6 +373,7 @@ function aplicarLote(){var reg=document.getElementById('bkreg').value,pz=documen
     if(reg&&!x.r){x.r=reg;n++}if(pz&&!num(x.p)&&num(pz)>0){x.p=pz;n++}});
   render();document.getElementById('msgTab').innerHTML='<div class="msg ok">Aplicado em '+n+' campo(s) das cidades visíveis.</div>'}
 function resumo(){var r=document.getElementById('resumo'),ct=document.getElementById('cont');var linhas=[];
+  if(CFG.modalidade==='PROPRIA'){if(ct)ct.textContent=CFG.canais.map(function(c){return nomeCanal(c)+': '+ST[c].f.length+' arquivo(s)'}).join('   |   ');return}
   CFG.canais.forEach(function(c){var s=ST[c],n=0,nc=0;Object.keys(s.c).forEach(function(k){if(cheio(s.c[k]))n++});Object.keys(s.a).forEach(function(k){if(cidadeOk(s.a[k]))nc++});linhas.push(nomeCanal(c)+': '+n+' células · '+nc+' cidades com região e prazo')});
   if(ct)ct.textContent=linhas.join('   |   ');
   if(r){var s2=ST[CANAL],pre=ORI+'|',n2=0,c2=0;Object.keys(s2.c).forEach(function(k){if(k.indexOf(pre)===0&&cheio(s2.c[k]))n2++});Object.keys(s2.a).forEach(function(k){if(k.indexOf(pre)===0&&cidadeOk(s2.a[k]))c2++});r.textContent='Esta origem: '+n2+' células · '+c2+' cidades'}}
@@ -339,7 +383,7 @@ function montarPayload(){var out={};CFG.canais.forEach(function(c){var s=ST[c],o
   Object.keys(s.a).forEach(function(k){var x=s.a[k],p=k.split('|');if(!x.r&&!(num(x.p)>0))return;
     ori[oriNome(Number(p[0]))].atendimento.push({i:p[1],r:x.r||'',p:num(x.p),tda:num(x.tda),trt:num(x.trt),suf:num(x.suf),out:num(x.out)})});
   out[c]={gerais:s.g,origens:ori}});return out}
-function validar(final){var out=[];CFG.canais.forEach(function(c){var s=ST[c],n=0,nc=0;Object.keys(s.c).forEach(function(k){var x=s.c[k];if(cheio(x)){n++;
+function validar(final){var out=[];if(CFG.modalidade==='PROPRIA'){if(final)CFG.canais.forEach(function(c){var s=ST[c];if(!s.f.length)out.push(nomeCanal(c)+': anexe a tabela de frete.');if(!s.g.icms_incluso)out.push(nomeCanal(c)+': informe se os valores já incluem ICMS.')});return out}CFG.canais.forEach(function(c){var s=ST[c],n=0,nc=0;Object.keys(s.c).forEach(function(k){var x=s.c[k];if(cheio(x)){n++;
     ['v','p','m'].forEach(function(f){if(x[f]&&!(num(x[f])>=0))out.push(nomeCanal(c)+': valor inválido em '+k.replace(/\\|/g,' / ')+'.')});
     if(num(x.p)>100)out.push(nomeCanal(c)+': percentual acima de 100% em '+k.replace(/\\|/g,' / ')+'.')}});
     Object.keys(s.a).forEach(function(k){if(cidadeOk(s.a[k]))nc++});
@@ -348,7 +392,7 @@ function enviar(final){var m=document.getElementById('msgTab');m.innerHTML='';va
   if(erros.length){m.innerHTML='<div class="msg erro">'+erros.slice(0,6).map(esc).join('<br>')+'</div>';window.scrollTo(0,0);return}
   if(final&&!confirm('Enviar a tabela para análise? Você poderá reenviar enquanto o link estiver válido.'))return;
   api({acao:'salvar',acesso:ACESSO,canais:montarPayload(),enviar:final,origem_envio:'PORTAL'}).then(function(j){
-    m.innerHTML='<div class="msg ok">'+(final?'✅ Tabela enviada ('+j.salvas+' células e '+j.cidades+' cidades). Obrigado! O time de suprimentos já recebeu.':'Rascunho salvo ('+j.salvas+' células e '+j.cidades+' cidades).')+'</div>';window.scrollTo(0,0)}).catch(function(e){m.innerHTML='<div class="msg erro">'+esc(e.message)+'</div>';window.scrollTo(0,0)})}
+    m.innerHTML='<div class="msg ok">'+(final?'✅ Tabela enviada'+(CFG.modalidade==='PROPRIA'?'':' ('+j.salvas+' células e '+j.cidades+' cidades)')+'. Obrigado! O time de suprimentos já recebeu'+(CFG.modalidade==='PROPRIA'?' e vai avaliar as generalidades informadas.':'.'):'Rascunho salvo'+(CFG.modalidade==='PROPRIA'?'.':' ('+j.salvas+' células e '+j.cidades+' cidades).'))+'</div>';window.scrollTo(0,0)}).catch(function(e){m.innerHTML='<div class="msg erro">'+esc(e.message)+'</div>';window.scrollTo(0,0)})}
 // ---- Excel (mesmo layout dos templates padrao: FICHA DE CADASTRO + TABELA + ATENDIMENTO) ----
 function faixaIdx(label){var fi=-1;CFG.faixas[CANAL].forEach(function(f,i){if(f.label===label)fi=i});return fi}
 function baixarModelo(){if(!window.XLSX){alert('Não foi possível carregar o recurso de Excel. Verifique sua conexão.');return}
@@ -368,9 +412,10 @@ function importar(inp){var f=inp.files&&inp.files[0],m=document.getElementById('
     var M=XLSX.utils.sheet_to_json(wb.Sheets[nTab],{header:1,defval:''}),s=ST[CANAL],ok=0,okc=0,aviso='';
     if(nFic){XLSX.utils.sheet_to_json(wb.Sheets[nFic],{header:1,defval:''}).forEach(function(row){var k=sa(row[0]),val=row[1];if(val===''||val==null)return;
       if(k.indexOf('CANAL')===0){var cv=sa(val);if((cv.indexOf('ATACADO')>=0||cv.indexOf('B2B')>=0)&&CANAL!=='ATACADO')aviso='A ficha da planilha indica ATACADO, mas você está na aba '+nomeCanal(CANAL)+'.';if(cv.indexOf('B2C')>=0&&CANAL!=='B2C')aviso='A ficha da planilha indica B2C, mas você está na aba '+nomeCanal(CANAL)+'.';return}
+      if(k.indexOf('TAXA ADICIONAL')===0){var mt=String(row[0]).match(/:\\s*(.*?)\\s*\\((R\\$\\/KG|R\\$|%)\\)\\s*$/i);if(mt&&num(val)!=null){s.g.taxas=(s.g.taxas||[]).filter(function(q){return sa(q.n)!==sa(mt[1])});s.g.taxas.push({n:mt[1],v:fmtIn(num(val)),u:mt[2].toUpperCase()})}return}
       if(k.indexOf('PRAZO')===0)s.g.prazo=fmtIn(num(val));else if(k.indexOf('GRIS')===0)s.g.gris=fmtIn(num(val));
       else if(k.indexOf('AD VALOREM MIN')===0)s.g.advalorem_min=fmtIn(num(val));else if(k.indexOf('AD VALOREM')===0||k.indexOf('ADVALOREM')===0)s.g.advalorem=fmtIn(num(val));
-      else if(k.indexOf('PEDAGIO')===0)s.g.pedagio=fmtIn(num(val));else if(k.indexOf('TAS')===0)s.g.tas=fmtIn(num(val));else if(k.indexOf('TDA')===0)s.g.tda=fmtIn(num(val));
+      else if(k.indexOf('PEDAGIO')===0)s.g.pedagio=fmtIn(num(val));else if(k.indexOf('TAS')===0)s.g.tas=fmtIn(num(val));
       else if(k.indexOf('ICMS')===0){var iv=sa(val);s.g.icms_incluso=(iv==='SIM'||iv==='S')?'SIM':(iv==='NAO'||iv==='N')?'NAO':s.g.icms_incluso}
       else if(k.indexOf('VIGENCIA')===0&&/^\\d{4}-\\d{2}-\\d{2}/.test(String(val)))s.g.vigencia=String(val).slice(0,10)})}
     if(CFG.modalidade==='PERCENTUAL'){var ri=-1;for(var i=0;i<Math.min(M.length,15);i++){if(M[i].some(function(c){return detReg(c)})){ri=i;break}}
@@ -417,10 +462,21 @@ function limparGerais(g) {
   for (const k of CHAVES_GERAIS) {
     const v = g?.[k];
     if (v === undefined || v === null || v === '') continue;
+    if (k === 'generalidades') { out[k] = String(v).slice(0, 5000); continue; }
     if (k === 'icms_incluso') { if (v === 'SIM' || v === 'NAO') out[k] = v; continue; }
     if (k === 'vigencia') { if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) out[k] = String(v); continue; }
     const n = numero(v);
     if (n !== null && n >= 0) out[k] = n;
+  }
+  if (Array.isArray(g?.taxas)) {
+    const taxas = [];
+    for (const t of g.taxas.slice(0, 30)) {
+      const n = String(t?.n || '').trim().slice(0, 60);
+      const v = numero(t?.v);
+      const u = ['R$', '%', 'R$/KG'].includes(String(t?.u)) ? String(t.u) : 'R$';
+      if (n && v !== null && v >= 0) taxas.push({ n, v, u });
+    }
+    if (taxas.length) out.taxas = taxas;
   }
   return out;
 }
@@ -469,17 +525,48 @@ export default async function handler(req, res) {
         primeiro_acesso_em: convite.primeiro_acesso_em || agora, ultimo_acesso_em: agora,
         status: convite.status === 'ENVIADO' ? 'ENVIADO' : 'EM_PREENCHIMENTO',
       }).eq('id', convite.id);
+      const anexos = convite.modalidade === 'PROPRIA'
+        ? await todas(() => supabase.from('fracionado_anexos').select('id,canal,nome,tamanho').eq('convite_id', convite.id).order('created_at'))
+        : [];
       const [linhas, atendimento] = await Promise.all([
         todas(() => supabase.from('fracionado_respostas').select('canal,origem,uf_destino,regiao,faixa,frete_valor,frete_percentual,frete_minimo').eq('convite_id', convite.id).order('id')),
         todas(() => supabase.from('fracionado_atendimento').select('canal,origem,ibge,regiao,prazo_dias,tda,trt,suframa,outras_taxas').eq('convite_id', convite.id).order('id')),
       ]);
-      return enviarJson(res, 200, { acesso: gerarAcesso(token, segredo), config, gerais: convite.dados_gerais || {}, linhas, atendimento, status: convite.status });
+      return enviarJson(res, 200, { acesso: gerarAcesso(token, segredo), config, gerais: convite.dados_gerais || {}, linhas, atendimento, anexos, status: convite.status });
     }
 
     if (body.acao === 'municipios') {
       if (!acessoValido(token, body.acesso, segredo)) return enviarJson(res, 401, { erro: 'Sessão expirada. Recarregue a página e se identifique novamente.' });
       const mun = await carregarMunicipios(supabase);
       return enviarJson(res, 200, { m: mun.map((m) => [m.i, m.u, m.c]) });
+    }
+
+    if (body.acao === 'anexar') {
+      if (!acessoValido(token, body.acesso, segredo)) return enviarJson(res, 401, { erro: 'Sessão expirada. Recarregue a página e se identifique novamente.' });
+      if (config.modalidade !== 'PROPRIA') return enviarJson(res, 400, { erro: 'Este link não aceita anexos.' });
+      const canal = String(body.canal || '');
+      if (!config.canais.includes(canal)) return enviarJson(res, 400, { erro: 'Canal inválido.' });
+      const nome = String(body.nome || '').replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 180);
+      const ext = nome.includes('.') ? nome.split('.').pop().toLowerCase() : '';
+      if (!nome || !EXT_ANEXO.includes(ext)) return enviarJson(res, 400, { erro: 'Formato não aceito. Envie Excel, CSV, PDF, Word ou ZIP.' });
+      const dados = String(body.dados || '');
+      if (!dados || dados.length > MAX_ANEXO_B64 || /[^A-Za-z0-9+/=]/.test(dados)) return enviarJson(res, 400, { erro: 'Arquivo inválido ou maior que 3 MB.' });
+      const { count } = await supabase.from('fracionado_anexos').select('id', { count: 'exact', head: true }).eq('convite_id', convite.id);
+      if ((count || 0) >= 20) return enviarJson(res, 400, { erro: 'Limite de 20 arquivos atingido.' });
+      const tamanho = Math.floor((dados.length * 3) / 4);
+      const { data: ins, error: eAn } = await supabase.from('fracionado_anexos').insert({
+        convite_id: convite.id, canal, nome, tipo: String(body.tipo || '').slice(0, 100), tamanho, conteudo: dados,
+      }).select('id,canal,nome,tamanho').single();
+      if (eAn) throw eAn;
+      await supabase.from('fracionado_convites').update({ ultimo_acesso_em: new Date().toISOString() }).eq('id', convite.id);
+      return enviarJson(res, 200, { ok: true, anexo: ins });
+    }
+
+    if (body.acao === 'remover_anexo') {
+      if (!acessoValido(token, body.acesso, segredo)) return enviarJson(res, 401, { erro: 'Sessão expirada. Recarregue a página e se identifique novamente.' });
+      const { error: eRm } = await supabase.from('fracionado_anexos').delete().eq('convite_id', convite.id).eq('id', String(body.id || ''));
+      if (eRm) throw eRm;
+      return enviarJson(res, 200, { ok: true });
     }
 
     if (body.acao === 'salvar') {
@@ -563,8 +650,13 @@ export default async function handler(req, res) {
         if (!canaisSalvos.length) return enviarJson(res, 400, { erro: 'Nada para enviar.' });
         for (const c of canaisSalvos) {
           const nome = c === 'ATACADO' ? 'Atacado' : 'B2C';
-          if (!linhas.some((l) => l.canal === c)) return enviarJson(res, 400, { erro: `${nome}: preencha ao menos uma célula da tabela de frete.` });
-          if (!atend.some((a) => a.canal === c && a.regiao && a.prazo_dias)) return enviarJson(res, 400, { erro: `${nome}: informe região e prazo de ao menos uma cidade (Atendimento).` });
+          if (config.modalidade === 'PROPRIA') {
+            const { count: nAnx } = await supabase.from('fracionado_anexos').select('id', { count: 'exact', head: true }).eq('convite_id', convite.id).eq('canal', c);
+            if (!nAnx) return enviarJson(res, 400, { erro: `${nome}: anexe a tabela de frete.` });
+          } else {
+            if (!linhas.some((l) => l.canal === c)) return enviarJson(res, 400, { erro: `${nome}: preencha ao menos uma célula da tabela de frete.` });
+            if (!atend.some((a) => a.canal === c && a.regiao && a.prazo_dias)) return enviarJson(res, 400, { erro: `${nome}: informe região e prazo de ao menos uma cidade (Atendimento).` });
+          }
           if (!gerais[c]?.icms_incluso) return enviarJson(res, 400, { erro: `${nome}: informe se os valores já incluem ICMS.` });
         }
         Object.assign(atualiza, { status: 'ENVIADO', enviado_em: agora, qtd_envios: (convite.qtd_envios || 0) + 1 });

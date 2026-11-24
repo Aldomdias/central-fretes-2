@@ -42,10 +42,11 @@ export function montarPlanilhaFracionado(XLSX, o) {
   // ---------------- FICHA ----------------
   var fichaRows = [
     ['Transportadora', o.transportadora, 'f'], ['CNPJ', o.cnpj || '', 'f'], ['Canal', o.canal, 'f'], ['Origem', o.origem || '', 'f'],
-    ['Prazo médio (dias)', num(g.prazo), 'i'], ['GRIS (%)', num(g.gris), 'i'], ['Ad valorem mínimo (R$)', num(g.advalorem_min), 'i'], ['Ad valorem (%)', num(g.advalorem), 'i'],
-    ['Pedágio (R$)', num(g.pedagio), 'i'], ['TAS (R$)', num(g.tas), 'i'], ['TDA (R$)', num(g.tda), 'i'],
+    ['Prazo de pagamento (dias)', num(g.prazo), 'i'], ['GRIS (%)', num(g.gris), 'i'], ['Ad valorem mínimo (R$)', num(g.advalorem_min), 'i'], ['Ad valorem (%)', num(g.advalorem), 'i'],
+    ['Pedágio (R$)', num(g.pedagio), 'i'], ['TAS (R$)', num(g.tas), 'i'],
     ['ICMS incluso nos valores (SIM ou NAO)', g.icms_incluso || '', 'i'], ['Vigência a partir de', g.vigencia || '', 'i'],
   ];
+  (g.taxas || []).forEach(function (t) { fichaRows.push(['Taxa adicional: ' + t.n + ' (' + (t.u || 'R$') + ')', num(t.v), 'i']); });
   var aoaF = [['FICHA DE CADASTRO — ' + o.transportadora + ' · ' + canalTxt], ['Preencha as células AMARELAS com os dados gerais da tabela. Informe se os valores já incluem ICMS (SIM ou NAO).'], ['Legenda:   AMARELO = você preenche   ·   CINZA = informação já cadastrada'], []];
   fichaRows.forEach(function (x) { aoaF.push([x[0], x[1]]); });
   var wf = XLSX.utils.aoa_to_sheet(aoaF);

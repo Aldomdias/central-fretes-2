@@ -12,7 +12,7 @@ function client() {
 
 function erroMigration(error) {
   if (/does not exist|schema cache|relation/i.test(error?.message || '')) {
-    return new Error('Aplique as migrations 20261123_001_fracionado_portal.sql e 20261123_002_fracionado_atendimento.sql no Supabase.');
+    return new Error('Aplique as migrations 20261123_001_fracionado_portal.sql, 20261123_002_fracionado_atendimento.sql e 20261123_004_fracionado_propria.sql no Supabase.');
   }
   return error;
 }
@@ -80,4 +80,22 @@ export async function reabrirConviteFracionado(id, temEnvio) {
 export async function excluirConviteFracionado(id) {
   const { error } = await client().from('fracionado_convites').delete().eq('id', id);
   if (error) throw error;
+}
+
+export async function carregarAnexosFracionado(conviteId) {
+  const { data, error } = await client().from('fracionado_anexos').select('id,canal,nome,tipo,tamanho,created_at').eq('convite_id', conviteId).order('created_at');
+  if (error) return [];
+  return data || [];
+}
+
+export async function baixarAnexoFracionado(id) {
+  const { data, error } = await client().from('fracionado_anexos').select('nome,tipo,conteudo').eq('id', id).single();
+  if (error) throw error;
+  const bin = atob(data.conteudo);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([bytes], { type: data.tipo || 'application/octet-stream' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = data.nome; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
 }

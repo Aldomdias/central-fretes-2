@@ -3,7 +3,7 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { buscarCnpjRaizesPorNome } from '../services/lotacaoCotacaoService';
 import { CDS_B2C } from '../utils/tabelaPadraoB2c';
 import {
-  cancelarConviteFracionado, carregarAtendimentoFracionado, carregarRespostasFracionado, excluirConviteFracionado, gerarConviteFracionado,
+  baixarAnexoFracionado, carregarAnexosFracionado, cancelarConviteFracionado, carregarAtendimentoFracionado, carregarRespostasFracionado, excluirConviteFracionado, gerarConviteFracionado,
   linkConviteFracionado, listarConvitesFracionado, listarEnviosFracionado, reabrirConviteFracionado, renovarConviteFracionado,
 } from '../services/fracionadoCotacaoService';
 import {
@@ -39,7 +39,34 @@ function Kpi({ titulo, valor, cor, ativo, onClick }) {
   );
 }
 
-function PreviaResposta({ convite, respostas, atendimento }) {
+function PreviaPropria({ convite, anexos }) {
+  const canais = canaisDoConviteFracionado(convite);
+  return (
+    <div style={{ marginTop: 12 }}>
+      {canais.map((c) => {
+        const g = convite.dados_gerais?.[c] || {};
+        const arqs = anexos.filter((a) => a.canal === c);
+        return (
+          <div key={c} style={{ border: '1px solid #dbe3ef', borderRadius: 10, padding: 12, marginBottom: 10 }}>
+            <b>{CANAIS_FRACIONADO[c]}</b>
+            <div style={{ fontSize: 13, margin: '6px 0' }}>
+              Prazo pgto {g.prazo ?? '-'} d · ICMS incluso: <b>{g.icms_incluso === 'SIM' ? 'Sim' : g.icms_incluso === 'NAO' ? 'Não (por fora)' : 'não informado'}</b> · Vigência {g.vigencia ? dataBr(g.vigencia) : '-'}
+              {(g.taxas || []).map((t) => ` · ${t.n} ${num(t.v)}${t.u === '%' ? '%' : t.u === 'R$/KG' ? ' R$/kg' : ''}`).join('')}
+            </div>
+            <div style={{ fontSize: 13, margin: '6px 0' }}>
+              {arqs.length ? arqs.map((a) => <button key={a.id} style={{ ...btnSec, marginRight: 6 }} onClick={() => baixarAnexoFracionado(a.id).catch(() => {})}>⬇ {a.nome}</button>) : <small>Nenhum arquivo anexado.</small>}
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#334155' }}>Generalidades (a avaliar se entram no escopo):</div>
+            <div style={{ whiteSpace: 'pre-wrap', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 8, padding: 10, fontSize: 13, marginTop: 4 }}>{g.generalidades || 'Não informadas.'}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PreviaResposta({ convite, respostas, atendimento, anexos = [] }) {
+  if (convite.modalidade === 'PROPRIA') return <PreviaPropria convite={convite} anexos={anexos} />;
   const canais = canaisDoConviteFracionado(convite);
   const origens = origensDoConviteFracionado(convite);
   const [canal, setCanal] = useState(canais[0]);
@@ -74,7 +101,7 @@ function PreviaResposta({ convite, respostas, atendimento }) {
       </div>
       <div style={{ fontSize: 13, marginBottom: 8 }}>
         <b>{doCanal.length}</b> células · <b>{ufs.size}</b> de {UFS_FRACIONADO.length} UFs ·
-        {' '}Prazo {g.prazo ?? '-'} d · GRIS {num(g.gris) || '-'}% · Ad valorem {num(g.advalorem) || '-'}% (mín. R$ {num(g.advalorem_min) || '-'}) · Pedágio {num(g.pedagio) || '-'} · TAS {num(g.tas) || '-'} · TDA {num(g.tda) || '-'} ·
+        {' '}Prazo pgto {g.prazo ?? '-'} d · GRIS {num(g.gris) || '-'}% · Ad valorem {num(g.advalorem) || '-'}% (mín. R$ {num(g.advalorem_min) || '-'}) · Pedágio {num(g.pedagio) || '-'} · TAS {num(g.tas) || '-'}{(g.taxas || []).map((t) => ` · ${t.n} ${num(t.v)}${t.u === '%' ? '%' : t.u === 'R$/KG' ? ' R$/kg' : ''}`).join('')} ·
         {' '}ICMS incluso: <b>{g.icms_incluso === 'SIM' ? 'Sim' : g.icms_incluso === 'NAO' ? 'Não (por fora)' : 'não informado'}</b> · Vigência {g.vigencia ? dataBr(g.vigencia) : '-'}
       </div>
       {!doCanal.length ? <small>Nenhum valor salvo neste canal ainda.</small> : pct ? (
@@ -132,7 +159,7 @@ export default function FracionadoPortalPage() {
   const [ultimo, setUltimo] = useState(null);
 
   const [aberto, setAberto] = useState(null);
-  const [detalhe, setDetalhe] = useState({ respostas: [], atendimento: [], envios: [] });
+  const [detalhe, setDetalhe] = useState({ respostas: [], atendimento: [], envios: [], anexos: [] });
 
   const aviso = (texto, tipo = 'ok') => setMsg({ tipo, texto });
 
@@ -177,7 +204,7 @@ export default function FracionadoPortalPage() {
     const modTxt = MODALIDADES_FRACIONADO[cv.modalidade] || cv.modalidade;
     const assunto = encodeURIComponent(`Tabela de frete fracionado — ${canalTxt}${cv.campanha ? ` — ${cv.campanha}` : ''}`);
     const ate = cv.expira_em ? `\nO link vale até ${dataBr(cv.expira_em)}.` : '';
-    const corpo = encodeURIComponent(`Olá, ${cv.transportadora}!\n\nSegue o link para preenchimento da nossa tabela de frete fracionado (${canalTxt} · ${modTxt}):\n${linkConviteFracionado(cv.token)}\n\nVocê pode preencher direto no portal ou baixar o modelo em Excel, preencher e importar de volta. No primeiro acesso informe o CNPJ da transportadora (obrigatório).${ate}\n\nObrigado!`);
+    const corpo = encodeURIComponent(`Olá, ${cv.transportadora}!\n\nSegue o link para preenchimento da nossa tabela de frete fracionado (${canalTxt} · ${modTxt}):\n${linkConviteFracionado(cv.token)}\n\n${cv.modalidade === 'PROPRIA' ? 'Anexe a sua tabela e descreva as generalidades no portal (elas serão avaliadas pela nossa equipe para ver se entram no escopo).' : 'Você pode preencher direto no portal ou baixar o modelo em Excel, preencher e importar de volta.'} No primeiro acesso informe o CNPJ da transportadora (obrigatório).${ate}\n\nObrigado!`);
     window.location.href = `mailto:?subject=${assunto}&body=${corpo}`;
   };
 
@@ -190,8 +217,8 @@ export default function FracionadoPortalPage() {
     if (aberto?.id === cv.id) { setAberto(null); return; }
     setOcupado(true);
     try {
-      const [respostas, atendimento, envios] = await Promise.all([carregarRespostasFracionado(cv.id), carregarAtendimentoFracionado(cv.id), listarEnviosFracionado(cv.id)]);
-      setDetalhe({ respostas, atendimento, envios });
+      const [respostas, atendimento, envios, anexos] = await Promise.all([carregarRespostasFracionado(cv.id), carregarAtendimentoFracionado(cv.id), listarEnviosFracionado(cv.id), carregarAnexosFracionado(cv.id)]);
+      setDetalhe({ respostas, atendimento, envios, anexos });
       setAberto(cv);
     } catch (e) { aviso(e.message, 'erro'); } finally { setOcupado(false); }
   };
@@ -244,6 +271,11 @@ export default function FracionadoPortalPage() {
             <input style={inp} type="number" min={1} max={60} value={dias} onChange={(e) => setDias(e.target.value)} />
           </label>
         </div>
+        {modalidade === 'PROPRIA' && (
+          <div style={{ marginTop: 12, padding: 10, background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 8, fontSize: 13 }}>
+            Neste modo o transportador anexa a tabela dele e escreve as generalidades. O portal avisa que as generalidades serão avaliadas pela Suprimentos para ver se entram no escopo.
+          </div>
+        )}
         {modalidade === 'FAIXA_PESO' && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12, marginTop: 12 }}>
             {(canal === 'AMBOS' ? ['B2C', 'ATACADO'] : [canal]).map((c) => (
@@ -316,13 +348,13 @@ export default function FracionadoPortalPage() {
       {aberto && (
         <div style={card}>
           <h2 style={h2}>{aberto.transportadora} — {CANAIS_FRACIONADO[aberto.canal]} · {MODALIDADES_FRACIONADO[aberto.modalidade]}</h2>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '8px 0' }}>
+          {aberto.modalidade !== 'PROPRIA' && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '8px 0' }}>
             {canaisDoConviteFracionado(aberto).flatMap((c) => origensDoConviteFracionado(aberto).map((o) => (
               <button key={`${c}|${o}`} style={btn} onClick={() => exportar(aberto, c, o)}>⬇ Excel padrão — {CANAIS_FRACIONADO[c]}{o ? ` / ${o}` : ''}</button>
             )))}
-          </div>
-          <small style={{ color: '#64748b' }}>O Excel exportado segue o modelo padrão (FICHA DE CADASTRO + TABELA + ATENDIMENTO) e pode ser importado em Importar Template.</small>
-          <PreviaResposta key={aberto.id} convite={aberto} respostas={detalhe.respostas} atendimento={detalhe.atendimento} />
+          </div>}
+          {aberto.modalidade !== 'PROPRIA' && <small style={{ color: '#64748b' }}>O Excel exportado segue o modelo padrão (FICHA DE CADASTRO + TABELA + ATENDIMENTO) e pode ser importado em Importar Template.</small>}
+          <PreviaResposta key={aberto.id} convite={aberto} respostas={detalhe.respostas} atendimento={detalhe.atendimento} anexos={detalhe.anexos} />
           <h3 style={{ margin: '16px 0 4px', fontSize: 15, color: '#06183d' }}>Histórico de envios</h3>
           {detalhe.envios.length ? (
             <table style={{ borderCollapse: 'collapse' }}>
