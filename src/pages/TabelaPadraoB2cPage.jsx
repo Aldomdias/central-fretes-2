@@ -733,6 +733,21 @@ export default function TabelaPadraoB2cPage() {
         refeitas: [...(exec.meta.refeitas || []), { transportadora: transp.nome, em: Date.now() }],
       });
 
+      if (!cont.depois) {
+        const espelhoDiag = montarEspelhoRotasPorTransportadora(baseAlvo, cds[0])[transp.nome] || [];
+        const destinosTransp = idx.porDestinoIbge.size;
+        const casam = espelhoDiag.filter((r) => destinoPorIbge.has(r.ibgeDestino)).length;
+        const motivo = !saiDoCd
+          ? `a origem da tabela não casa com ${cds[0].label} (IBGE/cidade de origem)`
+          : !espelhoDiag.length
+            ? `nenhuma rota da tabela está na origem ${cds[0].label}`
+            : !casam
+              ? `nenhum dos ${fmtN(espelhoDiag.length)} destinos da tabela está entre os destinos da geração`
+              : 'as rotas casam, mas o motor de cálculo não retornou valor (tabela de frete/cotação vazia ou fora do canal B2C)';
+        setProgresso('');
+        setErro(`${transp.nome}: 0 valores calculados — ${motivo}. Rotas na origem: ${fmtN(espelhoDiag.length)} · destinos casados: ${fmtN(casam)} · destinos indexados: ${fmtN(destinosTransp)}.`);
+      }
+
       const ctes = exec.lotes.flatMap((l) => l.ctes);
       const comValor = new Set();
       const todosDestinos = new Set();
