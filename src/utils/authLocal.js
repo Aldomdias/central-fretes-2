@@ -59,6 +59,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'oportunidade-transportadora', label: 'Oportunidade Transportadora', grupo: 'Transportadoras' },
   { chave: 'simular-saida-transportadora', label: 'Simular Saída de Transportadora', grupo: 'Transportadoras' },
   { chave: 'tabela-padrao-b2c', label: 'Tabela Padrão B2C', grupo: 'Transportadoras' },
+  { chave: 'rotas-b2c', label: 'Rotas B2C (download)', grupo: 'Transportadoras' },
   { chave: 'gestao-contratos', label: 'Gestão de Contratos', grupo: 'Transportadoras' },
   { chave: 'gestao-base-cte', label: 'Gestão da Base CT-e', grupo: 'Auditoria' },
   { chave: 'alertas-cte-valor', label: 'Alerta CT-e valor alto', grupo: 'Auditoria' },

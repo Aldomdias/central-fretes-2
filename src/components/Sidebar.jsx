@@ -23,6 +23,7 @@ export const MENU_GRUPOS = [
       { chave: 'oportunidade-transportadora', label: 'Oportunidade transportadora' },
       { chave: 'simular-saida-transportadora', label: 'Saida de transportadora' },
       { chave: 'tabela-padrao-b2c', label: 'Tabela padrao B2C' },
+      { chave: 'rotas-b2c', label: 'Rotas B2C (download)' },
       { chave: 'gestao-contratos', label: 'Gestao de contratos' },
     ],
   },
