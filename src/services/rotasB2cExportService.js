@@ -126,7 +126,9 @@ function vigente(rota, hoje) {
 // Monta as linhas da exportação.
 // agrupar=true: 1 linha por transportadora+origem+IBGE destino, com o menor e o
 // maior prazo (as faixas de CEP de um mesmo município viram uma linha só).
-export async function exportarRotasB2cDb({ origens = [], somenteVigentes = true, agrupar = true, onProgress } = {}) {
+// Vigência não filtra por padrão: as rotas da base não trazem início/fim
+// preenchidos de forma confiável e o filtro zerava a exportação.
+export async function exportarRotasB2cDb({ origens = [], somenteVigentes = false, agrupar = true, onProgress } = {}) {
   const supabase = ensureClient();
   const hoje = new Date().toISOString().slice(0, 10);
 
