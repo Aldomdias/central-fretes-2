@@ -240,7 +240,7 @@ function assinaturaTarifariaDestino(destinoIbge, ufDestino, candidatas, base, cd
 }
 
 // Preço de TODAS as tabelas que cobrem a rota do CT-e (nenhuma excluída), mais barato primeiro.
-function simularTodas(cte, base, candidatas, ibgeOrigem, ibgeDestino, cidadeOrigem) {
+function simularTodas(cte, base, candidatas, ibgeOrigem, ibgeDestino, cidadeOrigem, diag = null) {
   const canalReal = canalRealDe(cte);
   const cteBase = {
     ...cte,
@@ -254,11 +254,17 @@ function simularTodas(cte, base, candidatas, ibgeOrigem, ibgeDestino, cidadeOrig
     let r;
     // Passa só a tabela da própria transportadora (array estável, p/ o cache do motor) e sem o comparativo de pesos:
     // aqui só interessa o valor calculado, e varrer a malha inteira a cada CT-e levava segundos por CT-e.
-    try { r = processarCte({ ...cteBase, transportadora: transp.nome, nome_transportadora: transp.nome }, baseUnitaria(transp, base), null, '', { semComparativoPesos: true }); } catch { continue; }
-    if (r.status_calculo !== 'CALCULADO') continue;
-    if (!cidadeBate(normTexto(r.detalhes_calculo?.origem_cidade), origemCmp)) continue;
+    try { r = processarCte({ ...cteBase, transportadora: transp.nome, nome_transportadora: transp.nome }, baseUnitaria(transp, base), null, '', { semComparativoPesos: true }); } catch (e) { if (diag) { const m = `erro: ${e?.message || e}`; diag[m] = (diag[m] || 0) + 1; } continue; }
+    if (r.status_calculo !== 'CALCULADO') {
+      if (diag) { const m = `${r.status_calculo || 'sem status'}${r.motivo_calculo || r.observacao ? ` (${String(r.motivo_calculo || r.observacao).slice(0, 80)})` : ''}`; diag[m] = (diag[m] || 0) + 1; }
+      continue;
+    }
+    if (!cidadeBate(normTexto(r.detalhes_calculo?.origem_cidade), origemCmp)) {
+      if (diag) { const m = `origem da tabela "${r.detalhes_calculo?.origem_cidade || ''}" ≠ "${cidadeOrigem}"`; diag[m] = (diag[m] || 0) + 1; }
+      continue;
+    }
     const total = safeNum(r.valor_calculado);
-    if (total <= 0) continue;
+    if (total <= 0) { if (diag) diag['valor calculado zerado'] = (diag['valor calculado zerado'] || 0) + 1; continue; }
     resultados.push({ transportadora: transp.nome, total, prazo: safeNum(r.detalhes_calculo?.rota_prazo) });
   }
   resultados.sort((a, b) => a.total - b.total);
@@ -679,8 +685,9 @@ export default function TabelaPadraoB2cPage() {
       const saiDoCd = nomesPorOrigem(idx, dig7(molde.ibgeOrigem), normTexto(molde.cidadeOrigem), new Map()).has(transp.nome);
       const destinoPorIbge = new Map(destinos.map((x) => [x.d, x]));
       const cacheSim = new Map();
+      const diagMotivos = {};
       const assinaturaCache = new Map();
-      const cont = { antes: 0, depois: 0, entrou: 0, saiu: 0 };
+      const cont ={ antes: 0, depois: 0, entrou: 0, saiu: 0 };
       const t0 = Date.now();
       let ultimoYield = t0;
       const totalLotes = exec.lotes.length;
@@ -709,7 +716,7 @@ export default function TabelaPadraoB2cPage() {
             novos = cacheSim.get(chave);
             if (!novos) {
               const cteRef = montarCteRef(molde, destino.info, d, destino.ufD, perfilDaFaixa(faixa));
-              novos = simularTodas(cteRef, baseAlvo, [transp], molde.ibgeOrigem, d, molde.cidadeOrigem);
+              novos = simularTodas(cteRef, baseAlvo, [transp], molde.ibgeOrigem, d, molde.cidadeOrigem, diagMotivos);
               cacheSim.set(chave, novos);
             }
           }
@@ -745,7 +752,8 @@ export default function TabelaPadraoB2cPage() {
               ? `nenhum dos ${fmtN(espelhoDiag.length)} destinos da tabela está entre os destinos da geração`
               : 'as rotas casam, mas o motor de cálculo não retornou valor (tabela de frete/cotação vazia ou fora do canal B2C)';
         setProgresso('');
-        setErro(`${transp.nome}: 0 valores calculados — ${motivo}. Rotas na origem: ${fmtN(espelhoDiag.length)} · destinos casados: ${fmtN(casam)} · destinos indexados: ${fmtN(destinosTransp)}.`);
+        const topMotivos = Object.entries(diagMotivos).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([m, n]) => `${m} ×${fmtN(n)}`).join(' | ');
+        setErro(`${transp.nome}: 0 valores calculados — ${motivo}${topMotivos ? ` [motor: ${topMotivos}]` : ''}. Rotas na origem: ${fmtN(espelhoDiag.length)} · destinos casados: ${fmtN(casam)} · destinos indexados: ${fmtN(destinosTransp)}.`);
       }
 
       const ctes = exec.lotes.flatMap((l) => l.ctes);
