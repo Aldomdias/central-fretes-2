@@ -5251,10 +5251,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       setMensagemImportacao('Cole uma chave de CT-e ou uma lista de CT-es para consultar.');
       return;
     }
-    if (ids.length > AUDITORIA_MAX_CTES_EXECUCAO) {
-      setMensagemImportacao(`Limite de ${AUDITORIA_MAX_CTES_EXECUCAO} CT-es por consulta (colados: ${ids.length}). Divida a lista em partes menores.`);
-      return;
-    }
+    // Consulta e so leitura e ja busca em lotes de 200: nao ha teto aqui.
     setAuditandoCtesAvulsos(true);
     setProgressoCtesAvulsos(null);
     setResultadoCtesAvulsos([]);
@@ -5289,10 +5286,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       setMensagemImportacao('Cole uma chave de CT-e ou uma lista de CT-es para auditar.');
       return;
     }
-    if (ids.length > AUDITORIA_MAX_CTES_EXECUCAO) {
-      setMensagemImportacao(`Limite de ${AUDITORIA_MAX_CTES_EXECUCAO} CT-es por auditoria (colados: ${ids.length}). Divida a lista em partes menores.`);
-      return;
-    }
+    // Listas grandes rodam em blocos de AUDITORIA_MAX_CTES_EXECUCAO, em
+    // sequencia e com pausa entre blocos (processarEmBlocosLimitados).
     setAuditandoCtesAvulsos(true);
     setProgressoCtesAvulsos(null);
     setResultadoCtesAvulsos([]);
@@ -5326,7 +5321,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         }
         if (row.reentrega_manual) reentregaPorChave[chave] = true;
       });
-      const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(ids, setProgressoCtesAvulsos, {
+      const { registros, encontrados, naoEncontrados } = await processarEmBlocosLimitados(ids, processarCtesPorChave, setProgressoCtesAvulsos, {
         ignorarCubagem: usarPesoCteAvulso,
         percentualContingenciaPeso: percentualContingenciaAvulso,
         apenasDadosCompletos: apenasDadosCompletosAvulso,
