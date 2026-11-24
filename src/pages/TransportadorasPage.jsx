@@ -523,6 +523,44 @@ function CanalInvertidoSection({ transportadora, store }) {
   );
 }
 
+function OperaLotacaoSection({ transportadora, store }) {
+  const [salvando, setSalvando] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+  const ativo = Boolean(transportadora.operaLotacao);
+
+  async function alternar(event) {
+    const novo = event.target.checked;
+    setSalvando(true);
+    setFeedback(null);
+    const resposta = await store.salvarOperaLotacao?.(transportadora.id, novo);
+    setSalvando(false);
+    if (!resposta?.ok) {
+      setFeedback({ tipo: 'error', texto: resposta?.erro?.message || 'Erro ao salvar.' });
+      return;
+    }
+    setFeedback({ tipo: 'info', texto: novo
+      ? 'Ligado. Resimule o mês na Auditoria CT-e para os CT-es já processados.'
+      : 'Desligado. Resimule o mês na Auditoria CT-e.' });
+  }
+
+  return (
+    <div className="form-card" style={{ marginTop: 12, padding: 16, background: '#f8fafc', borderRadius: 8 }}>
+      <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: store.podeEditarTransportadoras ? 'pointer' : 'default' }}>
+        <input type="checkbox" checked={ativo} disabled={!store.podeEditarTransportadoras || salvando} onChange={alternar} />
+        <strong style={{ fontSize: '0.9rem' }}>Opera lotação (mesmo sem tabela vigente)</strong>
+        {salvando ? <span style={{ fontSize: 12, color: 'var(--muted)' }}>salvando...</span> : null}
+      </label>
+      <p style={{ fontSize: 12, color: 'var(--muted)', margin: '4px 0 0' }}>
+        Marque para transportadora de lotação que ainda não tem tabela subida. Na Auditoria CT-e, o CT-e dela segue a
+        regra de lotação: tabela de lotação (quando houver), decisão da TransGP ou <strong>DIST do fluxo</strong> com o
+        mesmo número de CT-e. Vale também para CT-e que veio como B2C ou ATACADO: se existir DIST para o número, a
+        Auditoria usa a viagem. Sem DIST, o CT-e B2C segue o cálculo normal.
+      </p>
+      {feedback ? <div className={`mini-feedback ${feedback.tipo} top-space`} style={{ marginTop: 8 }}>{feedback.texto}</div> : null}
+    </div>
+  );
+}
+
 function AntecipacaoSection({ transportadora, store }) {
   const [salvando, setSalvando] = useState(false);
   const [feedback, setFeedback] = useState(null);
@@ -2470,6 +2508,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
       ) : null}
       <TdeSection transportadora={transportadora} store={store} />
       <CanalInvertidoSection transportadora={transportadora} store={store} />
+      <OperaLotacaoSection transportadora={transportadora} store={store} />
       <AntecipacaoSection transportadora={transportadora} store={store} />
       <CnpjsAdicionaisTransportadoraSection transportadora={transportadora} podeEditar={podeEditar} />
       <LotacaoTransportadoraSection

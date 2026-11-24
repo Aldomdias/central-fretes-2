@@ -825,7 +825,7 @@ export async function carregarBaseCompletaDb(onProgress = null) {
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, operaLotacao: transportadora.opera_lotacao === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
   return _cacheBaseCompleta;
@@ -1169,7 +1169,7 @@ export async function carregarBaseFiltradaPorOrigemEDestinosDb(filtroCidades = [
       cnpjRaiz: transportadora.cnpj_raiz || '',
       tde: transportadora.tde ?? 0,
       tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-      aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
+      aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, operaLotacao: transportadora.opera_lotacao === true, fazAntecipacao: transportadora.faz_antecipacao === true,
       origens: origensByTransportadora.get(String(transportadora.id)) || [],
     }))
     .filter((t) => t.origens.length);
@@ -1302,7 +1302,7 @@ export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [],
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, operaLotacao: transportadora.opera_lotacao === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
 }
@@ -1411,7 +1411,7 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, operaLotacao: transportadora.opera_lotacao === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
 }
@@ -1772,6 +1772,24 @@ export async function salvarAceitaCanalInvertidoDb(transportadoraId, aceita) {
       throw new Error('Rode a migration 20261113_003_transportadoras_aceita_canal_invertido.sql no Supabase antes de usar este flag.');
     }
     throw new Error(`Erro ao salvar canal invertido: ${error.message}`);
+  }
+  invalidarCacheBaseCompletaDb();
+  return { ok: true };
+}
+
+// Flag "opera lotação" da transportadora (direto no Supabase). Na Auditoria, o CT-e dela é conferido
+// pela tabela de lotação, pela DIST da TransGP ou pela viagem do fluxo, mesmo sem tabela vigente.
+export async function salvarOperaLotacaoDb(transportadoraId, opera) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  if (!UUID_REGEX.test(String(transportadoraId || ''))) throw new Error('Grave a transportadora no Supabase antes de marcar como lotação.');
+  const { error } = await ensureClient().from('transportadoras')
+    .update({ opera_lotacao: Boolean(opera) })
+    .eq('id', transportadoraId);
+  if (error) {
+    if (/opera_lotacao/i.test(error.message || '')) {
+      throw new Error('Rode a migration 20261124_001_transportadoras_opera_lotacao.sql no Supabase antes de usar este flag.');
+    }
+    throw new Error(`Erro ao salvar flag de lotação: ${error.message}`);
   }
   invalidarCacheBaseCompletaDb();
   return { ok: true };
@@ -2894,7 +2912,7 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, operaLotacao: transportadora.opera_lotacao === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     detalheCarregado: true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   })).filter((item) => item.origens.length);
@@ -3212,7 +3230,7 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, operaLotacao: transportadora.opera_lotacao === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     detalheCarregado: true,
     origens: [],
   };
