@@ -1175,6 +1175,36 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
     <>
       <div className="panel-card" style={{ marginBottom: 14 }}>
         <div className="panel-title audit-table-title">Diagnóstico de faturas</div>
+        {(() => {
+          const semEscolha = !temLista && !transportadora && !auditor;
+          const passoAtual = semEscolha ? 1 : Object.values(escolhidos).some(Boolean) ? 3 : 2;
+          const passos = [
+            ['1', 'Escolha o auditor', 'Selecione o nome do auditor abaixo (ou "Todos" para ver a equipe inteira).'],
+            ['2', 'Filtre as faturas', 'Clique no card Vencido (atrasadas) ou A vencer (ainda no prazo) para ver só essas.'],
+            ['3', 'Trate as faturas', 'Marque as faturas na lista e use as ações: previsão de pagamento, liberar, enviar ao OMS.'],
+          ];
+          return (
+            <div role="note" aria-label="Passo a passo" style={{ margin: '0 0 12px', padding: '10px 12px', borderRadius: 8, background: '#eff6ff', border: '1px solid #bfdbfe' }}>
+              <div style={{ fontWeight: 700, color: '#071d49', marginBottom: 8 }}>
+                {passoAtual === 1 && 'Comece aqui: selecione o nome do auditor.'}
+                {passoAtual === 2 && `Agora filtre: clique em "Vencido" para as atrasadas ou em "A vencer" para as que ainda estão no prazo.`}
+                {passoAtual === 3 && 'Pronto: marque as faturas na lista e use as ações abaixo da tabela de filtros.'}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {passos.map(([n, titulo, texto]) => {
+                  const ativo = Number(n) === passoAtual;
+                  const feito = Number(n) < passoAtual;
+                  return (
+                    <div key={n} style={{ flex: '1 1 220px', display: 'flex', gap: 8, alignItems: 'flex-start', opacity: ativo || feito ? 1 : 0.6 }}>
+                      <span aria-hidden="true" style={{ flex: '0 0 auto', width: 24, height: 24, borderRadius: '50%', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 700, color: '#fff', background: feito ? '#14733b' : ativo ? '#315ee7' : '#94a3b8' }}>{feito ? '✓' : n}</span>
+                      <span className="compact" style={{ color: '#334155' }}><strong style={{ color: '#071d49' }}>{titulo}</strong><br />{texto}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'start' }}>
           <div style={{ display: 'grid', gap: 8, flex: '1 1 220px', maxWidth: 320 }}>
             <label className="field">Transportadora
@@ -1183,10 +1213,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
                 {transportadoras.map((t) => { const nomes = nomesDoGrupo.get(t) || []; return <option key={t} value={t} title={nomes.length > 1 ? `Inclui: ${nomes.join(' · ')}` : undefined}>{t}{nomes.length > 1 ? ` (${nomes.length} nomes)` : ''}</option>; })}
               </select>
             </label>
-            <label className="field">Auditor
+            <label className="field">1. Selecione o auditor
               <div style={{ display: 'flex', gap: 6 }}>
-                <select value={verTodosAuditores ? TODOS_AUDITORES : auditorEscolhido} onChange={(e) => setAuditor(e.target.value)} style={{ flex: 1, minWidth: 0 }}>
-                  <option value="">Nenhum</option>
+                <select value={verTodosAuditores ? TODOS_AUDITORES : auditorEscolhido} onChange={(e) => setAuditor(e.target.value)} style={{ flex: 1, minWidth: 0, ...(!auditor && !transportadora && !temLista ? { outline: '2px solid #315ee7', outlineOffset: 1 } : {}) }}>
+                  <option value="">— Selecione o auditor —</option>
                   <option value={TODOS_AUDITORES}>Todos os auditores (visão geral)</option>
                   {auditores.map((a) => { const grafias = unificador.grafiasDe(a); return <option key={a} value={a} title={grafias.length > 1 ? `Inclui: ${grafias.join(' · ')}` : undefined}>{a}</option>; })}
                 </select>
@@ -1217,9 +1247,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       </div>
 
       {!linhas.length ? (
-        <div className="hint-box">Cole uma lista de faturas, escolha uma transportadora ou um auditor, ou clique em "Todos" para a visão geral de todos os auditores.</div>
+        <div className="hint-box">Para começar, <strong>selecione o nome do auditor</strong> no campo acima (ou clique em "Todos" para a visão geral). Também dá para escolher uma transportadora ou colar uma lista de faturas.</div>
       ) : (
         <>
+          <div className="compact" style={{ margin: '0 0 6px', color: '#071d49', fontWeight: 600 }}>2. Clique em um card para filtrar: <span style={{ color: '#9b1111' }}>Vencido</span> = já passou do vencimento · <span style={{ color: '#e67e22' }}>A vencer</span> = ainda no prazo. Clique de novo para tirar o filtro.</div>
           <div className="summary-strip audit-summary-grid" style={{ marginBottom: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
             <CardResumo rotulo="Faturas no recorte" valor={inteiro(resultado.length)} detalhe={`de ${inteiro(linhas.length)}`} cor="#071d49" dica="Clique para mostrar todas (tira os filtros de card e de pesquisa)." onClick={limparFiltros} />
             <CardResumo rotulo="Valor total" valor={dinheiro(totais.total.valor)} detalhe={totais.total.detalhe} cor="#071d49" dica="Clique para mostrar todas (tira os filtros de card e de pesquisa)." onClick={limparFiltros} />
