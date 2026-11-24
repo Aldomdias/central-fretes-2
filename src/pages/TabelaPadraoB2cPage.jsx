@@ -265,6 +265,8 @@ function simularTodas(cte, base, candidatas, ibgeOrigem, ibgeDestino, cidadeOrig
   return resultados;
 }
 
+const LINHAS_POR_ARQUIVO_ROTAS = 250000;
+
 function montarEspelhoRotasPorTransportadora(base, cd) {
   const porTransportadora = {};
   const vistos = new Map();
@@ -478,6 +480,8 @@ export default function TabelaPadraoB2cPage() {
   const [status, setStatus] = useState('idle');
   const [progresso, setProgresso] = useState('');
   const [erro, setErro] = useState('');
+  const [erroDownload, setErroDownload] = useState('');
+  const [progressoDownload, setProgressoDownload] = useState('');
   const interromperRef = useRef(false);
   const [simulados, setSimulados] = useState(null); // { ctes, semIbge, totalLidos }
   const [filtroCd, setFiltroCd] = useState('');
@@ -882,34 +886,54 @@ export default function TabelaPadraoB2cPage() {
       });
     }
     const base = `tabela-black-b2c-${nomeSeguro(cdEscolhido)}-${nomeSeguro(nome)}`;
-    return [
-      { nome: `${base}-fretes-verum.xlsx`, bytes: montarXlsxVerum('cotacoes', fretes) },
-      { nome: `${base}-rotas-verum.xlsx`, bytes: montarXlsxVerum('rotas', rotas) },
-    ];
+    // Um xlsx guarda no máximo ~1 milhão de linhas e o XML de centenas de milhares de rotas estoura a memória
+    // do navegador: acima do limite as rotas saem em vários arquivos (mesmas cotações, rotas repartidas).
+    const partes = Math.max(1, Math.ceil(rotas.length / LINHAS_POR_ARQUIVO_ROTAS));
+    const arquivos = [{ nome: `${base}-fretes-verum.xlsx`, bytes: montarXlsxVerum('cotacoes', fretes) }];
+    for (let i = 0; i < partes; i += 1) {
+      arquivos.push({
+        nome: partes === 1 ? `${base}-rotas-verum.xlsx` : `${base}-rotas-verum-parte${i + 1}de${partes}.xlsx`,
+        bytes: montarXlsxVerum('rotas', rotas.slice(i * LINHAS_POR_ARQUIVO_ROTAS, (i + 1) * LINHAS_POR_ARQUIVO_ROTAS)),
+      });
+    }
+    return arquivos;
   }
 
   function baixarBlob(bytes, nome, tipo) {
     const url = URL.createObjectURL(new Blob([bytes], { type: tipo }));
     const a = document.createElement('a');
     a.href = url; a.download = nome; document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    // Arquivo grande: revogar cedo cancela o download antes de terminar de gravar.
+    setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000);
   }
 
   async function baixarArquivos(nomes) {
-    setGerandoArquivos(true);
+    setGerandoArquivos(true); setErroDownload(''); setProgressoDownload('');
+    let atual = '';
     try {
       const arquivos = {};
-      for (const n of nomes) {
+      for (let i = 0; i < nomes.length; i += 1) {
+        const n = nomes[i];
+        atual = n;
+        setProgressoDownload(`Montando os arquivos de ${n} (${i + 1}/${nomes.length})...`);
+        await new Promise((res) => setTimeout(res, 30));
         for (const f of arquivosVerumDaTransportadora(n)) arquivos[f.nome] = f.bytes;
-        await new Promise((res) => setTimeout(res, 0));
       }
+      atual = '';
       if (!Object.keys(arquivos).length) {
-        setErro(`Nenhum arquivo Verum gerado para ${nomes.join(', ')}: a transportadora ficou sem nenhuma linha com valor nesta geração (0 linhas). Confira se a tabela dela está ativa e sai do CD ${cdEscolhido}.`);
+        setErroDownload(`Nenhum arquivo Verum gerado para ${nomes.join(', ')}: a transportadora ficou sem nenhuma linha com valor nesta geração (0 linhas). Confira se a tabela dela está ativa e sai do CD ${cdEscolhido}.`);
         return;
       }
-      baixarBlob(zipSync(arquivos), `tabelas-black-b2c-verum-${nomeSeguro(cdEscolhido)}-${new Date().toISOString().slice(0, 10)}.zip`, 'application/zip');
+      const total = Object.values(arquivos).reduce((t, b) => t + b.length, 0);
+      setProgressoDownload(`Compactando ${Object.keys(arquivos).length} arquivo(s) (${(total / 1048576).toFixed(1).replace('.', ',')} MB)...`);
+      await new Promise((res) => setTimeout(res, 30));
+      const nomeZip = `tabelas-black-b2c-verum-${nomeSeguro(cdEscolhido)}-${new Date().toISOString().slice(0, 10)}.zip`;
+      baixarBlob(zipSync(arquivos), nomeZip, 'application/zip');
+      setProgressoDownload(`Download iniciado: ${nomeZip}. Se não aparecer, confira se o navegador bloqueou downloads deste site.`);
     } catch (e) {
-      setErro(`Falha ao gerar arquivos: ${e.message || e}`);
+      console.error('[TabelaPadraoB2C] download', e);
+      const memoria = /string length|array length|memory|allocation/i.test(String(e?.message || e));
+      setErroDownload(`Falha ao gerar os arquivos${atual ? ` de ${atual}` : ''}: ${e.message || e}.${memoria ? ' A malha é grande demais para montar de uma vez: baixe uma transportadora por vez (botão "baixar" da linha dela).' : ''}`);
     } finally {
       setGerandoArquivos(false);
     }
@@ -1050,6 +1074,7 @@ export default function TabelaPadraoB2cPage() {
               <button type="button" className="primary" disabled={gerandoArquivos} onClick={() => baixarArquivos([simulados.refeita.transportadora])}>
                 {gerandoArquivos ? 'Gerando...' : `Baixar arquivos Verum de ${simulados.refeita.transportadora}`}
               </button>
+              {(erroDownload || progressoDownload) && <span style={{ color: erroDownload ? '#9b1111' : '#1d4ed8', fontWeight: 600 }}>{erroDownload || progressoDownload}</span>}
             </div>
           )}
         </div>
@@ -1132,6 +1157,9 @@ export default function TabelaPadraoB2cPage() {
                 <button type="button" className="primary" disabled={gerandoArquivos} onClick={() => baixarArquivos([simulados.refeita.transportadora])}>
                   {gerandoArquivos ? 'Gerando...' : `Baixar arquivos Verum de ${simulados.refeita.transportadora}`}
                 </button>
+                {(erroDownload || progressoDownload) && (
+                <div className={erroDownload ? 'sim-alert error' : ''} style={erroDownload ? { marginTop: 8 } : { marginTop: 8, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '8px 12px', fontSize: '0.82rem', color: '#1d4ed8' }}>{erroDownload || progressoDownload}</div>
+              )}
               </div>
             </div>
           )}
@@ -1169,6 +1197,9 @@ export default function TabelaPadraoB2cPage() {
                 {gerandoArquivos ? 'Gerando...' : `Baixar todos (${coberturaTransp.length}) em ZIP`}
               </button>
             </div>
+            {(erroDownload || progressoDownload) && (
+              <div className={erroDownload ? 'sim-alert error' : ''} style={erroDownload ? { marginBottom: 8 } : { marginBottom: 8, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '8px 12px', fontSize: '0.82rem', color: '#1d4ed8' }}>{erroDownload || progressoDownload}</div>
+            )}
             <div style={{ overflowX: 'auto', maxHeight: 280 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
