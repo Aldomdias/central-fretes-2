@@ -128,6 +128,13 @@ import {
   invalidarCacheBaseFreteAuditoriaCte,
   buscarResultadoAuditoriaPorChave,
 } from '../services/auditoriaCteProcessamentoService';
+import {
+  AUDITORIA_MAX_CTES_EXECUCAO,
+  AUDITORIA_MAX_FATURAS_BLOCO,
+  AUDITORIA_MAX_FATURAS_LOTE,
+  pausaAuditoria,
+  processarEmBlocosLimitados,
+} from '../utils/auditoriaLimites';
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { listarUsuariosSupabase } from '../services/usuariosSupabaseService';
 import { getSupabaseClient } from '../lib/supabaseClient';
@@ -2837,7 +2844,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         reentregaPorChave,
         deveCancelar: () => cancelarRecalculoRef.current,
       };
-      let { registros, encontrados, naoEncontrados } = await processarCtesPorChave(chaves, setProgressoRecalculo, {
+      let { registros, encontrados, naoEncontrados } = await processarEmBlocosLimitados(chaves, processarCtesPorChave, setProgressoRecalculo, {
         ...opcoesCalculoFatura,
         modoPesoPorChave: fatura.peso_tracking_mais_proximo ? Object.fromEntries(Object.entries(modoPesoPorChave).filter(([chave]) => !chavesAutoPeso.has(chave))) : modoPesoPorChave,
       });
@@ -2847,7 +2854,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       if (fatura.peso_tracking_mais_proximo && chavesAutoPeso.size && !cancelarRecalculoRef.current) {
         const modoTracking = { ...modoPesoPorChave };
         chavesAutoPeso.forEach((chave) => { modoTracking[chave] = 'tracking'; });
-        const comTracking = await processarCtesPorChave([...chavesAutoPeso], setProgressoRecalculo, { ...opcoesCalculoFatura, modoPesoPorChave: modoTracking });
+        const comTracking = await processarEmBlocosLimitados([...chavesAutoPeso], processarCtesPorChave, setProgressoRecalculo, { ...opcoesCalculoFatura, modoPesoPorChave: modoTracking });
         const porChaveTracking = new Map((comTracking.registros || []).map((r) => [normalizarChaveCte(r.chave_cte), r]));
         let trocados = 0;
         registros = registros.map((r) => {
@@ -5244,6 +5251,10 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       setMensagemImportacao('Cole uma chave de CT-e ou uma lista de CT-es para consultar.');
       return;
     }
+    if (ids.length > AUDITORIA_MAX_CTES_EXECUCAO) {
+      setMensagemImportacao(`Limite de ${AUDITORIA_MAX_CTES_EXECUCAO} CT-es por consulta (colados: ${ids.length}). Divida a lista em partes menores.`);
+      return;
+    }
     setAuditandoCtesAvulsos(true);
     setProgressoCtesAvulsos(null);
     setResultadoCtesAvulsos([]);
@@ -5276,6 +5287,10 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     const ids = extrairIdentificadoresCte(buscaCtesAvulsa);
     if (!ids.length) {
       setMensagemImportacao('Cole uma chave de CT-e ou uma lista de CT-es para auditar.');
+      return;
+    }
+    if (ids.length > AUDITORIA_MAX_CTES_EXECUCAO) {
+      setMensagemImportacao(`Limite de ${AUDITORIA_MAX_CTES_EXECUCAO} CT-es por auditoria (colados: ${ids.length}). Divida a lista em partes menores.`);
       return;
     }
     setAuditandoCtesAvulsos(true);
@@ -5388,6 +5403,10 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     const corrigirTracking = opcoes?.corrigirTracking === true;
     const faturasSelecionadas = state.faturas.filter((item) => selecionadasIds.includes(item.id));
     if (!faturasSelecionadas.length) return;
+    if (faturasSelecionadas.length > AUDITORIA_MAX_FATURAS_LOTE) {
+      setMensagemImportacao(`Limite de ${AUDITORIA_MAX_FATURAS_LOTE} faturas por recálculo em lote (selecionadas: ${faturasSelecionadas.length}). Desmarque algumas e rode de novo em seguida, para não sobrecarregar o servidor.`);
+      return;
+    }
     setRecalculandoLote(true);
     setProgressoLote(null);
     setMensagemImportacao('');
@@ -5412,8 +5431,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
 
       // Processa em blocos pequenos (calcula -> grava -> atualiza as faturas do bloco),
       // para que um travamento/erro no meio nao perca as faturas ja recalculadas.
-      const MAX_FATURAS_BLOCO = 4;
-      const MAX_CTES_BLOCO = 300;
+      const MAX_FATURAS_BLOCO = AUDITORIA_MAX_FATURAS_BLOCO;
+      const MAX_CTES_BLOCO = AUDITORIA_MAX_CTES_EXECUCAO;
       const blocos = [];
       let blocoAtual = [];
       let ctesBlocoAtual = 0;
@@ -5444,6 +5463,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
 
       for (let indiceBloco = 0; indiceBloco < blocos.length; indiceBloco += 1) {
         const bloco = blocos[indiceBloco];
+        if (indiceBloco > 0) await pausaAuditoria();
         const rotuloBloco = `Bloco ${indiceBloco + 1} de ${blocos.length}`;
         const progressoDoBloco = (p) => setProgressoLote({ ...p, bloco: indiceBloco + 1, totalBlocos: blocos.length });
         setMensagemImportacao(`${rotuloBloco}: calculando ${bloco.length} fatura(s)... ${idsAtualizados.length} ja atualizada(s).`);
