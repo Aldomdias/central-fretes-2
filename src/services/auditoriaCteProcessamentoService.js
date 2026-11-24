@@ -1048,6 +1048,21 @@ function inverterOrigemDestinoCte(cte = {}) {
   };
 }
 
+// Transportadoras marcadas "opera lotação" no cadastro (mesmo sem tabela vigente). Coluna ausente = sem marcadas.
+async function carregarNomesOperaLotacao(supabase) {
+  const { data, error } = await supabase.from('transportadoras').select('nome').eq('opera_lotacao', true);
+  if (error) return [];
+  return (data || []).map((t) => t.nome).filter(Boolean);
+}
+
+function transportadoraOperaLotacao(cte, contexto, mapaVinculos) {
+  const marcadas = contexto?.nomesOperaLotacao;
+  if (!marcadas?.length) return false;
+  const nomeBruto = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);
+  const nomes = [nomeBruto, aplicarVinculoTransportadora(nomeBruto, mapaVinculos)].filter(Boolean);
+  return marcadas.some((marcada) => nomes.some((nome) => marcada === nome || nomeCompativel(marcada, nome)));
+}
+
 async function carregarContextoLotacaoAuditoria(supabase, mapaVinculos = null) {
   const { data: tabelasDb, error: tabelasError } = await supabase
     .from('lotacao_tabelas')
@@ -1095,6 +1110,7 @@ async function carregarContextoLotacaoAuditoria(supabase, mapaVinculos = null) {
     tabelas: tabelasValidas.map((tabela) => ({ ...tabela, rotas: rotasPorTabela.get(tabela.id) || [] })),
     origensFracionadoPorNome,
     mapaVinculos,
+    nomesOperaLotacao: await carregarNomesOperaLotacao(supabase),
     fluxo: await carregarFluxoLotacaoAuditoria(supabase),
     transgp: await carregarTransgpAuditoria(supabase),
   };
@@ -1439,7 +1455,10 @@ function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracio
   if (pelaTransgp) return pelaTransgp;
   // B2C nunca é lotação (envios B2C são manuais, fora do fluxo): sem tabela/fluxo de lotação e sem
   // questionamento/autorização para a Operação Lotação. Sem cálculo, fica na auditoria para revisar.
-  if (canalCategoria(pick(cte, ['canal', 'canal_original'])) === 'B2C') return calcularFracionado();
+  // Exceção: transportadora marcada "opera lotação" procura a DIST (tabela de lotação ou fluxo) pelo número do
+  // CT-e; sem DIST, o B2C segue o cálculo normal (fracionado), sem ir para a Operação.
+  const b2c = canalCategoria(pick(cte, ['canal', 'canal_original'])) === 'B2C';
+  if (b2c && !transportadoraOperaLotacao(cte, contexto, mapaVinculos)) return calcularFracionado();
   const porTabela = calcularCtePelaTabelaLotacao(cte, contexto, mapaVinculos);
   if (porTabela && toNumber(porTabela.valor_calculado) > 0) return porTabela;
   const resultado = porTabela || calcularFracionado();
@@ -1457,6 +1476,7 @@ function cteDeLotacao(cte, contexto, mapaVinculos, porTabela, resultado = null) 
   const canal = canalCategoria(pick(cte, ['canal', 'canal_original']));
   if (canal === 'INTERCOMPANY' || canal === 'B2C') return false;
   if (porTabela) return true;
+  if (transportadoraOperaLotacao(cte, contexto, mapaVinculos)) return true;
   if (['SEM_ORIGEM', 'SEM_ROTA'].includes(resultado?.status_calculo)) return false;
   if (['LOTACAO', 'LOTAÇÃO'].includes(canal)) return true;
   const nomeBruto = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);

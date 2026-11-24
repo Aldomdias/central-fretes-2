@@ -16,6 +16,7 @@ import {
   salvarGeneralidadesOrigemDb,
   salvarHubOrigemDb,
   salvarAceitaCanalInvertidoDb,
+  salvarOperaLotacaoDb,
   salvarFazAntecipacaoDb,
   salvarVigenciaTabelaAlternativaDb,
   converterOrigemEmReajusteDb,
@@ -1000,6 +1001,25 @@ export function useFreteStore(sessao = null) {
           tipo: 'aceita_canal_invertido',
           transportadoraId,
           detalhe: aceita ? 'Ligou: aceitar canal invertido (B2C x ATACADO) na auditoria' : 'Desligou: aceitar canal invertido na auditoria',
+        });
+        return { ok: true };
+      },
+      // Flag da transportadora: opera lotação (mesmo sem tabela vigente). Na Auditoria o CT-e dela
+      // é conferido pela tabela de lotação, DIST da TransGP ou viagem do fluxo.
+      async salvarOperaLotacao(transportadoraId, opera) {
+        if (!podeEditarTransportadoras()) return { ok: false, erro: new Error(ERRO_SEM_PERMISSAO) };
+        try {
+          if (bancoConfigurado()) await salvarOperaLotacaoDb(transportadoraId, opera);
+        } catch (error) {
+          return { ok: false, erro: error };
+        }
+        setTransportadoras((prev) =>
+          (prev || []).map((t) => (t.id !== transportadoraId ? t : { ...t, operaLotacao: Boolean(opera) }))
+        );
+        registrarAlteracaoTransportadora(sessao, {
+          tipo: 'opera_lotacao',
+          transportadoraId,
+          detalhe: opera ? 'Ligou: transportadora opera lotação (auditoria busca DIST/tabela de lotação)' : 'Desligou: transportadora opera lotação',
         });
         return { ok: true };
       },
