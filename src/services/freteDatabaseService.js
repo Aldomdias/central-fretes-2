@@ -2009,8 +2009,20 @@ export async function localizarOrigensOficiaisDb(nomeTransportadora, origens = [
   const norm = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
   const canalDe = (v) => String(v || 'ATACADO').trim().toUpperCase();
 
-  // IBGE de origem → origens oficiais, lido das rotas já cadastradas.
-  const ibgesBuscados = Array.from(new Set(origens.map((o) => onlyDigitsDb(o.ibgeOrigem).slice(0, 7)).filter((v) => v.length === 7)));
+  const casaPorCidade = (origem) => {
+    if (!norm(origem.cidade)) return null;
+    const daCidade = existentes.filter((o) => norm(o.cidade) === norm(origem.cidade));
+    return daCidade.find((o) => canalDe(o.canal) === canalDe(origem.canal)) || (daCidade.length === 1 ? daCidade[0] : null);
+  };
+
+  // IBGE de origem → origens oficiais, lido das rotas já cadastradas. Só para
+  // as origens que não casaram pela cidade: a busca roda uma consulta de rotas
+  // por origem oficial e, em transportadora com dezenas de filiais (FL BRASIL),
+  // estourava o tempo do banco e travava a tela de publicação.
+  const ibgesBuscados = Array.from(new Set(origens
+    .filter((o) => !casaPorCidade(o))
+    .map((o) => onlyDigitsDb(o.ibgeOrigem).slice(0, 7))
+    .filter((v) => v.length === 7)));
   const origensPorIbge = new Map();
   if (ibgesBuscados.length) {
     for (const origem of existentes) {
@@ -2033,11 +2045,7 @@ export async function localizarOrigensOficiaisDb(nomeTransportadora, origens = [
   const encontrados = [];
   origens.forEach((origem, indice) => {
     const canal = canalDe(origem.canal);
-    let escolhida = null;
-    if (norm(origem.cidade)) {
-      const daCidade = existentes.filter((o) => norm(o.cidade) === norm(origem.cidade));
-      escolhida = daCidade.find((o) => canalDe(o.canal) === canal) || (daCidade.length === 1 ? daCidade[0] : null);
-    }
+    let escolhida = casaPorCidade(origem);
     if (!escolhida) {
       const doIbge = origensPorIbge.get(onlyDigitsDb(origem.ibgeOrigem).slice(0, 7)) || [];
       escolhida = doIbge.find((o) => canalDe(o.canal) === canal) || (doIbge.length === 1 ? doIbge[0] : null);
