@@ -3,6 +3,7 @@ import { identificacaoSapDoCte, resumirCtesFatura } from '../utils/diagnosticoFa
 import { casarLancamentoPeloGrupo, chaveCasamentoCte, situacaoLancamentoCte } from '../utils/lancamentosCteSap';
 import { carregarGruposRaizTransportadora } from './transportadoraCnpjsService';
 import { ehLinhaNfse } from '../utils/nfseFatura';
+import { mapaFornecedoresCompras } from './fornecedoresComprasService';
 
 const PAGINA = 1000;
 const LOTE_FATURAS = 40;
@@ -122,15 +123,35 @@ async function carregarLancamentos(client, detalhes) {
   return porChave;
 }
 
+// Compras: remetente (expedidor) de cada CT-e da fatura, lido da base de CT-es, casado com o cadastro de
+// fornecedores de compras. Devolve Map(chave_cte -> fornecedor) so dos CT-es de fornecedor; null quando o
+// cadastro nao carregou (card fica "verificando" em vez de dizer que nao ha compras).
+async function carregarRemetentesCompras(client, detalhes) {
+  const fornecedores = await mapaFornecedoresCompras();
+  if (!fornecedores.size) return null;
+  const chaves = [...new Set(detalhes.filter((d) => d.excluido_da_versao !== true).map((d) => String(d.chave_cte || '').replace(/\D/g, '')).filter((c) => c.length === 44))];
+  const achados = new Map();
+  if (!chaves.length) return achados;
+  const linhas = await buscarEmLotes(chaves, (lote) => client.from('realizado_local_ctes').select('id,chave_cte,documento_remetente,chave_nfe').in('chave_cte', lote));
+  linhas.forEach((r) => {
+    // Sem o remetente gravado, o emitente da NF-e (posicoes 7-20 da chave) e o mesmo CNPJ.
+    const nfe = String(r.chave_nfe || '').replace(/\D/g, '');
+    const cnpj = String(r.documento_remetente || '').replace(/\D/g, '') || (nfe.length === 44 ? nfe.slice(6, 20) : '');
+    const f = fornecedores.get(cnpj);
+    if (f) achados.set(String(r.chave_cte).replace(/\D/g, ''), { cnpj, nome: f.nome, codigo: f.codigo || '', ativo: f.ativo !== false });
+  });
+  return achados;
+}
+
 // Resumo de CT-es x partida no SAP de um lote de faturas: Map(faturaId -> resumo).
 export async function carregarResumoCtesFaturas(faturaIds = []) {
   if (!isSupabaseConfigured() || !faturaIds.length) return new Map();
   const client = getSupabaseClient();
   const detalhes = await carregarDetalhes(client, faturaIds);
-  const lancamentos = await carregarLancamentos(client, detalhes);
+  const [lancamentos, compras] = await Promise.all([carregarLancamentos(client, detalhes), carregarRemetentesCompras(client, detalhes)]);
   const porFatura = new Map(faturaIds.map((id) => [String(id), []]));
   detalhes.forEach((d) => porFatura.get(String(d.fatura_id))?.push(d));
-  return new Map([...porFatura].map(([id, lista]) => [id, resumirCtesFatura(lista, lancamentos)]));
+  return new Map([...porFatura].map(([id, lista]) => [id, resumirCtesFatura(lista, lancamentos, compras)]));
 }
 
 // Partida no SAP de cada CT-e de uma fatura (tela da fatura): Map(detalheId -> situacao).
