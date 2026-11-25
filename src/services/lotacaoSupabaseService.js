@@ -1971,7 +1971,9 @@ export async function salvarDetalhesFaturaSupabase(detalhes) {
   const CHUNK = 200;
   for (let i = 0; i < detalhes.length; i += CHUNK) {
     let chunk = detalhes.slice(i, i + CHUNK);
-    for (let tentativa = 0; tentativa < 8; tentativa += 1) {
+    // A linha da tela pode trazer campos calculados que nao sao colunas (origem do valor, saldo...): remove um a um
+    // ate o banco aceitar. Com limite de 8 a correcao manual deixava de ser gravada (mais de 8 campos extras).
+    for (let tentativa = 0; tentativa < 40; tentativa += 1) {
       const { error } = await supabase.from('fatura_detalhes').upsert(chunk, { onConflict: 'id' });
       if (!error) break;
       const msg = String(error.message || '');
@@ -1982,7 +1984,7 @@ export async function salvarDetalhesFaturaSupabase(detalhes) {
         delete copy[coluna];
         return copy;
       });
-      if (tentativa === 7) throw new Error(detalheErroSupabase(error));
+      if (tentativa === 39) throw new Error(detalheErroSupabase(error));
     }
   }
   // CT-e que voltou a ter fatura deixa de "aguardar nova fatura" (melhor esforco).

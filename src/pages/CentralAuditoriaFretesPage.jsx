@@ -2638,10 +2638,13 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       });
     }
     try {
-      await salvarDetalhesFaturaSupabase([{ ...item, ...patch }]);
+      // Grava SO os campos alterados (a linha da tela traz campos calculados que nao sao colunas,
+      // e mandar a linha inteira fazia o banco recusar e a correcao de canal/endereco nao ficava gravada).
+      const { error } = await getSupabaseOms().from('fatura_detalhes').update(patch).eq('id', item.id);
+      if (error) throw new Error(error.message);
       if (mensagem) setInfoRecalculo(mensagem);
     } catch (error) {
-      setErroDetalhes(error.message || String(error));
+      setErroDetalhes(`A correcao nao foi gravada: ${error.message || String(error)}`);
     }
   };
 

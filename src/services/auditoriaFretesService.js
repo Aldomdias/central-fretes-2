@@ -141,7 +141,8 @@ async function safeUpsert(table, payload) {
   if (!isSupabaseConfigured()) return false;
   const client = getSupabaseClient();
   let { error } = await client.from(table).upsert(payload, { onConflict: 'id' });
-  for (let tentativa = 0; error && tentativa < 8; tentativa += 1) {
+  // Remove campo a campo o que nao e coluna (a linha da tela traz campos calculados): ate 40 tentativas.
+  for (let tentativa = 0; error && tentativa < 40; tentativa += 1) {
     const mensagemOriginal = String(error.message || '');
     const mensagem = mensagemOriginal.toLowerCase();
     const matchColuna = mensagemOriginal.match(/'([^']+)'\s+column/i);
