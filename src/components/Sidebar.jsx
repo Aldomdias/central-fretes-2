@@ -154,6 +154,8 @@ export default function Sidebar({
   recolhida = false,
   menuMobileAberto = false,
   onFecharMobile,
+  preferencias,
+  onPreferencias,
 }) {
   const inicial = (usuario?.nome || 'A')[0].toUpperCase();
   const grupos = MENU_GRUPOS
@@ -177,8 +179,8 @@ export default function Sidebar({
 
       <aside className={`sidebar-app ${recolhida ? 'is-collapsed' : ''} ${menuMobileAberto ? 'is-mobile-open' : ''}`}>
         <div className="sidebar-brand">
-          <div className="brand-mark">A</div>
-          <img src={amdLogo} alt="AMD LOG" className="brand-logo" />
+          <div className="brand-mark">{preferencias?.identidade === 'cantu' ? 'C' : 'A'}</div>
+          {preferencias?.identidade === 'cantu' ? <div className="cantu-wordmark" aria-label="Cantu">cantu</div> : <img src={amdLogo} alt="AMD LOG" className="brand-logo" />}
           <div className="brand-copy">
             <strong>Central de Fretes</strong>
             <span>Operacao, simulacao e auditoria</span>
@@ -205,6 +207,23 @@ export default function Sidebar({
         </nav>
 
         <div className="sidebar-footer-note">
+          <div className="appearance-controls" aria-label="Aparência">
+            <label>
+              <span>Identidade</span>
+              <select value={preferencias?.identidade || 'amd'} onChange={(event) => onPreferencias({ ...preferencias, identidade: event.target.value })}>
+                <option value="amd">AMD</option>
+                <option value="cantu">Cantu</option>
+              </select>
+            </label>
+            <label>
+              <span>Tema</span>
+              <select value={preferencias?.modoCor || 'automatico'} onChange={(event) => onPreferencias({ ...preferencias, modoCor: event.target.value })}>
+                <option value="claro">Claro</option>
+                <option value="escuro">Escuro</option>
+                <option value="automatico">Automático</option>
+              </select>
+            </label>
+          </div>
           <div className="sidebar-user-row">
             <div className="sidebar-avatar">{inicial}</div>
             <div className="sidebar-user-meta">

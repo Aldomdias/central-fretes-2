@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import Sidebar from './components/Sidebar';
-import DashboardPage from './pages/DashboardPage';
 import SimuladorPage from './pages/SimuladorPage';
 import TransportadorasPage from './pages/TransportadorasPage';
 import ImportacaoPage from './pages/ImportacaoPage';
@@ -64,6 +63,8 @@ import { sairSupabaseAuth } from './services/biometriaService';
 import { assinarManutencao } from './services/manutencaoService';
 import ManutencaoOverlay from './components/ManutencaoOverlay';
 import SupabaseStatusBanner from './components/SupabaseStatusBanner';
+import MinhaAreaTrabalhoPage from './pages/MinhaAreaTrabalhoPage';
+import { aplicarPreferenciasInterface, carregarPreferenciasInterface, salvarPreferenciasInterface } from './utils/preferenciasInterface';
 
 const PAGINAS_PERMITIDAS = [
   'dashboard', 'conceito-app', 'simulador', 'simulador-reversa', 'tabelas-negociacao', 'cte', 'cte-origem-destino', 'auditoria-cte', 'tracking', 'tracking-prazos',
@@ -89,6 +90,7 @@ export default function App() {
   const [filtroFaturasExterno, setFiltroFaturasExterno] = useState(null);
   const [sidebarRecolhida, setSidebarRecolhida] = useState(true);
   const [menuMobileAberto, setMenuMobileAberto] = useState(false);
+  const [preferenciasInterface, setPreferenciasInterface] = useState(() => carregarPreferenciasInterface(sessao));
   const [avisosOcultos, setAvisosOcultos] = useState(() => {
     try { return window.localStorage.getItem('central_fretes_avisos_ocultos') === '1'; } catch { return false; }
   });
@@ -138,6 +140,11 @@ export default function App() {
   useEffect(() => {
     return assinarManutencao(setManutencao);
   }, []);
+
+  useEffect(() => {
+    aplicarPreferenciasInterface(preferenciasInterface);
+    salvarPreferenciasInterface(sessao, preferenciasInterface);
+  }, [preferenciasInterface, sessao]);
 
   useEffect(() => {
     if (!sessao?.expiraEm) return undefined;
@@ -212,7 +219,7 @@ export default function App() {
   };
 
   const paginas = {
-    dashboard: <DashboardPage transportadoras={transportadorasMemo} onAbrirSimulador={abrirSimulador} onAbrirTransportadoras={abrirTransportadoras} onAbrirImportacao={abrirImportacao} onAbrirFormatacaoTabelas={() => mudarPagina('formatacao')} onMudarPagina={mudarPagina} onAtualizarBase={store.atualizarResumo} onConferirBase={store.conferirBase} syncStatus={store.syncStatus} />,
+    dashboard: <MinhaAreaTrabalhoPage usuario={sessao} preferencias={preferenciasInterface} onPreferencias={setPreferenciasInterface} onMudarPagina={mudarPagina} />,
     'conceito-app': <VisualConceptPage />,
     simulador: <SimuladorPage transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />,
     'tabelas-negociacao': <TabelasNegociacaoPageWithEditor />,
@@ -298,6 +305,8 @@ export default function App() {
         recolhida={sidebarRecolhida}
         menuMobileAberto={menuMobileAberto}
         onFecharMobile={() => setMenuMobileAberto(false)}
+        preferencias={preferenciasInterface}
+        onPreferencias={setPreferenciasInterface}
       />
       <main className="app-content">{content}</main>
       <IbgeRapidoModal />
