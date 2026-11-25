@@ -79,6 +79,7 @@ import {
 } from '../utils/auditoriaFretesDomain';
 import {
   atualizarFaturaAuditoria,
+  salvarReferenciaSapFatura,
   atenderSolicitacaoFinanceira,
   buscarReferenciaCtes,
   importarCteXmlNaBase,
@@ -2163,6 +2164,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [mensagemLiberacao, setMensagemLiberacao] = useState('');
   const [ocorrenciaDraft, setOcorrenciaDraft] = useState(fatura.ocorrencia_texto || '');
   const [salvandoOcorrencia, setSalvandoOcorrencia] = useState(false);
+  const [referenciaSapDraft, setReferenciaSapDraft] = useState(fatura.referencia_sap || '');
+  const [salvandoReferenciaSap, setSalvandoReferenciaSap] = useState(false);
   const [infoRecalculo, setInfoRecalculo] = useState('');
   const [progressoRecalculo, setProgressoRecalculo] = useState(null);
   const [referenciaCtes, setReferenciaCtes] = useState(new Map());
@@ -2396,6 +2399,28 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       setErroDetalhes(`Erro ao salvar ocorrencia: ${error.message}`);
     } finally {
       setSalvandoOcorrencia(false);
+    }
+  };
+
+  // Referencia manual no SAP: quando a "Referência" do lancamento no SAP ficou diferente do numero da
+  // fatura (ex.: 1225 lancada como 12225). Salva, procura nas linhas do SAP sem vinculo e casa as do
+  // mesmo CNPJ; as proximas importacoes do relatorio SAP tambem passam a casar por ela.
+  const salvarReferenciaSap = async () => {
+    setSalvandoReferenciaSap(true);
+    setErroDetalhes('');
+    try {
+      const { state: next, vinculadas, outrasTransportadoras } = await salvarReferenciaSapFatura(
+        state, fatura, referenciaSapDraft, sessao?.nome || sessao?.email || 'Usuario local',
+      );
+      onState(next);
+      const ref = referenciaSapDraft.trim();
+      if (!ref) setMensagemLiberacao('✓ Referencia manual no SAP removida.');
+      else if (vinculadas.length) setMensagemLiberacao(`✓ Referencia ${ref} salva e ${vinculadas.length} linha(s) do SAP vinculada(s) a esta fatura (doc. ${vinculadas.map((l) => l.partida || l.lancamento_contabil).filter(Boolean).join(', ') || '-'}).`);
+      else setMensagemLiberacao(`✓ Referencia ${ref} salva. Nenhuma linha do SAP com essa referencia aguardando vinculo${outrasTransportadoras.length ? ` do mesmo CNPJ (${outrasTransportadoras.length} de outro CNPJ — confira em Vincular pagamentos do SAP)` : ''}; a proxima importacao do relatorio SAP ja casa por ela.`);
+    } catch (error) {
+      setErroDetalhes(`Erro ao salvar referencia SAP: ${error.message}`);
+    } finally {
+      setSalvandoReferenciaSap(false);
     }
   };
 
@@ -4158,6 +4183,26 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
             <label className="field">Valor pago<input value={fatura.valor_pago ? dinheiro(fatura.valor_pago) : '-'} readOnly /></label>
             <label className="field">Data do lancamento financeiro<input value={fatura.lancamento_financeiro_em ? dataBr(fatura.lancamento_financeiro_em) : '-'} readOnly /></label>
             <label className="field">Lancamento financeiro<input value={fatura.lancamento_financeiro || '-'} readOnly /></label>
+          </div>
+          <div className="hint-box compact" style={{ marginBottom: 14 }}>
+            <strong style={{ display: 'block', marginBottom: 6 }}>Referencia no SAP (excecao)</strong>
+            <p style={{ margin: '0 0 8px', fontSize: 12, color: '#64748b' }}>
+              Use quando o lancamento no SAP ficou com outra referencia (ex.: fatura 1225 lancada como 12225). A fatura passa a casar com as partidas do SAP por esse numero, alem do proprio — sempre conferindo o CNPJ da transportadora.
+            </p>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                value={referenciaSapDraft}
+                onChange={(event) => setReferenciaSapDraft(event.target.value)}
+                placeholder={`Referencia no SAP (fatura ${fatura.numero_fatura})`}
+                style={{ width: 240 }}
+              />
+              <button type="button" className="btn-secondary" disabled={salvandoReferenciaSap || referenciaSapDraft.trim() === (fatura.referencia_sap || '')} onClick={salvarReferenciaSap}>
+                {salvandoReferenciaSap ? 'Buscando...' : 'Salvar e buscar no SAP'}
+              </button>
+              <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                {fatura.referencia_sap ? `Atual: ${fatura.referencia_sap}${fatura.referencia_sap_por ? ` (por ${fatura.referencia_sap_por}${fatura.referencia_sap_em ? ` em ${dataBr(fatura.referencia_sap_em)}` : ''})` : ''}` : 'Sem referencia manual — casa pelo numero da fatura.'}
+              </span>
+            </div>
           </div>
           {faturaSubstituta && (
             <div className="hint-box compact">

@@ -1,12 +1,13 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { urlBaseApp } from '../utils/urlBaseApp';
-import { aplicarReauditoriaDetalhes, ENCERRADOS, gerarProtocolo, isoDate, montarPagamentoVinculado, normalizarChaveCte } from '../utils/auditoriaFretesDomain';
+import { aplicarReauditoriaDetalhes, ENCERRADOS, gerarProtocolo, isoDate, montarPagamentoVinculado, normalizarChaveCte, normalizarReferenciaSap } from '../utils/auditoriaFretesDomain';
 import { chaveFatura, excelDateToISO } from '../utils/auditoriaFretesImport';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 import { gerarTokenAleatorio } from './auditoriaCteJornadaService';
 import { carregarSaldosAutorizadosPorChave } from './transporteAutorizacoesService';
 import { buscarTrackingParaRealizado, enriquecerRealizadoComTracking, obterTrackingDaLinha } from './realizadoTrackingEnrichment';
 import { avaliarEstornoSap, compararReferenciasFatura } from '../utils/portalFinanceiroDomain';
+import { carregarGruposRaizTransportadora } from './transportadoraCnpjsService';
 
 const STORAGE_KEY = 'central_fretes_plataforma_auditoria_440_v1';
 
@@ -2436,6 +2437,53 @@ export async function vincularLinhaSapAFatura(state, linha, fatura, usuarioNome)
   }).eq('id', linha.id);
   if (error) throw new Error(`Pagamento gravado, mas nao consegui marcar a linha como vinculada: ${error.message}`);
   return next;
+}
+
+// Referencia manual da fatura no SAP (excecao: a "Referência" lancada no SAP ficou diferente do numero
+// da fatura, ex.: 1225 lancada como 12225). Grava na fatura e procura na fila de linhas do SAP sem
+// vinculo as linhas com essa referencia; as do mesmo grupo de CNPJ da transportadora sao vinculadas
+// na hora. As proximas importacoes do relatorio SAP tambem casam por ela (conciliarPagamentosSap).
+export async function salvarReferenciaSapFatura(state, fatura, referencia, usuarioNome) {
+  const valor = normalizarReferenciaSap(referencia) || null;
+  const agora = new Date().toISOString();
+  const client = getSupabaseClient();
+  const { error } = await client.from('faturas')
+    .update({ referencia_sap: valor, referencia_sap_por: valor ? (usuarioNome || null) : null, referencia_sap_em: valor ? agora : null })
+    .eq('id', fatura.id);
+  if (error) throw new Error(`${error.message} — a migration 20261125_011_faturas_referencia_sap.sql ja foi aplicada?`);
+  const historico = {
+    id: uid('hist'), fatura_id: fatura.id, created_at: agora, acao: 'REFERENCIA_SAP',
+    descricao: valor ? `Referencia no SAP informada a mao: ${valor} (fatura ${fatura.numero_fatura}).` : 'Referencia manual no SAP removida.',
+    usuario_nome: usuarioNome || 'Usuario local',
+  };
+  await inserirHistorico('auditoria_fatura_historico', historico);
+  let next = {
+    ...state,
+    faturas: state.faturas.map((item) => (item.id === fatura.id
+      ? { ...item, referencia_sap: valor, referencia_sap_por: valor ? usuarioNome : null, referencia_sap_em: valor ? agora : null } : item)),
+    historico: [historico, ...(state.historico || [])],
+  };
+  next = writeLocal(next);
+  if (!valor) return { state: next, vinculadas: [], outrasTransportadoras: [] };
+
+  // Linhas guardadas na fila "sem vinculo" com essa referencia (o SAP as vezes exporta "12225.0").
+  const { data: linhas, error: erroFila } = await client.from(TABELA_SAP_SEM_VINCULO).select('*')
+    .in('numero_fatura', [valor, `${valor}.0`]).is('vinculado_em', null);
+  if (erroFila) throw new Error(`Referencia salva, mas nao consegui ler a fila do SAP: ${erroFila.message}`);
+  let gruposRaiz = new Map();
+  try { gruposRaiz = await carregarGruposRaizTransportadora(); } catch { /* sem grupos: compara so a raiz da fatura */ }
+  const raizFatura = obterRaizCnpj(fatura.cnpj_transportadora);
+  const mesmoGrupo = (linha) => {
+    const raiz = obterRaizCnpj(linha.cnpj);
+    return !!raiz && !!raizFatura && (raiz === raizFatura || (gruposRaiz.get(raizFatura) || []).includes(raiz));
+  };
+  const vinculadas = [];
+  for (const linha of (linhas || []).filter(mesmoGrupo)) {
+    const faturaAtual = next.faturas.find((f) => f.id === fatura.id) || fatura;
+    next = await vincularLinhaSapAFatura(next, linha, faturaAtual, usuarioNome);
+    vinculadas.push(linha);
+  }
+  return { state: next, vinculadas, outrasTransportadoras: (linhas || []).filter((l) => !mesmoGrupo(l)) };
 }
 
 // ---------------------------------------------------------------------------

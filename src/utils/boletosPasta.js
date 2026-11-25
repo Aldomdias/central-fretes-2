@@ -48,7 +48,8 @@ export function casarBoletosComFaturas(nomesArquivos, faturas) {
 }
 
 // ---- Leitura do conteudo do boleto (linha digitavel: banco, fator de vencimento e valor) ----
-const RE_LINHA = /(\d{5})\.?(\d{5})\s+(\d{5})\.?(\d{6})\s+(\d{5})\.?(\d{6})\s+(\d)\s+(\d{4})(\d{10})/;
+// Entre os blocos aceita espaco ou ponto: o OCR de boleto escaneado as vezes le o espaco como ponto.
+const RE_LINHA = /(\d{5})[.\s]?(\d{5})[.\s]+(\d{5})[.\s]?(\d{6})[.\s]+(\d{5})[.\s]?(\d{6})[.\s]+(\d)[.\s]+(\d{4})(\d{10})/;
 
 // Fator de vencimento (regra vigente desde 22/02/2025: 1000 = 22/02/2025). Retorna 'AAAA-MM-DD' ou null.
 function fatorParaData(fator) {
