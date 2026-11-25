@@ -3,7 +3,8 @@
  *
  * GET /api/robo-faturas-ausentes — cron da Vercel de toda hora cheia (vercel.json). Quem decide se roda naquela hora
  * e a configuracao da tela (Automacao > Robo identificador de faturas: tabela robo_faturas_config).
- * ?agora=1 ignora horario/dia (botao "Rodar agora"); ?simular=1 nunca envia e-mail (so registra o resultado).
+ * ?agora=1 ignora horario/dia (botao "Rodar agora"); ?simular=1 nunca envia e-mail (so registra o resultado);
+ * ?transportadora_id=<id> (junto com agora=1) roda so aquela transportadora.
  *
  * Para cada transportadora cadastrada pelos auditores (robo_faturas_transportadoras):
  *  1) conta as faturas recebidas no periodo de faturamento (semanal = 7 dias, quinzenal = 15, mensal = 30);
@@ -191,8 +192,10 @@ export default async function handler(req, res) {
 
     const { data: cadastradas, error: eLista } = await db.from('robo_faturas_transportadoras').select('*').eq('ativo', true);
     if (eLista) throw new Error(`Lista do robo: ${eLista.message}`);
-    const lista = (cadastradas || []).filter((t) => !t.nao_cadastrada || t.transportadora);
-    if (!lista.length) return res.status(200).json({ ok: true, analisadas: 0, motivo: 'Nenhuma transportadora cadastrada.' });
+    // ?transportadora_id=<id> (so no botao manual): roda apenas aquela transportadora.
+    const idAlvo = manual ? (String(req.url || '').match(/[?&]transportadora_id=([^&]+)/)?.[1] || '') : '';
+    const lista = (cadastradas || []).filter((t) => (!t.nao_cadastrada || t.transportadora) && (!idAlvo || String(t.id) === decodeURIComponent(idAlvo)));
+    if (!lista.length) return res.status(200).json({ ok: true, analisadas: 0, motivo: idAlvo ? 'Transportadora selecionada nao encontrada ou pausada.' : 'Nenhuma transportadora cadastrada.' });
 
     const [{ data: vinculos }, { data: carteiras }, { data: robo }, { data: recentes }] = await Promise.all([
       db.from('transportadora_vinculos').select('nome_cte,nome_tabela'),

@@ -35,6 +35,9 @@ export default function IdentificadorFaturasRobo() {
   const [erro, setErro] = useState('');
   const [msg, setMsg] = useState('');
   const [rodando, setRodando] = useState(false);
+  const [buscaAberta, setBuscaAberta] = useState(false);
+  const [idxBusca, setIdxBusca] = useState(0);
+  const [rodarId, setRodarId] = useState('');
 
   const carregar = async () => {
     const db = getSupabaseClient();
@@ -65,6 +68,13 @@ export default function IdentificadorFaturasRobo() {
     return m;
   }, [execucoes]);
   const naoCadastradas = lista.filter((t) => t.nao_cadastrada);
+  const sugestoes = useMemo(() => {
+    const termo = normNome(form.transportadora || '');
+    if (!termo) return nomes.slice(0, 60);
+    const comeca = []; const contem = [];
+    nomes.forEach((n) => { const k = normNome(n); if (k.startsWith(termo)) comeca.push(n); else if (k.includes(termo)) contem.push(n); });
+    return [...comeca, ...contem].slice(0, 60);
+  }, [nomes, form.transportadora]);
 
   const escolher = (nome) => {
     const existe = nomes.find((n) => normNome(n) === normNome(nome));
@@ -122,10 +132,14 @@ export default function IdentificadorFaturasRobo() {
 
   const rodar = async (simular) => {
     if (!simular && !config.enviar_emails) { setErro('O envio de e-mails está desligado. Ligue "Enviar e-mails de verdade" e salve antes de rodar valendo.'); return; }
-    if (!simular && !window.confirm('Rodar agora e ENVIAR e-mails aos transportadores que estiverem com pendência?')) return;
+    const alvo = lista.find((t) => String(t.id) === String(rodarId));
+    if (rodarId && !alvo) { setErro('Selecione a transportadora de novo.'); return; }
+    if (alvo && !alvo.ativo) { setErro(`${alvo.transportadora} está pausada. Retome antes de rodar.`); return; }
+    const quemRoda = alvo ? `só para ${alvo.transportadora}` : 'para todas as transportadoras ativas';
+    if (!simular && !window.confirm(`Rodar agora ${quemRoda} e ENVIAR e-mail se estiver com pendência?`)) return;
     setRodando(true); setErro(''); setMsg('');
     try {
-      const resp = await fetch(`/api/robo-faturas-ausentes?agora=1${simular ? '&simular=1' : ''}`);
+      const resp = await fetch(`/api/robo-faturas-ausentes?agora=1${simular ? '&simular=1' : ''}${alvo ? `&transportadora_id=${encodeURIComponent(alvo.id)}` : ''}`);
       const dados = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(dados.error || `HTTP ${resp.status}`);
       if (!dados.ok) throw new Error('O servidor não respondeu como o robô. Localmente (vite) o robô não existe; rode no deploy da Vercel ou com "vercel dev".');
@@ -168,8 +182,36 @@ export default function IdentificadorFaturasRobo() {
         <h3 style={{ margin: '0 0 10px' }}>{form.id ? 'Editar transportadora' : 'Cadastrar transportadora sem fatura'}</h3>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <label style={{ ...campo, flex: '2 1 280px' }}>Transportadora
-            <input list="lista-transp-faturas" value={form.transportadora} onChange={(e) => escolher(e.target.value)} placeholder="Digite para pesquisar no cadastro" />
-            <datalist id="lista-transp-faturas">{nomes.map((n) => <option key={n} value={n} />)}</datalist>
+            <div style={{ position: 'relative' }}>
+              <input
+                value={form.transportadora}
+                onChange={(e) => { escolher(e.target.value); setBuscaAberta(true); setIdxBusca(0); }}
+                onFocus={() => setBuscaAberta(true)}
+                onBlur={() => setTimeout(() => setBuscaAberta(false), 150)}
+                onKeyDown={(e) => {
+                  if (!buscaAberta || !sugestoes.length) return;
+                  if (e.key === 'ArrowDown') { e.preventDefault(); setIdxBusca((i) => Math.min(i + 1, sugestoes.length - 1)); }
+                  else if (e.key === 'ArrowUp') { e.preventDefault(); setIdxBusca((i) => Math.max(i - 1, 0)); }
+                  else if (e.key === 'Enter') { e.preventDefault(); escolher(sugestoes[idxBusca] || sugestoes[0]); setBuscaAberta(false); }
+                  else if (e.key === 'Escape') setBuscaAberta(false);
+                }}
+                placeholder="Digite parte do nome para pesquisar"
+                autoComplete="off"
+                style={{ width: '100%', boxSizing: 'border-box' }}
+              />
+              {buscaAberta && sugestoes.length > 0 && (
+                <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 30, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 20px rgba(15,23,42,.12)', maxHeight: 280, overflowY: 'auto', marginTop: 2 }}>
+                  {sugestoes.map((n, i) => (
+                    <div
+                      key={n}
+                      onMouseDown={(e) => { e.preventDefault(); escolher(n); setBuscaAberta(false); }}
+                      onMouseEnter={() => setIdxBusca(i)}
+                      style={{ padding: '7px 10px', cursor: 'pointer', fontSize: 13, background: i === idxBusca ? '#e0ecff' : '#fff', borderBottom: '1px solid #f1f5f9' }}
+                    >{n}</div>
+                  ))}
+                </div>
+              )}
+            </div>
           </label>
           <label style={campo}>Tipo de faturamento
             <select value={form.periodicidade} onChange={(e) => setForm({ ...form, periodicidade: e.target.value })}>{PERIODOS.map(([v, r]) => <option key={v} value={v}>{r}</option>)}</select>
@@ -213,6 +255,10 @@ export default function IdentificadorFaturasRobo() {
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button type="button" className="btn-primary" onClick={salvarConfig}>Salvar agendamento</button>
+          <select value={rodarId} onChange={(e) => setRodarId(e.target.value)} title="Rodar agora para todas ou só uma transportadora" style={{ minWidth: 220 }}>
+            <option value="">Rodar para: todas as ativas</option>
+            {lista.map((t) => <option key={t.id} value={t.id} disabled={!t.ativo}>{t.transportadora}{t.ativo ? '' : ' (pausada)'}</option>)}
+          </select>
           <button type="button" className="btn-secondary" disabled={rodando} onClick={() => rodar(true)}>{rodando ? 'Rodando...' : 'Rodar agora (simulação, sem e-mail)'}</button>
           <button type="button" className="btn-secondary" disabled={rodando} onClick={() => rodar(false)}>Rodar agora e enviar e-mails</button>
         </div>
