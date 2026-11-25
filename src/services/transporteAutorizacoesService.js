@@ -32,13 +32,24 @@ export function analisarFrete({ valor_nf: valorNf, valor_calculado: calculado, v
 
 export const formatarPct = (valor) => (valor == null ? '-' : `${valor.toFixed(2).replace('.', ',')}%`);
 
+// Pagina de 1000 em 1000: o Supabase corta cada resposta em 1000 linhas, e com
+// o historico crescendo os PENDENTES mais antigos sumiam da fila (o CT-e mostrava
+// "Na fila: B2C" na auditoria, mas a tela da fila nao listava).
 export async function listarAutorizacoes({ canal, status } = {}) {
-  let query = exigirClient().from(TABELA).select('*').eq('ativo', true).order('enviado_em', { ascending: false }).limit(2000);
-  if (canal) query = query.eq('canal', canal);
-  if (status) query = query.eq('status', status);
-  const { data, error } = await query;
-  if (error) throw new Error(`Erro ao listar autorizacoes: ${error.message}. Rode a migration 20260923_003_transporte_autorizacoes.sql.`);
-  return data || [];
+  const PAGINA = 1000;
+  const todos = [];
+  for (let inicio = 0; inicio < 50000; inicio += PAGINA) {
+    let query = exigirClient().from(TABELA).select('*').eq('ativo', true)
+      .order('enviado_em', { ascending: false }).order('id', { ascending: true })
+      .range(inicio, inicio + PAGINA - 1);
+    if (canal) query = query.eq('canal', canal);
+    if (status) query = query.eq('status', status);
+    const { data, error } = await query;
+    if (error) throw new Error(`Erro ao listar autorizacoes: ${error.message}. Rode a migration 20260923_003_transporte_autorizacoes.sql.`);
+    todos.push(...(data || []));
+    if (!data || data.length < PAGINA) break;
+  }
+  return todos;
 }
 
 // Pedido (Marketplace) e chave da NF de cada CT-e, pela base (tracking primeiro,
