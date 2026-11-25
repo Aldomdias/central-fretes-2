@@ -8386,9 +8386,14 @@ function Gestao({ state, onState }) {
         if (cancelado) return;
         // Perfil de auditor + pessoas liberadas nominalmente (ex.: Caroline,
         // que tem outro perfil mas tambem recebe carteira de transportadora).
+        // Bianca (Ruzzante) tem perfil de gestora e tambem recebe carteira: liberada pelo nome.
         const EMAILS_EXTRA_AUDITORES = new Set(['caroline.waldhelm@cantu.inc']);
+        const NOMES_EXTRA_AUDITORES = [/^bianca\b/];
+        const nomeNorm = (u) => String(u.nome || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
         setAuditores((usuarios || [])
-          .filter((u) => u.ativo && (u.perfil === 'AUDITORIA_FRETES' || EMAILS_EXTRA_AUDITORES.has(String(u.email || '').trim().toLowerCase())))
+          .filter((u) => u.ativo && (u.perfil === 'AUDITORIA_FRETES'
+            || EMAILS_EXTRA_AUDITORES.has(String(u.email || '').trim().toLowerCase())
+            || NOMES_EXTRA_AUDITORES.some((re) => re.test(nomeNorm(u)))))
           .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR')));
       })
       .catch((error) => { if (!cancelado) setErroAuditores(error.message || 'Erro ao carregar auditores.'); })

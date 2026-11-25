@@ -89,6 +89,25 @@ function isTransportadoraCnpjColumnMissing(error) {
     || (message.includes("'cnpj'") && message.includes('schema cache'));
 }
 
+// Flags do cadastro (canal invertido, opera lotacao, antecipacao) para a lista leve.
+// Sem isso o checkbox aparecia desmarcado depois de salvo. Coluna ausente (migration
+// nao aplicada) so deixa aquele flag desligado, sem derrubar a lista.
+async function carregarFlagsTransportadorasCompat(supabase) {
+  const colunas = ['aceita_canal_invertido', 'opera_lotacao', 'faz_antecipacao'];
+  const porId = new Map();
+  const juntar = (rows = []) => rows.forEach((r) => porId.set(String(r.id), { ...(porId.get(String(r.id)) || {}), ...r }));
+  const todas = await supabase.from('transportadoras').select(`id, ${colunas.join(', ')}`).range(0, 9999);
+  if (!todas.error) {
+    juntar(todas.data);
+    return porId;
+  }
+  await Promise.all(colunas.map(async (coluna) => {
+    const r = await supabase.from('transportadoras').select(`id, ${coluna}`).range(0, 9999);
+    if (!r.error) juntar(r.data);
+  }));
+  return porId;
+}
+
 async function carregarTransportadorasResumoCompat(supabase) {
   const atual = await supabase
     .from('transportadoras')
@@ -1564,6 +1583,7 @@ export async function carregarResumoBaseDb() {
     cotacoesAlternativasResponse,
     taxasAlternativasResponse,
     generalidadesAlternativasResponse,
+    flagsPorTransportadora,
   ] = await Promise.all([
     carregarTransportadorasResumoCompat(supabase),
     supabase.from('origens').select('id, transportadora_id, cidade, codigo_centro, cnpj, cnpj_raiz, canal, status, validado, validado_em, validado_por').order('cidade', { ascending: true }),
@@ -1580,6 +1600,7 @@ export async function carregarResumoBaseDb() {
     supabase.from('cotacoes').select('origem_id').not('grupo_tabela_alternativa', 'is', null),
     supabase.from('taxas_especiais').select('origem_id').not('grupo_tabela_alternativa', 'is', null),
     supabase.from('generalidades').select('origem_id').neq('grupo_tabela_alternativa', ''),
+    carregarFlagsTransportadorasCompat(supabase).catch(() => new Map()),
   ]);
 
   if (transportadorasResponse.error) throw transportadorasResponse.error;
@@ -1628,6 +1649,9 @@ export async function carregarResumoBaseDb() {
     status: transportadora.status || 'Ativa',
     cnpj: transportadora.cnpj || '',
     cnpjRaiz: transportadora.cnpj_raiz || '',
+    aceitaCanalInvertido: flagsPorTransportadora.get(String(transportadora.id))?.aceita_canal_invertido === true,
+    operaLotacao: flagsPorTransportadora.get(String(transportadora.id))?.opera_lotacao === true,
+    fazAntecipacao: flagsPorTransportadora.get(String(transportadora.id))?.faz_antecipacao === true,
     // A view de cobertura agrega rotas e cotacoes e pode ser cara. Ela fica na
     // conferencia explicita; a lista inicial usa um marcador leve.
     resumoCobertura: {
