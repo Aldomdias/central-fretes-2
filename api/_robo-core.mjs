@@ -25570,6 +25570,8 @@ function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo
     tabelaNome: candidato.tabelaNome || "Principal",
     tabelaPrincipal: candidato.tabelaPrincipal !== false,
     origem: origemCidade || candidato.origem,
+    // Origem da tabela que calculou (a Auditoria usa para pegar a vigencia do reajuste DESSA origem).
+    origemId: candidato.origemId || null,
     cidadeDestino: destinoInfo.cidade || candidato.cidadeDestino,
     ibgeDestino: destinoInfo.ibge || candidato.ibgeDestino,
     ufDestino: destinoInfo.uf || candidato.ufDestino,
@@ -26191,6 +26193,16 @@ function vigenciaDoGrupoTransportadora(transportadora = {}, grupo) {
     if (v.fim && v.fim > fim) fim = v.fim;
   });
   return { inicio, fim };
+}
+function vigenciaPelaOrigem(entradas = [], origemId = "") {
+  if (!origemId) return entradas;
+  return (entradas || []).map((entrada) => {
+    if (!entrada?.tabelaAlternativaDe || !entrada.varianteTabela) return entrada;
+    const origem = (entrada.origens || []).find((o) => String(o?.id) === String(origemId));
+    const v = origem?.vigenciasAlternativas?.[entrada.varianteTabela];
+    if (!v || !v.inicio && !v.fim) return entrada;
+    return { ...entrada, vigenciaInicio: v.inicio || "", vigenciaFim: v.fim || "" };
+  });
 }
 function dataEmissaoIsoCte(cte = {}) {
   const valor = pick(cte, ["data_emissao", "emissao", "dataEmissao"]);
@@ -27015,7 +27027,10 @@ function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, de
   if (!grupoAlvo || grupoAlvo.length <= 1) return null;
   const grupoSemTransferencia = grupoAlvo.filter((entrada) => !ehTabelaTransferencia(entrada));
   if (grupoSemTransferencia.length <= 1 && grupoSemTransferencia.length !== grupoAlvo.length) return null;
-  const { entradas: entradasGrupo, porVigencia } = aplicarVigenciaNoGrupo(grupoSemTransferencia, dataEmissaoIsoCte(cte));
+  const { entradas: entradasGrupo, porVigencia } = aplicarVigenciaNoGrupo(
+    vigenciaPelaOrigem(grupoSemTransferencia, detalheVencedor?.origemId),
+    dataEmissaoIsoCte(cte)
+  );
   const valorCtePago = toNumber4(pick(cte, ["valor_cte", "valorCte", "valor_frete", "frete"]));
   const candidatos = entradasGrupo.map((entrada) => {
     const detalhe = calcularValorParaTabelaEspecifica(cte, entrada, canaisTentativa, cidadePorIbge, opcoes, usarRotaInvertida);
@@ -27124,6 +27139,7 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
       componentes_base: detalhe.detalhes?.frete,
       componente_base: detalhe.detalhes?.frete?.componenteBase,
       origem_validada: Boolean(detalhe.origemValidada),
+      origem_id: detalhe.origemId || null,
       motor: "simulador_realizado",
       calculo_devolucao_invertida: calculoInvertido,
       observacao_devolucao: calculoInvertido ? "CT-e de devolucao calculado pela rota de ida equivalente." : ""
@@ -27612,7 +27628,10 @@ function processarCteSemChecagemCanal(cte, transportadoras = [], mapaVinculos = 
     const tabelaAtualId = String(transportadora.negociacaoId || transportadora.id || "");
     const entradasVinculadas = gruposVinculados.find((grupo) => grupo.some((entrada) => String(entrada.negociacaoId || entrada.id || "") === tabelaAtualId));
     if (!entradasVinculadas?.length) return resultadoDireto;
-    const { entradas: entradasVigentes, porVigencia } = aplicarVigenciaNoGrupo(entradasVinculadas, dataEmissaoIsoCte(cte));
+    const { entradas: entradasVigentes, porVigencia } = aplicarVigenciaNoGrupo(
+      vigenciaPelaOrigem(entradasVinculadas, resultadoDireto?.detalhes_calculo?.origem_id),
+      dataEmissaoIsoCte(cte)
+    );
     const candidatos = entradasVigentes.map((entrada) => {
       const calculadoTabela = processarCteSemChecagemCanal(cteCalculo, [entrada], mapaVinculos, entrada.nome, opcoes);
       if (calculadoTabela?.status_calculo !== "CALCULADO" || !(Number(calculadoTabela.valor_calculado) > 0)) return null;

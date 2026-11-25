@@ -652,6 +652,21 @@ function vigenciaDoGrupoTransportadora(transportadora = {}, grupo) {
   return { inicio, fim };
 }
 
+// A vigência do reajuste é cadastrada POR ORIGEM. A entrada da tabela alternativa carrega a mais antiga entre as
+// origens carregadas (vigenciaDoGrupoTransportadora), e isso fazia o resultado depender de quais origens vieram
+// junto: com a malha inteira, a Serra "herdava" a vigência de Contagem; com a busca direcionada, não. Quando se
+// sabe a origem que calculou o CT-e e ela tem vigência própria para o grupo, vale a dela.
+function vigenciaPelaOrigem(entradas = [], origemId = '') {
+  if (!origemId) return entradas;
+  return (entradas || []).map((entrada) => {
+    if (!entrada?.tabelaAlternativaDe || !entrada.varianteTabela) return entrada;
+    const origem = (entrada.origens || []).find((o) => String(o?.id) === String(origemId));
+    const v = origem?.vigenciasAlternativas?.[entrada.varianteTabela];
+    if (!v || (!v.inicio && !v.fim)) return entrada;
+    return { ...entrada, vigenciaInicio: v.inicio || '', vigenciaFim: v.fim || '' };
+  });
+}
+
 // Data de emissão do CT-e em YYYY-MM-DD (aceita ISO e dd/mm/aaaa); '' se ausente.
 function dataEmissaoIsoCte(cte = {}) {
   const valor = pick(cte, ['data_emissao', 'emissao', 'dataEmissao']);
@@ -1753,7 +1768,10 @@ function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, de
   // (a tabela em vigor substitui a principal).
   const grupoSemTransferencia = grupoAlvo.filter((entrada) => !ehTabelaTransferencia(entrada));
   if (grupoSemTransferencia.length <= 1 && grupoSemTransferencia.length !== grupoAlvo.length) return null;
-  const { entradas: entradasGrupo, porVigencia } = aplicarVigenciaNoGrupo(grupoSemTransferencia, dataEmissaoIsoCte(cte));
+  const { entradas: entradasGrupo, porVigencia } = aplicarVigenciaNoGrupo(
+    vigenciaPelaOrigem(grupoSemTransferencia, detalheVencedor?.origemId),
+    dataEmissaoIsoCte(cte),
+  );
   const valorCtePago = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
   const candidatos = entradasGrupo.map((entrada) => {
     const detalhe = calcularValorParaTabelaEspecifica(cte, entrada, canaisTentativa, cidadePorIbge, opcoes, usarRotaInvertida);
@@ -1895,6 +1913,7 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
       componentes_base: detalhe.detalhes?.frete,
       componente_base: detalhe.detalhes?.frete?.componenteBase,
       origem_validada: Boolean(detalhe.origemValidada),
+      origem_id: detalhe.origemId || null,
       motor: 'simulador_realizado',
       calculo_devolucao_invertida: calculoInvertido,
       observacao_devolucao: calculoInvertido ? 'CT-e de devolucao calculado pela rota de ida equivalente.' : '',
@@ -2487,7 +2506,10 @@ function processarCteSemChecagemCanal(cte, transportadoras = [], mapaVinculos = 
     if (!entradasVinculadas?.length) return resultadoDireto;
 
     // Reajuste com vigência: a data de emissão decide quais tabelas concorrem.
-    const { entradas: entradasVigentes, porVigencia } = aplicarVigenciaNoGrupo(entradasVinculadas, dataEmissaoIsoCte(cte));
+    const { entradas: entradasVigentes, porVigencia } = aplicarVigenciaNoGrupo(
+      vigenciaPelaOrigem(entradasVinculadas, resultadoDireto?.detalhes_calculo?.origem_id),
+      dataEmissaoIsoCte(cte),
+    );
     const candidatos = entradasVigentes.map((entrada) => {
       const calculadoTabela = processarCteSemChecagemCanal(cteCalculo, [entrada], mapaVinculos, entrada.nome, opcoes);
       if (calculadoTabela?.status_calculo !== 'CALCULADO' || !(Number(calculadoTabela.valor_calculado) > 0)) return null;
