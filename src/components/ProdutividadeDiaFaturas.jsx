@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { carregarHistoricoProdutividade, carregarAutorizacoesProdutividade, carregarPendenciasAtuais, carregarEnviosErpPeriodo, carregarFaturasPorIds } from '../services/auditoriaFretesService';
+import { carregarHistoricoProdutividade, carregarAutorizacoesProdutividade, carregarPendenciasAtuais, carregarEnviosErpPeriodo, carregarFaturasPorIds, carregarRemetentesAprovacaoGestao, carregarDecisoesAutorizacoesProdutividade } from '../services/auditoriaFretesService';
 
 const inteiro = (v) => Number(v || 0).toLocaleString('pt-BR');
 const FUSO = 'America/Sao_Paulo';
@@ -8,6 +8,24 @@ const LIBERADAS = new Set(['PRONTA_PARA_PAGAMENTO', 'LIBERADA_COM_DESCONTO']);
 
 const semAcento = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
 const partesNome = (nome) => semAcento(nome).split(/\s+/).filter(Boolean);
+// O Verum grava "amd-log: Fulano" - tira o prefixo do sistema pra casar com o nome do usuario.
+const limparNome = (nome) => String(nome || '').replace(/^\s*[\w.-]{1,30}:\s*/, '').trim();
+const ehRobo = (nome) => semAcento(nome).startsWith('ROBO');
+const ehDecisaoGestao = (e) => e.status_anterior === 'AGUARDANDO_APROVACAO_GESTAO' && e.status_novo !== 'AGUARDANDO_APROVACAO_GESTAO';
+
+// Agrupa as variacoes de nome da mesma pessoa ("Caroline", "amd-log: Caroline de
+// Quadro Waldhelm", nome completo) numa linha so, exibindo o nome mais completo.
+function criarAgrupador(criarVazio) {
+  const lista = [];
+  const pessoa = (nomeBruto) => {
+    const nome = limparNome(nomeBruto) || '(sem usuario)';
+    let p = lista.find((x) => semAcento(x.nome) === semAcento(nome) || mesmaPessoa(nome, x.nome) || mesmaPessoa(x.nome, nome));
+    if (!p) { p = { nome, ...criarVazio() }; lista.push(p); }
+    else if (nome.length > p.nome.length) p.nome = nome;
+    return p;
+  };
+  return { lista, pessoa };
+}
 
 // O Verum grava nome curto ("Deborah", "Abraao Ferreira") e o sistema o nome
 // completo: casa pelo primeiro nome e, quando ha mais de um, tambem pelo ultimo.
@@ -46,6 +64,8 @@ export default function ProdutividadeDiaFaturas({ compacto = false }) {
   const [eventos, setEventos] = useState([]);
   const [autorizacoes, setAutorizacoes] = useState([]);
   const [enviosErp, setEnviosErp] = useState([]);
+  const [remetentes, setRemetentes] = useState(new Map());
+  const [decisoes, setDecisoes] = useState([]);
   const [pendencias, setPendencias] = useState({});
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState('');
@@ -59,12 +79,18 @@ export default function ProdutividadeDiaFaturas({ compacto = false }) {
       // Meia-noite de Brasilia (UTC-3) do dia inicial/final.
       const ini = `${inicio}T00:00:00-03:00`;
       const fi = `${fim}T00:00:00-03:00`;
-      const [ev, aut, pend, erp] = await Promise.all([
+      const [ev, aut, pend, erp, dec] = await Promise.all([
         carregarHistoricoProdutividade(ini, fi),
         carregarAutorizacoesProdutividade(ini, fi),
         carregarPendenciasAtuais(),
         carregarEnviosErpPeriodo(ini, fi),
+        carregarDecisoesAutorizacoesProdutividade(ini, fi),
       ]);
+      // Liberacoes aprovadas pela gestao contam pra quem enviou pra aprovacao.
+      const aprovadas = ev.filter((e) => ehDecisaoGestao(e) && LIBERADAS.has(e.status_novo)).map((e) => e.fatura_id);
+      const rem = await carregarRemetentesAprovacaoGestao(aprovadas);
+      setRemetentes(rem);
+      setDecisoes(dec);
       setEventos(ev);
       setAutorizacoes(aut);
       setPendencias(pend);
@@ -92,38 +118,56 @@ export default function ProdutividadeDiaFaturas({ compacto = false }) {
     };
   }, [periodo]);
 
-  const linhas = useMemo(() => {
-    const porPessoa = new Map();
-    const pessoa = (nome) => {
-      const chave = String(nome || '').trim() || '(sem usuario)';
-      if (!porPessoa.has(chave)) {
-        porPessoa.set(chave, { nome: chave, auditadas: new Set(), liberadas: new Set(), aprovacao: new Set(), enviadas: new Set(), fornecedor: new Set(), suprimentos: new Set(), transporte: new Set(), erp: new Set() });
-      }
-      return porPessoa.get(chave);
-    };
+  const CHAVES = ['auditadas', 'liberadas', 'aprovacao', 'enviadas', 'fornecedor', 'suprimentos', 'transporte', 'erp'];
+  const CHAVES_APROV = ['gestaoAprovadas', 'gestaoDevolvidas', 'b2cAutorizadas', 'atacadoAutorizadas', 'suprimentosAutorizadas', 'recusadas'];
+  const vazio = (chaves) => () => Object.fromEntries(chaves.map((k) => [k, new Set()]));
+  const fechar = (lista, chaves, soma) => lista
+    .map((p) => ({ nome: p.nome, ids: Object.fromEntries(chaves.map((k) => [k, [...p[k]]])), ...Object.fromEntries(chaves.map((k) => [k, p[k].size])) }))
+    .filter((l) => chaves.some((k) => l[k] > 0))
+    .sort((a, b) => soma(b) - soma(a));
+
+  const { linhas, linhasAprov } = useMemo(() => {
+    const aud = criarAgrupador(vazio(CHAVES));
+    const apr = criarAgrupador(vazio(CHAVES_APROV));
     for (const e of eventos) {
-      const p = pessoa(e.usuario_nome);
+      if (ehDecisaoGestao(e)) {
+        // Decisao da gestao: vai pro quadro de aprovacoes, nao pra produtividade de auditoria.
+        if (LIBERADAS.has(e.status_novo)) {
+          apr.pessoa(e.usuario_nome).gestaoAprovadas.add(e.fatura_id);
+          const quemEnviou = remetentes.get(e.fatura_id);
+          if (quemEnviou) aud.pessoa(quemEnviou).liberadas.add(e.fatura_id);
+        } else if (!ehRobo(e.usuario_nome)) {
+          apr.pessoa(e.usuario_nome).gestaoDevolvidas.add(e.fatura_id);
+        }
+        continue;
+      }
+      const p = aud.pessoa(e.usuario_nome);
       if (LIBERADAS.has(e.status_novo)) { p.liberadas.add(e.fatura_id); p.auditadas.add(e.fatura_id); }
       else if (e.status_novo === 'AGUARDANDO_APROVACAO_GESTAO') { p.aprovacao.add(e.fatura_id); p.auditadas.add(e.fatura_id); }
       else if (e.status_novo === 'ENVIADA_AO_FINANCEIRO') p.enviadas.add(e.fatura_id);
       else if (e.status_novo === 'AGUARDANDO_TRANSPORTADORA') p.fornecedor.add(e.fatura_id);
       else if (e.acao === 'REAUDITORIA_CONCLUIDA') p.auditadas.add(e.fatura_id);
     }
-    for (const f of enviosErp) {
-      const nome = String(f.enviado_por || '').trim() || '(sem usuario)';
-      const existente = [...porPessoa.values()].find((p) => mesmaPessoa(nome, p.nome));
-      (existente || pessoa(nome)).erp.add(f.id);
-    }
+    for (const f of enviosErp) aud.pessoa(f.enviado_por).erp.add(f.id);
     for (const a of autorizacoes) {
-      const p = pessoa(a.enviado_por);
+      const p = aud.pessoa(a.enviado_por);
       const id = a.fatura_id || a.id;
       if (a.canal === 'SUPRIMENTOS') p.suprimentos.add(id);
       else p.transporte.add(id);
     }
-    return [...porPessoa.values()]
-      .map((p) => ({ ids: { auditadas: [...p.auditadas], liberadas: [...p.liberadas], aprovacao: [...p.aprovacao], enviadas: [...p.enviadas], fornecedor: [...p.fornecedor], suprimentos: [...p.suprimentos], transporte: [...p.transporte], erp: [...p.erp] }, nome: p.nome, auditadas: p.auditadas.size, liberadas: p.liberadas.size, aprovacao: p.aprovacao.size, enviadas: p.enviadas.size, fornecedor: p.fornecedor.size, suprimentos: p.suprimentos.size, transporte: p.transporte.size, erp: p.erp.size }))
-      .sort((a, b) => (b.auditadas + b.enviadas + b.erp) - (a.auditadas + a.enviadas + a.erp));
-  }, [eventos, autorizacoes, enviosErp]);
+    for (const d of decisoes) {
+      const p = apr.pessoa(d.decidido_por);
+      const id = d.fatura_id || d.id;
+      if (d.status === 'RECUSADA') p.recusadas.add(id);
+      else if (d.canal === 'SUPRIMENTOS') p.suprimentosAutorizadas.add(id);
+      else if (d.canal === 'ATACADO') p.atacadoAutorizadas.add(id);
+      else p.b2cAutorizadas.add(id);
+    }
+    return {
+      linhas: fechar(aud.lista, CHAVES, (l) => l.auditadas + l.enviadas + l.erp + l.liberadas),
+      linhasAprov: fechar(apr.lista, CHAVES_APROV, (l) => CHAVES_APROV.reduce((t, k) => t + l[k], 0)),
+    };
+  }, [eventos, autorizacoes, enviosErp, remetentes, decisoes]);
 
   const total = linhas.reduce((t, l) => ({
     auditadas: t.auditadas + l.auditadas,
@@ -170,7 +214,13 @@ export default function ProdutividadeDiaFaturas({ compacto = false }) {
     ['erp', 'Enviadas ao ERP'], ['enviadas', 'Enviadas ao financeiro'], ['fornecedor', 'Enviadas ao fornecedor'],
     ['suprimentos', 'Enviadas p/ Suprimentos'], ['transporte', 'Enviadas p/ Transporte'],
   ];
-  const idsTotal = (chave) => [...new Set(linhas.flatMap((l) => l.ids[chave]))];
+  const idsTotal = (chave, base = linhas) => [...new Set(base.flatMap((l) => l.ids[chave]))];
+  const colunasAprov = [
+    ['gestaoAprovadas', 'Aprovadas pela gestao'], ['gestaoDevolvidas', 'Devolvidas pela gestao'],
+    ['b2cAutorizadas', 'Autorizadas Transporte B2C'], ['atacadoAutorizadas', 'Autorizadas Transporte Atacado'],
+    ['suprimentosAutorizadas', 'Autorizadas Suprimentos'], ['recusadas', 'Recusadas (Transp./Supr.)'],
+  ];
+  const totalAprov = Object.fromEntries(CHAVES_APROV.map((k) => [k, idsTotal(k, linhasAprov).length]));
 
   const rotulo = { hoje: 'Hoje', ontem: 'Ontem', '7d': 'Ultimos 7 dias', mes: 'Mes atual' }[periodo];
 
@@ -181,6 +231,7 @@ export default function ProdutividadeDiaFaturas({ compacto = false }) {
           <h4 style={{ margin: 0 }}>Produtividade da auditoria de faturas - {rotulo}</h4>
           <small>
             Auditadas = liberadas para pagamento + enviadas para aprovacao da gestao + reauditorias concluidas.
+            Liberacao aprovada pela gestao conta para quem enviou a fatura para aprovacao; as decisoes de gestao, Transporte e Suprimentos ficam no quadro de aprovacoes abaixo.
             {atualizadoEm ? ` Atualizado as ${atualizadoEm.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}.` : ''}
           </small>
         </div>
@@ -228,6 +279,33 @@ export default function ProdutividadeDiaFaturas({ compacto = false }) {
               <tr style={{ fontWeight: 700, background: '#f1f5f9' }}>
                 <td>Total</td>
                 {colunas.map(([k, rot]) => <React.Fragment key={k}>{celula('Total', rot, k, idsTotal(k), total[k])}</React.Fragment>)}
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+      <h4 style={{ margin: '16px 0 4px' }}>Aprovacoes - gestao, Transporte e Suprimentos - {rotulo}</h4>
+      <small>Quem decidiu (aprovou, devolveu, autorizou ou recusou) no periodo. Nao entra na produtividade da auditoria.</small>
+      <div style={{ overflowX: 'auto', marginTop: 8 }}>
+        <table>
+          <thead>
+            <tr>
+              <th>Pessoa</th>
+              {colunasAprov.map(([k, rot]) => <th key={k} style={{ textAlign: 'right' }}>{rot}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {linhasAprov.map((l) => (
+              <tr key={l.nome}>
+                <td>{l.nome}</td>
+                {colunasAprov.map(([k, rot]) => <React.Fragment key={k}>{celula(l.nome, rot, k, l.ids[k], l[k])}</React.Fragment>)}
+              </tr>
+            ))}
+            {!linhasAprov.length ? <tr><td colSpan={colunasAprov.length + 1} style={{ color: '#64748b' }}>{carregando ? 'Carregando...' : 'Nenhuma aprovacao no periodo.'}</td></tr> : null}
+            {linhasAprov.length ? (
+              <tr style={{ fontWeight: 700, background: '#f1f5f9' }}>
+                <td>Total</td>
+                {colunasAprov.map(([k, rot]) => <React.Fragment key={k}>{celula('Total', rot, k, idsTotal(k, linhasAprov), totalAprov[k])}</React.Fragment>)}
               </tr>
             ) : null}
           </tbody>
