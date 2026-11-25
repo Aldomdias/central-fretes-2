@@ -131,6 +131,19 @@ async function textoDoPdf(bytes) {
   return partes.join('\n');
 }
 
+// Registro da rodada (card Automacao > Robo de boletos). Sem a migration 20261125_012 a coluna detalhe nao existe:
+// grava sem ela para o historico continuar.
+let clienteRodada = null;
+async function registrarRodada(payload) {
+  if (!clienteRodada) return;
+  const base = { origem: 'ROBO_PC', executado_por: USUARIO, total_arquivos: 0, novos: 0, repetidos: 0, ...payload };
+  const { error } = await clienteRodada.from('boleto_pasta_leituras').insert(base);
+  if (error && /detalhe/i.test(error.message || '')) {
+    const { detalhe, ...semDetalhe } = base;
+    await clienteRodada.from('boleto_pasta_leituras').insert(semDetalhe);
+  }
+}
+
 async function buscarTodas(consulta) {
   const out = [];
   for (let de = 0; ; de += 1000) {
@@ -149,6 +162,7 @@ async function main() {
   const env = lerEnv();
   if (!env.VITE_SUPABASE_URL || !env.VITE_SUPABASE_ANON_KEY) throw new Error('VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY ausentes no .env');
   const sb = createClient(env.VITE_SUPABASE_URL, env.VITE_SUPABASE_ANON_KEY, { auth: { persistSession: false } });
+  clienteRodada = sb;
 
   const nomes = fs.readdirSync(PASTA).filter((n) => /\.pdf$/i.test(n));
   log(`${nomes.length} PDF(s) na pasta.`);
@@ -271,9 +285,10 @@ async function main() {
   log(`SEM FATURA CANDIDATA ${res.foraDoSistema.length}:`); res.foraDoSistema.forEach((l) => log(`  - ${l}`));
 
   if (!SIMULAR) {
-    await sb.from('boleto_pasta_leituras').insert({
-      origem: 'ROBO_PC', status: 'SUCESSO', total_arquivos: nomes.length, novos: res.guardados.length, repetidos: res.jaGuardados.length,
-      erro: res.revisar.length ? `${res.revisar.length} para revisar` : null, executado_por: USUARIO,
+    await registrarRodada({
+      status: 'SUCESSO', total_arquivos: nomes.length, novos: res.guardados.length, repetidos: res.jaGuardados.length,
+      erro: res.revisar.length ? `${res.revisar.length} para revisar` : null,
+      detalhe: { guardados: res.guardados, revisar: res.revisar, foraDoSistema: res.foraDoSistema, avisosDesconto, jaGuardados: res.jaGuardados.length },
     });
   }
 }
@@ -282,5 +297,6 @@ main()
   .catch(async (e) => {
     log(`FALHA: ${e.message}`);
     process.exitCode = 1;
+    if (!SIMULAR) await registrarRodada({ status: 'FALHA', erro: e.message }).catch(() => {});
   })
   .finally(async () => { await encerrarOcr().catch(() => {}); fecharLog(); });

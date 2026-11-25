@@ -7,10 +7,12 @@ import HistoricoLancamentos from './robos/HistoricoLancamentos';
 
 import AuditorRobo from './robos/AuditorRobo';
 import IdentificadorFaturasRobo from './robos/IdentificadorFaturasRobo';
+import BoletosPastaRobo from './robos/BoletosPastaRobo';
 
 const ROBOS = [
   { chave: 'auditor-faturas', titulo: 'Robô Auditor', descricao: 'Audita as faturas novas das transportadoras da lista: laudo ao transportador se houver desconto, aprovação se estiver correta, sempre com o auditor responsável em cópia. Faturas corretas já vão para a aprovação da gestão; o laudo pode sair por e-mail (manual, automático após o OK do auditor ou direto).', componente: AuditorRobo },
   { chave: 'identificador-faturas', titulo: 'Robô identificador de faturas', descricao: 'Cada auditor cadastra a transportadora que não envia fatura e o tipo de faturamento (semanal, quinzenal, mensal). O robô confere se saiu fatura no período e quantos CT-es dos últimos 30 dias estão sem fatura vinculada, e avisa o transportador por e-mail (auditor e grupo da auditoria em cópia).', componente: IdentificadorFaturasRobo },
+  { chave: 'boletos-pasta', titulo: 'Robô de boletos', descricao: 'Lê a pasta “Verum protocolo - Boletos” do SharePoint (sincronizada no PC), confere valor e vencimento de cada boleto com a fatura e guarda o boleto no sistema. Roda no PC a cada 30 minutos; aqui você acompanha as rodadas e o que ficou para revisar.', componente: BoletosPastaRobo },
   { chave: 'reprocessar-cte', titulo: 'Escrituração (Reprocessar CT-e)', descricao: 'Exporta os CT-e com erro do SAP e reprocessa (escritura) em lotes; os que ganham MIRO já entram na base de partidas. Substitui a planilha “Reprocessar Cte”.', componente: ReprocessarCteRobo },
   { chave: 'correcao-saldo', titulo: 'Correção de saldo', descricao: 'Corrige o valor líquido do pedido dos CT-e com erro de saldo e reprocessa; os que ganham MIRO já entram na base de partidas. Substitui a planilha “Ajuste de saldo”.', componente: CorrecaoSaldoRobo },
   { chave: 'lancamento-nfse', titulo: 'Lançamento NFS-e', descricao: 'Cria o pedido (ME21N) e a MIRO das notas de serviço das transportadoras. Substitui a planilha “Lançamento NFS-e”.', componente: LancamentoNfseRobo },
