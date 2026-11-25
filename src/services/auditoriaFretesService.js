@@ -1221,7 +1221,7 @@ export async function corrigirNomesFaturasPorCnpj({ usuarioNome = 'Sistema' } = 
   const [mapa, carteiras, faturas] = await Promise.all([
     carregarMapaNomeOficialPorRaizCnpj(),
     listarCarteirasAuditoria(),
-    paginarTudo(client, 'faturas', 'id, transportadora, cnpj_transportadora, auditor_nome, status'),
+    paginarTudo(client, 'faturas', 'id, transportadora, cnpj_transportadora, auditor_nome, auditor_email, status'),
   ]);
   const carteiraPorNome = new Map();
   (carteiras || []).forEach((c) => { if (c.auditor_nome) carteiraPorNome.set(normalizarTexto(c.transportadora), c); });
@@ -1233,10 +1233,14 @@ export async function corrigirNomesFaturasPorCnpj({ usuarioNome = 'Sistema' } = 
     const nomeDiferente = normalizarTexto(oficial) !== normalizarTexto(f.transportadora);
     const carteira = !f.auditor_nome && !ENCERRADOS.has(f.status) ? carteiraPorNome.get(normalizarTexto(oficial)) : null;
     if (!nomeDiferente && !carteira) return;
+    // Upsert em lote preenche com NULL a coluna que falta em alguma linha: toda
+    // linha leva auditor_nome/auditor_email (o atual quando nao ha carteira),
+    // senao o auditor das faturas sem carteira no mesmo lote e apagado.
     alvo.push({
       id: f.id,
       transportadora: oficial,
-      ...(carteira ? { auditor_nome: carteira.auditor_nome, auditor_email: carteira.auditor_email || '' } : {}),
+      auditor_nome: carteira ? carteira.auditor_nome : (f.auditor_nome ?? null),
+      auditor_email: carteira ? (carteira.auditor_email || '') : (f.auditor_email ?? null),
       updated_at: agora,
       _antes: f.transportadora,
       _carteira: Boolean(carteira),
