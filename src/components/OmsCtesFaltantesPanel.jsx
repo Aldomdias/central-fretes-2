@@ -6,7 +6,7 @@ const ROTULO_IMPORT = { queued: 'na fila', processing: 'processando', imported: 
 const ROTULO_ENVIO = { queued: 'na fila do OMS', alreadyExists: 'OMS já tem (ok)', rejected: 'recusado', erro: 'erro na chamada' };
 
 /** Linhas da fatura sem CT-e no OMS + envio dos XMLs originais (cteProc / procEventoCTe). Nunca altera o arquivo. */
-export default function OmsCtesFaltantesPanel({ invoiceId }) {
+export default function OmsCtesFaltantesPanel({ invoiceId, onArquivosEnviados }) {
   const [aberto, setAberto] = useState(false);
   const [faltantes, setFaltantes] = useState(null);
   const [estado, setEstado] = useState('');
@@ -31,8 +31,14 @@ export default function OmsCtesFaltantesPanel({ invoiceId }) {
       const r = await enviarArquivosCte(invoiceId, arquivos, { aoProgredir: (n, t) => setMsg(`Enviados ${n} de ${t}...`) });
       setResultado(r);
       const rec = r.filter((x) => x.status === 'rejected' || x.status === 'erro').length;
-      setMsg(rec ? `${rec} arquivo(s) não foram aceitos. Veja o motivo abaixo.` : 'Arquivos aceitos. Atualize a lista para acompanhar a gravação.');
+      let local = '';
+      if (onArquivosEnviados) {
+        const l = await onArquivosEnviados(arquivos).catch(() => null);
+        if (l?.importados) local = ` ${l.importados} CT-e(s) fora da base também importado(s) na auditoria.`;
+        if (l?.falhas?.length) local += ` Não importados na base: ${l.falhas.join(' | ')}.`;
+      }
       await atualizar();
+      setMsg((rec ? `${rec} arquivo(s) não foram aceitos. Veja o motivo abaixo.` : 'Arquivos aceitos. Atualize a lista para acompanhar a gravação.') + local);
     } catch (e) { setMsg(`OMS: ${e.message}`); } finally { setOcupado(false); }
   }
 
@@ -46,8 +52,8 @@ export default function OmsCtesFaltantesPanel({ invoiceId }) {
       setResultado(r);
       await marcarEnviadosAoOms(r.filter((x) => x.status === 'queued' || x.status === 'alreadyExists').map((x) => x.chave).filter(Boolean));
       const rec = r.filter((x) => x.status === 'rejected' || x.status === 'erro').length;
-      setMsg(`${achados.length} XML(s) guardado(s) enviado(s)${rec ? `; ${rec} não aceito(s), veja o motivo abaixo` : ''}. Atualize a lista para acompanhar a gravação.`);
       await atualizar();
+      setMsg(`${achados.length} XML(s) guardado(s) enviado(s)${rec ? `; ${rec} não aceito(s), veja o motivo abaixo` : ''}. Atualize a lista para acompanhar a gravação.`);
     } catch (e) { setMsg(`OMS: ${e.message}`); } finally { setOcupado(false); }
   }
 

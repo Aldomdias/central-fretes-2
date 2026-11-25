@@ -3288,6 +3288,47 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     }
   };
 
+  // XMLs enviados ao OMS (painel "CT-es sem chave no OMS"): os que casam com uma
+  // linha desta fatura que esta "Fora da base" ja sao importados aqui tambem,
+  // pra nao precisar subir o mesmo arquivo duas vezes. Nunca lanca.
+  const importarXmlsEnviadosAoOms = async (arquivos) => {
+    const semZeros = (v) => String(v || '').replace(/\D/g, '').replace(/^0+/, '');
+    const importados = [];
+    const falhas = [];
+    const registros = [];
+    for (const arquivo of arquivos || []) {
+      let cte;
+      try { cte = lerCteXml(await arquivo.text(), arquivo.name); } catch { continue; } // evento de cancelamento etc.
+      try { registros.push(await montarRegistroXml(arquivo, cte)); } catch { /* guardar o original e opcional */ }
+      const item = detalhes.find((d) => normalizarChaveCte(d.chave_cte) === cte.chave_cte)
+        || detalhes.find((d) => !d.chave_cte && semZeros(d.numero_cte) && semZeros(d.numero_cte) === semZeros(cte.numero_cte));
+      if (!item) continue;
+      const jaNaBase = referenciaCtes.get(normalizarChaveCte(item.chave_cte)) || referenciaCtes.get(normalizarChaveCte(item.numero_cte));
+      if (jaNaBase) continue;
+      try {
+        const canal = String(item.canal || fatura.canal || '').trim();
+        await importarCteXmlNaBase(cte, { canal: /^(ATACADO|B2C|AMBOS)$/i.test(canal) ? canal.toUpperCase() : '' });
+        if (!item.chave_cte) await atualizarDetalheManual(item, { chave_cte: cte.chave_cte });
+        importados.push(cte);
+      } catch (error) {
+        falhas.push(`${cte.numero_cte}: ${error.message}`);
+      }
+    }
+    if (registros.length) guardarXmlsOriginais(registros).catch(() => {});
+    if (importados.length) {
+      try {
+        const nova = await buscarReferenciaCtes(importados.flatMap((c) => [c.chave_cte, c.numero_cte]), { lancarErro: true });
+        setReferenciaCtes((atual) => {
+          const proximo = new Map(atual);
+          nova.forEach((valor, chave) => proximo.set(chave, valor));
+          return proximo;
+        });
+      } catch { /* a importacao ja foi gravada; recarregar a fatura mostra */ }
+      setInfoRecalculo(`${importados.length} CT-e(s) que estavam fora da base foram importados aqui também (${importados.map((c) => c.numero_cte).join(', ')}). Agora recalcule esses CT-es.`);
+    }
+    return { importados: importados.length, falhas };
+  };
+
   // Corrige origem/destino da base pelo tracking (selecionados, ou os sem
   // calculo se nada estiver marcado) e ja recalcula esses CT-es.
   const [corrigindoTracking, setCorrigindoTracking] = useState(false);
@@ -4367,7 +4408,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         </div>
       )}
       {omsInvoiceIdValido(fatura.oms_invoice_id) && !ENCERRADOS.has(fatura.status) && (
-        <OmsCtesFaltantesPanel key={fatura.oms_invoice_id} invoiceId={fatura.oms_invoice_id} />
+        <OmsCtesFaltantesPanel key={fatura.oms_invoice_id} invoiceId={fatura.oms_invoice_id} onArquivosEnviados={importarXmlsEnviadosAoOms} />
       )}
       {enviosOms[0] && (() => {
         const envio = enviosOms[0];
