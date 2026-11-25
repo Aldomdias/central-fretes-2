@@ -3710,3 +3710,28 @@ button:disabled { opacity: 0.58; cursor: not-allowed; }
   .app-content :is(.form-grid, .filters-grid, [class*="form-grid"], [class*="filter-grid"]) { grid-template-columns: 1fr !important; }
   .app-content :is(.modal, [class*="modal-card"], [class*="modal-content"]) { max-width: calc(100vw - 24px) !important; max-height: calc(100dvh - 24px) !important; }
 }
+
+/* Minha Area: busca ao incluir tela + card sendo arrastado */
+.workspace-add-busca { min-width: 180px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text); font-size: 12px; }
+.workspace-card.is-dragging { opacity: .55; outline: 2px dashed color-mix(in srgb, var(--brand) 60%, transparent); }
+.workspace-kbd { margin-left: 6px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel-soft); font-size: 11px; font-family: inherit; }
+
+/* Menu rapido (Alt+M / Ctrl+K) */
+.menu-rapido-fundo { position: fixed; inset: 0; z-index: 10050; display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; background: rgba(15, 23, 42, .38); }
+.menu-rapido { width: min(560px, calc(100vw - 24px)); max-height: 72vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); color: var(--text); box-shadow: 0 24px 60px rgba(15, 23, 42, .3); }
+.menu-rapido-topo { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border-soft, var(--border)); }
+.menu-rapido-topo input { flex: 1; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 15px; }
+.menu-rapido kbd { padding: 1px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel-soft); color: var(--muted); font-size: 11px; font-family: inherit; }
+.menu-rapido-atual { display: flex; justify-content: space-between; gap: 8px; margin: 8px 10px 0; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px; background: var(--panel-soft); color: var(--text); font-size: 12px; font-weight: 700; cursor: pointer; text-align: left; }
+.menu-rapido-atual span { color: var(--muted); font-weight: 400; }
+.menu-rapido-lista { overflow-y: auto; padding: 6px; }
+.menu-rapido-secao { padding: 6px 8px 4px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.menu-rapido-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; cursor: pointer; }
+.menu-rapido-item.is-selected { background: color-mix(in srgb, var(--brand) 12%, transparent); }
+.menu-rapido-item.is-current .menu-rapido-label::after { content: ' · aberta'; color: var(--muted); font-weight: 400; font-size: 11px; }
+.menu-rapido-label { flex: 1; font-size: 14px; font-weight: 600; }
+.menu-rapido-grupo { color: var(--muted); font-size: 11px; }
+.menu-rapido-estrela { border: 0; background: transparent; color: var(--muted); font-size: 17px; line-height: 1; cursor: pointer; padding: 2px 4px; }
+.menu-rapido-estrela.on { color: #d4a106; }
+.menu-rapido-vazio { padding: 16px 10px; color: var(--muted); font-size: 13px; }
+.menu-rapido-rodape { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 14px; border-top: 1px solid var(--border-soft, var(--border)); color: var(--muted); font-size: 11px; }

@@ -1,62 +1,38 @@
 import { useEffect, useMemo, useState } from 'react';
-import { usuarioTemAcesso } from '../utils/authLocal';
+import { BLOCOS, MODELOS, blocoPermitido, blocosEfetivos, incluirPaginaNaArea, modeloParaPerfil, paginaNaArea, paginasDoUsuario, resolverBloco } from '../utils/areaTrabalho';
 import { salvarPreferenciasInterface } from '../utils/preferenciasInterface';
 import MonitorAtualizacoes from '../components/MonitorAtualizacoes';
 
-const BLOCOS = {
-  lancarCte: { titulo: 'Lançar CT-e', descricao: 'Abra diretamente o fluxo atual de CT-e.', pagina: 'cte', tom: 'operacao' },
-  tracking: { titulo: 'Tracking', descricao: 'Consulte entregas e acompanhe ocorrências.', pagina: 'tracking', tom: 'operacao' },
-  operacao: { titulo: 'Painel da operação', descricao: 'Acompanhe cargas, pendências e execução.', pagina: 'painel-operacao', tom: 'operacao' },
-  faturas: { titulo: 'Faturas para auditar', descricao: 'Entre na carteira de auditoria de fretes.', pagina: 'faturas', tom: 'auditoria' },
-  diagnostico: { titulo: 'Diagnóstico de CT-e', descricao: 'Investigue cálculos e divergências de frete.', pagina: 'auditoria-cte', tom: 'auditoria' },
-  sap: { titulo: 'Acompanhamento SAP e OMS', descricao: 'Veja protocolos, financeiro e integrações.', pagina: 'financeiro-auditoria', tom: 'auditoria' },
-  propostas: { titulo: 'Propostas e negociações', descricao: 'Compare rodadas, tabelas e aprovações.', pagina: 'tabelas-negociacao', tom: 'suprimentos' },
-  realizado: { titulo: 'Simulador do Realizado', descricao: 'Meça oportunidades na operação realizada.', pagina: 'perda-realizado', tom: 'suprimentos' },
-  laudos: { titulo: 'Laudos e reajustes', descricao: 'Analise impactos e evidências da negociação.', pagina: 'reajustes', tom: 'suprimentos' },
-  contratos: { titulo: 'Contratos', descricao: 'Acompanhe vigências e documentos negociados.', pagina: 'gestao-contratos', tom: 'suprimentos' },
-  transportadoras: { titulo: 'Transportadoras', descricao: 'Mantenha origens, rotas, cotações e taxas.', pagina: 'transportadoras', tom: 'base' },
-  simulador: { titulo: 'Simulador de fretes', descricao: 'Compare tabelas e impactos por rota.', pagina: 'simulador', tom: 'base' },
-};
-
-const MODELOS = {
-  operacao: { nome: 'Operação', blocos: ['lancarCte', 'tracking', 'operacao', 'transportadoras'] },
-  auditoria: { nome: 'Auditoria', blocos: ['faturas', 'diagnostico', 'sap', 'lancarCte'] },
-  suprimentos: { nome: 'Suprimentos e Negociação', blocos: ['propostas', 'realizado', 'laudos', 'contratos', 'simulador'] },
-};
-
-function modeloParaPerfil(perfil) {
-  if (['AUDITORIA_FRETES', 'AUDITORIA_LOTACAO', 'GESTOR_AUDITORIA_FRETES', 'FINANCEIRO'].includes(perfil)) return 'auditoria';
-  if (perfil === 'NEGOCIACAO_FRETES') return 'suprimentos';
-  return 'operacao';
-}
-
-function permitidos(usuario) {
-  return Object.entries(BLOCOS).filter(([, bloco]) => usuarioTemAcesso(usuario, bloco.pagina)).map(([id]) => id);
-}
-
-export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPreferencias, onMudarPagina, onAbrirPainelGeral }) {
-  const disponiveis = useMemo(() => permitidos(usuario), [usuario]);
+export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPreferencias, onMudarPagina, onAbrirPainelGeral, onAbrirMenuRapido }) {
+  const paginasUsuario = useMemo(() => paginasDoUsuario(usuario), [usuario]);
   const modeloInicial = preferencias.modeloArea || modeloParaPerfil(usuario?.perfil);
-  const idsIniciais = (preferencias.blocos.length ? preferencias.blocos : MODELOS[modeloInicial].blocos)
-    .filter((id) => disponiveis.includes(id));
   const [editando, setEditando] = useState(false);
-  const [blocos, setBlocos] = useState(idsIniciais);
-  const [fixados, setFixados] = useState(() => preferencias.fixados || []);
+  const [blocos, setBlocos] = useState(() => blocosEfetivos(usuario, preferencias));
   const [arrastando, setArrastando] = useState(null);
+  const [buscaAdicionar, setBuscaAdicionar] = useState('');
 
   useEffect(() => {
-    const nova = { ...preferencias, blocos, fixados, modeloArea: preferencias.modeloArea || modeloInicial };
+    // "fixados" virou so ordem: salva a lista ja convertida e descarta o campo.
+    const { fixados: _antigo, ...resto } = preferencias;
+    const nova = { ...resto, blocos, modeloArea: preferencias.modeloArea || modeloInicial };
     salvarPreferenciasInterface(usuario, nova);
     onPreferencias(nova);
   // O pai mantem a identidade do objeto sincronizada; persistimos apenas quando a composicao muda.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blocos, fixados]);
+  }, [blocos]);
+
+  // O menu rapido (Alt+M) tambem inclui/remove telas: acompanha a mudanca vinda de fora.
+  useEffect(() => {
+    const externos = blocosEfetivos(usuario, preferencias);
+    if (externos.join('|') !== blocos.join('|') && preferencias.blocos?.length) setBlocos(externos);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preferencias.blocos]);
 
   const aplicarModelo = (id) => {
-    const lista = MODELOS[id].blocos.filter((item) => disponiveis.includes(item));
-    const nova = { ...preferencias, modeloArea: id, blocos: lista, fixados: [] };
+    const lista = MODELOS[id].blocos.filter((item) => blocoPermitido(usuario, item));
+    const { fixados: _antigo, ...resto } = preferencias;
+    const nova = { ...resto, modeloArea: id, blocos: lista };
     setBlocos(lista);
-    setFixados([]);
     salvarPreferenciasInterface(usuario, nova);
     onPreferencias(nova);
   };
@@ -90,8 +66,10 @@ export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPrefere
     if (alvo?.dataset.workspaceBlock) moverPara(origemId, alvo.dataset.workspaceBlock);
   };
 
-  const ordenados = [...blocos].sort((a, b) => Number(fixados.includes(b)) - Number(fixados.includes(a)));
-  const ausentes = disponiveis.filter((id) => !blocos.includes(id));
+  const termo = buscaAdicionar.trim().toLowerCase();
+  const ausentes = paginasUsuario
+    .filter((p) => !paginaNaArea(blocos, p.chave))
+    .filter((p) => !termo || `${p.label} ${p.grupo}`.toLowerCase().includes(termo));
 
   return (
     <div className="workspace-page page-shell">
@@ -101,7 +79,10 @@ export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPrefere
           <h1>Olá, {usuario?.nome?.split(' ')[0] || 'usuário'}.</h1>
           <p>Seus fluxos mais importantes, organizados conforme seu acesso.</p>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {onAbrirMenuRapido && !editando ? (
+            <button type="button" className="btn-secondary" onClick={onAbrirMenuRapido} title="Abre de qualquer tela com Alt+M (ou Ctrl+K)">Menu rápido <kbd className="workspace-kbd">Alt+M</kbd></button>
+          ) : null}
           {onAbrirPainelGeral && !editando ? (
             <button type="button" className="btn-secondary" onClick={onAbrirPainelGeral}>Painel geral e importações</button>
           ) : null}
@@ -122,23 +103,32 @@ export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPrefere
             ))}
             <button type="button" onClick={() => aplicarModelo(modeloParaPerfil(usuario?.perfil))}>Restaurar padrão do perfil</button>
           </div>
-          {ausentes.length > 0 && (
-            <div className="workspace-add">
-              <strong>Adicionar bloco</strong>
-              {ausentes.map((id) => <button type="button" key={id} onClick={() => setBlocos((lista) => [...lista, id])}>+ {BLOCOS[id].titulo}</button>)}
-            </div>
-          )}
-          <p className="workspace-help">Use as setas para reordenar por toque ou teclado. Blocos fixados aparecem primeiro.</p>
+          <div className="workspace-add">
+            <strong>Incluir tela</strong>
+            <input
+              type="search"
+              className="workspace-add-busca"
+              placeholder="Buscar tela…"
+              value={buscaAdicionar}
+              onChange={(event) => setBuscaAdicionar(event.target.value)}
+            />
+            {ausentes.map((p) => {
+              const rico = Object.values(BLOCOS).find((b) => b.pagina === p.chave);
+              return <button type="button" key={p.chave} title={p.grupo} onClick={() => setBlocos((lista) => incluirPaginaNaArea(lista, p.chave))}>+ {rico?.titulo || p.label}</button>;
+            })}
+            {ausentes.length === 0 && <span className="workspace-help">{termo ? 'Nenhuma tela encontrada.' : 'Todas as suas telas já estão na área.'}</span>}
+          </div>
+          <p className="workspace-help">Telas incluídas entram sempre no fim. Arraste pela alça ⠿ (ou use as setas) para mudar a posição.</p>
         </section>
       )}
 
       <section className="workspace-grid" aria-label="Blocos da área de trabalho">
-        {ordenados.map((id) => {
-          const bloco = BLOCOS[id];
-          const indice = blocos.indexOf(id);
+        {blocos.map((id, indice) => {
+          const bloco = resolverBloco(id);
+          if (!bloco) return null;
           return (
             <article
-              className={`workspace-card tone-${bloco.tom} ${editando ? '' : 'is-clickable'}`}
+              className={`workspace-card tone-${bloco.tom} ${editando ? '' : 'is-clickable'} ${arrastando === id ? 'is-dragging' : ''}`}
               key={id}
               role={editando ? undefined : 'button'}
               tabIndex={editando ? undefined : 0}
@@ -195,7 +185,6 @@ export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPrefere
               </div>
               {editando ? (
                 <div className="workspace-card-controls" aria-label={`Organizar ${bloco.titulo}`}>
-                  <button type="button" onClick={() => setFixados((lista) => lista.includes(id) ? lista.filter((item) => item !== id) : [...lista, id])} aria-pressed={fixados.includes(id)} title="Fixar bloco">{fixados.includes(id) ? 'Desafixar' : 'Fixar'}</button>
                   <button type="button" onClick={() => mover(id, -1)} disabled={indice === 0} aria-label={`Mover ${bloco.titulo} para cima`}>↑</button>
                   <button type="button" onClick={() => mover(id, 1)} disabled={indice === blocos.length - 1} aria-label={`Mover ${bloco.titulo} para baixo`}>↓</button>
                   <button type="button" className="danger" onClick={() => setBlocos((lista) => lista.filter((item) => item !== id))}>Remover</button>

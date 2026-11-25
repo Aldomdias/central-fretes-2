@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import DashboardPage from './pages/DashboardPage';
 import SimuladorPage from './pages/SimuladorPage';
@@ -65,6 +65,7 @@ import { assinarManutencao } from './services/manutencaoService';
 import ManutencaoOverlay from './components/ManutencaoOverlay';
 import SupabaseStatusBanner from './components/SupabaseStatusBanner';
 import MinhaAreaTrabalhoPage from './pages/MinhaAreaTrabalhoPage';
+import MenuRapido from './components/MenuRapido';
 import { aplicarPreferenciasInterface, carregarPreferenciasInterface, salvarPreferenciasInterface } from './utils/preferenciasInterface';
 
 const PAGINAS_PERMITIDAS = [
@@ -93,6 +94,9 @@ export default function App() {
   const [menuMobileAberto, setMenuMobileAberto] = useState(false);
   // Painel geral antigo (Central de importacoes etc.) continua acessivel pela Minha Area de Trabalho.
   const [painelGeralAberto, setPainelGeralAberto] = useState(false);
+  const [menuRapidoAberto, setMenuRapidoAberto] = useState(false);
+  const abrirMenuRapido = useCallback(() => setMenuRapidoAberto(true), []);
+  const fecharMenuRapido = useCallback(() => setMenuRapidoAberto(false), []);
   const [preferenciasInterface, setPreferenciasInterface] = useState(() => carregarPreferenciasInterface(sessao));
   const [avisosOcultos, setAvisosOcultos] = useState(() => {
     try { return window.localStorage.getItem('central_fretes_avisos_ocultos') === '1'; } catch { return false; }
@@ -231,7 +235,7 @@ export default function App() {
         <DashboardPage transportadoras={transportadorasMemo} onAbrirSimulador={abrirSimulador} onAbrirTransportadoras={abrirTransportadoras} onAbrirImportacao={abrirImportacao} onAbrirFormatacaoTabelas={() => mudarPagina('formatacao')} onMudarPagina={mudarPagina} onAtualizarBase={store.atualizarResumo} onConferirBase={store.conferirBase} syncStatus={store.syncStatus} />
       </>
     ) : (
-      <MinhaAreaTrabalhoPage usuario={sessao} preferencias={preferenciasInterface} onPreferencias={setPreferenciasInterface} onMudarPagina={mudarPagina} onAbrirPainelGeral={() => setPainelGeralAberto(true)} />
+      <MinhaAreaTrabalhoPage usuario={sessao} preferencias={preferenciasInterface} onPreferencias={setPreferenciasInterface} onMudarPagina={mudarPagina} onAbrirPainelGeral={() => setPainelGeralAberto(true)} onAbrirMenuRapido={() => setMenuRapidoAberto(true)} />
     ),
     'conceito-app': <VisualConceptPage />,
     simulador: <SimuladorPage transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />,
@@ -322,6 +326,16 @@ export default function App() {
         onPreferencias={setPreferenciasInterface}
       />
       <main className="app-content">{content}</main>
+      <MenuRapido
+        usuario={sessao}
+        preferencias={preferenciasInterface}
+        onPreferencias={setPreferenciasInterface}
+        paginaAtual={paginaAtual}
+        onMudarPagina={mudarPagina}
+        aberto={menuRapidoAberto}
+        onAbrir={abrirMenuRapido}
+        onFechar={fecharMenuRapido}
+      />
       <IbgeRapidoModal />
       <ChamadoRapidoModal sessao={sessao} paginaAtual={paginaAtual} />
       {(usuarioTemAcesso(sessao, 'cte') || usuarioTemAcesso(sessao, 'auditoria-cte')) && <CteRapidoModal onRecalcular={usuarioTemAcesso(sessao, 'auditoria-cte') ? () => mudarPagina('auditoria-cte') : undefined} />}
