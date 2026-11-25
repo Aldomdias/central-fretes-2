@@ -26,7 +26,7 @@ const SUBSTITUTAS = {
     'Sub AvisarFalhaCentral(sap, desc)',
     '    Dim m',
     '    m = sap',
-    '    If m = "" Or m = "(sem mensagem)" Then m = desc',
+    '    If m = "" Or m = "(sem mensagem)" Then m = desc & " [passo: " & passo & "]"',
     '    EnviarCentral L(kk)(0), """motivo"":""" & JsonTexto(m) & """"',
     'End Sub',
   ],
