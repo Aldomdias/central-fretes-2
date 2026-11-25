@@ -15,7 +15,7 @@ const SITUACAO = {
   SEM_CTES: { texto: 'Sem CT-es a faturar', cor: '#64748b' },
   ERRO: { texto: 'Erro', cor: '#b91c1c' },
 };
-const CONFIG_PADRAO = { ativo: true, horas: [8], dias_semana: [2], enviar_emails: false, janela_cte_dias: 30 };
+const CONFIG_PADRAO = { ativo: true, horas: [8], dias_semana: [2], enviar_emails: false, janela_cte_dias: 30, dias_sem_reenvio: 3 };
 const vazio = { id: '', transportadora: '', nao_cadastrada: false, periodicidade: 'SEMANAL', emails_transportadora: '', emails_copia: '', auditor_nome: '', auditor_email: '' };
 const ausente = (e) => ['42P01', 'PGRST205'].includes(e?.code) || /does not exist|schema cache/i.test(e?.message || '');
 const caixa = { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, marginBottom: 14 };
@@ -37,7 +37,8 @@ export default function IdentificadorFaturasRobo() {
   const [rodando, setRodando] = useState(false);
   const [buscaAberta, setBuscaAberta] = useState(false);
   const [idxBusca, setIdxBusca] = useState(0);
-  const [rodarId, setRodarId] = useState('');
+  const [marcadas, setMarcadas] = useState([]);
+  const [ignorarTrava, setIgnorarTrava] = useState(false);
 
   const carregar = async () => {
     const db = getSupabaseClient();
@@ -124,22 +125,27 @@ export default function IdentificadorFaturasRobo() {
       horas: [...new Set((config.horas || []).map(Number).filter((h) => h >= 0 && h <= 23))].sort((a, b) => a - b),
       dias_semana: [...new Set((config.dias_semana || []).map(Number))].sort((a, b) => a - b),
       janela_cte_dias: Math.min(Math.max(Number(config.janela_cte_dias) || 30, 7), 90),
+      dias_sem_reenvio: Math.min(Math.max(Math.round(Number(config.dias_sem_reenvio ?? 3)) || 0, 0), 60),
       atualizado_por: quem, atualizado_em: new Date().toISOString(),
     };
     const { error } = await getSupabaseClient().from('robo_faturas_config').upsert(payload);
+    if (error && /dias_sem_reenvio/i.test(error.message || '')) {
+      setErro('Falta aplicar a migration supabase/migrations/20261125_010_robo_faturas_dias_sem_reenvio.sql no Supabase para salvar os dias da trava.');
+      return;
+    }
     if (error) setErro(error.message); else setMsg('Agendamento salvo.');
   };
 
   const rodar = async (simular) => {
     if (!simular && !config.enviar_emails) { setErro('O envio de e-mails está desligado. Ligue "Enviar e-mails de verdade" e salve antes de rodar valendo.'); return; }
-    const alvo = lista.find((t) => String(t.id) === String(rodarId));
-    if (rodarId && !alvo) { setErro('Selecione a transportadora de novo.'); return; }
-    if (alvo && !alvo.ativo) { setErro(`${alvo.transportadora} está pausada. Retome antes de rodar.`); return; }
-    const quemRoda = alvo ? `só para ${alvo.transportadora}` : 'para todas as transportadoras ativas';
-    if (!simular && !window.confirm(`Rodar agora ${quemRoda} e ENVIAR e-mail se estiver com pendência?`)) return;
+    const alvos = lista.filter((t) => marcadas.includes(String(t.id)) && t.ativo);
+    if (marcadas.length && !alvos.length) { setErro('As transportadoras marcadas estão pausadas. Retome antes de rodar.'); return; }
+    const quemRoda = alvos.length ? `só para ${alvos.map((t) => t.transportadora).join(', ')}` : 'para todas as transportadoras ativas';
+    const avisoTrava = ignorarTrava ? '\n\nA trava de reenvio será IGNORADA: quem já recebeu e-mail recentemente recebe de novo.' : '';
+    if (!simular && !window.confirm(`Rodar agora ${quemRoda} e ENVIAR e-mail se estiver com pendência?${avisoTrava}`)) return;
     setRodando(true); setErro(''); setMsg('');
     try {
-      const resp = await fetch(`/api/robo-faturas-ausentes?agora=1${simular ? '&simular=1' : ''}${alvo ? `&transportadora_id=${encodeURIComponent(alvo.id)}` : ''}`);
+      const resp = await fetch(`/api/robo-faturas-ausentes?agora=1${simular ? '&simular=1' : ''}${alvos.length ? `&transportadora_id=${encodeURIComponent(alvos.map((t) => t.id).join(','))}` : ''}${ignorarTrava ? '&ignorar_trava=1' : ''}`);
       const dados = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(dados.error || `HTTP ${resp.status}`);
       if (!dados.ok) throw new Error('O servidor não respondeu como o robô. Localmente (vite) o robô não existe; rode no deploy da Vercel ou com "vercel dev".');
@@ -252,16 +258,23 @@ export default function IdentificadorFaturasRobo() {
           <label>Olhar CT-es dos últimos
             <input type="number" min={7} max={90} style={{ width: 60, margin: '0 6px' }} value={config.janela_cte_dias} onChange={(e) => setConfig({ ...config, janela_cte_dias: e.target.value })} />dias
           </label>
+          <label title="Depois de mandar e-mail para uma transportadora, o robô espera esses dias antes de mandar outro. 0 = sem trava.">Não reenviar e-mail antes de
+            <input type="number" min={0} max={60} style={{ width: 60, margin: '0 6px' }} value={config.dias_sem_reenvio ?? 3} onChange={(e) => setConfig({ ...config, dias_sem_reenvio: e.target.value })} />dia(s)
+          </label>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button type="button" className="btn-primary" onClick={salvarConfig}>Salvar agendamento</button>
-          <select value={rodarId} onChange={(e) => setRodarId(e.target.value)} title="Rodar agora para todas ou só uma transportadora" style={{ minWidth: 220 }}>
-            <option value="">Rodar para: todas as ativas</option>
-            {lista.map((t) => <option key={t.id} value={t.id} disabled={!t.ativo}>{t.transportadora}{t.ativo ? '' : ' (pausada)'}</option>)}
-          </select>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }} title="Só vale para o botão Rodar agora; o agendamento sempre respeita a trava.">
+            <input type="checkbox" checked={ignorarTrava} onChange={(e) => setIgnorarTrava(e.target.checked)} /> Ignorar trava de reenvio nesta rodada
+          </label>
           <button type="button" className="btn-secondary" disabled={rodando} onClick={() => rodar(true)}>{rodando ? 'Rodando...' : 'Rodar agora (simulação, sem e-mail)'}</button>
           <button type="button" className="btn-secondary" disabled={rodando} onClick={() => rodar(false)}>Rodar agora e enviar e-mails</button>
         </div>
+        <p style={{ margin: '8px 0 0', fontSize: 12, color: '#64748b' }}>
+          {marcadas.length
+            ? <>Rodar agora vale só para as <b>{marcadas.length} marcada(s)</b> na lista abaixo. <button type="button" className="btn-secondary" style={{ padding: '1px 8px', marginLeft: 6 }} onClick={() => setMarcadas([])}>Desmarcar</button></>
+            : 'Rodar agora vale para todas as ativas. Para rodar só algumas, marque a caixa delas na lista abaixo.'}
+        </p>
       </div>
 
       <div style={caixa}>
@@ -269,6 +282,9 @@ export default function IdentificadorFaturasRobo() {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
             <thead><tr style={{ textAlign: 'left', background: '#f1f5f9' }}>
+              <th style={{ padding: 6, width: 28 }} title="Marcar para rodar agora só estas">
+                <input type="checkbox" checked={lista.some((t) => t.ativo) && lista.filter((t) => t.ativo).every((t) => marcadas.includes(String(t.id)))} onChange={(e) => setMarcadas(e.target.checked ? lista.filter((t) => t.ativo).map((t) => String(t.id)) : [])} />
+              </th>
               <th style={{ padding: 6 }}>Transportadora</th><th>Faturamento</th><th>Auditor</th><th>Última checagem</th><th>Faturas no período</th><th>CT-es sem fatura</th><th>Situação</th><th />
             </tr></thead>
             <tbody>
@@ -277,13 +293,18 @@ export default function IdentificadorFaturasRobo() {
                 const s = SITUACAO[u?.situacao];
                 return (
                   <tr key={t.id} style={{ borderTop: '1px solid #e2e8f0', opacity: t.ativo ? 1 : 0.5 }}>
+                    <td style={{ padding: 6 }}>
+                      <input type="checkbox" disabled={!t.ativo} title={t.ativo ? 'Rodar agora só esta' : 'Pausada'} checked={marcadas.includes(String(t.id))} onChange={(e) => setMarcadas((m) => (e.target.checked ? [...m, String(t.id)] : m.filter((x) => x !== String(t.id))))} />
+                    </td>
                     <td style={{ padding: 6 }}>{t.transportadora}{t.nao_cadastrada && <span style={{ color: '#b45309' }}> (não cadastrada)</span>}</td>
                     <td>{PERIODOS.find(([v]) => v === t.periodicidade)?.[1]}</td>
                     <td>{t.auditor_nome || '-'}</td>
                     <td>{u ? dataHoraBr(u.executado_em) : '-'}</td>
-                    <td>{u ? u.faturas_no_periodo : '-'}</td>
-                    <td>{u ? `${u.ctes_sem_fatura} (${dinheiro(u.valor_sem_fatura)})` : '-'}</td>
-                    <td style={{ color: s?.cor }}>{s?.texto || '-'}{u?.email_enviado ? ' · e-mail enviado' : ''}</td>
+                    <td>{u && u.situacao !== 'ERRO' ? (u.faturas_no_periodo ?? '-') : '-'}</td>
+                    <td>{u && u.situacao !== 'ERRO' && u.ctes_sem_fatura != null ? `${u.ctes_sem_fatura} (${dinheiro(u.valor_sem_fatura)})` : '-'}</td>
+                    <td style={{ color: s?.cor }} title={u?.observacao || ''}>{s?.texto || '-'}{u?.email_enviado ? ' · e-mail enviado' : ''}
+                      {u?.situacao === 'ERRO' && u?.observacao && <div style={{ fontSize: 11, color: '#991b1b' }}>{/timeout/i.test(u.observacao) ? 'Banco demorou a responder; rode de novo.' : u.observacao.slice(0, 120)}</div>}
+                    </td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       <button type="button" className="btn-secondary" style={{ padding: '2px 8px' }} onClick={() => { setForm({ ...vazio, ...t, emails_transportadora: t.emails_transportadora || '', emails_copia: t.emails_copia || '', auditor_nome: t.auditor_nome || '', auditor_email: t.auditor_email || '' }); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Editar</button>{' '}
                       <button type="button" className="btn-secondary" style={{ padding: '2px 8px' }} onClick={() => alternar(t)}>{t.ativo ? 'Pausar' : 'Ativar'}</button>{' '}
@@ -292,7 +313,7 @@ export default function IdentificadorFaturasRobo() {
                   </tr>
                 );
               })}
-              {!lista.length && <tr><td colSpan={8} style={{ padding: 12, color: '#64748b' }}>Nenhuma transportadora cadastrada ainda.</td></tr>}
+              {!lista.length && <tr><td colSpan={9} style={{ padding: 12, color: '#64748b' }}>Nenhuma transportadora cadastrada ainda.</td></tr>}
             </tbody>
           </table>
         </div>
