@@ -676,6 +676,12 @@ const comFatura = (fn) => (l) => Boolean(l.fatura) && fn(l);
 const auditoria = (...ids) => comFatura((l) => ids.includes(situacaoAuditoria(l.fatura)));
 const pagamento = (id) => (l) => situacaoPagamentoLinha(l) === id;
 const faixa = (...ids) => (l) => ids.includes(faixaDaLinha(l));
+// Nao pagas vencendo em mais de N dias (meta financeira: acima de 10 dias). Recorte dentro de "Mais de 7 dias".
+const venceEmMaisDe = (n) => (l) => {
+  if (faixaDaLinha(l) !== 'MAIS_7') return false;
+  const dias = diasAte(l.fatura ? l.fatura.data_vencimento : l.vencimentoLista, new Date());
+  return dias != null && dias > n;
+};
 const ctes = (...ids) => comFatura((l) => ids.includes(situacaoCtes(l.ctes)));
 const ativa = (l) => !inativa(l.fatura);
 // Compras (fornecedores): COM = algum CT-e com remetente de fornecedor; SEM = verificada sem; VERIFICANDO = CT-es ou cadastro ainda nao carregados.
@@ -800,6 +806,7 @@ export const GRUPOS_DIAGNOSTICO = [
     { id: 'hoje_amanha', rotulo: 'Hoje / amanhã', cor: '#cf2f2f', teste: faixa('HOJE_AMANHA'), dica: 'Não pagas vencendo hoje ou amanhã.' },
     { id: 'ate_7', rotulo: '2 a 7 dias', cor: '#e67e22', teste: faixa('ATE_7'), dica: 'Não pagas vencendo em 2 a 7 dias.' },
     { id: 'mais_7', rotulo: 'Mais de 7 dias', cor: '#04a484', teste: faixa('MAIS_7'), dica: 'Não pagas vencendo em mais de 7 dias.' },
+    { id: 'mais_10', rotulo: 'Acima de 10 dias (meta)', cor: '#0f766e', teste: venceEmMaisDe(10), dica: 'Não pagas vencendo em mais de 10 dias: acompanhamento da meta financeira. Está contido em "Mais de 7 dias".' },
     { id: 'sem_data', rotulo: 'Sem vencimento', cor: '#64748b', teste: faixa('SEM_DATA'), dica: 'Não pagas sem data de vencimento.' },
   ] },
 ];
