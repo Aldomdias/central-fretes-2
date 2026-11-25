@@ -177,6 +177,18 @@ export async function guardarBoletos(itens, { usuario = {} } = {}) {
   return guardados;
 }
 
+// Boleto de uma fatura (detalhe da fatura): controle atual + versoes anteriores (boleto substituido).
+export async function carregarBoletoDaFatura(faturaId) {
+  if (!isSupabaseConfigured() || !faturaId) return { controle: null, versoes: [] };
+  const client = getSupabaseClient();
+  const [c, v] = await Promise.all([
+    client.from(TABELA).select('*').eq('fatura_id', String(faturaId)).maybeSingle(),
+    client.from('boleto_arquivo_versoes').select('*').eq('fatura_id', String(faturaId)).order('created_at', { ascending: false }).limit(20),
+  ]);
+  if (c.error && !tabelaAusente(c.error)) throw new Error(`Erro ao carregar o boleto: ${c.error.message}`);
+  return { controle: c.data || null, versoes: v.error ? [] : (v.data || []) };
+}
+
 export async function urlBoletoGuardado(path) {
   const { data, error } = await getSupabaseClient().storage.from(BUCKET_BOLETOS).createSignedUrl(path, 300);
   if (error) throw new Error(`Nao foi possivel abrir o boleto: ${error.message}`);

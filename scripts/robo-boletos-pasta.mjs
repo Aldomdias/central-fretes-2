@@ -194,6 +194,43 @@ async function encaminharComBoleto(sb) {
   return feitas;
 }
 
+// Fatura paga: apaga do servidor o PDF do boleto atual e dos anteriores (substituidos) e mantem os dados lidos
+// (valor, vencimento, linha digitavel, nome do arquivo). Mesma regra do cron diario api/limpar-boletos.
+async function apagarBoletosDePagas(sb) {
+  const controle = await buscarTodas(() => sb.from('fatura_boleto_controle').select('fatura_id,numero_fatura,transportadora,boleto_arquivo_path').order('fatura_id'));
+  const versoes = await buscarTodas(() => sb.from('boleto_arquivo_versoes').select('id,fatura_id,arquivo_path').not('arquivo_path', 'is', null).order('id'));
+  const ids = [...new Set([...controle.filter((c) => c.boleto_arquivo_path).map((c) => String(c.fatura_id)), ...versoes.map((v) => String(v.fatura_id))])];
+  const pagas = new Set();
+  for (let i = 0; i < ids.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await sb.from('faturas').select('id,status,data_pagamento,valor_pago,partida').in('id', ids.slice(i, i + 200));
+    if (error) { log(`Limpeza nao verificada: ${error.message}`); return []; }
+    (data || []).filter(faturaPaga).forEach((f) => pagas.add(String(f.id)));
+  }
+  const ctrlAlvo = controle.filter((c) => c.boleto_arquivo_path && pagas.has(String(c.fatura_id)));
+  const versAlvo = versoes.filter((v) => pagas.has(String(v.fatura_id)));
+  const caminhos = [...new Set([...ctrlAlvo.map((c) => c.boleto_arquivo_path), ...versAlvo.map((v) => v.arquivo_path)])];
+  const linhas = ctrlAlvo.map((c) => `fatura ${c.numero_fatura} ${c.transportadora}`);
+  if (SIMULAR || !caminhos.length) return linhas;
+  for (let i = 0; i < caminhos.length; i += 100) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await sb.storage.from(BUCKET).remove(caminhos.slice(i, i + 100));
+    if (error) { log(`Erro ao apagar PDFs: ${error.message}`); return []; }
+  }
+  const agora = new Date().toISOString();
+  const idsCtrl = ctrlAlvo.map((c) => String(c.fatura_id));
+  for (let i = 0; i < idsCtrl.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    await sb.from('fatura_boleto_controle').update({ boleto_arquivo_path: null, boleto_apagado_em: agora, boleto_apagado_motivo: 'PAGA' }).in('fatura_id', idsCtrl.slice(i, i + 200));
+  }
+  const idsVers = versAlvo.map((v) => v.id);
+  for (let i = 0; i < idsVers.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    await sb.from('boleto_arquivo_versoes').update({ arquivo_path: null }).in('id', idsVers.slice(i, i + 200));
+  }
+  return linhas;
+}
+
 async function buscarTodas(consulta) {
   const out = [];
   for (let de = 0; ; de += 1000) {
@@ -329,6 +366,7 @@ async function main() {
   }
 
   const encaminhadas = await encaminharComBoleto(sb);
+  const apagados = await apagarBoletosDePagas(sb);
 
   log(`GUARDADOS ${SIMULAR ? '(simulado) ' : ''}${res.guardados.length}:`); res.guardados.forEach((l) => log(`  + ${l}`));
   log(`JA GUARDADOS ${res.jaGuardados.length}:`); res.jaGuardados.forEach((l) => log(`  = ${l}`));
@@ -336,12 +374,13 @@ async function main() {
   log(`BOLETO ANTECIPADO x DESCONTO ${avisosDesconto.length}:`); avisosDesconto.forEach((l) => log(`  ! ${l}`));
   log(`SEM FATURA CANDIDATA ${res.foraDoSistema.length}:`); res.foraDoSistema.forEach((l) => log(`  - ${l}`));
   log(`ENCAMINHADAS AO FINANCEIRO (boleto na pasta) ${SIMULAR ? '(simulado) ' : ''}${encaminhadas.length}:`); encaminhadas.forEach((l) => log(`  > ${l}`));
+  log(`PDF APAGADO (fatura paga) ${SIMULAR ? '(simulado) ' : ''}${apagados.length}:`); apagados.forEach((l) => log(`  x ${l}`));
 
   if (!SIMULAR) {
     await registrarRodada({
       status: 'SUCESSO', total_arquivos: nomes.length, novos: res.guardados.length, repetidos: res.jaGuardados.length,
       erro: res.revisar.length ? `${res.revisar.length} para revisar` : null,
-      detalhe: { guardados: res.guardados, revisar: res.revisar, foraDoSistema: res.foraDoSistema, avisosDesconto, encaminhadas, jaGuardados: res.jaGuardados.length },
+      detalhe: { guardados: res.guardados, revisar: res.revisar, foraDoSistema: res.foraDoSistema, avisosDesconto, encaminhadas, apagados, jaGuardados: res.jaGuardados.length },
     });
   }
 }
