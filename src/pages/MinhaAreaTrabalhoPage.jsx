@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { usuarioTemAcesso } from '../utils/authLocal';
 import { salvarPreferenciasInterface } from '../utils/preferenciasInterface';
+import MonitorAtualizacoes from '../components/MonitorAtualizacoes';
 
 const BLOCOS = {
   lancarCte: { titulo: 'Lançar CT-e', descricao: 'Abra diretamente o fluxo atual de CT-e.', pagina: 'cte', tom: 'operacao' },
@@ -85,6 +86,8 @@ export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPrefere
           {editando ? 'Concluir personalização' : 'Personalizar área'}
         </button>
       </header>
+
+      <MonitorAtualizacoes usuario={usuario} onMudarPagina={onMudarPagina} />
 
       {editando && (
         <section className="workspace-editor" aria-label="Personalização da área de trabalho">

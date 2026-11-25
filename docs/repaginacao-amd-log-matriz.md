@@ -74,6 +74,7 @@ Atualizada em 25/11/2026. Esta matriz acompanha a branch local `repaginacao-amd-
 | Claro/escuro/automático | Preferência independente da identidade, aplicada por variáveis compartilhadas. |
 | Preferência por usuário | Persistência local usa ID/e-mail da sessão, seguindo o mecanismo local já adotado pelo projeto. |
 | Permissões | Menu e blocos filtram com `usuarioTemAcesso`; atalhos sem permissão não são renderizados. |
+| Monitor de atualizações | As cinco fontes aparecem para todos os perfis; botões de acesso continuam condicionados à permissão da tela. |
 | Menu compacto | Ícones têm título/rótulo acessível; rota atual permanece destacada. |
 | Menu móvel | Drawer recolhível, backdrop e fechamento automático após navegação. |
 | Reordenação | Botões nativos de subir/descer funcionam por toque e teclado; IDs estáveis preservam ordem. |
@@ -87,6 +88,7 @@ Atualizada em 25/11/2026. Esta matriz acompanha a branch local `repaginacao-amd-
 | Navegador celular (390 × 844) | Home, CT-e, faturas e negociações sem overflow horizontal global. |
 | Identidade/tema | AMD → Cantu e automático → escuro aplicados no DOM e persistidos. |
 | Menu móvel | Abre, permite navegar e fecha após seleção. |
+| Perfil restrito | Perfil `CONSULTA` com acesso apenas ao dashboard visualizou as cinco fontes do monitor e nenhum botão indevido. |
 | Testes (`npm test`) | Linha de base já falha: imports ESM sem extensão, `vitest` ausente e testes funcionais antigos. Não causado pela repaginação. |
 | Auditoria de dependências | 16 vulnerabilidades preexistentes (2 baixas, 6 moderadas, 8 altas); nenhuma atualização forçada foi aplicada. |
 
