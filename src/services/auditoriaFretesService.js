@@ -259,11 +259,47 @@ export async function carregarHistoricoProdutividade(inicioISO, fimISO) {
   return paginarTudo(
     getSupabaseClient(),
     'auditoria_fatura_historico',
-    'id,fatura_id,acao,status_novo,usuario_nome,created_at',
+    'id,fatura_id,acao,status_anterior,status_novo,usuario_nome,created_at',
     undefined,
     (q) => q.gte('created_at', inicioISO).lt('created_at', fimISO)
-      .or('status_novo.in.(PRONTA_PARA_PAGAMENTO,LIBERADA_COM_DESCONTO,AGUARDANDO_APROVACAO_GESTAO,AGUARDANDO_TRANSPORTADORA,ENVIADA_AO_FINANCEIRO),acao.eq.REAUDITORIA_CONCLUIDA'),
+      .or('status_novo.in.(PRONTA_PARA_PAGAMENTO,LIBERADA_COM_DESCONTO,AGUARDANDO_APROVACAO_GESTAO,AGUARDANDO_TRANSPORTADORA,ENVIADA_AO_FINANCEIRO),acao.eq.REAUDITORIA_CONCLUIDA,status_anterior.eq.AGUARDANDO_APROVACAO_GESTAO'),
   );
+}
+
+// Quem enviou cada fatura para aprovacao da gestao (ultimo envio de cada uma).
+// Usado pra creditar a liberacao a quem auditou, nao a quem aprovou.
+export async function carregarRemetentesAprovacaoGestao(faturaIds = []) {
+  const mapa = new Map();
+  const lista = [...new Set((faturaIds || []).filter(Boolean))];
+  if (!isSupabaseConfigured() || !lista.length) return mapa;
+  const client = getSupabaseClient();
+  for (let i = 0; i < lista.length; i += 100) {
+    const { data, error } = await client
+      .from('auditoria_fatura_historico')
+      .select('fatura_id,usuario_nome,created_at')
+      .in('fatura_id', lista.slice(i, i + 100))
+      .eq('status_novo', 'AGUARDANDO_APROVACAO_GESTAO')
+      .order('created_at', { ascending: false });
+    if (error) throw new Error(error.message);
+    (data || []).forEach((r) => { if (!mapa.has(r.fatura_id)) mapa.set(r.fatura_id, r.usuario_nome); });
+  }
+  return mapa;
+}
+
+// Decisoes de Transporte (B2C/Atacado) e Suprimentos no periodo (quem aprovou/recusou).
+export async function carregarDecisoesAutorizacoesProdutividade(inicioISO, fimISO) {
+  if (!isSupabaseConfigured()) return [];
+  try {
+    return await paginarTudo(
+      getSupabaseClient(),
+      'transporte_autorizacoes',
+      'id,canal,status,decidido_por,decidido_em,fatura_id',
+      undefined,
+      (q) => q.eq('ativo', true).in('status', ['AUTORIZADA', 'RECUSADA']).gte('decidido_em', inicioISO).lt('decidido_em', fimISO),
+    );
+  } catch {
+    return [];
+  }
 }
 
 // Envios da auditoria para Suprimentos / Transporte (B2C, Atacado) no periodo.
