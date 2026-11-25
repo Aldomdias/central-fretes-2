@@ -3635,6 +3635,22 @@ button:disabled { opacity: 0.58; cursor: not-allowed; }
 .workspace-card.is-clickable { cursor: pointer; transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
 .workspace-card.is-clickable:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--brand) 55%, var(--border)); box-shadow: 0 16px 36px color-mix(in srgb, var(--brand) 13%, transparent); }
 .workspace-card.is-clickable:focus-visible { outline: 3px solid color-mix(in srgb, var(--brand) 55%, transparent); outline-offset: 3px; }
+.workspace-card[draggable="true"] { cursor: grab; }
+.workspace-card[draggable="true"]:active { cursor: grabbing; }
+.workspace-drag-handle {
+  align-self: flex-start;
+  min-height: 38px;
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  padding: 6px 10px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  touch-action: none;
+  cursor: grab;
+}
+.workspace-drag-handle span { margin-right: 5px; font-size: 16px; }
 .workspace-card-mark { position: absolute; inset: 0 auto 0 0; width: 5px; background: var(--brand); }
 .workspace-card.tone-auditoria .workspace-card-mark { background: #f59e0b; }
 .workspace-card.tone-suprimentos .workspace-card-mark { background: #7c3aed; }

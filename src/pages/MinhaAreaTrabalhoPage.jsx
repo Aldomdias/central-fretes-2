@@ -42,6 +42,7 @@ export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPrefere
   const [editando, setEditando] = useState(false);
   const [blocos, setBlocos] = useState(idsIniciais);
   const [fixados, setFixados] = useState(() => preferencias.fixados || []);
+  const [arrastando, setArrastando] = useState(null);
 
   useEffect(() => {
     const nova = { ...preferencias, blocos, fixados, modeloArea: preferencias.modeloArea || modeloInicial };
@@ -69,6 +70,24 @@ export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPrefere
       [proximo[origem], proximo[destino]] = [proximo[destino], proximo[origem]];
       return proximo;
     });
+  };
+
+  const moverPara = (origemId, destinoId) => {
+    if (!origemId || !destinoId || origemId === destinoId) return;
+    setBlocos((atual) => {
+      const origem = atual.indexOf(origemId);
+      const destino = atual.indexOf(destinoId);
+      if (origem < 0 || destino < 0) return atual;
+      const proximo = [...atual];
+      const [movido] = proximo.splice(origem, 1);
+      proximo.splice(destino, 0, movido);
+      return proximo;
+    });
+  };
+
+  const moverPeloPonteiro = (event, origemId) => {
+    const alvo = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('[data-workspace-block]');
+    if (alvo?.dataset.workspaceBlock) moverPara(origemId, alvo.dataset.workspaceBlock);
   };
 
   const ordenados = [...blocos].sort((a, b) => Number(fixados.includes(b)) - Number(fixados.includes(a)));
@@ -126,7 +145,43 @@ export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPrefere
                 }
               }}
               aria-label={editando ? undefined : `Abrir ${bloco.titulo}`}
+              data-workspace-block={id}
+              draggable={editando}
+              onDragStart={editando ? (event) => {
+                setArrastando(id);
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', id);
+              } : undefined}
+              onDragOver={editando ? (event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } : undefined}
+              onDrop={editando ? (event) => {
+                event.preventDefault();
+                moverPara(event.dataTransfer.getData('text/plain') || arrastando, id);
+                setArrastando(null);
+              } : undefined}
+              onDragEnd={editando ? () => setArrastando(null) : undefined}
             >
+              {editando && (
+                <button
+                  type="button"
+                  className="workspace-drag-handle"
+                  aria-label={`Arrastar ${bloco.titulo}`}
+                  title="Arraste para mudar a posição"
+                  onPointerDown={(event) => {
+                    setArrastando(id);
+                    event.currentTarget.setPointerCapture?.(event.pointerId);
+                  }}
+                  onPointerMove={(event) => {
+                    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) moverPeloPonteiro(event, id);
+                  }}
+                  onPointerUp={(event) => {
+                    event.currentTarget.releasePointerCapture?.(event.pointerId);
+                    setArrastando(null);
+                  }}
+                  onPointerCancel={() => setArrastando(null)}
+                >
+                  <span aria-hidden="true">⠿</span> Arrastar
+                </button>
+              )}
               <div className="workspace-card-mark" aria-hidden="true" />
               <div className="workspace-card-copy">
                 <span>{bloco.tom}</span>

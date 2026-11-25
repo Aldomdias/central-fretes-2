@@ -77,7 +77,7 @@ Atualizada em 25/11/2026. Esta matriz acompanha a branch local `repaginacao-amd-
 | Monitor de atualizações | As cinco fontes aparecem para todos os perfis; botões de acesso continuam condicionados à permissão da tela. |
 | Menu compacto | Ícones têm título/rótulo acessível; rota atual permanece destacada. |
 | Menu móvel | Drawer recolhível, backdrop e fechamento automático após navegação. |
-| Reordenação | Botões nativos de subir/descer funcionam por toque e teclado; IDs estáveis preservam ordem. |
+| Reordenação | Arraste por mouse ou toque no modo de edição; botões de subir/descer continuam disponíveis para teclado. |
 
 ## Verificações executadas
 
