@@ -201,6 +201,13 @@ export function usuarioPodeAdministrarUsuarios(usuario) {
   return normalizarEmail(usuario?.email) === ADMIN_EMAIL && usuario?.perfil === 'GESTAO';
 }
 
+// Painel "Usuarios ativos": admin + e-mails liberados nominalmente.
+const EMAILS_USUARIOS_ATIVOS = new Set(['caroline.waldhelm@cantu.inc']);
+
+export function usuarioPodeVerUsuariosAtivos(usuario) {
+  return usuarioPodeAdministrarUsuarios(usuario) || EMAILS_USUARIOS_ATIVOS.has(normalizarEmail(usuario?.email));
+}
+
 // Perfis com poder de gestão sobre a auditoria (podem anular uma auditoria
 // já registrada, diferente do auditor comum que só avança a jornada).
 const PERFIS_GESTOR_AUDITORIA = new Set(['GESTAO', 'GESTOR_AUDITORIA_FRETES']);
@@ -382,7 +389,8 @@ export function usuarioTemAcesso(usuario, pagina) {
   if (pagina === 'autorizacoes-transporte-lotacao' && ['GESTAO', 'OPERACAO_LOTACAO'].includes(usuario.perfil)) return true;
   // Auditoria TransGP (API): tela nova, vale mesmo com lista de paginas salva antes dela existir.
   if (pagina === 'lotacao-transgp' && ['GESTAO', 'OPERACAO_LOTACAO', 'AUDITORIA_LOTACAO'].includes(usuario.perfil)) return true;
-  if (pagina === 'usuarios' || pagina === 'usuarios-ativos') return usuarioPodeAdministrarUsuarios(usuario);
+  if (pagina === 'usuarios') return usuarioPodeAdministrarUsuarios(usuario);
+  if (pagina === 'usuarios-ativos') return usuarioPodeVerUsuariosAtivos(usuario);
 
   const permissoes = permissoesUsuario(usuario);
   if (permissoes.includes('*')) return true;
