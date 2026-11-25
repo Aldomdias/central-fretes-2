@@ -1304,6 +1304,62 @@ function corAlerta(fatura) {
   return '#04a484';
 }
 
+// Lista com busca: digita um pedaço do nome e filtra as opções (sem acento,
+// sem diferenciar maiúscula). opcoes = [{ value, label }].
+function SelectBuscavel({ value, onChange, opcoes = [], placeholder = 'Digite para buscar...', style, disabled = false }) {
+  const [aberto, setAberto] = useState(false);
+  const [busca, setBusca] = useState('');
+  const ref = useRef(null);
+  useEffect(() => {
+    const fora = (e) => { if (ref.current && !ref.current.contains(e.target)) setAberto(false); };
+    document.addEventListener('mousedown', fora);
+    return () => document.removeEventListener('mousedown', fora);
+  }, []);
+  const normalizar = (texto) => String(texto || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const termo = normalizar(busca.trim());
+  const filtradas = termo ? opcoes.filter((o) => normalizar(o.label).includes(termo)) : opcoes;
+  const selecionada = opcoes.find((o) => String(o.value) === String(value));
+  const escolher = (o) => { onChange(o.value); setAberto(false); setBusca(''); };
+  return (
+    <div ref={ref} style={{ position: 'relative', minWidth: 260, ...style }}>
+      <input
+        value={aberto ? busca : (selecionada?.label || '')}
+        onChange={(e) => { setBusca(e.target.value); if (!aberto) setAberto(true); }}
+        onFocus={() => { setBusca(''); setAberto(true); }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setAberto(false);
+          if (e.key === 'Enter' && filtradas.length) { e.preventDefault(); escolher(filtradas[0]); }
+        }}
+        placeholder={placeholder}
+        title={selecionada?.label || ''}
+        autoComplete="off"
+        disabled={disabled}
+        style={{ width: '100%', boxSizing: 'border-box', textOverflow: 'ellipsis' }}
+      />
+      {aberto && !disabled ? (
+        <div style={{ position: 'absolute', zIndex: 60, top: '100%', left: 0, right: 0, marginTop: 4, maxHeight: 280, overflowY: 'auto', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.12)', minWidth: 320 }}>
+          {filtradas.slice(0, 300).map((o) => {
+            const ativa = String(o.value) === String(value);
+            return (
+              <div
+                key={o.value}
+                onMouseDown={(e) => { e.preventDefault(); escolher(o); }}
+                style={{ padding: '7px 10px', fontSize: 13, cursor: 'pointer', borderBottom: '1px solid #f1f5f9', background: ativa ? '#eff6ff' : '#fff', fontWeight: ativa ? 700 : 500 }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#f1f5f9'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = ativa ? '#eff6ff' : '#fff'; }}
+              >
+                {o.label}
+              </div>
+            );
+          })}
+          {!filtradas.length ? <div style={{ padding: '8px 10px', fontSize: 12, color: '#94a3b8' }}>Nada encontrado.</div> : null}
+          {filtradas.length > 300 ? <div style={{ padding: '6px 10px', fontSize: 11, color: '#94a3b8' }}>Mostrando 300. Refine a busca.</div> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Card({ label, value, detail, color = '#9153F0', onClick, ativo = false, titulo }) {
   return (
     <div
@@ -8706,10 +8762,36 @@ function Gestao({ state, onState }) {
     <>
       <AmdProcessingOverlay ativo={salvandoAtribuicao} progresso={{}} mensagemRodape="Gravando a atribuição de auditor." />
       <div className="summary-strip">
-        <Card label="Auditores ativos" value={new Set(carteiras.filter((item) => item.auditor_nome).map((item) => item.auditor_nome)).size} />
-        <Card label="Transportadoras" value={carteiras.length} />
-        <Card label="Sem responsavel" value={carteiras.filter((item) => !item.auditor_nome).length} color="#9b1111" />
-        <Card label="Faturas vencidas" value={carteiras.reduce((total, item) => total + item.vencidas, 0)} color="#9b1111" />
+        <Card
+          label="Auditores ativos"
+          value={new Set(carteiras.filter((item) => item.auditor_nome).map((item) => item.auditor_nome)).size}
+          ativo={visao === 'auditor' && !filtroAuditor && !filtroVencimento && !filtroBusca}
+          titulo="Ver a carteira por auditor"
+          onClick={() => { setVisao('auditor'); setFiltroBusca(''); setFiltroAuditor(''); setFiltroVencimento(''); }}
+        />
+        <Card
+          label="Transportadoras"
+          value={carteiras.length}
+          ativo={visao === 'transportadora' && !filtroAuditor && !filtroVencimento && !filtroBusca}
+          titulo="Mostrar todas as transportadoras (limpa os filtros)"
+          onClick={() => { setVisao('transportadora'); setFiltroBusca(''); setFiltroAuditor(''); setFiltroVencimento(''); }}
+        />
+        <Card
+          label="Sem responsavel"
+          value={carteiras.filter((item) => !item.auditor_nome).length}
+          color="#9b1111"
+          ativo={filtroAuditor === 'SEM_AUDITOR'}
+          titulo="Mostrar só as transportadoras sem auditor"
+          onClick={() => { setVisao('transportadora'); setFiltroBusca(''); setFiltroAuditor((atual) => (atual === 'SEM_AUDITOR' ? '' : 'SEM_AUDITOR')); }}
+        />
+        <Card
+          label="Faturas vencidas"
+          value={carteiras.reduce((total, item) => total + item.vencidas, 0)}
+          color="#9b1111"
+          ativo={filtroVencimento === 'vencida'}
+          titulo="Mostrar só as transportadoras com fatura vencida"
+          onClick={() => { setVisao('transportadora'); setFiltroVencimento((atual) => (atual === 'vencida' ? '' : 'vencida')); }}
+        />
       </div>
       <div className="table-card" style={{ marginTop: 12 }}>
         <div className="panel-title audit-table-title">Sincronizar faturas sem auditor</div>
@@ -8749,10 +8831,13 @@ function Gestao({ state, onState }) {
                         <td>{carteiraExata ? (carteiraExata.auditor_nome ? <>{carteiraExata.auditor_nome} <span style={{ color: '#b45309' }}>(clique em Sincronizar)</span></> : <span style={{ color: '#9b1111' }}>carteira existe, sem auditor</span>) : <span style={{ color: '#9b1111' }}>nenhuma carteira com esse nome</span>}</td>
                         <td>
                           <div style={{ display: 'flex', gap: 6 }}>
-                            <select value={escolhaCarteira[linha.nome] || ''} onChange={(e) => setEscolhaCarteira((atual) => ({ ...atual, [linha.nome]: e.target.value }))} style={{ maxWidth: 260 }}>
-                              <option value="">Selecione a transportadora…</option>
-                              {carteirasComAuditor.map((c) => <option key={c.transportadora} value={c.transportadora}>{c.transportadora} — {c.auditor_nome}</option>)}
-                            </select>
+                            <SelectBuscavel
+                              value={escolhaCarteira[linha.nome] || ''}
+                              onChange={(valor) => setEscolhaCarteira((atual) => ({ ...atual, [linha.nome]: valor }))}
+                              opcoes={carteirasComAuditor.map((c) => ({ value: c.transportadora, label: `${c.transportadora} — ${c.auditor_nome}` }))}
+                              placeholder="Digite parte do nome…"
+                              style={{ width: 280 }}
+                            />
                             <button type="button" disabled={!escolhaCarteira[linha.nome] || Boolean(atribuindoNome)} onClick={() => atribuirNomeACarteira(linha.nome)}>
                               {atribuindoNome === linha.nome ? 'Aplicando...' : 'Vincular'}
                             </button>
@@ -8970,12 +9055,12 @@ function Gestao({ state, onState }) {
                   <div className="form-grid three" style={{ marginTop: 10 }}>
                     <label className="field">
                       Transportadora
-                      <select value={transportadoraParaAdicionar} onChange={(e) => setTransportadoraParaAdicionar(e.target.value)}>
-                        <option value="">Selecione uma transportadora</option>
-                        {disponiveis.map((item) => (
-                          <option key={item.transportadora} value={item.transportadora}>{item.transportadora}{item.auditor_nome ? ` (atual: ${item.auditor_nome})` : ''}</option>
-                        ))}
-                      </select>
+                      <SelectBuscavel
+                        value={transportadoraParaAdicionar}
+                        onChange={setTransportadoraParaAdicionar}
+                        opcoes={disponiveis.map((item) => ({ value: item.transportadora, label: `${item.transportadora}${item.auditor_nome ? ` (atual: ${item.auditor_nome})` : ''}` }))}
+                        placeholder="Digite parte do nome da transportadora…"
+                      />
                     </label>
                     <div className="audit-form-actions">
                       <button className="btn-secondary" onClick={() => setAdicionandoParaAuditor(null)}>Cancelar</button>
