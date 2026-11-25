@@ -1,4 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { chaveNaturalDescontoObtido } from '../utils/descontosObtidosImport';
 
 const TABELA = 'descontos_obtidos_sap';
 const LOTE = 500;
@@ -33,8 +34,55 @@ async function buscarTodasPaginas(montarQuery) {
   return todos;
 }
 
-export async function importarDescontosObtidos({ registros, arquivoOrigem, onProgress }) {
+// Quantas vezes cada lançamento (chave natural) já está gravado nos meses
+// que o arquivo cobre. Base pra não regravar o que já existe mesmo quando o
+// linha_hash antigo não bate (hash v1 incluía texto que o SAP varia).
+async function contarExistentesPorChave(client, registros) {
+  const anosMeses = new Map();
+  registros.forEach((r) => {
+    if (!anosMeses.has(r.ano)) anosMeses.set(r.ano, new Set());
+    anosMeses.get(r.ano).add(r.mes);
+  });
+
+  const contagem = new Map();
+  for (const [ano, meses] of anosMeses) {
+    const existentes = await buscarTodasPaginas(() => client
+      .from(TABELA)
+      .select('id, empresa, conta_razao, lancamento_contabil, data_lancamento, valor')
+      .eq('ano', ano)
+      .in('mes', Array.from(meses))
+      .order('id', { ascending: true }));
+    existentes.forEach((l) => {
+      const chave = chaveNaturalDescontoObtido({
+        empresa: l.empresa,
+        contaRazao: l.conta_razao,
+        lancamentoContabil: l.lancamento_contabil,
+        dataLancamento: l.data_lancamento,
+        valor: l.valor,
+      });
+      contagem.set(chave, (contagem.get(chave) || 0) + 1);
+    });
+  }
+  return contagem;
+}
+
+export async function importarDescontosObtidos({ registros: registrosArquivo, arquivoOrigem, onProgress }) {
   const client = exigirClient();
+
+  let jaExistentes = 0;
+  let registros = registrosArquivo;
+  if (registrosArquivo.length) {
+    const contagem = await contarExistentesPorChave(client, registrosArquivo);
+    registros = registrosArquivo.filter((r) => {
+      const chave = r.chaveNatural || chaveNaturalDescontoObtido(r);
+      const ocorrencia = r.ocorrencia || 1;
+      if ((contagem.get(chave) || 0) >= ocorrencia) {
+        jaExistentes += 1;
+        return false;
+      }
+      return true;
+    });
+  }
 
   const linhas = registros.map((registro) => ({
     ano: registro.ano,
@@ -74,7 +122,7 @@ export async function importarDescontosObtidos({ registros, arquivoOrigem, onPro
     });
   }
 
-  return { totalLinhas: linhas.length, inseridos, duplicados };
+  return { totalLinhas: registrosArquivo.length, inseridos, duplicados: duplicados + jaExistentes };
 }
 
 export async function listarResumoDescontosObtidos({ ano, mesInicio, mesFim } = {}) {
