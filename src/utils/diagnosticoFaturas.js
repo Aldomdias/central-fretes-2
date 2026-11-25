@@ -684,6 +684,20 @@ const venceEmMaisDe = (n) => (l) => {
 };
 const ctes = (...ids) => comFatura((l) => ids.includes(situacaoCtes(l.ctes)));
 const ativa = (l) => !inativa(l.fatura);
+// Lancada (partida/lancamento) e em aberto sem encaminhamento ao financeiro: falta boleto na pasta (ou dados
+// bancarios). Sai sozinha quando o robo de boletos acha o boleto (marca o encaminhamento) ou quando paga.
+export const faltaBoletoNaPasta = (f) => emAbertoFinanceiro(f) && (faturaLancada(f) || agrupamentoManual(f)) && situacaoFinanceiro(f) === 'AGUARDA_ENCAMINHAMENTO';
+// Sem boleto vencendo em ate N dias (hoje incluso) ou ja vencida: aviso para por o boleto antes do financeiro cobrar.
+export const semBoletoVencendo = (f, dias = 2, referencia = new Date()) => {
+  if (!faltaBoletoNaPasta(f) || !f.data_vencimento) return false;
+  const d = diasAte(f.data_vencimento, referencia);
+  return d != null && d >= 0 && d <= dias;
+};
+export const semBoletoVencida = (f, referencia = new Date()) => {
+  if (!faltaBoletoNaPasta(f) || !f.data_vencimento) return false;
+  const d = diasAte(f.data_vencimento, referencia);
+  return d != null && d < 0;
+};
 // Compras (fornecedores): COM = algum CT-e com remetente de fornecedor; SEM = verificada sem; VERIFICANDO = CT-es ou cadastro ainda nao carregados.
 export function situacaoCompras(l) {
   if (!l.fatura) return 'SEM_FATURA';
@@ -746,7 +760,9 @@ export const GRUPOS_DIAGNOSTICO = [
   { id: 'financeiro', titulo: 'Financeiro', cards: [
     // Todos os cards de acompanhamento valem so para fatura ativa e AINDA EM ABERTO (nao paga, nao estornada):
     // situacaoPagamento ja exclui cancelada/estornada/paga, e as pagas antigas nao tem pagamento_confirmado.
-    { id: 'aguarda_encaminhamento', rotulo: 'Aguardam encaminhamento', cor: '#9b1111', teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && (faturaLancada(l.fatura) || agrupamentoManual(l.fatura)) && situacaoFinanceiro(l.fatura) === 'AGUARDA_ENCAMINHAMENTO'), dica: 'Já lançadas em aberto, ainda sem encaminhamento registrado.' },
+    { id: 'aguarda_encaminhamento', rotulo: 'Aguardam encaminhamento (falta boleto)', cor: '#9b1111', teste: comFatura((l) => faltaBoletoNaPasta(l.fatura)), dica: 'Já lançadas em aberto, ainda sem boleto na pasta nem dados bancários. Sai daqui sozinha quando o robô de boletos acha o boleto na pasta ou quando a fatura é paga.' },
+    { id: 'sem_boleto_vence_2d', rotulo: 'Sem boleto: vencem em até 2 dias', cor: '#dc2626', teste: comFatura((l) => semBoletoVencendo(l.fatura, 2)), dica: 'Lançadas, sem boleto na pasta, vencendo hoje, amanhã ou depois de amanhã: colocar o boleto na pasta antes do financeiro cobrar.' },
+    { id: 'sem_boleto_vencidas', rotulo: 'Sem boleto: já vencidas', cor: '#7f1d1d', teste: comFatura((l) => semBoletoVencida(l.fatura)), dica: 'Lançadas, sem boleto na pasta e com o vencimento já passado.' },
     { id: 'encaminhadas_sem_previsao', rotulo: 'Encaminhadas sem previsão', cor: '#b78700', teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && situacaoFinanceiro(l.fatura) === 'ENCAMINHADA_SEM_PREVISAO'), dica: 'Boleto ou dados bancários encaminhados, sem programação vigente.' },
     { id: 'encaminhadas_com_previsao', rotulo: 'Encaminhadas com previsão', cor: '#315ee7', teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && situacaoFinanceiro(l.fatura) === 'ENCAMINHADA_COM_PREVISAO'), dica: 'Encaminhadas com previsão ainda não confirmada pelo SAP/HANA.' },
     { id: 'programadas_financeiro', rotulo: 'Programadas pelo Financeiro', cor: '#9153F0', teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && situacaoFinanceiro(l.fatura) === 'PROGRAMADA'), dica: 'Programação confirmada pelo SAP/HANA; continua em aberto até o pagamento efetivo.' },

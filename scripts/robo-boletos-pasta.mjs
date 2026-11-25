@@ -10,6 +10,9 @@
 // - acha a fatura pelo numero do nome do arquivo; se houver mais de uma, desempata pelo nome da transportadora
 //   e depois pelo VALOR lido no boleto;
 // - so guarda quando valor e vencimento do boleto batem com a fatura; o resto fica listado para o painel.
+// - fecha o ciclo no Diagnostico: fatura LANCADA (partida/lancamento), em aberto, com boleto guardado (pelo robo ou
+//   pelo painel) e sem encaminhamento vira "Encaminhada ao financeiro - Boleto na pasta" (mesma marcacao do
+//   Diagnostico). Encaminhamento ja feito (ex.: dados bancarios) nunca e sobrescrito.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -142,6 +145,53 @@ async function registrarRodada(payload) {
     const { detalhe, ...semDetalhe } = base;
     await clienteRodada.from('boleto_pasta_leituras').insert(semDetalhe);
   }
+}
+
+// Fatura lancada e em aberto com boleto guardado -> encaminhada ao financeiro (BOLETO_NA_PASTA), igual ao botao do
+// Diagnostico (marcarEncaminhamentoFinanceiro): grava na fatura, no historico de encaminhamentos e no da fatura.
+async function encaminharComBoleto(sb) {
+  const controle = (await buscarTodas(() => sb.from('fatura_boleto_controle').select('fatura_id,boleto_arquivo_nome,boleto_valor').eq('status', 'NA_PASTA').order('fatura_id')))
+    .filter((c) => c.boleto_arquivo_nome);
+  const porId = new Map(controle.map((c) => [String(c.fatura_id), c]));
+  const ids = [...porId.keys()];
+  const alvos = [];
+  for (let i = 0; i < ids.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await sb.from('faturas')
+      .select('id,numero_fatura,transportadora,status,partida,lancamento_financeiro,encaminhado_financeiro_em,data_pagamento,valor_pago')
+      .in('id', ids.slice(i, i + 200));
+    if (error) { log(`Encaminhamento nao verificado: ${error.message}`); return []; }
+    (data || []).forEach((f) => {
+      if (f.encaminhado_financeiro_em || faturaPaga(f) || ['CANCELADA', 'SUBSTITUIDA'].includes(f.status)) return;
+      if (!(f.partida || f.lancamento_financeiro)) return; // ainda nao lancada: espera o lancamento
+      alvos.push(f);
+    });
+  }
+  const linhas = alvos.map((f) => `fatura ${f.numero_fatura} ${f.transportadora} (${porId.get(String(f.id)).boleto_arquivo_nome})`);
+  if (SIMULAR || !alvos.length) return linhas;
+  const agora = new Date().toISOString();
+  const feitas = [];
+  for (const f of alvos) {
+    const evidencia = `Boleto na pasta: ${porId.get(String(f.id)).boleto_arquivo_nome}`;
+    // So grava se continuar sem encaminhamento (alguem pode ter marcado no meio da rodada).
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await sb.from('faturas').update({
+      encaminhado_financeiro_em: agora, encaminhado_financeiro_por: USUARIO, encaminhamento_tipo: 'BOLETO_NA_PASTA', encaminhamento_evidencia: evidencia,
+    }).eq('id', f.id).is('encaminhado_financeiro_em', null).select('id');
+    if (error) { log(`Erro ao encaminhar fatura ${f.numero_fatura}: ${error.message}`); continue; }
+    if (!data?.length) continue;
+    // eslint-disable-next-line no-await-in-loop
+    await sb.from('financeiro_encaminhamentos').update({ ativo: false }).eq('fatura_id', f.id).eq('ativo', true);
+    // eslint-disable-next-line no-await-in-loop
+    await sb.from('financeiro_encaminhamentos').insert({ fatura_id: f.id, tipo: 'BOLETO_NA_PASTA', responsavel: USUARIO, evidencia, ativo: true, created_at: agora });
+    // eslint-disable-next-line no-await-in-loop
+    await sb.from('auditoria_fatura_historico').insert({
+      id: crypto.randomUUID(), fatura_id: f.id, created_at: agora, acao: 'ENCAMINHADA_FINANCEIRO',
+      descricao: `Encaminhada ao financeiro (Boleto na pasta) pelo robo de boletos: ${porId.get(String(f.id)).boleto_arquivo_nome}.`, usuario_nome: USUARIO, usuario_email: '',
+    });
+    feitas.push(`fatura ${f.numero_fatura} ${f.transportadora} (${porId.get(String(f.id)).boleto_arquivo_nome})`);
+  }
+  return feitas;
 }
 
 async function buscarTodas(consulta) {
@@ -278,17 +328,20 @@ async function main() {
     res.guardados.push(resumo);
   }
 
+  const encaminhadas = await encaminharComBoleto(sb);
+
   log(`GUARDADOS ${SIMULAR ? '(simulado) ' : ''}${res.guardados.length}:`); res.guardados.forEach((l) => log(`  + ${l}`));
   log(`JA GUARDADOS ${res.jaGuardados.length}:`); res.jaGuardados.forEach((l) => log(`  = ${l}`));
   log(`PARA REVISAR NO PAINEL ${res.revisar.length}:`); res.revisar.forEach((l) => log(`  ! ${l}`));
   log(`BOLETO ANTECIPADO x DESCONTO ${avisosDesconto.length}:`); avisosDesconto.forEach((l) => log(`  ! ${l}`));
   log(`SEM FATURA CANDIDATA ${res.foraDoSistema.length}:`); res.foraDoSistema.forEach((l) => log(`  - ${l}`));
+  log(`ENCAMINHADAS AO FINANCEIRO (boleto na pasta) ${SIMULAR ? '(simulado) ' : ''}${encaminhadas.length}:`); encaminhadas.forEach((l) => log(`  > ${l}`));
 
   if (!SIMULAR) {
     await registrarRodada({
       status: 'SUCESSO', total_arquivos: nomes.length, novos: res.guardados.length, repetidos: res.jaGuardados.length,
       erro: res.revisar.length ? `${res.revisar.length} para revisar` : null,
-      detalhe: { guardados: res.guardados, revisar: res.revisar, foraDoSistema: res.foraDoSistema, avisosDesconto, jaGuardados: res.jaGuardados.length },
+      detalhe: { guardados: res.guardados, revisar: res.revisar, foraDoSistema: res.foraDoSistema, avisosDesconto, encaminhadas, jaGuardados: res.jaGuardados.length },
     });
   }
 }

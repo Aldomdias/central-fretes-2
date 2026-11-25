@@ -49,6 +49,9 @@ import {
   temFenix,
   textoPagamentoLinha,
   valorDaLinha,
+  faltaBoletoNaPasta,
+  semBoletoVencendo,
+  semBoletoVencida,
 } from '../utils/diagnosticoFaturas';
 import { exportarExcelFormatado } from '../utils/exportarExcelFormatado';
 import { gerarHtmlLaudo } from '../utils/laudoDiagnostico';
@@ -621,6 +624,16 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const temFiltro = Object.values(escolhidos).some(Boolean) || Object.values(filtros).some(Boolean);
 
   // Abrir as canceladas tira os outros cards (com "Vencidas" ativo a lista ficaria vazia).
+  // Aviso do topo: lancadas sem boleto na pasta vencendo em ate 2 dias (ou ja vencidas). Some quando o robo de
+  // boletos acha o boleto (encaminhamento) ou quando a fatura e paga.
+  const avisoBoleto = useMemo(() => {
+    const soma = (lista) => lista.reduce((s, l) => s + valorDaLinha(l), 0);
+    const comF = recorte.filter((l) => l.fatura);
+    const vencendo = comF.filter((l) => semBoletoVencendo(l.fatura, 2));
+    const vencidas = comF.filter((l) => semBoletoVencida(l.fatura));
+    const total = comF.filter((l) => faltaBoletoNaPasta(l.fatura));
+    return { vencendo: vencendo.length, valorVencendo: soma(vencendo), vencidas: vencidas.length, valorVencidas: soma(vencidas), total: total.length };
+  }, [recorte]);
   const alternarCard = (grupo, card) => setEscolhidos((atual) => {
     if (CARDS_OCULTAS.includes(card)) return atual.pagamento === card ? {} : { pagamento: card };
     return { ...atual, [grupo]: atual[grupo] === card ? '' : card };
@@ -1297,6 +1310,29 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             {(duplicadasRecorte.length > 0 || verDuplicadas) && <CardResumo rotulo="Duplicadas" valor={inteiro(duplicadasRecorte.length)} detalhe={`${dinheiro(duplicadasRecorte.reduce((s, l) => s + valorDaLinha(l), 0))} · fora dos totais`} cor="#b45309" ativo={verDuplicadas} dica="Mesma fatura (número, valor e emissão) importada mais de uma vez. Não entram nos totais; clique para ver e marcar como substituídas." onClick={() => alternarCard('pagamento', 'duplicadas')} />}
 
           </div>
+
+          {(avisoBoleto.vencendo > 0 || avisoBoleto.vencidas > 0) && (
+            <div role="alert" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', margin: '0 0 14px', padding: '10px 14px', borderRadius: 8, background: '#fef2f2', border: '1px solid #fecaca', borderLeft: '5px solid #dc2626', color: '#7f1d1d' }}>
+              <strong style={{ fontSize: 15 }}>⚠ Falta boleto na pasta</strong>
+              {avisoBoleto.vencendo > 0 && (
+                <button type="button" className="link-button" style={{ fontWeight: 700, color: '#b91c1c' }} onClick={() => alternarCard('financeiro', 'sem_boleto_vence_2d')}
+                  title="Lançadas, sem boleto na pasta, vencendo hoje, amanhã ou depois de amanhã. Clique para listar.">
+                  {inteiro(avisoBoleto.vencendo)} fatura(s) vencem em até 2 dias ({dinheiro(avisoBoleto.valorVencendo)})
+                </button>
+              )}
+              {avisoBoleto.vencidas > 0 && (
+                <button type="button" className="link-button" style={{ fontWeight: 700, color: '#7f1d1d' }} onClick={() => alternarCard('financeiro', 'sem_boleto_vencidas')}
+                  title="Lançadas, sem boleto na pasta e já vencidas. Clique para listar.">
+                  · {inteiro(avisoBoleto.vencidas)} já vencida(s) ({dinheiro(avisoBoleto.valorVencidas)})
+                </button>
+              )}
+              <button type="button" className="link-button" style={{ color: '#7f1d1d' }} onClick={() => alternarCard('financeiro', 'aguarda_encaminhamento')}
+                title="Todas as lançadas em aberto ainda sem boleto na pasta nem dados bancários.">
+                · {inteiro(avisoBoleto.total)} lançada(s) sem boleto no total
+              </button>
+              <span style={{ fontSize: 12, color: '#991b1b' }}>Coloque o boleto na pasta antes do financeiro cobrar: o robô de boletos acha e a fatura sai daqui sozinha (sai também quando é paga).</span>
+            </div>
+          )}
 
           <section className="panel-card" style={{ marginBottom: 14, borderLeft: '4px solid #0f766e' }} aria-label="Envios ao OMS por data">
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}>

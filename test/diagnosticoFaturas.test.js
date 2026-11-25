@@ -505,3 +505,18 @@ test('resultado do envio OMS: erro/recusa com fatura ja lancada (partida) conta 
   assert.equal(resultadoEnvioOms(erro, { status: 'EM_ABERTO' }), 'NAO_FOI');
   assert.equal(resultadoEnvioOms(null, { partida: '1' }), '');
 });
+
+test('aviso de boleto: lancada sem encaminhamento vencendo em ate 2 dias; some com boleto ou pagamento', async () => {
+  const { faltaBoletoNaPasta, semBoletoVencendo, semBoletoVencida } = await import('../src/utils/diagnosticoFaturas.js');
+  const ref = new Date('2026-11-25T12:00:00');
+  const base = { status: 'PRONTA_PARA_PAGAMENTO', partida: '1900000123', data_vencimento: '2026-11-27' };
+  assert.equal(faltaBoletoNaPasta(base), true);
+  assert.equal(semBoletoVencendo(base, 2, ref), true);
+  assert.equal(semBoletoVencendo({ ...base, data_vencimento: '2026-11-28' }, 2, ref), false);
+  assert.equal(semBoletoVencida({ ...base, data_vencimento: '2026-11-20' }, ref), true);
+  // Boleto achado (encaminhada) ou paga: sai do aviso.
+  assert.equal(semBoletoVencendo({ ...base, encaminhado_financeiro_em: '2026-11-25T10:00:00Z' }, 2, ref), false);
+  assert.equal(semBoletoVencendo({ ...base, status: 'PAGA', partida: '2000000999' }, 2, ref), false);
+  // Ainda nao lancada: nao cobra boleto.
+  assert.equal(semBoletoVencendo({ ...base, partida: null }, 2, ref), false);
+});
