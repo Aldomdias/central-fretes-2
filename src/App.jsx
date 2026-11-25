@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import Sidebar from './components/Sidebar';
+import DashboardPage from './pages/DashboardPage';
 import SimuladorPage from './pages/SimuladorPage';
 import TransportadorasPage from './pages/TransportadorasPage';
 import ImportacaoPage from './pages/ImportacaoPage';
@@ -90,6 +91,8 @@ export default function App() {
   const [filtroFaturasExterno, setFiltroFaturasExterno] = useState(null);
   const [sidebarRecolhida, setSidebarRecolhida] = useState(true);
   const [menuMobileAberto, setMenuMobileAberto] = useState(false);
+  // Painel geral antigo (Central de importacoes etc.) continua acessivel pela Minha Area de Trabalho.
+  const [painelGeralAberto, setPainelGeralAberto] = useState(false);
   const [preferenciasInterface, setPreferenciasInterface] = useState(() => carregarPreferenciasInterface(sessao));
   const [avisosOcultos, setAvisosOcultos] = useState(() => {
     try { return window.localStorage.getItem('central_fretes_avisos_ocultos') === '1'; } catch { return false; }
@@ -173,6 +176,7 @@ export default function App() {
   const mudarPagina = (pagina) => {
     if (!usuarioTemAcesso(sessao, pagina)) return;
     setPaginaAtual(pagina);
+    setPainelGeralAberto(false);
     setMenuMobileAberto(false);
     sincronizarPaginaAppNaUrl(pagina);
     if (pagina !== 'transportadoras') {
@@ -219,7 +223,16 @@ export default function App() {
   };
 
   const paginas = {
-    dashboard: <MinhaAreaTrabalhoPage usuario={sessao} preferencias={preferenciasInterface} onPreferencias={setPreferenciasInterface} onMudarPagina={mudarPagina} />,
+    dashboard: painelGeralAberto ? (
+      <>
+        <div style={{ marginBottom: 12 }}>
+          <button type="button" className="btn-secondary" onClick={() => setPainelGeralAberto(false)}>← Voltar para Minha Área de Trabalho</button>
+        </div>
+        <DashboardPage transportadoras={transportadorasMemo} onAbrirSimulador={abrirSimulador} onAbrirTransportadoras={abrirTransportadoras} onAbrirImportacao={abrirImportacao} onAbrirFormatacaoTabelas={() => mudarPagina('formatacao')} onMudarPagina={mudarPagina} onAtualizarBase={store.atualizarResumo} onConferirBase={store.conferirBase} syncStatus={store.syncStatus} />
+      </>
+    ) : (
+      <MinhaAreaTrabalhoPage usuario={sessao} preferencias={preferenciasInterface} onPreferencias={setPreferenciasInterface} onMudarPagina={mudarPagina} onAbrirPainelGeral={() => setPainelGeralAberto(true)} />
+    ),
     'conceito-app': <VisualConceptPage />,
     simulador: <SimuladorPage transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />,
     'tabelas-negociacao': <TabelasNegociacaoPageWithEditor />,

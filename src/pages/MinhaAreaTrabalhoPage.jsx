@@ -34,7 +34,7 @@ function permitidos(usuario) {
   return Object.entries(BLOCOS).filter(([, bloco]) => usuarioTemAcesso(usuario, bloco.pagina)).map(([id]) => id);
 }
 
-export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPreferencias, onMudarPagina }) {
+export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPreferencias, onMudarPagina, onAbrirPainelGeral }) {
   const disponiveis = useMemo(() => permitidos(usuario), [usuario]);
   const modeloInicial = preferencias.modeloArea || modeloParaPerfil(usuario?.perfil);
   const idsIniciais = (preferencias.blocos.length ? preferencias.blocos : MODELOS[modeloInicial].blocos)
@@ -101,9 +101,14 @@ export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPrefere
           <h1>Olá, {usuario?.nome?.split(' ')[0] || 'usuário'}.</h1>
           <p>Seus fluxos mais importantes, organizados conforme seu acesso.</p>
         </div>
-        <button type="button" className="btn-secondary" onClick={() => setEditando((valor) => !valor)} aria-pressed={editando}>
-          {editando ? 'Concluir personalização' : 'Personalizar área'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {onAbrirPainelGeral && !editando ? (
+            <button type="button" className="btn-secondary" onClick={onAbrirPainelGeral}>Painel geral e importações</button>
+          ) : null}
+          <button type="button" className="btn-secondary" onClick={() => setEditando((valor) => !valor)} aria-pressed={editando}>
+            {editando ? 'Concluir personalização' : 'Personalizar área'}
+          </button>
+        </div>
       </header>
 
       <MonitorAtualizacoes usuario={usuario} onMudarPagina={onMudarPagina} />
