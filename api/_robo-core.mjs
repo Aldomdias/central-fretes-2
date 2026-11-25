@@ -23457,6 +23457,7 @@ async function carregarBaseCompletaDb(onProgress = null) {
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
     aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
+    operaLotacao: transportadora.opera_lotacao === true,
     fazAntecipacao: transportadora.faz_antecipacao === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || []
   }));
@@ -23804,6 +23805,7 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
     aceitaCanalInvertido: transportadora.aceita_canal_invertido === true,
+    operaLotacao: transportadora.opera_lotacao === true,
     fazAntecipacao: transportadora.faz_antecipacao === true,
     detalheCarregado: true,
     origens: origensByTransportadora.get(String(transportadora.id)) || []
@@ -26509,6 +26511,18 @@ function inverterOrigemDestinoCte(cte = {}) {
     __auditoriaDevolucaoInvertida: true
   };
 }
+async function carregarNomesOperaLotacao(supabase2) {
+  const { data, error } = await supabase2.from("transportadoras").select("nome").eq("opera_lotacao", true);
+  if (error) return [];
+  return (data || []).map((t) => t.nome).filter(Boolean);
+}
+function transportadoraOperaLotacao(cte, contexto, mapaVinculos) {
+  const marcadas = contexto?.nomesOperaLotacao;
+  if (!marcadas?.length) return false;
+  const nomeBruto = pick(cte, ["transportadora", "nome_transportadora", "transportadora_realizada", "transportador"]);
+  const nomes = [nomeBruto, aplicarVinculoTransportadora2(nomeBruto, mapaVinculos)].filter(Boolean);
+  return marcadas.some((marcada) => nomes.some((nome) => marcada === nome || nomeCompativel(marcada, nome)));
+}
 async function carregarContextoLotacaoAuditoria(supabase2, mapaVinculos = null) {
   const { data: tabelasDb, error: tabelasError } = await supabase2.from("lotacao_tabelas").select("id,nome,nome_normalizado,fontes_valor").eq("tipo", "TRANSPORTADORA");
   if (tabelasError) return { tabelas: [], origensFracionadoPorNome: /* @__PURE__ */ new Map() };
@@ -26546,6 +26560,7 @@ async function carregarContextoLotacaoAuditoria(supabase2, mapaVinculos = null) 
     tabelas: tabelasValidas.map((tabela) => ({ ...tabela, rotas: rotasPorTabela.get(tabela.id) || [] })),
     origensFracionadoPorNome,
     mapaVinculos,
+    nomesOperaLotacao: await carregarNomesOperaLotacao(supabase2),
     fluxo: await carregarFluxoLotacaoAuditoria(supabase2),
     transgp: await carregarTransgpAuditoria(supabase2)
   };
@@ -26801,7 +26816,13 @@ function calcularCteValidadoPelaOperacao(cte = {}, viagem = {}) {
 function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracionado) {
   const pelaTransgp = calcularCtePelaTransgp(cte, contexto);
   if (pelaTransgp) return pelaTransgp;
-  if (canalCategoria2(pick(cte, ["canal", "canal_original"])) === "B2C") return calcularFracionado();
+  const b2c = canalCategoria2(pick(cte, ["canal", "canal_original"])) === "B2C";
+  const operaLotacao = transportadoraOperaLotacao(cte, contexto, mapaVinculos);
+  if (b2c && !operaLotacao) return calcularFracionado();
+  if (operaLotacao) {
+    const pelaDist = calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos);
+    if (pelaDist) return pelaDist;
+  }
   const porTabela = calcularCtePelaTabelaLotacao(cte, contexto, mapaVinculos);
   if (porTabela && toNumber4(porTabela.valor_calculado) > 0) return porTabela;
   const resultado = porTabela || calcularFracionado();
@@ -26814,6 +26835,7 @@ function cteDeLotacao(cte, contexto, mapaVinculos, porTabela, resultado = null) 
   const canal2 = canalCategoria2(pick(cte, ["canal", "canal_original"]));
   if (canal2 === "INTERCOMPANY" || canal2 === "B2C") return false;
   if (porTabela) return true;
+  if (transportadoraOperaLotacao(cte, contexto, mapaVinculos)) return true;
   if (["SEM_ORIGEM", "SEM_ROTA"].includes(resultado?.status_calculo)) return false;
   if (["LOTACAO", "LOTA\xC7\xC3O"].includes(canal2)) return true;
   const nomeBruto = pick(cte, ["transportadora", "nome_transportadora", "transportadora_realizada", "transportador"]);

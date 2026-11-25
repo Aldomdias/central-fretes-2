@@ -551,10 +551,10 @@ function OperaLotacaoSection({ transportadora, store }) {
         {salvando ? <span style={{ fontSize: 12, color: 'var(--muted)' }}>salvando...</span> : null}
       </label>
       <p style={{ fontSize: 12, color: 'var(--muted)', margin: '4px 0 0' }}>
-        Marque para transportadora de lotação que ainda não tem tabela subida. Na Auditoria CT-e, o CT-e dela segue a
-        regra de lotação: tabela de lotação (quando houver), decisão da TransGP ou <strong>DIST do fluxo</strong> com o
-        mesmo número de CT-e. Vale também para CT-e que veio como B2C ou ATACADO: se existir DIST para o número, a
-        Auditoria usa a viagem. Sem DIST, o CT-e B2C segue o cálculo normal.
+        Marque para transportadora de lotação que ainda não tem tabela subida. Na Auditoria CT-e, o CT-e dela busca
+        <strong> primeiro a DIST do fluxo</strong> com o mesmo número de CT-e; sem DIST, vai para a tabela de lotação
+        (quando houver) e depois para o fracionado. Vale também para CT-e que veio como B2C ou ATACADO. Sem DIST, o
+        CT-e B2C segue o cálculo normal.
       </p>
       {feedback ? <div className={`mini-feedback ${feedback.tipo} top-space`} style={{ marginTop: 8 }}>{feedback.texto}</div> : null}
     </div>

@@ -1483,7 +1483,14 @@ function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracio
   // Exceção: transportadora marcada "opera lotação" procura a DIST (tabela de lotação ou fluxo) pelo número do
   // CT-e; sem DIST, o B2C segue o cálculo normal (fracionado), sem ir para a Operação.
   const b2c = canalCategoria(pick(cte, ['canal', 'canal_original'])) === 'B2C';
-  if (b2c && !transportadoraOperaLotacao(cte, contexto, mapaVinculos)) return calcularFracionado();
+  const operaLotacao = transportadoraOperaLotacao(cte, contexto, mapaVinculos);
+  if (b2c && !operaLotacao) return calcularFracionado();
+  // Transportadora marcada "opera lotação" (ex.: Rodotista): primeiro a DIST da viagem no fluxo de lotação
+  // (pelo número do CT-e); só sem DIST vai para a tabela de lotação e depois para o fracionado.
+  if (operaLotacao) {
+    const pelaDist = calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos);
+    if (pelaDist) return pelaDist;
+  }
   const porTabela = calcularCtePelaTabelaLotacao(cte, contexto, mapaVinculos);
   if (porTabela && toNumber(porTabela.valor_calculado) > 0) return porTabela;
   const resultado = porTabela || calcularFracionado();
