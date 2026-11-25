@@ -7,6 +7,7 @@ import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamen
 import { carregarCadastroPorRaiz } from '../services/transportadoraCnpjsService';
 import { aoMudarFornecedoresCompras, formatarCnpj } from '../services/fornecedoresComprasService';
 import FornecedoresComprasCadastro from './FornecedoresComprasCadastro';
+import SelectComBusca from './SelectComBusca';
 import { diasAte } from '../utils/auditoriaFretesDomain';
 import { carregarSessao } from '../utils/authLocal';
 import {
@@ -337,6 +338,10 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const agrupador = useMemo(() => criarAgrupadorTransportadoras(state.faturas || [], cadastroPorRaiz), [state.faturas, cadastroPorRaiz]);
   const transportadoras = useMemo(() => agrupador.opcoes.map((o) => o.rotulo), [agrupador]);
   const nomesDoGrupo = useMemo(() => new Map(agrupador.opcoes.map((o) => [o.rotulo, o.nomes])), [agrupador]);
+  const opcoesTransportadora = useMemo(() => transportadoras.map((t) => {
+    const nomes = nomesDoGrupo.get(t) || [];
+    return { value: t, label: t, sufixo: nomes.length > 1 ? ` (${nomes.length} nomes)` : '', extra: nomes.join(' '), title: nomes.length > 1 ? `Inclui: ${nomes.join(' · ')}` : undefined };
+  }), [transportadoras, nomesDoGrupo]);
   // Mesma fatura importada mais de uma vez (em toda a base, nao so no recorte).
   const duplicadas = useMemo(() => detectarDuplicadas(state.faturas || [], agrupador.chaveDaFatura), [state.faturas, agrupador]);
 
@@ -1234,12 +1239,15 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
         })()}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'start' }}>
           <div style={{ display: 'grid', gap: 8, flex: '1 1 220px', maxWidth: 320 }}>
-            <label className="field">Transportadora
-              <select value={transportadora} onChange={(e) => setTransportadora(e.target.value)}>
-                <option value="">Todas</option>
-                {transportadoras.map((t) => { const nomes = nomesDoGrupo.get(t) || []; return <option key={t} value={t} title={nomes.length > 1 ? `Inclui: ${nomes.join(' · ')}` : undefined}>{t}{nomes.length > 1 ? ` (${nomes.length} nomes)` : ''}</option>; })}
-              </select>
-            </label>
+            <div className="field">Transportadora
+              <SelectComBusca
+                value={transportadora}
+                onChange={setTransportadora}
+                rotuloVazio="Todas"
+                placeholder="Digite parte do nome…"
+                opcoes={opcoesTransportadora}
+              />
+            </div>
             <label className="field">1. Selecione o auditor
               <div style={{ display: 'flex', gap: 6 }}>
                 <select value={verTodosAuditores ? TODOS_AUDITORES : auditorEscolhido} onChange={(e) => setAuditor(e.target.value)} style={{ flex: 1, minWidth: 0, ...(!auditor && !transportadora && !temLista ? { outline: '2px solid #315ee7', outlineOffset: 1 } : {}) }}>
