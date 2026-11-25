@@ -1553,9 +1553,10 @@ function TransportadorasList({ items, onOpen, store }) {
   const [coberturaFiltro, setCoberturaFiltro] = useState('');
   const [validacaoFiltro, setValidacaoFiltro] = useState('');
   const [tabelaAlternativaFiltro, setTabelaAlternativaFiltro] = useState('');
+  const [auditorFiltro, setAuditorFiltro] = useState('');
   const [painelValidacaoOpen, setPainelValidacaoOpen] = useState(false);
   const [historicoOpen, setHistoricoOpen] = useState(false);
-  const { vinculosSet, auditoresMap, repropagarTodosAuditores } = useVinculosEAuditores();
+  const { vinculosSet, auditoresMap, auditorNomes, repropagarTodosAuditores } = useVinculosEAuditores();
   const [repropagando, setRepropagando] = useState(false);
   const [progressoRepropagacao, setProgressoRepropagacao] = useState(null);
   const [feedbackRepropagacao, setFeedbackRepropagacao] = useState('');
@@ -1603,9 +1604,24 @@ function TransportadorasList({ items, onOpen, store }) {
       const temTabelaAlt = transportadoraTemTabelaAlternativa(item);
       const tabelaAlternativaMatch = !tabelaAlternativaFiltro
         || (tabelaAlternativaFiltro === 'com' ? temTabelaAlt : !temTabelaAlt);
-      return nomeMatch && cidadeMatch && canalMatch && coberturaMatch && validacaoMatch && tabelaAlternativaMatch;
+      const auditorDoItem = auditoresMap ? (auditoresMap.get(normalizarChave(item.nome)) || '') : '';
+      const auditorMatch = !auditorFiltro
+        || (auditorFiltro === '__sem__' ? !auditorDoItem : auditorDoItem === auditorFiltro);
+      return nomeMatch && cidadeMatch && canalMatch && coberturaMatch && validacaoMatch && tabelaAlternativaMatch && auditorMatch;
     });
-  }, [items, busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro, tabelaAlternativaFiltro]);
+  }, [items, busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro, tabelaAlternativaFiltro, auditorFiltro, auditoresMap]);
+
+  // Quantas transportadoras (da lista carregada) cada auditor tem na carteira.
+  const contagemPorAuditor = useMemo(() => {
+    const mapa = new Map();
+    let semAuditor = 0;
+    items.forEach((item) => {
+      const auditor = auditoresMap ? auditoresMap.get(normalizarChave(item.nome)) : null;
+      if (auditor) mapa.set(auditor, (mapa.get(auditor) || 0) + 1);
+      else semAuditor += 1;
+    });
+    return { mapa, semAuditor };
+  }, [items, auditoresMap]);
 
   const totalOrigens = useMemo(() => items.reduce((acc, item) => acc + (item.origens || []).length, 0), [items]);
   const totalOrigensValidadas = useMemo(
@@ -1621,7 +1637,7 @@ function TransportadorasList({ items, onOpen, store }) {
 
   useEffect(() => {
     setPagina(1);
-  }, [busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro, tabelaAlternativaFiltro]);
+  }, [busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro, tabelaAlternativaFiltro, auditorFiltro]);
 
   const atualizarBaseOficial = async () => {
     if (!store?.atualizarResumo || atualizandoResumo) return false;
@@ -1682,6 +1698,8 @@ function TransportadorasList({ items, onOpen, store }) {
     setCanalFiltro('');
     setCoberturaFiltro('');
     setValidacaoFiltro('');
+    setTabelaAlternativaFiltro('');
+    setAuditorFiltro('');
   };
 
   const confirmarRemocaoTransportadora = async (item) => {
@@ -1727,13 +1745,13 @@ function TransportadorasList({ items, onOpen, store }) {
         <div className="filters-header">
           <div>
             <strong>Filtros</strong>
-            <p>Filtre por transportadora, cidade de origem, canal e status de cobertura.</p>
+            <p>Filtre por transportadora, cidade de origem, canal, status de cobertura e auditor.</p>
           </div>
           <div className="inline-meta">
             <span><strong>{filtrados.length}</strong> transportadora(s)</span>
             <span>Mostrando {visiveis.length ? inicioPagina + 1 : 0}-{Math.min(inicioPagina + PAGE_SIZE, filtrados.length)} de {filtrados.length}</span>
             <span><strong>{totalOrigensValidadas}</strong> de <strong>{totalOrigens}</strong> origem(ns) validada(s)</span>
-            {(busca || cidadeFiltro || canalFiltro || coberturaFiltro || validacaoFiltro) ? <button className="btn-link inline-btn" onClick={limparFiltros}>Limpar filtros</button> : null}
+            {(busca || cidadeFiltro || canalFiltro || coberturaFiltro || validacaoFiltro || tabelaAlternativaFiltro || auditorFiltro) ? <button className="btn-link inline-btn" onClick={limparFiltros}>Limpar filtros</button> : null}
           </div>
         </div>
         <div className="form-grid four filters-grid">
@@ -1787,6 +1805,16 @@ function TransportadorasList({ items, onOpen, store }) {
               <option value="">Todas</option>
               <option value="com">Só com tabela alternativa</option>
               <option value="sem">Só sem tabela alternativa</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>Auditor</label>
+            <select value={auditorFiltro} onChange={(e) => setAuditorFiltro(e.target.value)} disabled={!auditoresMap} title="Mostra só as transportadoras da carteira do auditor escolhido">
+              <option value="">{auditoresMap ? 'Todos os auditores' : 'Carregando auditores...'}</option>
+              <option value="__sem__">Sem auditor ({contagemPorAuditor.semAuditor})</option>
+              {(auditorNomes || []).map((nome) => (
+                <option key={nome} value={nome}>{nome} ({contagemPorAuditor.mapa.get(nome) || 0})</option>
+              ))}
             </select>
           </div>
         </div>
