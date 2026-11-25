@@ -8333,6 +8333,7 @@ ${portaisLaudo.length ? `
 
 function Gestao({ state, onState }) {
   const [visao, setVisao] = useState('transportadora');
+  const refListaSemAuditor = useRef(null);
   const [filtroBusca, setFiltroBusca] = useState('');
   const [filtroAuditor, setFiltroAuditor] = useState('');
   const [filtroVencimento, setFiltroVencimento] = useState('');
@@ -8821,7 +8822,7 @@ function Gestao({ state, onState }) {
           onClick={() => { setVisao('transportadora'); setFiltroBusca(''); setFiltroAuditor(''); setFiltroVencimento(''); }}
         />
         <Card
-          label="Sem responsavel"
+          label="Transportadoras sem auditor"
           value={carteiras.filter((item) => !item.auditor_nome).length}
           color="#9b1111"
           ativo={filtroAuditor === 'SEM_AUDITOR'}
@@ -8835,6 +8836,14 @@ function Gestao({ state, onState }) {
           ativo={filtroVencimento === 'vencida'}
           titulo="Mostrar só as transportadoras com fatura vencida"
           onClick={() => { setVisao('transportadora'); setFiltroVencimento((atual) => (atual === 'vencida' ? '' : 'vencida')); }}
+        />
+        <Card
+          label="Faturas sem auditor"
+          value={semAuditorPorNome.reduce((total, linha) => total + linha.abertas, 0)}
+          detail={`em aberto, ${semAuditorPorNome.filter((linha) => linha.abertas > 0).length} nome(s) na fatura · ${semAuditorPorNome.reduce((total, linha) => total + linha.total, 0)} no total`}
+          color="#b45309"
+          titulo="Ir para a lista de faturas sem auditor (nomes que nao casam com a carteira)"
+          onClick={() => refListaSemAuditor.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
         />
       </div>
       <div className="table-card" style={{ marginTop: 12 }}>
@@ -8856,7 +8865,7 @@ function Gestao({ state, onState }) {
         )}
         {erroAtribuicao && <p className="error-text">{erroAtribuicao}</p>}
         {semAuditorPorNome.length > 0 && (
-          <div style={{ marginTop: 12 }}>
+          <div ref={refListaSemAuditor} style={{ marginTop: 12, scrollMarginTop: 80 }}>
             <strong>Faturas sem auditor, por nome da transportadora na fatura</strong>
             <p style={{ margin: '4px 0 8px', color: '#475569' }}>Mostra o nome exatamente como veio na fatura. Nomes com sufixo (ex.: “| SPO”) ou diferentes do cadastro são os que a sincronização não acha. As primeiras 40, das que têm mais faturas em aberto.</p>
             <div className="sim-analise-tabela-wrap">
