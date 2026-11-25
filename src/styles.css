@@ -3613,6 +3613,9 @@ button:disabled { opacity: 0.58; cursor: not-allowed; }
   box-shadow: var(--shadow);
   overflow: hidden;
 }
+.workspace-card.is-clickable { cursor: pointer; transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+.workspace-card.is-clickable:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--brand) 55%, var(--border)); box-shadow: 0 16px 36px color-mix(in srgb, var(--brand) 13%, transparent); }
+.workspace-card.is-clickable:focus-visible { outline: 3px solid color-mix(in srgb, var(--brand) 55%, transparent); outline-offset: 3px; }
 .workspace-card-mark { position: absolute; inset: 0 auto 0 0; width: 5px; background: var(--brand); }
 .workspace-card.tone-auditoria .workspace-card-mark { background: #f59e0b; }
 .workspace-card.tone-suprimentos .workspace-card-mark { background: #7c3aed; }
@@ -3620,7 +3623,7 @@ button:disabled { opacity: 0.58; cursor: not-allowed; }
 .workspace-card-copy > span { color: var(--muted); font-size: 10px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; }
 .workspace-card h2 { margin: 12px 0 8px; color: var(--text); font-size: 21px; letter-spacing: -.02em; }
 .workspace-card p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
-.workspace-open { align-self: flex-start; border: 0; padding: 0; background: transparent; color: var(--brand); font-weight: 900; }
+.workspace-open { align-self: flex-start; color: var(--brand); font-weight: 900; }
 .workspace-open span { display: inline-block; margin-left: 6px; transition: transform .15s ease; }
 .workspace-open:hover span { transform: translateX(4px); }
 .workspace-card-controls { display: flex; flex-wrap: wrap; gap: 6px; }

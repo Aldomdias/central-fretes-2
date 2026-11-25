@@ -110,7 +110,20 @@ export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPrefere
           const bloco = BLOCOS[id];
           const indice = blocos.indexOf(id);
           return (
-            <article className={`workspace-card tone-${bloco.tom}`} key={id}>
+            <article
+              className={`workspace-card tone-${bloco.tom} ${editando ? '' : 'is-clickable'}`}
+              key={id}
+              role={editando ? undefined : 'button'}
+              tabIndex={editando ? undefined : 0}
+              onClick={editando ? undefined : () => onMudarPagina(bloco.pagina)}
+              onKeyDown={editando ? undefined : (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onMudarPagina(bloco.pagina);
+                }
+              }}
+              aria-label={editando ? undefined : `Abrir ${bloco.titulo}`}
+            >
               <div className="workspace-card-mark" aria-hidden="true" />
               <div className="workspace-card-copy">
                 <span>{bloco.tom}</span>
@@ -125,7 +138,7 @@ export default function MinhaAreaTrabalhoPage({ usuario, preferencias, onPrefere
                   <button type="button" className="danger" onClick={() => setBlocos((lista) => lista.filter((item) => item !== id))}>Remover</button>
                 </div>
               ) : (
-                <button type="button" className="workspace-open" onClick={() => onMudarPagina(bloco.pagina)}>Abrir <span aria-hidden="true">→</span></button>
+                <span className="workspace-open">Abrir <span aria-hidden="true">→</span></span>
               )}
             </article>
           );
