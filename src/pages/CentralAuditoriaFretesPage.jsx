@@ -8384,7 +8384,12 @@ function Gestao({ state, onState }) {
     listarUsuariosSupabase()
       .then((usuarios) => {
         if (cancelado) return;
-        setAuditores((usuarios || []).filter((u) => u.perfil === 'AUDITORIA_FRETES' && u.ativo));
+        // Perfil de auditor + pessoas liberadas nominalmente (ex.: Caroline,
+        // que tem outro perfil mas tambem recebe carteira de transportadora).
+        const EMAILS_EXTRA_AUDITORES = new Set(['caroline.waldhelm@cantu.inc']);
+        setAuditores((usuarios || [])
+          .filter((u) => u.ativo && (u.perfil === 'AUDITORIA_FRETES' || EMAILS_EXTRA_AUDITORES.has(String(u.email || '').trim().toLowerCase())))
+          .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR')));
       })
       .catch((error) => { if (!cancelado) setErroAuditores(error.message || 'Erro ao carregar auditores.'); })
       .finally(() => { if (!cancelado) setCarregandoAuditores(false); });
