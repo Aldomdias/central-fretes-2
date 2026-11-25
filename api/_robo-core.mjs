@@ -22123,6 +22123,7 @@ var init_authLocal = __esm({
       { chave: "formatacao", label: "Formata\xE7\xE3o de Tabelas", grupo: "Suprimentos" },
       { chave: "importar-template", label: "Importar Template", grupo: "Suprimentos" },
       { chave: "importacao-ia-tabelas", label: "Importa\xE7\xE3o IA de Tabelas", grupo: "Suprimentos" },
+      { chave: "fracionado-portal", label: "Portal de Tabelas Fracionado", grupo: "Suprimentos" },
       { chave: "lotacao", label: "Gest\xE3o de Tabelas Lota\xE7\xE3o (vigentes)", grupo: "Lota\xE7\xE3o" },
       { chave: "lotacao-cotacao", label: "Gest\xE3o de Tabelas Lota\xE7\xE3o (cota\xE7\xE3o)", grupo: "Lota\xE7\xE3o" },
       { chave: "lotacao-operacao", label: "Lota\xE7\xE3o Opera\xE7\xE3o", grupo: "Lota\xE7\xE3o" },
@@ -22150,6 +22151,7 @@ var init_authLocal = __esm({
       { chave: "oportunidade-transportadora", label: "Oportunidade Transportadora", grupo: "Transportadoras" },
       { chave: "simular-saida-transportadora", label: "Simular Sa\xEDda de Transportadora", grupo: "Transportadoras" },
       { chave: "tabela-padrao-b2c", label: "Tabela Padr\xE3o B2C", grupo: "Transportadoras" },
+      { chave: "rotas-b2c", label: "Rotas B2C (download)", grupo: "Transportadoras" },
       { chave: "gestao-contratos", label: "Gest\xE3o de Contratos", grupo: "Transportadoras" },
       { chave: "gestao-base-cte", label: "Gest\xE3o da Base CT-e", grupo: "Auditoria" },
       { chave: "alertas-cte-valor", label: "Alerta CT-e valor alto", grupo: "Auditoria" },
@@ -23460,7 +23462,30 @@ async function carregarBaseCompletaDb(onProgress = null) {
   }));
   return _cacheBaseCompleta;
 }
-async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [] } = {}) {
+async function fetchRotasPorOrigensEDestinosDb(supabase2, origemIds = [], ibgesDestino = []) {
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  if (!ids.length) return [];
+  const rows = [];
+  const vistos = /* @__PURE__ */ new Set();
+  const anexar = (lista) => (lista || []).forEach((row) => {
+    const chave = row?.id == null ? null : String(row.id);
+    if (chave !== null) {
+      if (vistos.has(chave)) return;
+      vistos.add(chave);
+    }
+    rows.push(row);
+  });
+  for (let oi = 0; oi < ids.length; oi += 100) {
+    const origemChunk = ids.slice(oi, oi + 100);
+    for (let di = 0; di < ibgesDestino.length; di += 150) {
+      const destinoChunk = ibgesDestino.slice(di, di + 150);
+      anexar(await paginarEmParaleloDb(() => supabase2.from("rotas").select("*").in("origem_id", origemChunk).in("ibge_destino", destinoChunk).order("origem_id", { ascending: true }).order("id", { ascending: true })));
+    }
+    anexar(await paginarEmParaleloDb(() => supabase2.from("rotas").select("*").in("origem_id", origemChunk).is("ibge_destino", null).order("origem_id", { ascending: true }).order("id", { ascending: true })));
+  }
+  return rows;
+}
+async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [], ibgesDestino = null } = {}) {
   const nomesLimpos = Array.from(new Set(
     (nomes || []).map((nome) => String(nome || "").trim()).filter(Boolean)
   ));
@@ -23506,9 +23531,10 @@ async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [] } = {}) {
       origens: []
     }));
   }
+  const destinosFiltro = Array.from(new Set((ibgesDestino || []).map((v) => onlyDigitsDb(v)).filter((v) => v.length === 7)));
   const [generalidades, rotasRaw, cotacoes, taxas] = await Promise.all([
     fetchRowsByOrigemIds(supabase2, "generalidades", origemIds),
-    fetchRowsByOrigemIds(supabase2, "rotas", origemIds),
+    destinosFiltro.length ? fetchRotasPorOrigensEDestinosDb(supabase2, origemIds, destinosFiltro) : fetchRowsByOrigemIds(supabase2, "rotas", origemIds),
     fetchRowsByOrigemIds(supabase2, "cotacoes", origemIds),
     fetchRowsByOrigemIds(supabase2, "taxas_especiais", origemIds)
   ]);
@@ -23970,13 +23996,13 @@ function normalizeMunicipioIbgeRow(row = {}) {
   if (!ibge || !cidade) return null;
   return { ibge, cidade, uf, mesorregiao };
 }
-async function resolverIbgePorCepDbComCache(cep, cache) {
+async function resolverIbgePorCepDbComCache(cep, cache2) {
   const cepLimpo = normalizarCepDb(cep);
   if (!cepLimpo) return "";
-  if (cache.has(cepLimpo)) return cache.get(cepLimpo);
+  if (cache2.has(cepLimpo)) return cache2.get(cepLimpo);
   const municipio = await resolverCepEmFaixasDb(cepLimpo).catch(() => null);
   const ibge = onlyDigitsDb(municipio?.ibge || municipio?.codigo_ibge || municipio?.codigo || "").slice(0, 7);
-  cache.set(cepLimpo, ibge || "");
+  cache2.set(cepLimpo, ibge || "");
   return ibge || "";
 }
 async function enriquecerRotasComIbgeDestinoPorCepDb(rotas = []) {
@@ -23998,7 +24024,7 @@ async function enriquecerRotasComIbgeDestinoPorCepDb(rotas = []) {
   return resultado ?? lista;
 }
 async function _enriquecerRotas(lista) {
-  const cache = /* @__PURE__ */ new Map();
+  const cache2 = /* @__PURE__ */ new Map();
   const resultado = [];
   for (const rota of lista) {
     const ibgeAtual = onlyDigitsDb(pickFirstDb(rota.ibge_destino, rota.ibgeDestino, rota.codigo_ibge_destino, rota.codigoMunicipioDestino)).slice(0, 7);
@@ -24009,8 +24035,8 @@ async function _enriquecerRotas(lista) {
     const cepInicial = normalizarCepDb(pickFirstDb(rota.cep_inicial, rota.cepInicial, rota.cep_inicio, rota.cepInicio));
     const cepFinal = normalizarCepDb(pickFirstDb(rota.cep_final, rota.cepFinal, rota.cep_fim, rota.cepFim));
     let ibgeResolvido = "";
-    if (cepInicial) ibgeResolvido = await resolverIbgePorCepDbComCache(cepInicial, cache);
-    if (!ibgeResolvido && cepFinal) ibgeResolvido = await resolverIbgePorCepDbComCache(cepFinal, cache);
+    if (cepInicial) ibgeResolvido = await resolverIbgePorCepDbComCache(cepInicial, cache2);
+    if (!ibgeResolvido && cepFinal) ibgeResolvido = await resolverIbgePorCepDbComCache(cepFinal, cache2);
     if (ibgeResolvido) {
       resultado.push({
         ...rota,
@@ -26279,14 +26305,32 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
   }
   const nomes = (transportadorasAlvo || []).length ? Array.from(new Set((transportadorasAlvo || []).map((nome) => aplicarVinculoTransportadora2(nome, mapaVinculos) || nome).map((nome) => String(nome || "").trim()).filter(Boolean))) : nomesTransportadorasRegistros(registros, mapaVinculos);
   if (nomes.length > 0 && nomes.length <= 40) {
-    const cacheKey = nomes.map((nome) => normalizeTransportadoraCompare(nome)).sort().join("|");
-    if (!_cacheBaseFretePorTransportadora.has(cacheKey)) {
+    const ibgesCtes = /* @__PURE__ */ new Set();
+    let todosComDestino = (registros || []).length > 0;
+    (registros || []).forEach((cte) => {
+      const destino = pickDigits(cte, ["ibge_destino", "ibgeDestino", "codigo_ibge_destino"]);
+      const destinoCorrigido = pickDigits(cte, ["ibge_corrigido_destino"]);
+      const origem = pickDigits(cte, ["ibge_origem", "ibgeOrigem"]);
+      const origemCorrigida = pickDigits(cte, ["ibge_corrigido_origem"]);
+      if (!destino && !destinoCorrigido) todosComDestino = false;
+      [destino, destinoCorrigido, origem, origemCorrigida].forEach((v) => {
+        if (v && v.length === 7) ibgesCtes.add(v);
+      });
+    });
+    const ibgesDestino = todosComDestino && ibgesCtes.size <= 600 ? [...ibgesCtes].sort() : null;
+    const cacheKey = nomes.map((nome) => normalizeTransportadoraCompare(nome)).sort().join("|") + (ibgesDestino ? `#${ibgesDestino.join(",")}` : "");
+    const entrada = _cacheBaseFretePorTransportadora.get(cacheKey);
+    if (!entrada || Date.now() - entrada.ts > CACHE_BASE_TRANSPORTADORA_MS) {
       onProgress?.({ etapa: "carregando_tabelas_transportadora", carregados: 0, total: nomes.length });
       const cnpjs = (registros || []).map(cnpjTransportadoraCte).filter(Boolean);
-      const base = expandirTabelasAlternativasOficiais(normalizarTransportadoras(await carregarBaseTransportadorasDb(nomes, { cnpjs })));
-      _cacheBaseFretePorTransportadora.set(cacheKey, base);
+      const promessa = carregarBaseTransportadorasDb(nomes, { cnpjs, ibgesDestino }).then((linhas) => expandirTabelasAlternativasOficiais(normalizarTransportadoras(linhas)));
+      if (_cacheBaseFretePorTransportadora.size >= 40) _cacheBaseFretePorTransportadora.delete(_cacheBaseFretePorTransportadora.keys().next().value);
+      _cacheBaseFretePorTransportadora.set(cacheKey, { ts: Date.now(), promessa });
+      promessa.catch(() => {
+        if (_cacheBaseFretePorTransportadora.get(cacheKey)?.promessa === promessa) _cacheBaseFretePorTransportadora.delete(cacheKey);
+      });
     }
-    return _cacheBaseFretePorTransportadora.get(cacheKey);
+    return _cacheBaseFretePorTransportadora.get(cacheKey).promessa;
   }
   onProgress?.({ etapa: "carregando_tabelas", carregados: 0, total: registros.length });
   if (!_cacheBaseFrete) {
@@ -26977,14 +27021,14 @@ function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, de
   return { candidatos, melhor, porVigencia };
 }
 function obterLookupCacheado(transportadoras) {
-  let cache = _cacheLookupPorTransportadoras.get(transportadoras);
-  if (!cache) {
+  let cache2 = _cacheLookupPorTransportadoras.get(transportadoras);
+  if (!cache2) {
     const transportadorasPrincipais = (transportadoras || []).filter((t) => !t?.tabelaAlternativaDe);
     const { cidadePorIbge } = buildLookupTables(transportadorasPrincipais);
-    cache = { transportadorasPrincipais, cidadePorIbge };
-    _cacheLookupPorTransportadoras.set(transportadoras, cache);
+    cache2 = { transportadorasPrincipais, cidadePorIbge };
+    _cacheLookupPorTransportadoras.set(transportadoras, cache2);
   }
-  return cache;
+  return cache2;
 }
 function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = "", opcoes = {}) {
   const transportadoraTabela = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
@@ -27907,7 +27951,7 @@ async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
   }
   return { registros, encontrados: ctesUnicos.length, naoEncontrados: Math.max(0, normalizadas.length - ctesUnicos.length) };
 }
-var PAGE_SIZE2, TABELA_CTES, UF_POR_CODIGO_IBGE, _cacheBaseFrete, _cacheBaseFretePorTransportadora, _cacheMapaVinculosTransportadoras, _cacheMapaEquivalenciasOrigem, memoNormalizeText, _cacheOrigensHub, TTL_ORIGENS_HUB_MS, indicesCotacoesPorLista2, _cacheRaizesAdicionaisPorId, _cacheTransgp, SITUACOES_TRANSGP_DECIDIDAS, _cacheFluxoLotacao, STATUS_ADICIONAL_APROVADO, raizDaChaveCte, numeroDoCte, _cacheLookupPorTransportadoras, TOLERANCIA_CANAL_COBRADO, TOLERANCIA_CANAL_INVERTIDO, dentroToleranciaCanalInvertido;
+var PAGE_SIZE2, TABELA_CTES, UF_POR_CODIGO_IBGE, _cacheBaseFrete, _cacheBaseFretePorTransportadora, CACHE_BASE_TRANSPORTADORA_MS, _cacheMapaVinculosTransportadoras, _cacheMapaEquivalenciasOrigem, memoNormalizeText, _cacheOrigensHub, TTL_ORIGENS_HUB_MS, indicesCotacoesPorLista2, _cacheRaizesAdicionaisPorId, _cacheTransgp, SITUACOES_TRANSGP_DECIDIDAS, _cacheFluxoLotacao, STATUS_ADICIONAL_APROVADO, raizDaChaveCte, numeroDoCte, _cacheLookupPorTransportadoras, TOLERANCIA_CANAL_COBRADO, TOLERANCIA_CANAL_INVERTIDO, dentroToleranciaCanalInvertido;
 var init_auditoriaCteProcessamentoService = __esm({
   "src/services/auditoriaCteProcessamentoService.js"() {
     "use strict";
@@ -27960,6 +28004,7 @@ var init_auditoriaCteProcessamentoService = __esm({
     };
     _cacheBaseFrete = null;
     _cacheBaseFretePorTransportadora = /* @__PURE__ */ new Map();
+    CACHE_BASE_TRANSPORTADORA_MS = 30 * 60 * 1e3;
     _cacheMapaVinculosTransportadoras = null;
     _cacheMapaEquivalenciasOrigem = /* @__PURE__ */ new Map();
     memoNormalizeText = /* @__PURE__ */ new Map();
@@ -28542,15 +28587,20 @@ function identificacaoSapDoCte(item = {}) {
     serie: temChave ? serieDaChave(chave) : String(Number(digitos3(item.serie_cte) || 0))
   };
 }
-function resumirCtesFatura(detalhes = [], lancamentosPorChave = /* @__PURE__ */ new Map()) {
+function resumirCtesFatura(detalhes = [], lancamentosPorChave = /* @__PURE__ */ new Map(), comprasPorChave = null) {
   const vistos = /* @__PURE__ */ new Set();
-  const resumo = { total: 0, lancados: 0, nfse: 0, itens: [], semPartida: [], valorSemPartida: 0, fenix: [], valorFenix: 0, compensados: [] };
+  const resumo = { total: 0, lancados: 0, nfse: 0, itens: [], semPartida: [], valorSemPartida: 0, fenix: [], valorFenix: 0, compensados: [], compras: comprasPorChave ? [] : null, valorCompras: 0 };
   detalhes.forEach((item) => {
     if (item.excluido_da_versao === true) return;
     const unico = digitos3(item.chave_cte) || `${digitos3(item.numero_cte)}-${item.serie_cte || ""}`;
     if (vistos.has(unico)) return;
     vistos.add(unico);
     const base = { numero_cte: item.numero_cte, serie_cte: item.serie_cte, chave_cte: item.chave_cte, valor_frete: Number(item.valor_frete || 0) };
+    const fornecedorCompra = comprasPorChave?.get(digitos3(item.chave_cte));
+    if (fornecedorCompra) {
+      resumo.compras.push({ ...base, cnpj_fornecedor: fornecedorCompra.cnpj, fornecedor: fornecedorCompra.nome, codigo_fornecedor: fornecedorCompra.codigo, fornecedor_ativo: fornecedorCompra.ativo });
+      resumo.valorCompras += base.valor_frete;
+    }
     if (ehLinhaNfse(item)) {
       resumo.nfse += 1;
       resumo.itens.push({ ...base, situacao: "NFSE" });
@@ -28587,6 +28637,7 @@ function resumirCtesFatura(detalhes = [], lancamentosPorChave = /* @__PURE__ */ 
   });
   resumo.valorSemPartida = Number(resumo.valorSemPartida.toFixed(2));
   resumo.valorFenix = Number(resumo.valorFenix.toFixed(2));
+  resumo.valorCompras = Number(resumo.valorCompras.toFixed(2));
   return resumo;
 }
 function aptidaoEnvioSap(resumo) {
@@ -28649,6 +28700,11 @@ function tipoDocumentoFatura(resumoCtes) {
   if (ctes2 > 0 && nfse === 0) return "CTE";
   if (nfse > 0 && ctes2 === 0) return "NFSE";
   return ctes2 > 0 ? "MISTA" : "SEM_ITENS";
+}
+function situacaoCompras(l) {
+  if (!l.fatura) return "SEM_FATURA";
+  if (!l.ctes || !Array.isArray(l.ctes.compras)) return "VERIFICANDO";
+  return l.ctes.compras.length ? "COM" : "SEM";
 }
 var TOLERANCIA_VALOR_LISTA, digitos3, inativa, STATUS_LIBERADAS, pagaComDesconto, emAbertoFinanceiro, faturaLancada, enviadaErp, agrupamentoManual, situacaoPagamentoLinha, FAIXAS_A_VENCER, previsaoPagamento, STATUS_LIBERADAS_OMS, temFenix, statusAjusteFenix, faturaAntecipada, enviadaAntecipacao, ANTECIPACAO_VALOR_MINIMO, ANTECIPACAO_DIAS_MIN_EMISSAO, ANTECIPACAO_DIAS_MIN_VENCIMENTO, comFatura, auditoria, pagamento, faixa, ctes, ativa, faturaSemIdOms, GRUPOS_DIAGNOSTICO;
 var init_diagnosticoFaturas = __esm({
@@ -28713,15 +28769,16 @@ var init_diagnosticoFaturas = __esm({
         { id: "gestao", rotulo: "Aguardando gest\xE3o", cor: "#9153F0", teste: auditoria("GESTAO"), dica: "Na aprovacao da gest\xE3o." },
         { id: "liberadas", rotulo: "Liberadas", cor: "#04a484", teste: auditoria("LIBERADA"), dica: "Liberadas, no financeiro ou j\xE1 pagas." }
       ] },
-      { id: "oms", titulo: "Integra\xE7\xE3o OMS/SAP", cards: [
-        { id: "sem_id_oms", rotulo: "Sem Id do OMS", cor: "#b91c1c", teste: comFatura((l) => faturaSemIdOms(l.fatura)), dica: 'Em aberto e sem o Id do OMS: n\xE3o consegue ser enviada ao SAP. Importe o Id pela planilha da Verum (bot\xE3o "Importar s\xF3 o Id do OMS" na lista de faturas).' },
-        { id: "oms_bloqueadas", rotulo: "Liberadas, bloqueadas por partida", cor: "#c2410c", teste: (l) => situacaoOms(l) === "BLOQUEADA_PARTIDA", dica: "Liberadas no AMD, mas com CT-e sem partida no SAP ou com partida compensada (F\xEAnix ou outra): n\xE3o v\xE3o ao OMS at\xE9 corrigir." },
-        { id: "oms_aptas", rotulo: "Liberadas, aptas e n\xE3o enviadas", cor: "#315ee7", teste: (l) => situacaoOms(l) === "APTA", dica: 'Liberadas, com Id e todas as partidas em ordem, mas sem envio ao OMS: abra e use "Enviar ao OMS".' },
-        { id: "oms_aguardando", rotulo: "Aguardando OMS", cor: "#b78700", teste: (l) => situacaoOms(l) === "AGUARDANDO", dica: "Enviadas, aguardando o OMS aceitar e processar." },
-        { id: "oms_fila", rotulo: "Na fila do SAP", cor: "#0f766e", teste: (l) => situacaoOms(l) === "FILA", dica: "O OMS liberou: aguardando o SAP ler a fatura." },
-        { id: "oms_enviadas", rotulo: "Enviadas ao SAP", cor: "#14733b", teste: (l) => situacaoOms(l) === "ENVIADA", dica: "O SAP j\xE1 leu a fatura." },
+      // Na ordem do fluxo: o que falta enviar, o que foi enviado e esta pendente, o que foi e o que voltou com erro.
+      { id: "oms", titulo: "Integra\xE7\xE3o OMS/SAP (situa\xE7\xE3o atual, qualquer data)", cards: [
+        { id: "oms_aptas", rotulo: "A enviar: aptas", cor: "#315ee7", teste: (l) => situacaoOms(l) === "APTA", dica: 'Liberadas, com Id e todas as partidas em ordem, mas ainda sem envio ao OMS: selecione e use "Enviar ao OMS".' },
+        { id: "oms_bloqueadas", rotulo: "A enviar: bloqueadas por partida", cor: "#c2410c", teste: (l) => situacaoOms(l) === "BLOQUEADA_PARTIDA", dica: "Liberadas no AMD, mas com CT-e sem partida no SAP ou com partida compensada (F\xEAnix ou outra): n\xE3o v\xE3o ao OMS at\xE9 corrigir." },
+        { id: "sem_id_oms", rotulo: "A enviar: sem Id do OMS", cor: "#b91c1c", teste: comFatura((l) => faturaSemIdOms(l.fatura)), dica: 'Em aberto e sem o Id do OMS: n\xE3o consegue ser enviada ao SAP. Importe o Id pela planilha da Verum (bot\xE3o "Importar s\xF3 o Id do OMS" na lista de faturas).' },
+        { id: "oms_aguardando", rotulo: "Enviadas: aguardando o OMS", cor: "#b78700", teste: (l) => situacaoOms(l) === "AGUARDANDO", dica: "Enviadas, aguardando o OMS aceitar e processar." },
+        { id: "oms_fila", rotulo: "Foram: na fila do SAP", cor: "#0f766e", teste: (l) => situacaoOms(l) === "FILA", dica: "O OMS liberou: aguardando o SAP ler a fatura." },
+        { id: "oms_enviadas", rotulo: "Foram: SAP j\xE1 leu", cor: "#14733b", teste: (l) => situacaoOms(l) === "ENVIADA", dica: "O SAP j\xE1 leu a fatura." },
+        { id: "oms_erro", rotulo: "N\xE3o foram: erro/recusa no OMS", cor: "#9b1111", teste: (l) => situacaoOms(l) === "ERRO", dica: "Recusadas pelo OMS, bloqueadas por trava do OMS ou com falha: abra a fatura para ver o motivo." },
         { id: "oms_lancadas", rotulo: "J\xE1 lan\xE7adas no SAP", cor: "#64748b", teste: (l) => situacaoOms(l) === "LANCADA", dica: "J\xE1 t\xEAm partida/lan\xE7amento na fatura: passaram da fase de envio ao OMS e n\xE3o aparecem como aptas nem bloqueadas." },
-        { id: "oms_erro", rotulo: "Erro/recusadas no OMS", cor: "#9b1111", teste: (l) => situacaoOms(l) === "ERRO", dica: "Recusadas pelo OMS, bloqueadas por trava do OMS ou com falha: abra a fatura para ver o motivo." },
         { id: "com_id_oms", rotulo: "Com Id do OMS", cor: "#14733b", teste: comFatura((l) => ativa(l) && omsInvoiceIdValido(l.fatura.oms_invoice_id)), dica: "Tem o Id do OMS: pode ser enviada ao SAP ao liberar." }
       ] },
       { id: "erp", titulo: "Envio ao ERP", cards: [
@@ -28752,6 +28809,12 @@ var init_diagnosticoFaturas = __esm({
         { id: "manual_a_agrupar", rotulo: "Agrupamento manual a enviar", cor: "#9153F0", teste: comFatura((l) => ativa(l) && agrupamentoManual(l.fatura) && !faturaLancada(l.fatura)), dica: "Marcadas para protocolo por agrupamento manual (fora do AMD) e ainda sem partida na fatura." },
         { id: "manual_agrupadas", rotulo: "J\xE1 agrupadas pelo financeiro", cor: "#14733b", teste: comFatura((l) => agrupamentoManual(l.fatura) && faturaLancada(l.fatura)), dica: "Marcadas para agrupamento manual que j\xE1 receberam partida, lan\xE7amento ou pagamento." },
         { id: "sem_marcacao", rotulo: "Sem marca\xE7\xE3o", cor: "#64748b", teste: comFatura((l) => ativa(l) && !agrupamentoManual(l.fatura)), dica: "Seguem o fluxo normal do AMD." }
+      ] },
+      // Operacao de compras: o expedidor/remetente do CT-e e um fornecedor cadastrado (botao "Fornecedores de compras").
+      { id: "compras", titulo: "Compras (CT-e de fornecedor)", cards: [
+        { id: "com_compras", rotulo: "Com CT-e de fornecedor", cor: "#7c3aed", teste: comFatura((l) => ativa(l) && situacaoCompras(l) === "COM"), dica: "Faturas com pelo menos um CT-e cujo remetente (expedidor) \xE9 um fornecedor de compras cadastrado. Mostra quantos CT-es e o valor de frete deles.", detalheCompras: true },
+        { id: "sem_compras", rotulo: "Sem fornecedor de compras", cor: "#64748b", teste: comFatura((l) => ativa(l) && situacaoCompras(l) === "SEM"), dica: "Faturas verificadas sem nenhum CT-e de fornecedor de compras." },
+        { id: "compras_verificando", rotulo: "Verificando", cor: "#94a3b8", teste: comFatura((l) => ativa(l) && situacaoCompras(l) === "VERIFICANDO"), dica: "CT-es ainda sendo conferidos (ou cadastro de fornecedores indispon\xEDvel: migration 20261124_002 pendente). Zera quando a verifica\xE7\xE3o termina." }
       ] },
       { id: "ctes", titulo: "CT-es no SAP", cards: [
         { id: "todos", rotulo: "Todos os CT-es lan\xE7ados", cor: "#14733b", teste: ctes("TODOS"), dica: "Todos os CT-es da fatura tem partida pr\xF3pria no SAP." },
@@ -28797,6 +28860,43 @@ var init_diagnosticoFaturas = __esm({
         { id: "sem_data", rotulo: "Sem vencimento", cor: "#64748b", teste: faixa("SEM_DATA"), dica: "N\xE3o pagas sem data de vencimento." }
       ] }
     ];
+  }
+});
+
+// src/services/fornecedoresComprasService.js
+async function carregarFornecedoresCompras({ forcar = false } = {}) {
+  if (!isSupabaseConfigured()) return [];
+  if (!forcar && cache && Date.now() - cache.em < VALIDADE_CACHE) return cache.lista;
+  const { data, error } = await getSupabaseClient().from(TABELA3).select(COLUNAS2).order("nome").order("cnpj");
+  if (error) {
+    if (erroTabela(error)) throw new Error(`A migration ${MIGRATION} ainda n\xE3o foi aplicada no Supabase.`);
+    throw error;
+  }
+  cache = { em: Date.now(), lista: data || [] };
+  return cache.lista;
+}
+async function mapaFornecedoresCompras() {
+  try {
+    const lista = await carregarFornecedoresCompras();
+    return new Map(lista.map((f) => [soDigitosCnpj(f.cnpj), f]).filter(([c]) => c.length === 14));
+  } catch (e) {
+    console.warn("[Compras] fornecedores nao carregados", e?.message || e);
+    return /* @__PURE__ */ new Map();
+  }
+}
+var TABELA3, COLUNAS2, MIGRATION, VALIDADE_CACHE, soDigitosCnpj, cache, erroTabela;
+var init_fornecedoresComprasService = __esm({
+  "src/services/fornecedoresComprasService.js"() {
+    "use strict";
+    init_define_import_meta_env();
+    init_supabaseClient();
+    TABELA3 = "fornecedores_compras";
+    COLUNAS2 = "id,codigo,nome,cnpj,ativo,created_at,updated_at,criado_por";
+    MIGRATION = "20261124_002_fornecedores_compras.sql";
+    VALIDADE_CACHE = 2 * 60 * 1e3;
+    soDigitosCnpj = (v) => String(v ?? "").replace(/\D/g, "");
+    cache = null;
+    erroTabela = (error) => /fornecedores_compras/.test(error?.message || "") || error?.code === "42P01" || error?.code === "PGRST205";
   }
 });
 
@@ -28895,14 +28995,29 @@ async function carregarLancamentos(client2, detalhes) {
   });
   return porChave;
 }
+async function carregarRemetentesCompras(client2, detalhes) {
+  const fornecedores = await mapaFornecedoresCompras();
+  if (!fornecedores.size) return null;
+  const chaves = [...new Set(detalhes.filter((d) => d.excluido_da_versao !== true).map((d) => String(d.chave_cte || "").replace(/\D/g, "")).filter((c) => c.length === 44))];
+  const achados = /* @__PURE__ */ new Map();
+  if (!chaves.length) return achados;
+  const linhas = await buscarEmLotes(chaves, (lote) => client2.from("realizado_local_ctes").select("id,chave_cte,documento_remetente,chave_nfe").in("chave_cte", lote));
+  linhas.forEach((r) => {
+    const nfe = String(r.chave_nfe || "").replace(/\D/g, "");
+    const cnpj = String(r.documento_remetente || "").replace(/\D/g, "") || (nfe.length === 44 ? nfe.slice(6, 20) : "");
+    const f = fornecedores.get(cnpj);
+    if (f) achados.set(String(r.chave_cte).replace(/\D/g, ""), { cnpj, nome: f.nome, codigo: f.codigo || "", ativo: f.ativo !== false });
+  });
+  return achados;
+}
 async function carregarResumoCtesFaturas(faturaIds = []) {
   if (!isSupabaseConfigured() || !faturaIds.length) return /* @__PURE__ */ new Map();
   const client2 = getSupabaseClient();
   const detalhes = await carregarDetalhes(client2, faturaIds);
-  const lancamentos = await carregarLancamentos(client2, detalhes);
+  const [lancamentos, compras] = await Promise.all([carregarLancamentos(client2, detalhes), carregarRemetentesCompras(client2, detalhes)]);
   const porFatura = new Map(faturaIds.map((id) => [String(id), []]));
   detalhes.forEach((d) => porFatura.get(String(d.fatura_id))?.push(d));
-  return new Map([...porFatura].map(([id, lista]) => [id, resumirCtesFatura(lista, lancamentos)]));
+  return new Map([...porFatura].map(([id, lista]) => [id, resumirCtesFatura(lista, lancamentos, compras)]));
 }
 var PAGINA, LOTE_FATURAS, LOTE_NUMEROS, COLUNAS_DETALHE, LIMITE_PARALELO, COLUNAS_LANCAMENTO, cacheGrupos;
 var init_diagnosticoFaturasService = __esm({
@@ -28914,6 +29029,7 @@ var init_diagnosticoFaturasService = __esm({
     init_lancamentosCteSap();
     init_transportadoraCnpjsService();
     init_nfseFatura();
+    init_fornecedoresComprasService();
     PAGINA = 1e3;
     LOTE_FATURAS = 40;
     LOTE_NUMEROS = 200;
@@ -29571,39 +29687,61 @@ async function apurarFaturaRobo(fatura, aoProgredir = () => {
         reentregaPorChave: correcoes.reentregaPorChave
       };
       const modoDoLote = (lote, forcar) => Object.fromEntries(lote.map((c) => [c, forcar || (pesoMaisProximo ? null : correcoes.modoPesoPorChave[c])]).filter(([, modo]) => modo));
+      const TEMPO_ESGOTADO = "__bloco_tempo__";
+      const calcularLote = async (lote, limiteMs) => {
+        const calculo = pesoMaisProximo ? Promise.all([
+          processarCtesPorChave(lote, () => {
+          }, opcoesBase),
+          processarCtesPorChave(lote, () => {
+          }, { ...opcoesBase, modoPesoPorChave: modoDoLote(lote, "tracking") })
+        ]).then(([cte, tracking]) => ({ registros: escolherPesoMaisProximo(cte.registros || [], tracking.registros || []) })) : processarCtesPorChave(lote, () => {
+        }, { ...opcoesBase, modoPesoPorChave: modoDoLote(lote) });
+        let relogio = null;
+        const { registros } = limiteMs ? await Promise.race([calculo, new Promise((_, rej) => {
+          relogio = setTimeout(() => rej(new Error(TEMPO_ESGOTADO)), limiteMs);
+        })]).finally(() => clearTimeout(relogio)) : await calculo;
+        if (registros.length) {
+          const competencia = registros.find((r2) => r2.competencia)?.competencia || (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
+          await salvarRecorteCarregadoAuditoria({ competencia, registros, atualizarResumoMensal: false });
+          calculou = true;
+          try {
+            await abrirAutorizacoesExcedenteLotacao(fatura, registros);
+          } catch (e) {
+            falhaFilaLotacao = String(e?.message || e).slice(0, 140);
+          }
+          try {
+            await abrirQuestionamentosSemDistLotacao(fatura, registros);
+          } catch (e) {
+            console.warn("[robo] questionamento para a operacao:", e?.message || e);
+          }
+        }
+      };
+      const adiados = [];
       for (let i = 0; i < chaves.length; i += BLOCO) {
         if (prazoFinal && Date.now() > prazoFinal) throw new Error("__parcial__");
         aoProgredir({ fase: "calculando", atual: Math.min(i + BLOCO, chaves.length), total: chaves.length });
+        const lote = chaves.slice(i, i + BLOCO);
         try {
-          const lote = chaves.slice(i, i + BLOCO);
-          const calculo = pesoMaisProximo ? Promise.all([
-            processarCtesPorChave(lote, () => {
-            }, opcoesBase),
-            processarCtesPorChave(lote, () => {
-            }, { ...opcoesBase, modoPesoPorChave: modoDoLote(lote, "tracking") })
-          ]).then(([cte, tracking]) => ({ registros: escolherPesoMaisProximo(cte.registros || [], tracking.registros || []) })) : processarCtesPorChave(lote, () => {
-          }, { ...opcoesBase, modoPesoPorChave: modoDoLote(lote) });
-          const { registros } = limiteBlocoMs ? await Promise.race([calculo, new Promise((_, rej) => {
-            setTimeout(() => rej(new Error(`demorou demais (>${Math.round(limiteBlocoMs / 1e3)}s)`)), limiteBlocoMs);
-          })]) : await calculo;
-          if (registros.length) {
-            const competencia = registros.find((r2) => r2.competencia)?.competencia || (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
-            await salvarRecorteCarregadoAuditoria({ competencia, registros, atualizarResumoMensal: false });
-            calculou = true;
-            try {
-              await abrirAutorizacoesExcedenteLotacao(fatura, registros);
-            } catch (e) {
-              falhaFilaLotacao = String(e?.message || e).slice(0, 140);
-            }
-            try {
-              await abrirQuestionamentosSemDistLotacao(fatura, registros);
-            } catch (e) {
-              console.warn("[robo] questionamento para a operacao:", e?.message || e);
-            }
-          }
+          await calcularLote(lote, limiteBlocoMs);
         } catch (e) {
-          falhasCalculo += Math.min(BLOCO, chaves.length - i);
+          if (e?.message === TEMPO_ESGOTADO) {
+            adiados.push(lote);
+            continue;
+          }
+          falhasCalculo += lote.length;
           erroCalculo = erroCalculo || String(e?.message || e).slice(0, 140);
+        }
+      }
+      for (const lote of adiados) {
+        const resta = prazoFinal ? prazoFinal - Date.now() : 0;
+        if (prazoFinal && resta < 15e3) throw new Error("__parcial__");
+        aoProgredir({ fase: "calculando", atual: chaves.length, total: chaves.length, refazendo: lote.length });
+        try {
+          await calcularLote(lote, prazoFinal ? resta : limiteBlocoMs);
+        } catch (e) {
+          if (e?.message === TEMPO_ESGOTADO && prazoFinal) throw new Error("__parcial__");
+          falhasCalculo += lote.length;
+          erroCalculo = erroCalculo || (e?.message === TEMPO_ESGOTADO ? `demorou demais (>${Math.round(limiteBlocoMs / 1e3)}s)` : String(e?.message || e).slice(0, 140));
         }
       }
     } finally {

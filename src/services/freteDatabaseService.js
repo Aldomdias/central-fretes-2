@@ -1416,7 +1416,32 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
   }));
 }
 
-export async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [] } = {}) {
+async function fetchRotasPorOrigensEDestinosDb(supabase, origemIds = [], ibgesDestino = []) {
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  if (!ids.length) return [];
+  const rows = [];
+  const vistos = new Set();
+  const anexar = (lista) => (lista || []).forEach((row) => {
+    const chave = row?.id == null ? null : String(row.id);
+    if (chave !== null) { if (vistos.has(chave)) return; vistos.add(chave); }
+    rows.push(row);
+  });
+  for (let oi = 0; oi < ids.length; oi += 100) {
+    const origemChunk = ids.slice(oi, oi + 100);
+    for (let di = 0; di < ibgesDestino.length; di += 150) {
+      const destinoChunk = ibgesDestino.slice(di, di + 150);
+      anexar(await paginarEmParaleloDb(() => supabase.from('rotas').select('*')
+        .in('origem_id', origemChunk).in('ibge_destino', destinoChunk)
+        .order('origem_id', { ascending: true }).order('id', { ascending: true })));
+    }
+    anexar(await paginarEmParaleloDb(() => supabase.from('rotas').select('*')
+      .in('origem_id', origemChunk).is('ibge_destino', null)
+      .order('origem_id', { ascending: true }).order('id', { ascending: true })));
+  }
+  return rows;
+}
+
+export async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [], ibgesDestino = null } = {}) {
   const nomesLimpos = Array.from(new Set(
     (nomes || []).map((nome) => String(nome || '').trim()).filter(Boolean)
   ));
@@ -1488,9 +1513,13 @@ export async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [] } =
     }));
   }
 
+  // ibgesDestino (calculo de CT-es): traz de cada origem so as rotas cujo destino interessa (+ as sem IBGE, que
+  // sao resolvidas por CEP). Transportadora grande (FL Brasil: 47 origens, ~530 mil rotas) travava o processo
+  // inteiro ao montar a malha toda para calcular um punhado de CT-es.
+  const destinosFiltro = Array.from(new Set((ibgesDestino || []).map((v) => onlyDigitsDb(v)).filter((v) => v.length === 7)));
   const [generalidades, rotasRaw, cotacoes, taxas] = await Promise.all([
     fetchRowsByOrigemIds(supabase, 'generalidades', origemIds),
-    fetchRowsByOrigemIds(supabase, 'rotas', origemIds),
+    destinosFiltro.length ? fetchRotasPorOrigensEDestinosDb(supabase, origemIds, destinosFiltro) : fetchRowsByOrigemIds(supabase, 'rotas', origemIds),
     fetchRowsByOrigemIds(supabase, 'cotacoes', origemIds),
     fetchRowsByOrigemIds(supabase, 'taxas_especiais', origemIds),
   ]);

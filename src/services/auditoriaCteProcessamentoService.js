@@ -62,7 +62,8 @@ function semCamposResultadoOpcionais(row) {
 
 // Alias local para o cache centralizado em freteDatabaseService (carregarBaseCompletaDb já cacheia).
 let _cacheBaseFrete = null;
-const _cacheBaseFretePorTransportadora = new Map();
+const _cacheBaseFretePorTransportadora = new Map(); // chave -> { ts, promessa }
+const CACHE_BASE_TRANSPORTADORA_MS = 30 * 60 * 1000;
 let _cacheMapaVinculosTransportadoras = null;
 // Exceções de origem (Ferramentas): transportadora emite CT-e numa cidade
 // diferente da origem cadastrada na tabela. Fica em cache de módulo porque o
@@ -816,17 +817,41 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
   // no fallback de baixar a base inteira (~1,8 milhao de rotas) mesmo quando so
   // precisavam de um punhado de transportadoras especificas.
   if (nomes.length > 0 && nomes.length <= 40) {
-    const cacheKey = nomes.map((nome) => normalizeTransportadoraCompare(nome)).sort().join('|');
-    if (!_cacheBaseFretePorTransportadora.has(cacheKey)) {
+    // So os destinos dos CT-es (e as origens deles: ha rota cadastrada no sentido inverso). Se algum CT-e nao tem
+    // IBGE de destino, carrega a malha inteira como antes (o casamento dele pode depender de rota sem filtro).
+    const ibgesCtes = new Set();
+    let todosComDestino = (registros || []).length > 0;
+    (registros || []).forEach((cte) => {
+      const destino = pickDigits(cte, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino']);
+      const destinoCorrigido = pickDigits(cte, ['ibge_corrigido_destino']);
+      const origem = pickDigits(cte, ['ibge_origem', 'ibgeOrigem']);
+      const origemCorrigida = pickDigits(cte, ['ibge_corrigido_origem']);
+      if (!destino && !destinoCorrigido) todosComDestino = false;
+      [destino, destinoCorrigido, origem, origemCorrigida].forEach((v) => { if (v && v.length === 7) ibgesCtes.add(v); });
+    });
+    const ibgesDestino = todosComDestino && ibgesCtes.size <= 600 ? [...ibgesCtes].sort() : null;
+    const cacheKey = nomes.map((nome) => normalizeTransportadoraCompare(nome)).sort().join('|')
+      + (ibgesDestino ? `#${ibgesDestino.join(',')}` : '');
+    // Guarda a PROMESSA (nao so o resultado): transportadora grande (ex.: FL Brasil, ~530 mil rotas) leva
+    // minutos para baixar; sem isso, cada bloco/chamada simultanea comecava outro download do zero e nenhum
+    // terminava (o robo travou assim em 23-25/11/2026). Expira em 30 min para pegar tabela republicada.
+    const entrada = _cacheBaseFretePorTransportadora.get(cacheKey);
+    if (!entrada || Date.now() - entrada.ts > CACHE_BASE_TRANSPORTADORA_MS) {
       onProgress?.({ etapa: 'carregando_tabelas_transportadora', carregados: 0, total: nomes.length });
       const cnpjs = (registros || []).map(cnpjTransportadoraCte).filter(Boolean);
-      const base = expandirTabelasAlternativasOficiais(normalizarTransportadoras(await carregarBaseTransportadorasDb(nomes, { cnpjs })));
       // Sem tabela para a transportadora (nem por nome nem por CNPJ): nao adianta
       // baixar a base inteira (~1M linhas) para uma fatura de poucos CT-es — o
       // resultado seria o mesmo "sem tabela", so que minutos depois.
-      _cacheBaseFretePorTransportadora.set(cacheKey, base);
+      const promessa = carregarBaseTransportadorasDb(nomes, { cnpjs, ibgesDestino })
+        .then((linhas) => expandirTabelasAlternativasOficiais(normalizarTransportadoras(linhas)));
+      // Com o filtro por destino cada lote gera uma chave: guarda so as mais recentes.
+      if (_cacheBaseFretePorTransportadora.size >= 40) _cacheBaseFretePorTransportadora.delete(_cacheBaseFretePorTransportadora.keys().next().value);
+      _cacheBaseFretePorTransportadora.set(cacheKey, { ts: Date.now(), promessa });
+      promessa.catch(() => {
+        if (_cacheBaseFretePorTransportadora.get(cacheKey)?.promessa === promessa) _cacheBaseFretePorTransportadora.delete(cacheKey);
+      });
     }
-    return _cacheBaseFretePorTransportadora.get(cacheKey);
+    return _cacheBaseFretePorTransportadora.get(cacheKey).promessa;
   }
 
   onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: registros.length });
