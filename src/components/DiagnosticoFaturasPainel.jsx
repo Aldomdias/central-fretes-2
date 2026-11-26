@@ -846,14 +846,20 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       return;
     }
     let motivo = '';
+    // Mostra o periodo de vencimento e a quantidade por mes: confere se a selecao seguiu o filtro antes de gravar.
+    const vencs = alvo.map((f) => String(f.data_vencimento || '').slice(0, 10)).filter(Boolean).sort();
+    const porMes = new Map();
+    vencs.forEach((v) => porMes.set(v.slice(0, 7), (porMes.get(v.slice(0, 7)) || 0) + 1));
+    const semVenc = alvo.length - vencs.length;
+    const linhasMes = [...porMes].map(([m, n]) => `  ${m.split('-').reverse().join('/')}: ${n}`);
+    if (semVenc) linhasMes.push(`  sem vencimento: ${semVenc}`);
+    const resumoVenc = `Vencimentos de ${vencs.length ? dataBr(vencs[0]) : '-'} a ${vencs.length ? dataBr(vencs[vencs.length - 1]) : '-'}:\n${linhasMes.join('\n')}`;
     if (baixar) {
       const valor = alvo.reduce((s, f) => s + Number(f.valor_fatura || 0), 0);
-      const resposta = window.prompt(`Baixar ${alvo.length} fatura(s) (${dinheiro(valor)}) como "não devemos mais"? Elas saem de em aberto, vencidas e totais e ficam no card "Baixados".
-
-Motivo (opcional):`, 'Saneamento: fatura antiga, não devemos mais');
+      const resposta = window.prompt(`Baixar ${alvo.length} fatura(s) (${dinheiro(valor)}) como "não devemos mais"? Elas saem de em aberto, vencidas e totais e ficam no card "Baixados".\n\n${resumoVenc}\n\nSe o período não for o que você filtrou, clique em Cancelar.\nMotivo (opcional):`, 'Saneamento: fatura antiga, não devemos mais');
       if (resposta === null) return;
       motivo = resposta;
-    } else if (!window.confirm(`Voltar ${alvo.length} fatura(s) para em aberto?`)) return;
+    } else if (!window.confirm(`Voltar ${alvo.length} fatura(s) para em aberto?\n\n${resumoVenc}`)) return;
     setMarcando(true);
     setAviso('');
     try {
