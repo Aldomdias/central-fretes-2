@@ -150,6 +150,23 @@ function Kpi({ titulo, valor, cor, ativo, onClick }) {
   );
 }
 
+// Pré-cadastro informado pela transportadora no portal (dados_gerais.CADASTRO).
+function CadastroResumo({ convite }) {
+  const c = convite.dados_gerais?.CADASTRO;
+  if (!c || !Object.keys(c).length) return <div style={{ fontSize: 13, color: '#64748b', margin: '8px 0' }}>🪪 Dados cadastrais: ainda não preenchidos pela transportadora.</div>;
+  const contato = (p) => [c[`${p}_nome`], c[`${p}_tel`] && `tel ${c[`${p}_tel`]}`, c[`${p}_whats`] && `WhatsApp ${c[`${p}_whats`]}`, c[`${p}_email`]].filter(Boolean).join(' · ') || '-';
+  return (
+    <div style={{ border: '1px solid #bbf7d0', background: '#f0fdf4', borderRadius: 10, padding: 12, margin: '10px 0', fontSize: 13 }}>
+      <b style={{ color: '#166534' }}>🪪 Dados cadastrais (pré-cadastro)</b>
+      <div style={{ marginTop: 4 }}><b>{c.razao || '-'}</b>{c.fantasia ? ` (${c.fantasia})` : ''} · IE {c.ie || '-'} · {c.endereco || 'endereço não informado'}</div>
+      <div><b>CNPJ emissor por origem:</b> {Object.entries(c.cnpj_origem || {}).map(([o, v]) => `${o || 'geral'}: ${fmtCnpj(v)}`).join(' · ') || '-'}</div>
+      <div><b>Comercial:</b> {contato('com')}</div>
+      <div><b>Operacional:</b> {contato('op')}</div>
+      <div><b>Financeiro:</b> {contato('fin')}</div>
+    </div>
+  );
+}
+
 function PreviaPropria({ convite, anexos }) {
   const canais = canaisDoConviteFracionado(convite);
   return (
@@ -485,6 +502,7 @@ export default function FracionadoPortalPage() {
           </div>}
           <VolumetriaConvite key={`vol-${aberto.id}`} convite={aberto} />
           {aberto.modalidade !== 'PROPRIA' && <small style={{ color: '#64748b' }}>O Excel exportado segue o modelo padrão (FICHA DE CADASTRO + TABELA + ATENDIMENTO) e pode ser importado em Importar Template.</small>}
+          <CadastroResumo convite={aberto} />
           <PreviaResposta key={aberto.id} convite={aberto} respostas={detalhe.respostas} atendimento={detalhe.atendimento} anexos={detalhe.anexos} />
           <h3 style={{ margin: '16px 0 4px', fontSize: 15, color: '#06183d' }}>Histórico de envios</h3>
           {detalhe.envios.length ? (

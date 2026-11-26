@@ -251,7 +251,7 @@ ${cancelado ? '<div class="msg erro">Este link foi cancelado. Solicite um novo l
 var TOKEN=${JSON.stringify(convite.token)},NOME=${JSON.stringify(convite.transportadora)},PRAZO_PADRAO=${PRAZO_PAGAMENTO_PADRAO},MAX_CTES=${MAX_CTES_POR_FATURA},PREMISSAS=${JSON.stringify(PREMISSAS_FRACIONADO)};
 ${montarPlanilhaFracionado.toString()}
 var CFG=null,ACESSO='',ST={},CANAL='',ORI=0,VISAO='tabela',UFSEL='',FUF='',CNPJ='',MUN=[],MUNIDX={},FREG='',FBUSCA='',FSEM=false;
-var VOLABERTO=false,VOLORI={},VOLUFS={},VOLBUSY=false;
+var CAD={cnpj_origem:{}},CADABERTO=true,VOLABERTO=false,VOLORI={},VOLUFS={},VOLBUSY=false;
 var GER=[['prazo','Prazo de pagamento (dias)'],['gris','GRIS (%)'],['gris_min','GRIS mínimo (R$)'],['advalorem','Ad valorem (%)'],['advalorem_min','Ad valorem mínimo (R$)'],['pedagio','Pedágio (R$ por fração de 100 kg)'],['tas','TAS (R$)'],['ctrc','Taxa por CT-e emitido / CTRC (R$)'],['cubagem','Cubagem (kg/m³)','300'],['emergencial','Taxa emergencial (%)'],['frete_min','Frete mínimo geral (R$)']];
 var COLS_A=${JSON.stringify(COLS_ATEND_FRACIONADO)};
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -275,13 +275,43 @@ function excInfo(c,k){var p=k.split('|'),F=CFG.faixas[c]||[],fi=Number(p[3]),f=F
 function excCel(t){var info=excInfo(CANAL,t.getAttribute('data-k'));t.className=(t.value?'cheio':'')+(info?(info.n==='erro'?' bloq':' alerta'):'');t.title=info?info.t:''}
 function excMsg(){var e=document.getElementById('excMsg');if(!e)return;var out=[];document.querySelectorAll('input[data-exc]').forEach(function(t){excCel(t);var info=excInfo(CANAL,t.getAttribute('data-k'));if(info)out.push('<div style="color:'+(info.n==='erro'?'#b91c1c':'#b45309')+';font-weight:bold">'+(info.n==='erro'?'⛔ ':'⚠ ')+esc(t.getAttribute('data-k').split('|')[2])+': '+esc(info.t)+'</div>')});e.innerHTML=out.join('')}
 function cheio(x){return !!(x&&(x.v||x.p||x.m||x.k))}
+function cnpjOkC(v){var c=String(v||'').replace(/\\D/g,'');if(c.length!==14||/^(\\d)\\1+$/.test(c))return false;function dv(b){var s=0,p=b.length-7;for(var i=0;i<b.length;i++){s+=Number(b[i])*p;p--;if(p<2)p=9}var r=s%11;return r<2?0:11-r}return dv(c.slice(0,12))===Number(c[12])&&dv(c.slice(0,13))===Number(c[13])}
+function telOk(v){return String(v||'').replace(/\\D/g,'').length>=10}
+function mailOk(v){return /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(String(v||'').trim())}
+function faltasCadastro(){var c=CAD,out=[];if(!c.razao)out.push('Informe a RAZÃO SOCIAL');
+  if(!c.com_nome||!(telOk(c.com_tel)||telOk(c.com_whats))||!mailOk(c.com_email))out.push('Complete o CONTATO COMERCIAL (nome, telefone ou WhatsApp e e-mail)');
+  if(!(telOk(c.op_tel)||telOk(c.op_whats)))out.push('Informe telefone ou WhatsApp do OPERACIONAL (coletas e ocorrências)');
+  if(!mailOk(c.fin_email))out.push('Informe o e-mail do FINANCEIRO (faturas)');
+  CFG.origens.forEach(function(o){if(!cnpjOkC(c.cnpj_origem[o]))out.push('Informe o CNPJ que vai emitir os CT-es'+(o?' saindo de '+o:''))});return out}
+function cadCampo(k,rot,obrig,ph,tipo){var v=CAD[k]||'',ok=!obrig||(tipo==='mail'?mailOk(v):tipo==='tel'?telOk(v):!!String(v).trim());
+  return '<div><label>'+rot+(obrig?' <span style="color:#b91c1c">*</span>':'')+'</label><input data-cad="'+k+'" data-tipo="'+(tipo||'')+'" data-obrig="'+(obrig?1:0)+'" value="'+esc(v)+'" placeholder="'+esc(ph||'')+'"'+(tipo==='tel'?' inputmode="tel"':tipo==='mail'?' inputmode="email"':'')+' style="border:2px solid '+(ok?'#cbd5e1':'#fca5a5')+'"></div>'}
+function blocoCadastro(){var nOri=CFG.origens,falta=faltasCadastro();
+  var h='<div class="taxas" id="cadBox" style="border-color:'+(falta.length?'#fca5a5':'#86efac')+'"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b style="font-size:17px">🪪 Dados cadastrais (pré-cadastro)</b><span id="cadSt" style="font-size:13px;color:'+(falta.length?'#b91c1c':'#166534')+';font-weight:bold">'+(falta.length?falta.length+' pendência(s)':'✅ completo')+'</span><button class="sec" style="padding:4px 10px" onclick="CADABERTO=!CADABERTO;render()">'+(CADABERTO?'Recolher ▴':'Abrir ▾')+'</button></div>';
+  h+='<small style="color:#64748b">Tabela: <b>'+CFG.canais.map(nomeCanal).join(' + ')+'</b> · <b>'+(CFG.modalidade==='FAIXA_PESO'?'Frete por faixa de peso':CFG.modalidade==='PROPRIA'?'Tabela própria':'Frete percentual')+'</b>'+(nOri.filter(Boolean).length?' · Origens: <b>'+nOri.map(esc).join(', ')+'</b>':'')+' · CNPJ de acesso: <b>'+esc(CNPJ)+'</b></small>';
+  if(!CADABERTO)return h+'</div>';
+  h+='<div class="ger" style="background:#fff;margin-top:8px">'+cadCampo('razao','Razão social',true,'Razão social completa')+cadCampo('fantasia','Nome fantasia',false,NOME)+cadCampo('ie','Inscrição estadual',false,'')+cadCampo('endereco','Endereço da matriz',false,'Rua, nº, cidade/UF')+'</div>';
+  h+='<div style="font-weight:bold;margin:6px 0 2px">CNPJ que vai emitir os CT-es <span style="color:#b91c1c">*</span> <small style="font-weight:normal;color:#64748b">(filial de cada origem; pode repetir se for o mesmo)</small></div><div class="ger" style="background:#fff">'
+    +nOri.map(function(o,i){var v=CAD.cnpj_origem[o]||'',ok=cnpjOkC(v);return '<div><label>'+(o?esc(o):'CNPJ emissor')+'</label><input data-cadori="'+i+'" value="'+esc(v)+'" placeholder="00.000.000/0000-00" inputmode="numeric" style="border:2px solid '+(ok?'#86efac':'#fca5a5')+'">'+(v&&!ok?'<small style="color:#b91c1c;font-weight:bold">CNPJ inválido</small>':'')+'</div>'}).join('')+'</div>';
+  h+='<div style="font-weight:bold;margin:6px 0 2px">Contato comercial</div><div class="ger" style="background:#fff">'+cadCampo('com_nome','Nome',true,'')+cadCampo('com_tel','Telefone',false,'(00) 0000-0000','tel')+cadCampo('com_whats','WhatsApp',false,'(00) 00000-0000','tel')+cadCampo('com_email','E-mail',true,'','mail')+'</div>';
+  h+='<div style="font-weight:bold;margin:6px 0 2px">Operacional (coletas e ocorrências)</div><div class="ger" style="background:#fff">'+cadCampo('op_nome','Nome',false,'')+cadCampo('op_tel','Telefone',false,'','tel')+cadCampo('op_whats','WhatsApp',false,'','tel')+cadCampo('op_email','E-mail',false,'','mail')+'</div>';
+  h+='<div style="font-weight:bold;margin:6px 0 2px">Financeiro (faturas e cobrança)</div><div class="ger" style="background:#fff">'+cadCampo('fin_nome','Nome',false,'')+cadCampo('fin_tel','Telefone',false,'','tel')+cadCampo('fin_email','E-mail',true,'','mail')+'</div>';
+  h+='<small style="color:#64748b">Telefone ou WhatsApp: informe ao menos um no comercial e no operacional. Esses dados serão usados no cadastro da transportadora.</small></div>';
+  return h}
+function ligaCad(){var b=document.getElementById('cadBox');if(!b)return;
+  b.oninput=function(ev){var t=ev.target,k=t.getAttribute('data-cad'),o=t.getAttribute('data-cadori');ev.stopPropagation();
+    if(k)CAD[k]=t.value;else if(o!==null)CAD.cnpj_origem[CFG.origens[Number(o)]]=t.value;else return;
+    if(typeof caixaFaltas==='function')caixaFaltas()};
+  b.addEventListener('input',function(ev){var t=ev.target,tp=t.getAttribute('data-tipo'),ob=t.getAttribute('data-obrig')==='1',v=t.value,ok;
+    if(t.hasAttribute('data-cadori'))ok=cnpjOkC(v);else ok=!ob||(tp==='mail'?mailOk(v):tp==='tel'?telOk(v):!!v.trim());
+    t.style.borderColor=ok?(t.hasAttribute('data-cadori')?'#86efac':'#cbd5e1'):'#fca5a5';
+    var f=faltasCadastro(),st=document.getElementById('cadSt');if(st){st.textContent=f.length?f.length+' pendência(s)':'✅ completo';st.style.color=f.length?'#b91c1c':'#166534'}})}
 function cidadeOk(x){return !!(x&&x.r&&num(x.p)>0)}
 function identificar(){var b=document.getElementById('btnId');document.getElementById('erroId').innerHTML='';
   var cnpj=document.getElementById('cnpj').value,nome=document.getElementById('nome').value.trim(),email=document.getElementById('email').value.trim();
   if(!nome||!email||cnpj.replace(/\\D/g,'').length!==14){document.getElementById('erroId').innerHTML='<div class="msg erro">Informe CNPJ (14 dígitos), nome e e-mail.</div>';return}
   b.disabled=true;api({acao:'identificar',cnpj:cnpj,nome:nome,email:email}).then(function(j){
     ACESSO=j.acesso;CFG=j.config;CNPJ=cnpj;ST={};VOLORI={};CFG.origens.forEach(function(o,i){VOLORI[i]=true});VOLUFS={};CFG.ufs.forEach(function(u){VOLUFS[u]=true});
-    CFG.canais.forEach(function(c){ST[c]={g:Object.assign({},(j.gerais||{})[c]||{}),c:{},a:{},f:[]}});
+    CFG.canais.forEach(function(c){ST[c]={g:Object.assign({},(j.gerais||{})[c]||{}),c:{},a:{},f:[]}});CAD=Object.assign({com_nome:nome,com_email:email},(j.gerais||{}).CADASTRO||{});CAD.cnpj_origem=Object.assign({},CAD.cnpj_origem||{});
     (j.anexos||[]).forEach(function(a){if(ST[a.canal])ST[a.canal].f.push(a)});
     (j.linhas||[]).forEach(function(l){var s=ST[l.canal],oi=CFG.origens.indexOf(l.origem||'');if(!s||oi<0)return;var fi='';
       if(CFG.modalidade==='FAIXA_PESO'){fi=-1;(CFG.faixas[l.canal]||[]).forEach(function(f,i){if(f.label===l.faixa)fi=i});if(fi<0)return}
@@ -303,7 +333,7 @@ function abas(){var a=document.getElementById('abas');if(CFG.canais.length<2){a.
   a.innerHTML=CFG.canais.map(function(c){return '<button class="'+(c===CANAL?'on':'')+'" onclick="setCanal(\\''+c+'\\')">'+nomeCanal(c)+'</button>'}).join('')}
 function setCanal(c){CANAL=c;render()}
 function setVisao(v){VISAO=v;render()}
-function render(){if(!CFG)return;if(CFG.modalidade==='PROPRIA'){renderPropria();return}abas();var s=ST[CANAL],h=blocoPremissas();
+function render(){if(!CFG)return;if(CFG.modalidade==='PROPRIA'){renderPropria();return}abas();var s=ST[CANAL],h=blocoPremissas()+blocoCadastro();
   h+='<div class="ferr">';
   if(CFG.origens.length>1)h+='<label class="fl">Origem <select onchange="ORI=Number(this.value);render()">'+CFG.origens.map(function(o,i){return '<option value="'+i+'"'+(i===ORI?' selected':'')+'>'+esc(o)+'</option>'}).join('')+'</select></label><button class="sec" onclick="copiarOrigem()">Copiar esta origem para as demais</button>';
   else if(CFG.origens[0])h+='<span class="fl">Origem: '+esc(CFG.origens[0])+'</span>';
@@ -319,7 +349,7 @@ function render(){if(!CFG)return;if(CFG.modalidade==='PROPRIA'){renderPropria();
     h+=blocoTaxas(s);
     h+=CFG.modalidade==='PERCENTUAL'?gradePct():gradeFaixa();
   }else h+=viewCidades();
-  var c=document.getElementById('conteudo');c.innerHTML=h;excMsg();
+  var c=document.getElementById('conteudo');c.innerHTML=h;excMsg();ligaCad();
   c.oninput=function(ev){var t=ev.target;if(t.getAttribute('data-g')){ST[CANAL].g[t.getAttribute('data-g')]=t.value;if(t.getAttribute('data-g')==='prazo')checaPrazo(t);return}
     var kt=t.getAttribute('data-t');if(kt!==null&&kt!==undefined){var tx=ST[CANAL].g.taxas||(ST[CANAL].g.taxas=[]);var ti=Number(kt);if(tx[ti])tx[ti][t.getAttribute('data-f')]=t.value;return}
     var ka=t.getAttribute('data-a');if(ka){var xa=ST[CANAL].a[ka]||(ST[CANAL].a[ka]={});xa[t.getAttribute('data-f')]=t.value;if(t.tagName==='INPUT')t.className=t.value?'cheio':'';else if(t.getAttribute('data-f')==='r'){var rt0=regTab(UFSEL);t.className=(t.value&&rt0&&!rt0[t.value])?'fora':''}resumo();return}
@@ -339,7 +369,7 @@ function faltasPropria(c){var s=ST[c],out=[],tab=s.f.filter(function(a){return c
   if(!s.g.prazo)out.push('Informe o PRAZO DE PAGAMENTO');
   if(!s.g.icms_incluso)out.push('Informe se os valores JÁ INCLUEM ICMS');
   return out}
-function caixaFaltas(){var e=document.getElementById('faltaBox');if(!e)return;var linhas=[];CFG.canais.forEach(function(c){faltasPropria(c).forEach(function(t){linhas.push((CFG.canais.length>1?nomeCanal(c)+': ':'')+t)})});
+function caixaFaltas(){var e=document.getElementById('faltaBox');if(!e)return;var linhas=faltasCadastro().map(function(t){return 'Dados cadastrais: '+t});CFG.canais.forEach(function(c){faltasPropria(c).forEach(function(t){linhas.push((CFG.canais.length>1?nomeCanal(c)+': ':'')+t)})});
   e.innerHTML=linhas.length?'<div style="background:#fef2f2;border:3px solid #dc2626;border-radius:12px;padding:14px 18px;color:#b91c1c;margin:12px 0"><div style="font-size:22px;font-weight:900;margin-bottom:6px">⛔ Ainda falta para enviar:</div>'+linhas.map(function(t){return '<div style="font-size:18px;font-weight:bold;margin:3px 0">• '+esc(t)+'</div>'}).join('')+'</div>':'<div style="background:#ecfdf3;border:2px solid #16a34a;border-radius:12px;padding:12px 16px;color:#166534;font-size:17px;font-weight:bold;margin:12px 0">✅ Tudo certo: tabela, destinos e generalidades. Pode clicar em Enviar.</div>'}
 function lerPlanilha(f){return new Promise(function(ok,nok){if(!window.XLSX){nok(new Error('Recurso de Excel não carregou. Verifique a conexão.'));return}
   var rd=new FileReader();rd.onload=function(ev){try{var wb=XLSX.read(new Uint8Array(ev.target.result),{type:'array'}),r={cidade:false,rota:false,prazo:false,taxa:false,frete:false,linhas:0};
@@ -365,7 +395,7 @@ function listaAnexos(s,cat){var l=s.f.map(function(a,i){return {a:a,i:i}}).filte
     h+='<div class="lin">📎 <b>'+esc(String(a.nome||'').replace(/^\\[(DESTINOS|GENERALIDADES)\\] /,''))+'</b> <span style="color:#64748b">('+Math.max(1,Math.round((a.tamanho||0)/1024))+' KB)</span>'+info+'<button class="x" onclick="removerAnexo('+x.i+')">Remover</button></div>'});
   return h}
 function renderPropria(){abas();var s=ST[CANAL],h='';
-  h+=blocoPremissas();
+  h+=blocoPremissas()+blocoCadastro();
   h+='<div class="msg aviso"><b>Atenção:</b> as generalidades informadas aqui serão <b>avaliadas pelo time de suprimentos</b> para definir se entram ou não no nosso escopo. O envio não garante a aceitação das condições.</div>';
   h+=blocoVol();
   h+='<div class="taxas"><b>1. Tabela de frete — '+nomeCanal(CANAL)+'</b> <span style="color:#b91c1c;font-weight:bold">(obrigatório)</span><br><small style="color:#64748b">A sua tabela de preços: Excel, CSV, PDF, Word ou ZIP · até 3 MB por arquivo.</small><div style="margin:8px 0">'+listaAnexos(s,'TABELA')+'</div>';
@@ -380,7 +410,7 @@ function renderPropria(){abas();var s=ST[CANAL],h='';
   h+=blocoTaxas(s);
   h+='<div class="taxas"><b>4. Observações / generalidades</b> <span style="color:#64748b">(opcional)</span><br><small style="color:#64748b">Algo sobre a tabela que não esteja nos arquivos: condições, restrições de atendimento, exceções, reajustes.</small><textarea data-g="generalidades" rows="9" style="width:100%;margin-top:8px;padding:10px;border:2px solid #fcd34d;border-radius:8px;font-size:15px;font-family:inherit">'+esc(s.g.generalidades||'')+'</textarea></div>';
   h+='<div id="faltaBox"></div>';
-  var c=document.getElementById('conteudo');c.innerHTML=h;
+  var c=document.getElementById('conteudo');c.innerHTML=h;ligaCad();
   c.oninput=function(ev){var t=ev.target;if(t.getAttribute('data-g')){ST[CANAL].g[t.getAttribute('data-g')]=t.value;if(t.getAttribute('data-g')==='prazo')checaPrazo(t);caixaFaltas();return}
     var kt=t.getAttribute('data-t');if(kt!==null&&kt!==undefined){var tx=ST[CANAL].g.taxas||(ST[CANAL].g.taxas=[]);var ti=Number(kt);if(tx[ti])tx[ti][t.getAttribute('data-f')]=t.value}};
   caixaFaltas();resumo()}
@@ -514,7 +544,7 @@ function montarPayload(){var out={};CFG.canais.forEach(function(c){var s=ST[c],o
   Object.keys(s.a).forEach(function(k){var x=s.a[k],p=k.split('|');if(!x.r&&!(num(x.p)>0))return;
     var it={i:p[1],r:x.r||'',p:num(x.p)};COLS_A.forEach(function(c2){it[c2[0]]=num(x[c2[0]])});ori[oriNome(Number(p[0]))].atendimento.push(it)});
   out[c]={gerais:s.g,origens:ori}});return out}
-function validar(final){var out=[];if(CFG.modalidade==='PROPRIA'){if(final){CFG.canais.forEach(function(c){faltasPropria(c).forEach(function(t){out.push(nomeCanal(c)+': '+t)})});caixaFaltas();var fb=document.getElementById('faltaBox');if(out.length&&fb)fb.scrollIntoView({behavior:'smooth',block:'center'})}return out}CFG.canais.forEach(function(c){var s=ST[c],n=0,nc=0;Object.keys(s.c).forEach(function(k){var x=s.c[k];if(cheio(x)){n++;
+function validar(final){var out=final?faltasCadastro().map(function(t){return 'Dados cadastrais: '+t}):[];if(CFG.modalidade==='PROPRIA'){if(final){CFG.canais.forEach(function(c){faltasPropria(c).forEach(function(t){out.push(nomeCanal(c)+': '+t)})});caixaFaltas();var fb=document.getElementById('faltaBox');if(out.length&&fb)fb.scrollIntoView({behavior:'smooth',block:'center'})}return out}CFG.canais.forEach(function(c){var s=ST[c],n=0,nc=0;Object.keys(s.c).forEach(function(k){var x=s.c[k];if(cheio(x)){n++;
     ['v','p','m','k'].forEach(function(f){if(x[f]&&!(num(x[f])>=0))out.push(nomeCanal(c)+': valor inválido em '+k.replace(/\\|/g,' / ')+'.')});
     if(num(x.p)>100)out.push(nomeCanal(c)+': percentual acima de 100% em '+k.replace(/\\|/g,' / ')+'.');
     var ei=final?excInfo(c,k):null;if(ei&&ei.n==='erro'){var pk=k.split('|');out.push(nomeCanal(c)+' — '+pk[1]+' / '+pk[2]+': '+ei.t)}}});
@@ -523,7 +553,7 @@ function validar(final){var out=[];if(CFG.modalidade==='PROPRIA'){if(final){CFG.
 function enviar(final){var m=document.getElementById('msgTab');m.innerHTML='';var erros=validar(final);
   if(erros.length){m.innerHTML='<div class="msg erro">'+erros.slice(0,6).map(esc).join('<br>')+'</div>';window.scrollTo(0,0);return}
   if(final&&!confirm('Enviar a tabela para análise? Você poderá reenviar enquanto o link estiver válido.'))return;
-  api({acao:'salvar',acesso:ACESSO,canais:montarPayload(),enviar:final,origem_envio:'PORTAL'}).then(function(j){
+  api({acao:'salvar',acesso:ACESSO,canais:montarPayload(),cadastro:CAD,enviar:final,origem_envio:'PORTAL'}).then(function(j){
     m.innerHTML='<div class="msg ok">'+(final?'✅ Tabela enviada'+(CFG.modalidade==='PROPRIA'?'':' ('+j.salvas+' células e '+j.cidades+' cidades)')+'. Obrigado! O time de suprimentos já recebeu'+(CFG.modalidade==='PROPRIA'?' e vai avaliar as generalidades informadas.':'.'):'Rascunho salvo'+(CFG.modalidade==='PROPRIA'?'.':' ('+j.salvas+' células e '+j.cidades+' cidades).'))+'</div>';window.scrollTo(0,0)}).catch(function(e){m.innerHTML='<div class="msg erro">'+esc(e.message)+'</div>';window.scrollTo(0,0)})}
 // ---- Excel (mesmo layout dos templates padrao: FICHA DE CADASTRO + TABELA + ATENDIMENTO) ----
 function faixaIdx(label){var fi=-1;CFG.faixas[CANAL].forEach(function(f,i){if(f.label===label)fi=i});return fi}
@@ -531,7 +561,7 @@ function baixarModelo(){if(!window.XLSX){alert('Não foi possível carregar o re
   if(!MUN.length){alert('Aguarde o carregamento da lista de cidades e tente de novo.');return}
   var s=ST[CANAL],pct=CFG.modalidade==='PERCENTUAL';
   var cidades=MUN.map(function(m){var a=s.a[ORI+'|'+m.i]||{};var tx={};COLS_A.forEach(function(c){tx[c[0]]=num(a[c[0]])});return{ibge:m.i,uf:m.u,cidade:m.c,regiao:a.r||'',prazo:num(a.p),tx:tx}});
-  var wb=montarPlanilhaFracionado(XLSX,{transportadora:NOME,cnpj:CNPJ,canal:CANAL,origem:oriNome(ORI),modalidade:CFG.modalidade,faixas:CFG.faixas[CANAL],ufs:CFG.ufs,regioes:CFG.regioes,gerais:s.g,cidades:cidades,colsAtend:COLS_A,premissas:PREMISSAS,
+  var wb=montarPlanilhaFracionado(XLSX,{transportadora:NOME,cnpj:CNPJ,canal:CANAL,origem:oriNome(ORI),modalidade:CFG.modalidade,faixas:CFG.faixas[CANAL],ufs:CFG.ufs,regioes:CFG.regioes,gerais:s.g,cidades:cidades,colsAtend:COLS_A,premissas:PREMISSAS,cadastro:CAD,
     valor:function(uf,rg,fl){var x=s.c[ORI+'|'+uf+'|'+rg+'|'+(pct?'':faixaIdx(fl))];return x?{p:num(x.p),m:num(x.m),k:num(x.k),v:num(x.v)}:null}});
   XLSX.writeFile(wb,'tabela-fracionado-'+(pct?'percentual':'faixa-peso')+'-'+CANAL.toLowerCase()+(oriNome(ORI)?'-'+oriNome(ORI).replace(/[^a-z0-9]+/gi,'-'):'')+'-'+NOME.replace(/[^a-z0-9]+/gi,'-')+'.xlsx')}
 function detReg(v){var n=sa(v).replace(/[-_\\s]/g,'');for(var i=0;i<CFG.regioes.length;i++){if(CFG.regioes[i].replace(' ','')===n)return CFG.regioes[i]}return null}
@@ -591,6 +621,28 @@ function lerCorpo(req) {
   if (req.body && typeof req.body === 'object') return req.body;
   if (typeof req.body === 'string') { try { return JSON.parse(req.body); } catch { return {}; } }
   return {};
+}
+
+// Dados cadastrais (pre-cadastro da transportadora), gravados em dados_gerais.CADASTRO
+const CAMPOS_CADASTRO = ['razao', 'fantasia', 'ie', 'endereco', 'com_nome', 'com_tel', 'com_whats', 'com_email', 'op_nome', 'op_tel', 'op_whats', 'op_email', 'fin_nome', 'fin_tel', 'fin_email'];
+function limparCadastro(c, origens) {
+  const out = {};
+  for (const k of CAMPOS_CADASTRO) { const v = String(c?.[k] ?? '').trim().slice(0, 200); if (v) out[k] = v; }
+  const cnpjs = {};
+  for (const o of origens) { const d = soDigitos(c?.cnpj_origem?.[o]); if (d) cnpjs[o] = d.slice(0, 14); }
+  if (Object.keys(cnpjs).length) out.cnpj_origem = cnpjs;
+  return out;
+}
+function faltasCadastroServidor(cad, origens) {
+  const out = [];
+  const tel = (v) => soDigitos(v).length >= 10;
+  const mail = (v) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(v || ''));
+  if (!cad.razao) out.push('razão social');
+  if (!cad.com_nome || !(tel(cad.com_tel) || tel(cad.com_whats)) || !mail(cad.com_email)) out.push('contato comercial (nome, telefone ou WhatsApp e e-mail)');
+  if (!(tel(cad.op_tel) || tel(cad.op_whats))) out.push('telefone ou WhatsApp do operacional');
+  if (!mail(cad.fin_email)) out.push('e-mail do financeiro');
+  origens.forEach((o) => { if (!cnpjValido(soDigitos(cad.cnpj_origem?.[o]))) out.push(`CNPJ emissor${o ? ` de ${o}` : ''}`); });
+  return out;
 }
 
 function limparGerais(g) {
@@ -774,6 +826,7 @@ export default async function handler(req, res) {
         if (!bloco) continue;
         canaisSalvos.push(canal);
         gerais[canal] = limparGerais(bloco.gerais);
+        if (body.cadastro) gerais.CADASTRO = limparCadastro(body.cadastro, config.origens);
         const faixas = new Map((config.faixas[canal] || []).map((f) => [f.label, f]));
         for (const origem of config.origens) {
           const ob = bloco.origens?.[origem];
@@ -850,6 +903,8 @@ export default async function handler(req, res) {
       const atualiza = { dados_gerais: gerais, ultimo_acesso_em: agora };
       if (body.enviar) {
         if (!canaisSalvos.length) return enviarJson(res, 400, { erro: 'Nada para enviar.' });
+        const faltaCad = faltasCadastroServidor(gerais.CADASTRO || {}, config.origens);
+        if (faltaCad.length) return enviarJson(res, 400, { erro: `Dados cadastrais: falta ${faltaCad.join(', ')}.` });
         for (const c of canaisSalvos) {
           const nome = c === 'ATACADO' ? 'Atacado' : 'B2C';
           if (config.modalidade === 'PROPRIA') {

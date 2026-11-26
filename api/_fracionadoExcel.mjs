@@ -73,6 +73,16 @@ export function montarPlanilhaFracionado(XLSX, o) {
     ['Cubagem (kg/m³)', num(g.cubagem), 'i'], ['Taxa emergencial (%)', num(g.emergencial), 'i'], ['Frete mínimo geral (R$)', num(g.frete_min), 'i'],
   ];
   if (pct) fichaRows.push(['Composição do frete (MAIOR ou SOMA)', compTxt, 'i']);
+  var cad = o.cadastro || {};
+  if (Object.keys(cad).length) {
+    var cnpjs = cad.cnpj_origem || {};
+    [['Razão social', cad.razao], ['Nome fantasia', cad.fantasia], ['Inscrição estadual', cad.ie], ['Endereço da matriz', cad.endereco]].forEach(function (x) { fichaRows.push([x[0], x[1] || '', 'f']); });
+    Object.keys(cnpjs).forEach(function (k2) { fichaRows.push(['CNPJ emissor dos CT-es' + (k2 ? ' — ' + k2 : ''), String(cnpjs[k2]).replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5'), 'f']); });
+    [['Comercial', 'com'], ['Operacional', 'op'], ['Financeiro', 'fin']].forEach(function (x) {
+      var p = x[1];
+      fichaRows.push(['Contato ' + x[0], [cad[p + '_nome'], cad[p + '_tel'] ? 'tel ' + cad[p + '_tel'] : '', cad[p + '_whats'] ? 'WhatsApp ' + cad[p + '_whats'] : '', cad[p + '_email']].filter(Boolean).join(' · '), 'f']);
+    });
+  }
   (o.premissas || []).forEach(function (p, k) { fichaRows.push(['Premissa ' + (k + 1), String(p).replace(/<[^>]+>/g, ''), 'f']); });
   fichaRows.push(['ICMS incluso nos valores (SIM ou NAO)', g.icms_incluso || '', 'i'], ['Vigência a partir de', g.vigencia || '', 'i'], ['Observações / outras condições', g.observacoes || '', 'i']);
   fichaRows.push(['TAXAS ADICIONAIS — unidade no nome: (R$) por CT-e, (%) da NF, (R$/KG) ou (R$/FRACAO)', 'Valor', 'h', ['Mínimo (R$)', 'Franquia kg (R$/KG) ou fração em kg (R$/FRACAO)', 'UFs (vazio = todas)']]);
