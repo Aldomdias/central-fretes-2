@@ -51,18 +51,18 @@ export function origensDoConviteFracionado(convite) {
 // respostas / atendimento = linhas de fracionado_respostas / fracionado_atendimento do convite.
 export async function baixarExcelFracionado({ convite, canal, origem = '', respostas, atendimento }) {
   const { default: XS } = await import('xlsx-js-style');
-  const { montarPlanilhaFracionado } = await import('../../api/_fracionadoExcel.mjs');
+  const { montarPlanilhaFracionado, COLS_ATEND_FRACIONADO } = await import('../../api/_fracionadoExcel.mjs');
   const mapa = new Map();
   (respostas || []).filter((r) => r.canal === canal && (r.origem || '') === origem)
     .forEach((r) => mapa.set(`${r.uf_destino}|${r.regiao}|${r.faixa || ''}`, r));
   const cidades = (atendimento || []).filter((a) => a.canal === canal && (a.origem || '') === origem)
     .sort((a, b) => (a.uf === b.uf ? a.cidade.localeCompare(b.cidade, 'pt-BR') : a.uf.localeCompare(b.uf)))
-    .map((a) => ({ ibge: a.ibge, uf: a.uf, cidade: a.cidade, regiao: a.regiao || '', prazo: a.prazo_dias, tda: a.tda, trt: a.trt, suframa: a.suframa, outras: a.outras_taxas }));
+    .map((a) => ({ ibge: a.ibge, uf: a.uf, cidade: a.cidade, regiao: a.regiao || '', prazo: a.prazo_dias, tx: Object.fromEntries(COLS_ATEND_FRACIONADO.map(([k, , col]) => [k, col ? a[col] : a.taxas_destino?.[k]])) }));
   const pct = convite.modalidade !== 'FAIXA_PESO';
   const wb = montarPlanilhaFracionado(XS, {
     transportadora: convite.transportadora, cnpj: convite.respondente_cnpj || '', canal, origem, modalidade: convite.modalidade,
     faixas: faixasDoConviteFracionado(convite, canal), ufs: UFS_FRACIONADO, regioes: REGIOES_FRACIONADO,
-    gerais: convite.dados_gerais?.[canal] || {}, cidades,
+    gerais: convite.dados_gerais?.[canal] || {}, cidades, colsAtend: COLS_ATEND_FRACIONADO,
     valor: (uf, rg, fl) => { const x = mapa.get(`${uf}|${rg}|${fl}`); return x ? { p: x.frete_percentual, m: x.frete_minimo, k: x.frete_kg, v: x.frete_valor } : null; },
   });
   const slug = (t) => String(t || '').replace(/[^a-z0-9]+/gi, '-');

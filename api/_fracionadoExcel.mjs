@@ -7,6 +7,21 @@
 //   PERCENTUAL : linha de regioes, linha "ESTADO DESTINO | FRETE (%) | MINIMO (R$) | KG GARANTIA (R$/KG)...", uma linha por UF
 //   FAIXA_PESO : linha de regioes, linha "ESTADO DESTINO | FAIXA PESO | FRETE (R$) | AD VALOREM..." (colunas
 //                de ad valorem ficam ocultas, preenchidas com os dados gerais), uma linha por UF x faixa
+// Taxas por cidade (aba ATENDIMENTO / passo 2 do portal): [chave, cabecalho, coluna propria em fracionado_atendimento ou null (vai no jsonb taxas_destino)]
+// Baseado nas taxas por destino mais cadastradas hoje (taxas_especiais + taxas_extras). Taxa que nao estiver aqui entra em "Taxas adicionais" com as UFs.
+export const COLS_ATEND_FRACIONADO = [
+  ['tda', 'TDA (R$)', 'tda'], ['tdap', 'TDA (% NF)', null], ['tdam', 'TDA mínimo (R$)', null],
+  ['tdr', 'TDR (R$)', null],
+  ['trt', 'TRT (R$)', 'trt'], ['trtp', 'TRT (% NF)', null], ['trtm', 'TRT mínimo (R$)', null],
+  ['suf', 'Suframa (R$)', 'suframa'],
+  ['col', 'Taxa de coleta (R$)', null], ['ent', 'Taxa de entrega (R$)', null],
+  ['ped', 'Pedágio do destino (R$ por 100 kg)', null], ['sec', 'SEC/CAT (R$)', null],
+  ['trf', 'TRF / redespacho fluvial (% NF)', null], ['sfl', 'Seguro fluvial (% NF)', null],
+  ['tzr', 'TZR - zona rural/restrita (% NF)', null], ['adf', 'Adicional de frete (%)', null],
+  ['gris', 'GRIS (%) do destino', null], ['grm', 'GRIS mínimo (R$) do destino', null],
+  ['adv', 'Ad valorem (%) do destino', null], ['adm', 'Ad valorem mínimo (R$) do destino', null],
+];
+
 export function montarPlanilhaFracionado(XLSX, o) {
   var pct = o.modalidade !== 'FAIXA_PESO';
   var R = o.regioes;
@@ -40,24 +55,34 @@ export function montarPlanilhaFracionado(XLSX, o) {
   }
 
   // ---------------- FICHA ----------------
+  var compTxt = g.composicao === 'PESO_MAIS_PERCENTUAL' ? 'SOMA peso (R$/kg) + % NF' : g.composicao === 'MAIOR' ? 'MAIOR entre % NF, mínimo e kg' : '';
   var fichaRows = [
     ['Transportadora', o.transportadora, 'f'], ['CNPJ', o.cnpj || '', 'f'], ['Canal', o.canal, 'f'], ['Origem', o.origem || '', 'f'],
-    ['Faturamento (SEMANAL ou QUINZENAL)', g.faturamento || '', 'i'], ['Prazo de pagamento após faturamento (dias) — padrão 35', num(g.prazo), 'i'], ['Premissa', 'Máximo de 500 CT-es por fatura', 'f'], ['GRIS (%)', num(g.gris), 'i'], ['Ad valorem mínimo (R$)', num(g.advalorem_min), 'i'], ['Ad valorem (%)', num(g.advalorem), 'i'],
-    ['Pedágio (R$)', num(g.pedagio), 'i'], ['TAS (R$)', num(g.tas), 'i'],
-    ['ICMS incluso nos valores (SIM ou NAO)', g.icms_incluso || '', 'i'], ['Vigência a partir de', g.vigencia || '', 'i'],
+    ['Faturamento (SEMANAL ou QUINZENAL)', g.faturamento || '', 'i'], ['Prazo de pagamento após faturamento (dias) — padrão 35', num(g.prazo), 'i'], ['Premissa', 'Máximo de 500 CT-es por fatura', 'f'],
+    ['GRIS (%)', num(g.gris), 'i'], ['GRIS mínimo (R$)', num(g.gris_min), 'i'], ['Ad valorem (%)', num(g.advalorem), 'i'], ['Ad valorem mínimo (R$)', num(g.advalorem_min), 'i'],
+    ['Pedágio (R$ por fração de 100 kg)', num(g.pedagio), 'i'], ['TAS (R$)', num(g.tas), 'i'], ['CTRC / taxa por CT-e emitido (R$)', num(g.ctrc), 'i'],
+    ['Cubagem (kg/m³)', num(g.cubagem), 'i'], ['Taxa emergencial (%)', num(g.emergencial), 'i'], ['Frete mínimo geral (R$)', num(g.frete_min), 'i'],
   ];
-  (g.taxas || []).forEach(function (t) { fichaRows.push(['Taxa adicional: ' + t.n + ' (' + (t.u || 'R$') + ')', num(t.v), 'i']); });
-  var aoaF = [['FICHA DE CADASTRO — ' + o.transportadora + ' · ' + canalTxt], ['Preencha as células AMARELAS com os dados gerais da tabela. Informe se os valores já incluem ICMS (SIM ou NAO).'], ['Legenda:   AMARELO = você preenche   ·   CINZA = informação já cadastrada'], []];
-  fichaRows.forEach(function (x) { aoaF.push([x[0], x[1]]); });
+  if (pct) fichaRows.push(['Composição do frete (MAIOR ou SOMA)', compTxt, 'i']);
+  fichaRows.push(['ICMS incluso nos valores (SIM ou NAO)', g.icms_incluso || '', 'i'], ['Vigência a partir de', g.vigencia || '', 'i'], ['Observações / outras condições', g.observacoes || '', 'i']);
+  fichaRows.push(['TAXAS ADICIONAIS — unidade no nome: (R$) por CT-e, (%) da NF, (R$/KG) ou (R$/FRACAO)', 'Valor', 'h', ['Mínimo (R$)', 'Franquia kg (R$/KG) ou fração em kg (R$/FRACAO)', 'UFs (vazio = todas)']]);
+  (g.taxas || []).forEach(function (t) { fichaRows.push(['Taxa adicional: ' + t.n + ' (' + (t.u || 'R$') + ')', num(t.v), 'i', [num(t.min), num(t.fr), t.ufs || '']]); });
+  var aoaF = [['FICHA DE CADASTRO — ' + o.transportadora + ' · ' + canalTxt], ['Preencha as células AMARELAS com os dados gerais da tabela. Informe se os valores já incluem ICMS (SIM ou NAO). Para incluir taxa adicional, copie uma linha "Taxa adicional: NOME (UNIDADE)".'], ['Legenda:   AMARELO = você preenche   ·   CINZA = informação já cadastrada'], []];
+  fichaRows.forEach(function (x) { aoaF.push([x[0], x[1]].concat(x[3] || [])); });
   var wf = XLSX.utils.aoa_to_sheet(aoaF);
-  var mf = banner(wf, 2, aoaF[0][0], aoaF[1][0], aoaF[2][0]);
+  var mf = banner(wf, 5, aoaF[0][0], aoaF[1][0], aoaF[2][0]);
   fichaRows.forEach(function (x, i) {
     var r = 4 + i;
+    if (x[2] === 'h') {
+      for (var hc = 0; hc < 5; hc += 1) aplica(wf, r, hc, { font: { bold: true, sz: 10, color: { rgb: 'FFFFFF' } }, fill: fill('1E3A5F'), alignment: { vertical: 'center', wrapText: true }, border: bd('FFFFFF') });
+      return;
+    }
     aplica(wf, r, 0, { font: { bold: true, sz: 11 }, fill: fill('F1F5F9'), alignment: { vertical: 'center' }, border: bd(L) });
     aplica(wf, r, 1, { font: { sz: 11, bold: x[2] === 'f' }, fill: fill(x[2] === 'i' ? 'FFF7CC' : 'F1F5F9'), alignment: { horizontal: 'left', vertical: 'center' }, border: bd(x[2] === 'i' ? 'F59E0B' : L) }, x[2] === 'i' && typeof x[1] === 'number' ? '#,##0.00' : null);
+    if (x[3]) for (var tc = 2; tc < 5; tc += 1) aplica(wf, r, tc, { font: { sz: 11 }, fill: fill('FFF7CC'), alignment: { horizontal: tc === 4 ? 'left' : 'right', vertical: 'center' }, border: bd('F59E0B') }, tc < 4 ? '#,##0.00' : null);
   });
   wf['!merges'] = mf;
-  wf['!cols'] = [{ wch: 42 }, { wch: 34 }];
+  wf['!cols'] = [{ wch: 52 }, { wch: 34 }, { wch: 14 }, { wch: 22 }, { wch: 20 }];
 
   // ---------------- TABELA ----------------
   var aoa = [];
@@ -170,15 +195,17 @@ export function montarPlanilhaFracionado(XLSX, o) {
 
   // ---------------- ATENDIMENTO (cidade -> regiao/rota, prazo e taxas) ----------------
   if (o.cidades && o.cidades.length) {
-    var cab = ['IBGE', 'UF DESTINO', 'CIDADE DE DESTINO', 'REGIÃO (rota)', 'PRAZO (DIAS)', 'TDA (R$)', 'TRT (R$)', 'SUFRAMA (R$)', 'OUTRAS TAXAS (R$)'];
+    var CA = o.colsAtend || [];
+    var cab = ['IBGE', 'UF DESTINO', 'CIDADE DE DESTINO', 'REGIÃO (rota)', 'PRAZO (DIAS)'].concat(CA.map(function (x) { return String(x[1]).toUpperCase(); }));
     var aoaA = [
       ['ATENDIMENTO — ' + o.transportadora + ' · ' + canalTxt],
-      ['Para cada cidade atendida informe a REGIÃO (rota da tabela: CAPITAL, INTERIOR 1 a INTERIOR 9 ou METROPOLITANA) e o PRAZO de entrega em dias. TDA, TRT, Suframa e outras taxas são opcionais. Cidades sem prazo são consideradas não atendidas.'],
+      ['Para cada cidade atendida informe a REGIÃO (rota da tabela: CAPITAL, INTERIOR 1 a INTERIOR 9 ou METROPOLITANA) e o PRAZO de entrega em dias. As taxas por cidade são opcionais (GRIS/ad valorem do destino só se diferentes da ficha). Cobra uma taxa por destino que não tem coluna aqui? Inclua na FICHA como "Taxa adicional: NOME (UNIDADE)" e informe as UFs. Cidades sem prazo são consideradas não atendidas.'],
       ['Legenda:   AMARELO = você preenche   ·   CINZA = cidade (não alterar)'],
       cab,
     ];
     o.cidades.forEach(function (m) {
-      aoaA.push([m.ibge, m.uf, m.cidade, m.regiao || '', num(m.prazo), num(m.tda), num(m.trt), num(m.suframa), num(m.outras)]);
+      var tx = m.tx || {};
+      aoaA.push([m.ibge, m.uf, m.cidade, m.regiao || '', num(m.prazo)].concat(CA.map(function (x) { return num(tx[x[0]]); })));
     });
     var wa = XLSX.utils.aoa_to_sheet(aoaA);
     var ma = banner(wa, cab.length, aoaA[0][0], aoaA[1][0], aoaA[2][0]);
@@ -192,8 +219,8 @@ export function montarPlanilhaFracionado(XLSX, o) {
       }
     }
     wa['!merges'] = ma;
-    wa['!cols'] = [{ wch: 11 }, { wch: 11 }, { wch: 34 }, { wch: 16 }, { wch: 13 }, { wch: 11 }, { wch: 11 }, { wch: 13 }, { wch: 16 }];
-    wa['!rows'] = [{ hpt: 32 }, { hpt: 48 }, { hpt: 20 }, { hpt: 34 }];
+    wa['!cols'] = [{ wch: 11 }, { wch: 11 }, { wch: 34 }, { wch: 16 }, { wch: 13 }].concat(CA.map(function () { return { wch: 15 }; }));
+    wa['!rows'] = [{ hpt: 32 }, { hpt: 60 }, { hpt: 20 }, { hpt: 48 }];
     wa['!autofilter'] = { ref: 'A4:' + XLSX.utils.encode_cell({ r: aoaA.length - 1, c: cab.length - 1 }) };
     wa['!views'] = [{ state: 'frozen', xSplit: 0, ySplit: 4 }];
     XLSX.utils.book_append_sheet(wb, wa, 'ATENDIMENTO');
