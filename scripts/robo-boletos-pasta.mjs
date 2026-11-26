@@ -9,7 +9,9 @@
 // - so considera faturas que aguardam boleto (liberadas, nao pagas, fora de antecipacao);
 // - acha a fatura pelo numero do nome do arquivo; se houver mais de uma, desempata pelo nome da transportadora
 //   e depois pelo VALOR lido no boleto;
-// - so guarda quando valor e vencimento do boleto batem com a fatura; o resto fica listado para o painel.
+// - so guarda quando valor e vencimento do boleto batem com a fatura; tolera (e anota) vencimento reemitido, ate
+//   R$ 0,10 de arredondamento e boleto sem linha digitavel (PIX) com valor e vencimento escritos no PDF;
+//   numero que so existe em aberto para outra transportadora vai para "sem fatura"; o resto fica para o painel.
 // - fecha o ciclo no Diagnostico: fatura LANCADA (partida/lancamento), em aberto, com boleto guardado (pelo robo ou
 //   pelo painel) e sem encaminhamento vira "Encaminhada ao financeiro - Boleto na pasta" (mesma marcacao do
 //   Diagnostico). Encaminhamento ja feito (ex.: dados bancarios) nunca e sobrescrito.
@@ -327,18 +329,26 @@ async function main() {
 
     // Desempate: entre as candidatas, as que batem valor e vencimento.
     let batem = cand.faturas.filter((f) => !divergenciasBoleto(leitura, f).length);
+    if (!batem.length && leitura.valor != null) {
+      // Tolerancia: valor ate R$ 0,10 de diferenca (arredondamento) com a mesma transportadora, ou valor exato mesmo
+      // com nome do arquivo diferente do cadastro (ex.: LATAM x TAM LINHAS AEREAS); o vencimento pode ter mudado
+      // (boleto reemitido/prorrogado). Tudo fica anotado no resumo.
+      const tolerante = cand.faturas.filter((f) => {
+        const dv = Math.abs(leitura.valor - Number(f.valor_fatura || 0));
+        return dv <= 0.10 + 1e-9 && (dv <= 0.01 || nomeDoArquivoCombina(nome, f.transportadora));
+      });
+      if (tolerante.length === 1) {
+        const f = tolerante[0];
+        batem = tolerante;
+        const dv = leitura.valor - Number(f.valor_fatura || 0);
+        if (Math.abs(dv) > 0.01) nota += ` [valor do boleto ${dinheiro(leitura.valor)} x fatura ${dinheiro(f.valor_fatura)}: dif. ${dinheiro(dv)}]`;
+        if (divergenciasBoleto(leitura, f).includes('vencimento')) nota += ` [vencimento do boleto ${leitura.vencimento} diferente da fatura ${String(f.data_vencimento).slice(0, 10)}]`;
+        if (!nomeDoArquivoCombina(nome, f.transportadora)) nota += ' [nome do arquivo diferente do cadastro]';
+      }
+    }
     if (!batem.length && outraTransportadora) {
       res.foraDoSistema.push(`${nome} — boleto ${dinheiro(leitura.valor)} venc ${leitura.vencimento}: nenhuma fatura em aberto dessa transportadora com esse numero (o mesmo numero em aberto e de outra: ${quais})`);
       continue;
-    }
-    if (!batem.length) {
-      // Mesmo numero, mesma transportadora e valor exato: so o vencimento mudou (boleto reemitido/prorrogado).
-      const soVencimento = cand.faturas.filter((f) => nomeDoArquivoCombina(nome, f.transportadora)
-        && divergenciasBoleto(leitura, f).join() === 'vencimento');
-      if (soVencimento.length === 1) {
-        batem = soVencimento;
-        nota += ` [vencimento do boleto ${leitura.vencimento} diferente da fatura ${String(soVencimento[0].data_vencimento).slice(0, 10)}]`;
-      }
     }
     if (batem.length !== 1) {
       const difValor = cand.faturas.length === 1 && leitura.valor != null
@@ -354,13 +364,17 @@ async function main() {
     faturasUsadas.add(id);
 
     const atual = controlePorFatura.get(id);
-    if (atual?.boleto_arquivo_path && atual.boleto_linha_digitavel && atual.boleto_linha_digitavel === leitura.linhaDigitavel) {
+    // Mesmo arquivo (hash) ja gravado para esta fatura: cobre tambem boleto sem linha digitavel (PIX / leitura parcial).
+    const versaoDoArquivo = versoes.find((v) => v.hash_conteudo === hash && String(v.fatura_id) === id);
+    const mesmoBoleto = (atual?.boleto_linha_digitavel && atual.boleto_linha_digitavel === leitura.linhaDigitavel)
+      || Boolean(versaoDoArquivo && (atual?.boleto_arquivo_path === versaoDoArquivo.arquivo_path || atual?.boleto_apagado_em));
+    if (atual?.boleto_arquivo_path && mesmoBoleto) {
       res.jaGuardados.push(`${nome} -> fatura ${fatura.numero_fatura}`);
       continue;
     }
     // PDF apagado de proposito (limpeza no card do robo): o mesmo boleto ainda na pasta nao volta a subir.
     // Boleto diferente (outra linha digitavel) e guardado normalmente.
-    if (atual && !atual.boleto_arquivo_path && atual.boleto_apagado_em && atual.boleto_linha_digitavel && atual.boleto_linha_digitavel === leitura.linhaDigitavel) {
+    if (atual && !atual.boleto_arquivo_path && atual.boleto_apagado_em && mesmoBoleto) {
       res.jaGuardados.push(`${nome} -> fatura ${fatura.numero_fatura} (PDF apagado na limpeza; nao sobe de novo)`);
       continue;
     }
