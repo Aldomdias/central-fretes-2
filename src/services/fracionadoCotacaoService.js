@@ -83,9 +83,10 @@ export async function excluirConviteFracionado(id) {
 }
 
 export async function carregarAnexosFracionado(conviteId) {
-  const { data, error } = await client().from('fracionado_anexos').select('id,canal,nome,tipo,tamanho,created_at').eq('convite_id', conviteId).order('created_at');
+  let { data, error } = await client().from('fracionado_anexos').select('id,canal,nome,tipo,tamanho,created_at,categoria,leitura').eq('convite_id', conviteId).order('created_at');
+  if (error) ({ data, error } = await client().from('fracionado_anexos').select('id,canal,nome,tipo,tamanho,created_at').eq('convite_id', conviteId).order('created_at'));
   if (error) return [];
-  return data || [];
+  return (data || []).map((a) => ({ ...a, categoria: a.categoria || (/^\[(DESTINOS|GENERALIDADES)\]/.exec(a.nome || '')?.[1] || 'TABELA') }));
 }
 
 export async function baixarAnexoFracionado(id) {
@@ -154,4 +155,72 @@ export async function gerarVolumetriaPronta({ canal, origem, faixas, periodo, ba
     if (error) throw erroMigrationVol(error);
   }
   return { notas: res.notas, linhas: res.linhas.length, lidas: res.lidas };
+}
+
+// ---------------- Origens cadastradas (para o campo de origens do convite) ----------------
+// Junta as origens das tabelas (B2C + Atacado) num nome padrao "CIDADE/UF" (MAIUSCULO sem acento),
+// sem "FILIAL " nem sufixos GP/GRIP. UF: CD B2C conhecido > municipio IBGE de nome unico.
+const normOrigem = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9/ ]+/g, ' ').replace(/\s+/g, ' ').trim();
+let CACHE_ORIGENS = null;
+
+export async function listarOrigensCadastradas() {
+  if (CACHE_ORIGENS) return CACHE_ORIGENS;
+  const sb = client();
+  const origens = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb.from('origens').select('id,cidade,canal,transportadora_id').range(from, from + 999);
+    if (error) throw error;
+    origens.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  const [{ carregarMunicipiosIbgeDb }, { CDS_B2C }] = await Promise.all([import('./freteDatabaseService'), import('../utils/tabelaPadraoB2c')]);
+  const ufsPorNome = new Map();
+  const ufPorIbge2 = {};
+  (await carregarMunicipiosIbgeDb().catch(() => [])).forEach((m) => {
+    const n = normOrigem(m.cidade || m.nome);
+    const uf = String(m.uf || '').toUpperCase();
+    if (!n || !uf) return;
+    if (!ufsPorNome.has(n)) ufsPorNome.set(n, new Set());
+    ufsPorNome.get(n).add(uf);
+    const ib = String(m.ibge || '').replace(/\D/g, '');
+    if (ib.length >= 2) ufPorIbge2[ib.slice(0, 2)] = uf;
+  });
+  // Nome do cadastro -> municipio real: tira "FILIAL ", "/UF" e palavras extras do fim (ITAJAI HUB, BARUERI CNPJ ANTIGO, ITAJAI X MG).
+  const resolver = (bruto) => {
+    let nome = normOrigem(bruto).replace(/^FILIAL /, '');
+    let uf = '';
+    const m = nome.match(/^(.*?)\s*\/\s*([A-Z]{2})$/);
+    if (m) { nome = m[1].trim(); uf = m[2]; }
+    const cd = CDS_B2C.find((c) => c.cidades.includes(nome) || normOrigem(c.label) === nome);
+    if (cd) {
+      const oficial = [nome, normOrigem(cd.label), ...cd.cidades.map(normOrigem)].find((x) => ufsPorNome.get(x)?.has(uf || cd.uf));
+      return { nome: oficial || nome, uf: uf || cd.uf };
+    }
+    const partes = nome.split(' ');
+    for (let n = partes.length; n >= 1; n -= 1) {
+      const tent = partes.slice(0, n).join(' ');
+      const ufs = ufsPorNome.get(tent);
+      if (ufs && (!uf || ufs.has(uf))) return { nome: tent, uf: uf || (ufs.size === 1 ? [...ufs][0] : ''), ambiguo: !uf && ufs.size > 1 };
+    }
+    return null; // nao e municipio (erro de digitacao, apelido): fica fora da lista
+  };
+  const resolvidas = origens.map((o) => ({ o, r: resolver(o.cidade) })).filter((x) => x.r);
+  // Homonimo sem UF (ex.: PARNAMIRIM, SANTA INES): pega a UF pelo IBGE de origem das rotas daquela origem.
+  for (const x of resolvidas.filter((y) => y.r.ambiguo)) {
+    const { data } = await sb.from('rotas').select('ibge_origem').eq('origem_id', x.o.id).not('ibge_origem', 'is', null).limit(1);
+    const ib = String(data?.[0]?.ibge_origem || '').replace(/\D/g, '');
+    if (ib.length >= 2 && ufPorIbge2[ib.slice(0, 2)]) x.r.uf = ufPorIbge2[ib.slice(0, 2)];
+  }
+  const mapa = new Map();
+  resolvidas.forEach(({ o, r }) => {
+    const valor = r.uf ? `${r.nome}/${r.uf}` : r.nome;
+    let it = mapa.get(valor);
+    if (!it) { it = { valor, cidade: r.nome, uf: r.uf, canais: new Set(), transportadoras: new Set() }; mapa.set(valor, it); }
+    String(o.canal || '').toUpperCase().split(/[^A-Z0-9]+/).filter((c) => c === 'B2C' || c === 'ATACADO').forEach((c) => it.canais.add(c));
+    if (o.transportadora_id) it.transportadoras.add(o.transportadora_id);
+  });
+  CACHE_ORIGENS = [...mapa.values()]
+    .map((it) => ({ valor: it.valor, cidade: it.cidade, uf: it.uf, canais: [...it.canais].sort(), transportadoras: it.transportadoras.size }))
+    .sort((a, b) => a.valor.localeCompare(b.valor));
+  return CACHE_ORIGENS;
 }

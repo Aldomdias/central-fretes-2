@@ -22,6 +22,7 @@ import { createClient } from '@supabase/supabase-js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { montarPlanilhaFracionado, COLS_ATEND_FRACIONADO } from '../_fracionadoExcel.mjs';
 import { periodoVolumetria, baseVolumetria } from '../_fracionadoVolumetria.mjs';
+import { PREMISSAS_FRACIONADO } from '../_fracionadoExcel.mjs';
 
 const VALIDADE_ACESSO_MS = 8 * 60 * 60 * 1000;
 // Prazo de pagamento padrao (dias). Abaixo disso o portal marca em vermelho: exige aprovacao da diretoria.
@@ -247,7 +248,7 @@ ${cancelado ? '<div class="msg erro">Este link foi cancelado. Solicite um novo l
 <div id="telaTab" style="display:none"></div>`}
 </div></div>
 <script>
-var TOKEN=${JSON.stringify(convite.token)},NOME=${JSON.stringify(convite.transportadora)},PRAZO_PADRAO=${PRAZO_PAGAMENTO_PADRAO},MAX_CTES=${MAX_CTES_POR_FATURA};
+var TOKEN=${JSON.stringify(convite.token)},NOME=${JSON.stringify(convite.transportadora)},PRAZO_PADRAO=${PRAZO_PAGAMENTO_PADRAO},MAX_CTES=${MAX_CTES_POR_FATURA},PREMISSAS=${JSON.stringify(PREMISSAS_FRACIONADO)};
 ${montarPlanilhaFracionado.toString()}
 var CFG=null,ACESSO='',ST={},CANAL='',ORI=0,VISAO='tabela',UFSEL='',FUF='',CNPJ='',MUN=[],MUNIDX={},FREG='',FBUSCA='',FSEM=false;
 var VOLABERTO=false,VOLORI={},VOLUFS={},VOLBUSY=false;
@@ -293,7 +294,7 @@ function identificar(){var b=document.getElementById('btnId');document.getElemen
   }).catch(function(e){document.getElementById('erroId').innerHTML='<div class="msg erro">'+esc(e.message)+'</div>';b.disabled=false})}
 function montar(status){var t=document.getElementById('telaTab');t.style.display='block';CANAL=CFG.canais[0];UFSEL=CFG.ufs[0];ORI=0;
   var pct=CFG.modalidade==='PERCENTUAL';
-  var h=(CFG.modalidade==='PROPRIA'?'<div class="regra"><b>Como funciona</b><br>• <b>Anexe a sua tabela de frete</b> (Excel, CSV, PDF, Word ou ZIP) e descreva as <b>generalidades</b>: taxas, restrições, regras de cobrança, prazos e o que mais for relevante.<br>• As generalidades serão <b>avaliadas pelo time de suprimentos</b> para definir se entram ou não no nosso escopo.<br>• Clique em <b>Salvar rascunho</b> para continuar depois e em <b>Enviar</b> quando concluir.</div>':'<div class="regra"><b>Como preencher (2 passos por canal'+(CFG.origens.length>1?' e por origem':'')+')</b><br>• <b>1. Tabela de frete:</b> '+(pct?'informe, por <b>UF de destino</b> e <b>região</b> (Capital, Interior 1 a 9, Metropolitana), o <b>frete em % sobre o valor da NF</b> e o <b>mínimo em R$</b> e, se você trabalha com ele, o <b>kg garantia (R$/kg)</b>: o frete fica o maior entre % da NF, mínimo e peso × R$/kg.':'escolha a <b>UF de destino</b> e informe o <b>frete em R$</b> de cada <b>faixa de peso</b> por <b>região</b>. Na última linha (faixa aberta) informe o <b>R$ por kg excedente</b>.')+'<br>• <b>2. Atendimento:</b> para cada <b>cidade de destino</b> informe a <b>região (rota)</b> a que ela pertence e o <b>prazo de entrega</b> em dias (as taxas por cidade — TDA, TRT, Suframa, coleta, entrega, pedágio, fluvial, TZR etc. — são opcionais; taxa por destino que não tiver coluna entra em <b>+ Incluir taxa</b> com as UFs). A lista de regiões mostra primeiro as que você preencheu na tabela; se escolher outra, o campo fica <b style="color:#ea580c">laranja</b>. Cidades sem prazo são consideradas não atendidas. Use os filtros de UF, busca e região, e o botão para aplicar região/prazo a várias cidades de uma vez.<br>• Preencha os <b>dados gerais</b> (prazo de pagamento — <b>nosso padrão é '+PRAZO_PADRAO+' dias após o faturamento</b>, semanal ou quinzenal; abaixo disso precisa de aprovação da diretoria. <b>Premissa: no máximo '+MAX_CTES+' CT-es por fatura</b> —, GRIS, ad valorem, pedágio, TAS), inclua outras <b>taxas</b> em <b>+ Incluir taxa</b> e informe se os valores <b>já incluem ICMS</b>. A TDA é por rota final e fica no passo 2 (Atendimento).'+(CFG.origens.length>1?'<br>• Use o filtro <b>Origem</b> para preencher cada origem; <b>Copiar esta origem para as demais</b> vale se a tabela for igual.':'')+'<br>• Prefere o Excel? <b>Baixe o modelo</b> (da origem e do canal selecionados), preencha e <b>importe</b> de volta. Clique em <b>Salvar rascunho</b> para continuar depois e em <b>Enviar tabela</b> quando concluir.</div>')
+  var h=(CFG.modalidade==='PROPRIA'?'<div class="regra"><b>Como funciona</b><br>• Anexe <b>2 arquivos obrigatórios</b>: <b>(1) a sua tabela de frete</b> (Excel, CSV, PDF, Word ou ZIP) e <b>(2) os destinos atendidos</b> em Excel/CSV, com <b>cidade (ou IBGE), rota/região de cada cidade, prazo de entrega e taxas por destino</b> (TDA, TRT etc.). Baixe o modelo de destinos se preferir.<br>• <b>Generalidades</b> (taxas gerais, regras de cobrança, restrições): de preferência na própria tabela; se estiverem em outro arquivo, anexe no item 3. Há também um campo de observações.<br>• O portal confere os arquivos na hora: <b>sem a tabela e os destinos completos não é possível enviar</b>.<br>• As generalidades serão <b>avaliadas pelo time de suprimentos</b> para definir se entram ou não no nosso escopo.<br>• Clique em <b>Salvar rascunho</b> para continuar depois e em <b>Enviar</b> quando concluir.</div>':'<div class="regra"><b>Como preencher (2 passos por canal'+(CFG.origens.length>1?' e por origem':'')+')</b><br>• <b>1. Tabela de frete:</b> '+(pct?'informe, por <b>UF de destino</b> e <b>região</b> (Capital, Interior 1 a 9, Metropolitana), o <b>frete em % sobre o valor da NF</b> e o <b>mínimo em R$</b> e, se você trabalha com ele, o <b>kg garantia (R$/kg)</b>: o frete fica o maior entre % da NF, mínimo e peso × R$/kg.':'escolha a <b>UF de destino</b> e informe o <b>frete em R$</b> de cada <b>faixa de peso</b> por <b>região</b>. Na última linha (faixa aberta) informe o <b>R$ por kg excedente</b>.')+'<br>• <b>2. Atendimento:</b> para cada <b>cidade de destino</b> informe a <b>região (rota)</b> a que ela pertence e o <b>prazo de entrega</b> em dias (as taxas por cidade — TDA, TRT, Suframa, coleta, entrega, pedágio, fluvial, TZR etc. — são opcionais; taxa por destino que não tiver coluna entra em <b>+ Incluir taxa</b> com as UFs). A lista de regiões mostra primeiro as que você preencheu na tabela; se escolher outra, o campo fica <b style="color:#ea580c">laranja</b>. Cidades sem prazo são consideradas não atendidas. Use os filtros de UF, busca e região, e o botão para aplicar região/prazo a várias cidades de uma vez.<br>• Preencha os <b>dados gerais</b> (prazo de pagamento — <b>nosso padrão é '+PRAZO_PADRAO+' dias após o faturamento</b>, semanal ou quinzenal; abaixo disso precisa de aprovação da diretoria. <b>Premissa: no máximo '+MAX_CTES+' CT-es por fatura</b> —, GRIS, ad valorem, pedágio, TAS), inclua outras <b>taxas</b> em <b>+ Incluir taxa</b> e informe se os valores <b>já incluem ICMS</b>. A TDA é por rota final e fica no passo 2 (Atendimento).'+(CFG.origens.length>1?'<br>• Use o filtro <b>Origem</b> para preencher cada origem; <b>Copiar esta origem para as demais</b> vale se a tabela for igual.':'')+'<br>• Prefere o Excel? <b>Baixe o modelo</b> (da origem e do canal selecionados), preencha e <b>importe</b> de volta. Clique em <b>Salvar rascunho</b> para continuar depois e em <b>Enviar tabela</b> quando concluir.</div>')
   +(status==='ENVIADO'?'<div class="msg ok">Você já enviou esta tabela. Se alterar valores, clique em enviar novamente para atualizar.</div>':'')
   +'<div class="abas" id="abas"></div><div id="msgTab"></div><div id="conteudo"></div>'
   +'<div class="barra"><button class="sec" onclick="enviar(false)">Salvar rascunho</button><button onclick="enviar(true)">Enviar tabela</button><span id="cont"></span></div>';
@@ -302,7 +303,7 @@ function abas(){var a=document.getElementById('abas');if(CFG.canais.length<2){a.
   a.innerHTML=CFG.canais.map(function(c){return '<button class="'+(c===CANAL?'on':'')+'" onclick="setCanal(\\''+c+'\\')">'+nomeCanal(c)+'</button>'}).join('')}
 function setCanal(c){CANAL=c;render()}
 function setVisao(v){VISAO=v;render()}
-function render(){if(!CFG)return;if(CFG.modalidade==='PROPRIA'){renderPropria();return}abas();var s=ST[CANAL],h='';
+function render(){if(!CFG)return;if(CFG.modalidade==='PROPRIA'){renderPropria();return}abas();var s=ST[CANAL],h=blocoPremissas();
   h+='<div class="ferr">';
   if(CFG.origens.length>1)h+='<label class="fl">Origem <select onchange="ORI=Number(this.value);render()">'+CFG.origens.map(function(o,i){return '<option value="'+i+'"'+(i===ORI?' selected':'')+'>'+esc(o)+'</option>'}).join('')+'</select></label><button class="sec" onclick="copiarOrigem()">Copiar esta origem para as demais</button>';
   else if(CFG.origens[0])h+='<span class="fl">Origem: '+esc(CFG.origens[0])+'</span>';
@@ -326,22 +327,63 @@ function render(){if(!CFG)return;if(CFG.modalidade==='PROPRIA'){renderPropria();
   c.onchange=function(ev){var t=ev.target;if(t.getAttribute('data-g'))ST[CANAL].g[t.getAttribute('data-g')]=t.value;else if(t.getAttribute('data-a'))c.oninput(ev);else if(t.hasAttribute('data-t')&&t.getAttribute('data-f')==='u'){c.oninput(ev);render()}};
   if(VISAO==='cidades')filtraCidades();
   resumo()}
+function catAnexo(a){var m=/^\\[(DESTINOS|GENERALIDADES)\\]/.exec(a.nome||'');return a.categoria||(m?m[1]:'TABELA')}
+function blocoPremissas(){return '<div style="background:#fff7ed;border:3px solid #ea580c;border-radius:12px;padding:12px 16px;margin:0 0 12px"><div style="font-size:19px;font-weight:900;color:#9a3412;margin-bottom:6px">📌 Premissas da negociação — leia antes de preencher</div>'+PREMISSAS.map(function(p){return '<div style="font-size:15px;margin:4px 0;color:#431407">• '+p+'</div>'}).join('')+'<div style="font-size:13px;color:#9a3412;margin-top:6px">Essas condições valem para qualquer tabela enviada e farão parte do termo de aceite.</div></div>'}
+var ITENS_DEST=[['cidade','CIDADE (ou código IBGE)'],['rota','ROTA / REGIÃO de cada cidade'],['prazo','PRAZO de entrega'],['taxa','TAXAS por destino (TDA, TRT…)']];
+function faltasPropria(c){var s=ST[c],out=[],tab=s.f.filter(function(a){return catAnexo(a)==='TABELA'}),dst=s.f.filter(function(a){return catAnexo(a)==='DESTINOS'});
+  if(!tab.length)out.push('Anexe a TABELA DE FRETE');
+  if(!dst.length)out.push('Anexe o arquivo de DESTINOS ATENDIDOS (cidade, rota, prazo e taxas)');
+  else{var un={};dst.forEach(function(a){var l=a.leitura||{};ITENS_DEST.forEach(function(it){if(l[it[0]])un[it[0]]=1})});var ver=dst.some(function(a){return a.leitura});
+    if(ver)ITENS_DEST.forEach(function(it){if(!un[it[0]])out.push('O arquivo de destinos não tem '+it[1])})}
+  if(!s.g.faturamento)out.push('Informe o FATURAMENTO (semanal ou quinzenal)');
+  if(!s.g.prazo)out.push('Informe o PRAZO DE PAGAMENTO');
+  if(!s.g.icms_incluso)out.push('Informe se os valores JÁ INCLUEM ICMS');
+  return out}
+function caixaFaltas(){var e=document.getElementById('faltaBox');if(!e)return;var linhas=[];CFG.canais.forEach(function(c){faltasPropria(c).forEach(function(t){linhas.push((CFG.canais.length>1?nomeCanal(c)+': ':'')+t)})});
+  e.innerHTML=linhas.length?'<div style="background:#fef2f2;border:3px solid #dc2626;border-radius:12px;padding:14px 18px;color:#b91c1c;margin:12px 0"><div style="font-size:22px;font-weight:900;margin-bottom:6px">⛔ Ainda falta para enviar:</div>'+linhas.map(function(t){return '<div style="font-size:18px;font-weight:bold;margin:3px 0">• '+esc(t)+'</div>'}).join('')+'</div>':'<div style="background:#ecfdf3;border:2px solid #16a34a;border-radius:12px;padding:12px 16px;color:#166534;font-size:17px;font-weight:bold;margin:12px 0">✅ Tudo certo: tabela, destinos e generalidades. Pode clicar em Enviar.</div>'}
+function lerPlanilha(f){return new Promise(function(ok,nok){if(!window.XLSX){nok(new Error('Recurso de Excel não carregou. Verifique a conexão.'));return}
+  var rd=new FileReader();rd.onload=function(ev){try{var wb=XLSX.read(new Uint8Array(ev.target.result),{type:'array'}),r={cidade:false,rota:false,prazo:false,taxa:false,frete:false,linhas:0};
+    wb.SheetNames.forEach(function(nm){var M=XLSX.utils.sheet_to_json(wb.Sheets[nm],{header:1,defval:''}),n=0;
+      M.slice(0,40).forEach(function(row){row.forEach(function(cel){var t=sa(cel);if(!t||t.length>60)return;
+        if(/CIDADE|MUNICIPIO|DESTINO|IBGE|LOCALIDADE/.test(t))r.cidade=true;
+        if(/ROTA|REGIAO|PRACA|TARIFA|ZONA|SETOR|CAPITAL|INTERIOR/.test(t))r.rota=true;
+        if(/PRAZO|LEAD ?TIME|TRANSIT|DIAS UTEIS/.test(t))r.prazo=true;
+        if(/TDA|TRT|TDE|TDR|SUFRAMA|TAXA|RESTRI|DIFICIL|PEDAGIO|GRIS|VALOREM/.test(t))r.taxa=true;
+        if(/FRETE|PESO|KG|MINIMO|VALOR|EXCEDENTE|%/.test(t))r.frete=true})});
+      M.forEach(function(row){if(row.filter(function(x){return String(x).trim()!==''}).length>=3)n++});if(n>r.linhas)r.linhas=n});
+    ok(r)}catch(e){nok(new Error('Não consegui ler o arquivo: '+e.message))}};rd.onerror=function(){nok(new Error('Falha ao ler o arquivo.'))};rd.readAsArrayBuffer(f)})}
+function modeloDestinos(){if(!window.XLSX){alert('Recurso de Excel não carregou.');return}var m=document.getElementById('msgTab');m.innerHTML='<div class="msg aviso">Gerando o modelo de destinos…</div>';
+  api({acao:'municipios',acesso:ACESSO}).then(function(j){var cab=['IBGE','UF','CIDADE','ROTA / REGIÃO','PRAZO (DIAS)','TDA (R$)','TRT (R$)','SUFRAMA (R$)','OUTRAS TAXAS (nome e valor)'];
+    var aoa=[cab].concat(j.m.map(function(x){return [x[0],x[1],x[2],'','','','','','']}));var ws=XLSX.utils.aoa_to_sheet(aoa);ws['!cols']=[{wch:10},{wch:5},{wch:32},{wch:16},{wch:12},{wch:10},{wch:10},{wch:12},{wch:28}];ws['!autofilter']={ref:ws['!ref']};
+    var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'DESTINOS');XLSX.writeFile(wb,'modelo-destinos-atendidos-'+CANAL.toLowerCase()+'.xlsx');
+    m.innerHTML='<div class="msg ok">Modelo baixado. Preencha ROTA, PRAZO e as taxas das cidades que você atende (apague ou deixe sem prazo as que não atende) e anexe no item 2.</div>'}).catch(function(e){m.innerHTML='<div class="msg erro">'+esc(e.message)+'</div>'})}
+function listaAnexos(s,cat){var l=s.f.map(function(a,i){return {a:a,i:i}}).filter(function(x){return catAnexo(x.a)===cat}),h='';
+  if(!l.length)return cat==='GENERALIDADES'?'<div style="color:#64748b;font-size:14px">Nenhum arquivo (opcional).</div>':'<div style="color:#b91c1c;font-size:15px;font-weight:bold">Nenhum arquivo anexado ainda (obrigatório).</div>';
+  l.forEach(function(x){var a=x.a,lt=a.leitura,info='';
+    if(cat==='DESTINOS'&&lt)info=' <span style="font-size:13px">'+ITENS_DEST.map(function(it){return (lt[it[0]]?'✅':'❌')+' '+it[1].split(' ')[0]}).join(' · ')+(lt.linhas?' · ~'+lt.linhas+' linhas':'')+'</span>';
+    if(cat==='TABELA'&&lt&&!lt.frete)info=' <span style="font-size:13px;color:#b45309;font-weight:bold">⚠ não achei colunas de frete/peso/valor nesta planilha — confira se é o arquivo certo</span>';
+    h+='<div class="lin">📎 <b>'+esc(String(a.nome||'').replace(/^\\[(DESTINOS|GENERALIDADES)\\] /,''))+'</b> <span style="color:#64748b">('+Math.max(1,Math.round((a.tamanho||0)/1024))+' KB)</span>'+info+'<button class="x" onclick="removerAnexo('+x.i+')">Remover</button></div>'});
+  return h}
 function renderPropria(){abas();var s=ST[CANAL],h='';
+  h+=blocoPremissas();
   h+='<div class="msg aviso"><b>Atenção:</b> as generalidades informadas aqui serão <b>avaliadas pelo time de suprimentos</b> para definir se entram ou não no nosso escopo. O envio não garante a aceitação das condições.</div>';
   h+=blocoVol();
-  h+='<div class="taxas"><b>1. Anexe a sua tabela de frete — '+nomeCanal(CANAL)+'</b><br><small style="color:#64748b">Excel, CSV, PDF, Word ou ZIP · até 3 MB por arquivo.</small><div style="margin:8px 0">';
-  if(!s.f.length)h+='<div style="color:#64748b;font-size:14px">Nenhum arquivo anexado ainda.</div>';
-  s.f.forEach(function(a,i){h+='<div class="lin">📎 <b>'+esc(a.nome)+'</b> <span style="color:#64748b">('+Math.max(1,Math.round((a.tamanho||0)/1024))+' KB)</span><button class="x" onclick="removerAnexo('+i+')">Remover</button></div>'});
-  h+='</div><input type="file" id="arqp" multiple accept=".xlsx,.xls,.csv,.pdf,.doc,.docx,.zip" onchange="anexar(this)" style="max-width:420px"></div>';
+  h+='<div class="taxas"><b>1. Tabela de frete — '+nomeCanal(CANAL)+'</b> <span style="color:#b91c1c;font-weight:bold">(obrigatório)</span><br><small style="color:#64748b">A sua tabela de preços: Excel, CSV, PDF, Word ou ZIP · até 3 MB por arquivo.</small><div style="margin:8px 0">'+listaAnexos(s,'TABELA')+'</div>';
+  h+='<input type="file" multiple accept=".xlsx,.xls,.csv,.pdf,.doc,.docx,.zip" onchange="anexar(this,\\'TABELA\\')" style="max-width:420px"></div>';
+  h+='<div class="taxas"><b>2. Destinos atendidos — '+nomeCanal(CANAL)+'</b> <span style="color:#b91c1c;font-weight:bold">(obrigatório)</span><br><small style="color:#64748b">Excel ou CSV com uma linha por cidade atendida e as colunas: <b>CIDADE (ou IBGE)</b>, <b>ROTA/REGIÃO</b> a que a cidade pertence, <b>PRAZO</b> de entrega e <b>TAXAS por destino</b> (TDA, TRT, Suframa…; se não cobra, deixe a coluna com 0). O portal confere as colunas ao anexar.</small><div style="margin:8px 0">'+listaAnexos(s,'DESTINOS')+'</div>';
+  h+='<input type="file" multiple accept=".xlsx,.xls,.csv" onchange="anexar(this,\\'DESTINOS\\')" style="max-width:420px"> <button class="sec" onclick="modeloDestinos()">⬇ Baixar modelo de destinos (Excel)</button></div>';
+  h+='<div class="taxas"><b>3. Generalidades em arquivo</b> <span style="color:#64748b">(opcional — só se não estiverem na própria tabela)</span><br><small style="color:#64748b">Regras de cobrança, taxas gerais, cubagem, restrições, reajuste… Excel, CSV, PDF, Word ou ZIP.</small><div style="margin:8px 0">'+listaAnexos(s,'GENERALIDADES')+'</div>';
+  h+='<input type="file" multiple accept=".xlsx,.xls,.csv,.pdf,.doc,.docx,.zip" onchange="anexar(this,\\'GENERALIDADES\\')" style="max-width:420px"></div>';
   h+='<div class="ger">'+campoPrazo(s)
     +'<div><label>Valores já incluem ICMS?</label><select data-g="icms_incluso"><option value="">Selecione…</option><option value="SIM"'+(s.g.icms_incluso==='SIM'?' selected':'')+'>Sim, já incluem</option><option value="NAO"'+(s.g.icms_incluso==='NAO'?' selected':'')+'>Não, ICMS por fora</option></select></div>'
     +'<div><label>Vigência a partir de</label><input type="date" data-g="vigencia" value="'+esc(s.g.vigencia||'')+'"></div></div>';
   h+=blocoTaxas(s);
-  h+='<div class="taxas"><b>2. Generalidades</b><br><small style="color:#64748b">Descreva condições da sua tabela: taxas e regras de cobrança, restrições de atendimento, mínimos, prazos, reajustes, exceções.</small><textarea data-g="generalidades" rows="9" style="width:100%;margin-top:8px;padding:10px;border:2px solid #fcd34d;border-radius:8px;font-size:15px;font-family:inherit">'+esc(s.g.generalidades||'')+'</textarea></div>';
+  h+='<div class="taxas"><b>4. Observações / generalidades</b> <span style="color:#64748b">(opcional)</span><br><small style="color:#64748b">Algo sobre a tabela que não esteja nos arquivos: condições, restrições de atendimento, exceções, reajustes.</small><textarea data-g="generalidades" rows="9" style="width:100%;margin-top:8px;padding:10px;border:2px solid #fcd34d;border-radius:8px;font-size:15px;font-family:inherit">'+esc(s.g.generalidades||'')+'</textarea></div>';
+  h+='<div id="faltaBox"></div>';
   var c=document.getElementById('conteudo');c.innerHTML=h;
-  c.oninput=function(ev){var t=ev.target;if(t.getAttribute('data-g')){ST[CANAL].g[t.getAttribute('data-g')]=t.value;if(t.getAttribute('data-g')==='prazo')checaPrazo(t);return}
+  c.oninput=function(ev){var t=ev.target;if(t.getAttribute('data-g')){ST[CANAL].g[t.getAttribute('data-g')]=t.value;if(t.getAttribute('data-g')==='prazo')checaPrazo(t);caixaFaltas();return}
     var kt=t.getAttribute('data-t');if(kt!==null&&kt!==undefined){var tx=ST[CANAL].g.taxas||(ST[CANAL].g.taxas=[]);var ti=Number(kt);if(tx[ti])tx[ti][t.getAttribute('data-f')]=t.value}};
-  resumo()}
+  caixaFaltas();resumo()}
 // ---- Volumetria (so volumes/peso/cubagem; sem transportadora e sem valor de frete) ----
 function fmtDia(d){var p=String(d).split('-');return p[2]+'/'+p[1]+'/'+p[0]}
 function blocoVol(){var p=CFG.periodos&&CFG.periodos[CANAL];if(!p)return '';
@@ -381,13 +423,18 @@ function baixarVol(){if(VOLBUSY)return;if(!window.XLSX){alert('Não foi possíve
     XLSX.writeFile(wb,'volumetria-'+canal.toLowerCase()+'-'+ini.slice(0,7)+'-a-'+fim.slice(0,7)+'.xlsx');
     volSt('Pronto: '+tot.toLocaleString('pt-BR')+' notas em '+rows.length.toLocaleString('pt-BR')+' linhas. Arquivo baixado.'+(pend.length?' Ainda em preparação: '+pend.join(', ')+'.':''))
   }).catch(function(e){VOLBUSY=false;volSt('Erro: '+e.message,true)})}
-function anexar(inp){var fs=Array.prototype.slice.call(inp.files||[]),canal=CANAL,m=document.getElementById('msgTab');inp.value='';m.innerHTML='';
+function anexar(inp,cat){var fs=Array.prototype.slice.call(inp.files||[]),canal=CANAL,m=document.getElementById('msgTab');inp.value='';m.innerHTML='';cat=['DESTINOS','GENERALIDADES'].indexOf(cat)>=0?cat:'TABELA';
   fs.forEach(function(f){
     if(f.size>3*1024*1024){m.innerHTML+='<div class="msg erro">'+esc(f.name)+' passa de 3 MB. Compacte (ZIP) ou divida o arquivo.</div>';return}
-    var rd=new FileReader();rd.onload=function(ev){var b64=String(ev.target.result).split(',')[1]||'';
-      api({acao:'anexar',acesso:ACESSO,canal:canal,nome:f.name,tipo:f.type,dados:b64}).then(function(j){ST[canal].f.push(j.anexo);render();m.innerHTML+='<div class="msg ok">'+esc(f.name)+' anexado.</div>'})
-        .catch(function(e){m.innerHTML+='<div class="msg erro">'+esc(f.name)+': '+esc(e.message)+'</div>'})};
-    rd.readAsDataURL(f)})}
+    var ext=String(f.name).split('.').pop().toLowerCase(),planilha=['xlsx','xls','csv'].indexOf(ext)>=0;
+    if(cat==='DESTINOS'&&!planilha){m.innerHTML+='<div class="msg erro" style="font-size:17px">⛔ '+esc(f.name)+': o arquivo de destinos precisa ser Excel ou CSV.</div>';return}
+    (planilha?lerPlanilha(f):Promise.resolve(null)).then(function(lt){
+      if(cat==='DESTINOS'){var falta=ITENS_DEST.filter(function(it){return !lt[it[0]]}).map(function(it){return it[1]});
+        if(falta.length){m.innerHTML+='<div style="background:#fef2f2;border:3px solid #dc2626;border-radius:12px;padding:12px 16px;color:#b91c1c;margin:8px 0"><div style="font-size:20px;font-weight:900">⛔ '+esc(f.name)+' não foi anexado</div><div style="font-size:17px;font-weight:bold">Não encontrei: '+esc(falta.join(', '))+'. Inclua essas colunas (ou use o modelo de destinos) e anexe de novo.</div></div>';return}}
+      var rd=new FileReader();rd.onload=function(ev){var b64=String(ev.target.result).split(',')[1]||'';
+        api({acao:'anexar',acesso:ACESSO,canal:canal,nome:f.name,tipo:f.type,dados:b64,categoria:cat,leitura:lt}).then(function(j){ST[canal].f.push(j.anexo);render();document.getElementById('msgTab').innerHTML+='<div class="msg ok">'+esc(f.name)+' anexado.</div>'})
+          .catch(function(e){document.getElementById('msgTab').innerHTML+='<div class="msg erro">'+esc(f.name)+': '+esc(e.message)+'</div>'})};
+      rd.readAsDataURL(f)}).catch(function(e){m.innerHTML+='<div class="msg erro">'+esc(f.name)+': '+esc(e.message)+'</div>'})})}
 function removerAnexo(i){var a=ST[CANAL].f[i];if(!a||!confirm('Remover o arquivo '+a.nome+'?'))return;
   api({acao:'remover_anexo',acesso:ACESSO,id:a.id}).then(function(){ST[CANAL].f.splice(i,1);render()}).catch(function(e){document.getElementById('msgTab').innerHTML='<div class="msg erro">'+esc(e.message)+'</div>'})}
 function blocoTaxas(s){var tx=s.g.taxas||[];
@@ -467,7 +514,7 @@ function montarPayload(){var out={};CFG.canais.forEach(function(c){var s=ST[c],o
   Object.keys(s.a).forEach(function(k){var x=s.a[k],p=k.split('|');if(!x.r&&!(num(x.p)>0))return;
     var it={i:p[1],r:x.r||'',p:num(x.p)};COLS_A.forEach(function(c2){it[c2[0]]=num(x[c2[0]])});ori[oriNome(Number(p[0]))].atendimento.push(it)});
   out[c]={gerais:s.g,origens:ori}});return out}
-function validar(final){var out=[];if(CFG.modalidade==='PROPRIA'){if(final)CFG.canais.forEach(function(c){var s=ST[c];if(!s.f.length)out.push(nomeCanal(c)+': anexe a tabela de frete.');if(!s.g.icms_incluso)out.push(nomeCanal(c)+': informe se os valores já incluem ICMS.')});return out}CFG.canais.forEach(function(c){var s=ST[c],n=0,nc=0;Object.keys(s.c).forEach(function(k){var x=s.c[k];if(cheio(x)){n++;
+function validar(final){var out=[];if(CFG.modalidade==='PROPRIA'){if(final){CFG.canais.forEach(function(c){faltasPropria(c).forEach(function(t){out.push(nomeCanal(c)+': '+t)})});caixaFaltas();var fb=document.getElementById('faltaBox');if(out.length&&fb)fb.scrollIntoView({behavior:'smooth',block:'center'})}return out}CFG.canais.forEach(function(c){var s=ST[c],n=0,nc=0;Object.keys(s.c).forEach(function(k){var x=s.c[k];if(cheio(x)){n++;
     ['v','p','m','k'].forEach(function(f){if(x[f]&&!(num(x[f])>=0))out.push(nomeCanal(c)+': valor inválido em '+k.replace(/\\|/g,' / ')+'.')});
     if(num(x.p)>100)out.push(nomeCanal(c)+': percentual acima de 100% em '+k.replace(/\\|/g,' / ')+'.');
     var ei=final?excInfo(c,k):null;if(ei&&ei.n==='erro'){var pk=k.split('|');out.push(nomeCanal(c)+' — '+pk[1]+' / '+pk[2]+': '+ei.t)}}});
@@ -484,7 +531,7 @@ function baixarModelo(){if(!window.XLSX){alert('Não foi possível carregar o re
   if(!MUN.length){alert('Aguarde o carregamento da lista de cidades e tente de novo.');return}
   var s=ST[CANAL],pct=CFG.modalidade==='PERCENTUAL';
   var cidades=MUN.map(function(m){var a=s.a[ORI+'|'+m.i]||{};var tx={};COLS_A.forEach(function(c){tx[c[0]]=num(a[c[0]])});return{ibge:m.i,uf:m.u,cidade:m.c,regiao:a.r||'',prazo:num(a.p),tx:tx}});
-  var wb=montarPlanilhaFracionado(XLSX,{transportadora:NOME,cnpj:CNPJ,canal:CANAL,origem:oriNome(ORI),modalidade:CFG.modalidade,faixas:CFG.faixas[CANAL],ufs:CFG.ufs,regioes:CFG.regioes,gerais:s.g,cidades:cidades,colsAtend:COLS_A,
+  var wb=montarPlanilhaFracionado(XLSX,{transportadora:NOME,cnpj:CNPJ,canal:CANAL,origem:oriNome(ORI),modalidade:CFG.modalidade,faixas:CFG.faixas[CANAL],ufs:CFG.ufs,regioes:CFG.regioes,gerais:s.g,cidades:cidades,colsAtend:COLS_A,premissas:PREMISSAS,
     valor:function(uf,rg,fl){var x=s.c[ORI+'|'+uf+'|'+rg+'|'+(pct?'':faixaIdx(fl))];return x?{p:num(x.p),m:num(x.m),k:num(x.k),v:num(x.v)}:null}});
   XLSX.writeFile(wb,'tabela-fracionado-'+(pct?'percentual':'faixa-peso')+'-'+CANAL.toLowerCase()+(oriNome(ORI)?'-'+oriNome(ORI).replace(/[^a-z0-9]+/gi,'-'):'')+'-'+NOME.replace(/[^a-z0-9]+/gi,'-')+'.xlsx')}
 function detReg(v){var n=sa(v).replace(/[-_\\s]/g,'');for(var i=0;i<CFG.regioes.length;i++){if(CFG.regioes[i].replace(' ','')===n)return CFG.regioes[i]}return null}
@@ -625,7 +672,8 @@ export default async function handler(req, res) {
         status: convite.status === 'ENVIADO' ? 'ENVIADO' : 'EM_PREENCHIMENTO',
       }).eq('id', convite.id);
       const anexos = convite.modalidade === 'PROPRIA'
-        ? await todas(() => supabase.from('fracionado_anexos').select('id,canal,nome,tamanho').eq('convite_id', convite.id).order('created_at'))
+        ? await todas(() => supabase.from('fracionado_anexos').select('id,canal,nome,tamanho,categoria,leitura').eq('convite_id', convite.id).order('created_at'))
+          .catch(() => todas(() => supabase.from('fracionado_anexos').select('id,canal,nome,tamanho').eq('convite_id', convite.id).order('created_at')))
         : [];
       const [linhas, atendimento] = await Promise.all([
         todas(() => supabase.from('fracionado_respostas').select('canal,origem,uf_destino,regiao,faixa,frete_valor,frete_percentual,frete_minimo,frete_kg').eq('convite_id', convite.id).order('id'))
@@ -684,9 +732,21 @@ export default async function handler(req, res) {
       const { count } = await supabase.from('fracionado_anexos').select('id', { count: 'exact', head: true }).eq('convite_id', convite.id);
       if ((count || 0) >= 20) return enviarJson(res, 400, { erro: 'Limite de 20 arquivos atingido.' });
       const tamanho = Math.floor((dados.length * 3) / 4);
-      const { data: ins, error: eAn } = await supabase.from('fracionado_anexos').insert({
-        convite_id: convite.id, canal, nome, tipo: String(body.tipo || '').slice(0, 100), tamanho, conteudo: dados,
-      }).select('id,canal,nome,tamanho').single();
+      const categoria = ['DESTINOS', 'GENERALIDADES'].includes(body.categoria) ? body.categoria : 'TABELA';
+      if (categoria === 'DESTINOS' && !['xlsx', 'xls', 'csv'].includes(ext)) return enviarJson(res, 400, { erro: 'O arquivo de destinos atendidos precisa ser Excel ou CSV (para conferirmos cidade, rota, prazo e taxas).' });
+      const lido = body.leitura && typeof body.leitura === 'object' ? body.leitura : null;
+      const leitura = lido ? { cidade: !!lido.cidade, rota: !!lido.rota, prazo: !!lido.prazo, taxa: !!lido.taxa, frete: !!lido.frete, linhas: Math.max(0, parseInt(lido.linhas, 10) || 0) } : null;
+      if (categoria === 'DESTINOS' && !(leitura && leitura.cidade && leitura.rota && leitura.prazo && leitura.taxa)) return enviarJson(res, 400, { erro: 'O arquivo de destinos precisa ter as colunas de CIDADE (ou IBGE), ROTA/REGIÃO, PRAZO e TAXAS por destino.' });
+      let { data: ins, error: eAn } = await supabase.from('fracionado_anexos').insert({
+        convite_id: convite.id, canal, nome, tipo: String(body.tipo || '').slice(0, 100), tamanho, conteudo: dados, categoria, leitura,
+      }).select('id,canal,nome,tamanho,categoria,leitura').single();
+      // migration 20261126_004 ainda nao aplicada: marca a categoria no nome
+      if (eAn && /categoria|leitura/.test(eAn.message || '')) {
+        ({ data: ins, error: eAn } = await supabase.from('fracionado_anexos').insert({
+          convite_id: convite.id, canal, nome: categoria === 'TABELA' ? nome : `[${categoria}] ${nome}`, tipo: String(body.tipo || '').slice(0, 100), tamanho, conteudo: dados,
+        }).select('id,canal,nome,tamanho').single());
+        if (ins) Object.assign(ins, { categoria, leitura });
+      }
       if (eAn) throw eAn;
       await supabase.from('fracionado_convites').update({ ultimo_acesso_em: new Date().toISOString() }).eq('id', convite.id);
       return enviarJson(res, 200, { ok: true, anexo: ins });
@@ -793,8 +853,12 @@ export default async function handler(req, res) {
         for (const c of canaisSalvos) {
           const nome = c === 'ATACADO' ? 'Atacado' : 'B2C';
           if (config.modalidade === 'PROPRIA') {
-            const { count: nAnx } = await supabase.from('fracionado_anexos').select('id', { count: 'exact', head: true }).eq('convite_id', convite.id).eq('canal', c);
-            if (!nAnx) return enviarJson(res, 400, { erro: `${nome}: anexe a tabela de frete.` });
+            const anx = await todas(() => supabase.from('fracionado_anexos').select('id,nome,categoria').eq('convite_id', convite.id).eq('canal', c).order('created_at'))
+              .catch(() => todas(() => supabase.from('fracionado_anexos').select('id,nome').eq('convite_id', convite.id).eq('canal', c).order('created_at')));
+            const cat = (a) => a.categoria || (/^\[(DESTINOS|GENERALIDADES)\]/.exec(a.nome)?.[1] || 'TABELA');
+            if (!anx.some((a) => cat(a) === 'TABELA')) return enviarJson(res, 400, { erro: `${nome}: anexe a tabela de frete.` });
+            if (!anx.some((a) => cat(a) === 'DESTINOS')) return enviarJson(res, 400, { erro: `${nome}: anexe o arquivo de destinos atendidos (cidade, rota, prazo e taxas).` });
+            if (!gerais[c]?.prazo) return enviarJson(res, 400, { erro: `${nome}: informe o prazo de pagamento.` });
           } else {
             if (!linhas.some((l) => l.canal === c)) return enviarJson(res, 400, { erro: `${nome}: preencha ao menos uma célula da tabela de frete.` });
             if (!atend.some((a) => a.canal === c && a.regiao && a.prazo_dias)) return enviarJson(res, 400, { erro: `${nome}: informe região e prazo de ao menos uma cidade (Atendimento).` });

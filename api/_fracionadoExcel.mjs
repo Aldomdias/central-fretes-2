@@ -7,6 +7,15 @@
 //   PERCENTUAL : linha de regioes, linha "ESTADO DESTINO | FRETE (%) | MINIMO (R$) | KG GARANTIA (R$/KG)...", uma linha por UF
 //   FAIXA_PESO : linha de regioes, linha "ESTADO DESTINO | FAIXA PESO | FRETE (R$) | AD VALOREM..." (colunas
 //                de ad valorem ficam ocultas, preenchidas com os dados gerais), uma linha por UF x faixa
+// Premissas da negociacao (portal + Excel). Vao tambem para o futuro termo de aceite.
+export const PREMISSAS_FRACIONADO = [
+  'Pagamento somente de CT-es <b>ENTREGUES</b>: as faturas devem conter apenas CT-es já entregues. Na auditoria, fatura com CT-e ainda não entregue não será paga.',
+  'A entrega é comprovada por integração: <b>B2C via API</b> e <b>Atacado via EDI</b>.',
+  'Cubagem: vale a informada na <b>nossa nota fiscal</b>. Não é aceita cubagem manual; será pago o que estiver na NF. Se não concordar com a cubagem, a transportadora tem direito de não coletar.',
+  'Faturas com no máximo <b>500 CT-es</b> cada.',
+  'Prazo de pagamento padrão: <b>35 dias após o faturamento</b> (semanal ou quinzenal). Prazo menor depende de aprovação da diretoria.',
+];
+
 // Taxas por cidade (aba ATENDIMENTO / passo 2 do portal): [chave, cabecalho, coluna propria em fracionado_atendimento ou null (vai no jsonb taxas_destino)]
 // Baseado nas taxas por destino mais cadastradas hoje (taxas_especiais + taxas_extras). Taxa que nao estiver aqui entra em "Taxas adicionais" com as UFs.
 export const COLS_ATEND_FRACIONADO = [
@@ -58,12 +67,13 @@ export function montarPlanilhaFracionado(XLSX, o) {
   var compTxt = g.composicao === 'PESO_MAIS_PERCENTUAL' ? 'SOMA peso (R$/kg) + % NF' : g.composicao === 'MAIOR' ? 'MAIOR entre % NF, mínimo e kg' : '';
   var fichaRows = [
     ['Transportadora', o.transportadora, 'f'], ['CNPJ', o.cnpj || '', 'f'], ['Canal', o.canal, 'f'], ['Origem', o.origem || '', 'f'],
-    ['Faturamento (SEMANAL ou QUINZENAL)', g.faturamento || '', 'i'], ['Prazo de pagamento após faturamento (dias) — padrão 35', num(g.prazo), 'i'], ['Premissa', 'Máximo de 500 CT-es por fatura', 'f'],
+    ['Faturamento (SEMANAL ou QUINZENAL)', g.faturamento || '', 'i'], ['Prazo de pagamento após faturamento (dias) — padrão 35', num(g.prazo), 'i'], 
     ['GRIS (%)', num(g.gris), 'i'], ['GRIS mínimo (R$)', num(g.gris_min), 'i'], ['Ad valorem (%)', num(g.advalorem), 'i'], ['Ad valorem mínimo (R$)', num(g.advalorem_min), 'i'],
     ['Pedágio (R$ por fração de 100 kg)', num(g.pedagio), 'i'], ['TAS (R$)', num(g.tas), 'i'], ['CTRC / taxa por CT-e emitido (R$)', num(g.ctrc), 'i'],
     ['Cubagem (kg/m³)', num(g.cubagem), 'i'], ['Taxa emergencial (%)', num(g.emergencial), 'i'], ['Frete mínimo geral (R$)', num(g.frete_min), 'i'],
   ];
   if (pct) fichaRows.push(['Composição do frete (MAIOR ou SOMA)', compTxt, 'i']);
+  (o.premissas || []).forEach(function (p, k) { fichaRows.push(['Premissa ' + (k + 1), String(p).replace(/<[^>]+>/g, ''), 'f']); });
   fichaRows.push(['ICMS incluso nos valores (SIM ou NAO)', g.icms_incluso || '', 'i'], ['Vigência a partir de', g.vigencia || '', 'i'], ['Observações / outras condições', g.observacoes || '', 'i']);
   fichaRows.push(['TAXAS ADICIONAIS — unidade no nome: (R$) por CT-e, (%) da NF, (R$/KG) ou (R$/FRACAO)', 'Valor', 'h', ['Mínimo (R$)', 'Franquia kg (R$/KG) ou fração em kg (R$/FRACAO)', 'UFs (vazio = todas)']]);
   (g.taxas || []).forEach(function (t) { fichaRows.push(['Taxa adicional: ' + t.n + ' (' + (t.u || 'R$') + ')', num(t.v), 'i', [num(t.min), num(t.fr), t.ufs || '']]); });

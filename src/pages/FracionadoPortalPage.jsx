@@ -4,7 +4,7 @@ import { buscarCnpjRaizesPorNome } from '../services/lotacaoCotacaoService';
 import { CDS_B2C } from '../utils/tabelaPadraoB2c';
 import {
   baixarAnexoFracionado, carregarAnexosFracionado, cancelarConviteFracionado, carregarAtendimentoFracionado, carregarRespostasFracionado, excluirConviteFracionado, gerarConviteFracionado,
-  gerarVolumetriaPronta, linkConviteFracionado, listarConvitesFracionado, listarEnviosFracionado, reabrirConviteFracionado, renovarConviteFracionado, statusVolumetriaConvite,
+  gerarVolumetriaPronta, linkConviteFracionado, listarConvitesFracionado, listarOrigensCadastradas, listarEnviosFracionado, reabrirConviteFracionado, renovarConviteFracionado, statusVolumetriaConvite,
 } from '../services/fracionadoCotacaoService';
 import {
   CANAIS_FRACIONADO, FAIXAS_PADRAO_FRACIONADO, MODALIDADES_FRACIONADO, REGIOES_FRACIONADO, UFS_FRACIONADO,
@@ -92,6 +92,55 @@ function VolumetriaConvite({ convite, auto = false }) {
   );
 }
 
+// Campo de origens: só aceita origens das tabelas cadastradas (B2C + Atacado). Digita um pedaço do nome
+// (com ou sem acento, maiúsculo ou minúsculo) e escolhe na lista; pode marcar várias. Cada origem vira uma tabela no portal.
+function OrigensSelect({ valor, onChange, opcoes, canal }) {
+  const [busca, setBusca] = useState('');
+  const [aberta, setAberta] = useState(false);
+  const n = padronizarOrigem(busca);
+  const lista = (opcoes || []).filter((o) => (canal === 'AMBOS' || !o.canais.length || o.canais.includes(canal)) && !valor.includes(o.valor) && (!n || o.valor.includes(n))).slice(0, 60);
+  const add = (v) => { onChange([...valor, v]); setBusca(''); };
+  return (
+    <div style={{ position: 'relative', marginTop: 4 }}>
+      <div style={{ ...inp, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', minHeight: 40, cursor: 'text' }} onClick={() => setAberta(true)}>
+        {valor.map((v) => (
+          <span key={v} style={{ background: '#dbeafe', color: '#1e3a8a', borderRadius: 99, padding: '3px 4px 3px 10px', fontSize: 12, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            {v}
+            <button type="button" title="Remover" onClick={(e) => { e.stopPropagation(); onChange(valor.filter((x) => x !== v)); }} style={{ border: 0, background: 'transparent', color: '#1e3a8a', cursor: 'pointer', fontWeight: 900, fontSize: 13 }}>×</button>
+          </span>
+        ))}
+        <input
+          value={busca}
+          onChange={(e) => { setBusca(e.target.value); setAberta(true); }}
+          onFocus={() => setAberta(true)}
+          onBlur={() => setTimeout(() => setAberta(false), 150)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { e.preventDefault(); if (lista[0]) add(lista[0].valor); }
+            else if (e.key === 'Backspace' && !busca && valor.length) onChange(valor.slice(0, -1));
+          }}
+          placeholder={opcoes ? (valor.length ? 'Adicionar outra origem…' : 'Digite parte do nome da cidade (ex.: itaj)') : 'Carregando origens…'}
+          style={{ border: 0, outline: 0, flex: 1, minWidth: 180, fontSize: 14, padding: 2, background: 'transparent' }}
+        />
+      </div>
+      {aberta && opcoes && (
+        <div style={{ position: 'absolute', zIndex: 20, left: 0, right: 0, top: '100%', maxHeight: 260, overflow: 'auto', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 20px rgba(0,0,0,.12)' }}>
+          {lista.length ? lista.map((o) => (
+            <div
+              key={o.valor}
+              onMouseDown={(e) => { e.preventDefault(); add(o.valor); }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = '#eff6ff'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
+              style={{ padding: '7px 10px', cursor: 'pointer', borderBottom: '1px solid #f1f5f9', fontSize: 13, display: 'flex', justifyContent: 'space-between', gap: 8 }}
+            >
+              <b>{o.valor}</b><span style={{ color: '#64748b', fontWeight: 400 }}>{o.canais.join(' + ') || '-'} · {o.transportadoras} transp.</span>
+            </div>
+          )) : <div style={{ padding: 10, fontSize: 13, color: '#64748b', fontWeight: 400 }}>Nenhuma origem cadastrada com “{busca}”{canal !== 'AMBOS' ? ` no canal ${CANAIS_FRACIONADO[canal]}` : ''}.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Kpi({ titulo, valor, cor, ativo, onClick }) {
   return (
     <button type="button" onClick={onClick} style={{ textAlign: 'left', cursor: 'pointer', border: `2px solid ${ativo ? '#185FA5' : '#dbe3ef'}`, borderRadius: 12, padding: '10px 14px', background: ativo ? '#eff6ff' : '#f8fafc' }}>
@@ -116,9 +165,21 @@ function PreviaPropria({ convite, anexos }) {
               {(g.taxas || []).map((t) => ` · ${t.n} ${num(t.v)}${t.u === '%' ? '%' : t.u === 'R$/KG' ? ' R$/kg' : ''}`).join('')}
             </div>
             <div style={{ fontSize: 13, margin: '6px 0' }}>
-              {arqs.length ? arqs.map((a) => <button key={a.id} style={{ ...btnSec, marginRight: 6 }} onClick={() => baixarAnexoFracionado(a.id).catch(() => {})}>⬇ {a.nome}</button>) : <small>Nenhum arquivo anexado.</small>}
+              {['TABELA', 'DESTINOS', 'GENERALIDADES'].map((cat) => {
+                const doTipo = arqs.filter((a) => (a.categoria || 'TABELA') === cat);
+                return (
+                  <div key={cat} style={{ margin: '4px 0' }}>
+                    <b>{cat === 'TABELA' ? 'Tabela de frete' : cat === 'DESTINOS' ? 'Destinos atendidos' : 'Generalidades (arquivo)'}:</b>{' '}
+                    {doTipo.length ? doTipo.map((a) => (
+                      <button key={a.id} style={{ ...btnSec, marginRight: 6 }} onClick={() => baixarAnexoFracionado(a.id).catch(() => {})}>
+                        ⬇ {String(a.nome).replace(/^\[(DESTINOS|GENERALIDADES)\] /, '')}{a.leitura?.linhas ? ` (~${a.leitura.linhas} linhas)` : ''}
+                      </button>
+                    )) : <small style={{ color: cat === 'GENERALIDADES' ? '#64748b' : '#b91c1c', fontWeight: 700 }}>{cat === 'GENERALIDADES' ? 'nenhum (opcional)' : 'não anexado'}</small>}
+                  </div>
+                );
+              })}
             </div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#334155' }}>Generalidades (a avaliar se entram no escopo):</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#334155' }}>Observações / generalidades digitadas (a avaliar se entram no escopo):</div>
             <div style={{ whiteSpace: 'pre-wrap', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 8, padding: 10, fontSize: 13, marginTop: 4 }}>{g.generalidades || 'Não informadas.'}</div>
           </div>
         );
@@ -213,7 +274,8 @@ export default function FracionadoPortalPage() {
 
   const [transportadora, setTransportadora] = useState('');
   const [campanha, setCampanha] = useState('');
-  const [origensTxt, setOrigensTxt] = useState('');
+  const [origensSel, setOrigensSel] = useState([]);
+  const [opcoesOrigem, setOpcoesOrigem] = useState(null);
   const [canal, setCanal] = useState('AMBOS');
   const [modalidade, setModalidade] = useState('PERCENTUAL');
   const [faixasTxt, setFaixasTxt] = useState({ ...FAIXAS_PADRAO_FRACIONADO });
@@ -229,6 +291,10 @@ export default function FracionadoPortalPage() {
     try { setConvites(await listarConvitesFracionado()); } catch (e) { aviso(e.message, 'erro'); }
   }, []);
   useEffect(() => { recarregar(); }, [recarregar]);
+  useEffect(() => {
+    listarOrigensCadastradas().then(setOpcoesOrigem)
+      .catch((e) => { setOpcoesOrigem([]); setMsg({ tipo: 'erro', texto: `Não consegui carregar as origens cadastradas: ${e.message}` }); });
+  }, []);
   useEffect(() => {
     if (!isSupabaseConfigured()) return;
     getSupabaseClient().from('transportadoras').select('nome').order('nome').limit(2000)
@@ -251,7 +317,7 @@ export default function FracionadoPortalPage() {
     try {
       const cnpjRaizes = await buscarCnpjRaizesPorNome(transportadora.trim());
       const cv = await gerarConviteFracionado({
-        transportadora: transportadora.trim(), campanha: campanha.trim(), origens: Array.from(new Set(origensTxt.split(/[\n;]/).map(padronizarOrigem).filter(Boolean))), canal, modalidade, faixas: faixasTxt, dias, cnpjRaizes,
+        transportadora: transportadora.trim(), campanha: campanha.trim(), origens: origensSel, canal, modalidade, faixas: faixasTxt, dias, cnpjRaizes,
       });
       setUltimo(cv);
       setTransportadora('');
@@ -319,13 +385,14 @@ export default function FracionadoPortalPage() {
               {Object.entries(MODALIDADES_FRACIONADO).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
           </label>
-          <label style={{ ...lbl, gridColumn: 'span 2' }}>Origens / CDs (opcional — uma por linha ou separadas por ;)
-            <textarea style={{ ...inp, minHeight: 54 }} value={origensTxt} onChange={(e) => setOrigensTxt(e.target.value)} onBlur={() => setOrigensTxt(origensTxt.split('\n').map((l) => l.split(';').map(padronizarOrigem).join('; ')).join('\n'))} placeholder={'ITAJAI/SC\nSERRA/ES'} />
-            <span style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <button type="button" style={btnSec} onClick={() => setOrigensTxt(CDS_B2C.map((cd) => padronizarOrigem(`${cd.label}/${cd.uf}`)).join('\n'))}>Usar todos os CDs B2C</button>
-              <small style={{ fontWeight: 400, color: '#64748b' }}>O transportador filtra por origem e preenche a tabela de cada uma. Vazio = tabela única.</small>
+          <div style={{ ...lbl, gridColumn: 'span 2' }}>Origens / CDs (opcional — escolha na lista; pode marcar várias)
+            <OrigensSelect valor={origensSel} onChange={setOrigensSel} opcoes={opcoesOrigem} canal={canal} />
+            <span style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
+              <button type="button" style={btnSec} onClick={() => setOrigensSel(Array.from(new Set([...origensSel, ...CDS_B2C.map((cd) => (opcoesOrigem || []).find((o) => o.uf === cd.uf && cd.cidades.map(padronizarOrigem).includes(o.cidade))?.valor || padronizarOrigem(`${cd.cidades[0]}/${cd.uf}`))])))}>Usar todos os CDs B2C</button>
+              {origensSel.length ? <button type="button" style={btnSec} onClick={() => setOrigensSel([])}>Limpar</button> : null}
+              <small style={{ fontWeight: 400, color: '#64748b' }}>Só origens das tabelas cadastradas (B2C e Atacado). Cada origem vira uma tabela no portal. Vazio = tabela única.</small>
             </span>
-          </label>
+          </div>
           <label style={lbl}>Campanha / rótulo (opcional)
             <input style={inp} value={campanha} onChange={(e) => setCampanha(e.target.value)} placeholder="ex.: Reajuste 2027" />
           </label>
