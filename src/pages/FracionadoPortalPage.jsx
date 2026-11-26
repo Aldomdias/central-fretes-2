@@ -50,7 +50,7 @@ function PreviaPropria({ convite, anexos }) {
           <div key={c} style={{ border: '1px solid #dbe3ef', borderRadius: 10, padding: 12, marginBottom: 10 }}>
             <b>{CANAIS_FRACIONADO[c]}</b>
             <div style={{ fontSize: 13, margin: '6px 0' }}>
-              Prazo pgto {g.prazo ?? '-'} d · ICMS incluso: <b>{g.icms_incluso === 'SIM' ? 'Sim' : g.icms_incluso === 'NAO' ? 'Não (por fora)' : 'não informado'}</b> · Vigência {g.vigencia ? dataBr(g.vigencia) : '-'}
+              Faturamento {g.faturamento ? g.faturamento.toLowerCase() : '-'} · Prazo pgto {g.prazo ?? '-'} d · ICMS incluso: <b>{g.icms_incluso === 'SIM' ? 'Sim' : g.icms_incluso === 'NAO' ? 'Não (por fora)' : 'não informado'}</b> · Vigência {g.vigencia ? dataBr(g.vigencia) : '-'}
               {(g.taxas || []).map((t) => ` · ${t.n} ${num(t.v)}${t.u === '%' ? '%' : t.u === 'R$/KG' ? ' R$/kg' : ''}`).join('')}
             </div>
             <div style={{ fontSize: 13, margin: '6px 0' }}>
@@ -101,17 +101,17 @@ function PreviaResposta({ convite, respostas, atendimento, anexos = [] }) {
       </div>
       <div style={{ fontSize: 13, marginBottom: 8 }}>
         <b>{doCanal.length}</b> células · <b>{ufs.size}</b> de {UFS_FRACIONADO.length} UFs ·
-        {' '}Prazo pgto {g.prazo ?? '-'} d · GRIS {num(g.gris) || '-'}% · Ad valorem {num(g.advalorem) || '-'}% (mín. R$ {num(g.advalorem_min) || '-'}) · Pedágio {num(g.pedagio) || '-'} · TAS {num(g.tas) || '-'}{(g.taxas || []).map((t) => ` · ${t.n} ${num(t.v)}${t.u === '%' ? '%' : t.u === 'R$/KG' ? ' R$/kg' : ''}`).join('')} ·
+        {' '}Faturamento {g.faturamento ? g.faturamento.toLowerCase() : '-'} · Prazo pgto {g.prazo ?? '-'} d · GRIS {num(g.gris) || '-'}% · Ad valorem {num(g.advalorem) || '-'}% (mín. R$ {num(g.advalorem_min) || '-'}) · Pedágio {num(g.pedagio) || '-'} · TAS {num(g.tas) || '-'}{(g.taxas || []).map((t) => ` · ${t.n} ${num(t.v)}${t.u === '%' ? '%' : t.u === 'R$/KG' ? ' R$/kg' : ''}`).join('')} ·
         {' '}ICMS incluso: <b>{g.icms_incluso === 'SIM' ? 'Sim' : g.icms_incluso === 'NAO' ? 'Não (por fora)' : 'não informado'}</b> · Vigência {g.vigencia ? dataBr(g.vigencia) : '-'}
       </div>
       {!doCanal.length ? <small>Nenhum valor salvo neste canal ainda.</small> : pct ? (
         <div style={{ overflow: 'auto', maxHeight: 360, border: '1px solid #e2e8f0', borderRadius: 8 }}>
           <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-            <thead><tr><th style={th}>UF</th>{regioesUsadas.map((r) => <th key={r} style={th}>{r}<br /><small>% / mín. R$</small></th>)}</tr></thead>
+            <thead><tr><th style={th}>UF</th>{regioesUsadas.map((r) => <th key={r} style={th}>{r}<br /><small>% / mín. R$ / kg garantia</small></th>)}</tr></thead>
             <tbody>
               {UFS_FRACIONADO.filter((u) => ufs.has(u)).map((u) => (
                 <tr key={u}><td style={{ ...td, fontWeight: 700 }}>{u}</td>
-                  {regioesUsadas.map((r) => { const x = mapa.get(`${u}|${r}|`); return <td key={r} style={{ ...td, textAlign: 'right' }}>{x ? `${num(x.frete_percentual) || '-'} / ${num(x.frete_minimo) || '-'}` : ''}</td>; })}
+                  {regioesUsadas.map((r) => { const x = mapa.get(`${u}|${r}|`); return <td key={r} style={{ ...td, textAlign: 'right' }}>{x ? `${num(x.frete_percentual) || '-'} / ${num(x.frete_minimo) || '-'}${x.frete_kg != null ? ` / ${num(x.frete_kg)}` : ''}` : ''}</td>; })}
                 </tr>
               ))}
             </tbody>

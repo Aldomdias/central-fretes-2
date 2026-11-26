@@ -63,7 +63,7 @@ export async function baixarExcelFracionado({ convite, canal, origem = '', respo
     transportadora: convite.transportadora, cnpj: convite.respondente_cnpj || '', canal, origem, modalidade: convite.modalidade,
     faixas: faixasDoConviteFracionado(convite, canal), ufs: UFS_FRACIONADO, regioes: REGIOES_FRACIONADO,
     gerais: convite.dados_gerais?.[canal] || {}, cidades,
-    valor: (uf, rg, fl) => { const x = mapa.get(`${uf}|${rg}|${fl}`); return x ? { p: x.frete_percentual, m: x.frete_minimo, v: x.frete_valor } : null; },
+    valor: (uf, rg, fl) => { const x = mapa.get(`${uf}|${rg}|${fl}`); return x ? { p: x.frete_percentual, m: x.frete_minimo, k: x.frete_kg, v: x.frete_valor } : null; },
   });
   const slug = (t) => String(t || '').replace(/[^a-z0-9]+/gi, '-');
   XS.writeFile(wb, `tabela-fracionado-${pct ? 'percentual' : 'faixa-peso'}-${canal.toLowerCase()}${origem ? `-${slug(origem)}` : ''}-${slug(convite.transportadora)}.xlsx`);

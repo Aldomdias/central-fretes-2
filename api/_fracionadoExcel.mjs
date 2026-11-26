@@ -4,7 +4,7 @@
 // IMPORTANTE: a funcao precisa ser autocontida (so usa o parametro XLSX), pois e serializada com toString().
 //
 // Layout compativel com o importador de templates (aba FICHA DE CADASTRO + aba TABELA):
-//   PERCENTUAL : linha de regioes, linha "ESTADO DESTINO | FRETE (%) | MINIMO (R$)...", uma linha por UF
+//   PERCENTUAL : linha de regioes, linha "ESTADO DESTINO | FRETE (%) | MINIMO (R$) | KG GARANTIA (R$/KG)...", uma linha por UF
 //   FAIXA_PESO : linha de regioes, linha "ESTADO DESTINO | FAIXA PESO | FRETE (R$) | AD VALOREM..." (colunas
 //                de ad valorem ficam ocultas, preenchidas com os dados gerais), uma linha por UF x faixa
 export function montarPlanilhaFracionado(XLSX, o) {
@@ -42,7 +42,7 @@ export function montarPlanilhaFracionado(XLSX, o) {
   // ---------------- FICHA ----------------
   var fichaRows = [
     ['Transportadora', o.transportadora, 'f'], ['CNPJ', o.cnpj || '', 'f'], ['Canal', o.canal, 'f'], ['Origem', o.origem || '', 'f'],
-    ['Prazo de pagamento (dias)', num(g.prazo), 'i'], ['GRIS (%)', num(g.gris), 'i'], ['Ad valorem mínimo (R$)', num(g.advalorem_min), 'i'], ['Ad valorem (%)', num(g.advalorem), 'i'],
+    ['Faturamento (SEMANAL ou QUINZENAL)', g.faturamento || '', 'i'], ['Prazo de pagamento após faturamento (dias) — padrão 35', num(g.prazo), 'i'], ['Premissa', 'Máximo de 500 CT-es por fatura', 'f'], ['GRIS (%)', num(g.gris), 'i'], ['Ad valorem mínimo (R$)', num(g.advalorem_min), 'i'], ['Ad valorem (%)', num(g.advalorem), 'i'],
     ['Pedágio (R$)', num(g.pedagio), 'i'], ['TAS (R$)', num(g.tas), 'i'],
     ['ICMS incluso nos valores (SIM ou NAO)', g.icms_incluso || '', 'i'], ['Vigência a partir de', g.vigencia || '', 'i'],
   ];
@@ -69,7 +69,7 @@ export function montarPlanilhaFracionado(XLSX, o) {
   var primeiraDados = 6;
   var titulo = 'TABELA DE FRETE FRACIONADO — ' + o.transportadora + ' · ' + canalTxt + (o.origem ? ' · origem ' + o.origem : '') + ' · ' + (pct ? 'Frete percentual' : 'Frete por faixa de peso');
   var instr = pct
-    ? 'Preencha somente as colunas AMARELAS: FRETE (%) sobre o valor da NF e MÍNIMO (R$) por UF de destino e região. Deixe em branco o que você não atende.'
+    ? 'Preencha somente as colunas AMARELAS: FRETE (%) sobre o valor da NF, MÍNIMO (R$) e, se trabalhar com ele, KG GARANTIA (R$/kg — o frete fica o maior entre % da NF, mínimo e peso × R$/kg) por UF de destino e região. Deixe em branco o que você não atende.'
     : 'Preencha somente as células AMARELAS: FRETE (R$) de cada faixa de peso por UF e região. Na faixa "Acima de X kg" informe o R$ por kg excedente. Deixe em branco o que você não atende.';
   var legenda = 'Legenda:   AMARELO = você preenche   ·   CINZA = informação da linha (não alterar)';
   var i;
@@ -77,23 +77,23 @@ export function montarPlanilhaFracionado(XLSX, o) {
   var c;
   var uf;
   if (pct) {
-    nCols = 1 + R.length * 2;
+    nCols = 1 + R.length * 3;
     var r0 = ['']; var r1 = ['ESTADO DESTINO'];
-    R.forEach(function (rg) { r0.push(rg, ''); r1.push('FRETE (%)', 'MÍNIMO (R$)'); });
+    R.forEach(function (rg) { r0.push(rg, '', ''); r1.push('FRETE (%)', 'MÍNIMO (R$)', 'KG GARANTIA (R$/KG)'); });
     aoa = [[titulo], [instr], [legenda], [], r0, r1];
     o.ufs.forEach(function (u) {
       var row = [u];
-      R.forEach(function (rg) { var x = o.valor(u, rg, '') || {}; row.push(num(x.p), num(x.m)); });
+      R.forEach(function (rg) { var x = o.valor(u, rg, '') || {}; row.push(num(x.p), num(x.m), num(x.k)); });
       aoa.push(row);
     });
     ws = XLSX.utils.aoa_to_sheet(aoa);
     merges = banner(ws, nCols, titulo, instr, legenda);
-    R.forEach(function (rg, k) { merges.push({ s: { r: HR, c: 1 + k * 2 }, e: { r: HR, c: 2 + k * 2 } }); });
+    R.forEach(function (rg, k) { merges.push({ s: { r: HR, c: 1 + k * 3 }, e: { r: HR, c: 3 + k * 3 } }); });
     aplica(ws, HR, 0, { fill: fill(NAVY), border: bd('FFFFFF') });
     aplica(ws, HR + 1, 0, { font: { bold: true, sz: 11, color: { rgb: 'FFFFFF' } }, fill: fill(NAVY), alignment: { horizontal: 'center', vertical: 'center', wrapText: true }, border: bd('FFFFFF') });
     R.forEach(function (rg, k) {
       var cor = k % 2 ? '2B5C8F' : '1E3A5F';
-      for (c = 1 + k * 2; c <= 2 + k * 2; c += 1) {
+      for (c = 1 + k * 3; c <= 3 + k * 3; c += 1) {
         aplica(ws, HR, c, { font: { bold: true, sz: 12, color: { rgb: 'FFFFFF' } }, fill: fill(cor), alignment: { horizontal: 'center', vertical: 'center' }, border: bd('FFFFFF') });
         aplica(ws, HR + 1, c, { font: { bold: true, sz: 10, color: { rgb: 'FFFFFF' } }, fill: fill('B45309'), alignment: { horizontal: 'center', vertical: 'center', wrapText: true }, border: bd('FFFFFF') });
       }
@@ -105,7 +105,7 @@ export function montarPlanilhaFracionado(XLSX, o) {
       }
     }
     cols = [{ wch: 17 }];
-    R.forEach(function () { cols.push({ wch: 12 }, { wch: 13 }); });
+    R.forEach(function () { cols.push({ wch: 12 }, { wch: 13 }, { wch: 13 }); });
     ws['!freeze'] = { xSplit: 1, ySplit: HR + 2 };
     ws['!views'] = [{ state: 'frozen', xSplit: 1, ySplit: HR + 2 }];
   } else {
