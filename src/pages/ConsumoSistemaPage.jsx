@@ -129,7 +129,8 @@ export default function ConsumoSistemaPage() {
     setCarregando(true);
     setErro('');
     try {
-      const dados = await carregarPainelTelemetria({ desde: inicioPeriodo(periodo), usuarioId: usuarioFiltro || null });
+      // 'ate' com folga: os horarios vem do relogio de cada computador, que pode estar a frente do servidor.
+      const dados = await carregarPainelTelemetria({ desde: inicioPeriodo(periodo), ate: new Date(Date.now() + 3600000).toISOString(), usuarioId: usuarioFiltro || null });
       setPainel(dados);
     } catch (e) {
       const msg = String(e?.message || e);
@@ -243,7 +244,7 @@ function VisaoGeral({ totais, painel, recomendacoes }) {
         <Cartao titulo="Dados baixados do banco" valor={formatarBytes(totais.bytes_recebidos)} sub={`${formatarBytes(totais.bytes_enviados)} enviados`} />
         <Cartao titulo="Requisições" valor={fmtNum(totais.requisicoes)} sub={`${formatarMs(totais.ms_rede)} esperando rede`} />
         <Cartao titulo="CPU travada (navegador)" valor={formatarMs(totais.ms_cpu_travada)} sub="tarefas > 50 ms (Chrome/Edge)" />
-        <Cartao titulo="Pico de RAM" valor={fmtMb(totais.heap_mb_max)} sub="memória JS de uma aba" />
+        <Cartao titulo="Pico de RAM" valor={fmtMb(Math.max(n(totais.heap_mb_max), ...(painel.usuarios || []).map((u) => n(u.heap_mb_max))) || null)} sub="memória JS de uma aba" />
         <Cartao titulo="Erros / timeouts" valor={`${fmtNum(totais.erros)} / ${fmtNum(totais.timeouts)}`} sub={`${fmtNum(totais.processos)} processo(s) medidos`} />
       </div>
 

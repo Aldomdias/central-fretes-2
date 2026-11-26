@@ -26,6 +26,7 @@ let picoHeapMb = 0;
 let timers = [];
 let fetchOriginal = null;
 let sessaoCriada = false;
+let sessaoIniciadaEm = null; // relogio do navegador (o do servidor pode estar adiantado)
 const blocos = new Map(); // pagina -> bloco acumulado
 const processosAtivos = new Set();
 
@@ -311,6 +312,7 @@ async function enviarSinal(encerrar = false) {
         usuario_nome: usuario.nome || usuario.email || 'Usuário',
         usuario_email: usuario.email || '',
         perfil: usuario.perfil || '',
+        iniciado_em: sessaoIniciadaEm || agoraIso(),
         limite_heap_mb: limiteHeapMb(),
         memoria_aparelho_gb: typeof navigator !== 'undefined' ? (navigator.deviceMemory || null) : null,
         nucleos_cpu: typeof navigator !== 'undefined' ? (navigator.hardwareConcurrency || null) : null,
@@ -414,6 +416,7 @@ export function iniciarTelemetria(sessao) {
     sessionStorage.setItem(CHAVE_SESSAO_ABA, JSON.stringify({ id: sessaoId, usuarioId: sessao.id }));
   } catch { sessaoId = gerarUuid(); }
   sessaoCriada = false;
+  sessaoIniciadaEm = agoraIso();
   segundosAtivo = 0; segundosOcioso = 0; segundosOculto = 0; picoHeapMb = 0;
   ultimoTick = Date.now(); ultimaInteracao = Date.now();
 
