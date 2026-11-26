@@ -670,7 +670,7 @@ function lerCorpo(req) {
 
 // Questionario + termo de ciencia (obrigatorio antes de preencher/enviar). Gravado em dados_gerais.QUESTIONARIO
 // com data, IP e versao do termo. O texto descritivo definitivo do termo ainda sera enviado pela Suprimentos.
-const VERSAO_TERMO = 'v1-2026-11-26';
+const VERSAO_TERMO = 'v2-2026-11-26'; // v2: regra de fatura so via DOCCOB
 const TERMO_TEXTO = [
   'Ao enviar a tabela de frete por este portal, a transportadora declara estar ciente e de acordo com as regras abaixo, que serão consideradas na análise da proposta, na auditoria dos CT-es e no pagamento das faturas.',
   ...PREMISSAS_FRACIONADO,

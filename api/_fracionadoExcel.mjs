@@ -13,6 +13,7 @@ export const PREMISSAS_FRACIONADO = [
   'A entrega é comprovada por integração: <b>B2C via API</b> e <b>Atacado via EDI</b>.',
   'Cubagem: vale a informada na <b>nossa nota fiscal</b>. Não é aceita cubagem manual; será pago o que estiver na NF. Se não concordar com a cubagem, a transportadora tem direito de não coletar.',
   'Faturas com no máximo <b>500 CT-es</b> cada.',
+  'Só consideramos faturas enviadas devidamente pelo <b>EDI DOCCOB</b>. Fatura não recebida por DOCCOB: a transportadora terá que comprovar o envio; caso contrário, deverá refazer a fatura e enviá-la novamente, com o prazo de pagamento ajustado à nova data.',
   'Prazo de pagamento padrão: <b>35 dias após o faturamento</b> (semanal ou quinzenal). Prazo menor depende de aprovação da diretoria.',
 ];
 
