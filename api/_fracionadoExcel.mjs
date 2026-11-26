@@ -95,7 +95,7 @@ export function montarPlanilhaFracionado(XLSX, o) {
   var titulo = 'TABELA DE FRETE FRACIONADO — ' + o.transportadora + ' · ' + canalTxt + (o.origem ? ' · origem ' + o.origem : '') + ' · ' + (pct ? 'Frete percentual' : 'Frete por faixa de peso');
   var instr = pct
     ? 'Preencha somente as colunas AMARELAS: FRETE (%) sobre o valor da NF, MÍNIMO (R$) e, se trabalhar com ele, KG GARANTIA (R$/kg — o frete fica o maior entre % da NF, mínimo e peso × R$/kg) por UF de destino e região. Deixe em branco o que você não atende.'
-    : 'Preencha somente as células AMARELAS: FRETE (R$) de cada faixa de peso por UF e região. Na faixa "Acima de X kg" informe o R$ por kg excedente. Deixe em branco o que você não atende.';
+    : 'Preencha somente as células AMARELAS: FRETE (R$) de cada faixa de peso por UF e região. Na faixa "Acima de X kg" informe SÓ o R$ por KG excedente (não o preço da faixa nem valor por tonelada). Ex.: até 100 kg = R$ 150,00 e excedente R$ 1,20/kg → 130 kg paga 150,00 + 30 × 1,20 = R$ 186,00. Deixe em branco o que você não atende.';
   var legenda = 'Legenda:   AMARELO = você preenche   ·   CINZA = informação da linha (não alterar)';
   var i;
   var r;

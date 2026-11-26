@@ -21,6 +21,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { montarPlanilhaFracionado, COLS_ATEND_FRACIONADO } from '../_fracionadoExcel.mjs';
+import { periodoVolumetria, baseVolumetria } from '../_fracionadoVolumetria.mjs';
 
 const VALIDADE_ACESSO_MS = 8 * 60 * 60 * 1000;
 // Prazo de pagamento padrao (dias). Abaixo disso o portal marca em vermelho: exige aprovacao da diretoria.
@@ -129,99 +130,6 @@ function origensDoConvite(convite) {
 
 // ---- Volumetria (base de CT-es, sem transportadora e sem valor de frete) ----------
 // ATACADO = 3 meses fechados anteriores; B2C = 1 mes fechado anterior (base muito maior).
-const MESES_VOLUMETRIA = { B2C: 1, ATACADO: 3 };
-const COLUNAS_CTE_VOLUMETRIA = 'data_emissao,canal,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem,valor_nf,qtd_volumes';
-
-function periodoVolumetria(canal) {
-  const n = MESES_VOLUMETRIA[canal] || 1;
-  const hoje = new Date(Date.now() - 3 * 60 * 60 * 1000); // horario de Brasilia
-  const ano = hoje.getUTCFullYear();
-  const mes = hoje.getUTCMonth();
-  const iso = (d) => d.toISOString().slice(0, 10);
-  return { inicio: iso(new Date(Date.UTC(ano, mes - n, 1))), fim: iso(new Date(Date.UTC(ano, mes, 0))), meses: n };
-}
-
-const semAcento = (v) => String(v ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
-
-// Mesma regra de canal da base de CT-es (realizadoLocalDb.normalizeCanalParaMalha)
-function canalDaBase(v) {
-  const c = semAcento(v);
-  if (!c) return '';
-  if (c.includes('A DEFINIR') || c.includes('SEM TABELA') || c.includes('SEM VINCULO')) return 'A DEFINIR';
-  if (c.includes('INTERCOMPANY')) return 'INTERCOMPANY';
-  if (c.includes('REVERSA')) return 'REVERSA';
-  if (['ATACADO', 'B2B'].some((i) => c === i || c.includes(i))) return 'ATACADO';
-  if (['B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA', 'CARREFOUR', 'CANTU PNEUS', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET', 'BRADESCO SHOP', 'ITAU SHOP', 'SHOPEE', '99', 'MUSTANG', 'LIVELO', 'COOPERA', 'MARKETPLACE', 'MARKET PLACE', 'ECOMMERCE', 'E COMMERCE']
-    .some((i) => c === i || c.includes(i))) return 'B2C';
-  return c;
-}
-
-// "Itajai/SC" -> { cidade: 'ITAJAI', uf: 'SC' }
-function parseOrigemVolumetria(texto) {
-  const t = String(texto || '').trim();
-  const m = t.match(/^(.*?)\s*[/\-,]\s*([A-Za-z]{2})$/);
-  if (m && UFS.includes(m[2].toUpperCase())) return { cidade: semAcento(m[1]), uf: m[2].toUpperCase() };
-  return { cidade: semAcento(t), uf: '' };
-}
-
-function faixaDoPeso(faixas, peso) {
-  let achada = null;
-  for (const f of faixas) { if (peso >= f.min && (f.max == null || peso < f.max)) achada = f; }
-  return achada ? achada.label : (faixas.length ? faixas[faixas.length - 1].label : '');
-}
-
-async function volumetriaDoDia(supabase, { canal, dia, origens, ufsDestino, faixas }) {
-  const proximo = new Date(Date.parse(`${dia}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
-  const ufsOrigem = origens.length && origens.every((o) => o.uf) ? Array.from(new Set(origens.map((o) => o.uf))) : [];
-  const mk = () => {
-    let q = supabase.from('realizado_local_ctes').select(COLUNAS_CTE_VOLUMETRIA).gte('data_emissao', dia).lt('data_emissao', proximo);
-    if (ufsOrigem.length) q = q.in('uf_origem', ufsOrigem);
-    if (ufsDestino.length) q = q.in('uf_destino', ufsDestino);
-    return q.order('data_emissao', { ascending: true }).order('id', { ascending: true });
-  };
-  const mapa = new Map();
-  let lidas = 0;
-  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-  for (let pag = 0; pag < 200; pag += 4) {
-    const respostas = await Promise.all([0, 1, 2, 3].map((i) => mk().range((pag + i) * 1000, (pag + i) * 1000 + 999)));
-    let acabou = false;
-    for (const r of respostas) {
-      if (r.error) throw r.error;
-      const dados = r.data || [];
-      lidas += dados.length;
-      if (dados.length < 1000) acabou = true;
-      for (const row of dados) {
-        if (canalDaBase(row.canal) !== canal) continue;
-        const cidO = semAcento(row.cidade_origem);
-        const ufO = String(row.uf_origem || '').toUpperCase();
-        if (origens.length && !origens.some((o) => (!o.uf || o.uf === ufO) && (!o.cidade || cidO === o.cidade || cidO.includes(o.cidade)))) continue;
-        const peso = Math.max(num(row.peso), num(row.peso_declarado), num(row.peso_cubado));
-        const faixa = faixaDoPeso(faixas, peso);
-        const ibgeO = String(row.ibge_origem || '').replace(/\D/g, '').slice(0, 7);
-        const ibgeD = String(row.ibge_destino || '').replace(/\D/g, '').slice(0, 7);
-        const chave = [row.cidade_origem, ufO, ibgeO, row.cidade_destino, row.uf_destino, ibgeD, faixa].join('|');
-        let it = mapa.get(chave);
-        if (!it) {
-          it = [String(row.cidade_origem || ''), ufO, ibgeO, String(row.cidade_destino || ''), String(row.uf_destino || '').toUpperCase(), ibgeD, faixa, 0, 0, 0, 0, 0, 0, 0, 0];
-          mapa.set(chave, it);
-        }
-        const vol = num(row.qtd_volumes);
-        it[7] += 1;
-        it[8] += vol;
-        it[9] += num(row.peso);
-        it[10] += num(row.peso_declarado);
-        it[11] += num(row.peso_cubado);
-        it[12] += peso;
-        it[13] += num(row.cubagem) * (vol > 0 ? vol : 1);
-        it[14] += num(row.valor_nf);
-      }
-    }
-    if (acabou) break;
-  }
-  const r3 = (n) => Math.round(n * 1000) / 1000;
-  return { r: [...mapa.values()].map((it) => it.map((v, i) => (i >= 9 ? r3(v) : v))), n: lidas };
-}
-
 function configDoConvite(convite) {
   return {
     periodos: Object.fromEntries(canaisDoConvite(convite).map((c) => [c, periodoVolumetria(c)])),
@@ -313,6 +221,8 @@ th.sub{background:#b45309;top:34px;font-size:12px}
 td{padding:4px;border-bottom:1px solid #e2e8f0;background:#fff}td.fixo{font-weight:bold;background:#f1f5f9;position:sticky;left:0;z-index:1;padding:6px 10px;white-space:nowrap}
 td input{width:96px;padding:7px 8px;font-size:14px;text-align:right;border:2px solid #fcd34d;background:#fffbeb}
 td input.cheio{background:#ecfdf3;border-color:#86efac}
+td input.alerta{background:#fff7ed;border:2px solid #f59e0b;color:#9a3412;font-weight:bold}td input.bloq{background:#fef2f2;border:2px solid #dc2626;color:#b91c1c;font-weight:bold}
+.excbox{margin:8px 0;padding:10px 12px;background:#eff6ff;border:2px solid #93c5fd;border-radius:10px;font-size:14px;line-height:1.45}
 select.fora{background:#fed7aa;border:2px solid #ea580c;color:#9a3412;font-weight:bold}
 .ufgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:4px 10px;margin:6px 0 10px}.ufgrid label{display:flex;align-items:center;gap:4px;font-weight:normal;margin:0;font-size:14px;cursor:pointer}.ufgrid input{width:auto;margin:0}
 .ufsel{flex-basis:100%;background:#fff;border:1px solid #cbd5e1;border-radius:8px;padding:6px 10px}.ufsel summary{cursor:pointer;font-size:14px}
@@ -354,6 +264,15 @@ function prazoBaixo(v){var n=num(v);return n!=null&&n<PRAZO_PADRAO}
 function prazoMsg(v){return prazoBaixo(v)?'Abaixo do nosso padrão de '+PRAZO_PADRAO+' dias após o faturamento: precisa de aprovação da diretoria e pode pesar na avaliação da proposta.':'Nosso padrão: '+PRAZO_PADRAO+' dias após o faturamento (semanal ou quinzenal).'}
 function campoPrazo(s){var v=s.g.prazo||'',fa=s.g.faturamento||'';return '<div><label>Faturamento</label><select data-g="faturamento"><option value="">Selecione…</option><option value="SEMANAL"'+(fa==='SEMANAL'?' selected':'')+'>Semanal</option><option value="QUINZENAL"'+(fa==='QUINZENAL'?' selected':'')+'>Quinzenal</option></select><small class="prazo-msg erro">Premissa: no máximo '+MAX_CTES+' CT-es por fatura.</small></div><div><label>Prazo de pagamento após faturamento (dias)</label><input data-g="prazo" value="'+esc(v)+'" inputmode="decimal" placeholder="'+PRAZO_PADRAO+'" class="'+(prazoBaixo(v)?'prazo-baixo':'')+'"><small id="prazoMsg" class="prazo-msg'+(prazoBaixo(v)?' erro':'')+'">'+prazoMsg(v)+'</small></div>'}
 function checaPrazo(t){var b=prazoBaixo(t.value);t.className=b?'prazo-baixo':'';var m=document.getElementById('prazoMsg');if(m){m.className='prazo-msg'+(b?' erro':'');m.textContent=prazoMsg(t.value)}}
+function fmtR(n){return Number(n).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}
+// Faixa aberta (Acima de X kg) = R$ por kg excedente. Bloqueia valor com cara de preço de faixa/tonelada; avisa se fora da curva.
+function excInfo(c,k){var p=k.split('|'),F=CFG.faixas[c]||[],fi=Number(p[3]),f=F[fi];if(p[3]===''||!f||f.max!=null)return null;
+  var v=num((ST[c].c[k]||{}).v);if(v==null)return null;var ant=F[fi-1],pv=ant?num((ST[c].c[p[0]+'|'+p[1]+'|'+p[2]+'|'+(fi-1)]||{}).v):null,media=pv&&ant.max?pv/ant.max:null;
+  if(v>50||(pv&&v>=pv))return{n:'erro',t:'R$ '+fmtR(v)+' não parece R$ por kg excedente (parece o preço da faixa ou valor por tonelada). Informe só quanto cobra por CADA KG acima de '+f.min+' kg'+(pv?'; até '+f.min+' kg o frete já é R$ '+fmtR(pv):'')+'.'};
+  if((media&&v>media*3)||(!media&&v>10))return{n:'aviso',t:'R$ '+fmtR(v)+' por kg excedente está alto'+(media?' (na faixa anterior sai R$ '+fmtR(media)+' por kg)':'')+'. Confira se é por kg e não por tonelada.'};
+  return null}
+function excCel(t){var info=excInfo(CANAL,t.getAttribute('data-k'));t.className=(t.value?'cheio':'')+(info?(info.n==='erro'?' bloq':' alerta'):'');t.title=info?info.t:''}
+function excMsg(){var e=document.getElementById('excMsg');if(!e)return;var out=[];document.querySelectorAll('input[data-exc]').forEach(function(t){excCel(t);var info=excInfo(CANAL,t.getAttribute('data-k'));if(info)out.push('<div style="color:'+(info.n==='erro'?'#b91c1c':'#b45309')+';font-weight:bold">'+(info.n==='erro'?'⛔ ':'⚠ ')+esc(t.getAttribute('data-k').split('|')[2])+': '+esc(info.t)+'</div>')});e.innerHTML=out.join('')}
 function cheio(x){return !!(x&&(x.v||x.p||x.m||x.k))}
 function cidadeOk(x){return !!(x&&x.r&&num(x.p)>0)}
 function identificar(){var b=document.getElementById('btnId');document.getElementById('erroId').innerHTML='';
@@ -399,11 +318,11 @@ function render(){if(!CFG)return;if(CFG.modalidade==='PROPRIA'){renderPropria();
     h+=blocoTaxas(s);
     h+=CFG.modalidade==='PERCENTUAL'?gradePct():gradeFaixa();
   }else h+=viewCidades();
-  var c=document.getElementById('conteudo');c.innerHTML=h;
+  var c=document.getElementById('conteudo');c.innerHTML=h;excMsg();
   c.oninput=function(ev){var t=ev.target;if(t.getAttribute('data-g')){ST[CANAL].g[t.getAttribute('data-g')]=t.value;if(t.getAttribute('data-g')==='prazo')checaPrazo(t);return}
     var kt=t.getAttribute('data-t');if(kt!==null&&kt!==undefined){var tx=ST[CANAL].g.taxas||(ST[CANAL].g.taxas=[]);var ti=Number(kt);if(tx[ti])tx[ti][t.getAttribute('data-f')]=t.value;return}
     var ka=t.getAttribute('data-a');if(ka){var xa=ST[CANAL].a[ka]||(ST[CANAL].a[ka]={});xa[t.getAttribute('data-f')]=t.value;if(t.tagName==='INPUT')t.className=t.value?'cheio':'';else if(t.getAttribute('data-f')==='r'){var rt0=regTab(UFSEL);t.className=(t.value&&rt0&&!rt0[t.value])?'fora':''}resumo();return}
-    var k=t.getAttribute('data-k');if(!k)return;var f=t.getAttribute('data-f'),x=ST[CANAL].c[k]||(ST[CANAL].c[k]={});x[f]=t.value;t.className=t.value?'cheio':'';resumo()};
+    var k=t.getAttribute('data-k');if(!k)return;var f=t.getAttribute('data-f'),x=ST[CANAL].c[k]||(ST[CANAL].c[k]={});x[f]=t.value;t.className=t.value?'cheio':'';if(t.hasAttribute('data-exc')||CFG.modalidade==='FAIXA_PESO')excMsg();resumo()};
   c.onchange=function(ev){var t=ev.target;if(t.getAttribute('data-g'))ST[CANAL].g[t.getAttribute('data-g')]=t.value;else if(t.getAttribute('data-a'))c.oninput(ev);else if(t.hasAttribute('data-t')&&t.getAttribute('data-f')==='u'){c.oninput(ev);render()}};
   if(VISAO==='cidades')filtraCidades();
   resumo()}
@@ -438,24 +357,30 @@ function blocoVol(){var p=CFG.periodos&&CFG.periodos[CANAL];if(!p)return '';
 function volSt(t,erro){var e=document.getElementById('volst');if(e){e.textContent=t;e.style.color=erro?'#b91c1c':'#334155'}}
 function volUfTodas(on){CFG.ufs.forEach(function(u){VOLUFS[u]=on});render()}
 function baixarVol(){if(VOLBUSY)return;if(!window.XLSX){alert('Não foi possível carregar o recurso de Excel. Verifique sua conexão.');return}
-  var canal=CANAL,p=CFG.periodos[canal],oris=[];CFG.origens.forEach(function(o,i){if(o&&VOLORI[i])oris.push(o)});
-  var ufs=CFG.ufs.filter(function(u){return VOLUFS[u]});if(!ufs.length){alert('Marque ao menos uma UF de destino.');return}if(ufs.length===CFG.ufs.length)ufs=[];
-  var dias=[];for(var d=new Date(p.inicio+'T00:00:00Z');d.toISOString().slice(0,10)<=p.fim;d=new Date(d.getTime()+864e5))dias.push(d.toISOString().slice(0,10));
-  var agg={},feitos=0,lidas=0,fila=dias.slice(),falha=null;VOLBUSY=true;volSt('Gerando… 0 de '+dias.length+' dias');
-  function dia(){if(falha||!fila.length)return Promise.resolve();var dt=fila.shift();
-    function tenta(n){return api({acao:'volumetria',acesso:ACESSO,canal:canal,dia:dt,origens:oris,ufs:ufs}).catch(function(e){if(n<2)return tenta(n+1);falha=e;throw e})}
-    return tenta(0).then(function(j){lidas+=j.n;j.r.forEach(function(r){var k=r.slice(0,7).join('|'),a=agg[k];if(!a)agg[k]=r.slice();else for(var q=7;q<15;q++)a[q]+=r[q]});feitos++;volSt('Gerando… '+feitos+' de '+dias.length+' dias ('+lidas.toLocaleString('pt-BR')+' CT-es lidos)');return dia()})}
-  Promise.all([dia(),dia(),dia()]).then(function(){VOLBUSY=false;if(falha)return;
-    var linhas=Object.keys(agg).map(function(k){return agg[k]}).sort(function(a,b){return (a[4]+a[3]).localeCompare(b[4]+b[3])||String(a[6]).localeCompare(String(b[6]))});
-    if(!linhas.length){volSt('Nenhuma nota encontrada para os filtros no período.',true);return}
+  var canal=CANAL,idx=[];CFG.origens.forEach(function(o,i){if(!o||VOLORI[i])idx.push(i)});if(!idx.length)CFG.origens.forEach(function(o,i){idx.push(i)});
+  var ufs=CFG.ufs.filter(function(u){return VOLUFS[u]});if(!ufs.length){alert('Marque ao menos uma UF de destino.');return}var todasUfs=ufs.length===CFG.ufs.length;
+  VOLBUSY=true;volSt('Buscando a volumetria…');var linhas=[],pend=[],per=[];
+  api({acao:'volumetria',acesso:ACESSO,canal:canal}).then(function(j){
+    var alvos=idx.map(function(i){var it=(j.itens||[])[i]||{pendente:true};it.i=i;return it});
+    alvos.forEach(function(a){if(a.pendente)pend.push(oriNome(a.i)||'todas as origens')});
+    var ok=alvos.filter(function(a){return !a.pendente});
+    var fila=[];ok.forEach(function(a){per.push(a);for(var q=0;q<(a.partes||1);q++)fila.push({a:a,q:q})});
+    var tot=fila.length,feitos=0;
+    function prox(){if(!fila.length)return Promise.resolve();var f=fila.shift();
+      return api({acao:'volumetria',acesso:ACESSO,canal:canal,origem:f.a.i,inicio:f.a.inicio,fim:f.a.fim,parte:f.q}).then(function(r){
+        (r.r||[]).forEach(function(x){if(todasUfs||ufs.indexOf(String(x[4]))>=0)linhas.push(x)});feitos++;volSt('Baixando… '+feitos+' de '+tot);return prox()})}
+    return prox()}).then(function(){VOLBUSY=false;
+    if(!per.length){volSt('A volumetria '+(pend.length?'de '+pend.join(', ')+' ':'')+'ainda está sendo preparada pelo nosso time. Tente novamente mais tarde.',true);return}
+    if(!linhas.length){volSt('Nenhuma nota encontrada para as UFs marcadas.',true);return}
+    var ini=per.map(function(a){return a.inicio}).sort()[0],fim=per.map(function(a){return a.fim}).sort().pop();
     var rows=linhas.map(function(r){var n=r[7]||1;return{Canal:nomeCanal(canal),Faixa_Peso:r[6],Notas:r[7],Volumes:r[8],Peso_Real:r[9],Peso_Declarado:r[10],Peso_Cubado:r[11],Peso_Considerado:r[12],Cubagem_Total_m3:r[13],Valor_NF:r[14],Origem:r[0],UF_Origem:r[1],Destino:r[3],UF_Destino:r[4],IBGE_Origem:r[2],IBGE_Destino:r[5],Media_Peso_Nota:Math.round(r[12]/n*100)/100,Media_Volumes_Nota:Math.round(r[8]/n*100)/100,Media_Cubagem_Nota:Math.round(r[13]/n*1000)/1000,Media_Valor_NF_Nota:Math.round(r[14]/n*100)/100}});
     var wb=XLSX.utils.book_new(),ws=XLSX.utils.json_to_sheet(rows);ws['!cols']=Object.keys(rows[0]).map(function(h){return{wch:Math.min(Math.max(h.length+3,12),30)}});ws['!autofilter']={ref:ws['!ref']};
     XLSX.utils.book_append_sheet(wb,ws,'Volumetria');
-    var tot=rows.reduce(function(s,r){return s+r.Notas},0);
-    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet([{Canal:nomeCanal(canal),Periodo_Inicial:p.inicio,Periodo_Final:p.fim,Origens:oris.length?oris.join(' | '):(CFG.origens.filter(function(o){return o}).join(' | ')||'Todas'),UFs_Destino:ufs.length?ufs.join(', '):'Todas',Notas:tot,Linhas:rows.length,Regra_Peso:'Peso_Considerado = maior entre peso real, declarado e cubado (define a faixa)',Regra_Cubagem:'Cubagem_Total_m3 = cubagem x volumes',Regra_Valor_NF:'Valor_NF = valor da nota fiscal'}]),'Resumo');
-    XLSX.writeFile(wb,'volumetria-'+canal.toLowerCase()+'-'+p.inicio.slice(0,7)+'-a-'+p.fim.slice(0,7)+'.xlsx');
-    volSt('Pronto: '+tot.toLocaleString('pt-BR')+' notas em '+rows.length.toLocaleString('pt-BR')+' linhas. Arquivo baixado.')
-  }).catch(function(e){VOLBUSY=false;falha=e;volSt('Erro: '+e.message,true)})}
+    var tot=rows.reduce(function(s2,r){return s2+r.Notas},0);
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet([{Canal:nomeCanal(canal),Periodo_Inicial:ini,Periodo_Final:fim,Origens:per.map(function(a){return oriNome(a.i)||'Todas'}).join(' | '),UFs_Destino:todasUfs?'Todas':ufs.join(', '),Notas:tot,Linhas:rows.length,Regra_Peso:'Peso_Considerado = maior entre peso real, declarado e cubado (define a faixa)',Regra_Cubagem:'Cubagem_Total_m3 = cubagem x volumes',Regra_Valor_NF:'Valor_NF = valor da nota fiscal'}]),'Resumo');
+    XLSX.writeFile(wb,'volumetria-'+canal.toLowerCase()+'-'+ini.slice(0,7)+'-a-'+fim.slice(0,7)+'.xlsx');
+    volSt('Pronto: '+tot.toLocaleString('pt-BR')+' notas em '+rows.length.toLocaleString('pt-BR')+' linhas. Arquivo baixado.'+(pend.length?' Ainda em preparação: '+pend.join(', ')+'.':''))
+  }).catch(function(e){VOLBUSY=false;volSt('Erro: '+e.message,true)})}
 function anexar(inp){var fs=Array.prototype.slice.call(inp.files||[]),canal=CANAL,m=document.getElementById('msgTab');inp.value='';m.innerHTML='';
   fs.forEach(function(f){
     if(f.size>3*1024*1024){m.innerHTML+='<div class="msg erro">'+esc(f.name)+' passa de 3 MB. Compacte (ZIP) ou divida o arquivo.</div>';return}
@@ -489,9 +414,12 @@ function ufTem(uf){var s=ST[CANAL],r=false;Object.keys(s.c).forEach(function(k){
 function gradeFaixa(){var s=ST[CANAL],R=CFG.regioes,F=CFG.faixas[CANAL];
   var h='<div class="ferr"><label class="fl">UF destino <select id="ufsel" onchange="UFSEL=this.value;render()">'+CFG.ufs.map(function(u){return '<option value="'+u+'"'+(u===UFSEL?' selected':'')+'>'+u+(ufTem(u)?' ✔':'')+'</option>'}).join('')+'</select></label><button class="sec" onclick="copiarUf()">Copiar esta UF para as demais UFs</button></div>';
   h+='<div class="tw"><table><thead><tr><th style="left:0;z-index:3">Faixa de peso</th>'+R.map(function(r){return '<th>'+r+'</th>'}).join('')+'</tr></thead><tbody>';
-  F.forEach(function(f,i){h+='<tr><td class="fixo">'+esc(f.max==null?f.label+' (R$/kg excedente)':f.label)+'</td>';R.forEach(function(r){var k=ORI+'|'+UFSEL+'|'+r+'|'+i,x=s.c[k]||{};
-    h+='<td><input data-k="'+k+'" data-f="v" class="'+(x.v?'cheio':'')+'" value="'+esc(x.v||'')+'" inputmode="decimal"></td>'});h+='</tr>'});
-  return h+'</tbody></table></div>'}
+  F.forEach(function(f,i){var ab=f.max==null;h+='<tr><td class="fixo">'+(ab?esc(f.label)+'<br><b style="color:#b45309">R$ por KG excedente</b>':esc(f.label))+'</td>';R.forEach(function(r){var k=ORI+'|'+UFSEL+'|'+r+'|'+i,x=s.c[k]||{},info=ab?excInfo(CANAL,k):null;
+    h+='<td><input data-k="'+k+'" data-f="v"'+(ab?' data-exc="1" placeholder="R$/kg"':'')+' class="'+(x.v?'cheio':'')+(info?(info.n==='erro'?' bloq':' alerta'):'')+'" title="'+esc(info?info.t:'')+'" value="'+esc(x.v||'')+'" inputmode="decimal"></td>'});h+='</tr>'});
+  var fa=F[F.length-1],fu=F[F.length-2];
+  h+='</tbody></table></div>';
+  if(fa&&fa.max==null&&fu)h+='<div class="excbox"><b>Atenção à última linha ('+esc(fa.label)+'):</b> informe só o <b>R$ por KG excedente</b>, não o preço da faixa nem valor por tonelada. Acima de '+fa.min+' kg cobra-se o valor da faixa '+esc(fu.label)+' <b>mais</b> o excedente por kg.<br>Exemplo: se até '+fa.min+' kg o frete é R$ 150,00 e o excedente é R$ 1,20/kg, um envio de '+(fa.min+30)+' kg paga 150,00 + 30 × 1,20 = <b>R$ 186,00</b>.<div id="excMsg"></div></div>';
+  return h}
 function copiarUf(){var s=ST[CANAL];if(!ufTem(UFSEL)){alert('Preencha a UF '+UFSEL+' antes de copiar.');return}
   if(!confirm('Copiar os valores de '+UFSEL+' para TODAS as outras UFs desta origem? Valores já digitados nelas serão substituídos.'))return;
   var pre=ORI+'|'+UFSEL+'|',origem={};Object.keys(s.c).forEach(function(k){if(k.indexOf(pre)===0&&cheio(s.c[k]))origem[k.slice(pre.length)]=s.c[k]});
@@ -541,7 +469,8 @@ function montarPayload(){var out={};CFG.canais.forEach(function(c){var s=ST[c],o
   out[c]={gerais:s.g,origens:ori}});return out}
 function validar(final){var out=[];if(CFG.modalidade==='PROPRIA'){if(final)CFG.canais.forEach(function(c){var s=ST[c];if(!s.f.length)out.push(nomeCanal(c)+': anexe a tabela de frete.');if(!s.g.icms_incluso)out.push(nomeCanal(c)+': informe se os valores já incluem ICMS.')});return out}CFG.canais.forEach(function(c){var s=ST[c],n=0,nc=0;Object.keys(s.c).forEach(function(k){var x=s.c[k];if(cheio(x)){n++;
     ['v','p','m','k'].forEach(function(f){if(x[f]&&!(num(x[f])>=0))out.push(nomeCanal(c)+': valor inválido em '+k.replace(/\\|/g,' / ')+'.')});
-    if(num(x.p)>100)out.push(nomeCanal(c)+': percentual acima de 100% em '+k.replace(/\\|/g,' / ')+'.')}});
+    if(num(x.p)>100)out.push(nomeCanal(c)+': percentual acima de 100% em '+k.replace(/\\|/g,' / ')+'.');
+    var ei=final?excInfo(c,k):null;if(ei&&ei.n==='erro'){var pk=k.split('|');out.push(nomeCanal(c)+' — '+pk[1]+' / '+pk[2]+': '+ei.t)}}});
     Object.keys(s.a).forEach(function(k){if(cidadeOk(s.a[k]))nc++});
     if(final){if(!n)out.push(nomeCanal(c)+': preencha ao menos uma célula da tabela de frete.');if(!nc)out.push(nomeCanal(c)+': informe região e prazo de ao menos uma cidade (passo 2, Atendimento).');if(!s.g.icms_incluso)out.push(nomeCanal(c)+': informe se os valores já incluem ICMS.')}});return out}
 function enviar(final){var m=document.getElementById('msgTab');m.innerHTML='';var erros=validar(final);
@@ -713,20 +642,33 @@ export default async function handler(req, res) {
       return enviarJson(res, 200, { m: mun.map((m) => [m.i, m.u, m.c]) });
     }
 
+    // Volumetria pronta (gerada pelo time interno em Portal de tabelas — fracionado). Sem parte: lista o que existe
+    // para as origens do canal; com parte: devolve aquele pedaco das linhas. Nunca varre a base de CT-es aqui.
     if (body.acao === 'volumetria') {
       if (!acessoValido(token, body.acesso, segredo)) return enviarJson(res, 401, { erro: 'Sessão expirada. Recarregue a página e se identifique novamente.' });
       const canal = String(body.canal || '');
       if (!config.canais.includes(canal)) return enviarJson(res, 400, { erro: 'Canal inválido.' });
-      const per = periodoVolumetria(canal);
-      const dia = String(body.dia || '');
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dia) || dia < per.inicio || dia > per.fim) return enviarJson(res, 400, { erro: 'Dia fora do período da volumetria.' });
-      // so as origens do convite; nada marcado = todas as do convite
-      const doConvite = config.origens.filter(Boolean);
-      const marcadas = (Array.isArray(body.origens) ? body.origens : []).map(String).filter((o) => doConvite.includes(o));
-      const alvo = (marcadas.length ? marcadas : doConvite).map(parseOrigemVolumetria);
-      const ufsDestino = (Array.isArray(body.ufs) ? body.ufs : []).map((u) => String(u).toUpperCase()).filter((u) => UFS.includes(u));
-      const out = await volumetriaDoDia(supabase, { canal, dia, origens: alvo, ufsDestino, faixas: config.faixas[canal] || [] });
-      return enviarJson(res, 200, out);
+      const faixas = config.faixas[canal] || [];
+      const bases = config.origens.map((o) => ({ origem: o, base: baseVolumetria({ canal, origem: o, faixas }) }));
+      if (body.parte === undefined || body.parte === null) {
+        const itens = [];
+        for (const b of bases) {
+          const { data, error } = await supabase.from('fracionado_volumetria').select('periodo_inicio,periodo_fim,total_partes,notas,gerado_em')
+            .eq('base', b.base).eq('parte', 0).order('periodo_fim', { ascending: false }).limit(1);
+          if (error) throw error;
+          const r = data?.[0];
+          itens.push(r ? { origem: b.origem, inicio: r.periodo_inicio, fim: r.periodo_fim, partes: r.total_partes, notas: r.notas, gerado_em: r.gerado_em } : { origem: b.origem, pendente: true });
+        }
+        return enviarJson(res, 200, { itens });
+      }
+      const b = bases[Number(body.origem)];
+      const parte = parseInt(body.parte, 10);
+      if (!b || !Number.isFinite(parte) || parte < 0 || !/^\d{4}-\d{2}-\d{2}$/.test(String(body.inicio || '')) || !/^\d{4}-\d{2}-\d{2}$/.test(String(body.fim || ''))) return enviarJson(res, 400, { erro: 'Pedido inválido.' });
+      const { data, error } = await supabase.from('fracionado_volumetria').select('linhas')
+        .eq('base', b.base).eq('periodo_inicio', body.inicio).eq('periodo_fim', body.fim).eq('parte', parte).limit(1);
+      if (error) throw error;
+      if (!data?.length) return enviarJson(res, 404, { erro: 'Volumetria não encontrada. Recarregue a página.' });
+      return enviarJson(res, 200, { r: data[0].linhas || [] });
     }
 
     if (body.acao === 'anexar') {

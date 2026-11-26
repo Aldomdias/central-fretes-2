@@ -4,13 +4,15 @@ import { buscarCnpjRaizesPorNome } from '../services/lotacaoCotacaoService';
 import { CDS_B2C } from '../utils/tabelaPadraoB2c';
 import {
   baixarAnexoFracionado, carregarAnexosFracionado, cancelarConviteFracionado, carregarAtendimentoFracionado, carregarRespostasFracionado, excluirConviteFracionado, gerarConviteFracionado,
-  linkConviteFracionado, listarConvitesFracionado, listarEnviosFracionado, reabrirConviteFracionado, renovarConviteFracionado,
+  gerarVolumetriaPronta, linkConviteFracionado, listarConvitesFracionado, listarEnviosFracionado, reabrirConviteFracionado, renovarConviteFracionado, statusVolumetriaConvite,
 } from '../services/fracionadoCotacaoService';
 import {
   CANAIS_FRACIONADO, FAIXAS_PADRAO_FRACIONADO, MODALIDADES_FRACIONADO, REGIOES_FRACIONADO, UFS_FRACIONADO,
   baixarExcelFracionado, canaisDoConviteFracionado, faixasDoConviteFracionado, origensDoConviteFracionado, parseFaixasFracionado,
 } from '../utils/fracionadoModelo';
 
+// Origem/CD: aceita minúsculo, maiúsculo, com ou sem acento; grava MAIÚSCULO sem acento (ex.: "itajaí / sc" -> "ITAJAI/SC").
+const padronizarOrigem = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s*\/\s*/g, '/').replace(/\s+/g, ' ').trim();
 const dataBr = (v) => (v ? new Date(v).toLocaleDateString('pt-BR') : '-');
 const dataHoraBr = (v) => (v ? new Date(v).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '-');
 const fmtCnpj = (c) => String(c || '').replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5') || '-';
@@ -29,6 +31,66 @@ const td = { padding: '6px', borderTop: '1px solid #e5e7eb', fontSize: 12 };
 const lbl = { display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12, fontWeight: 700, color: '#334155' };
 
 const statusEfetivo = (cv) => (cv.status !== 'CANCELADO' && cv.status !== 'ENVIADO' && cv.expira_em && new Date(cv.expira_em).getTime() < Date.now() ? 'EXPIRADO' : cv.status);
+
+// Volumetria pronta do convite: gerada aqui uma vez (lendo a base de CT-es dia a dia) e gravada;
+// o transportador so baixa o arquivo pronto no portal. auto = gera sozinho o que faltar (logo apos criar o link).
+function VolumetriaConvite({ convite, auto = false }) {
+  const [itens, setItens] = useState(null);
+  const [rodando, setRodando] = useState('');
+  const [prog, setProg] = useState('');
+  const [erro, setErro] = useState('');
+  const carregar = useCallback(async () => {
+    try { setItens(await statusVolumetriaConvite(convite)); setErro(''); } catch (e) { setErro(e.message); setItens([]); }
+  }, [convite]);
+  const gerar = useCallback(async (lista) => {
+    for (const a of lista) {
+      const rotulo = `${CANAIS_FRACIONADO[a.canal]}${a.origem ? ` / ${a.origem}` : ''}`;
+      setRodando(rotulo);
+      setProg('');
+      try {
+        const r = await gerarVolumetriaPronta(a, { onProgresso: ({ feitos, total, lidas }) => setProg(`${feitos} de ${total} dias · ${lidas.toLocaleString('pt-BR')} CT-es lidos`) });
+        setProg(`${rotulo}: ${r.notas.toLocaleString('pt-BR')} notas em ${r.linhas.toLocaleString('pt-BR')} linhas.`);
+      } catch (e) { setErro(`${rotulo}: ${e.message}`); break; }
+    }
+    setRodando('');
+    await carregar();
+  }, [carregar]);
+  useEffect(() => {
+    let vivo = true;
+    statusVolumetriaConvite(convite).then((l) => {
+      if (!vivo) return;
+      setItens(l);
+      if (auto) { const falta = l.filter((x) => !x.atual); if (falta.length) gerar(falta); }
+    }).catch((e) => { if (vivo) { setErro(e.message); setItens([]); } });
+    return () => { vivo = false; };
+  }, [convite, auto, gerar]);
+  if (convite.modalidade === 'PROPRIA') return null;
+  return (
+    <div style={{ margin: '10px 0', padding: '10px 12px', border: '1px solid #cbd5e1', borderRadius: 8, background: '#f8fafc' }}>
+      <b style={{ color: '#06183d' }}>📊 Volumetria para o transportador</b>{' '}
+      <small style={{ color: '#64748b' }}>Gerada aqui uma vez e gravada pronta; no portal ele só baixa (rápido). Atualize quando virar o mês.</small>
+      {itens === null ? <div><small>Carregando…</small></div> : (
+        <table style={{ borderCollapse: 'collapse', marginTop: 6 }}>
+          <tbody>
+            {itens.map((a) => (
+              <tr key={a.base}>
+                <td style={td}>{CANAIS_FRACIONADO[a.canal]}{a.origem ? ` / ${a.origem}` : ''}</td>
+                <td style={td}>{dataBr(a.periodo.inicio + 'T12:00')} a {dataBr(a.periodo.fim + 'T12:00')}</td>
+                <td style={td}>{a.atual
+                  ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Pronta · {Number(a.pronta.notas || 0).toLocaleString('pt-BR')} notas · gerada {dataHoraBr(a.pronta.gerado_em)}</span>
+                  : a.pronta ? <span style={{ color: '#b45309', fontWeight: 700 }}>Desatualizada (período {dataBr(a.pronta.periodo_inicio + 'T12:00')} a {dataBr(a.pronta.periodo_fim + 'T12:00')}) — o portal entrega esta até atualizar</span>
+                    : <span style={{ color: '#b91c1c', fontWeight: 700 }}>Não gerada — o transportador ainda não consegue baixar</span>}</td>
+                <td style={td}><button style={btnSec} disabled={!!rodando} onClick={() => gerar([a])}>{a.pronta ? 'Atualizar' : 'Gerar'}</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {rodando ? <div style={{ marginTop: 6, fontSize: 13, color: '#185FA5', fontWeight: 700 }}>Gerando {rodando}… {prog} (pode levar alguns minutos; não feche esta tela)</div> : prog ? <div style={{ marginTop: 6, fontSize: 13, color: '#166534' }}>{prog}</div> : null}
+      {erro ? <div style={{ marginTop: 6, fontSize: 13, color: '#b91c1c', fontWeight: 700 }}>{erro}</div> : null}
+    </div>
+  );
+}
 
 function Kpi({ titulo, valor, cor, ativo, onClick }) {
   return (
@@ -189,7 +251,7 @@ export default function FracionadoPortalPage() {
     try {
       const cnpjRaizes = await buscarCnpjRaizesPorNome(transportadora.trim());
       const cv = await gerarConviteFracionado({
-        transportadora: transportadora.trim(), campanha: campanha.trim(), origens: Array.from(new Set(origensTxt.split(/[\n;]/).map((x) => x.trim()).filter(Boolean))), canal, modalidade, faixas: faixasTxt, dias, cnpjRaizes,
+        transportadora: transportadora.trim(), campanha: campanha.trim(), origens: Array.from(new Set(origensTxt.split(/[\n;]/).map(padronizarOrigem).filter(Boolean))), canal, modalidade, faixas: faixasTxt, dias, cnpjRaizes,
       });
       setUltimo(cv);
       setTransportadora('');
@@ -258,9 +320,9 @@ export default function FracionadoPortalPage() {
             </select>
           </label>
           <label style={{ ...lbl, gridColumn: 'span 2' }}>Origens / CDs (opcional — uma por linha ou separadas por ;)
-            <textarea style={{ ...inp, minHeight: 54 }} value={origensTxt} onChange={(e) => setOrigensTxt(e.target.value)} placeholder={'Itajaí/SC\nSerra/ES'} />
+            <textarea style={{ ...inp, minHeight: 54 }} value={origensTxt} onChange={(e) => setOrigensTxt(e.target.value)} onBlur={() => setOrigensTxt(origensTxt.split('\n').map((l) => l.split(';').map(padronizarOrigem).join('; ')).join('\n'))} placeholder={'ITAJAI/SC\nSERRA/ES'} />
             <span style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <button type="button" style={btnSec} onClick={() => setOrigensTxt(CDS_B2C.map((cd) => `${cd.label}/${cd.uf}`).join('\n'))}>Usar todos os CDs B2C</button>
+              <button type="button" style={btnSec} onClick={() => setOrigensTxt(CDS_B2C.map((cd) => padronizarOrigem(`${cd.label}/${cd.uf}`)).join('\n'))}>Usar todos os CDs B2C</button>
               <small style={{ fontWeight: 400, color: '#64748b' }}>O transportador filtra por origem e preenche a tabela de cada uma. Vazio = tabela única.</small>
             </span>
           </label>
@@ -296,6 +358,7 @@ export default function FracionadoPortalPage() {
             </>
           )}
         </div>
+        {ultimo && <VolumetriaConvite key={ultimo.id} convite={ultimo} auto />}
       </div>
 
       <div style={card}>
@@ -353,6 +416,7 @@ export default function FracionadoPortalPage() {
               <button key={`${c}|${o}`} style={btn} onClick={() => exportar(aberto, c, o)}>⬇ Excel padrão — {CANAIS_FRACIONADO[c]}{o ? ` / ${o}` : ''}</button>
             )))}
           </div>}
+          <VolumetriaConvite key={`vol-${aberto.id}`} convite={aberto} />
           {aberto.modalidade !== 'PROPRIA' && <small style={{ color: '#64748b' }}>O Excel exportado segue o modelo padrão (FICHA DE CADASTRO + TABELA + ATENDIMENTO) e pode ser importado em Importar Template.</small>}
           <PreviaResposta key={aberto.id} convite={aberto} respostas={detalhe.respostas} atendimento={detalhe.atendimento} anexos={detalhe.anexos} />
           <h3 style={{ margin: '16px 0 4px', fontSize: 15, color: '#06183d' }}>Histórico de envios</h3>

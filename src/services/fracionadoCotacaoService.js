@@ -99,3 +99,59 @@ export async function baixarAnexoFracionado(id) {
   a.href = url; a.download = data.nome; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
+
+// ---------------- Volumetria pronta (gerada aqui, so baixada no portal) ----------------
+const LINHAS_POR_PARTE_VOL = 5000;
+
+function alvosVolumetria(convite, canaisFn, origensFn, faixasFn, periodoFn, baseFn) {
+  return canaisFn(convite).flatMap((canal) => origensFn(convite).map((origem) => {
+    const faixas = faixasFn(convite, canal);
+    const periodo = periodoFn(canal);
+    return { canal, origem, faixas, periodo, base: baseFn({ canal, origem, faixas }) };
+  }));
+}
+
+async function utilsVol() {
+  const vol = await import('../../api/_fracionadoVolumetria.mjs');
+  const mod = await import('../utils/fracionadoModelo');
+  return { vol, mod, base: vol.baseVolumetria };
+}
+
+// Status da volumetria pronta para cada canal x origem do convite (periodo atual).
+export async function statusVolumetriaConvite(convite) {
+  const { vol, mod, base } = await utilsVol();
+  const alvos = alvosVolumetria(convite, mod.canaisDoConviteFracionado, mod.origensDoConviteFracionado, mod.faixasDoConviteFracionado, vol.periodoVolumetria, base);
+  const out = [];
+  for (const a of alvos) {
+    const { data, error } = await client().from('fracionado_volumetria').select('periodo_inicio,periodo_fim,notas,gerado_em,total_partes')
+      .eq('base', a.base).eq('parte', 0).order('periodo_fim', { ascending: false }).limit(1);
+    if (error) throw erroMigrationVol(error);
+    const r = data?.[0] || null;
+    out.push({ ...a, pronta: r, atual: !!r && r.periodo_inicio === a.periodo.inicio && r.periodo_fim === a.periodo.fim });
+  }
+  return out;
+}
+
+function erroMigrationVol(error) {
+  if (/does not exist|schema cache|relation/i.test(error?.message || '')) return new Error('Aplique a migration 20261126_003_fracionado_volumetria_pronta.sql no Supabase.');
+  return error;
+}
+
+// Gera (ou regera) a volumetria de um canal x origem e grava em partes.
+export async function gerarVolumetriaPronta({ canal, origem, faixas, periodo, base }, { onProgresso, geradoPor } = {}) {
+  const { vol } = await utilsVol();
+  const sb = client();
+  const res = await vol.gerarVolumetria(sb, { canal, origem, faixas, periodo, onProgresso });
+  const partes = [];
+  for (let i = 0; i < Math.max(res.linhas.length, 1); i += LINHAS_POR_PARTE_VOL) partes.push(res.linhas.slice(i, i + LINHAS_POR_PARTE_VOL));
+  const { error: eDel } = await sb.from('fracionado_volumetria').delete().eq('base', base).eq('periodo_inicio', periodo.inicio).eq('periodo_fim', periodo.fim);
+  if (eDel) throw erroMigrationVol(eDel);
+  for (let p = 0; p < partes.length; p += 1) {
+    const { error } = await sb.from('fracionado_volumetria').insert({
+      base, canal, origem: origem || null, periodo_inicio: periodo.inicio, periodo_fim: periodo.fim, parte: p, total_partes: partes.length,
+      linhas: partes[p], notas: res.notas, ctes_lidos: res.lidas, gerado_por: geradoPor || null,
+    });
+    if (error) throw erroMigrationVol(error);
+  }
+  return { notas: res.notas, linhas: res.linhas.length, lidas: res.lidas };
+}
