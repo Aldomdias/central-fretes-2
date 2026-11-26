@@ -506,3 +506,39 @@ export async function marcarEnviadaAntecipacao(ids = [], marcar = true, usuario 
   }
   return gravadas;
 }
+
+// Baixa de saneamento: faturas antigas em aberto que nao devemos mais. Saem de em aberto/vencidas/totais
+// e ficam so no card "Baixados". Desmarcar devolve (o status da fatura nao e mexido). Devolve os campos por id.
+export async function marcarBaixadas(ids = [], marcar = true, usuario = '', motivo = '') {
+  if (!isSupabaseConfigured() || !ids.length) return new Map();
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const campos = marcar
+    ? { baixada_saneamento: true, baixada_saneamento_em: agora, baixada_saneamento_por: usuario || null, baixada_saneamento_motivo: motivo || null }
+    : { baixada_saneamento: false, baixada_saneamento_em: null, baixada_saneamento_por: null, baixada_saneamento_motivo: null };
+  const gravadas = new Map();
+  for (let i = 0; i < ids.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await client.from('faturas').update(campos).in('id', ids.slice(i, i + 200)).select('id');
+    if (error) {
+      if (/baixada_saneamento/.test(error.message || '')) throw new Error('A migration 20261125_013_faturas_baixada_saneamento.sql ainda não foi aplicada no Supabase.');
+      throw error;
+    }
+    (data || []).forEach((r) => gravadas.set(r.id, campos));
+  }
+  const historico = [...gravadas.keys()].map((id) => ({
+    id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `baixa-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    fatura_id: id,
+    created_at: agora,
+    acao: marcar ? 'BAIXADA_SANEAMENTO' : 'BAIXADA_SANEAMENTO_DESFEITA',
+    descricao: marcar ? `Baixada no saneamento (não devemos mais) pela tela Diagnóstico.${motivo ? ` Motivo: ${motivo}` : ''}` : 'Baixa de saneamento desfeita pela tela Diagnóstico: volta para em aberto.',
+    usuario_nome: usuario || null,
+    usuario_email: '',
+  }));
+  for (let i = 0; i < historico.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await client.from('auditoria_fatura_historico').insert(historico.slice(i, i + 200));
+    if (error) { console.warn('Historico da baixa nao registrado:', error.message); break; }
+  }
+  return gravadas;
+}

@@ -3,7 +3,7 @@ import { carregarPlataformaAuditoria, reauditarFatura, vincularChavesDetalhesPor
 import { carregarDetalhesFaturaSupabase } from '../services/lotacaoSupabaseService';
 import { carregarEnviosOmsPorFatura, liberarFaturaNoOms } from '../services/omsFaturasEnvioService';
 import AlertaBloqueioOms from './AlertaBloqueioOms';
-import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarCanceladas, marcarEncaminhamentoFinanceiro, marcarEnviadaAntecipacao, marcarPrevisaoPagamento, TIPOS_ENCAMINHAMENTO, marcarSubstituidasDuplicadas } from '../services/diagnosticoFaturasService';
+import { carregarResumoCtesFaturas, carregarUltimaImportacaoSap, marcarAgrupamentoManual, limparCacheGruposCnpj, marcarAjusteFenix, marcarBaixadas, marcarCanceladas, marcarEncaminhamentoFinanceiro, marcarEnviadaAntecipacao, marcarPrevisaoPagamento, TIPOS_ENCAMINHAMENTO, marcarSubstituidasDuplicadas } from '../services/diagnosticoFaturasService';
 import { carregarCadastroPorRaiz } from '../services/transportadoraCnpjsService';
 import { aoMudarFornecedoresCompras, formatarCnpj } from '../services/fornecedoresComprasService';
 import FornecedoresComprasCadastro from './FornecedoresComprasCadastro';
@@ -49,6 +49,9 @@ import {
   temFenix,
   textoPagamentoLinha,
   valorDaLinha,
+  faltaBoletoNaPasta,
+  semBoletoVencendo,
+  semBoletoVencida,
 } from '../utils/diagnosticoFaturas';
 import { exportarExcelFormatado } from '../utils/exportarExcelFormatado';
 import { gerarHtmlLaudo } from '../utils/laudoDiagnostico';
@@ -70,9 +73,11 @@ const ORDEM_GRUPOS = ['localizacao', 'auditoria', 'erp', 'lancamento', 'financei
 
 const dinheiro = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const ehCancelada = (l) => situacaoPagamentoLinha(l) === 'CANCELADA';
-// Fora da lista e dos totais: canceladas/substituidas e duplicadas (cada uma so no seu card).
-const ehOculta = (l) => ehCancelada(l) || Boolean(l.duplicada);
-const CARDS_OCULTAS = ['canceladas', 'duplicadas'];
+// Baixa de saneamento: faturas antigas que nao devemos mais (so no card "Baixados").
+const ehBaixada = (l) => situacaoPagamentoLinha(l) === 'BAIXADA';
+// Fora da lista e dos totais: canceladas/substituidas, baixadas e duplicadas (cada uma so no seu card).
+const ehOculta = (l) => ehCancelada(l) || ehBaixada(l) || Boolean(l.duplicada);
+const CARDS_OCULTAS = ['canceladas', 'baixadas', 'duplicadas'];
 const inteiro = (v) => Number(v || 0).toLocaleString('pt-BR');
 const dataBr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
 const dataHoraBr = (v) => { const d = v ? new Date(v) : null; return d && !Number.isNaN(d.getTime()) ? d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''; };
@@ -532,6 +537,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   // "Canceladas" (ou filtrando o status cancelada/substituida).
   const verCanceladas = escolhidos.pagamento === 'canceladas' || ['CANCELADA', 'SUBSTITUIDA'].includes(filtros.status);
   const verDuplicadas = escolhidos.pagamento === 'duplicadas';
+  const verBaixadas = escolhidos.pagamento === 'baixadas';
   // Um recorte so para a tela inteira: cards, totais e lista sempre mostram os mesmos numeros.
   // Ranking: transportadora (mesmo agrupamento do seletor do topo) ou auditor (nome unificado).
   // Linha sem fatura fica num grupo a parte. Clicar num item filtra so pela dimensao dele.
@@ -544,8 +550,9 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   // Recorte antes do filtro do ranking: base do ranking (senao ele so mostraria o item escolhido).
   const recorteTodas = useMemo(() => {
     const r = filtrarPorCards(filtradas, escolhidos);
-    return verCanceladas || verDuplicadas ? r : r.filter((l) => !ehOculta(l));
-  }, [filtradas, escolhidos, verCanceladas, verDuplicadas]);
+    if (verBaixadas) return r;
+    return verCanceladas || verDuplicadas ? r.filter((l) => !ehBaixada(l)) : r.filter((l) => !ehOculta(l));
+  }, [filtradas, escolhidos, verCanceladas, verDuplicadas, verBaixadas]);
   const recorte = useMemo(() => doGrupo(recorteTodas), [recorteTodas, filtros.grupoTransp, filtros.grupoAuditor, agrupador]); // eslint-disable-line react-hooks/exhaustive-deps
   const ranking = useMemo(() => {
     const rotulos = new Map(agrupador.opcoes.map((o) => [o.chave, o.rotulo]));
@@ -569,6 +576,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   // O card das canceladas ignora os outros cards (ex.: "Vencidas"): cancelada nao e mais vencida, nem
   // aberta, nem lancada... e sumiria. Vale so a pesquisa e os filtros de campo.
   const canceladasRecorte = useMemo(() => doGrupo(filtradas.filter(ehCancelada)), [filtradas, filtros.grupoTransp, filtros.grupoAuditor, agrupador]); // eslint-disable-line react-hooks/exhaustive-deps
+  const baixadasRecorte = useMemo(() => doGrupo(filtradas.filter(ehBaixada)), [filtradas, filtros.grupoTransp, filtros.grupoAuditor, agrupador]); // eslint-disable-line react-hooks/exhaustive-deps
   const duplicadasRecorte = useMemo(() => doGrupo(filtradas.filter((l) => l.duplicada)), [filtradas, filtros.grupoTransp, filtros.grupoAuditor, agrupador]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Card de antecipacao: so com uma transportadora escolhida que tem o flag no cadastro.
@@ -582,7 +590,7 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const grupos = useMemo(() => GRUPOS_DIAGNOSTICO
     .filter((g) => (temLista || !g.soComLista) && (fazAntecipacao || !g.soAntecipa))
     .sort((a, b) => ORDEM_GRUPOS.indexOf(a.id) - ORDEM_GRUPOS.indexOf(b.id))
-    .map((g) => ({ ...g, cards: g.cards.filter((c) => !c.oculto).map((c) => ({ ...c, linhas: { canceladas: canceladasRecorte, duplicadas: duplicadasRecorte }[c.id] || recorte.filter(c.teste) })) })), [recorte, canceladasRecorte, duplicadasRecorte, temLista, fazAntecipacao]);
+    .map((g) => ({ ...g, cards: g.cards.filter((c) => !c.oculto).map((c) => ({ ...c, linhas: { canceladas: canceladasRecorte, baixadas: baixadasRecorte, duplicadas: duplicadasRecorte }[c.id] || recorte.filter(c.teste) })) })), [recorte, canceladasRecorte, baixadasRecorte, duplicadasRecorte, temLista, fazAntecipacao]);
 
   const resultado = useMemo(() => {
     const coluna = COLUNAS.find((c) => c.id === ordem.coluna) || COLUNAS[3];
@@ -621,6 +629,16 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
   const temFiltro = Object.values(escolhidos).some(Boolean) || Object.values(filtros).some(Boolean);
 
   // Abrir as canceladas tira os outros cards (com "Vencidas" ativo a lista ficaria vazia).
+  // Aviso do topo: lancadas sem boleto na pasta vencendo em ate 2 dias (ou ja vencidas). Some quando o robo de
+  // boletos acha o boleto (encaminhamento) ou quando a fatura e paga.
+  const avisoBoleto = useMemo(() => {
+    const soma = (lista) => lista.reduce((s, l) => s + valorDaLinha(l), 0);
+    const comF = recorte.filter((l) => l.fatura);
+    const vencendo = comF.filter((l) => semBoletoVencendo(l.fatura, 2));
+    const vencidas = comF.filter((l) => semBoletoVencida(l.fatura));
+    const total = comF.filter((l) => faltaBoletoNaPasta(l.fatura));
+    return { vencendo: vencendo.length, valorVencendo: soma(vencendo), vencidas: vencidas.length, valorVencidas: soma(vencidas), total: total.length };
+  }, [recorte]);
   const alternarCard = (grupo, card) => setEscolhidos((atual) => {
     if (CARDS_OCULTAS.includes(card)) return atual.pagamento === card ? {} : { pagamento: card };
     return { ...atual, [grupo]: atual[grupo] === card ? '' : card };
@@ -816,6 +834,36 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
       const ignoradas = selecaoValida.length - gravadas.size;
       setAviso(`${inteiro(gravadas.size)} fatura(s) ${cancelar ? 'cancelada(s): estão no card "Canceladas"' : 'reativada(s)'}.${ignoradas > 0 ? ` ${inteiro(ignoradas)} selecionada(s) não se aplicavam.` : ''}`);
     } catch (e) { setAviso(`Erro ao ${cancelar ? 'cancelar' : 'reativar'}: ${e.message || e}`); } finally { setMarcando(false); }
+  };
+
+  // Baixa de saneamento: faturas antigas em aberto que nao devemos mais. Saem da lista e dos totais e ficam
+  // no card "Baixados"; "Voltar para em aberto" desfaz (o status da fatura nao e alterado).
+  const aplicarBaixa = async (baixar) => {
+    const porId = new Map(resultado.filter((l) => l.fatura).map((l) => [l.fatura.id, l.fatura]));
+    const alvo = selecaoValida.map((id) => porId.get(id)).filter((f) => f && (baixar ? situacaoPagamento(f) === 'ABERTA' : faturaBaixada(f)));
+    if (!alvo.length) {
+      setAviso(baixar ? 'Nenhuma selecionada pode ser baixada (só as não pagas e ainda ativas).' : 'Nenhuma selecionada está baixada.');
+      return;
+    }
+    let motivo = '';
+    if (baixar) {
+      const valor = alvo.reduce((s, f) => s + Number(f.valor_fatura || 0), 0);
+      const resposta = window.prompt(`Baixar ${alvo.length} fatura(s) (${dinheiro(valor)}) como "não devemos mais"? Elas saem de em aberto, vencidas e totais e ficam no card "Baixados".
+
+Motivo (opcional):`, 'Saneamento: fatura antiga, não devemos mais');
+      if (resposta === null) return;
+      motivo = resposta;
+    } else if (!window.confirm(`Voltar ${alvo.length} fatura(s) para em aberto?`)) return;
+    setMarcando(true);
+    setAviso('');
+    try {
+      const sessao = carregarSessao();
+      const gravadas = await marcarBaixadas(alvo.map((f) => f.id), baixar, sessao?.nome || sessao?.email || '', motivo);
+      onState((atual) => ({ ...atual, faturas: (atual.faturas || []).map((f) => (gravadas.has(f.id) ? { ...f, ...gravadas.get(f.id) } : f)) }));
+      setSelecionadas(new Set());
+      const ignoradas = selecaoValida.length - gravadas.size;
+      setAviso(`${inteiro(gravadas.size)} fatura(s) ${baixar ? 'baixada(s): estão no card "Baixados"' : 'de volta para em aberto'}.${ignoradas > 0 ? ` ${inteiro(ignoradas)} selecionada(s) não se aplicavam.` : ''}`);
+    } catch (e) { setAviso(`Erro ao ${baixar ? 'baixar' : 'desfazer a baixa'}: ${e.message || e}`); } finally { setMarcando(false); }
   };
 
   // Duplicadas: as copias viram SUBSTITUIDA (a principal fica valendo) e passam para o card "Canceladas".
@@ -1294,9 +1342,33 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
             <CardResumo rotulo="A vencer" valor={dinheiro(totais.aVencer.valor)} detalhe={totais.aVencer.detalhe} cor="#e67e22" ativo={escolhidos.vencimento === 'a_vencer'} dica="Clique para ver as faturas não pagas que ainda vão vencer." onClick={() => alternarCard('vencimento', 'a_vencer')} />
             <CardResumo rotulo="Pago" valor={dinheiro(totais.pago.valor)} detalhe={totais.pago.detalhe} cor="#14733b" ativo={escolhidos.pagamento === 'pagas_todas'} dica="Clique para ver as faturas pagas, com ou sem divergência." onClick={() => alternarCard('pagamento', 'pagas_todas')} />
             <CardResumo rotulo="Canceladas" valor={inteiro(canceladasRecorte.length)} detalhe={`${dinheiro(canceladasRecorte.reduce((s, l) => s + valorDaLinha(l), 0))} · clique para ver`} cor="#64748b" ativo={escolhidos.pagamento === 'canceladas'} dica="Canceladas/substituídas ficam fora da lista e dos totais. Clique para vê-las (e reativar, se preciso)." onClick={() => alternarCard('pagamento', 'canceladas')} />
+            <CardResumo rotulo="Baixados" valor={inteiro(baixadasRecorte.length)} detalhe={`${dinheiro(baixadasRecorte.reduce((s, l) => s + valorDaLinha(l), 0))} · clique para ver`} cor="#475569" ativo={verBaixadas} dica="Faturas antigas em aberto que não devemos mais (saneamento). Ficam fora da lista, dos totais, das vencidas e do laudo. Clique para vê-las (e voltar para em aberto, se preciso)." onClick={() => alternarCard('pagamento', 'baixadas')} />
             {(duplicadasRecorte.length > 0 || verDuplicadas) && <CardResumo rotulo="Duplicadas" valor={inteiro(duplicadasRecorte.length)} detalhe={`${dinheiro(duplicadasRecorte.reduce((s, l) => s + valorDaLinha(l), 0))} · fora dos totais`} cor="#b45309" ativo={verDuplicadas} dica="Mesma fatura (número, valor e emissão) importada mais de uma vez. Não entram nos totais; clique para ver e marcar como substituídas." onClick={() => alternarCard('pagamento', 'duplicadas')} />}
 
           </div>
+
+          {(avisoBoleto.vencendo > 0 || avisoBoleto.vencidas > 0) && (
+            <div role="alert" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', margin: '0 0 14px', padding: '10px 14px', borderRadius: 8, background: '#fef2f2', border: '1px solid #fecaca', borderLeft: '5px solid #dc2626', color: '#7f1d1d' }}>
+              <strong style={{ fontSize: 15 }}>⚠ Falta boleto na pasta</strong>
+              {avisoBoleto.vencendo > 0 && (
+                <button type="button" className="link-button" style={{ fontWeight: 700, color: '#b91c1c' }} onClick={() => alternarCard('financeiro', 'sem_boleto_vence_2d')}
+                  title="Lançadas, sem boleto na pasta, vencendo hoje, amanhã ou depois de amanhã. Clique para listar.">
+                  {inteiro(avisoBoleto.vencendo)} fatura(s) vencem em até 2 dias ({dinheiro(avisoBoleto.valorVencendo)})
+                </button>
+              )}
+              {avisoBoleto.vencidas > 0 && (
+                <button type="button" className="link-button" style={{ fontWeight: 700, color: '#7f1d1d' }} onClick={() => alternarCard('financeiro', 'sem_boleto_vencidas')}
+                  title="Lançadas, sem boleto na pasta e já vencidas. Clique para listar.">
+                  · {inteiro(avisoBoleto.vencidas)} já vencida(s) ({dinheiro(avisoBoleto.valorVencidas)})
+                </button>
+              )}
+              <button type="button" className="link-button" style={{ color: '#7f1d1d' }} onClick={() => alternarCard('financeiro', 'aguarda_encaminhamento')}
+                title="Todas as lançadas em aberto ainda sem boleto na pasta nem dados bancários.">
+                · {inteiro(avisoBoleto.total)} lançada(s) sem boleto no total
+              </button>
+              <span style={{ fontSize: 12, color: '#991b1b' }}>Coloque o boleto na pasta antes do financeiro cobrar: o robô de boletos acha e a fatura sai daqui sozinha (sai também quando é paga).</span>
+            </div>
+          )}
 
           <section className="panel-card" style={{ marginBottom: 14, borderLeft: '4px solid #0f766e' }} aria-label="Envios ao OMS por data">
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}>
@@ -1468,6 +1540,14 @@ export default function DiagnosticoFaturasPainel({ state, onState, onAbrirFatura
               {!verDuplicadas && (verCanceladas
                 ? <button type="button" className="btn-primary" style={{ background: '#315ee7', borderColor: '#315ee7' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarCancelamento(false)} title="Volta as selecionadas ao status que tinham antes do cancelamento">{marcando ? 'Gravando...' : 'Reativar selecionadas'}</button>
                 : <button type="button" className="btn-primary" style={{ background: '#64748b', borderColor: '#64748b' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarCancelamento(true)} title="Marca as selecionadas (não pagas) como canceladas: saem da lista e vão para o card 'Canceladas'">{marcando ? 'Gravando...' : 'Cancelar selecionadas'}</button>)}
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>
+              <span className="compact" style={{ color: '#475569' }} title="Saneamento: faturas antigas em aberto (ex.: janeiro a março) que não devemos mais. Saem da lista e dos totais e ficam no card 'Baixados'. O status da fatura não muda: dá para voltar.">
+                Baixa (não devemos mais): {inteiro(selecaoValida.length)} selecionada(s)
+              </span>
+              {verBaixadas
+                ? <button type="button" className="btn-primary" style={{ background: '#315ee7', borderColor: '#315ee7' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarBaixa(false)} title="Tira as selecionadas de 'Baixados' e volta para em aberto">{marcando ? 'Gravando...' : 'Voltar para em aberto'}</button>
+                : <button type="button" className="btn-primary" style={{ background: '#475569', borderColor: '#475569' }} disabled={!selecaoValida.length || marcando} onClick={() => aplicarBaixa(true)} title="Marca as selecionadas (não pagas) como baixadas: saem da lista e vão para o card 'Baixados'">{marcando ? 'Gravando...' : 'Baixar selecionadas'}</button>}
             </div>
             {fazAntecipacao && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #cbd5e1' }}>

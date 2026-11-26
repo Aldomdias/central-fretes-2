@@ -172,7 +172,8 @@ function indexarBase(base) {
   const vistos = new Set();
   for (const t of base) {
     for (const origem of (t.origens || [])) {
-      const cidadeNorm = origem.__cidadeNorm || normTexto(origem.cidade);
+      // Não usar origem.__cidadeNorm: vem em minúsculas do serviço de auditoria e aqui a comparação é em maiúsculas (normTexto).
+      const cidadeNorm = normTexto(origem.cidade || origem.__cidadeNorm);
       const ck = `${t.nome}|${cidadeNorm}`;
       if (cidadeNorm && !vistos.has(ck)) { vistos.add(ck); origensCidade.push({ cidadeNorm, nome: t.nome }); }
       for (const rota of (origem.rotas || [])) {

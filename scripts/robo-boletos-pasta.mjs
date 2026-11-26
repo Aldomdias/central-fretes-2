@@ -10,12 +10,16 @@
 // - acha a fatura pelo numero do nome do arquivo; se houver mais de uma, desempata pelo nome da transportadora
 //   e depois pelo VALOR lido no boleto;
 // - so guarda quando valor e vencimento do boleto batem com a fatura; o resto fica listado para o painel.
+// - fecha o ciclo no Diagnostico: fatura LANCADA (partida/lancamento), em aberto, com boleto guardado (pelo robo ou
+//   pelo painel) e sem encaminhamento vira "Encaminhada ao financeiro - Boleto na pasta" (mesma marcacao do
+//   Diagnostico). Encaminhamento ja feito (ex.: dados bancarios) nunca e sobrescrito.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
-import { casarBoletosComFaturas, decodificarBoleto, divergenciasBoleto, lerNomeBoleto } from '../src/utils/boletosPasta.js';
+import { casarBoletosComFaturas, decodificarBoleto, divergenciasBoleto, lerNomeBoleto, nomeDoArquivoCombina, textoTrazValorEVencimento } from '../src/utils/boletosPasta.js';
+import { itensParaLinhas } from '../src/utils/robos/nfsePdf.js';
 
 const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SIMULAR = process.argv.includes('--simular');
@@ -110,11 +114,15 @@ async function ocrDoPdf(bytes) {
 }
 
 async function lerBoleto(bytes) {
-  const leitura = decodificarBoleto(await textoDoPdf(bytes));
-  if (leitura) return { ...leitura, origemLeitura: 'TEXTO' };
-  const viaOcr = decodificarBoleto(await ocrDoPdf(bytes));
-  if (viaOcr) return { ...viaOcr, origemLeitura: 'OCR' };
-  return { erro: 'linha digitavel nao encontrada nem por OCR (conferir no painel)' };
+  const texto = await textoDoPdf(bytes);
+  const leitura = decodificarBoleto(texto);
+  if (leitura) return { ...leitura, origemLeitura: leitura.parcial ? 'TEXTO_PARCIAL' : 'TEXTO' };
+  const textoOcr = await ocrDoPdf(bytes);
+  const viaOcr = decodificarBoleto(textoOcr);
+  if (viaOcr) return { ...viaOcr, origemLeitura: viaOcr.parcial ? 'OCR_PARCIAL' : 'OCR' };
+  // Sem linha digitavel (ex.: cobranca PIX do SSW): o texto ainda serve para conferir valor e vencimento escritos.
+  return { erro: 'linha digitavel nao encontrada nem por OCR (conferir no painel)', texto: `${texto}
+${textoOcr}` };
 }
 
 async function textoDoPdf(bytes) {
@@ -125,10 +133,110 @@ async function textoDoPdf(bytes) {
     const pag = await doc.getPage(n);
     // eslint-disable-next-line no-await-in-loop
     const conteudo = await pag.getTextContent();
+    // Ordem do arquivo E linhas pela posicao na pagina (igual ao painel): em alguns boletos (Itau) o ultimo bloco
+    // da linha digitavel (fator + valor) vem separado no arquivo, mas fica na mesma linha visual.
     partes.push(conteudo.items.map((i) => i.str).join(' '));
+    partes.push(itensParaLinhas(conteudo.items).join(String.fromCharCode(10)));
   }
   await doc.destroy();
   return partes.join('\n');
+}
+
+// Registro da rodada (card Automacao > Robo de boletos). Sem a migration 20261125_012 a coluna detalhe nao existe:
+// grava sem ela para o historico continuar.
+let clienteRodada = null;
+async function registrarRodada(payload) {
+  if (!clienteRodada) return;
+  const base = { origem: 'ROBO_PC', executado_por: USUARIO, total_arquivos: 0, novos: 0, repetidos: 0, ...payload };
+  const { error } = await clienteRodada.from('boleto_pasta_leituras').insert(base);
+  if (error && /detalhe/i.test(error.message || '')) {
+    const { detalhe, ...semDetalhe } = base;
+    await clienteRodada.from('boleto_pasta_leituras').insert(semDetalhe);
+  }
+}
+
+// Fatura lancada e em aberto com boleto guardado -> encaminhada ao financeiro (BOLETO_NA_PASTA), igual ao botao do
+// Diagnostico (marcarEncaminhamentoFinanceiro): grava na fatura, no historico de encaminhamentos e no da fatura.
+async function encaminharComBoleto(sb) {
+  const controle = (await buscarTodas(() => sb.from('fatura_boleto_controle').select('fatura_id,boleto_arquivo_nome,boleto_valor').eq('status', 'NA_PASTA').order('fatura_id')))
+    .filter((c) => c.boleto_arquivo_nome);
+  const porId = new Map(controle.map((c) => [String(c.fatura_id), c]));
+  const ids = [...porId.keys()];
+  const alvos = [];
+  for (let i = 0; i < ids.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await sb.from('faturas')
+      .select('id,numero_fatura,transportadora,status,partida,lancamento_financeiro,encaminhado_financeiro_em,data_pagamento,valor_pago')
+      .in('id', ids.slice(i, i + 200));
+    if (error) { log(`Encaminhamento nao verificado: ${error.message}`); return []; }
+    (data || []).forEach((f) => {
+      if (f.encaminhado_financeiro_em || faturaPaga(f) || ['CANCELADA', 'SUBSTITUIDA'].includes(f.status)) return;
+      if (!(f.partida || f.lancamento_financeiro)) return; // ainda nao lancada: espera o lancamento
+      alvos.push(f);
+    });
+  }
+  const linhas = alvos.map((f) => `fatura ${f.numero_fatura} ${f.transportadora} (${porId.get(String(f.id)).boleto_arquivo_nome})`);
+  if (SIMULAR || !alvos.length) return linhas;
+  const agora = new Date().toISOString();
+  const feitas = [];
+  for (const f of alvos) {
+    const evidencia = `Boleto na pasta: ${porId.get(String(f.id)).boleto_arquivo_nome}`;
+    // So grava se continuar sem encaminhamento (alguem pode ter marcado no meio da rodada).
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await sb.from('faturas').update({
+      encaminhado_financeiro_em: agora, encaminhado_financeiro_por: USUARIO, encaminhamento_tipo: 'BOLETO_NA_PASTA', encaminhamento_evidencia: evidencia,
+    }).eq('id', f.id).is('encaminhado_financeiro_em', null).select('id');
+    if (error) { log(`Erro ao encaminhar fatura ${f.numero_fatura}: ${error.message}`); continue; }
+    if (!data?.length) continue;
+    // eslint-disable-next-line no-await-in-loop
+    await sb.from('financeiro_encaminhamentos').update({ ativo: false }).eq('fatura_id', f.id).eq('ativo', true);
+    // eslint-disable-next-line no-await-in-loop
+    await sb.from('financeiro_encaminhamentos').insert({ fatura_id: f.id, tipo: 'BOLETO_NA_PASTA', responsavel: USUARIO, evidencia, ativo: true, created_at: agora });
+    // eslint-disable-next-line no-await-in-loop
+    await sb.from('auditoria_fatura_historico').insert({
+      id: crypto.randomUUID(), fatura_id: f.id, created_at: agora, acao: 'ENCAMINHADA_FINANCEIRO',
+      descricao: `Encaminhada ao financeiro (Boleto na pasta) pelo robo de boletos: ${porId.get(String(f.id)).boleto_arquivo_nome}.`, usuario_nome: USUARIO, usuario_email: '',
+    });
+    feitas.push(`fatura ${f.numero_fatura} ${f.transportadora} (${porId.get(String(f.id)).boleto_arquivo_nome})`);
+  }
+  return feitas;
+}
+
+// Fatura paga: apaga do servidor o PDF do boleto atual e dos anteriores (substituidos) e mantem os dados lidos
+// (valor, vencimento, linha digitavel, nome do arquivo). Mesma regra do cron diario api/limpar-boletos.
+async function apagarBoletosDePagas(sb) {
+  const controle = await buscarTodas(() => sb.from('fatura_boleto_controle').select('fatura_id,numero_fatura,transportadora,boleto_arquivo_path').order('fatura_id'));
+  const versoes = await buscarTodas(() => sb.from('boleto_arquivo_versoes').select('id,fatura_id,arquivo_path').not('arquivo_path', 'is', null).order('id'));
+  const ids = [...new Set([...controle.filter((c) => c.boleto_arquivo_path).map((c) => String(c.fatura_id)), ...versoes.map((v) => String(v.fatura_id))])];
+  const pagas = new Set();
+  for (let i = 0; i < ids.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await sb.from('faturas').select('id,status,data_pagamento,valor_pago,partida').in('id', ids.slice(i, i + 200));
+    if (error) { log(`Limpeza nao verificada: ${error.message}`); return []; }
+    (data || []).filter(faturaPaga).forEach((f) => pagas.add(String(f.id)));
+  }
+  const ctrlAlvo = controle.filter((c) => c.boleto_arquivo_path && pagas.has(String(c.fatura_id)));
+  const versAlvo = versoes.filter((v) => pagas.has(String(v.fatura_id)));
+  const caminhos = [...new Set([...ctrlAlvo.map((c) => c.boleto_arquivo_path), ...versAlvo.map((v) => v.arquivo_path)])];
+  const linhas = ctrlAlvo.map((c) => `fatura ${c.numero_fatura} ${c.transportadora}`);
+  if (SIMULAR || !caminhos.length) return linhas;
+  for (let i = 0; i < caminhos.length; i += 100) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await sb.storage.from(BUCKET).remove(caminhos.slice(i, i + 100));
+    if (error) { log(`Erro ao apagar PDFs: ${error.message}`); return []; }
+  }
+  const agora = new Date().toISOString();
+  const idsCtrl = ctrlAlvo.map((c) => String(c.fatura_id));
+  for (let i = 0; i < idsCtrl.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    await sb.from('fatura_boleto_controle').update({ boleto_arquivo_path: null, boleto_apagado_em: agora, boleto_apagado_motivo: 'PAGA' }).in('fatura_id', idsCtrl.slice(i, i + 200));
+  }
+  const idsVers = versAlvo.map((v) => v.id);
+  for (let i = 0; i < idsVers.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    await sb.from('boleto_arquivo_versoes').update({ arquivo_path: null }).in('id', idsVers.slice(i, i + 200));
+  }
+  return linhas;
 }
 
 async function buscarTodas(consulta) {
@@ -149,6 +257,7 @@ async function main() {
   const env = lerEnv();
   if (!env.VITE_SUPABASE_URL || !env.VITE_SUPABASE_ANON_KEY) throw new Error('VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY ausentes no .env');
   const sb = createClient(env.VITE_SUPABASE_URL, env.VITE_SUPABASE_ANON_KEY, { auth: { persistSession: false } });
+  clienteRodada = sb;
 
   const nomes = fs.readdirSync(PASTA).filter((n) => /\.pdf$/i.test(n));
   log(`${nomes.length} PDF(s) na pasta.`);
@@ -202,13 +311,39 @@ async function main() {
         leitura = { erro: `falha ao ler PDF: ${e.message}` };
       }
     }
-    if (leitura.erro) { res.revisar.push(`${nome} — ${leitura.erro}`); continue; }
+    const quais = cand.faturas.map((f) => `${f.numero_fatura} ${f.transportadora} ${dinheiro(f.valor_fatura)} venc ${String(f.data_vencimento || '').slice(0, 10)}`).join(' | ');
+    // Numero bateu so com fatura de OUTRA transportadora: o boleto e de fatura que nao esta em aberto no sistema.
+    const outraTransportadora = cand.faturas.every((f) => !nomeDoArquivoCombina(nome, f.transportadora));
+    let nota = '';
+    if (leitura.erro) {
+      // Sem linha digitavel: casa so se o PDF traz escritos o valor e o vencimento de exatamente uma candidata.
+      const porTexto = outraTransportadora ? [] : cand.faturas.filter((f) => textoTrazValorEVencimento(leitura.texto, f));
+      if (porTexto.length !== 1) { res.revisar.push(`${nome} — ${leitura.erro}`); continue; }
+      const f = porTexto[0];
+      leitura = { linhaDigitavel: null, valor: Number(f.valor_fatura), vencimento: String(f.data_vencimento).slice(0, 10), origemLeitura: 'TEXTO_SEM_LINHA' };
+      nota = ' [sem linha digitavel (PIX?): valor e vencimento conferidos no texto]';
+    }
+    if (leitura.origemLeitura === 'OCR_PARCIAL' || leitura.origemLeitura === 'TEXTO_PARCIAL') nota = ' [linha digitavel incompleta no PDF: valor/vencimento pelo fim da linha]';
 
     // Desempate: entre as candidatas, as que batem valor e vencimento.
-    const batem = cand.faturas.filter((f) => !divergenciasBoleto(leitura, f).length);
+    let batem = cand.faturas.filter((f) => !divergenciasBoleto(leitura, f).length);
+    if (!batem.length && outraTransportadora) {
+      res.foraDoSistema.push(`${nome} — boleto ${dinheiro(leitura.valor)} venc ${leitura.vencimento}: nenhuma fatura em aberto dessa transportadora com esse numero (o mesmo numero em aberto e de outra: ${quais})`);
+      continue;
+    }
+    if (!batem.length) {
+      // Mesmo numero, mesma transportadora e valor exato: so o vencimento mudou (boleto reemitido/prorrogado).
+      const soVencimento = cand.faturas.filter((f) => nomeDoArquivoCombina(nome, f.transportadora)
+        && divergenciasBoleto(leitura, f).join() === 'vencimento');
+      if (soVencimento.length === 1) {
+        batem = soVencimento;
+        nota += ` [vencimento do boleto ${leitura.vencimento} diferente da fatura ${String(soVencimento[0].data_vencimento).slice(0, 10)}]`;
+      }
+    }
     if (batem.length !== 1) {
-      const quais = cand.faturas.map((f) => `${f.numero_fatura} ${f.transportadora} ${dinheiro(f.valor_fatura)} venc ${String(f.data_vencimento || '').slice(0, 10)}`).join(' | ');
-      res.revisar.push(`${nome} — boleto ${dinheiro(leitura.valor)} venc ${leitura.vencimento}: ${batem.length ? 'mais de uma fatura bate' : 'valor/vencimento nao batem'} (${quais})`);
+      const difValor = cand.faturas.length === 1 && leitura.valor != null
+        ? ` dif. valor ${dinheiro(leitura.valor - Number(cand.faturas[0].valor_fatura || 0))};` : '';
+      res.revisar.push(`${nome} — boleto ${dinheiro(leitura.valor)} venc ${leitura.vencimento}: ${batem.length ? 'mais de uma fatura bate' : 'valor/vencimento nao batem'};${difValor} (${quais})`);
       continue;
     }
     const fatura = batem[0];
@@ -223,7 +358,13 @@ async function main() {
       res.jaGuardados.push(`${nome} -> fatura ${fatura.numero_fatura}`);
       continue;
     }
-    const resumo = `${nome} -> fatura ${fatura.numero_fatura} ${fatura.transportadora} (${dinheiro(leitura.valor)}, venc ${leitura.vencimento})${cand.certeza !== 'CONFIRMADO' ? ' [achada pelo valor]' : ''}${STATUS_EXIGE_BOLETO.includes(fatura.status) ? '' : ` [antecipado: fatura ${fatura.status}]`}`;
+    // PDF apagado de proposito (limpeza no card do robo): o mesmo boleto ainda na pasta nao volta a subir.
+    // Boleto diferente (outra linha digitavel) e guardado normalmente.
+    if (atual && !atual.boleto_arquivo_path && atual.boleto_apagado_em && atual.boleto_linha_digitavel && atual.boleto_linha_digitavel === leitura.linhaDigitavel) {
+      res.jaGuardados.push(`${nome} -> fatura ${fatura.numero_fatura} (PDF apagado na limpeza; nao sobe de novo)`);
+      continue;
+    }
+    const resumo = `${nome} -> fatura ${fatura.numero_fatura} ${fatura.transportadora} (${dinheiro(leitura.valor)}, venc ${leitura.vencimento})${cand.certeza !== 'CONFIRMADO' ? ' [achada pelo valor]' : ''}${nota}${STATUS_EXIGE_BOLETO.includes(fatura.status) ? '' : ` [antecipado: fatura ${fatura.status}]`}`;
     if (SIMULAR) { res.guardados.push(resumo); continue; }
 
     // Mesmo fluxo do guardarBoletos do painel: sobe o PDF, grava o controle e a versao.
@@ -264,16 +405,22 @@ async function main() {
     res.guardados.push(resumo);
   }
 
+  const encaminhadas = await encaminharComBoleto(sb);
+  const apagados = await apagarBoletosDePagas(sb);
+
   log(`GUARDADOS ${SIMULAR ? '(simulado) ' : ''}${res.guardados.length}:`); res.guardados.forEach((l) => log(`  + ${l}`));
   log(`JA GUARDADOS ${res.jaGuardados.length}:`); res.jaGuardados.forEach((l) => log(`  = ${l}`));
   log(`PARA REVISAR NO PAINEL ${res.revisar.length}:`); res.revisar.forEach((l) => log(`  ! ${l}`));
   log(`BOLETO ANTECIPADO x DESCONTO ${avisosDesconto.length}:`); avisosDesconto.forEach((l) => log(`  ! ${l}`));
   log(`SEM FATURA CANDIDATA ${res.foraDoSistema.length}:`); res.foraDoSistema.forEach((l) => log(`  - ${l}`));
+  log(`ENCAMINHADAS AO FINANCEIRO (boleto na pasta) ${SIMULAR ? '(simulado) ' : ''}${encaminhadas.length}:`); encaminhadas.forEach((l) => log(`  > ${l}`));
+  log(`PDF APAGADO (fatura paga) ${SIMULAR ? '(simulado) ' : ''}${apagados.length}:`); apagados.forEach((l) => log(`  x ${l}`));
 
   if (!SIMULAR) {
-    await sb.from('boleto_pasta_leituras').insert({
-      origem: 'ROBO_PC', status: 'SUCESSO', total_arquivos: nomes.length, novos: res.guardados.length, repetidos: res.jaGuardados.length,
-      erro: res.revisar.length ? `${res.revisar.length} para revisar` : null, executado_por: USUARIO,
+    await registrarRodada({
+      status: 'SUCESSO', total_arquivos: nomes.length, novos: res.guardados.length, repetidos: res.jaGuardados.length,
+      erro: res.revisar.length ? `${res.revisar.length} para revisar` : null,
+      detalhe: { guardados: res.guardados, revisar: res.revisar, foraDoSistema: res.foraDoSistema, avisosDesconto, encaminhadas, apagados, jaGuardados: res.jaGuardados.length },
     });
   }
 }
@@ -282,5 +429,6 @@ main()
   .catch(async (e) => {
     log(`FALHA: ${e.message}`);
     process.exitCode = 1;
+    if (!SIMULAR) await registrarRodada({ status: 'FALHA', erro: e.message }).catch(() => {});
   })
   .finally(async () => { await encerrarOcr().catch(() => {}); fecharLog(); });

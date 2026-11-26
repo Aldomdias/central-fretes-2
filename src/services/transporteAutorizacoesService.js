@@ -19,6 +19,17 @@ export function normalizarCanalAutorizacao(canal) {
   return texto.includes('B2C') ? 'B2C' : 'ATACADO';
 }
 
+// TransGP: o gestor dos veiculos dela e o mesmo do B2C, entao o fracionado
+// Atacado dela tambem vai pra fila B2C (unifica num lugar so). Lotacao e
+// Suprimentos nao mudam: lotacao segue pela DIST no canal LOTACAO.
+const ehTransgp = (transportadora) => String(transportadora || '').toUpperCase().replace(/[^A-Z]/g, '').includes('TRANSGP');
+
+export function canalFilaAutorizacao(canal, transportadora) {
+  const normalizado = normalizarCanalAutorizacao(canal);
+  if (normalizado === 'ATACADO' && ehTransgp(transportadora)) return 'B2C';
+  return normalizado;
+}
+
 // Analise do frete pra quem decide: frete atual (calculado pela AMD), quanto
 // vira com o adicional cobrado e quanto isso pesa sobre o valor da NF.
 export function analisarFrete({ valor_nf: valorNf, valor_calculado: calculado, valor_divergente: adicional, valor_cte: cobrado } = {}) {
@@ -146,7 +157,7 @@ export async function enviarParaAutorizacao(itens = [], usuarioNome = '') {
     .filter((item) => soDigitos(item.chave_cte) || soDigitos(item.chave_nfe))
     .filter((item) => !existentes.has(soDigitos(item.chave_cte)))
     .map((item) => ({
-      canal: normalizarCanalAutorizacao(item.canal),
+      canal: canalFilaAutorizacao(item.canal, item.transportadora),
       origem: 'AUDITORIA',
       status: 'PENDENTE',
       chave_cte: soDigitos(item.chave_cte) || null,

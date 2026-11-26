@@ -150,6 +150,7 @@ import ProdutividadeDiaFaturas from '../components/ProdutividadeDiaFaturas';
 import MeuPainelAuditor from '../components/MeuPainelAuditor';
 import DiagnosticoFaturasPainel from '../components/DiagnosticoFaturasPainel';
 import { carregarPartidasCtes } from '../services/diagnosticoFaturasService';
+import BoletoDaFatura from '../components/BoletoDaFatura';
 import BoletosPendentesPainel from '../components/BoletosPendentesPainel';
 import RoboAuditoriaPainel from '../components/RoboAuditoriaPainel';
 import LancamentosRoboFatura from '../components/LancamentosRoboFatura';
@@ -4184,6 +4185,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
             <label className="field">Data do lancamento financeiro<input value={fatura.lancamento_financeiro_em ? dataBr(fatura.lancamento_financeiro_em) : '-'} readOnly /></label>
             <label className="field">Lancamento financeiro<input value={fatura.lancamento_financeiro || '-'} readOnly /></label>
           </div>
+          <BoletoDaFatura fatura={fatura} />
           <div className="hint-box compact" style={{ marginBottom: 14 }}>
             <strong style={{ display: 'block', marginBottom: 6 }}>Referencia no SAP (excecao)</strong>
             <p style={{ margin: '0 0 8px', fontSize: 12, color: '#64748b' }}>
