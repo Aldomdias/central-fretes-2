@@ -67,6 +67,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'robos', label: 'Automação (Robôs)', grupo: 'Automação' },
   { chave: 'usuarios', label: 'Gestão de Usuários', grupo: 'Administração', somenteAdmin: true },
   { chave: 'usuarios-ativos', label: 'Usuários Ativos', grupo: 'Administração', somenteAdmin: true },
+  { chave: 'consumo-sistema', label: 'Consumo do Sistema', grupo: 'Administração', somenteAdmin: true },
 ];
 
 const CHAVES_MODULOS = MODULOS_SISTEMA.map((modulo) => modulo.chave);
@@ -391,6 +392,8 @@ export function usuarioTemAcesso(usuario, pagina) {
   if (pagina === 'lotacao-transgp' && ['GESTAO', 'OPERACAO_LOTACAO', 'AUDITORIA_LOTACAO'].includes(usuario.perfil)) return true;
   if (pagina === 'usuarios') return usuarioPodeAdministrarUsuarios(usuario);
   if (pagina === 'usuarios-ativos') return usuarioPodeVerUsuariosAtivos(usuario);
+  // Consumo do Sistema (quem/qual tela/qual processo puxa rede, CPU e RAM): so o administrador.
+  if (pagina === 'consumo-sistema') return usuarioPodeAdministrarUsuarios(usuario);
 
   const permissoes = permissoesUsuario(usuario);
   if (permissoes.includes('*')) return true;

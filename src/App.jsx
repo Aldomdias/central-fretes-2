@@ -21,6 +21,7 @@ import AvisoPrazoFaturas from './components/AvisoPrazoFaturas';
 import LoginPage from './pages/LoginPage';
 import UserManagementPage from './pages/UserManagementPage';
 import PainelUsuariosAtivosPage from './pages/PainelUsuariosAtivosPage';
+import ConsumoSistemaPage from './pages/ConsumoSistemaPage';
 import MinhaSenhaPage from './pages/MinhaSenhaPage';
 import FerramentasPage from './pages/FerramentasPage';
 import TrackingPage from './pages/TrackingPage';
@@ -60,6 +61,7 @@ import { useFreteStore } from './data/store';
 import { carregarSessao, carregarUsuariosAsync, MODULOS_SISTEMA, sairLocal, usuarioPodeAdministrarUsuarios, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
 import { entrarPresenca, sairPresenca } from './services/presencaService';
+import { definirPaginaTelemetria, encerrarTelemetria, iniciarTelemetria } from './services/telemetriaService';
 import { sairSupabaseAuth } from './services/biometriaService';
 import { assinarManutencao } from './services/manutencaoService';
 import ManutencaoOverlay from './components/ManutencaoOverlay';
@@ -75,7 +77,7 @@ const PAGINAS_PERMITIDAS = [
   'lotacao', 'lotacao-cotacao', 'fracionado-portal', 'lotacao-operacao', 'lotacao-transgp', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
   'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'prazo-pagamento',
   'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'tabela-padrao-b2c', 'rotas-b2c', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
-  'icms-uf', 'auditoria-ecommerce', 'usuarios-ativos',
+  'icms-uf', 'auditoria-ecommerce', 'usuarios-ativos', 'consumo-sistema',
   'importar-descontos-obtidos', 'painel-descontos-obtidos',
   'gestao-contratos', 'autorizacoes-transporte-b2c', 'autorizacoes-transporte-atacado', 'autorizacoes-transporte-lotacao', 'autorizacoes-suprimentos', 'robos', 'alertas-cte-valor', 'consulta-tracking',
 ];
@@ -134,11 +136,20 @@ export default function App() {
     if (!sessao) return undefined;
     const paginaLabel = MODULOS_SISTEMA.find((modulo) => modulo.chave === paginaAtual)?.label || paginaAtual;
     entrarPresenca(sessao, paginaAtual, paginaLabel);
+    definirPaginaTelemetria(paginaAtual, paginaLabel);
   }, [sessao, paginaAtual]);
+
+  // Telemetria de consumo (modulo Consumo do Sistema): mede rede/CPU/RAM/tempo online.
+  useEffect(() => {
+    if (!sessaoId) return undefined;
+    iniciarTelemetria(carregarSessao() || { id: sessaoId });
+    return undefined;
+  }, [sessaoId]);
 
   useEffect(() => {
     if (sessao) return undefined;
     sairPresenca();
+    encerrarTelemetria();
     return undefined;
   }, [sessao]);
 
@@ -221,6 +232,7 @@ export default function App() {
 
   const sair = () => {
     sairPresenca();
+    encerrarTelemetria();
     sairLocal();
     void sairSupabaseAuth();
     setSessao(null);
@@ -280,6 +292,7 @@ export default function App() {
     ferramentas: <FerramentasPage transportadoras={transportadorasMemo} />,
     usuarios: <UserManagementPage usuarioAtual={sessao} />,
     'usuarios-ativos': <PainelUsuariosAtivosPage />,
+    'consumo-sistema': <ConsumoSistemaPage />,
     'minha-senha': <MinhaSenhaPage usuarioAtual={sessao} onSenhaAlterada={setSessao} />,
     'importar-descontos-obtidos': <ImportarDescontosObtidosPage />,
     'painel-descontos-obtidos': <CentralControlePage />,

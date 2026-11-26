@@ -84,6 +84,7 @@ export const MENU_GRUPOS = [
       { chave: 'transportadoras', label: 'Transportadoras' },
       { chave: 'usuarios', label: 'Usuarios' },
       { chave: 'usuarios-ativos', label: 'Usuarios ativos' },
+      { chave: 'consumo-sistema', label: 'Consumo do sistema' },
       { chave: 'ferramentas', label: 'Ferramentas' },
     ],
   },
@@ -115,6 +116,7 @@ const ICONS = {
   'icms-uf': 'M4 4h16v16H4V4zm4 4h8M8 12h8M8 16h5',
   usuarios: 'M16 11a4 4 0 10-8 0 4 4 0 008 0zm-12 9a8 8 0 0116 0',
   'usuarios-ativos': 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
+  'consumo-sistema': 'M4 19h16M6 16V9m4 7V5m4 11v-5m4 5V7',
   'minha-senha': 'M7 11V8a5 5 0 0110 0v3m-11 0h12v10H6V11zm6 4v3',
 };
 

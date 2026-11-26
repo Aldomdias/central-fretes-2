@@ -1,3 +1,4 @@
+import { medirProcesso } from '../services/telemetriaService';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { carregarRespostasEntregaFatura, salvarPendenciasEntrega, urlAnexoEntrega, urlPortalEntrega, validarRespostaEntrega } from '../services/entregaPortalService';
@@ -5427,7 +5428,11 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     }
   };
 
-  const auditarCtesAvulsos = async () => {
+  // Telemetria (modulo Consumo do Sistema): mede rede/CPU/RAM de cada auditoria avulsa.
+  const auditarCtesAvulsos = () => medirProcesso('AUDITORIA_CTE_AVULSA', 'Auditar CT-es avulsos', () => auditarCtesAvulsosInterno(), {
+    itens: extrairIdentificadoresCte(buscaCtesAvulsa).length,
+  });
+  const auditarCtesAvulsosInterno = async () => {
     const ids = extrairIdentificadoresCte(buscaCtesAvulsa);
     if (!ids.length) {
       setMensagemImportacao('Cole uma chave de CT-e ou uma lista de CT-es para auditar.');
@@ -7173,7 +7178,8 @@ ${portaisLaudo.length ? `
     }
   };
 
-  const importarFaturas = async (event) => {
+  const importarFaturas = (event) => medirProcesso('IMPORTACAO_FATURAS_VERUM', `Importar faturas ${event?.target?.files?.[0]?.name || ''}`.trim(), () => importarFaturasInterno(event));
+  const importarFaturasInterno = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
     event.target.value = '';

@@ -31,6 +31,7 @@ import { carregarGradeFreteCentralizada, salvarGradeFreteCentralizada, restaurar
 import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, carregarOrigensTransportadoraDb, resolverDestinoIbgeDb, listarCoberturaDestinoDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { aguardarVezProcessamento, atualizarProcessamentoPesado, criarProcessamentoPesado, finalizarProcessamentoPesado, verificarTarefaPesadaAtiva } from '../services/processamentoFilaService';
+import { iniciarProcessoTelemetria } from '../services/telemetriaService';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import {
   carregarSimulacaoRealizadoMensal,
@@ -7252,6 +7253,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     let tarefaFila = null;
     let erroExecucaoFila = null;
     let heartbeatFila = null;
+    let medicaoTelemetria = null;
     iniciarProcessamentoUi('Simulação do realizado', `Simulando ${rowsBase.length.toLocaleString('pt-BR')} CT-es filtrados...`, 20);
 
     // Permite que o botão e o painel de progresso apareçam antes do cálculo pesado.
@@ -7270,6 +7272,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
           atualizarProcessamentoPesado(tarefaFila.id, { etapa: 'simulando', total: rowsBase.length });
         }, 15000);
       }
+      medicaoTelemetria = iniciarProcessoTelemetria('SIMULACAO_REALIZADO', `Simulação / ${transportadoraRealizado || 'realizado'}`, {
+        itens: rowsBase.length,
+        metadados: { canal: canalRealizado, transportadora: transportadoraRealizado || null },
+      });
       await cederThread();
       const ehReajusteSelecionado = ctx.ehReajusteSelecionado;
       const transportadoraBaseReajuste = ctx.transportadoraBaseReajuste;
@@ -7765,6 +7771,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       finalizarProcessamentoUi('Erro na simulação do realizado', 'Não foi possível gerar o dossiê.', 100);
     } finally {
       if (heartbeatFila) window.clearInterval(heartbeatFila);
+      void medicaoTelemetria?.finalizar(erroExecucaoFila ? 'ERRO' : 'CONCLUIDO', erroExecucaoFila?.message || null);
       if (tarefaFila) {
         await finalizarProcessamentoPesado(tarefaFila.id, erroExecucaoFila ? 'ERRO' : 'CONCLUIDO', erroExecucaoFila?.message || null);
       }
