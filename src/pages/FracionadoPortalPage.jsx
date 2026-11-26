@@ -150,6 +150,41 @@ function Kpi({ titulo, valor, cor, ativo, onClick }) {
   );
 }
 
+// Questionário + termo aceito no portal (dados_gerais.QUESTIONARIO). "Não" aparece em vermelho com a explicação.
+const PERGUNTAS_RESUMO = [
+  ['edi', 'EDI (OCOREN/CONEMB/DOCCOB) ajustado'],
+  ['cubagem', 'Ciente: só a cubagem da NF vale'],
+  ['recusa', 'Ciente: sem recusa por evento'],
+  ['divergencia', 'Ciente: divergência via negociação/desconto na fatura'],
+  ['whats', 'Possui WhatsApp'],
+  ['devolucao', 'Trabalha com devolução / coleta reversa (NFD)'],
+];
+function QuestionarioResumo({ convite }) {
+  const q = convite.dados_gerais?.QUESTIONARIO;
+  const c = convite.dados_gerais?.CADASTRO || {};
+  if (!q?.aceite_em) return <div style={{ fontSize: 13, color: '#b91c1c', fontWeight: 700, margin: '8px 0' }}>📝 Questionário e termo: ainda não aceitos pela transportadora.</div>;
+  const contato = (p) => [c[`${p}_nome`], c[`${p}_tel`], c[`${p}_whats`] && `WhatsApp ${c[`${p}_whats`]}`, c[`${p}_email`]].filter(Boolean).join(' · ') || '-';
+  return (
+    <div style={{ border: '1px solid #cbd5e1', background: '#f8fafc', borderRadius: 10, padding: 12, margin: '10px 0', fontSize: 13 }}>
+      <b style={{ color: '#06183d' }}>📝 Questionário e termo</b> — aceito em {dataHoraBr(q.aceite_em)} por <b>{q.aceite_nome}</b> (termo {q.versao_termo}{q.aceite_ip ? ` · IP ${q.aceite_ip}` : ''})
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '2px 16px', marginTop: 6 }}>
+        {PERGUNTAS_RESUMO.map(([k, rot]) => {
+          const r = q.respostas?.[k];
+          const obs = k === 'devolucao' ? q.devolucao_obs : q.obs?.[k];
+          const ruim = r === 'NAO' && k !== 'whats' && k !== 'devolucao';
+          return (
+            <div key={k} style={{ color: ruim ? '#b91c1c' : '#334155', fontWeight: ruim ? 700 : 400 }}>
+              {r === 'SIM' ? '✅' : '❌'} {rot}: <b>{r === 'SIM' ? 'Sim' : r === 'NAO' ? 'Não' : '-'}</b>{obs ? ` — ${obs}` : ''}
+            </div>
+          );
+        })}
+        <div>🗓 Faturamento: <b>{q.faturamento ? q.faturamento.toLowerCase() : '-'}</b></div>
+      </div>
+      <div style={{ marginTop: 6 }}><b>EDI:</b> {contato('edi')} · <b>Banco:</b> {[c.bco_banco, c.bco_agencia && `ag ${c.bco_agencia}`, c.bco_conta && `cc ${c.bco_conta}`, c.bco_tipo, c.bco_pix && `PIX ${c.bco_pix}`].filter(Boolean).join(' · ') || '-'}{c.fin_obs ? ` · Regulação financeira: ${c.fin_obs}` : ''}</div>
+    </div>
+  );
+}
+
 // Pré-cadastro informado pela transportadora no portal (dados_gerais.CADASTRO).
 function CadastroResumo({ convite }) {
   const c = convite.dados_gerais?.CADASTRO;
@@ -502,6 +537,7 @@ export default function FracionadoPortalPage() {
           </div>}
           <VolumetriaConvite key={`vol-${aberto.id}`} convite={aberto} />
           {aberto.modalidade !== 'PROPRIA' && <small style={{ color: '#64748b' }}>O Excel exportado segue o modelo padrão (FICHA DE CADASTRO + TABELA + ATENDIMENTO) e pode ser importado em Importar Template.</small>}
+          <QuestionarioResumo convite={aberto} />
           <CadastroResumo convite={aberto} />
           <PreviaResposta key={aberto.id} convite={aberto} respostas={detalhe.respostas} atendimento={detalhe.atendimento} anexos={detalhe.anexos} />
           <h3 style={{ margin: '16px 0 4px', fontSize: 15, color: '#06183d' }}>Histórico de envios</h3>

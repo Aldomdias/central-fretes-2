@@ -225,6 +225,7 @@ td input.cheio{background:#ecfdf3;border-color:#86efac}
 td input.alerta{background:#fff7ed;border:2px solid #f59e0b;color:#9a3412;font-weight:bold}td input.bloq{background:#fef2f2;border:2px solid #dc2626;color:#b91c1c;font-weight:bold}
 .excbox{margin:8px 0;padding:10px 12px;background:#eff6ff;border:2px solid #93c5fd;border-radius:10px;font-size:14px;line-height:1.45}
 select.fora{background:#fed7aa;border:2px solid #ea580c;color:#9a3412;font-weight:bold}
+.qp{padding:10px 0;border-bottom:1px solid #e2e8f0}.qt{font-size:15px;margin-bottom:6px}.snw{display:flex;gap:10px;margin:4px 0}.snl{display:flex;align-items:center;gap:6px;border:2px solid #cbd5e1;border-radius:8px;padding:6px 16px;cursor:pointer;font-weight:bold;margin:0}.snl input{width:auto;margin:0}.snl.onSIM{border-color:#16a34a;background:#ecfdf3}.snl.onNAO{border-color:#dc2626;background:#fef2f2}#qBox textarea,#telaQ textarea{width:100%;padding:8px;border:2px solid #fcd34d;border-radius:8px;font-family:inherit;font-size:14px;margin-top:6px}
 .ufgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:4px 10px;margin:6px 0 10px}.ufgrid label{display:flex;align-items:center;gap:4px;font-weight:normal;margin:0;font-size:14px;cursor:pointer}.ufgrid input{width:auto;margin:0}
 .ufsel{flex-basis:100%;background:#fff;border:1px solid #cbd5e1;border-radius:8px;padding:6px 10px}.ufsel summary{cursor:pointer;font-size:14px}
 .taxas{padding:12px;background:#f8fafc;border:2px solid #cbd5e1;border-radius:10px;margin:0 0 12px}.taxas .lin{display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap}.taxas input,.taxas select{width:auto}.taxas button.x{background:#fff;color:#b91c1c;border:2px solid #b91c1c;padding:6px 12px}
@@ -245,13 +246,13 @@ ${cancelado ? '<div class="msg erro">Este link foi cancelado. Solicite um novo l
   <div id="erroId"></div>
   <p><button id="btnId" onclick="identificar()">Acessar a tabela</button></p>
 </div>
-<div id="telaTab" style="display:none"></div>`}
+<div id="telaQ" style="display:none"></div><div id="telaTab" style="display:none"></div>`}
 </div></div>
 <script>
-var TOKEN=${JSON.stringify(convite.token)},NOME=${JSON.stringify(convite.transportadora)},PRAZO_PADRAO=${PRAZO_PAGAMENTO_PADRAO},MAX_CTES=${MAX_CTES_POR_FATURA},PREMISSAS=${JSON.stringify(PREMISSAS_FRACIONADO)};
+var TOKEN=${JSON.stringify(convite.token)},NOME=${JSON.stringify(convite.transportadora)},PRAZO_PADRAO=${PRAZO_PAGAMENTO_PADRAO},MAX_CTES=${MAX_CTES_POR_FATURA},PREMISSAS=${JSON.stringify(PREMISSAS_FRACIONADO)},TERMO=${JSON.stringify(TERMO_TEXTO)},PERGUNTAS=${JSON.stringify(PERGUNTAS_SIM_NAO)},VERSAO_TERMO=${JSON.stringify(VERSAO_TERMO)};
 ${montarPlanilhaFracionado.toString()}
 var CFG=null,ACESSO='',ST={},CANAL='',ORI=0,VISAO='tabela',UFSEL='',FUF='',CNPJ='',MUN=[],MUNIDX={},FREG='',FBUSCA='',FSEM=false;
-var CAD={cnpj_origem:{}},CADABERTO=true,VOLABERTO=false,VOLORI={},VOLUFS={},VOLBUSY=false;
+var CAD={cnpj_origem:{}},QST={respostas:{},obs:{}},STATUS0='',CADABERTO=true,VOLABERTO=false,VOLORI={},VOLUFS={},VOLBUSY=false;
 var GER=[['prazo','Prazo de pagamento (dias)'],['gris','GRIS (%)'],['gris_min','GRIS mínimo (R$)'],['advalorem','Ad valorem (%)'],['advalorem_min','Ad valorem mínimo (R$)'],['pedagio','Pedágio (R$ por fração de 100 kg)'],['tas','TAS (R$)'],['ctrc','Taxa por CT-e emitido / CTRC (R$)'],['cubagem','Cubagem (kg/m³)','300'],['emergencial','Taxa emergencial (%)'],['frete_min','Frete mínimo geral (R$)']];
 var COLS_A=${JSON.stringify(COLS_ATEND_FRACIONADO)};
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -285,6 +286,7 @@ function faltasCadastro(){var c=CAD,out=[];if(!c.razao)out.push('Informe a RAZÃ
   CFG.origens.forEach(function(o){if(!cnpjOkC(c.cnpj_origem[o]))out.push('Informe o CNPJ que vai emitir os CT-es'+(o?' saindo de '+o:''))});return out}
 function cadCampo(k,rot,obrig,ph,tipo){var v=CAD[k]||'',ok=!obrig||(tipo==='mail'?mailOk(v):tipo==='tel'?telOk(v):!!String(v).trim());
   return '<div><label>'+rot+(obrig?' <span style="color:#b91c1c">*</span>':'')+'</label><input data-cad="'+k+'" data-tipo="'+(tipo||'')+'" data-obrig="'+(obrig?1:0)+'" value="'+esc(v)+'" placeholder="'+esc(ph||'')+'"'+(tipo==='tel'?' inputmode="tel"':tipo==='mail'?' inputmode="email"':'')+' style="border:2px solid '+(ok?'#cbd5e1':'#fca5a5')+'"></div>'}
+function seloAceite(){return QST.aceite_em?'<div class="msg ok">✅ Questionário respondido e termo aceito em '+new Date(QST.aceite_em).toLocaleString('pt-BR')+' por '+esc(QST.aceite_nome||'')+'. <a href="#" onclick="verQ();return false">Ver/alterar respostas</a></div>':''}
 function blocoCadastro(){var nOri=CFG.origens,falta=faltasCadastro();
   var h='<div class="taxas" id="cadBox" style="border-color:'+(falta.length?'#fca5a5':'#86efac')+'"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b style="font-size:17px">🪪 Dados cadastrais (pré-cadastro)</b><span id="cadSt" style="font-size:13px;color:'+(falta.length?'#b91c1c':'#166534')+';font-weight:bold">'+(falta.length?falta.length+' pendência(s)':'✅ completo')+'</span><button class="sec" style="padding:4px 10px" onclick="CADABERTO=!CADABERTO;render()">'+(CADABERTO?'Recolher ▴':'Abrir ▾')+'</button></div>';
   h+='<small style="color:#64748b">Tabela: <b>'+CFG.canais.map(nomeCanal).join(' + ')+'</b> · <b>'+(CFG.modalidade==='FAIXA_PESO'?'Frete por faixa de peso':CFG.modalidade==='PROPRIA'?'Tabela própria':'Frete percentual')+'</b>'+(nOri.filter(Boolean).length?' · Origens: <b>'+nOri.map(esc).join(', ')+'</b>':'')+' · CNPJ de acesso: <b>'+esc(CNPJ)+'</b></small>';
@@ -305,6 +307,49 @@ function ligaCad(){var b=document.getElementById('cadBox');if(!b)return;
     if(t.hasAttribute('data-cadori'))ok=cnpjOkC(v);else ok=!ob||(tp==='mail'?mailOk(v):tp==='tel'?telOk(v):!!v.trim());
     t.style.borderColor=ok?(t.hasAttribute('data-cadori')?'#86efac':'#cbd5e1'):'#fca5a5';
     var f=faltasCadastro(),st=document.getElementById('cadSt');if(st){st.textContent=f.length?f.length+' pendência(s)':'✅ completo';st.style.color=f.length?'#b91c1c':'#166534'}})}
+function snBtn(k,v){var a=QST.respostas[k];return '<label class="snl'+(a===v?' on'+v:'')+'"><input type="radio" name="q_'+k+'" value="'+v+'" data-q="'+k+'"'+(a===v?' checked':'')+'> '+(v==='SIM'?'Sim':'Não')+'</label>'}
+function qCampo(k,rot,obrig,ph,tipo){var v=CAD[k]||'';return '<div><label>'+rot+(obrig?' <span style="color:#b91c1c">*</span>':'')+'</label><input data-qc="'+k+'" value="'+esc(v)+'" placeholder="'+esc(ph||'')+'"'+(tipo==='tel'?' inputmode="tel"':tipo==='mail'?' inputmode="email"':'')+'></div>'}
+function faltasQ(){var q=QST,c=CAD,out=[];var NUMQ={edi:1,cubagem:6,recusa:7,divergencia:8};PERGUNTAS.forEach(function(p){var a=q.respostas[p[0]],nq=NUMQ[p[0]];if(!a)out.push('Responda a pergunta '+nq);else if(a==='NAO'&&!String(q.obs[p[0]]||'').trim())out.push('Explique o "Não" da pergunta '+nq)});
+  if(!c.edi_nome||!(telOk(c.edi_tel)||mailOk(c.edi_email)))out.push('Informe o contato responsável pelo EDI (nome e telefone ou e-mail)');
+  if(!c.fin_nome||!mailOk(c.fin_email))out.push('Informe o contato do FINANCEIRO (nome e e-mail)');
+  if(!c.op_nome||!(telOk(c.op_tel)||telOk(c.op_whats)))out.push('Informe o contato OPERACIONAL para coletas (nome e telefone)');
+  if(!q.respostas.whats)out.push('Informe se possui WhatsApp');else if(q.respostas.whats==='SIM'&&!telOk(c.op_whats))out.push('Informe o número de WhatsApp');
+  if(!q.faturamento)out.push('Escolha o faturamento (semanal ou quinzenal)');
+  if(!c.bco_banco||!c.bco_agencia||!c.bco_conta)out.push('Informe os DADOS BANCÁRIOS (banco, agência e conta)');
+  if(!q.respostas.devolucao)out.push('Responda sobre devolução / coleta reversa');else if(q.respostas.devolucao==='SIM'&&!String(q.devolucao_obs||'').trim())out.push('Descreva as particularidades da devolução');
+  if(!q.aceite||!String(q.aceite_nome||'').trim())out.push('Leia o termo, marque o aceite e informe o nome do responsável');
+  return out}
+function mostrarQ(){var t=document.getElementById('telaQ');t.style.display='block';document.getElementById('telaTab').style.display='none';var q=QST,h='';
+  h+='<div class="regra" style="font-size:15px"><b style="font-size:18px">Etapa obrigatória: questionário e termo de ciência</b><br>Antes de preencher e enviar a tabela, responda às perguntas abaixo e dê o aceite no termo. Respostas "Não" são aceitas, mas precisam de explicação e serão avaliadas pelo time de suprimentos.</div>';
+  h+='<div class="taxas" id="qBox">';
+  var n=0;function perg(txt,corpo){n++;return '<div class="qp"><div class="qt"><b>'+n+'.</b> '+txt+'</div>'+corpo+'</div>'}
+  h+=perg(esc(PERGUNTAS[0][1]),'<div class="snw">'+snBtn('edi','SIM')+snBtn('edi','NAO')+'</div>'+(q.respostas.edi==='NAO'?'<textarea data-qo="edi" rows="2" placeholder="Explique (obrigatório)">'+esc(q.obs.edi||'')+'</textarea>':''));
+  h+=perg('Em caso de erro de integração do EDI, qual o contato do responsável?','<div class="ger" style="background:#fff">'+qCampo('edi_nome','Nome',true)+qCampo('edi_tel','Telefone',false,'','tel')+qCampo('edi_email','E-mail',false,'','mail')+'</div>');
+  h+=perg('Qual o contato do financeiro para alinharmos dúvidas?','<div class="ger" style="background:#fff">'+qCampo('fin_nome','Nome',true)+qCampo('fin_tel','Telefone',false,'','tel')+qCampo('fin_email','E-mail',true,'','mail')+'</div>');
+  h+=perg('Qual o contato operacional para solicitarmos coletas?','<div class="ger" style="background:#fff">'+qCampo('op_nome','Nome',true)+qCampo('op_tel','Telefone',true,'','tel')+qCampo('op_email','E-mail',false,'','mail')+'</div>');
+  h+=perg('Possui WhatsApp?','<div class="snw">'+snBtn('whats','SIM')+snBtn('whats','NAO')+'</div>'+(q.respostas.whats==='SIM'?'<div class="ger" style="background:#fff">'+qCampo('op_whats','Número do WhatsApp',true,'(00) 00000-0000','tel')+'</div>':''));
+  [1,2,3].forEach(function(i){var k=PERGUNTAS[i][0];h+=perg(esc(PERGUNTAS[i][1]),'<div class="snw">'+snBtn(k,'SIM')+snBtn(k,'NAO')+'</div>'+(q.respostas[k]==='NAO'?'<textarea data-qo="'+k+'" rows="2" placeholder="Explique (obrigatório)">'+esc(q.obs[k]||'')+'</textarea>':''))});
+  h+=perg('O prazo de emissão da fatura segue o padrão dos fornecedores: <b>semanal com '+PRAZO_PADRAO+' dias</b> ou <b>quinzenal</b>, de acordo com a necessidade do fornecedor. Qual será o seu?','<div class="snw"><label class="snl'+(q.faturamento==='SEMANAL'?' onSIM':'')+'"><input type="radio" name="q_fat" data-qf="SEMANAL"'+(q.faturamento==='SEMANAL'?' checked':'')+'> Semanal</label><label class="snl'+(q.faturamento==='QUINZENAL'?' onSIM':'')+'"><input type="radio" name="q_fat" data-qf="QUINZENAL"'+(q.faturamento==='QUINZENAL'?' checked':'')+'> Quinzenal</label></div>');
+  h+=perg('Por gentileza, informe os dados bancários e eventuais necessidades de regulação financeira.','<div class="ger" style="background:#fff">'+qCampo('bco_banco','Banco',true,'Nome ou código')+qCampo('bco_agencia','Agência',true)+qCampo('bco_conta','Conta',true,'com dígito')+qCampo('bco_tipo','Tipo de conta',false,'Corrente / poupança')+qCampo('bco_pix','Chave PIX',false)+'</div><textarea data-qc="fin_obs" rows="2" placeholder="Necessidades de regulação financeira (opcional)">'+esc(CAD.fin_obs||'')+'</textarea>');
+  h+=perg('Trabalha com operação de devolução, coleta reversa mediante emissão de NFD e barramento de entrega?','<div class="snw">'+snBtn('devolucao','SIM')+snBtn('devolucao','NAO')+'</div>'+(q.respostas.devolucao==='SIM'?'<textarea data-qd="1" rows="3" placeholder="Informe particularidades e restrições da operação de devolução (obrigatório)">'+esc(q.devolucao_obs||'')+'</textarea>':''));
+  h+='</div>';
+  h+='<div class="taxas"><b style="font-size:17px">Termo de ciência e acordo</b> <small style="color:#64748b">versão '+esc(VERSAO_TERMO)+'</small><div style="max-height:260px;overflow:auto;background:#fff;border:1px solid #cbd5e1;border-radius:8px;padding:10px 14px;margin:8px 0;font-size:14px;line-height:1.5">'+TERMO.map(function(p,i){return '<p style="margin:0 0 8px">'+(i?i+'. ':'')+p+'</p>'}).join('')+'</div>';
+  h+='<label style="display:flex;gap:8px;align-items:center;font-size:16px;font-weight:bold;cursor:pointer"><input type="checkbox" id="qAceite" style="width:22px;height:22px"'+(q.aceite?' checked':'')+'> Li o termo e estou ciente e de acordo com as regras acima.</label>';
+  h+='<div class="ger" style="background:#fff;margin-top:8px"><div><label>Nome do responsável pelo aceite <span style="color:#b91c1c">*</span></label><input id="qNome" value="'+esc(q.aceite_nome||CAD.com_nome||'')+'"></div></div></div>';
+  h+='<div id="qFalta"></div><div class="ferr"><button onclick="enviarQ()" style="font-size:17px;padding:12px 22px">Aceitar e seguir para a tabela →</button><span id="qMsg" class="fl"></span></div>';
+  t.innerHTML=h;
+  t.oninput=function(ev){var e=ev.target;if(e.hasAttribute('data-qc'))CAD[e.getAttribute('data-qc')]=e.value;else if(e.hasAttribute('data-qo'))QST.obs[e.getAttribute('data-qo')]=e.value;else if(e.hasAttribute('data-qd'))QST.devolucao_obs=e.value;else if(e.id==='qNome')QST.aceite_nome=e.value;qFaltas(false)};
+  t.onchange=function(ev){var e=ev.target,y=window.scrollY;if(e.hasAttribute('data-q')){QST.respostas[e.getAttribute('data-q')]=e.value;mostrarQ();window.scrollTo(0,y)}else if(e.hasAttribute('data-qf')){QST.faturamento=e.getAttribute('data-qf');mostrarQ();window.scrollTo(0,y)}else if(e.id==='qAceite'){QST.aceite=e.checked;QST.aceite_nome=document.getElementById('qNome').value;qFaltas(false)}};
+  qFaltas(false)}
+function qFaltas(grande){var e=document.getElementById('qFalta');if(!e)return;var f=faltasQ();
+  e.innerHTML=f.length?'<div style="background:#fef2f2;border:'+(grande?3:2)+'px solid #dc2626;border-radius:12px;padding:12px 16px;color:#b91c1c;margin:10px 0"><div style="font-size:'+(grande?22:17)+'px;font-weight:900">⛔ Falta para seguir ('+f.length+'):</div>'+f.map(function(t){return '<div style="font-size:'+(grande?18:15)+'px;font-weight:bold">• '+esc(t)+'</div>'}).join('')+'</div>':'<div style="background:#ecfdf3;border:2px solid #16a34a;border-radius:12px;padding:10px 14px;color:#166534;font-size:16px;font-weight:bold;margin:10px 0">✅ Tudo respondido. Clique em “Aceitar e seguir”.</div>';
+  return f}
+function enviarQ(){QST.aceite_nome=document.getElementById('qNome').value;var f=qFaltas(true);if(f.length){document.getElementById('qFalta').scrollIntoView({behavior:'smooth',block:'center'});return}
+  var m=document.getElementById('qMsg');m.textContent='Gravando…';
+  api({acao:'questionario',acesso:ACESSO,questionario:QST,cadastro:CAD}).then(function(j){QST=j.questionario;CFG.canais.forEach(function(c){if(!ST[c].g.faturamento)ST[c].g.faturamento=QST.faturamento});
+    document.getElementById('telaQ').style.display='none';window.scrollTo(0,0);if(document.getElementById('telaTab').innerHTML)document.getElementById('telaTab').style.display='block',render();else montar(STATUS0)})
+    .catch(function(e){m.textContent='';document.getElementById('qFalta').innerHTML='<div class="msg erro" style="font-size:17px">'+esc(e.message)+'</div>'})}
+function verQ(){mostrarQ();window.scrollTo(0,0)}
 function cidadeOk(x){return !!(x&&x.r&&num(x.p)>0)}
 function identificar(){var b=document.getElementById('btnId');document.getElementById('erroId').innerHTML='';
   var cnpj=document.getElementById('cnpj').value,nome=document.getElementById('nome').value.trim(),email=document.getElementById('email').value.trim();
@@ -318,7 +363,7 @@ function identificar(){var b=document.getElementById('btnId');document.getElemen
       s.c[oi+'|'+l.uf_destino+'|'+l.regiao+'|'+fi]={v:fmtIn(l.frete_valor),p:fmtIn(l.frete_percentual),m:fmtIn(l.frete_minimo),k:fmtIn(l.frete_kg)}});
     (j.atendimento||[]).forEach(function(a){var s=ST[a.canal],oi=CFG.origens.indexOf(a.origem||'');if(!s||oi<0)return;
       var xa={r:a.regiao||'',p:fmtIn(a.prazo_dias)},td=a.taxas_destino||{};COLS_A.forEach(function(c){xa[c[0]]=fmtIn(c[2]?a[c[2]]:td[c[0]])});s.a[oi+'|'+a.ibge]=xa});
-    document.getElementById('telaId').style.display='none';montar(j.status);
+    document.getElementById('telaId').style.display='none';QST=Object.assign({respostas:{},obs:{}},(j.gerais||{}).QUESTIONARIO||{});STATUS0=j.status;montar(j.status);if(!QST.aceite_em)mostrarQ();
     if(CFG.modalidade==='PROPRIA')return;
     api({acao:'municipios',acesso:ACESSO}).then(function(m){MUN=m.m.map(function(x){return{i:x[0],u:x[1],c:x[2],n:sa(x[2])}});MUN.forEach(function(x){MUNIDX[x.i]=x});render()}).catch(function(e){document.getElementById('msgTab').innerHTML='<div class="msg erro">Não consegui carregar a lista de cidades: '+esc(e.message)+'</div>'})
   }).catch(function(e){document.getElementById('erroId').innerHTML='<div class="msg erro">'+esc(e.message)+'</div>';b.disabled=false})}
@@ -333,7 +378,7 @@ function abas(){var a=document.getElementById('abas');if(CFG.canais.length<2){a.
   a.innerHTML=CFG.canais.map(function(c){return '<button class="'+(c===CANAL?'on':'')+'" onclick="setCanal(\\''+c+'\\')">'+nomeCanal(c)+'</button>'}).join('')}
 function setCanal(c){CANAL=c;render()}
 function setVisao(v){VISAO=v;render()}
-function render(){if(!CFG)return;if(CFG.modalidade==='PROPRIA'){renderPropria();return}abas();var s=ST[CANAL],h=blocoPremissas()+blocoCadastro();
+function render(){if(!CFG)return;if(CFG.modalidade==='PROPRIA'){renderPropria();return}abas();var s=ST[CANAL],h=seloAceite()+blocoPremissas()+blocoCadastro();
   h+='<div class="ferr">';
   if(CFG.origens.length>1)h+='<label class="fl">Origem <select onchange="ORI=Number(this.value);render()">'+CFG.origens.map(function(o,i){return '<option value="'+i+'"'+(i===ORI?' selected':'')+'>'+esc(o)+'</option>'}).join('')+'</select></label><button class="sec" onclick="copiarOrigem()">Copiar esta origem para as demais</button>';
   else if(CFG.origens[0])h+='<span class="fl">Origem: '+esc(CFG.origens[0])+'</span>';
@@ -395,7 +440,7 @@ function listaAnexos(s,cat){var l=s.f.map(function(a,i){return {a:a,i:i}}).filte
     h+='<div class="lin">📎 <b>'+esc(String(a.nome||'').replace(/^\\[(DESTINOS|GENERALIDADES)\\] /,''))+'</b> <span style="color:#64748b">('+Math.max(1,Math.round((a.tamanho||0)/1024))+' KB)</span>'+info+'<button class="x" onclick="removerAnexo('+x.i+')">Remover</button></div>'});
   return h}
 function renderPropria(){abas();var s=ST[CANAL],h='';
-  h+=blocoPremissas()+blocoCadastro();
+  h+=seloAceite()+blocoPremissas()+blocoCadastro();
   h+='<div class="msg aviso"><b>Atenção:</b> as generalidades informadas aqui serão <b>avaliadas pelo time de suprimentos</b> para definir se entram ou não no nosso escopo. O envio não garante a aceitação das condições.</div>';
   h+=blocoVol();
   h+='<div class="taxas"><b>1. Tabela de frete — '+nomeCanal(CANAL)+'</b> <span style="color:#b91c1c;font-weight:bold">(obrigatório)</span><br><small style="color:#64748b">A sua tabela de preços: Excel, CSV, PDF, Word ou ZIP · até 3 MB por arquivo.</small><div style="margin:8px 0">'+listaAnexos(s,'TABELA')+'</div>';
@@ -544,7 +589,7 @@ function montarPayload(){var out={};CFG.canais.forEach(function(c){var s=ST[c],o
   Object.keys(s.a).forEach(function(k){var x=s.a[k],p=k.split('|');if(!x.r&&!(num(x.p)>0))return;
     var it={i:p[1],r:x.r||'',p:num(x.p)};COLS_A.forEach(function(c2){it[c2[0]]=num(x[c2[0]])});ori[oriNome(Number(p[0]))].atendimento.push(it)});
   out[c]={gerais:s.g,origens:ori}});return out}
-function validar(final){var out=final?faltasCadastro().map(function(t){return 'Dados cadastrais: '+t}):[];if(CFG.modalidade==='PROPRIA'){if(final){CFG.canais.forEach(function(c){faltasPropria(c).forEach(function(t){out.push(nomeCanal(c)+': '+t)})});caixaFaltas();var fb=document.getElementById('faltaBox');if(out.length&&fb)fb.scrollIntoView({behavior:'smooth',block:'center'})}return out}CFG.canais.forEach(function(c){var s=ST[c],n=0,nc=0;Object.keys(s.c).forEach(function(k){var x=s.c[k];if(cheio(x)){n++;
+function validar(final){var out=final?faltasCadastro().map(function(t){return 'Dados cadastrais: '+t}):[];if(final&&!QST.aceite_em)out.unshift('Responda o questionário e dê o aceite no termo (topo da página).');if(CFG.modalidade==='PROPRIA'){if(final){CFG.canais.forEach(function(c){faltasPropria(c).forEach(function(t){out.push(nomeCanal(c)+': '+t)})});caixaFaltas();var fb=document.getElementById('faltaBox');if(out.length&&fb)fb.scrollIntoView({behavior:'smooth',block:'center'})}return out}CFG.canais.forEach(function(c){var s=ST[c],n=0,nc=0;Object.keys(s.c).forEach(function(k){var x=s.c[k];if(cheio(x)){n++;
     ['v','p','m','k'].forEach(function(f){if(x[f]&&!(num(x[f])>=0))out.push(nomeCanal(c)+': valor inválido em '+k.replace(/\\|/g,' / ')+'.')});
     if(num(x.p)>100)out.push(nomeCanal(c)+': percentual acima de 100% em '+k.replace(/\\|/g,' / ')+'.');
     var ei=final?excInfo(c,k):null;if(ei&&ei.n==='erro'){var pk=k.split('|');out.push(nomeCanal(c)+' — '+pk[1]+' / '+pk[2]+': '+ei.t)}}});
@@ -623,11 +668,55 @@ function lerCorpo(req) {
   return {};
 }
 
+// Questionario + termo de ciencia (obrigatorio antes de preencher/enviar). Gravado em dados_gerais.QUESTIONARIO
+// com data, IP e versao do termo. O texto descritivo definitivo do termo ainda sera enviado pela Suprimentos.
+const VERSAO_TERMO = 'v1-2026-11-26';
+const TERMO_TEXTO = [
+  'Ao enviar a tabela de frete por este portal, a transportadora declara estar ciente e de acordo com as regras abaixo, que serão consideradas na análise da proposta, na auditoria dos CT-es e no pagamento das faturas.',
+  ...PREMISSAS_FRACIONADO,
+  'Recusas de entrega não são efetuadas por meio de evento/ocorrência: devem ser tratadas com o time operacional.',
+  'Em caso de divergência de cobrança, o procedimento é a negociação e eventual concessão de desconto na respectiva fatura.',
+  'Este aceite não garante a contratação: a tabela passará por análise e, se aprovada, por homologação com envio de documentos.',
+];
+const PERGUNTAS_SIM_NAO = [
+  ['edi', 'Os arquivos EDI (OCOREN, CONEMB e DOCCOB) estão devidamente ajustados para integração conosco?'],
+  ['cubagem', 'Estão cientes de que será considerada exclusivamente a cubagem informada na nota fiscal para fins de faturamento e cobrança do frete? Em caso de divergência ou não concordância, a mercadoria não deve ser embarcada e o time operacional deve ser comunicado para as devidas tratativas.'],
+  ['recusa', 'Estão cientes de que não efetuamos recusas por meio de evento?'],
+  ['divergencia', 'Estão cientes de que, em caso de divergência de cobrança, adotamos como procedimento a negociação e eventual concessão de desconto na respectiva fatura?'],
+];
+function limparQuestionario(q, req, convite) {
+  const sn = (v) => (v === 'SIM' || v === 'NAO' ? v : '');
+  const txt = (v, n = 1000) => String(v ?? '').trim().slice(0, n);
+  const out = { respostas: {}, obs: {} };
+  PERGUNTAS_SIM_NAO.forEach(([k]) => { out.respostas[k] = sn(q?.respostas?.[k]); const o = txt(q?.obs?.[k]); if (o) out.obs[k] = o; });
+  out.respostas.whats = sn(q?.respostas?.whats);
+  out.respostas.devolucao = sn(q?.respostas?.devolucao);
+  out.devolucao_obs = txt(q?.devolucao_obs, 3000);
+  out.faturamento = q?.faturamento === 'QUINZENAL' ? 'QUINZENAL' : q?.faturamento === 'SEMANAL' ? 'SEMANAL' : '';
+  out.aceite = q?.aceite === true;
+  out.aceite_nome = txt(q?.aceite_nome, 120);
+  const faltas = [];
+  PERGUNTAS_SIM_NAO.forEach(([k]) => { if (!out.respostas[k]) faltas.push(`responda a pergunta sobre ${k}`); else if (out.respostas[k] === 'NAO' && !out.obs[k]) faltas.push(`explique o "não" em ${k}`); });
+  if (!out.respostas.whats) faltas.push('informe se possui WhatsApp');
+  if (!out.respostas.devolucao) faltas.push('responda sobre devolução/coleta reversa');
+  if (out.respostas.devolucao === 'SIM' && !out.devolucao_obs) faltas.push('descreva as particularidades da devolução');
+  if (!out.faturamento) faltas.push('escolha o faturamento (semanal ou quinzenal)');
+  if (!out.aceite || !out.aceite_nome) faltas.push('dê o aceite no termo com o nome do responsável');
+  if (!faltas.length) {
+    out.aceite_em = new Date().toISOString();
+    out.aceite_ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim().slice(0, 60);
+    out.aceite_cnpj = convite.respondente_cnpj || '';
+    out.versao_termo = VERSAO_TERMO;
+  }
+  return { out, faltas };
+}
+
 // Dados cadastrais (pre-cadastro da transportadora), gravados em dados_gerais.CADASTRO
-const CAMPOS_CADASTRO = ['razao', 'fantasia', 'ie', 'endereco', 'com_nome', 'com_tel', 'com_whats', 'com_email', 'op_nome', 'op_tel', 'op_whats', 'op_email', 'fin_nome', 'fin_tel', 'fin_email'];
+const CAMPOS_CADASTRO = ['razao', 'fantasia', 'ie', 'endereco', 'com_nome', 'com_tel', 'com_whats', 'com_email', 'op_nome', 'op_tel', 'op_whats', 'op_email', 'fin_nome', 'fin_tel', 'fin_email',
+  'edi_nome', 'edi_tel', 'edi_email', 'bco_banco', 'bco_agencia', 'bco_conta', 'bco_tipo', 'bco_pix', 'fin_obs'];
 function limparCadastro(c, origens) {
   const out = {};
-  for (const k of CAMPOS_CADASTRO) { const v = String(c?.[k] ?? '').trim().slice(0, 200); if (v) out[k] = v; }
+  for (const k of CAMPOS_CADASTRO) { const v = String(c?.[k] ?? '').trim().slice(0, k === 'fin_obs' ? 2000 : 200); if (v) out[k] = v; }
   const cnpjs = {};
   for (const o of origens) { const d = soDigitos(c?.cnpj_origem?.[o]); if (d) cnpjs[o] = d.slice(0, 14); }
   if (Object.keys(cnpjs).length) out.cnpj_origem = cnpjs;
@@ -640,7 +729,9 @@ function faltasCadastroServidor(cad, origens) {
   if (!cad.razao) out.push('razão social');
   if (!cad.com_nome || !(tel(cad.com_tel) || tel(cad.com_whats)) || !mail(cad.com_email)) out.push('contato comercial (nome, telefone ou WhatsApp e e-mail)');
   if (!(tel(cad.op_tel) || tel(cad.op_whats))) out.push('telefone ou WhatsApp do operacional');
-  if (!mail(cad.fin_email)) out.push('e-mail do financeiro');
+  if (!cad.fin_nome || !mail(cad.fin_email)) out.push('contato do financeiro (nome e e-mail)');
+  if (!cad.edi_nome || !(tel(cad.edi_tel) || mail(cad.edi_email))) out.push('contato responsável pelo EDI');
+  if (!cad.bco_banco || !cad.bco_agencia || !cad.bco_conta) out.push('dados bancários (banco, agência e conta)');
   origens.forEach((o) => { if (!cnpjValido(soDigitos(cad.cnpj_origem?.[o]))) out.push(`CNPJ emissor${o ? ` de ${o}` : ''}`); });
   return out;
 }
@@ -734,6 +825,21 @@ export default async function handler(req, res) {
           .catch((e) => (/taxas_destino/.test(e?.message || '') ? todas(() => supabase.from('fracionado_atendimento').select('canal,origem,ibge,regiao,prazo_dias,tda,trt,suframa').eq('convite_id', convite.id).order('id')) : Promise.reject(e))),
       ]);
       return enviarJson(res, 200, { acesso: gerarAcesso(token, segredo), config, gerais: convite.dados_gerais || {}, linhas, atendimento, anexos, status: convite.status });
+    }
+
+    if (body.acao === 'questionario') {
+      if (!acessoValido(token, body.acesso, segredo)) return enviarJson(res, 401, { erro: 'Sessão expirada. Recarregue a página e se identifique novamente.' });
+      const { out, faltas } = limparQuestionario(body.questionario, req, convite);
+      const gerais = { ...(convite.dados_gerais || {}) };
+      gerais.CADASTRO = { ...(gerais.CADASTRO || {}), ...limparCadastro(body.cadastro, config.origens) };
+      if (faltas.length) return enviarJson(res, 400, { erro: `Para seguir: ${faltas.join('; ')}.` });
+      const faltaCad = faltasCadastroServidor(gerais.CADASTRO, []).filter((t) => /financeiro|EDI|banc/.test(t));
+      if (faltaCad.length) return enviarJson(res, 400, { erro: `Para seguir, informe: ${faltaCad.join(', ')}.` });
+      gerais.QUESTIONARIO = out;
+      config.canais.forEach((c) => { gerais[c] = { ...(gerais[c] || {}) }; if (!gerais[c].faturamento) gerais[c].faturamento = out.faturamento; });
+      const { error: eQ } = await supabase.from('fracionado_convites').update({ dados_gerais: gerais, ultimo_acesso_em: new Date().toISOString() }).eq('id', convite.id);
+      if (eQ) throw eQ;
+      return enviarJson(res, 200, { ok: true, questionario: out, gerais });
     }
 
     if (body.acao === 'municipios') {
@@ -903,6 +1009,7 @@ export default async function handler(req, res) {
       const atualiza = { dados_gerais: gerais, ultimo_acesso_em: agora };
       if (body.enviar) {
         if (!canaisSalvos.length) return enviarJson(res, 400, { erro: 'Nada para enviar.' });
+        if (!gerais.QUESTIONARIO?.aceite_em) return enviarJson(res, 400, { erro: 'Responda o questionário e dê o aceite no termo antes de enviar.' });
         const faltaCad = faltasCadastroServidor(gerais.CADASTRO || {}, config.origens);
         if (faltaCad.length) return enviarJson(res, 400, { erro: `Dados cadastrais: falta ${faltaCad.join(', ')}.` });
         for (const c of canaisSalvos) {
