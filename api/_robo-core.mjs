@@ -22738,12 +22738,65 @@ var init_realizadoTrackingEnrichment = __esm({
   }
 });
 
+// src/services/transportadoraCnpjsService.js
+function client() {
+  const supabase2 = getSupabaseClient();
+  if (!supabase2 || !isSupabaseConfigured()) throw new Error("Supabase n\xE3o configurado.");
+  return supabase2;
+}
+async function carregarRaizesAdicionaisPorId() {
+  const mapa = /* @__PURE__ */ new Map();
+  if (!isSupabaseConfigured()) return mapa;
+  const { data, error } = await client().from("transportadora_cnpjs").select("transportadora_id,cnpj_raiz").eq("ativo", true);
+  if (error) throw new Error(error.message || "Erro ao carregar CNPJs adicionais.");
+  (data || []).forEach((item) => {
+    if (!item.transportadora_id || !item.cnpj_raiz) return;
+    mapa.set(item.transportadora_id, [...mapa.get(item.transportadora_id) || [], item.cnpj_raiz]);
+  });
+  return mapa;
+}
+async function carregarGruposRaizTransportadora() {
+  const grupos = /* @__PURE__ */ new Map();
+  if (!isSupabaseConfigured()) return grupos;
+  const [transportadoras, origens, adicionais] = await Promise.all([
+    client().from("transportadoras").select("id,cnpj,cnpj_raiz").limit(2e4),
+    client().from("origens").select("transportadora_id,cnpj,cnpj_raiz").limit(5e4),
+    client().from("transportadora_cnpjs").select("transportadora_id,cnpj_raiz").eq("ativo", true).limit(2e4)
+  ]);
+  const erro = transportadoras.error || origens.error || adicionais.error;
+  if (erro) throw new Error(erro.message || "Erro ao carregar raizes das transportadoras.");
+  const porId = /* @__PURE__ */ new Map();
+  const adicionar = (id, valor) => {
+    const raiz2 = obterRaizCnpj(valor);
+    if (!id || !/^\d{8}$/.test(raiz2) || /^0+$/.test(raiz2)) return;
+    if (!porId.has(id)) porId.set(id, /* @__PURE__ */ new Set());
+    porId.get(id).add(raiz2);
+  };
+  (transportadoras.data || []).forEach((t) => adicionar(t.id, t.cnpj_raiz || t.cnpj));
+  (origens.data || []).forEach((o) => adicionar(o.transportadora_id, o.cnpj_raiz || o.cnpj));
+  (adicionais.data || []).forEach((a) => adicionar(a.transportadora_id, a.cnpj_raiz));
+  porId.forEach((raizes) => {
+    raizes.forEach((raiz2) => {
+      grupos.set(raiz2, Array.from(/* @__PURE__ */ new Set([...grupos.get(raiz2) || [], ...raizes])));
+    });
+  });
+  return grupos;
+}
+var init_transportadoraCnpjsService = __esm({
+  "src/services/transportadoraCnpjsService.js"() {
+    "use strict";
+    init_define_import_meta_env();
+    init_supabaseClient();
+    init_cnpj();
+  }
+});
+
 // src/services/auditoriaFretesService.js
 async function safeUpsert(table, payload) {
   if (!isSupabaseConfigured()) return false;
   const client2 = getSupabaseClient();
   let { error } = await client2.from(table).upsert(payload, { onConflict: "id" });
-  for (let tentativa = 0; error && tentativa < 8; tentativa += 1) {
+  for (let tentativa = 0; error && tentativa < 40; tentativa += 1) {
     const mensagemOriginal = String(error.message || "");
     const mensagem = mensagemOriginal.toLowerCase();
     const matchColuna = mensagemOriginal.match(/'([^']+)'\s+column/i);
@@ -22944,6 +22997,7 @@ var init_auditoriaFretesService = __esm({
     init_transporteAutorizacoesService();
     init_realizadoTrackingEnrichment();
     init_portalFinanceiroDomain();
+    init_transportadoraCnpjsService();
     CAMPOS_OPCIONAIS_FATURA = [
       "auditoria_cobranca_acima",
       "auditoria_cobranca_abaixo",
@@ -23091,59 +23145,6 @@ var init_auditoriaEntregaCteService = __esm({
     ORIGEM_BAIXA_MANUAL = "BAIXA_MANUAL";
     LOTE2 = 150;
     soDigitos2 = (v) => String(v || "").replace(/\D/g, "");
-  }
-});
-
-// src/services/transportadoraCnpjsService.js
-function client() {
-  const supabase2 = getSupabaseClient();
-  if (!supabase2 || !isSupabaseConfigured()) throw new Error("Supabase n\xE3o configurado.");
-  return supabase2;
-}
-async function carregarRaizesAdicionaisPorId() {
-  const mapa = /* @__PURE__ */ new Map();
-  if (!isSupabaseConfigured()) return mapa;
-  const { data, error } = await client().from("transportadora_cnpjs").select("transportadora_id,cnpj_raiz").eq("ativo", true);
-  if (error) throw new Error(error.message || "Erro ao carregar CNPJs adicionais.");
-  (data || []).forEach((item) => {
-    if (!item.transportadora_id || !item.cnpj_raiz) return;
-    mapa.set(item.transportadora_id, [...mapa.get(item.transportadora_id) || [], item.cnpj_raiz]);
-  });
-  return mapa;
-}
-async function carregarGruposRaizTransportadora() {
-  const grupos = /* @__PURE__ */ new Map();
-  if (!isSupabaseConfigured()) return grupos;
-  const [transportadoras, origens, adicionais] = await Promise.all([
-    client().from("transportadoras").select("id,cnpj,cnpj_raiz").limit(2e4),
-    client().from("origens").select("transportadora_id,cnpj,cnpj_raiz").limit(5e4),
-    client().from("transportadora_cnpjs").select("transportadora_id,cnpj_raiz").eq("ativo", true).limit(2e4)
-  ]);
-  const erro = transportadoras.error || origens.error || adicionais.error;
-  if (erro) throw new Error(erro.message || "Erro ao carregar raizes das transportadoras.");
-  const porId = /* @__PURE__ */ new Map();
-  const adicionar = (id, valor) => {
-    const raiz2 = obterRaizCnpj(valor);
-    if (!id || !/^\d{8}$/.test(raiz2) || /^0+$/.test(raiz2)) return;
-    if (!porId.has(id)) porId.set(id, /* @__PURE__ */ new Set());
-    porId.get(id).add(raiz2);
-  };
-  (transportadoras.data || []).forEach((t) => adicionar(t.id, t.cnpj_raiz || t.cnpj));
-  (origens.data || []).forEach((o) => adicionar(o.transportadora_id, o.cnpj_raiz || o.cnpj));
-  (adicionais.data || []).forEach((a) => adicionar(a.transportadora_id, a.cnpj_raiz));
-  porId.forEach((raizes) => {
-    raizes.forEach((raiz2) => {
-      grupos.set(raiz2, Array.from(/* @__PURE__ */ new Set([...grupos.get(raiz2) || [], ...raizes])));
-    });
-  });
-  return grupos;
-}
-var init_transportadoraCnpjsService = __esm({
-  "src/services/transportadoraCnpjsService.js"() {
-    "use strict";
-    init_define_import_meta_env();
-    init_supabaseClient();
-    init_cnpj();
   }
 });
 
@@ -26825,12 +26826,22 @@ function calcularCteValidadoPelaOperacao(cte = {}, viagem = {}) {
   });
   return { ...base, valor_calculado: valorCte, diferenca: 0, diferenca_abs: 0, percentual_diferenca: 0 };
 }
+function calcularLotacaoSoPelaDist(cte, contexto, mapaVinculos, calcularFracionado, b2c) {
+  const pelaDist = calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos);
+  if (pelaDist) return pelaDist;
+  const resultado = calcularFracionado();
+  if (toNumber4(resultado?.valor_calculado) > 0) return resultado;
+  if (b2c) return resultado;
+  const temTabelaLotacao = Boolean(localizarTabelaLotacaoContexto(cte, contexto, mapaVinculos));
+  return cteDeLotacao(cte, contexto, mapaVinculos, temTabelaLotacao, resultado) ? marcarSemDistLotacao(resultado) : resultado;
+}
 function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracionado) {
   const pelaTransgp = calcularCtePelaTransgp(cte, contexto);
   if (pelaTransgp) return pelaTransgp;
   const b2c = canalCategoria2(pick(cte, ["canal", "canal_original"])) === "B2C";
   const operaLotacao = transportadoraOperaLotacao(cte, contexto, mapaVinculos);
   if (b2c && !operaLotacao) return calcularFracionado();
+  if (!USAR_TABELA_LOTACAO) return calcularLotacaoSoPelaDist(cte, contexto, mapaVinculos, calcularFracionado, b2c);
   if (operaLotacao) {
     const pelaDist = calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos);
     if (pelaDist) return pelaDist;
@@ -27992,7 +28003,7 @@ async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
   }
   return { registros, encontrados: ctesUnicos.length, naoEncontrados: Math.max(0, normalizadas.length - ctesUnicos.length) };
 }
-var PAGE_SIZE2, TABELA_CTES, UF_POR_CODIGO_IBGE, _cacheBaseFrete, _cacheBaseFretePorTransportadora, CACHE_BASE_TRANSPORTADORA_MS, _cacheMapaVinculosTransportadoras, _cacheMapaEquivalenciasOrigem, memoNormalizeText, _cacheOrigensHub, TTL_ORIGENS_HUB_MS, indicesCotacoesPorLista2, _cacheRaizesAdicionaisPorId, _cacheTransgp, SITUACOES_TRANSGP_DECIDIDAS, _cacheFluxoLotacao, STATUS_ADICIONAL_APROVADO, raizDaChaveCte, numeroDoCte, _cacheLookupPorTransportadoras, TOLERANCIA_CANAL_COBRADO, TOLERANCIA_CANAL_INVERTIDO, dentroToleranciaCanalInvertido;
+var PAGE_SIZE2, TABELA_CTES, UF_POR_CODIGO_IBGE, _cacheBaseFrete, _cacheBaseFretePorTransportadora, CACHE_BASE_TRANSPORTADORA_MS, _cacheMapaVinculosTransportadoras, _cacheMapaEquivalenciasOrigem, memoNormalizeText, _cacheOrigensHub, TTL_ORIGENS_HUB_MS, indicesCotacoesPorLista2, _cacheRaizesAdicionaisPorId, _cacheTransgp, SITUACOES_TRANSGP_DECIDIDAS, _cacheFluxoLotacao, STATUS_ADICIONAL_APROVADO, raizDaChaveCte, numeroDoCte, USAR_TABELA_LOTACAO, _cacheLookupPorTransportadoras, TOLERANCIA_CANAL_COBRADO, TOLERANCIA_CANAL_INVERTIDO, dentroToleranciaCanalInvertido;
 var init_auditoriaCteProcessamentoService = __esm({
   "src/services/auditoriaCteProcessamentoService.js"() {
     "use strict";
@@ -28067,6 +28078,7 @@ var init_auditoriaCteProcessamentoService = __esm({
       const chave = pickDigits(cte, ["chave_cte", "chaveCte", "chave"], 0);
       return chave.length === 44 ? String(Number(chave.slice(25, 34))) : "";
     };
+    USAR_TABELA_LOTACAO = false;
     _cacheLookupPorTransportadoras = /* @__PURE__ */ new WeakMap();
     TOLERANCIA_CANAL_COBRADO = 0.1;
     TOLERANCIA_CANAL_INVERTIDO = { acima: 1, abaixo: 5 };
@@ -28572,6 +28584,7 @@ function situacaoAuditoria(f) {
 }
 function situacaoPagamento(f) {
   if (inativa(f)) return "CANCELADA";
+  if (faturaBaixada(f)) return "BAIXADA";
   if (estornadaSemRelancamento(f)) return "ESTORNADA";
   if (f.status === "PAGA_COM_DIVERGENCIA") return "PAGA_DIVERGENTE";
   return String(f.status || "").startsWith("PAGA") ? "PAGA" : "ABERTA";
@@ -28747,7 +28760,7 @@ function situacaoCompras(l) {
   if (!l.ctes || !Array.isArray(l.ctes.compras)) return "VERIFICANDO";
   return l.ctes.compras.length ? "COM" : "SEM";
 }
-var TOLERANCIA_VALOR_LISTA, digitos3, inativa, STATUS_LIBERADAS, pagaComDesconto, emAbertoFinanceiro, faturaLancada, enviadaErp, agrupamentoManual, situacaoPagamentoLinha, FAIXAS_A_VENCER, previsaoPagamento, STATUS_LIBERADAS_OMS, temFenix, statusAjusteFenix, faturaAntecipada, enviadaAntecipacao, ANTECIPACAO_VALOR_MINIMO, ANTECIPACAO_DIAS_MIN_EMISSAO, ANTECIPACAO_DIAS_MIN_VENCIMENTO, comFatura, auditoria, pagamento, faixa, ctes, ativa, faturaSemIdOms, GRUPOS_DIAGNOSTICO;
+var TOLERANCIA_VALOR_LISTA, digitos3, inativa, STATUS_LIBERADAS, faturaBaixada, pagaComDesconto, emAbertoFinanceiro, faturaLancada, enviadaErp, agrupamentoManual, situacaoPagamentoLinha, FAIXAS_A_VENCER, previsaoPagamento, STATUS_LIBERADAS_OMS, temFenix, statusAjusteFenix, faturaAntecipada, enviadaAntecipacao, ANTECIPACAO_VALOR_MINIMO, ANTECIPACAO_DIAS_MIN_EMISSAO, ANTECIPACAO_DIAS_MIN_VENCIMENTO, comFatura, auditoria, pagamento, faixa, venceEmMaisDe, ctes, ativa, faltaBoletoNaPasta, semBoletoVencendo, semBoletoVencida, faturaSemIdOms, GRUPOS_DIAGNOSTICO;
 var init_diagnosticoFaturas = __esm({
   "src/utils/diagnosticoFaturas.js"() {
     "use strict";
@@ -28764,6 +28777,7 @@ var init_diagnosticoFaturas = __esm({
     digitos3 = (v) => String(v ?? "").replace(/\D/g, "");
     inativa = (f) => ["CANCELADA", "SUBSTITUIDA"].includes(f.status);
     STATUS_LIBERADAS = /* @__PURE__ */ new Set(["PRONTA_PARA_PAGAMENTO", "LIBERADA_COM_DESCONTO", "ENVIADA_AO_FINANCEIRO", "TRATADA"]);
+    faturaBaixada = (f) => Boolean(f?.baixada_saneamento);
     pagaComDesconto = (f) => Boolean(f) && f.status === "PAGA_COM_DESCONTO" && (f.pagamento_confirmado === true || Boolean(f.partida));
     emAbertoFinanceiro = (f) => Boolean(f) && !inativa(f) && situacaoPagamento(f) === "ABERTA";
     faturaLancada = (f) => Boolean(f.partida || f.lancamento_financeiro || situacaoPagamento(f).startsWith("PAGA"));
@@ -28784,8 +28798,24 @@ var init_diagnosticoFaturas = __esm({
     auditoria = (...ids) => comFatura((l) => ids.includes(situacaoAuditoria(l.fatura)));
     pagamento = (id) => (l) => situacaoPagamentoLinha(l) === id;
     faixa = (...ids) => (l) => ids.includes(faixaDaLinha(l));
+    venceEmMaisDe = (n) => (l) => {
+      if (faixaDaLinha(l) !== "MAIS_7") return false;
+      const dias = diasAte(l.fatura ? l.fatura.data_vencimento : l.vencimentoLista, /* @__PURE__ */ new Date());
+      return dias != null && dias > n;
+    };
     ctes = (...ids) => comFatura((l) => ids.includes(situacaoCtes(l.ctes)));
     ativa = (l) => !inativa(l.fatura);
+    faltaBoletoNaPasta = (f) => emAbertoFinanceiro(f) && (faturaLancada(f) || agrupamentoManual(f)) && situacaoFinanceiro(f) === "AGUARDA_ENCAMINHAMENTO";
+    semBoletoVencendo = (f, dias = 2, referencia = /* @__PURE__ */ new Date()) => {
+      if (!faltaBoletoNaPasta(f) || !f.data_vencimento) return false;
+      const d = diasAte(f.data_vencimento, referencia);
+      return d != null && d >= 0 && d <= dias;
+    };
+    semBoletoVencida = (f, referencia = /* @__PURE__ */ new Date()) => {
+      if (!faltaBoletoNaPasta(f) || !f.data_vencimento) return false;
+      const d = diasAte(f.data_vencimento, referencia);
+      return d != null && d < 0;
+    };
     faturaSemIdOms = (f) => Boolean(f) && !inativa(f) && !String(f.status || "").startsWith("PAGA") && !omsInvoiceIdValido(f.oms_invoice_id);
     GRUPOS_DIAGNOSTICO = [
       { id: "localizacao", titulo: "Recebimento", soComLista: true, cards: [
@@ -28838,7 +28868,9 @@ var init_diagnosticoFaturas = __esm({
       { id: "financeiro", titulo: "Financeiro", cards: [
         // Todos os cards de acompanhamento valem so para fatura ativa e AINDA EM ABERTO (nao paga, nao estornada):
         // situacaoPagamento ja exclui cancelada/estornada/paga, e as pagas antigas nao tem pagamento_confirmado.
-        { id: "aguarda_encaminhamento", rotulo: "Aguardam encaminhamento", cor: "#9b1111", teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && (faturaLancada(l.fatura) || agrupamentoManual(l.fatura)) && situacaoFinanceiro(l.fatura) === "AGUARDA_ENCAMINHAMENTO"), dica: "J\xE1 lan\xE7adas em aberto, ainda sem encaminhamento registrado." },
+        { id: "aguarda_encaminhamento", rotulo: "Aguardam encaminhamento (falta boleto)", cor: "#9b1111", teste: comFatura((l) => faltaBoletoNaPasta(l.fatura)), dica: "J\xE1 lan\xE7adas em aberto, ainda sem boleto na pasta nem dados banc\xE1rios. Sai daqui sozinha quando o rob\xF4 de boletos acha o boleto na pasta ou quando a fatura \xE9 paga." },
+        { id: "sem_boleto_vence_2d", rotulo: "Sem boleto: vencem em at\xE9 2 dias", cor: "#dc2626", teste: comFatura((l) => semBoletoVencendo(l.fatura, 2)), dica: "Lan\xE7adas, sem boleto na pasta, vencendo hoje, amanh\xE3 ou depois de amanh\xE3: colocar o boleto na pasta antes do financeiro cobrar." },
+        { id: "sem_boleto_vencidas", rotulo: "Sem boleto: j\xE1 vencidas", cor: "#7f1d1d", teste: comFatura((l) => semBoletoVencida(l.fatura)), dica: "Lan\xE7adas, sem boleto na pasta e com o vencimento j\xE1 passado." },
         { id: "encaminhadas_sem_previsao", rotulo: "Encaminhadas sem previs\xE3o", cor: "#b78700", teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && situacaoFinanceiro(l.fatura) === "ENCAMINHADA_SEM_PREVISAO"), dica: "Boleto ou dados banc\xE1rios encaminhados, sem programa\xE7\xE3o vigente." },
         { id: "encaminhadas_com_previsao", rotulo: "Encaminhadas com previs\xE3o", cor: "#315ee7", teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && situacaoFinanceiro(l.fatura) === "ENCAMINHADA_COM_PREVISAO"), dica: "Encaminhadas com previs\xE3o ainda n\xE3o confirmada pelo SAP/HANA." },
         { id: "programadas_financeiro", rotulo: "Programadas pelo Financeiro", cor: "#9153F0", teste: comFatura((l) => emAbertoFinanceiro(l.fatura) && situacaoFinanceiro(l.fatura) === "PROGRAMADA"), dica: "Programa\xE7\xE3o confirmada pelo SAP/HANA; continua em aberto at\xE9 o pagamento efetivo." },
@@ -28886,6 +28918,7 @@ var init_diagnosticoFaturas = __esm({
         { id: "pagas_divergentes", rotulo: "Pagas com diverg\xEAncia", cor: "#b78700", teste: pagamento("PAGA_DIVERGENTE"), dica: "Valor pago diferente do esperado." },
         { id: "pagas_desconto", rotulo: "Pagas com desconto", cor: "#0f766e", teste: comFatura((l) => ativa(l) && pagaComDesconto(l.fatura)), dica: "Pagas ap\xF3s libera\xE7\xE3o com desconto, com pagamento confirmado por partida. Mostra valor pago e desconto no detalhe." },
         { id: "abertas", rotulo: "N\xE3o pagas", cor: "#315ee7", teste: pagamento("ABERTA"), dica: "Ainda sem pagamento. Inclui as n\xE3o localizadas." },
+        { id: "baixadas", rotulo: "Baixados", cor: "#475569", teste: pagamento("BAIXADA"), dica: 'Faturas antigas em aberto que n\xE3o devemos mais (saneamento). Ficam fora da lista, dos totais, das vencidas e do laudo; selecione e clique em "Voltar para em aberto" se precisar.' },
         { id: "canceladas", rotulo: "Canceladas/substitu\xEDdas", cor: "#64748b", teste: pagamento("CANCELADA"), dica: "Canceladas ou substitu\xEDdas." },
         // Mesma fatura importada mais de uma vez: fora dos totais, so aparecem neste card.
         { id: "duplicadas", rotulo: "Duplicadas", cor: "#b45309", teste: (l) => Boolean(l.duplicada), dica: "Mesma fatura (n\xFAmero, valor e emiss\xE3o) importada mais de uma vez. Ficam fora dos totais; marque como substitu\xEDdas." },
@@ -28898,6 +28931,7 @@ var init_diagnosticoFaturas = __esm({
         { id: "hoje_amanha", rotulo: "Hoje / amanh\xE3", cor: "#cf2f2f", teste: faixa("HOJE_AMANHA"), dica: "N\xE3o pagas vencendo hoje ou amanh\xE3." },
         { id: "ate_7", rotulo: "2 a 7 dias", cor: "#e67e22", teste: faixa("ATE_7"), dica: "N\xE3o pagas vencendo em 2 a 7 dias." },
         { id: "mais_7", rotulo: "Mais de 7 dias", cor: "#04a484", teste: faixa("MAIS_7"), dica: "N\xE3o pagas vencendo em mais de 7 dias." },
+        { id: "mais_10", rotulo: "Acima de 10 dias (meta)", cor: "#0f766e", teste: venceEmMaisDe(10), dica: 'N\xE3o pagas vencendo em mais de 10 dias: acompanhamento da meta financeira. Est\xE1 contido em "Mais de 7 dias".' },
         { id: "sem_data", rotulo: "Sem vencimento", cor: "#64748b", teste: faixa("SEM_DATA"), dica: "N\xE3o pagas sem data de vencimento." }
       ] }
     ];

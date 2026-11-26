@@ -1486,9 +1486,28 @@ function calcularCteValidadoPelaOperacao(cte = {}, viagem = {}) {
   return { ...base, valor_calculado: valorCte, diferenca: 0, diferenca_abs: 0, percentual_diferenca: 0 };
 }
 
+// CHAVE DA REGRA DE LOTAÇÃO (26/11/2026): as tabelas de lotação ainda não estão 100% atualizadas, então
+// a lotação é auditada SÓ pela DIST do fluxo. Ordem com false: TransGP → DIST do fluxo → fracionado →
+// SEM_DIST_LOTACAO (pede a viagem para a Operação). Quando as tabelas estiverem atualizadas, voltar para
+// true: TransGP → tabela de lotação → fracionado → DIST do fluxo (opera lotação: DIST antes da tabela).
+const USAR_TABELA_LOTACAO = false;
+
+// Só DIST: a tabela de lotação não calcula; ela serve apenas para reconhecer que o CT-e é de lotação
+// (sem DIST, vai para a Operação em vez de ficar como "sem tabela").
+function calcularLotacaoSoPelaDist(cte, contexto, mapaVinculos, calcularFracionado, b2c) {
+  const pelaDist = calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos);
+  if (pelaDist) return pelaDist;
+  const resultado = calcularFracionado();
+  if (toNumber(resultado?.valor_calculado) > 0) return resultado;
+  if (b2c) return resultado;
+  const temTabelaLotacao = Boolean(localizarTabelaLotacaoContexto(cte, contexto, mapaVinculos));
+  return cteDeLotacao(cte, contexto, mapaVinculos, temTabelaLotacao, resultado) ? marcarSemDistLotacao(resultado) : resultado;
+}
+
 // Tabela de lotação primeiro; depois o fracionado. Se nenhum dos dois calculou
 // (rota fora da tabela de lotação, transportadora sem tabela, origem/rota fora do
 // fracionado), usa o valor combinado da viagem no fluxo de lotação.
+// (Com USAR_TABELA_LOTACAO = false, vale calcularLotacaoSoPelaDist.)
 function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracionado) {
   // CT-e auditado pela TransGP (achado pela chave na API deles) segue a decisão de lá.
   const pelaTransgp = calcularCtePelaTransgp(cte, contexto);
@@ -1500,6 +1519,7 @@ function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracio
   const b2c = canalCategoria(pick(cte, ['canal', 'canal_original'])) === 'B2C';
   const operaLotacao = transportadoraOperaLotacao(cte, contexto, mapaVinculos);
   if (b2c && !operaLotacao) return calcularFracionado();
+  if (!USAR_TABELA_LOTACAO) return calcularLotacaoSoPelaDist(cte, contexto, mapaVinculos, calcularFracionado, b2c);
   // Transportadora marcada "opera lotação" (ex.: Rodotista): primeiro a DIST da viagem no fluxo de lotação
   // (pelo número do CT-e); só sem DIST vai para a tabela de lotação e depois para o fracionado.
   if (operaLotacao) {
