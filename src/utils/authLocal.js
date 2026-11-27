@@ -64,7 +64,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'gestao-base-cte', label: 'Gestão da Base CT-e', grupo: 'Auditoria' },
   { chave: 'alertas-cte-valor', label: 'Alerta CT-e valor alto', grupo: 'Auditoria' },
   { chave: 'consulta-tracking', label: 'Consulta Tracking', grupo: 'Operação' },
-  { chave: 'painel-black', label: 'Painel Black (cargas YVEC)', grupo: 'Operação' },
+  { chave: 'painel-black', label: 'Painel Black', grupo: 'Operação' },
   { chave: 'robos', label: 'Automação (Robôs)', grupo: 'Automação' },
   { chave: 'usuarios', label: 'Gestão de Usuários', grupo: 'Administração', somenteAdmin: true },
   { chave: 'usuarios-ativos', label: 'Usuários Ativos', grupo: 'Administração', somenteAdmin: true },

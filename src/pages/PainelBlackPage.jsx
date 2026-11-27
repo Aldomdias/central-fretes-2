@@ -167,7 +167,7 @@ export default function PainelBlackPage({ modoPainel = false, onSair } = {}) {
     <div className="page-stack">
       <div className="page-header">
         <div>
-          <h1>Painel Black · Cargas YVEC</h1>
+          <h1>Painel Black</h1>
           <p>Saldo por origem × transportadora contra o limite do dia, ranking dos piores cenários e saída por unidade. Dados do SAP (ZEWM003) publicados pelo robô.</p>
         </div>
       </div>
