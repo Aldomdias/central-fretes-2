@@ -33,6 +33,8 @@
   .card.bloq::before,.card.bloq::after{content:'';position:absolute;left:-10%;top:50%;width:120%;height:5px;background:#c0172f;opacity:.85;z-index:2;pointer-events:none}
   .card.bloq::before{transform:rotate(18deg)} .card.bloq::after{transform:rotate(-18deg)}
   .card.bloq .pos{opacity:1}
+  .card.inativ{border:2px solid #b3122d;background:#f9c9d0}
+  .card.inativ .pos{background:#b3122d}
   .card.f3{border:2px solid var(--alerta);background:#fff8f8}
   .card.f4{border:2px solid var(--estouro);background:#fff1f4}
   .pos{position:absolute;top:-9px;left:-9px;background:#1d2433;color:#fff;border-radius:50%;width:26px;height:26px;
@@ -231,6 +233,8 @@ const BLOQ = new Set([
   // GENEROSO Serra: bloqueada (informado em 27/11, depois do relatorio).
   'D004 - Serra|GENEROSO',
 ]);
+// Inativadas (nao e bloqueio por volume): card com fundo vermelho e etiqueta INATIVADA.
+const INATIVA = new Set(['D002 - Jaboatão dos Guararapes|PASSARO']);
 const COR = {'0-A processar':'var(--apr)','1-Agrupado':'var(--agr)','2-Separado':'var(--agr)',
              '3-Confirmado':'var(--agr)','4-Conferido':'var(--agr)','5-NF autorizada':'var(--nf)','6-Carregado':'var(--car)'};
 const GRP = e => e==='0-A processar'?'apr':e==='6-Carregado'?'car':e==='5-NF autorizada'?'nf':'agr';
@@ -302,8 +306,8 @@ function render(){
   const CH=L.filter(r=>r['Dia carregamento']===HOJE), EH=L.filter(r=>r['Dia entrada']===HOJE);
   const g={}; L.forEach(r=>(g[r['Depósito']+'|'+r.Transportadora] ??= []).push(r));
   let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), s=somaOcupacao(R.filter(ocupaDia)), lim=LIM[k]||null,
-     pct = lim ? s.tot/lim*100 : null, bloq = BLOQ.has(k) || (lim && s.tot > lim); // passou do limite: o sistema ja bloqueia
-     return {k,dep,tr,R,RA,s,sa,lim,pct,bloq,ord:(pct??-1),fx:faixa(pct),
+     pct = lim ? s.tot/lim*100 : null, inativ = INATIVA.has(k), bloq = !inativ && (BLOQ.has(k) || (lim && s.tot > lim)); // passou do limite: o sistema ja bloqueia
+     return {k,dep,tr,R,RA,s,sa,lim,pct,inativ,bloq,ord:(pct??-1),fx:faixa(pct),
              ent:tot(R.filter(r=>r['Dia entrada']===HOJE)), car:tot(R.filter(r=>r['Dia carregamento']===HOJE))};});
   if (document.getElementById('fSoLim').checked) cards = cards.filter(c=>c.lim);
   const nAl = cards.filter(c=>c.fx>=2).length, nEs = cards.filter(c=>c.fx===3).length;
@@ -328,10 +332,11 @@ function render(){
       cab=`<div class="origem"><b>📍 Origem ${esc(c.dep)}</b> · ${t.n} transportadora(s) · saldo ${fmt(t.tot)} pneus · carregou hoje ${fmt(t.car)}${t.al?` · <span style="color:#ff9b9b">🚨 ${t.al} em alerta</span>`:''}</div>`; }
     const placas=[...new Set(c.R.filter(r=>r['Dia carregamento']===HOJE && r.Placa).map(r=>r.Placa))];
     const ufs=[...new Set(c.RA.map(r=>r.UF).filter(Boolean))].sort().join(', ');
-    const tag = c.bloq ? `<span class="tag" style="background:#c0172f">❌ BLOQUEADA</span>`
+    const tag = c.inativ ? `<span class="tag" style="background:#7a0c1f">⛔ INATIVADA</span>`
+              : c.bloq ? `<span class="tag" style="background:#c0172f">❌ BLOQUEADA</span>`
               : c.lim ? `<span class="tag" style="background:${FX[c.fx]}">${c.pct.toLocaleString('pt-BR',{maximumFractionDigits:0})}% do limite</span>`
                       : `<span class="tag" style="background:#8a93a5">sem limite</span>`;
-    return cab + `<div class="card ${c.bloq?'bloq':c.fx>=2?'f'+(c.fx+1):''}">
+    return cab + `<div class="card ${c.inativ?'inativ':c.bloq?'bloq':c.fx>=2?'f'+(c.fx+1):''}">
       ${modo==='rank'?`<div class="pos">${i+1}º</div>`:''}
       <div class="top"><div><div class="nome ${c.tr==='(SEM TRANSPORTADORA)'?'alerta':''}">${esc(c.tr)}</div>
         <div class="dp">📍 ${esc(c.dep)}${ufs?' · '+esc(ufs):''}</div></div>${tag}</div>
