@@ -164,7 +164,7 @@ const REM = __DADOS__, LIM = __LIMITES__, DIARIO = __DIARIO__, HOJE = '__HOJE__'
 const MESMA_TRANSP = [
   [/L\.?\s*M\.?\s*RAMOS|GENEROSO/i, 'GENEROSO'],
   [/^WM LOG/i, 'WM'], [/^S\s*3\b/i, 'WM'], [/^MOVVI/i, 'MOVVI'], [/^GOL LINHAS/i, 'GOL'], [/^TAM\b/i, 'TAM'],
-  [/^REUNIDAS/i, 'REUNIDAS'], [/^CARVALIMA/i, 'CARVALIMA'], [/RIO VERMELHO/i, 'RIO VERMELHO'], [/^RPA\s*LOG/i, 'RPA'], [/^MID\b/i, 'MID'], [/^FABRIS/i, 'FABRIS'], [/^CONEXAO LOG/i, 'RPA'],
+  [/^REUNIDAS/i, 'REUNIDAS'], [/^CARVALIMA/i, 'CARVALIMA'], [/RIO VERMELHO/i, 'RIO VERMELHO'], [/^RPA\s*LOG/i, 'RPA'], [/^MID\b/i, 'MID'], [/^FABRIS/i, 'FABRIS'], [/LOG PRIME|TERRA BRASIL/i, 'TERRA BRASIL'], [/^CSRG|AGREGADO\s*-?\s*CSRG/i, 'CSRG'], [/^CONEXAO LOG/i, 'RPA'],
 ];
 const nomeTransp = t => {
   t = String(t||'').trim();
@@ -200,8 +200,21 @@ const LIM_PLANILHA = {"D001 - Itajaí SC|ALFA": 200,
 Object.entries(LIM_PLANILHA).forEach(([k,v])=>{ if (LIM[k]!=null) return;
   LIM[k] = typeof v==='number' ? v : (v[HOJE] ?? v.padrao); });
 // Ajustes combinados depois da planilha: valem por cima do robo e da planilha.
-const LIM_AJUSTE = {'D004 - Serra|MOVVI': 1000};
+// Relatorio de limites do sistema (27/11): Tex Courier = TOTAL EXPRESS, FL Brasil = SOLISTICA.
+const LIM_AJUSTE = {
+  'D004 - Serra|MOVVI': 1000,
+  'D004 - Serra|GENEROSO': 500,
+  'D001 - Itajaí SC|ANJUN': 100, 'D004 - Serra|ANJUN': 100, 'D003 - Itupeva|ANJUN': 100,
+  'D003 - Itupeva|MVT': 700,
+  'D002 - Jaboatão dos Guararapes|CSRG': 200,
+  'D002 - Jaboatão dos Guararapes|TERRA BRASIL': 600,
+};
 Object.assign(LIM, LIM_AJUSTE);
+// Bloqueadas no sistema (limite 1 no relatorio): o card mostra bloqueada e nao entra no alerta.
+const BLOQ = new Set([
+  'D001 - Itajaí SC|TAM', 'D004 - Serra|TAM', 'D002 - Jaboatão dos Guararapes|TAM',
+  'D004 - Serra|SOLISTICA', 'D002 - Jaboatão dos Guararapes|SOLISTICA',
+]);
 const COR = {'0-A processar':'var(--apr)','1-Agrupado':'var(--agr)','2-Separado':'var(--agr)',
              '3-Confirmado':'var(--agr)','4-Conferido':'var(--agr)','5-NF autorizada':'var(--nf)','6-Carregado':'var(--car)'};
 const GRP = e => e==='0-A processar'?'apr':e==='6-Carregado'?'car':e==='5-NF autorizada'?'nf':'agr';
@@ -273,8 +286,8 @@ function render(){
   const CH=L.filter(r=>r['Dia carregamento']===HOJE), EH=L.filter(r=>r['Dia entrada']===HOJE);
   const g={}; L.forEach(r=>(g[r['Depósito']+'|'+r.Transportadora] ??= []).push(r));
   let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), s=somaOcupacao(R.filter(ocupaDia)), lim=LIM[k]||null,
-     pct = lim ? s.tot/lim*100 : null;
-     return {k,dep,tr,R,RA,s,sa,lim,pct,fx:faixa(pct),
+     pct = lim ? s.tot/lim*100 : null, bloq = BLOQ.has(k);
+     return {k,dep,tr,R,RA,s,sa,lim,pct,bloq,ord:bloq?-1:(pct??-1),fx:bloq?-1:faixa(pct),
              ent:tot(R.filter(r=>r['Dia entrada']===HOJE)), car:tot(R.filter(r=>r['Dia carregamento']===HOJE))};});
   if (document.getElementById('fSoLim').checked) cards = cards.filter(c=>c.lim);
   const nAl = cards.filter(c=>c.fx>=2).length, nEs = cards.filter(c=>c.fx===3).length;
@@ -286,8 +299,8 @@ function render(){
     ['🚨 Em alerta (≥80%)', nAl, nAl?'red':''], ['Estourados (≥100%)', nEs, nEs?'red':''],
   ].map(([a,b,c])=>`<div class="kpi ${c||''}"><span>${a}</span><b>${b}</b></div>`).join('');
 
-  if (modo==='rank') cards.sort((a,b)=>(b.pct??-1)-(a.pct??-1) || b.s.tot-a.s.tot);
-  else cards.sort((a,b)=>a.dep.localeCompare(b.dep) || (b.pct??-1)-(a.pct??-1) || b.s.tot-a.s.tot);
+  if (modo==='rank') cards.sort((a,b)=>b.ord-a.ord || b.s.tot-a.s.tot);
+  else cards.sort((a,b)=>a.dep.localeCompare(b.dep) || b.ord-a.ord || b.s.tot-a.s.tot);
   document.getElementById('subCam').textContent = modo==='rank'
     ? '(carregado hoje + em aberto × limite · do mais perto do limite para o mais longe)' : '(agrupados por CD de origem)';
 
@@ -299,7 +312,8 @@ function render(){
       cab=`<div class="origem"><b>📍 Origem ${esc(c.dep)}</b> · ${t.n} transportadora(s) · saldo ${fmt(t.tot)} pneus · carregou hoje ${fmt(t.car)}${t.al?` · <span style="color:#ff9b9b">🚨 ${t.al} em alerta</span>`:''}</div>`; }
     const placas=[...new Set(c.R.filter(r=>r['Dia carregamento']===HOJE && r.Placa).map(r=>r.Placa))];
     const ufs=[...new Set(c.RA.map(r=>r.UF).filter(Boolean))].sort().join(', ');
-    const tag = c.lim ? `<span class="tag" style="background:${FX[c.fx]}">${c.pct.toLocaleString('pt-BR',{maximumFractionDigits:0})}% do limite</span>`
+    const tag = c.bloq ? `<span class="tag" style="background:#4a5162">🔒 bloqueada no sistema</span>`
+              : c.lim ? `<span class="tag" style="background:${FX[c.fx]}">${c.pct.toLocaleString('pt-BR',{maximumFractionDigits:0})}% do limite</span>`
                       : `<span class="tag" style="background:#8a93a5">sem limite</span>`;
     return cab + `<div class="card ${c.fx>=2?'f'+(c.fx+1):''}">
       ${modo==='rank'?`<div class="pos">${i+1}º</div>`:''}
