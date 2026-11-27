@@ -9,7 +9,7 @@ import logoAmdLog from '../assets/amdlog-logo-faixa.png';
 // O robo roda a cada 20 min. A tela confere a cada 2 min se saiu foto nova (consulta leve, so a data)
 // e so baixa o painel inteiro quando muda: a atualizacao aparece no maximo ~2 min depois do robo.
 const VERIFICA_MS = 2 * 60 * 1000;
-const ATRASO_ALERTA_MIN = 45; // robo de 20 em 20 min: mais de 2 rodadas perdidas vira alerta
+const ATRASO_ALERTA_MIN = 60; // robo de 20 em 20 min (rodada pode levar ate ~10): so alerta passando de 1 hora
 const dataHora = (v) => (v ? new Date(v).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-');
 
 function situacao(snapshot, ultimaRodada) {
