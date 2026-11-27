@@ -35,6 +35,20 @@
   .card.bloq .pos{opacity:1}
   .card.inativ{border:2px solid #b3122d;background:#f9c9d0}
   .card.inativ .pos{background:#b3122d}
+  .card.bloqm{border:2px dashed #5b2a86;background:#efe9f6;overflow:hidden}
+  .card.bloqm>*{opacity:.55}
+  .card.bloqm::before,.card.bloqm::after{content:'';position:absolute;left:-10%;top:50%;width:120%;height:5px;background:#c0172f;opacity:.85;z-index:2;pointer-events:none}
+  .card.bloqm::before{transform:rotate(18deg)} .card.bloqm::after{transform:rotate(-18deg)}
+  .card.bloqm .pos{opacity:1}
+  .card.lib{border:2px solid #14733b}
+  .edit{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-top:8px;padding-top:8px;border-top:1px dashed var(--lin);font-size:12px;position:relative;z-index:3}
+  .edit input[type=number]{width:70px;padding:2px 4px;font-size:12px}
+  .edit select{font-size:12px;padding:2px 4px}
+  .edit button,.manual-box button,#btnManual{font-size:12px;padding:3px 9px;border:1px solid var(--lin);border-radius:8px;background:#fff;cursor:pointer}
+  .manual-box{background:#fff;border:1px solid var(--lin);border-radius:12px;padding:10px 14px;margin:8px 0;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .manual-box select{font-size:13px;padding:3px 6px}
+  .chip{display:inline-flex;gap:6px;align-items:center;background:#eceef2;border-radius:10px;padding:2px 8px;font-size:12px}
+  .chip button{border:0;background:none;cursor:pointer;color:#c0172f;font-weight:700;padding:0}
   .card.f3{border:2px solid var(--alerta);background:#fff8f8}
   .card.f4{border:2px solid var(--estouro);background:#fff1f4}
   .pos{position:absolute;top:-9px;left:-9px;background:#1d2433;color:#fff;border-radius:50%;width:26px;height:26px;
@@ -122,7 +136,9 @@
       <button data-v="orig">📍 Agrupar por origem</button>
     </span>
     <label><input type="checkbox" id="fSoLim"> só com limite</label>
+    <button type="button" id="btnManual">➕ Bloqueio / inativação manual</button>
   </div>
+  <div id="painelManual" class="manual-box" style="display:none"></div>
   <div class="leg">
     <b style="color:var(--txt)">Ocupação do dia:</b>
     <span><i style="background:var(--sai)"></i>Já carregado hoje</span>
@@ -135,6 +151,10 @@
     <span><i style="background:var(--aten)"></i>60–80%</span>
     <span><i style="background:var(--alerta)"></i>≥ 80% alerta</span>
     <span><i style="background:var(--estouro)"></i>≥ 100% estourado</span>
+    <b style="color:var(--txt);margin-left:10px">Bloqueio:</b>
+    <span>❌ por volume (automático, passou do limite)</span>
+    <span>✋ manual (marcado por você / sistema)</span>
+    <span>⛔ inativada</span>
   </div>
 
   <h2>🏁 Caminhões <small id="subCam"></small></h2>
@@ -165,6 +185,9 @@
 
 <script>
 const REM = __DADOS__, LIM = __LIMITES__, DIARIO = __DIARIO__, HOJE = '__HOJE__';
+// Ajustes feitos na tela (salvos para todos): limites editados, contagem liberada e bloqueio/inativacao manual.
+const AJ = __AJUSTES__ || {}; AJ.limites ||= {}; AJ.liberados ||= {}; AJ.manual ||= {};
+const EDIT = __EDITAVEL__;
 // Nomes do SAP -> nome usado na meta (limite). Primeiro tira o codigo da frente
 // ("0002081494 - WM LOGISTICA SPO" -> "WM LOGISTICA SPO"), depois junta apelidos da mesma transportadora.
 // L.M. RAMOS e a GENEROSO.
@@ -212,6 +235,7 @@ Object.entries(LIM_PLANILHA).forEach(([k,v])=>{ if (LIM[k]!=null) return;
 const LIM_AJUSTE = {
   'D004 - Serra|MOVVI': 1000,
   'D004 - Serra|SOLISTICA': 800,
+  'D001 - Itajaí SC|SOLISTICA': 800,
   'D004 - Serra|GENEROSO': 500,
   'D001 - Itajaí SC|ANJUN': 100, 'D004 - Serra|ANJUN': 100, 'D003 - Itupeva|ANJUN': 100,
   'D003 - Itupeva|MVT': 700,
@@ -224,18 +248,18 @@ Object.assign(LIM, LIM_AJUSTE);
 // Brasil Web so tem unidade Black em Itajai (0001 - BLACK, bloqueada) e Itupeva (0002 - BLACK, 1000): sem Contagem.
 const SEM_OPERACAO = ['D004 - Serra|RPA', 'D003 - Itupeva|RPA', 'D005 - Contagem|BRASIL WEB'];
 SEM_OPERACAO.forEach(k=>{ delete LIM[k]; });
-// Bloqueadas no sistema = status Bloqueado ou limite 1 no relatorio: o card mostra bloqueada e nao entra no alerta.
+// Bloqueadas no sistema (relatorio de limites 27/11, status Bloqueado ou limite 1). Contam como bloqueio MANUAL
+// (a lista e fixa); para tirar uma daqui use "contagem liberada" ou o seletor de status no card.
 const BLOQ = new Set([
+  'D004 - Serra|TOTAL EXPRESS', 'D004 - Serra|ALFA',
+  'D001 - Itajaí SC|ANJUN', 'D003 - Itupeva|ANJUN', 'D004 - Serra|ANJUN',
   'D001 - Itajaí SC|TAM', 'D004 - Serra|TAM', 'D002 - Jaboatão dos Guararapes|TAM',
   'D002 - Jaboatão dos Guararapes|SOLISTICA',
-  'D001 - Itajaí SC|BRASIL WEB',
-  // ANJUN 0003 - BLACK (Itupeva) e 0004 - BLACK (Serra): status Bloqueado no relatorio (0002 - BLACK Itajai segue ativa).
-  'D003 - Itupeva|ANJUN', 'D004 - Serra|ANJUN',
-  // GENEROSO Serra: bloqueada (informado em 27/11, depois do relatorio).
-  'D004 - Serra|GENEROSO',
 ]);
 // Inativadas (nao e bloqueio por volume): card com fundo vermelho e etiqueta INATIVADA.
 const INATIVA = new Set(['D002 - Jaboatão dos Guararapes|PASSARO']);
+const LIM_BASE = {...LIM};
+Object.entries(AJ.limites).forEach(([k,v])=>{ if (v>0) LIM[k]=v; });
 const COR = {'0-A processar':'var(--apr)','1-Agrupado':'var(--agr)','2-Separado':'var(--agr)',
              '3-Confirmado':'var(--agr)','4-Conferido':'var(--agr)','5-NF autorizada':'var(--nf)','6-Carregado':'var(--car)'};
 const GRP = e => e==='0-A processar'?'apr':e==='6-Carregado'?'car':e==='5-NF autorizada'?'nf':'agr';
@@ -307,8 +331,11 @@ function render(){
   const CH=L.filter(r=>r['Dia carregamento']===HOJE), EH=L.filter(r=>r['Dia entrada']===HOJE);
   const g={}; L.forEach(r=>(g[r['Depósito']+'|'+r.Transportadora] ??= []).push(r));
   let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), s=somaOcupacao(R.filter(ocupaDia)), lim=LIM[k]||null,
-     pct = lim ? s.tot/lim*100 : null, inativ = INATIVA.has(k), bloq = !inativ && (BLOQ.has(k) || (lim && s.tot > lim)); // passou do limite: o sistema ja bloqueia
-     return {k,dep,tr,R,RA,s,sa,lim,pct,inativ,bloq,ord:(pct??-1),fx:faixa(pct),
+     pct = lim ? s.tot/lim*100 : null, man = (k in AJ.manual) ? AJ.manual[k] : (INATIVA.has(k) ? 'inativ' : BLOQ.has(k) ? 'bloq' : ''),
+     lib = !!AJ.liberados[k], inativ = man==='inativ',
+     bloqM = !inativ && !lib && man==='bloq',
+     bloqV = !inativ && !lib && !bloqM && !!(lim && s.tot > lim), bloq = bloqM || bloqV; // passou do limite: o sistema ja bloqueia
+     return {k,dep,tr,R,RA,s,sa,lim,pct,inativ,bloq,bloqM,bloqV,lib,man,ord:(pct??-1),fx:faixa(pct),
              ent:tot(R.filter(r=>r['Dia entrada']===HOJE)), car:tot(R.filter(r=>r['Dia carregamento']===HOJE))};});
   if (document.getElementById('fSoLim').checked) cards = cards.filter(c=>c.lim);
   const nAl = cards.filter(c=>c.fx>=2).length, nEs = cards.filter(c=>c.fx===3).length;
@@ -334,10 +361,12 @@ function render(){
     const placas=[...new Set(c.R.filter(r=>r['Dia carregamento']===HOJE && r.Placa).map(r=>r.Placa))];
     const ufs=[...new Set(c.RA.map(r=>r.UF).filter(Boolean))].sort().join(', ');
     const tag = c.inativ ? `<span class="tag" style="background:#7a0c1f">⛔ INATIVADA</span>`
-              : c.bloq ? `<span class="tag" style="background:#c0172f">❌ BLOQUEADA</span>`
+              : c.bloqM ? `<span class="tag" style="background:#5b2a86">✋ BLOQUEADA · MANUAL</span>`
+              : c.bloqV ? `<span class="tag" style="background:#c0172f">❌ BLOQUEADA · VOLUME</span>`
+              : c.lib ? `<span class="tag" style="background:#14733b">✅ CONTAGEM LIBERADA${c.lim?' · '+c.pct.toLocaleString('pt-BR',{maximumFractionDigits:0})+'%':''}</span>`
               : c.lim ? `<span class="tag" style="background:${FX[c.fx]}">${c.pct.toLocaleString('pt-BR',{maximumFractionDigits:0})}% do limite</span>`
                       : `<span class="tag" style="background:#8a93a5">sem limite</span>`;
-    return cab + `<div class="card ${c.inativ?'inativ':c.bloq?'bloq':c.fx>=2?'f'+(c.fx+1):''}">
+    return cab + `<div class="card ${c.inativ?'inativ':c.bloqM?'bloqm':c.bloqV?'bloq':c.lib?'lib':c.fx>=2?'f'+(c.fx+1):''}">
       ${modo==='rank'?`<div class="pos">${i+1}º</div>`:''}
       <div class="top"><div><div class="nome ${c.tr==='(SEM TRANSPORTADORA)'?'alerta':''}">${esc(c.tr)}</div>
         <div class="dp">📍 ${esc(c.dep)}${ufs?' · '+esc(ufs):''}</div></div>${tag}</div>
@@ -346,6 +375,12 @@ function render(){
         <span>Carreg. hoje<b style="color:var(--car)">${fmt(c.car)}</b></span>
         <span>A proc.<b>${fmt(c.sa.apr)}</b></span>
         <span>${c.lim?(c.lim>=c.s.tot?'Livre<b>'+fmt(c.lim-c.s.tot):'Passou<b style="color:var(--estouro)">'+fmt(c.s.tot-c.lim))+'</b>':'Remessas<b>'+c.RA.length+'</b>'}</span></div>
+      ${EDIT?`<div class="edit" data-k="${esc(c.k)}">
+        <label>Limite <input type="number" min="0" class="edLim" value="${c.lim||''}" placeholder="sem"></label>
+        <button type="button" class="edOk">Salvar</button>
+        <label><input type="checkbox" class="edLib" ${c.lib?'checked':''}> contagem liberada</label>
+        <select class="edSt"><option value="">sem marcação manual</option><option value="bloq" ${c.man==='bloq'?'selected':''}>✋ bloqueada (manual)</option><option value="inativ" ${c.man==='inativ'?'selected':''}>⛔ inativada</option></select>
+      </div>`:''}
       ${placas.length?`<div class="placas">Carregou hoje: ${placas.map(p=>`<span>${esc(p)}</span>`).join('')}</div>`:''}
     </div>`;}).join('') : '<div class="vazio">Nenhum caminhão com esses filtros.</div>';
 
@@ -392,6 +427,52 @@ function render(){
     <td class="n">${fmt(r.Pneus)}</td><td>${esc(r['Doc. EWM'])}</td></tr>`).join('');
 }
 ['fDep','fBusca','fSoLim'].forEach(id=>document.getElementById(id).addEventListener('input',render));
+
+// ---- edicao (limite, contagem liberada, bloqueio/inativacao manual); salva para todos via pagina pai ----
+function salvarAj(){
+  try { window.parent.postMessage({fonte:'painelBlack', tipo:'ajustes', ajustes:AJ}, '*'); } catch(e) {}
+  render(); renderManual();
+}
+function setLimite(k, v){
+  v = Number(v);
+  if (v>0){ AJ.limites[k]=v; LIM[k]=v; }
+  else { delete AJ.limites[k]; if (LIM_BASE[k]!=null) LIM[k]=LIM_BASE[k]; else delete LIM[k]; }
+}
+const manualAtual = k => (k in AJ.manual) ? AJ.manual[k] : (INATIVA.has(k) ? 'inativ' : BLOQ.has(k) ? 'bloq' : '');
+function chavesTodas(){
+  const st=new Set(Object.keys(LIM)); REM.forEach(r=>st.add(r['Depósito']+'|'+r.Transportadora));
+  Object.keys(AJ.manual).forEach(k=>st.add(k)); BLOQ.forEach(k=>st.add(k)); INATIVA.forEach(k=>st.add(k));
+  return [...st].sort();
+}
+function renderManual(){
+  const box=document.getElementById('painelManual'); if(!box || box.style.display==='none') return;
+  const ks=chavesTodas(), deps=[...new Set(ks.map(k=>k.split('|')[0]))];
+  const dep0=document.getElementById('mOrig')?.value || deps[0];
+  const lista=ks.filter(k=>manualAtual(k)).map(k=>`<span class="chip">${manualAtual(k)==='inativ'?'⛔':'✋'} ${esc(k.replace('|',' · '))} <button type="button" data-rm="${esc(k)}" title="Remover">✕</button></span>`).join('') || '<span style="color:var(--sub);font-size:12px">Nenhuma marcação manual.</span>';
+  box.innerHTML = `<b>Bloqueio / inativação manual</b>
+    <select id="mOrig">${deps.map(d=>`<option ${d===dep0?'selected':''}>${esc(d)}</option>`).join('')}</select>
+    <select id="mTr">${ks.filter(k=>k.startsWith(dep0+'|')).map(k=>`<option value="${esc(k)}">${esc(k.split('|')[1])}</option>`).join('')}</select>
+    <select id="mTipo"><option value="bloq">✋ Bloqueada (manual)</option><option value="inativ">⛔ Inativada</option></select>
+    <button type="button" id="mAdd">Adicionar</button>
+    <div style="flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px">${lista}</div>`;
+}
+document.getElementById('btnManual').addEventListener('click',()=>{
+  const box=document.getElementById('painelManual'); box.style.display = box.style.display==='none' ? 'flex' : 'none'; renderManual();
+});
+if (!EDIT) document.getElementById('btnManual').style.display='none';
+document.getElementById('painelManual').addEventListener('change',e=>{ if(e.target.id==='mOrig') renderManual(); });
+document.getElementById('painelManual').addEventListener('click',e=>{
+  if (e.target.id==='mAdd'){ const k=document.getElementById('mTr').value; if(!k) return; AJ.manual[k]=document.getElementById('mTipo').value; delete AJ.liberados[k]; salvarAj(); }
+  const rm=e.target.dataset?.rm; if (rm){ AJ.manual[rm]=''; salvarAj(); }
+});
+const gridEl=document.getElementById('grid');
+gridEl.addEventListener('click',e=>{ const b=e.target.closest('.edOk'); if(!b) return; const bx=b.closest('.edit'); setLimite(bx.dataset.k, bx.querySelector('.edLim').value); salvarAj(); });
+gridEl.addEventListener('keydown',e=>{ if(e.key==='Enter' && e.target.classList.contains('edLim')){ const bx=e.target.closest('.edit'); setLimite(bx.dataset.k, e.target.value); salvarAj(); } });
+gridEl.addEventListener('change',e=>{
+  const bx=e.target.closest('.edit'); if(!bx) return; const k=bx.dataset.k;
+  if (e.target.classList.contains('edLib')){ if(e.target.checked) AJ.liberados[k]=true; else delete AJ.liberados[k]; salvarAj(); }
+  if (e.target.classList.contains('edSt')){ AJ.manual[k]=e.target.value; salvarAj(); }
+});
 document.querySelectorAll('#fOrd button').forEach(b=>b.onclick=()=>{modo=b.dataset.v;
   document.querySelectorAll('#fOrd button').forEach(x=>x.classList.toggle('on',x===b)); render();});
 document.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{const k=th.dataset.k; ord={k,d:ord.k===k?-ord.d:-1}; render();});

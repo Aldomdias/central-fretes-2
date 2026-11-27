@@ -22,7 +22,21 @@ function situacao(snapshot, ultimaRodada) {
   return { cor: '#14733b', texto: `Atualizado em ${dataHora(snapshot.gerado_em)} (há ${minutos < 60 ? `${minutos} min` : `${Math.floor(minutos / 60)} h`}).` };
 }
 
-function montarHtml(payload) {
+// Ajustes feitos na tela (limite editado, contagem liberada, bloqueio/inativacao manual) ficam numa linha propria
+// (id = 'ajustes') da mesma tabela do snapshot: o robo so mexe na linha 'atual', entao nao conflita.
+const AJUSTES_ID = 'ajustes';
+function limparAjustes(a) {
+  const x = a && typeof a === 'object' ? a : {};
+  const limites = {};
+  Object.entries(x.limites || {}).forEach(([k, v]) => { const n = Number(v); if (k && Number.isFinite(n) && n > 0) limites[String(k)] = n; });
+  const liberados = {};
+  Object.entries(x.liberados || {}).forEach(([k, v]) => { if (k && v === true) liberados[String(k)] = true; });
+  const manual = {};
+  Object.entries(x.manual || {}).forEach(([k, v]) => { if (k && ['bloq', 'inativ', ''].includes(v)) manual[String(k)] = v; });
+  return { limites, liberados, manual };
+}
+
+function montarHtml(payload, ajustes, editavel) {
   const p = payload || {};
   const json = (v) => JSON.stringify(v ?? null).replace(/</g, '\\u003c');
   return modeloHtml
@@ -30,6 +44,8 @@ function montarHtml(payload) {
     .replace('__LIMITES__', () => json(p.limites || {}))
     .replace('__DIARIO__', () => json(p.diario || []))
     .replace('__CAPACIDADE__', () => json(p.capacidade || {}))
+    .replace('__AJUSTES__', () => json(ajustes || {}))
+    .replace('__EDITAVEL__', () => (editavel ? 'true' : 'false'))
     .replaceAll('__HOJE__', () => p.hoje || '')
     .replaceAll('__DIA__', () => p.dia_br || '')
     .replaceAll('__INICIO__', () => p.inicio_br || '')
@@ -46,8 +62,12 @@ export default function PainelBlackPage({ modoPainel = false, onSair } = {}) {
   const [erro, setErro] = useState('');
   const [telaCheia, setTelaCheia] = useState(false);
   const [, setRelogio] = useState(0); // re-render periodico para o "ha X min" andar sozinho
+  const [versaoAj, setVersaoAj] = useState(0); // sobe quando outra pessoa altera os ajustes: remonta o painel
   const geradoEmRef = useRef(null);
   const quadroRef = useRef(null);
+  const iframeRef = useRef(null);
+  const ajustesRef = useRef(limparAjustes({}));
+  const salvouEmRef = useRef(0);
 
   // forcar = true baixa tudo; senao confere so a data da ultima foto e baixa o painel se mudou.
   const carregar = useCallback(async (forcar = false) => {
@@ -55,10 +75,19 @@ export default function PainelBlackPage({ modoPainel = false, onSair } = {}) {
     setCarregando(true);
     try {
       const client = getSupabaseClient();
-      const [cab, r] = await Promise.all([
+      const [cab, r, aj] = await Promise.all([
         client.from('robo_black_snapshot').select('gerado_em').eq('id', 'atual').maybeSingle(),
         client.from('robo_black_rodadas').select('status,erro,created_at').order('created_at', { ascending: false }).limit(1),
+        client.from('robo_black_snapshot').select('payload').eq('id', AJUSTES_ID).maybeSingle(),
       ]);
+      // ajustes de outra pessoa: so aplica se mudou e se nao acabamos de salvar (evita voltar a edicao em andamento)
+      if (!aj.error && Date.now() - salvouEmRef.current > 15000) {
+        const novo = limparAjustes(aj.data?.payload);
+        if (JSON.stringify(novo) !== JSON.stringify(ajustesRef.current)) {
+          ajustesRef.current = novo;
+          setVersaoAj((v) => v + 1);
+        }
+      }
       let erroMsg = cab.error?.message || r.error?.message || '';
       if (!r.error) setRodada(r.data?.[0] || null);
       const novo = cab.data?.gerado_em || null;
@@ -84,6 +113,34 @@ export default function PainelBlackPage({ modoPainel = false, onSair } = {}) {
     document.addEventListener('visibilitychange', aoVoltar);
     return () => { clearInterval(t); document.removeEventListener('visibilitychange', aoVoltar); };
   }, [carregar]);
+
+  // O painel (iframe) avisa quando alguem edita limite / libera contagem / marca bloqueio manual: salva para todos.
+  useEffect(() => {
+    if (modoPainel) return undefined;
+    const aoMensagem = async (e) => {
+      const d = e.data;
+      if (!d || d.fonte !== 'painelBlack' || d.tipo !== 'ajustes') return;
+      if (e.source !== iframeRef.current?.contentWindow) return;
+      const a = limparAjustes(d.ajustes);
+      ajustesRef.current = a;
+      salvouEmRef.current = Date.now();
+      try {
+        const client = getSupabaseClient();
+        const { error } = await client.from('robo_black_snapshot').upsert({
+          id: AJUSTES_ID,
+          dia: new Date().toISOString().slice(0, 10),
+          payload: a,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'id' });
+        if (error) setErro(`Não salvou o ajuste: ${error.message}`);
+        else setErro('');
+      } catch (err) {
+        setErro(`Não salvou o ajuste: ${err?.message || err}`);
+      }
+    };
+    window.addEventListener('message', aoMensagem);
+    return () => window.removeEventListener('message', aoMensagem);
+  }, [modoPainel]);
 
   // Tela cheia: usa o modo tela cheia do navegador quando existe; se nao (ex.: iPhone), cobre a janela.
   const entrarTelaCheia = useCallback(async () => {
@@ -113,7 +170,8 @@ export default function PainelBlackPage({ modoPainel = false, onSair } = {}) {
     return () => { ativo = false; document.removeEventListener('visibilitychange', aoVoltar); trava?.release?.().catch(() => {}); };
   }, [telaCheia]);
 
-  const html = useMemo(() => (snapshot ? montarHtml(snapshot.payload) : ''), [snapshot]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const html = useMemo(() => (snapshot ? montarHtml(snapshot.payload, ajustesRef.current, !modoPainel) : ''), [snapshot, versaoAj, modoPainel]);
   const st = situacao(snapshot, rodada);
 
   const cheio = modoPainel || telaCheia;
@@ -149,6 +207,7 @@ export default function PainelBlackPage({ modoPainel = false, onSair } = {}) {
       {faixa}
       {snapshot ? (
         <iframe
+          ref={iframeRef}
           title="Painel Black"
           srcDoc={html}
           style={cheio
