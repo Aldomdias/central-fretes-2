@@ -158,13 +158,25 @@
 
 <script>
 const REM = __DADOS__, LIM = __LIMITES__, DIARIO = __DIARIO__, HOJE = '__HOJE__';
-// Mesma transportadora com nomes diferentes no SAP: junta no nome usado na meta (limite).
-// L.M. RAMOS e a GENEROSO (ex.: "0000023952 - L.M. RAMOS", "0000024866 - GENEROSO").
-const MESMA_TRANSP = [[/L\.?\s*M\.?\s*RAMOS|GENEROSO/i, 'GENEROSO']];
+// Nomes do SAP -> nome usado na meta (limite). Primeiro tira o codigo da frente
+// ("0002081494 - WM LOGISTICA SPO" -> "WM LOGISTICA SPO"), depois junta apelidos da mesma transportadora.
+// L.M. RAMOS e a GENEROSO.
+const MESMA_TRANSP = [
+  [/L\.?\s*M\.?\s*RAMOS|GENEROSO/i, 'GENEROSO'],
+  [/^WM LOG/i, 'WM'], [/^MOVVI/i, 'MOVVI'], [/^GOL LINHAS/i, 'GOL'], [/^TAM\b/i, 'TAM'],
+  [/^REUNIDAS/i, 'REUNIDAS'], [/^CARVALIMA/i, 'CARVALIMA'], [/RIO VERMELHO/i, 'RIO VERMELHO'], [/^RPA\s*LOG/i, 'RPA'],
+];
+const nomeTransp = t => {
+  t = String(t||'').trim();
+  if (t.startsWith('(')) return t;
+  const semCod = t.replace(/^[A-Z]*\d+\s*-\s*/i, '').trim() || t;
+  const m = MESMA_TRANSP.find(([re])=>re.test(semCod));
+  return m ? m[1] : semCod;
+};
+REM.forEach(r=>{ r.Transportadora = nomeTransp(r.Transportadora); });
 // Limites que faltam na planilha do robo (se a planilha passar a trazer, vale o da planilha).
-const LIM_EXTRA = {'D004 - Serra|GENEROSO': 750};
+const LIM_EXTRA = {'D004 - Serra|GENEROSO': 750, 'D059 - Azzurra|WM': 5000};
 Object.entries(LIM_EXTRA).forEach(([k,v])=>{ if(LIM[k]==null) LIM[k]=v; });
-REM.forEach(r=>{ const t=String(r.Transportadora||''); const m=MESMA_TRANSP.find(([re])=>re.test(t)); if(m) r.Transportadora=m[1]; });
 const COR = {'0-A processar':'var(--apr)','1-Agrupado':'var(--agr)','2-Separado':'var(--agr)',
              '3-Confirmado':'var(--agr)','4-Conferido':'var(--agr)','5-NF autorizada':'var(--nf)','6-Carregado':'var(--car)'};
 const GRP = e => e==='0-A processar'?'apr':e==='6-Carregado'?'car':e==='5-NF autorizada'?'nf':'agr';
