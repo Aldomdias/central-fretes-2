@@ -254,14 +254,9 @@ Object.assign(LIM, LIM_AJUSTE);
 // Brasil Web so tem unidade Black em Itajai (0001 - BLACK, bloqueada) e Itupeva (0002 - BLACK, 1000): sem Contagem.
 const SEM_OPERACAO = ['D004 - Serra|RPA', 'D003 - Itupeva|RPA', 'D005 - Contagem|BRASIL WEB'];
 SEM_OPERACAO.forEach(k=>{ delete LIM[k]; });
-// Bloqueadas no sistema (relatorio de limites 27/11, status Bloqueado ou limite 1). Contam como bloqueio MANUAL
-// (a lista e fixa); para tirar uma daqui use "Desbloquear" ou "Liberar volume" no card.
-const BLOQ = new Set([
-  'D004 - Serra|TOTAL EXPRESS', 'D004 - Serra|ALFA',
-  'D001 - Itajaí SC|ANJUN', 'D003 - Itupeva|ANJUN', 'D004 - Serra|ANJUN',
-  'D001 - Itajaí SC|TAM', 'D004 - Serra|TAM', 'D002 - Jaboatão dos Guararapes|TAM',
-  'D002 - Jaboatão dos Guararapes|SOLISTICA',
-]);
+// Sem bloqueios fixos: o bloqueio agora e so o automatico por volume (regra abaixo) ou o que voce marcar na tela
+// (botao Bloquear / bloqueio manual). Lista mantida vazia de proposito.
+const BLOQ = new Set([]);
 // Inativadas (nao e bloqueio por volume): card com fundo vermelho e etiqueta INATIVADA.
 const INATIVA = new Set(['D002 - Jaboatão dos Guararapes|PASSARO']);
 const LIM_BASE = {...LIM};
@@ -348,7 +343,9 @@ function render(){
      vol=AJ.volume[k], bv=(vol && vol.dia===HOJE) ? Math.min(vol.base||0, s1.tot) : 0, s=descontar(s1,bv), lim=LIM[k]||null,
      pct = lim ? s.tot/lim*100 : null, man = (k in AJ.manual) ? AJ.manual[k] : (INATIVA.has(k) ? 'inativ' : BLOQ.has(k) ? 'bloq' : ''),
      inativ = man==='inativ', desbloq = man==='desbloq', bloqM = man==='bloq',
-     bloqV = !inativ && !desbloq && !bloqM && !!(lim && s.tot > lim), bloq = bloqM || bloqV; // passou do limite: o sistema ja bloqueia
+     // Regra de volume: ocupacao (entrou = carregado hoje + em aberto) acima do limite bloqueia; no limite exato so bloqueia
+     // enquanto ainda sobra saldo em aberto (se entrou o limite e tudo ja carregou, libera).
+     bloqV = !inativ && !desbloq && !bloqM && !!(lim && (s.tot > lim || (s.tot === lim && sa.tot > 0))), bloq = bloqM || bloqV;
      return {k,dep,tr,R,RA,s,sa,lim,pct,inativ,desbloq,bloq,bloqM,bloqV,man,vol,bv,cg,ord:(pct??-1),fx:faixa(pct),
              ent:tot(R.filter(r=>r['Dia entrada']===HOJE)), car:tot(R.filter(r=>r['Dia carregamento']===HOJE))};});
   if (document.getElementById('fSoLim').checked) cards = cards.filter(c=>c.lim);
