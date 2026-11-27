@@ -34,7 +34,8 @@ function montarHtml(payload) {
     .replaceAll('__DIA__', () => p.dia_br || '')
     .replaceAll('__INICIO__', () => p.inicio_br || '')
     .replaceAll('__ATUALIZADO__', () => p.atualizado || '')
-    .replaceAll('__TIPOS__', () => p.tipos || 'YVEC');
+    .replaceAll('__TIPOS__', () => p.tipos || 'YVEC')
+    .replaceAll('__LOGO_AMD__', () => new URL(logoAmdLog, window.location.href).href);
 }
 
 // modoPainel: conta compartilhada so do Painel Black (ex.: TV da equipe). O App nao mostra menu,

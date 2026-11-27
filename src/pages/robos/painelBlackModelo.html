@@ -13,6 +13,9 @@
   header h1{font-size:20px;margin:0;font-weight:600}
   header .dia{background:#2f3a52;padding:4px 10px;border-radius:6px;font-size:14px}
   header .upd{margin-left:auto;font-size:13px;opacity:.8}
+  header .acoes{display:flex;gap:6px}
+  header .acoes button{border:1px solid #3c4c70;background:#13285a;color:#fff;border-radius:7px;padding:6px 10px;font-size:13px;cursor:pointer}
+  header .acoes button:hover{background:#e2231a;border-color:#e2231a}
   main{padding:18px 24px}
   .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
   .kpi{background:var(--card);border-radius:10px;padding:12px 14px;border:1px solid var(--lin)}
@@ -84,6 +87,11 @@
   <span class="dia">Dia __DIA__</span>
   <span class="dia" style="background:#26324a">Controle desde __INICIO__</span>
   <span class="upd">Atualizado em <b>__ATUALIZADO__</b> · o robô atualiza aproximadamente a cada 20 a 30 min</span>
+  <span class="acoes">
+    <button type="button" id="bLaudo" title="Baixa o laudo do cenário atual em HTML (abre em qualquer celular)">📄 Laudo</button>
+    <button type="button" id="bEnviar" title="Envia o laudo pelo WhatsApp / compartilhar do celular">📲 Enviar</button>
+    <button type="button" id="bTexto" title="Copia um resumo em texto para colar no WhatsApp">💬 Resumo</button>
+  </span>
 </header>
 <main>
   <div class="abas" id="abas">
@@ -281,14 +289,19 @@ function barras(el, pares, total, clic){
     f.value = f.value===e.dataset.k?'':e.dataset.k; render();});
 }
 
-function render(){
-  const L=filtrar(), A=L.filter(aberto), sA=soma(A);
-  const CH=L.filter(r=>r['Dia carregamento']===HOJE), EH=L.filter(r=>r['Dia entrada']===HOJE);
+// Um card por origem x transportadora: ocupacao do dia (carregado hoje + aberto) contra o limite.
+function montarCards(L){
   const g={}; L.forEach(r=>(g[r['Depósito']+'|'+r.Transportadora] ??= []).push(r));
-  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), s=somaOcupacao(R.filter(ocupaDia)), lim=LIM[k]||null,
+  return Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), s=somaOcupacao(R.filter(ocupaDia)), lim=LIM[k]||null,
      pct = lim ? s.tot/lim*100 : null, bloq = BLOQ.has(k);
      return {k,dep,tr,R,RA,s,sa,lim,pct,bloq,ord:bloq?-1:(pct??-1),fx:bloq?-1:faixa(pct),
              ent:tot(R.filter(r=>r['Dia entrada']===HOJE)), car:tot(R.filter(r=>r['Dia carregamento']===HOJE))};});
+}
+
+function render(){
+  const L=filtrar(), A=L.filter(aberto), sA=soma(A);
+  const CH=L.filter(r=>r['Dia carregamento']===HOJE), EH=L.filter(r=>r['Dia entrada']===HOJE);
+  let cards = montarCards(L);
   if (document.getElementById('fSoLim').checked) cards = cards.filter(c=>c.lim);
   const nAl = cards.filter(c=>c.fx>=2).length, nEs = cards.filter(c=>c.fx===3).length;
 
@@ -445,6 +458,227 @@ document.querySelectorAll('#uOrd button').forEach(b=>b.onclick=()=>{uOrd=b.datas
   document.querySelectorAll('#uOrd button').forEach(x=>x.classList.toggle('on',x===b)); renderUni();});
 renderUni();
 try{ const a=(location.hash==='#uni'?'uni':location.hash==='#cam'?'cam':null)||localStorage.getItem('roboBlackAba'); if(a) document.querySelector(`#abas button[data-a="${a}"]`)?.click(); }catch(e){}
+
+// ===== Laudo do cenario atual (HTML independente para mandar no WhatsApp / e-mail) =====
+// Usa os mesmos dados ja normalizados acima (transportadoras juntadas, Azzurra em Itajai, limites e bloqueios).
+const LAUDO_DIA = '__DIA__', LAUDO_ATUAL = '__ATUALIZADO__', LAUDO_INICIO = '__INICIO__', LOGO_AMD = '__LOGO_AMD__';
+// CDs da operacao Black (planilha de contratacao). O resto entra como filial.
+const CDS_BLACK = ['D001','D002','D003','D004','D005','D033'];
+const COR_FX = ['#2e9e5b','#e0a020','#d64545','#8b1e3f'];
+const nomeDep = d => String(d||'').replace(/^D\d+\s*-\s*/,'').replace(/ SC$/,'');
+const pctTxt = (v,t) => t ? (v/t*100).toLocaleString('pt-BR',{maximumFractionDigits:1})+'%' : '0%';
+
+function dadosLaudo(){
+  const cards = montarCards(REM);
+  const A = REM.filter(aberto), CH = REM.filter(r=>r['Dia carregamento']===HOJE), EH = REM.filter(r=>r['Dia entrada']===HOJE);
+  const sA = soma(A);
+  const uni = {};
+  REM.forEach(r=>{ const u=(uni[r['Depósito']] ??= {dep:r['Depósito'],cod:r['Depósito'].slice(0,4),sa:0,ent:0,car:0,tr:new Set(),placas:new Set(),uf:{},al:0});
+    if (aberto(r)){ u.sa+=r.Pneus; if(r.Transportadora && !r.Transportadora.startsWith('(')) u.tr.add(r.Transportadora); }
+    if (r['Dia entrada']===HOJE){ u.ent+=r.Pneus; u.uf[r.UF||'?']=(u.uf[r.UF||'?']||0)+r.Pneus; }
+    if (r['Dia carregamento']===HOJE){ u.car+=r.Pneus; if (r.Placa) u.placas.add(r.Placa); } });
+  cards.forEach(c=>{ if (c.fx>=2 && uni[c.dep]) uni[c.dep].al++; });
+  const U = Object.values(uni).map(u=>({...u, vol:u.car+u.sa}));
+  const cds = U.filter(u=>CDS_BLACK.includes(u.cod)).sort((a,b)=>b.vol-a.vol);
+  const filiais = U.filter(u=>!CDS_BLACK.includes(u.cod)).sort((a,b)=>b.vol-a.vol);
+  const tr = {};
+  cards.forEach(c=>{ if (c.tr.startsWith('(')) return; const t=(tr[c.tr] ??= {tr:c.tr,ent:0,car:0,sa:0,orig:new Set(),pior:null,piorDep:''});
+    t.ent+=c.ent; t.car+=c.car; t.sa+=c.sa.tot; t.orig.add(c.dep); (t.porDep ??= {})[c.dep]=c.car+c.sa.tot;
+    if (c.pct!=null && !c.bloq && (t.pior==null || c.pct>t.pior)){ t.pior=c.pct; t.piorDep=c.dep; } });
+  const T = Object.values(tr).map(t=>({...t, vol:t.car+t.sa})).sort((a,b)=>b.vol-a.vol);
+  const comLim = cards.filter(c=>c.lim && !c.bloq).sort((a,b)=>b.pct-a.pct);
+  const semTransp = cards.filter(c=>c.tr==='(SEM TRANSPORTADORA)').reduce((a,c)=>a+c.sa.tot,0);
+  const byUF={}; EH.forEach(r=>{byUF[r.UF||'?']=(byUF[r.UF||'?']||0)+r.Pneus;});
+  return { cards, sA, totEnt:tot(EH), totCar:tot(CH), veic:new Set(CH.filter(r=>r.Placa).map(r=>r.Placa)).size,
+    rem:EH.length, cds, filiais, U, T, comLim, semTransp, EH, byUF,
+    nAl:cards.filter(c=>c.fx>=2).length, nEs:cards.filter(c=>c.fx===3).length };
+}
+
+async function comoDataUrl(url){
+  try { const b = await (await fetch(url)).blob(); if (!b.type.startsWith('image/')) return '';
+    return await new Promise(ok=>{ const fr=new FileReader(); fr.onload=()=>ok(fr.result); fr.onerror=()=>ok(''); fr.readAsDataURL(b); });
+  } catch(e){ return ''; }
+}
+
+function barraH(v, max, cor){ return `<div class="bt"><span style="width:${max?Math.max(v/max*100,v?1.5:0):0}%;background:${cor}"></span></div>`; }
+function tagLim(pct, fx){ return pct==null ? '<span class="tg" style="background:#8a93a5">sem limite</span>'
+  : `<span class="tg" style="background:${COR_FX[Math.max(fx,0)]}">${Math.round(pct)}%</span>`; }
+
+function mapaCalor(d){
+  const ufs = Object.entries(d.byUF).sort((a,b)=>b[1]-a[1]).map(x=>x[0]);
+  const ufTop = ufs.slice(0,10), resto = ufs.length>10;
+  const orig = {}; d.EH.forEach(r=>{ (orig[r['Depósito']] ??= {}); const o=orig[r['Depósito']], u=ufTop.includes(r.UF||'?')?(r.UF||'?'):'Outras';
+    o[u]=(o[u]||0)+r.Pneus; o.__t=(o.__t||0)+r.Pneus; });
+  let linhas = Object.entries(orig).sort((a,b)=>b[1].__t-a[1].__t);
+  if (linhas.length>8){ const dem={}; linhas.slice(7).forEach(([,o])=>Object.entries(o).forEach(([k,v])=>dem[k]=(dem[k]||0)+v));
+    linhas = [...linhas.slice(0,7), [`Demais filiais (${linhas.length-7})`, dem]]; }
+  const cols = resto ? [...ufTop,'Outras'] : ufTop;
+  let mx=1; linhas.forEach(([,o])=>cols.forEach(c=>{ mx=Math.max(mx,o[c]||0); }));
+  if (!linhas.length) return '<div class="vz">Nenhum pedido entrou hoje ainda.</div>';
+  const cel = v => { if (!v) return '<td class="n"></td>'; const a=0.10+0.85*v/mx;
+    return `<td class="n" style="background:rgba(226,35,26,${a.toFixed(2)});color:${a>.5?'#fff':'#1d2433'};font-weight:${a>.5?700:500}">${fmt(v)}</td>`; };
+  return `<div class="tw"><table class="hm"><tr><th>Origem \\ UF destino</th>${cols.map(c=>`<th class="n">${esc(c)}</th>`).join('')}<th class="n">Total</th></tr>
+    ${linhas.map(([dep,o])=>`<tr><td class="o">${esc(nomeDep(dep))}</td>${cols.map(c=>cel(o[c])).join('')}<td class="n"><b>${fmt(o.__t)}</b></td></tr>`).join('')}
+    <tr class="tt"><td class="o">Total</td>${cols.map(c=>`<td class="n">${fmt(c==='Outras'?ufs.slice(10).reduce((a,u)=>a+d.byUF[u],0):d.byUF[c])}</td>`).join('')}<td class="n">${fmt(d.totEnt)}</td></tr>
+  </table></div>`;
+}
+
+function diaADia(){
+  const dias=[...new Set(DIARIO.map(x=>x.Dia))].sort();
+  if (!dias.length) return '';
+  const sd=(dd,k)=>DIARIO.filter(x=>x.Dia===dd).reduce((a,x)=>a+(x[k]||0),0);
+  let acc=0; const L=dias.map(dd=>{ acc+=sd(dd,'Entrada')-sd(dd,'Saída'); return [dd,sd(dd,'Entrada'),sd(dd,'Saída'),acc]; });
+  const mx=Math.max(...L.map(x=>Math.max(x[1],x[2])),1);
+  return `<div class="sec"><h2>📅 Dia a dia da operação Black <small>desde ${esc(LAUDO_INICIO)}</small></h2>
+    <table class="tb"><tr><th>Dia</th><th>Entrou × saiu</th><th class="n">Entrou</th><th class="n">Saiu</th><th class="n">Saldo</th></tr>
+    ${L.map(([dd,e,s,a])=>`<tr><td>${br(dd).slice(0,5)}</td><td style="width:45%">${barraH(e,mx,'#3d7bd9')}${barraH(s,mx,'#2e9e5b')}</td>
+      <td class="n">${fmt(e)}</td><td class="n">${fmt(s)}</td><td class="n"><b>${fmt(a)}</b></td></tr>`).join('')}</table>
+    <div class="lg"><i style="background:#3d7bd9"></i>Entrou (pedidos criados) <i style="background:#2e9e5b"></i>Saiu (carregado)</div></div>`;
+}
+
+function destaques(d){
+  const L=[]; const cd=d.cds[0], t=d.T[0], uf=Object.entries(d.byUF).sort((a,b)=>b[1]-a[1]);
+  const efic = d.totEnt ? d.totCar/d.totEnt*100 : 0;
+  L.push(`Foram carregados <b>${fmt(d.totCar)} pneus</b> hoje em <b>${d.veic} veículos</b>, contra <b>${fmt(d.totEnt)}</b> que entraram — ${efic>=100?`saiu <b>mais do que entrou</b> (${Math.round(efic)}%), o saldo está baixando`:`saiu <b>${Math.round(efic)}%</b> do que entrou`}.`);
+  if (cd) L.push(`<b>${esc(nomeDep(cd.dep))}</b> é o CD com maior volume do dia: ${fmt(cd.vol)} pneus (${pctTxt(cd.vol, d.U.reduce((a,u)=>a+u.vol,0))} do total).`);
+  if (t) L.push(`<b>${esc(t.tr)}</b> lidera entre as transportadoras com ${fmt(t.vol)} pneus${d.T[1]?`, seguida de <b>${esc(d.T[1].tr)}</b> (${fmt(d.T[1].vol)})`:''}.`);
+  if (uf.length) L.push(`Principais destinos dos pedidos de hoje: ${uf.slice(0,3).map(([u,v])=>`<b>${esc(u)}</b> ${pctTxt(v,d.totEnt)}`).join(', ')}.`);
+  L.push(d.nAl ? `<span style="color:#d64545">🚨 <b>${d.nAl}</b> origem×transportadora em alerta (≥ 80% do limite)${d.nEs?`, <b>${d.nEs}</b> já estourada(s)`:''}.</span>`
+               : `✅ Nenhuma transportadora em alerta: todas abaixo de 80% do limite do dia.`);
+  if (d.semTransp) L.push(`<span style="color:#d64545">⚠️ ${fmt(d.semTransp)} pneus em aberto <b>sem transportadora</b> definida.</span>`);
+  return L;
+}
+
+async function montarLaudo(){
+  const d = dadosLaudo();
+  const [amd, cantu] = await Promise.all([LOGO_AMD ? comoDataUrl(LOGO_AMD) : '', comoDataUrl('/logo_cantu.png')]);
+  const kp = [['📥 Entrou hoje', fmt(d.totEnt), `${fmt(d.rem)} remessas`], ['🚛 Carregado hoje', fmt(d.totCar), `${d.veic} veículos`],
+    ['📦 Saldo em aberto', fmt(d.sA.tot), `${fmt(d.sA.apr)} a processar`], ['🧾 NF autorizada', fmt(d.sA.nf), 'prontas p/ carregar'],
+    ['🚨 Em alerta', d.nAl, d.nEs?`${d.nEs} estourada(s)`:'≥ 80% do limite', d.nAl?'r':'']];
+  const mxCD = Math.max(...d.cds.map(u=>u.vol),1), totVol = d.U.reduce((a,u)=>a+u.vol,0);
+  const fil = d.filiais.filter(u=>u.vol>0).slice(0,10), mxF = Math.max(...fil.map(u=>u.vol),1);
+  const T = d.T.slice(0,10), mxT = Math.max(...T.map(t=>t.vol),1);
+  const perto = d.comLim.filter(c=>c.s.tot>0).slice(0,6);
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Laudo Black ${esc(LAUDO_ATUAL)}</title>
+<style>
+*{box-sizing:border-box} body{margin:0;background:#eef0f4;font-family:Segoe UI,Roboto,Arial,sans-serif;color:#1d2433;-webkit-text-size-adjust:100%}
+.pg{max-width:880px;margin:0 auto;background:#fff;min-height:100vh}
+.cab{background:#001848;color:#fff;padding:18px 20px 16px;border-bottom:5px solid #e2231a}
+.cab .lg1{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.cab .lg1 img{height:38px;background:#fff;border-radius:6px;padding:3px 6px}
+.cab h1{margin:0;font-size:22px;letter-spacing:.3px} .cab p{margin:4px 0 0;font-size:13px;opacity:.85}
+.selo{display:inline-block;background:#e2231a;color:#fff;font-weight:800;letter-spacing:1px;font-size:12px;padding:5px 8px;border-radius:5px}
+.cont{padding:16px 18px 8px}
+.kp{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.k{border:1px solid #e3e6ec;border-radius:10px;padding:10px 12px;background:#fafbfc}
+.k span{display:block;font-size:12px;color:#6b7385} .k b{display:block;font-size:24px;margin:2px 0} .k small{color:#6b7385;font-size:11px}
+.k.r{border-color:#d64545;background:#fff4f4} .k.r b{color:#d64545}
+.sec{margin-top:22px} h2{font-size:16px;margin:0 0 10px;padding-bottom:6px;border-bottom:2px solid #eef0f4} h2 small{font-weight:400;color:#6b7385;font-size:12px}
+.dq{margin:0;padding:12px 14px 12px 30px;background:#f6f8fc;border-left:4px solid #001848;border-radius:6px;font-size:14px;line-height:1.55}
+table{border-collapse:collapse;width:100%} th,td{padding:6px 7px;border-bottom:1px solid #eef0f4;font-size:13px;text-align:left}
+th{background:#f3f5f8;font-size:12px;color:#4a5162;font-weight:600} .n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tb td.nm{font-weight:600} .tb .sub{display:block;font-weight:400;font-size:11px;color:#6b7385}
+.bt{height:8px;background:#eef0f4;border-radius:4px;overflow:hidden;margin:2px 0} .bt span{display:block;height:100%;border-radius:4px}
+.tg{display:inline-block;color:#fff;font-size:11px;font-weight:700;padding:2px 7px;border-radius:9px;white-space:nowrap}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid #e3e6ec;border-radius:8px}
+.hm th,.hm td{font-size:12px;padding:6px 6px;border:1px solid #fff} .hm td.o{font-weight:600;white-space:nowrap;background:#f3f5f8}
+.hm tr.tt td{background:#001848;color:#fff;font-weight:700}
+.lg{font-size:11px;color:#6b7385;margin-top:6px} .lg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 4px 0 8px;vertical-align:-1px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px}
+.cd{border:1px solid #e3e6ec;border-radius:10px;padding:10px 12px}
+.cd .t{display:flex;justify-content:space-between;gap:8px;font-weight:600;font-size:14px} .cd .o{font-size:12px;color:#6b7385;margin-bottom:6px}
+.cd .bar{height:14px;background:#eef0f4;border-radius:7px;overflow:hidden;position:relative}
+.cd .bar span{display:block;height:100%} .cd .bar i{position:absolute;top:0;bottom:0;left:80%;border-left:2px dashed #d64545}
+.cd .v{font-size:12px;color:#6b7385;margin-top:4px}
+.vz{padding:16px;text-align:center;color:#6b7385}
+.rod{margin-top:26px;padding:14px 18px;background:#f3f5f8;font-size:11px;color:#6b7385;line-height:1.5}
+@media(max-width:560px){ .cont{padding:12px 10px} .cab{padding:14px 12px} .cab h1{font-size:19px} .k b{font-size:20px} th,td{font-size:12px;padding:5px} .hide-m{display:none} }
+@media print{ body{background:#fff} .pg{max-width:none} .sec{break-inside:avoid} }
+</style></head><body><div class="pg">
+<div class="cab">
+  <div class="lg1">${amd?`<img src="${amd}" alt="AMD LOG">`:'<span class="selo" style="background:#fff;color:#001848">AMD LOG</span>'}${cantu?`<img src="${cantu}" alt="Cantu" style="height:30px">`:'<span class="selo">CANTU</span>'}</div>
+  <h1>🚚 Laudo Black — cenário atual</h1>
+  <p>Dia <b>${esc(LAUDO_DIA)}</b> · foto do SAP (ZEWM003) de <b>${esc(LAUDO_ATUAL)}</b> · tipos ${esc('__TIPOS__')} · controle desde ${esc(LAUDO_INICIO)}</p>
+</div>
+<div class="cont">
+  <div class="kp">${kp.map(([a,b,c,r])=>`<div class="k ${r||''}"><span>${a}</span><b>${b}</b><small>${c}</small></div>`).join('')}</div>
+
+  <div class="sec"><h2>📝 Resumo</h2><ul class="dq">${destaques(d).map(x=>`<li>${x}</li>`).join('')}</ul></div>
+
+  <div class="sec"><h2>🏭 CDs <small>volume do dia = carregado hoje + saldo em aberto (pneus)</small></h2>
+  <table class="tb"><tr><th>CD</th><th class="hide-m">Volume</th><th class="n">Entrou</th><th class="n">Carregou</th><th class="n">Saldo</th><th class="n">Part.</th></tr>
+  ${d.cds.map(u=>`<tr><td class="nm">${esc(nomeDep(u.dep))}<span class="sub">${u.cod} · ${u.tr.size} transp. · ${u.placas.size} veíc.${u.al?` · <b style="color:#d64545">🚨 ${u.al} alerta</b>`:''}</span></td>
+    <td class="hide-m" style="width:28%">${barraH(u.vol,mxCD,'#001848')}</td><td class="n">${fmt(u.ent)}</td><td class="n" style="color:#2e9e5b"><b>${fmt(u.car)}</b></td>
+    <td class="n">${fmt(u.sa)}</td><td class="n">${pctTxt(u.vol,totVol)}</td></tr>`).join('')}</table></div>
+
+  <div class="sec"><h2>🗺️ Mapa de calor — origem × destino <small>pneus que entraram hoje</small></h2>${mapaCalor(d)}
+    <div class="lg">Quanto mais forte o vermelho, maior o volume saindo daquela origem para a UF.</div></div>
+
+  <div class="sec"><h2>🚛 Transportadoras com maior volume <small>top ${T.length} · % = origem mais perto do limite</small></h2>
+  <table class="tb"><tr><th>#</th><th>Transportadora</th><th class="hide-m">Volume</th><th class="n">Carregou</th><th class="n">Saldo</th><th class="n">Limite</th></tr>
+  ${T.map((t,i)=>`<tr><td>${i+1}º</td><td class="nm">${esc(t.tr)}<span class="sub">${(()=>{ const o=Object.entries(t.porDep).sort((x,y)=>y[1]-x[1]).map(x=>nomeDep(x[0]));
+      return o.slice(0,4).join(', ')+(o.length>4?` +${o.length-4} origens`:''); })()}</span></td>
+    <td class="hide-m" style="width:24%">${barraH(t.vol,mxT,'#e2231a')}</td><td class="n" style="color:#2e9e5b"><b>${fmt(t.car)}</b></td><td class="n">${fmt(t.sa)}</td>
+    <td class="n">${t.pior==null?'<span style="color:#8a93a5">—</span>':tagLim(t.pior,faixa(t.pior))}</td></tr>`).join('')}</table></div>
+
+  ${perto.length?`<div class="sec"><h2>${d.nAl?'🚨 Pontos de atenção':'🎯 Mais perto do limite'} <small>carregado hoje + aberto × limite do dia</small></h2><div class="cards">
+  ${perto.map(c=>`<div class="cd"><div class="t"><span>${esc(c.tr)}</span>${tagLim(c.pct,c.fx)}</div><div class="o">📍 ${esc(nomeDep(c.dep))}</div>
+    <div class="bar"><span style="width:${Math.min(c.pct,100)}%;background:${COR_FX[Math.max(c.fx,0)]}"></span><i></i></div>
+    <div class="v">${fmt(c.s.tot)} de ${fmt(c.lim)} pneus · ${c.lim>=c.s.tot?`livre ${fmt(c.lim-c.s.tot)}`:`<b style="color:#8b1e3f">passou ${fmt(c.s.tot-c.lim)}</b>`}</div></div>`).join('')}</div></div>`:''}
+
+  ${fil.length?`<div class="sec"><h2>🏬 Principais filiais <small>top ${fil.length} de ${d.filiais.filter(u=>u.vol>0).length} com movimento</small></h2>
+  <table class="tb"><tr><th>Filial</th><th class="hide-m">Volume</th><th class="n">Entrou</th><th class="n">Carregou</th><th class="n">Saldo</th></tr>
+  ${fil.map(u=>`<tr><td class="nm">${esc(nomeDep(u.dep))}<span class="sub">${u.cod}</span></td><td class="hide-m" style="width:30%">${barraH(u.vol,mxF,'#3d7bd9')}</td>
+    <td class="n">${fmt(u.ent)}</td><td class="n" style="color:#2e9e5b"><b>${fmt(u.car)}</b></td><td class="n">${fmt(u.sa)}</td></tr>`).join('')}</table></div>`:''}
+
+  ${diaADia()}
+</div>
+<div class="rod">Laudo gerado automaticamente pelo Painel Black (Central de Fretes · AMD LOG) a partir da foto do robô de ${esc(LAUDO_ATUAL)}.
+Pneus de remessas ${esc('__TIPOS__')}. "Carregou" = baixa de carregamento hoje; "Saldo" = remessas em aberto (a processar, separação, NF autorizada).
+Limites conforme planilha de contratação Black e relatório de limites do sistema.</div>
+</div></body></html>`;
+  return { html, d };
+}
+
+function textoWhats(d){
+  const L = [`*🚚 Painel Black — ${LAUDO_ATUAL}*`, '',
+    `📥 Entrou hoje: *${fmt(d.totEnt)}* pneus`, `🚛 Carregado hoje: *${fmt(d.totCar)}* pneus (${d.veic} veículos)`,
+    `📦 Saldo em aberto: *${fmt(d.sA.tot)}* pneus`, d.nAl?`🚨 Em alerta: *${d.nAl}*${d.nEs?` (${d.nEs} estourada)`:''}`:'✅ Nenhuma transportadora em alerta', '',
+    '*🏭 CDs* (carregou · saldo)', ...d.cds.filter(u=>u.vol).map(u=>`• ${nomeDep(u.dep)}: ${fmt(u.car)} · ${fmt(u.sa)}`), '',
+    '*🚛 Top transportadoras* (carregou · saldo)', ...d.T.slice(0,5).map((t,i)=>`${i+1}. ${t.tr}: ${fmt(t.car)} · ${fmt(t.sa)}${t.pior!=null?` (${Math.round(t.pior)}% do limite)`:''}`)];
+  const uf = Object.entries(d.byUF).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  if (uf.length) L.push('', `*🗺️ Destinos hoje:* ${uf.map(([u,v])=>`${u} ${pctTxt(v,d.totEnt)}`).join(' · ')}`);
+  return L.join('\n');
+}
+
+const nomeArq = () => `Laudo-Black-${HOJE}-${String(LAUDO_ATUAL).slice(-5).replace(':','h')}.html`;
+function baixar(html){
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([html],{type:'text/html;charset=utf-8'}));
+  a.download = nomeArq(); document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+async function copiar(txt){
+  try { await navigator.clipboard.writeText(txt); return true; } catch(e){
+    const t=document.createElement('textarea'); t.value=txt; document.body.appendChild(t); t.select();
+    let ok=false; try{ ok=document.execCommand('copy'); }catch(e2){} t.remove(); return ok; }
+}
+function avisar(btn, txt){ const o=btn.dataset.o ??= btn.textContent; btn.textContent=txt; setTimeout(()=>btn.textContent=o, 2500); }
+
+document.getElementById('bLaudo').onclick = async e => { const b=e.currentTarget; avisar(b,'⏳ Gerando…'); baixar((await montarLaudo()).html); avisar(b,'✅ Baixado'); };
+document.getElementById('bEnviar').onclick = async e => {
+  const b=e.currentTarget, { html, d } = await montarLaudo();
+  const arq = new File([html], nomeArq(), {type:'text/html'});
+  if (navigator.canShare?.({files:[arq]})) {
+    try { await navigator.share({files:[arq], title:'Laudo Black', text:`Laudo Black — ${LAUDO_ATUAL}`}); return; }
+    catch(err){ if (err?.name==='AbortError') return; }
+  }
+  // Computador: baixa o arquivo e abre o WhatsApp com o resumo (o arquivo vai anexado a mao).
+  baixar(html); window.open('https://wa.me/?text='+encodeURIComponent(textoWhats(d)), '_blank');
+  avisar(b,'✅ Baixado — anexe no WhatsApp');
+};
+document.getElementById('bTexto').onclick = async e => { const b=e.currentTarget;
+  avisar(b, await copiar(textoWhats(dadosLaudo())) ? '✅ Copiado' : '⚠️ Não copiou'); };
 
 </script>
 </body>
