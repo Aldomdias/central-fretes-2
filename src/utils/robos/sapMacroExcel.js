@@ -327,11 +327,11 @@ export function matrizDadosMacro(linhas, { campos, versao }, central = {}) {
 // arquivo e atualize as versoes abaixo. Enquanto isso, a tela avisa que a planilha esta desatualizada.
 export const PLANILHA_ROBO = {
   // ?v= muda a cada planilha publicada: o navegador/CDN nao entrega a versao antiga do cache.
-  url: '/robos/robo-lancamento.xlsm?v=20261125a',
+  url: '/robos/robo-lancamento.xlsm?v=20261127a',
   nome: 'Robo Lancamento.xlsm',
   // Planilha unica dos 4 robos (um modulo e um botao para cada): Lancar NFS-e, Lancar CT-e,
-  // Escriturar CT-e (ReprocessarCTe) e Corrigir saldo. Publicada em 25/11/2026.
-  versoes: { LancarNFSe: '4e73ef46', LancarCTe: 'd4615121', ReprocessarCTe: '83a22320', CorrigirSaldo: '5776bd1e' },
+  // Escriturar CT-e (ReprocessarCTe) e Corrigir saldo. Publicada em 27/11/2026.
+  versoes: { LancarNFSe: 'f8c99790', LancarCTe: '1b7d94ce', ReprocessarCTe: '83a22320', CorrigirSaldo: '5776bd1e' },
 };
 
 // ---------------------------------------------------------------- CT-e: centro de custo pelo robo
