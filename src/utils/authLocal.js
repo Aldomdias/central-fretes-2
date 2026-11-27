@@ -379,10 +379,19 @@ export async function salvarUsuariosAsync(usuarios = []) {
   }
 }
 
+// Conta compartilhada so do Painel Black (ex.: "Usuario Black", varias pessoas com a mesma senha):
+// perfil que nao e Gestao e cuja unica pagina liberada e o painel. Ninguem nela pode trocar a senha;
+// a senha so muda pela Gestao de Usuarios.
+export function contaSomentePainelBlack(usuario) {
+  if (!usuario || usuario.perfil === 'GESTAO') return false;
+  const permissoes = permissoesUsuario(usuario);
+  return permissoes.length > 0 && permissoes.every((pagina) => pagina === 'painel-black');
+}
+
 export function usuarioTemAcesso(usuario, pagina) {
   if (!usuario) return false;
   if (import.meta.env.DEV && pagina === 'importacao-ia-tabelas') return true;
-  if (pagina === 'minha-senha') return true;
+  if (pagina === 'minha-senha') return !contaSomentePainelBlack(usuario);
   // Gestao decide a fila de Suprimentos mesmo com lista de paginas personalizada.
   if (pagina === 'autorizacoes-suprimentos' && usuario.perfil === 'GESTAO') return true;
   // Modulo novo: Gestao ve sempre, mesmo com lista de paginas salva antes dele existir.
@@ -606,6 +615,7 @@ export async function alterarSenhaUsuarioLogado({ usuarioId, senhaAtual, novaSen
   const usuario = usuarios.find((item) => item.id === usuarioId && item.ativo !== false);
 
   if (!usuario) throw new Error('Usuário não encontrado ou inativo.');
+  if (contaSomentePainelBlack(usuario)) throw new Error('Esta conta é compartilhada; a senha só pode ser alterada pela Gestão de Usuários.');
 
   if (String(usuario.senha || '') !== String(senhaAtualLimpa)) {
     throw new Error('Senha atual inválida.');
