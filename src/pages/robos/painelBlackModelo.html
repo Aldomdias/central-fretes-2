@@ -139,11 +139,13 @@
       <button data-v="orig">📍 Agrupar por origem</button>
     </span>
     <label><input type="checkbox" id="fSoLim"> só com limite</label>
+    <label title="Ligado: só o carregado que tem placa abate do saldo; o carregado sem placa continua na conta do limite"><input type="checkbox" id="fSoPlaca"> considerar apenas carregados com placa</label>
     <button type="button" id="btnManual">➕ Bloqueio / inativação manual</button>
   </div>
   <div id="painelManual" class="manual-box" style="display:none"></div>
   <div class="leg">
     <b style="color:var(--txt)">Saldo em aberto:</b>
+    <span class="legSP" style="display:none"><i style="background:var(--sai)"></i>Carregado sem placa (conta no limite)</span>
     <span><i style="background:var(--apr)"></i>A processar</span>
     <span><i style="background:var(--agr)"></i>Agrupado / separação</span>
     <span><i style="background:var(--nf)"></i>NF autorizada</span>
@@ -189,7 +191,7 @@
 <script>
 const REM = __DADOS__, LIM = __LIMITES__, DIARIO = __DIARIO__, HOJE = '__HOJE__';
 // Ajustes feitos na tela (salvos para todos): limites editados, bloqueio/desbloqueio/inativacao manual.
-const AJ = __AJUSTES__ || {}; AJ.limites ||= {}; AJ.manual ||= {};
+const AJ = __AJUSTES__ || {}; AJ.limites ||= {}; AJ.manual ||= {}; AJ.soPlaca = AJ.soPlaca === true;
 const EDIT = __EDITAVEL__;
 // Nomes do SAP -> nome usado na meta (limite). Primeiro tira o codigo da frente
 // ("0002081494 - WM LOGISTICA SPO" -> "WM LOGISTICA SPO"), depois junta apelidos da mesma transportadora.
@@ -325,16 +327,18 @@ function barras(el, pares, total, clic){
 }
 
 function render(){
+  const lsp=document.querySelector('.legSP'); if (lsp) lsp.style.display = AJ.soPlaca ? '' : 'none';
   const L=filtrar(), A=L.filter(aberto), sA=soma(A);
   const CH=L.filter(r=>r['Dia carregamento']===HOJE), EH=L.filter(r=>r['Dia entrada']===HOJE);
   const g={}; L.forEach(r=>(g[r['Depósito']+'|'+r.Transportadora] ??= []).push(r));
   // Saldo (o que ainda nao carregou) = que veio de ontem sem carregamento + entrou hoje - carregou hoje.
   // Estourou o limite -> bloqueada por volume. Nao estourou -> liberada. O que ja carregou sai do saldo.
-  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), s={sai:0,...sa}, lim=LIM[k]||null,
+  // Flag 'so carregados com placa': so abate o carregado que tem placa; o carregado sem placa (sp) continua na conta.
+  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), sp=AJ.soPlaca ? tot(R.filter(r=>r['Dia carregamento']===HOJE && !r.Placa)) : 0, s={...sa, sai:sp, tot:sa.tot+sp}, lim=LIM[k]||null,
      pct = lim ? s.tot/lim*100 : null, man = (k in AJ.manual) ? AJ.manual[k] : (INATIVA.has(k) ? 'inativ' : BLOQ.has(k) ? 'bloq' : ''),
      inativ = man==='inativ', desbloq = man==='desbloq', bloqM = man==='bloq',
      bloqV = !inativ && !desbloq && !bloqM && !!(lim && s.tot > lim), bloq = bloqM || bloqV;
-     return {k,dep,tr,R,RA,s,sa,lim,pct,inativ,desbloq,bloq,bloqM,bloqV,man,ord:(pct??-1),fx:faixa(pct),
+     return {k,dep,tr,R,RA,s,sa,sp,lim,pct,inativ,desbloq,bloq,bloqM,bloqV,man,ord:(pct??-1),fx:faixa(pct),
              ent:tot(R.filter(r=>r['Dia entrada']===HOJE)), car:tot(R.filter(r=>r['Dia carregamento']===HOJE))};});
   if (document.getElementById('fSoLim').checked) cards = cards.filter(c=>c.lim);
   const nAl = cards.filter(c=>c.fx>=2).length, nEs = cards.filter(c=>c.fx===3).length;
@@ -374,6 +378,7 @@ function render(){
         <span>Carreg. hoje<b style="color:var(--car)">${fmt(c.car)}</b></span>
         <span>A proc.<b>${fmt(c.sa.apr)}</b></span>
         <span>${c.lim?(c.lim>=c.s.tot?'Livre<b>'+fmt(c.lim-c.s.tot):'Passou<b style="color:var(--estouro)">'+fmt(c.s.tot-c.lim))+'</b>':'Remessas<b>'+c.RA.length+'</b>'}</span></div>
+      ${c.sp?`<div class="libnote">🚗 Só abate o carregado com placa: ${fmt(c.sp)} pneus carregados sem placa continuam na conta</div>`:''}
       ${EDIT?`<div class="edit" data-k="${esc(c.k)}">
         <label>Limite <input type="number" min="0" class="edLim" value="${c.lim||''}" placeholder="sem"></label>
         <button type="button" class="edOk">Salvar</button>
@@ -430,6 +435,8 @@ function render(){
     <td class="n">${fmt(r.Pneus)}</td><td>${esc(r['Doc. EWM'])}</td></tr>`).join('');
 }
 ['fDep','fBusca','fSoLim'].forEach(id=>document.getElementById(id).addEventListener('input',render));
+const elSP=document.getElementById('fSoPlaca'); elSP.checked=!!AJ.soPlaca; elSP.disabled=!EDIT;
+elSP.addEventListener('change',()=>{ AJ.soPlaca=elSP.checked; salvarAj(); });
 
 // ---- edicao (limite, contagem liberada, bloqueio/inativacao manual); salva para todos via pagina pai ----
 function salvarAj(){
