@@ -31,6 +31,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'formatacao', label: 'Formatação de Tabelas', grupo: 'Suprimentos' },
   { chave: 'importar-template', label: 'Importar Template', grupo: 'Suprimentos' },
   { chave: 'importacao-ia-tabelas', label: 'Importação IA de Tabelas', grupo: 'Suprimentos' },
+  { chave: 'fracionado-portal', label: 'Portal de Tabelas Fracionado', grupo: 'Suprimentos' },
   { chave: 'lotacao', label: 'Gestão de Tabelas Lotação (vigentes)', grupo: 'Lotação' },
   { chave: 'lotacao-cotacao', label: 'Gestão de Tabelas Lotação (cotação)', grupo: 'Lotação' },
   { chave: 'lotacao-operacao', label: 'Lotação Operação', grupo: 'Lotação' },
@@ -58,13 +59,16 @@ export const MODULOS_SISTEMA = [
   { chave: 'oportunidade-transportadora', label: 'Oportunidade Transportadora', grupo: 'Transportadoras' },
   { chave: 'simular-saida-transportadora', label: 'Simular Saída de Transportadora', grupo: 'Transportadoras' },
   { chave: 'tabela-padrao-b2c', label: 'Tabela Padrão B2C', grupo: 'Transportadoras' },
+  { chave: 'rotas-b2c', label: 'Rotas B2C (download)', grupo: 'Transportadoras' },
   { chave: 'gestao-contratos', label: 'Gestão de Contratos', grupo: 'Transportadoras' },
   { chave: 'gestao-base-cte', label: 'Gestão da Base CT-e', grupo: 'Auditoria' },
   { chave: 'alertas-cte-valor', label: 'Alerta CT-e valor alto', grupo: 'Auditoria' },
   { chave: 'consulta-tracking', label: 'Consulta Tracking', grupo: 'Operação' },
+  { chave: 'painel-black', label: 'Painel Black', grupo: 'Operação' },
   { chave: 'robos', label: 'Automação (Robôs)', grupo: 'Automação' },
   { chave: 'usuarios', label: 'Gestão de Usuários', grupo: 'Administração', somenteAdmin: true },
   { chave: 'usuarios-ativos', label: 'Usuários Ativos', grupo: 'Administração', somenteAdmin: true },
+  { chave: 'consumo-sistema', label: 'Consumo do Sistema', grupo: 'Administração', somenteAdmin: true },
 ];
 
 const CHAVES_MODULOS = MODULOS_SISTEMA.map((modulo) => modulo.chave);
@@ -85,6 +89,7 @@ export const PERFIS_USUARIO = {
       'simulador',
       'simulador-reversa',
       'tabelas-negociacao',
+      'fracionado-portal',
       'cte',
       'tracking',
       'torre-controle',
@@ -196,6 +201,13 @@ function paginasPerfil(perfilChave) {
 
 export function usuarioPodeAdministrarUsuarios(usuario) {
   return normalizarEmail(usuario?.email) === ADMIN_EMAIL && usuario?.perfil === 'GESTAO';
+}
+
+// Painel "Usuarios ativos": admin + e-mails liberados nominalmente.
+const EMAILS_USUARIOS_ATIVOS = new Set(['caroline.waldhelm@cantu.inc']);
+
+export function usuarioPodeVerUsuariosAtivos(usuario) {
+  return usuarioPodeAdministrarUsuarios(usuario) || EMAILS_USUARIOS_ATIVOS.has(normalizarEmail(usuario?.email));
 }
 
 // Perfis com poder de gestão sobre a auditoria (podem anular uma auditoria
@@ -367,19 +379,33 @@ export async function salvarUsuariosAsync(usuarios = []) {
   }
 }
 
+// Conta compartilhada so do Painel Black (ex.: "Usuario Black", varias pessoas com a mesma senha):
+// perfil que nao e Gestao e cuja unica pagina liberada e o painel. Ninguem nela pode trocar a senha;
+// a senha so muda pela Gestao de Usuarios.
+export function contaSomentePainelBlack(usuario) {
+  if (!usuario || usuario.perfil === 'GESTAO') return false;
+  const permissoes = permissoesUsuario(usuario);
+  return permissoes.length > 0 && permissoes.every((pagina) => pagina === 'painel-black');
+}
+
 export function usuarioTemAcesso(usuario, pagina) {
   if (!usuario) return false;
   if (import.meta.env.DEV && pagina === 'importacao-ia-tabelas') return true;
-  if (pagina === 'minha-senha') return true;
+  if (pagina === 'minha-senha') return !contaSomentePainelBlack(usuario);
   // Gestao decide a fila de Suprimentos mesmo com lista de paginas personalizada.
   if (pagina === 'autorizacoes-suprimentos' && usuario.perfil === 'GESTAO') return true;
   // Modulo novo: Gestao ve sempre, mesmo com lista de paginas salva antes dele existir.
   if (pagina === 'robos' && usuario.perfil === 'GESTAO') return true;
+  // Painel Black: tela nova; Gestao ve sempre, demais perfis pela lista de paginas do usuario.
+  if (pagina === 'painel-black' && usuario.perfil === 'GESTAO') return true;
   // Autorizacoes Lotacao: a Operacao Lotacao decide; vale mesmo com lista de paginas salva antes dela existir.
   if (pagina === 'autorizacoes-transporte-lotacao' && ['GESTAO', 'OPERACAO_LOTACAO'].includes(usuario.perfil)) return true;
   // Auditoria TransGP (API): tela nova, vale mesmo com lista de paginas salva antes dela existir.
   if (pagina === 'lotacao-transgp' && ['GESTAO', 'OPERACAO_LOTACAO', 'AUDITORIA_LOTACAO'].includes(usuario.perfil)) return true;
-  if (pagina === 'usuarios' || pagina === 'usuarios-ativos') return usuarioPodeAdministrarUsuarios(usuario);
+  if (pagina === 'usuarios') return usuarioPodeAdministrarUsuarios(usuario);
+  if (pagina === 'usuarios-ativos') return usuarioPodeVerUsuariosAtivos(usuario);
+  // Consumo do Sistema (quem/qual tela/qual processo puxa rede, CPU e RAM): so o administrador.
+  if (pagina === 'consumo-sistema') return usuarioPodeAdministrarUsuarios(usuario);
 
   const permissoes = permissoesUsuario(usuario);
   if (permissoes.includes('*')) return true;
@@ -589,6 +615,7 @@ export async function alterarSenhaUsuarioLogado({ usuarioId, senhaAtual, novaSen
   const usuario = usuarios.find((item) => item.id === usuarioId && item.ativo !== false);
 
   if (!usuario) throw new Error('Usuário não encontrado ou inativo.');
+  if (contaSomentePainelBlack(usuario)) throw new Error('Esta conta é compartilhada; a senha só pode ser alterada pela Gestão de Usuários.');
 
   if (String(usuario.senha || '') !== String(senhaAtualLimpa)) {
     throw new Error('Senha atual inválida.');

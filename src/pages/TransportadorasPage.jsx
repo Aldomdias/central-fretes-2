@@ -523,6 +523,44 @@ function CanalInvertidoSection({ transportadora, store }) {
   );
 }
 
+function OperaLotacaoSection({ transportadora, store }) {
+  const [salvando, setSalvando] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+  const ativo = Boolean(transportadora.operaLotacao);
+
+  async function alternar(event) {
+    const novo = event.target.checked;
+    setSalvando(true);
+    setFeedback(null);
+    const resposta = await store.salvarOperaLotacao?.(transportadora.id, novo);
+    setSalvando(false);
+    if (!resposta?.ok) {
+      setFeedback({ tipo: 'error', texto: resposta?.erro?.message || 'Erro ao salvar.' });
+      return;
+    }
+    setFeedback({ tipo: 'info', texto: novo
+      ? 'Ligado. Resimule o mês na Auditoria CT-e para os CT-es já processados.'
+      : 'Desligado. Resimule o mês na Auditoria CT-e.' });
+  }
+
+  return (
+    <div className="form-card" style={{ marginTop: 12, padding: 16, background: '#f8fafc', borderRadius: 8 }}>
+      <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: store.podeEditarTransportadoras ? 'pointer' : 'default' }}>
+        <input type="checkbox" checked={ativo} disabled={!store.podeEditarTransportadoras || salvando} onChange={alternar} />
+        <strong style={{ fontSize: '0.9rem' }}>Opera lotação (mesmo sem tabela vigente)</strong>
+        {salvando ? <span style={{ fontSize: 12, color: 'var(--muted)' }}>salvando...</span> : null}
+      </label>
+      <p style={{ fontSize: 12, color: 'var(--muted)', margin: '4px 0 0' }}>
+        Marque para transportadora de lotação que ainda não tem tabela subida. Na Auditoria CT-e, o CT-e dela busca
+        <strong> primeiro a DIST do fluxo</strong> com o mesmo número de CT-e; sem DIST, vai para a tabela de lotação
+        (quando houver) e depois para o fracionado. Vale também para CT-e que veio como B2C ou ATACADO. Sem DIST, o
+        CT-e B2C segue o cálculo normal.
+      </p>
+      {feedback ? <div className={`mini-feedback ${feedback.tipo} top-space`} style={{ marginTop: 8 }}>{feedback.texto}</div> : null}
+    </div>
+  );
+}
+
 function AntecipacaoSection({ transportadora, store }) {
   const [salvando, setSalvando] = useState(false);
   const [feedback, setFeedback] = useState(null);
@@ -1515,9 +1553,10 @@ function TransportadorasList({ items, onOpen, store }) {
   const [coberturaFiltro, setCoberturaFiltro] = useState('');
   const [validacaoFiltro, setValidacaoFiltro] = useState('');
   const [tabelaAlternativaFiltro, setTabelaAlternativaFiltro] = useState('');
+  const [auditorFiltro, setAuditorFiltro] = useState('');
   const [painelValidacaoOpen, setPainelValidacaoOpen] = useState(false);
   const [historicoOpen, setHistoricoOpen] = useState(false);
-  const { vinculosSet, auditoresMap, repropagarTodosAuditores } = useVinculosEAuditores();
+  const { vinculosSet, auditoresMap, auditorNomes, repropagarTodosAuditores } = useVinculosEAuditores();
   const [repropagando, setRepropagando] = useState(false);
   const [progressoRepropagacao, setProgressoRepropagacao] = useState(null);
   const [feedbackRepropagacao, setFeedbackRepropagacao] = useState('');
@@ -1565,9 +1604,24 @@ function TransportadorasList({ items, onOpen, store }) {
       const temTabelaAlt = transportadoraTemTabelaAlternativa(item);
       const tabelaAlternativaMatch = !tabelaAlternativaFiltro
         || (tabelaAlternativaFiltro === 'com' ? temTabelaAlt : !temTabelaAlt);
-      return nomeMatch && cidadeMatch && canalMatch && coberturaMatch && validacaoMatch && tabelaAlternativaMatch;
+      const auditorDoItem = auditoresMap ? (auditoresMap.get(normalizarChave(item.nome)) || '') : '';
+      const auditorMatch = !auditorFiltro
+        || (auditorFiltro === '__sem__' ? !auditorDoItem : auditorDoItem === auditorFiltro);
+      return nomeMatch && cidadeMatch && canalMatch && coberturaMatch && validacaoMatch && tabelaAlternativaMatch && auditorMatch;
     });
-  }, [items, busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro, tabelaAlternativaFiltro]);
+  }, [items, busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro, tabelaAlternativaFiltro, auditorFiltro, auditoresMap]);
+
+  // Quantas transportadoras (da lista carregada) cada auditor tem na carteira.
+  const contagemPorAuditor = useMemo(() => {
+    const mapa = new Map();
+    let semAuditor = 0;
+    items.forEach((item) => {
+      const auditor = auditoresMap ? auditoresMap.get(normalizarChave(item.nome)) : null;
+      if (auditor) mapa.set(auditor, (mapa.get(auditor) || 0) + 1);
+      else semAuditor += 1;
+    });
+    return { mapa, semAuditor };
+  }, [items, auditoresMap]);
 
   const totalOrigens = useMemo(() => items.reduce((acc, item) => acc + (item.origens || []).length, 0), [items]);
   const totalOrigensValidadas = useMemo(
@@ -1583,7 +1637,7 @@ function TransportadorasList({ items, onOpen, store }) {
 
   useEffect(() => {
     setPagina(1);
-  }, [busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro, tabelaAlternativaFiltro]);
+  }, [busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro, tabelaAlternativaFiltro, auditorFiltro]);
 
   const atualizarBaseOficial = async () => {
     if (!store?.atualizarResumo || atualizandoResumo) return false;
@@ -1644,6 +1698,8 @@ function TransportadorasList({ items, onOpen, store }) {
     setCanalFiltro('');
     setCoberturaFiltro('');
     setValidacaoFiltro('');
+    setTabelaAlternativaFiltro('');
+    setAuditorFiltro('');
   };
 
   const confirmarRemocaoTransportadora = async (item) => {
@@ -1689,13 +1745,13 @@ function TransportadorasList({ items, onOpen, store }) {
         <div className="filters-header">
           <div>
             <strong>Filtros</strong>
-            <p>Filtre por transportadora, cidade de origem, canal e status de cobertura.</p>
+            <p>Filtre por transportadora, cidade de origem, canal, status de cobertura e auditor.</p>
           </div>
           <div className="inline-meta">
             <span><strong>{filtrados.length}</strong> transportadora(s)</span>
             <span>Mostrando {visiveis.length ? inicioPagina + 1 : 0}-{Math.min(inicioPagina + PAGE_SIZE, filtrados.length)} de {filtrados.length}</span>
             <span><strong>{totalOrigensValidadas}</strong> de <strong>{totalOrigens}</strong> origem(ns) validada(s)</span>
-            {(busca || cidadeFiltro || canalFiltro || coberturaFiltro || validacaoFiltro) ? <button className="btn-link inline-btn" onClick={limparFiltros}>Limpar filtros</button> : null}
+            {(busca || cidadeFiltro || canalFiltro || coberturaFiltro || validacaoFiltro || tabelaAlternativaFiltro || auditorFiltro) ? <button className="btn-link inline-btn" onClick={limparFiltros}>Limpar filtros</button> : null}
           </div>
         </div>
         <div className="form-grid four filters-grid">
@@ -1749,6 +1805,16 @@ function TransportadorasList({ items, onOpen, store }) {
               <option value="">Todas</option>
               <option value="com">Só com tabela alternativa</option>
               <option value="sem">Só sem tabela alternativa</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>Auditor</label>
+            <select value={auditorFiltro} onChange={(e) => setAuditorFiltro(e.target.value)} disabled={!auditoresMap} title="Mostra só as transportadoras da carteira do auditor escolhido">
+              <option value="">{auditoresMap ? 'Todos os auditores' : 'Carregando auditores...'}</option>
+              <option value="__sem__">Sem auditor ({contagemPorAuditor.semAuditor})</option>
+              {(auditorNomes || []).map((nome) => (
+                <option key={nome} value={nome}>{nome} ({contagemPorAuditor.mapa.get(nome) || 0})</option>
+              ))}
             </select>
           </div>
         </div>
@@ -2470,6 +2536,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
       ) : null}
       <TdeSection transportadora={transportadora} store={store} />
       <CanalInvertidoSection transportadora={transportadora} store={store} />
+      <OperaLotacaoSection transportadora={transportadora} store={store} />
       <AntecipacaoSection transportadora={transportadora} store={store} />
       <CnpjsAdicionaisTransportadoraSection transportadora={transportadora} podeEditar={podeEditar} />
       <LotacaoTransportadoraSection

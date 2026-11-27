@@ -26,7 +26,7 @@ const SUBSTITUTAS = {
     'Sub AvisarFalhaCentral(sap, desc)',
     '    Dim m',
     '    m = sap',
-    '    If m = "" Or m = "(sem mensagem)" Then m = desc',
+    '    If m = "" Or m = "(sem mensagem)" Then m = desc & " [passo: " & passo & "]"',
     '    EnviarCentral L(kk)(0), """motivo"":""" & JsonTexto(m) & """"',
     'End Sub',
   ],
@@ -143,7 +143,7 @@ const AUXILIARES_EXCEL = [
   '',
   "' Le a planilha de dados baixada da Central (1a aba: cabecalho na linha 1, uma nota por linha).",
   'Function CarregarDados(arq)',
-  '    Dim wb, ws, i, j, ultima, v(), cab',
+  '    Dim wb, ws, i, j, ultima, v(), cab, verDados',
   '    CarregarDados = False',
   '    Set wb = Workbooks.Open(arq, False, True)',
   '    Set ws = wb.Worksheets(1)',
@@ -157,9 +157,10 @@ const AUXILIARES_EXCEL = [
   '        Exit Function',
   '    End If',
   "    ' Versao diferente: a Central mudou o robo depois desta planilha. Bloqueia e pede para baixar a planilha nova.",
-  '    If CStr(ws.Cells(1, NCAMPOS + 2).Value) <> "macro " & VERSAO_MACRO Then',
+  '    verDados = CStr(ws.Cells(1, NCAMPOS + 2).Value)',
+  '    If verDados <> "macro " & VERSAO_MACRO Then',
   '        wb.Close False',
-  '        MsgBox "Esta planilha do robo esta DESATUALIZADA (planilha " & VERSAO_MACRO & ", Central " & Mid(CStr(ws.Cells(1, NCAMPOS + 2).Value), 7) & ")." & vbCrLf & vbCrLf & "O robo nao vai rodar com ela. Na Central de Fretes, clique em Baixar planilha do robo (.xlsm), use a planilha nova e baixe os dados do lote de novo.", vbExclamation, ROBO',
+  '        MsgBox "Esta planilha do robo esta DESATUALIZADA (planilha " & VERSAO_MACRO & ", Central " & Mid(verDados, 7) & ")." & vbCrLf & vbCrLf & "O robo nao vai rodar com ela. Na Central de Fretes, clique em Baixar planilha do robo (.xlsm), use a planilha nova e baixe os dados do lote de novo.", vbExclamation, ROBO',
   '        Exit Function',
   '    End If',
   "    ' Endereco e chave publica da Central (vem no arquivo de dados): sem eles, o resultado vai so pelo arquivo.",
@@ -326,11 +327,11 @@ export function matrizDadosMacro(linhas, { campos, versao }, central = {}) {
 // arquivo e atualize as versoes abaixo. Enquanto isso, a tela avisa que a planilha esta desatualizada.
 export const PLANILHA_ROBO = {
   // ?v= muda a cada planilha publicada: o navegador/CDN nao entrega a versao antiga do cache.
-  url: '/robos/robo-lancamento.xlsm?v=20261117a',
+  url: '/robos/robo-lancamento.xlsm?v=20261127a',
   nome: 'Robo Lancamento.xlsm',
   // Planilha unica dos 4 robos (um modulo e um botao para cada): Lancar NFS-e, Lancar CT-e,
-  // Escriturar CT-e (ReprocessarCTe) e Corrigir saldo. Publicada em 17/11/2026.
-  versoes: { LancarNFSe: 'e06ea4a2', LancarCTe: '81d8a185', ReprocessarCTe: 'bbf959f9', CorrigirSaldo: 'c2db5107' },
+  // Escriturar CT-e (ReprocessarCTe) e Corrigir saldo. Publicada em 27/11/2026.
+  versoes: { LancarNFSe: 'f8c99790', LancarCTe: '1b7d94ce', ReprocessarCTe: '83a22320', CorrigirSaldo: '5776bd1e' },
 };
 
 // ---------------------------------------------------------------- CT-e: centro de custo pelo robo

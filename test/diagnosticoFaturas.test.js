@@ -495,3 +495,44 @@ test('envio ao OMS: resultado e data local do envio', async () => {
   assert.equal(dataEnvioOms({ oms: { created_at: '2026-11-23T15:00:00Z' } }), '2026-11-23');
   assert.equal(dataEnvioOms({ oms: null }), '');
 });
+
+test('resultado do envio OMS: erro/recusa com fatura ja lancada (partida) conta como "Foi"', async () => {
+  const { resultadoEnvioOms } = await import('../src/utils/diagnosticoFaturas.js');
+  const erro = { status: 'recusado' };
+  assert.equal(resultadoEnvioOms(erro), 'NAO_FOI');
+  assert.equal(resultadoEnvioOms(erro, { partida: '1900001234' }), 'FOI');
+  assert.equal(resultadoEnvioOms(erro, { data_envio_erp: '2026-11-20' }), 'FOI');
+  assert.equal(resultadoEnvioOms(erro, { status: 'EM_ABERTO' }), 'NAO_FOI');
+  assert.equal(resultadoEnvioOms(null, { partida: '1' }), '');
+});
+
+test('aviso de boleto: lancada sem encaminhamento vencendo em ate 2 dias; some com boleto ou pagamento', async () => {
+  const { faltaBoletoNaPasta, semBoletoVencendo, semBoletoVencida } = await import('../src/utils/diagnosticoFaturas.js');
+  const ref = new Date('2026-11-25T12:00:00');
+  const base = { status: 'PRONTA_PARA_PAGAMENTO', partida: '1900000123', data_vencimento: '2026-11-27' };
+  assert.equal(faltaBoletoNaPasta(base), true);
+  assert.equal(semBoletoVencendo(base, 2, ref), true);
+  assert.equal(semBoletoVencendo({ ...base, data_vencimento: '2026-11-28' }, 2, ref), false);
+  assert.equal(semBoletoVencida({ ...base, data_vencimento: '2026-11-20' }, ref), true);
+  // Boleto achado (encaminhada) ou paga: sai do aviso.
+  assert.equal(semBoletoVencendo({ ...base, encaminhado_financeiro_em: '2026-11-25T10:00:00Z' }, 2, ref), false);
+  assert.equal(semBoletoVencendo({ ...base, status: 'PAGA', partida: '2000000999' }, 2, ref), false);
+  // Ainda nao lancada: nao cobra boleto.
+  assert.equal(semBoletoVencendo({ ...base, partida: null }, 2, ref), false);
+});
+
+test('baixada no saneamento sai de em aberto/vencidas e fica so no card Baixados', () => {
+  const card = (id) => GRUPOS_DIAGNOSTICO.flatMap((g) => g.cards).find((c) => c.id === id);
+  const antiga = { id: 'b1', numero_fatura: '1', status: 'EM_AUDITORIA', data_vencimento: '2026-02-10', valor_fatura: 100, baixada_saneamento: true };
+  const linha = { fatura: antiga, ctes: null };
+  assert.equal(card('baixadas').teste(linha), true);
+  assert.equal(card('abertas').teste(linha), false);
+  assert.equal(card('vencidas').teste(linha), false);
+  assert.match(proximaAcao(linha), /baixada/);
+  const desfeita = { fatura: { ...antiga, baixada_saneamento: false }, ctes: null };
+  assert.equal(card('baixadas').teste(desfeita), false);
+  assert.equal(card('vencidas').teste(desfeita), true);
+  // Visao do auditor (sem lista) traz as baixadas para o card delas.
+  const linhas = montarLinhasDiagnostico({ faturas: [antiga], todos: true });
+  assert.equal(linhas.length, 1);
+});

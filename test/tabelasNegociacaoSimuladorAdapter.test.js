@@ -121,3 +121,17 @@ test('tabela principal (sem alternativa) mantém os campos nulos — comportamen
   assert.equal(resultado.tabelaAlternativaDe, null);
   assert.equal(resultado.varianteTabela, null);
 });
+
+test('mesmo IBGE com faixas de CEP diferentes gera uma rota por faixa', () => {
+  const itens = [
+    { id: 'r1', item_tipo: 'ROTA', ibge_destino: '3550308', cep_inicial: '01000000', cep_final: '01999999', dados_originais: JSON.stringify({ cotacao: 'SP B2C' }) },
+    { id: 'r2', item_tipo: 'ROTA', ibge_destino: '3550308', cep_inicial: '02000000', cep_final: '02999999', dados_originais: JSON.stringify({ cotacao: 'SP B2C' }) },
+    { id: 'p1', faixa_peso: 'SP B2C', taxa_aplicada: 10, peso_inicial: 0, peso_final: 10 },
+  ];
+  const t = converterTabelaNegociacaoParaSimulador({
+    id: 'cep', transportadora: 'T', canal: 'B2C', origem: 'Itajai', cidade_origem: 'Itajai', uf_origem: 'SC', ibge_origem: '4208203',
+    tabelas_negociacao_itens: itens,
+  });
+  const rotas = t.origens.flatMap((o) => o.rotas);
+  assert.equal(rotas.length, 2);
+});

@@ -31,6 +31,7 @@ import { carregarGradeFreteCentralizada, salvarGradeFreteCentralizada, restaurar
 import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, carregarOrigensTransportadoraDb, resolverDestinoIbgeDb, listarCoberturaDestinoDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { aguardarVezProcessamento, atualizarProcessamentoPesado, criarProcessamentoPesado, finalizarProcessamentoPesado, verificarTarefaPesadaAtiva } from '../services/processamentoFilaService';
+import { iniciarProcessoTelemetria } from '../services/telemetriaService';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import {
   carregarSimulacaoRealizadoMensal,
@@ -6575,32 +6576,63 @@ export default function SimuladorPage({ transportadoras = [] }) {
       return;
     }
 
-    if (!origemAnalise) {
-      setErroSimulacao('Para evitar travamento em bases B2C grandes, selecione uma Origem para quebrar a análise. Depois você pode repetir para Itajaí, Itupeva, Campo Grande etc.');
+    // Com "Incluir negociações" a origem pode ficar vazia: ela vem das próprias negociações da transportadora.
+    if (!origemAnalise && !incluirNegociacoesAnalise) {
+      setErroSimulacao('Para evitar travamento em bases B2C grandes, selecione uma Origem para quebrar a análise (ou marque "Incluir negociações" para usar a origem da negociação). Depois você pode repetir para Itajaí, Itupeva, Campo Grande etc.');
       return;
     }
 
-    iniciarProcessamentoUi('Análise de transportadora', `Preparando análise de ${transportadoraAnalise} em ${origemAnalise}...`, 8);
+    iniciarProcessamentoUi('Análise de transportadora', `Preparando análise de ${transportadoraAnalise}${origemAnalise ? ` em ${origemAnalise}` : ''}...`, 8);
 
     try {
       atualizarProcessamentoUi('Buscando apenas destinos da transportadora nesta origem/UF...', 28);
 
-      const baseOnline = await carregarBaseOnline({
-        canal: canalAnalise,
-        origem: origemAnalise,
-        nomeTransportadora: transportadoraAnalise,
-        ufDestino: ufAnalise,
-      });
-      const ibgesRecorteAnalise = extrairIbgesDestinoBaseSimulador(baseOnline, canalAnalise, origemAnalise);
-      const baseNegociacoes = incluirNegociacoesAnalise && (ufAnalise || ibgesRecorteAnalise.length)
-        ? await carregarNegociacoesComparacaoSimulador({
+      let baseOnline = [];
+      let baseNegociacoes = [];
+      let origemEfetiva = origemAnalise;
+
+      if (origemAnalise) {
+        baseOnline = await carregarBaseOnline({
           canal: canalAnalise,
           origem: origemAnalise,
+          nomeTransportadora: transportadoraAnalise,
+          ufDestino: ufAnalise,
+        });
+        const ibgesRecorteAnalise = extrairIbgesDestinoBaseSimulador(baseOnline, canalAnalise, origemAnalise);
+        // Transportadora só em negociação: base online vazia → busca as negociações sem recorte de destino.
+        baseNegociacoes = incluirNegociacoesAnalise
+          ? await carregarNegociacoesComparacaoSimulador({
+            canal: canalAnalise,
+            origem: origemAnalise,
+            transportadoraSelecionada: transportadoraAnalise,
+            ibgesDestino: ufAnalise ? [] : ibgesRecorteAnalise,
+            ufsDestino: ufAnalise ? [ufAnalise] : [],
+          })
+          : [];
+      } else {
+        // Sem origem: descobre as origens pelas negociações da transportadora.
+        baseNegociacoes = await carregarNegociacoesComparacaoSimulador({
+          canal: canalAnalise,
+          origem: '',
           transportadoraSelecionada: transportadoraAnalise,
-          ibgesDestino: ufAnalise ? [] : ibgesRecorteAnalise,
+          ibgesDestino: [],
           ufsDestino: ufAnalise ? [ufAnalise] : [],
-        })
-        : [];
+        });
+        const origensNegociacao = [...new Set(
+          baseNegociacoes.flatMap((t) => (t.origens || []).map((o) => String(o.cidade || '').trim()).filter(Boolean))
+        )];
+        if (origensNegociacao.length === 1) origemEfetiva = origensNegociacao[0];
+        for (const origemNeg of origensNegociacao.slice(0, 5)) {
+          const parcial = await carregarBaseOnline({
+            canal: canalAnalise,
+            origem: origemNeg,
+            nomeTransportadora: transportadoraAnalise,
+            ufDestino: ufAnalise,
+          });
+          baseOnline = mesclarBasesTransportadorasSimulador([baseOnline, parcial].filter((b) => b.length));
+        }
+        if (origemEfetiva) setOrigemAnalise(origemEfetiva);
+      }
       const baseAnaliseComNegoc = [
         ...baseOnline,
         ...baseNegociacoes,
@@ -6625,7 +6657,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         transportadoras: baseAnaliseComNegoc,
         nomeTransportadora: transportadoraAnalise,
         canal: canalAnalise,
-        origem: origemAnalise,
+        origem: origemEfetiva,
         ufDestino: ufAnalise,
         grade: grade[canalAnalise] || grade.ATACADO || [],
         cidadePorIbge: mapaCidades,
@@ -6648,7 +6680,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       setResultadoAnalise(resultadoFinal);
 
-      finalizarProcessamentoUi('Análise concluída', `Relatório gerado para ${transportadoraAnalise} em ${origemAnalise}.`, 100);
+      finalizarProcessamentoUi('Análise concluída', `Relatório gerado para ${transportadoraAnalise}${origemEfetiva ? ` em ${origemEfetiva}` : ''}.`, 100);
     } catch (error) {
       setErroSimulacao(error.message || 'Erro ao gerar análise. Tente uma origem menor ou atualize as opções.');
       finalizarProcessamentoUi('Erro na análise', 'A análise foi interrompida. Tente filtrar outra origem.', 100);
@@ -7221,6 +7253,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     let tarefaFila = null;
     let erroExecucaoFila = null;
     let heartbeatFila = null;
+    let medicaoTelemetria = null;
     iniciarProcessamentoUi('Simulação do realizado', `Simulando ${rowsBase.length.toLocaleString('pt-BR')} CT-es filtrados...`, 20);
 
     // Permite que o botão e o painel de progresso apareçam antes do cálculo pesado.
@@ -7239,6 +7272,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
           atualizarProcessamentoPesado(tarefaFila.id, { etapa: 'simulando', total: rowsBase.length });
         }, 15000);
       }
+      medicaoTelemetria = iniciarProcessoTelemetria('SIMULACAO_REALIZADO', `Simulação / ${transportadoraRealizado || 'realizado'}`, {
+        itens: rowsBase.length,
+        metadados: { canal: canalRealizado, transportadora: transportadoraRealizado || null },
+      });
       await cederThread();
       const ehReajusteSelecionado = ctx.ehReajusteSelecionado;
       const transportadoraBaseReajuste = ctx.transportadoraBaseReajuste;
@@ -7734,6 +7771,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       finalizarProcessamentoUi('Erro na simulação do realizado', 'Não foi possível gerar o dossiê.', 100);
     } finally {
       if (heartbeatFila) window.clearInterval(heartbeatFila);
+      void medicaoTelemetria?.finalizar(erroExecucaoFila ? 'ERRO' : 'CONCLUIDO', erroExecucaoFila?.message || null);
       if (tarefaFila) {
         await finalizarProcessamentoPesado(tarefaFila.id, erroExecucaoFila ? 'ERRO' : 'CONCLUIDO', erroExecucaoFila?.message || null);
       }
@@ -9302,7 +9340,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <select value={canalAnalise} onChange={(e) => { setCanalAnalise(e.target.value); setOrigemAnalise(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
             </label>
             <label>Origem
-              <input list="origens-analise-lista" value={origemAnalise} onChange={(e) => setOrigemAnalise(e.target.value)} placeholder="Obrigatório para B2C grande" />
+              <input list="origens-analise-lista" value={origemAnalise} onChange={(e) => setOrigemAnalise(e.target.value)} placeholder={incluirNegociacoesAnalise ? 'Opcional (usa a origem da negociação)' : 'Obrigatório para B2C grande'} />
               <datalist id="origens-analise-lista">
                 {origensAnaliseDisponiveis.map((item) => <option key={item} value={item} />)}
               </datalist>

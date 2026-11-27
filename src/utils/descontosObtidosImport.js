@@ -80,6 +80,22 @@ function simpleHash(texto) {
   return hash.toString(36);
 }
 
+// Identidade estável de um lançamento do SAP: empresa + conta + nº do
+// lançamento contábil + data + valor. NÃO entra nome da contrapartida nem o
+// texto da partida — o SAP exporta esses textos de jeitos diferentes a cada
+// extração ("CONEXAO LOG TRANSP" x "CONEXAO LOG TRANSPORTES", "K - 2" x
+// "K 2", nome truncado, caixa alta/baixa), e foi isso que duplicou
+// lançamentos ao reimportar o mesmo mês (nov/2026).
+export function chaveNaturalDescontoObtido({ empresa, contaRazao, lancamentoContabil, dataLancamento, valor }) {
+  return [
+    normalizarTexto(empresa).toUpperCase(),
+    extrairCodigoConta(contaRazao),
+    normalizarTexto(lancamentoContabil),
+    normalizarTexto(dataLancamento).slice(0, 10),
+    Math.abs(Number(valor || 0)).toFixed(2),
+  ].join('|');
+}
+
 export async function parseDescontosObtidosFile(file) {
   if (!file) {
     return { registros: [], meta: { arquivo: '', linhasOriginais: 0, linhasElegiveis: 0 } };
@@ -101,6 +117,9 @@ export async function parseDescontosObtidosFile(file) {
 
   const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false, blankrows: false });
   const registros = [];
+  // Um mesmo lançamento pode ter dois itens legítimos com o mesmo valor —
+  // a ocorrência (1ª, 2ª...) dentro do arquivo entra no hash pra não fundi-los.
+  const ocorrencias = new Map();
 
   rows.forEach((row) => {
     const contaCodigo = extrairCodigoConta(row['Conta do Razão']);
@@ -128,11 +147,13 @@ export async function parseDescontosObtidosFile(file) {
 
     if (CONTRAPARTIDAS_IGNORADAS.has(transportadoraNome.trim().toLowerCase())) return;
 
-    const linhaOrigem = [
-      row['Empresa'], row['Conta do Razão'], row['Lançamento contábil'], row['Data de lançamento'],
-      row['Chave de lançamento'], row['Mont.moeda empresa'], row['Centro de lucro'],
-      row['Txt.it.partida indv.'], row['Cta.contrapartida'],
-    ].join('|');
+    const empresa = normalizarTexto(row['Nome da empresa']) || normalizarTexto(row['Empresa']);
+    const lancamentoContabil = normalizarTexto(row['Lançamento contábil']);
+    const chaveNatural = chaveNaturalDescontoObtido({
+      empresa, contaRazao: row['Conta do Razão'], lancamentoContabil, dataLancamento: dataIso, valor,
+    });
+    const ocorrencia = (ocorrencias.get(chaveNatural) || 0) + 1;
+    ocorrencias.set(chaveNatural, ocorrencia);
 
     registros.push({
       ano: Number(anoStr),
@@ -142,12 +163,14 @@ export async function parseDescontosObtidosFile(file) {
       regraAplicada,
       transportadoraNome: transportadoraNome || 'Não identificado',
       transportadoraCodigo,
-      empresa: normalizarTexto(row['Nome da empresa']) || normalizarTexto(row['Empresa']),
+      empresa,
       centroLucro: normalizarTexto(row['Nome centro de lucro']) || normalizarTexto(row['Centro de lucro']),
       valor: Math.abs(valor),
-      lancamentoContabil: normalizarTexto(row['Lançamento contábil']),
+      lancamentoContabil,
       textoPartida: normalizarTexto(row['Txt.it.partida indv.']),
-      linhaHash: simpleHash(linhaOrigem),
+      chaveNatural,
+      ocorrencia,
+      linhaHash: `v2:${simpleHash(chaveNatural)}:${ocorrencia}`,
     });
   });
 

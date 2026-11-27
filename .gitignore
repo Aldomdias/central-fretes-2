@@ -8,3 +8,4 @@ test-output.txt
 
 .env*
 .codex-build-*/
+logs/

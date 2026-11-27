@@ -1,3 +1,4 @@
+import { medirProcesso } from '../services/telemetriaService';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { carregarRespostasEntregaFatura, salvarPendenciasEntrega, urlAnexoEntrega, urlPortalEntrega, validarRespostaEntrega } from '../services/entregaPortalService';
@@ -45,6 +46,8 @@ import {
 import { omsInvoiceIdValido } from '../utils/omsEnvioPuro';
 import { STATUS_LIBERADAS_OMS, aptidaoEnvioSap } from '../utils/diagnosticoFaturas';
 import { carregarResumoCtesFaturas } from '../services/diagnosticoFaturasService';
+import OmsCtesFaltantesPanel from '../components/OmsCtesFaltantesPanel';
+import { guardarXmlsOriginais, montarRegistroXml } from '../services/cteXmlOriginalService';
 import { importarIdsOmsDaPlanilha, resumirImportacaoIds } from '../services/omsIdFaturasService';
 import { ROTULO_ENVIO_OMS, atualizarEnvioOms, estadoEnvioOms, faturasComMesmoCte, listarEnviosOms, liberarFaturaNoOms, liberarNoOmsAposAprovacao } from '../services/omsFaturasEnvioService';
 import AlertaBloqueioOms from '../components/AlertaBloqueioOms';
@@ -77,6 +80,7 @@ import {
 } from '../utils/auditoriaFretesDomain';
 import {
   atualizarFaturaAuditoria,
+  salvarReferenciaSapFatura,
   atenderSolicitacaoFinanceira,
   buscarReferenciaCtes,
   importarCteXmlNaBase,
@@ -126,6 +130,13 @@ import {
   invalidarCacheBaseFreteAuditoriaCte,
   buscarResultadoAuditoriaPorChave,
 } from '../services/auditoriaCteProcessamentoService';
+import {
+  AUDITORIA_MAX_CTES_EXECUCAO,
+  AUDITORIA_MAX_FATURAS_BLOCO,
+  AUDITORIA_MAX_FATURAS_LOTE,
+  pausaAuditoria,
+  processarEmBlocosLimitados,
+} from '../utils/auditoriaLimites';
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 import { listarUsuariosSupabase } from '../services/usuariosSupabaseService';
 import { getSupabaseClient } from '../lib/supabaseClient';
@@ -140,6 +151,7 @@ import ProdutividadeDiaFaturas from '../components/ProdutividadeDiaFaturas';
 import MeuPainelAuditor from '../components/MeuPainelAuditor';
 import DiagnosticoFaturasPainel from '../components/DiagnosticoFaturasPainel';
 import { carregarPartidasCtes } from '../services/diagnosticoFaturasService';
+import BoletoDaFatura from '../components/BoletoDaFatura';
 import BoletosPendentesPainel from '../components/BoletosPendentesPainel';
 import RoboAuditoriaPainel from '../components/RoboAuditoriaPainel';
 import LancamentosRoboFatura from '../components/LancamentosRoboFatura';
@@ -1295,6 +1307,62 @@ function corAlerta(fatura) {
   return '#04a484';
 }
 
+// Lista com busca: digita um pedaço do nome e filtra as opções (sem acento,
+// sem diferenciar maiúscula). opcoes = [{ value, label }].
+function SelectBuscavel({ value, onChange, opcoes = [], placeholder = 'Digite para buscar...', style, disabled = false }) {
+  const [aberto, setAberto] = useState(false);
+  const [busca, setBusca] = useState('');
+  const ref = useRef(null);
+  useEffect(() => {
+    const fora = (e) => { if (ref.current && !ref.current.contains(e.target)) setAberto(false); };
+    document.addEventListener('mousedown', fora);
+    return () => document.removeEventListener('mousedown', fora);
+  }, []);
+  const normalizar = (texto) => String(texto || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const termo = normalizar(busca.trim());
+  const filtradas = termo ? opcoes.filter((o) => normalizar(o.label).includes(termo)) : opcoes;
+  const selecionada = opcoes.find((o) => String(o.value) === String(value));
+  const escolher = (o) => { onChange(o.value); setAberto(false); setBusca(''); };
+  return (
+    <div ref={ref} style={{ position: 'relative', minWidth: 260, ...style }}>
+      <input
+        value={aberto ? busca : (selecionada?.label || '')}
+        onChange={(e) => { setBusca(e.target.value); if (!aberto) setAberto(true); }}
+        onFocus={() => { setBusca(''); setAberto(true); }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setAberto(false);
+          if (e.key === 'Enter' && filtradas.length) { e.preventDefault(); escolher(filtradas[0]); }
+        }}
+        placeholder={placeholder}
+        title={selecionada?.label || ''}
+        autoComplete="off"
+        disabled={disabled}
+        style={{ width: '100%', boxSizing: 'border-box', textOverflow: 'ellipsis' }}
+      />
+      {aberto && !disabled ? (
+        <div style={{ position: 'absolute', zIndex: 60, top: '100%', left: 0, right: 0, marginTop: 4, maxHeight: 280, overflowY: 'auto', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.12)', minWidth: 320 }}>
+          {filtradas.slice(0, 300).map((o) => {
+            const ativa = String(o.value) === String(value);
+            return (
+              <div
+                key={o.value}
+                onMouseDown={(e) => { e.preventDefault(); escolher(o); }}
+                style={{ padding: '7px 10px', fontSize: 13, cursor: 'pointer', borderBottom: '1px solid #f1f5f9', background: ativa ? '#eff6ff' : '#fff', fontWeight: ativa ? 700 : 500 }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#f1f5f9'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = ativa ? '#eff6ff' : '#fff'; }}
+              >
+                {o.label}
+              </div>
+            );
+          })}
+          {!filtradas.length ? <div style={{ padding: '8px 10px', fontSize: 12, color: '#94a3b8' }}>Nada encontrado.</div> : null}
+          {filtradas.length > 300 ? <div style={{ padding: '6px 10px', fontSize: 11, color: '#94a3b8' }}>Mostrando 300. Refine a busca.</div> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Card({ label, value, detail, color = '#9153F0', onClick, ativo = false, titulo }) {
   return (
     <div
@@ -2098,6 +2166,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [mensagemLiberacao, setMensagemLiberacao] = useState('');
   const [ocorrenciaDraft, setOcorrenciaDraft] = useState(fatura.ocorrencia_texto || '');
   const [salvandoOcorrencia, setSalvandoOcorrencia] = useState(false);
+  const [referenciaSapDraft, setReferenciaSapDraft] = useState(fatura.referencia_sap || '');
+  const [salvandoReferenciaSap, setSalvandoReferenciaSap] = useState(false);
   const [infoRecalculo, setInfoRecalculo] = useState('');
   const [progressoRecalculo, setProgressoRecalculo] = useState(null);
   const [referenciaCtes, setReferenciaCtes] = useState(new Map());
@@ -2331,6 +2401,28 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       setErroDetalhes(`Erro ao salvar ocorrencia: ${error.message}`);
     } finally {
       setSalvandoOcorrencia(false);
+    }
+  };
+
+  // Referencia manual no SAP: quando a "Referência" do lancamento no SAP ficou diferente do numero da
+  // fatura (ex.: 1225 lancada como 12225). Salva, procura nas linhas do SAP sem vinculo e casa as do
+  // mesmo CNPJ; as proximas importacoes do relatorio SAP tambem passam a casar por ela.
+  const salvarReferenciaSap = async () => {
+    setSalvandoReferenciaSap(true);
+    setErroDetalhes('');
+    try {
+      const { state: next, vinculadas, outrasTransportadoras } = await salvarReferenciaSapFatura(
+        state, fatura, referenciaSapDraft, sessao?.nome || sessao?.email || 'Usuario local',
+      );
+      onState(next);
+      const ref = referenciaSapDraft.trim();
+      if (!ref) setMensagemLiberacao('✓ Referencia manual no SAP removida.');
+      else if (vinculadas.length) setMensagemLiberacao(`✓ Referencia ${ref} salva e ${vinculadas.length} linha(s) do SAP vinculada(s) a esta fatura (doc. ${vinculadas.map((l) => l.partida || l.lancamento_contabil).filter(Boolean).join(', ') || '-'}).`);
+      else setMensagemLiberacao(`✓ Referencia ${ref} salva. Nenhuma linha do SAP com essa referencia aguardando vinculo${outrasTransportadoras.length ? ` do mesmo CNPJ (${outrasTransportadoras.length} de outro CNPJ — confira em Vincular pagamentos do SAP)` : ''}; a proxima importacao do relatorio SAP ja casa por ela.`);
+    } catch (error) {
+      setErroDetalhes(`Erro ao salvar referencia SAP: ${error.message}`);
+    } finally {
+      setSalvandoReferenciaSap(false);
     }
   };
 
@@ -2629,10 +2721,13 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       });
     }
     try {
-      await salvarDetalhesFaturaSupabase([{ ...item, ...patch }]);
+      // Grava SO os campos alterados (a linha da tela traz campos calculados que nao sao colunas,
+      // e mandar a linha inteira fazia o banco recusar e a correcao de canal/endereco nao ficava gravada).
+      const { error } = await getSupabaseOms().from('fatura_detalhes').update(patch).eq('id', item.id);
+      if (error) throw new Error(error.message);
       if (mensagem) setInfoRecalculo(mensagem);
     } catch (error) {
-      setErroDetalhes(error.message || String(error));
+      setErroDetalhes(`A correcao nao foi gravada: ${error.message || String(error)}`);
     }
   };
 
@@ -2835,7 +2930,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         reentregaPorChave,
         deveCancelar: () => cancelarRecalculoRef.current,
       };
-      let { registros, encontrados, naoEncontrados } = await processarCtesPorChave(chaves, setProgressoRecalculo, {
+      let { registros, encontrados, naoEncontrados } = await processarEmBlocosLimitados(chaves, processarCtesPorChave, setProgressoRecalculo, {
         ...opcoesCalculoFatura,
         modoPesoPorChave: fatura.peso_tracking_mais_proximo ? Object.fromEntries(Object.entries(modoPesoPorChave).filter(([chave]) => !chavesAutoPeso.has(chave))) : modoPesoPorChave,
       });
@@ -2845,7 +2940,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       if (fatura.peso_tracking_mais_proximo && chavesAutoPeso.size && !cancelarRecalculoRef.current) {
         const modoTracking = { ...modoPesoPorChave };
         chavesAutoPeso.forEach((chave) => { modoTracking[chave] = 'tracking'; });
-        const comTracking = await processarCtesPorChave([...chavesAutoPeso], setProgressoRecalculo, { ...opcoesCalculoFatura, modoPesoPorChave: modoTracking });
+        const comTracking = await processarEmBlocosLimitados([...chavesAutoPeso], processarCtesPorChave, setProgressoRecalculo, { ...opcoesCalculoFatura, modoPesoPorChave: modoTracking });
         const porChaveTracking = new Map((comTracking.registros || []).map((r) => [normalizarChaveCte(r.chave_cte), r]));
         let trocados = 0;
         registros = registros.map((r) => {
@@ -3262,6 +3357,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         && !window.confirm(`O XML é do CT-e ${cte.numero_cte}, mas a linha é do CT-e ${item.numero_cte}. Importar mesmo assim?`)) return;
       const canal = String(item.canal || fatura.canal || '').trim();
       const gravado = await importarCteXmlNaBase(cte, { canal: /^(ATACADO|B2C|AMBOS)$/i.test(canal) ? canal.toUpperCase() : '' });
+      // Guarda o arquivo ORIGINAL (bytes intactos) para enviar depois ao OMS; falha aqui nao desfaz a importacao.
+      montarRegistroXml(arquivo, cte).then((r) => guardarXmlsOriginais([r])).catch(() => {});
       if (!item.chave_cte) await atualizarDetalheManual(item, { chave_cte: cte.chave_cte });
       const nova = await buscarReferenciaCtes([cte.chave_cte, cte.numero_cte], { lancarErro: true });
       setReferenciaCtes((atual) => {
@@ -3275,6 +3372,47 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     } finally {
       setImportandoXmlId(null);
     }
+  };
+
+  // XMLs enviados ao OMS (painel "CT-es sem chave no OMS"): os que casam com uma
+  // linha desta fatura que esta "Fora da base" ja sao importados aqui tambem,
+  // pra nao precisar subir o mesmo arquivo duas vezes. Nunca lanca.
+  const importarXmlsEnviadosAoOms = async (arquivos) => {
+    const semZeros = (v) => String(v || '').replace(/\D/g, '').replace(/^0+/, '');
+    const importados = [];
+    const falhas = [];
+    const registros = [];
+    for (const arquivo of arquivos || []) {
+      let cte;
+      try { cte = lerCteXml(await arquivo.text(), arquivo.name); } catch { continue; } // evento de cancelamento etc.
+      try { registros.push(await montarRegistroXml(arquivo, cte)); } catch { /* guardar o original e opcional */ }
+      const item = detalhes.find((d) => normalizarChaveCte(d.chave_cte) === cte.chave_cte)
+        || detalhes.find((d) => !d.chave_cte && semZeros(d.numero_cte) && semZeros(d.numero_cte) === semZeros(cte.numero_cte));
+      if (!item) continue;
+      const jaNaBase = referenciaCtes.get(normalizarChaveCte(item.chave_cte)) || referenciaCtes.get(normalizarChaveCte(item.numero_cte));
+      if (jaNaBase) continue;
+      try {
+        const canal = String(item.canal || fatura.canal || '').trim();
+        await importarCteXmlNaBase(cte, { canal: /^(ATACADO|B2C|AMBOS)$/i.test(canal) ? canal.toUpperCase() : '' });
+        if (!item.chave_cte) await atualizarDetalheManual(item, { chave_cte: cte.chave_cte });
+        importados.push(cte);
+      } catch (error) {
+        falhas.push(`${cte.numero_cte}: ${error.message}`);
+      }
+    }
+    if (registros.length) guardarXmlsOriginais(registros).catch(() => {});
+    if (importados.length) {
+      try {
+        const nova = await buscarReferenciaCtes(importados.flatMap((c) => [c.chave_cte, c.numero_cte]), { lancarErro: true });
+        setReferenciaCtes((atual) => {
+          const proximo = new Map(atual);
+          nova.forEach((valor, chave) => proximo.set(chave, valor));
+          return proximo;
+        });
+      } catch { /* a importacao ja foi gravada; recarregar a fatura mostra */ }
+      setInfoRecalculo(`${importados.length} CT-e(s) que estavam fora da base foram importados aqui também (${importados.map((c) => c.numero_cte).join(', ')}). Agora recalcule esses CT-es.`);
+    }
+    return { importados: importados.length, falhas };
   };
 
   // Corrige origem/destino da base pelo tracking (selecionados, ou os sem
@@ -4048,6 +4186,27 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
             <label className="field">Data do lancamento financeiro<input value={fatura.lancamento_financeiro_em ? dataBr(fatura.lancamento_financeiro_em) : '-'} readOnly /></label>
             <label className="field">Lancamento financeiro<input value={fatura.lancamento_financeiro || '-'} readOnly /></label>
           </div>
+          <BoletoDaFatura fatura={fatura} />
+          <div className="hint-box compact" style={{ marginBottom: 14 }}>
+            <strong style={{ display: 'block', marginBottom: 6 }}>Referencia no SAP (excecao)</strong>
+            <p style={{ margin: '0 0 8px', fontSize: 12, color: '#64748b' }}>
+              Use quando o lancamento no SAP ficou com outra referencia (ex.: fatura 1225 lancada como 12225). A fatura passa a casar com as partidas do SAP por esse numero, alem do proprio — sempre conferindo o CNPJ da transportadora.
+            </p>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                value={referenciaSapDraft}
+                onChange={(event) => setReferenciaSapDraft(event.target.value)}
+                placeholder={`Referencia no SAP (fatura ${fatura.numero_fatura})`}
+                style={{ width: 240 }}
+              />
+              <button type="button" className="btn-secondary" disabled={salvandoReferenciaSap || referenciaSapDraft.trim() === (fatura.referencia_sap || '')} onClick={salvarReferenciaSap}>
+                {salvandoReferenciaSap ? 'Buscando...' : 'Salvar e buscar no SAP'}
+              </button>
+              <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                {fatura.referencia_sap ? `Atual: ${fatura.referencia_sap}${fatura.referencia_sap_por ? ` (por ${fatura.referencia_sap_por}${fatura.referencia_sap_em ? ` em ${dataBr(fatura.referencia_sap_em)}` : ''})` : ''}` : 'Sem referencia manual — casa pelo numero da fatura.'}
+              </span>
+            </div>
+          </div>
           {faturaSubstituta && (
             <div className="hint-box compact">
               Fatura substituida pela nova fatura <strong>{faturaSubstituta.numero_fatura}</strong> ({dinheiro(faturaSubstituta.valor_fatura)}, vencimento {dataBr(faturaSubstituta.data_vencimento)}).
@@ -4354,6 +4513,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
             } catch (error) { setMensagemLiberacao(`OMS/SAP: ${error.message}`); } finally { setAtualizandoOms(false); }
           }}>{atualizandoOms ? 'Conferindo partidas...' : 'Enviar ao OMS'}</button>
         </div>
+      )}
+      {omsInvoiceIdValido(fatura.oms_invoice_id) && !ENCERRADOS.has(fatura.status) && (
+        <OmsCtesFaltantesPanel key={fatura.oms_invoice_id} invoiceId={fatura.oms_invoice_id} onArquivosEnviados={importarXmlsEnviadosAoOms} />
       )}
       {enviosOms[0] && (() => {
         const envio = enviosOms[0];
@@ -5237,6 +5399,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       setMensagemImportacao('Cole uma chave de CT-e ou uma lista de CT-es para consultar.');
       return;
     }
+    // Consulta e so leitura e ja busca em lotes de 200: nao ha teto aqui.
     setAuditandoCtesAvulsos(true);
     setProgressoCtesAvulsos(null);
     setResultadoCtesAvulsos([]);
@@ -5265,12 +5428,18 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     }
   };
 
-  const auditarCtesAvulsos = async () => {
+  // Telemetria (modulo Consumo do Sistema): mede rede/CPU/RAM de cada auditoria avulsa.
+  const auditarCtesAvulsos = () => medirProcesso('AUDITORIA_CTE_AVULSA', 'Auditar CT-es avulsos', () => auditarCtesAvulsosInterno(), {
+    itens: extrairIdentificadoresCte(buscaCtesAvulsa).length,
+  });
+  const auditarCtesAvulsosInterno = async () => {
     const ids = extrairIdentificadoresCte(buscaCtesAvulsa);
     if (!ids.length) {
       setMensagemImportacao('Cole uma chave de CT-e ou uma lista de CT-es para auditar.');
       return;
     }
+    // Listas grandes rodam em blocos de AUDITORIA_MAX_CTES_EXECUCAO, em
+    // sequencia e com pausa entre blocos (processarEmBlocosLimitados).
     setAuditandoCtesAvulsos(true);
     setProgressoCtesAvulsos(null);
     setResultadoCtesAvulsos([]);
@@ -5304,7 +5473,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         }
         if (row.reentrega_manual) reentregaPorChave[chave] = true;
       });
-      const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(ids, setProgressoCtesAvulsos, {
+      const { registros, encontrados, naoEncontrados } = await processarEmBlocosLimitados(ids, processarCtesPorChave, setProgressoCtesAvulsos, {
         ignorarCubagem: usarPesoCteAvulso,
         percentualContingenciaPeso: percentualContingenciaAvulso,
         apenasDadosCompletos: apenasDadosCompletosAvulso,
@@ -5381,6 +5550,10 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     const corrigirTracking = opcoes?.corrigirTracking === true;
     const faturasSelecionadas = state.faturas.filter((item) => selecionadasIds.includes(item.id));
     if (!faturasSelecionadas.length) return;
+    if (faturasSelecionadas.length > AUDITORIA_MAX_FATURAS_LOTE) {
+      setMensagemImportacao(`Limite de ${AUDITORIA_MAX_FATURAS_LOTE} faturas por recálculo em lote (selecionadas: ${faturasSelecionadas.length}). Desmarque algumas e rode de novo em seguida, para não sobrecarregar o servidor.`);
+      return;
+    }
     setRecalculandoLote(true);
     setProgressoLote(null);
     setMensagemImportacao('');
@@ -5405,8 +5578,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
 
       // Processa em blocos pequenos (calcula -> grava -> atualiza as faturas do bloco),
       // para que um travamento/erro no meio nao perca as faturas ja recalculadas.
-      const MAX_FATURAS_BLOCO = 4;
-      const MAX_CTES_BLOCO = 300;
+      const MAX_FATURAS_BLOCO = AUDITORIA_MAX_FATURAS_BLOCO;
+      const MAX_CTES_BLOCO = AUDITORIA_MAX_CTES_EXECUCAO;
       const blocos = [];
       let blocoAtual = [];
       let ctesBlocoAtual = 0;
@@ -5437,6 +5610,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
 
       for (let indiceBloco = 0; indiceBloco < blocos.length; indiceBloco += 1) {
         const bloco = blocos[indiceBloco];
+        if (indiceBloco > 0) await pausaAuditoria();
         const rotuloBloco = `Bloco ${indiceBloco + 1} de ${blocos.length}`;
         const progressoDoBloco = (p) => setProgressoLote({ ...p, bloco: indiceBloco + 1, totalBlocos: blocos.length });
         setMensagemImportacao(`${rotuloBloco}: calculando ${bloco.length} fatura(s)... ${idsAtualizados.length} ja atualizada(s).`);
@@ -7004,7 +7178,8 @@ ${portaisLaudo.length ? `
     }
   };
 
-  const importarFaturas = async (event) => {
+  const importarFaturas = (event) => medirProcesso('IMPORTACAO_FATURAS_VERUM', `Importar faturas ${event?.target?.files?.[0]?.name || ''}`.trim(), () => importarFaturasInterno(event));
+  const importarFaturasInterno = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
     event.target.value = '';
@@ -8211,6 +8386,7 @@ ${portaisLaudo.length ? `
 
 function Gestao({ state, onState }) {
   const [visao, setVisao] = useState('transportadora');
+  const refListaSemAuditor = useRef(null);
   const [filtroBusca, setFiltroBusca] = useState('');
   const [filtroAuditor, setFiltroAuditor] = useState('');
   const [filtroVencimento, setFiltroVencimento] = useState('');
@@ -8261,7 +8437,17 @@ function Gestao({ state, onState }) {
     listarUsuariosSupabase()
       .then((usuarios) => {
         if (cancelado) return;
-        setAuditores((usuarios || []).filter((u) => u.perfil === 'AUDITORIA_FRETES' && u.ativo));
+        // Perfil de auditor + pessoas liberadas nominalmente (ex.: Caroline,
+        // que tem outro perfil mas tambem recebe carteira de transportadora).
+        // Bianca (Ruzzante) tem perfil de gestora e tambem recebe carteira: liberada pelo nome.
+        const EMAILS_EXTRA_AUDITORES = new Set(['caroline.waldhelm@cantu.inc']);
+        const NOMES_EXTRA_AUDITORES = [/^bianca\b/];
+        const nomeNorm = (u) => String(u.nome || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+        setAuditores((usuarios || [])
+          .filter((u) => u.ativo && (u.perfil === 'AUDITORIA_FRETES'
+            || EMAILS_EXTRA_AUDITORES.has(String(u.email || '').trim().toLowerCase())
+            || NOMES_EXTRA_AUDITORES.some((re) => re.test(nomeNorm(u)))))
+          .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR')));
       })
       .catch((error) => { if (!cancelado) setErroAuditores(error.message || 'Erro ao carregar auditores.'); })
       .finally(() => { if (!cancelado) setCarregandoAuditores(false); });
@@ -8684,10 +8870,44 @@ function Gestao({ state, onState }) {
     <>
       <AmdProcessingOverlay ativo={salvandoAtribuicao} progresso={{}} mensagemRodape="Gravando a atribuição de auditor." />
       <div className="summary-strip">
-        <Card label="Auditores ativos" value={new Set(carteiras.filter((item) => item.auditor_nome).map((item) => item.auditor_nome)).size} />
-        <Card label="Transportadoras" value={carteiras.length} />
-        <Card label="Sem responsavel" value={carteiras.filter((item) => !item.auditor_nome).length} color="#9b1111" />
-        <Card label="Faturas vencidas" value={carteiras.reduce((total, item) => total + item.vencidas, 0)} color="#9b1111" />
+        <Card
+          label="Auditores ativos"
+          value={new Set(carteiras.filter((item) => item.auditor_nome).map((item) => item.auditor_nome)).size}
+          ativo={visao === 'auditor' && !filtroAuditor && !filtroVencimento && !filtroBusca}
+          titulo="Ver a carteira por auditor"
+          onClick={() => { setVisao('auditor'); setFiltroBusca(''); setFiltroAuditor(''); setFiltroVencimento(''); }}
+        />
+        <Card
+          label="Transportadoras"
+          value={carteiras.length}
+          ativo={visao === 'transportadora' && !filtroAuditor && !filtroVencimento && !filtroBusca}
+          titulo="Mostrar todas as transportadoras (limpa os filtros)"
+          onClick={() => { setVisao('transportadora'); setFiltroBusca(''); setFiltroAuditor(''); setFiltroVencimento(''); }}
+        />
+        <Card
+          label="Transportadoras sem auditor"
+          value={carteiras.filter((item) => !item.auditor_nome).length}
+          color="#9b1111"
+          ativo={filtroAuditor === 'SEM_AUDITOR'}
+          titulo="Mostrar só as transportadoras sem auditor"
+          onClick={() => { setVisao('transportadora'); setFiltroBusca(''); setFiltroAuditor((atual) => (atual === 'SEM_AUDITOR' ? '' : 'SEM_AUDITOR')); }}
+        />
+        <Card
+          label="Faturas vencidas"
+          value={carteiras.reduce((total, item) => total + item.vencidas, 0)}
+          color="#9b1111"
+          ativo={filtroVencimento === 'vencida'}
+          titulo="Mostrar só as transportadoras com fatura vencida"
+          onClick={() => { setVisao('transportadora'); setFiltroVencimento((atual) => (atual === 'vencida' ? '' : 'vencida')); }}
+        />
+        <Card
+          label="Faturas sem auditor"
+          value={semAuditorPorNome.reduce((total, linha) => total + linha.abertas, 0)}
+          detail={`em aberto, ${semAuditorPorNome.filter((linha) => linha.abertas > 0).length} nome(s) na fatura · ${semAuditorPorNome.reduce((total, linha) => total + linha.total, 0)} no total`}
+          color="#b45309"
+          titulo="Ir para a lista de faturas sem auditor (nomes que nao casam com a carteira)"
+          onClick={() => refListaSemAuditor.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+        />
       </div>
       <div className="table-card" style={{ marginTop: 12 }}>
         <div className="panel-title audit-table-title">Sincronizar faturas sem auditor</div>
@@ -8708,7 +8928,7 @@ function Gestao({ state, onState }) {
         )}
         {erroAtribuicao && <p className="error-text">{erroAtribuicao}</p>}
         {semAuditorPorNome.length > 0 && (
-          <div style={{ marginTop: 12 }}>
+          <div ref={refListaSemAuditor} style={{ marginTop: 12, scrollMarginTop: 80 }}>
             <strong>Faturas sem auditor, por nome da transportadora na fatura</strong>
             <p style={{ margin: '4px 0 8px', color: '#475569' }}>Mostra o nome exatamente como veio na fatura. Nomes com sufixo (ex.: “| SPO”) ou diferentes do cadastro são os que a sincronização não acha. As primeiras 40, das que têm mais faturas em aberto.</p>
             <div className="sim-analise-tabela-wrap">
@@ -8727,10 +8947,13 @@ function Gestao({ state, onState }) {
                         <td>{carteiraExata ? (carteiraExata.auditor_nome ? <>{carteiraExata.auditor_nome} <span style={{ color: '#b45309' }}>(clique em Sincronizar)</span></> : <span style={{ color: '#9b1111' }}>carteira existe, sem auditor</span>) : <span style={{ color: '#9b1111' }}>nenhuma carteira com esse nome</span>}</td>
                         <td>
                           <div style={{ display: 'flex', gap: 6 }}>
-                            <select value={escolhaCarteira[linha.nome] || ''} onChange={(e) => setEscolhaCarteira((atual) => ({ ...atual, [linha.nome]: e.target.value }))} style={{ maxWidth: 260 }}>
-                              <option value="">Selecione a transportadora…</option>
-                              {carteirasComAuditor.map((c) => <option key={c.transportadora} value={c.transportadora}>{c.transportadora} — {c.auditor_nome}</option>)}
-                            </select>
+                            <SelectBuscavel
+                              value={escolhaCarteira[linha.nome] || ''}
+                              onChange={(valor) => setEscolhaCarteira((atual) => ({ ...atual, [linha.nome]: valor }))}
+                              opcoes={carteirasComAuditor.map((c) => ({ value: c.transportadora, label: `${c.transportadora} — ${c.auditor_nome}` }))}
+                              placeholder="Digite parte do nome…"
+                              style={{ width: 280 }}
+                            />
                             <button type="button" disabled={!escolhaCarteira[linha.nome] || Boolean(atribuindoNome)} onClick={() => atribuirNomeACarteira(linha.nome)}>
                               {atribuindoNome === linha.nome ? 'Aplicando...' : 'Vincular'}
                             </button>
@@ -8948,12 +9171,12 @@ function Gestao({ state, onState }) {
                   <div className="form-grid three" style={{ marginTop: 10 }}>
                     <label className="field">
                       Transportadora
-                      <select value={transportadoraParaAdicionar} onChange={(e) => setTransportadoraParaAdicionar(e.target.value)}>
-                        <option value="">Selecione uma transportadora</option>
-                        {disponiveis.map((item) => (
-                          <option key={item.transportadora} value={item.transportadora}>{item.transportadora}{item.auditor_nome ? ` (atual: ${item.auditor_nome})` : ''}</option>
-                        ))}
-                      </select>
+                      <SelectBuscavel
+                        value={transportadoraParaAdicionar}
+                        onChange={setTransportadoraParaAdicionar}
+                        opcoes={disponiveis.map((item) => ({ value: item.transportadora, label: `${item.transportadora}${item.auditor_nome ? ` (atual: ${item.auditor_nome})` : ''}` }))}
+                        placeholder="Digite parte do nome da transportadora…"
+                      />
                     </label>
                     <div className="audit-form-actions">
                       <button className="btn-secondary" onClick={() => setAdicionandoParaAuditor(null)}>Cancelar</button>

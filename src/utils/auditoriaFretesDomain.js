@@ -510,10 +510,14 @@ export function mapearPagamentoSap(row = {}) {
 export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdicionaisPorTransportadora = new Map()) {
   const normalizar = (valor) => String(valor || '').trim().toUpperCase();
   const porNumero = new Map();
+  // Referencia manual (fatura.referencia_sap): numero com que a fatura foi lancada no SAP quando ficou
+  // diferente do numero da fatura (ex.: 1225 lancada como 12225). Tem prioridade sobre o numero.
+  const porReferenciaManual = new Map();
   for (const fatura of faturas) {
     const numero = normalizar(fatura.numero_fatura);
-    if (!numero) continue;
-    porNumero.set(numero, [...(porNumero.get(numero) || []), fatura]);
+    if (numero) porNumero.set(numero, [...(porNumero.get(numero) || []), fatura]);
+    const manual = normalizar(normalizarReferenciaSap(fatura.referencia_sap));
+    if (manual) porReferenciaManual.set(manual, [...(porReferenciaManual.get(manual) || []), fatura]);
   }
 
   const nomeBase = (txt) => String(txt || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
@@ -556,7 +560,8 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdici
     .map(({ autoReferenciada, ...pagamento }) => pagamento)
     .flatMap((pagamento) => {
       const numero = normalizar(pagamento.numero_fatura);
-      const exatas = porNumero.get(numero) || [];
+      const manuais = porReferenciaManual.get(numero) || [];
+      const exatas = [...new Set([...manuais, ...(porNumero.get(numero) || [])])];
       const raizLinha = obterRaizCnpj(pagamento.cnpj);
       const candidatas = exatas.length ? exatas : (raizCnpjValida(raizLinha) ? faturasPorRaiz.get(raizLinha) || [] : [])
         .filter((fatura) => compararReferenciasFatura(fatura.numero_fatura, pagamento.numero_fatura).corresponde);
@@ -585,6 +590,9 @@ export function conciliarPagamentosSap(faturas = [], linhasSap = [], raizesAdici
       }
 
       let alvo = candidatasPorCnpj;
+      // Fatura com referencia manual igual a da linha (mesmo grupo de CNPJ) ganha de outra com o mesmo numero.
+      const alvoManual = alvo.filter((fatura) => manuais.includes(fatura));
+      if (alvoManual.length) alvo = alvoManual;
       if (!exatas.length) {
         alvo = alvo.filter((fatura) => compararFaturaPagamento(fatura, {
           ...pagamento,

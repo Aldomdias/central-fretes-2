@@ -89,6 +89,25 @@ function isTransportadoraCnpjColumnMissing(error) {
     || (message.includes("'cnpj'") && message.includes('schema cache'));
 }
 
+// Flags do cadastro (canal invertido, opera lotacao, antecipacao) para a lista leve.
+// Sem isso o checkbox aparecia desmarcado depois de salvo. Coluna ausente (migration
+// nao aplicada) so deixa aquele flag desligado, sem derrubar a lista.
+async function carregarFlagsTransportadorasCompat(supabase) {
+  const colunas = ['aceita_canal_invertido', 'opera_lotacao', 'faz_antecipacao'];
+  const porId = new Map();
+  const juntar = (rows = []) => rows.forEach((r) => porId.set(String(r.id), { ...(porId.get(String(r.id)) || {}), ...r }));
+  const todas = await supabase.from('transportadoras').select(`id, ${colunas.join(', ')}`).range(0, 9999);
+  if (!todas.error) {
+    juntar(todas.data);
+    return porId;
+  }
+  await Promise.all(colunas.map(async (coluna) => {
+    const r = await supabase.from('transportadoras').select(`id, ${coluna}`).range(0, 9999);
+    if (!r.error) juntar(r.data);
+  }));
+  return porId;
+}
+
 async function carregarTransportadorasResumoCompat(supabase) {
   const atual = await supabase
     .from('transportadoras')
@@ -825,7 +844,7 @@ export async function carregarBaseCompletaDb(onProgress = null) {
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, operaLotacao: transportadora.opera_lotacao === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
   return _cacheBaseCompleta;
@@ -1169,7 +1188,7 @@ export async function carregarBaseFiltradaPorOrigemEDestinosDb(filtroCidades = [
       cnpjRaiz: transportadora.cnpj_raiz || '',
       tde: transportadora.tde ?? 0,
       tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-      aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
+      aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, operaLotacao: transportadora.opera_lotacao === true, fazAntecipacao: transportadora.faz_antecipacao === true,
       origens: origensByTransportadora.get(String(transportadora.id)) || [],
     }))
     .filter((t) => t.origens.length);
@@ -1302,7 +1321,7 @@ export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [],
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, operaLotacao: transportadora.opera_lotacao === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
 }
@@ -1411,12 +1430,37 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, operaLotacao: transportadora.opera_lotacao === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
 }
 
-export async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [] } = {}) {
+async function fetchRotasPorOrigensEDestinosDb(supabase, origemIds = [], ibgesDestino = []) {
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  if (!ids.length) return [];
+  const rows = [];
+  const vistos = new Set();
+  const anexar = (lista) => (lista || []).forEach((row) => {
+    const chave = row?.id == null ? null : String(row.id);
+    if (chave !== null) { if (vistos.has(chave)) return; vistos.add(chave); }
+    rows.push(row);
+  });
+  for (let oi = 0; oi < ids.length; oi += 100) {
+    const origemChunk = ids.slice(oi, oi + 100);
+    for (let di = 0; di < ibgesDestino.length; di += 150) {
+      const destinoChunk = ibgesDestino.slice(di, di + 150);
+      anexar(await paginarEmParaleloDb(() => supabase.from('rotas').select('*')
+        .in('origem_id', origemChunk).in('ibge_destino', destinoChunk)
+        .order('origem_id', { ascending: true }).order('id', { ascending: true })));
+    }
+    anexar(await paginarEmParaleloDb(() => supabase.from('rotas').select('*')
+      .in('origem_id', origemChunk).is('ibge_destino', null)
+      .order('origem_id', { ascending: true }).order('id', { ascending: true })));
+  }
+  return rows;
+}
+
+export async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [], ibgesDestino = null } = {}) {
   const nomesLimpos = Array.from(new Set(
     (nomes || []).map((nome) => String(nome || '').trim()).filter(Boolean)
   ));
@@ -1488,9 +1532,13 @@ export async function carregarBaseTransportadorasDb(nomes = [], { cnpjs = [] } =
     }));
   }
 
+  // ibgesDestino (calculo de CT-es): traz de cada origem so as rotas cujo destino interessa (+ as sem IBGE, que
+  // sao resolvidas por CEP). Transportadora grande (FL Brasil: 47 origens, ~530 mil rotas) travava o processo
+  // inteiro ao montar a malha toda para calcular um punhado de CT-es.
+  const destinosFiltro = Array.from(new Set((ibgesDestino || []).map((v) => onlyDigitsDb(v)).filter((v) => v.length === 7)));
   const [generalidades, rotasRaw, cotacoes, taxas] = await Promise.all([
     fetchRowsByOrigemIds(supabase, 'generalidades', origemIds),
-    fetchRowsByOrigemIds(supabase, 'rotas', origemIds),
+    destinosFiltro.length ? fetchRotasPorOrigensEDestinosDb(supabase, origemIds, destinosFiltro) : fetchRowsByOrigemIds(supabase, 'rotas', origemIds),
     fetchRowsByOrigemIds(supabase, 'cotacoes', origemIds),
     fetchRowsByOrigemIds(supabase, 'taxas_especiais', origemIds),
   ]);
@@ -1535,6 +1583,7 @@ export async function carregarResumoBaseDb() {
     cotacoesAlternativasResponse,
     taxasAlternativasResponse,
     generalidadesAlternativasResponse,
+    flagsPorTransportadora,
   ] = await Promise.all([
     carregarTransportadorasResumoCompat(supabase),
     supabase.from('origens').select('id, transportadora_id, cidade, codigo_centro, cnpj, cnpj_raiz, canal, status, validado, validado_em, validado_por').order('cidade', { ascending: true }),
@@ -1551,6 +1600,7 @@ export async function carregarResumoBaseDb() {
     supabase.from('cotacoes').select('origem_id').not('grupo_tabela_alternativa', 'is', null),
     supabase.from('taxas_especiais').select('origem_id').not('grupo_tabela_alternativa', 'is', null),
     supabase.from('generalidades').select('origem_id').neq('grupo_tabela_alternativa', ''),
+    carregarFlagsTransportadorasCompat(supabase).catch(() => new Map()),
   ]);
 
   if (transportadorasResponse.error) throw transportadorasResponse.error;
@@ -1599,6 +1649,9 @@ export async function carregarResumoBaseDb() {
     status: transportadora.status || 'Ativa',
     cnpj: transportadora.cnpj || '',
     cnpjRaiz: transportadora.cnpj_raiz || '',
+    aceitaCanalInvertido: flagsPorTransportadora.get(String(transportadora.id))?.aceita_canal_invertido === true,
+    operaLotacao: flagsPorTransportadora.get(String(transportadora.id))?.opera_lotacao === true,
+    fazAntecipacao: flagsPorTransportadora.get(String(transportadora.id))?.faz_antecipacao === true,
     // A view de cobertura agrega rotas e cotacoes e pode ser cara. Ela fica na
     // conferencia explicita; a lista inicial usa um marcador leve.
     resumoCobertura: {
@@ -1743,6 +1796,24 @@ export async function salvarAceitaCanalInvertidoDb(transportadoraId, aceita) {
       throw new Error('Rode a migration 20261113_003_transportadoras_aceita_canal_invertido.sql no Supabase antes de usar este flag.');
     }
     throw new Error(`Erro ao salvar canal invertido: ${error.message}`);
+  }
+  invalidarCacheBaseCompletaDb();
+  return { ok: true };
+}
+
+// Flag "opera lotação" da transportadora (direto no Supabase). Na Auditoria, o CT-e dela é conferido
+// pela tabela de lotação, pela DIST da TransGP ou pela viagem do fluxo, mesmo sem tabela vigente.
+export async function salvarOperaLotacaoDb(transportadoraId, opera) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  if (!UUID_REGEX.test(String(transportadoraId || ''))) throw new Error('Grave a transportadora no Supabase antes de marcar como lotação.');
+  const { error } = await ensureClient().from('transportadoras')
+    .update({ opera_lotacao: Boolean(opera) })
+    .eq('id', transportadoraId);
+  if (error) {
+    if (/opera_lotacao/i.test(error.message || '')) {
+      throw new Error('Rode a migration 20261124_001_transportadoras_opera_lotacao.sql no Supabase antes de usar este flag.');
+    }
+    throw new Error(`Erro ao salvar flag de lotação: ${error.message}`);
   }
   invalidarCacheBaseCompletaDb();
   return { ok: true };
@@ -1991,8 +2062,20 @@ export async function localizarOrigensOficiaisDb(nomeTransportadora, origens = [
   const norm = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
   const canalDe = (v) => String(v || 'ATACADO').trim().toUpperCase();
 
-  // IBGE de origem → origens oficiais, lido das rotas já cadastradas.
-  const ibgesBuscados = Array.from(new Set(origens.map((o) => onlyDigitsDb(o.ibgeOrigem).slice(0, 7)).filter((v) => v.length === 7)));
+  const casaPorCidade = (origem) => {
+    if (!norm(origem.cidade)) return null;
+    const daCidade = existentes.filter((o) => norm(o.cidade) === norm(origem.cidade));
+    return daCidade.find((o) => canalDe(o.canal) === canalDe(origem.canal)) || (daCidade.length === 1 ? daCidade[0] : null);
+  };
+
+  // IBGE de origem → origens oficiais, lido das rotas já cadastradas. Só para
+  // as origens que não casaram pela cidade: a busca roda uma consulta de rotas
+  // por origem oficial e, em transportadora com dezenas de filiais (FL BRASIL),
+  // estourava o tempo do banco e travava a tela de publicação.
+  const ibgesBuscados = Array.from(new Set(origens
+    .filter((o) => !casaPorCidade(o))
+    .map((o) => onlyDigitsDb(o.ibgeOrigem).slice(0, 7))
+    .filter((v) => v.length === 7)));
   const origensPorIbge = new Map();
   if (ibgesBuscados.length) {
     for (const origem of existentes) {
@@ -2015,11 +2098,7 @@ export async function localizarOrigensOficiaisDb(nomeTransportadora, origens = [
   const encontrados = [];
   origens.forEach((origem, indice) => {
     const canal = canalDe(origem.canal);
-    let escolhida = null;
-    if (norm(origem.cidade)) {
-      const daCidade = existentes.filter((o) => norm(o.cidade) === norm(origem.cidade));
-      escolhida = daCidade.find((o) => canalDe(o.canal) === canal) || (daCidade.length === 1 ? daCidade[0] : null);
-    }
+    let escolhida = casaPorCidade(origem);
     if (!escolhida) {
       const doIbge = origensPorIbge.get(onlyDigitsDb(origem.ibgeOrigem).slice(0, 7)) || [];
       escolhida = doIbge.find((o) => canalDe(o.canal) === canal) || (doIbge.length === 1 ? doIbge[0] : null);
@@ -2857,7 +2936,7 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
     cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, operaLotacao: transportadora.opera_lotacao === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     detalheCarregado: true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   })).filter((item) => item.origens.length);
@@ -3175,7 +3254,7 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
-    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, fazAntecipacao: transportadora.faz_antecipacao === true,
+    aceitaCanalInvertido: transportadora.aceita_canal_invertido === true, operaLotacao: transportadora.opera_lotacao === true, fazAntecipacao: transportadora.faz_antecipacao === true,
     detalheCarregado: true,
     origens: [],
   };

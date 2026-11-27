@@ -378,36 +378,63 @@ export async function apurarFaturaRobo(fatura, aoProgredir = () => {}, { prazoFi
     const modoDoLote = (lote, forcar) => Object.fromEntries(lote
       .map((c) => [c, forcar || (pesoMaisProximo ? null : correcoes.modoPesoPorChave[c])])
       .filter(([, modo]) => modo));
+    const TEMPO_ESGOTADO = '__bloco_tempo__';
+    const calcularLote = async (lote, limiteMs) => {
+      // pesoMaisProximo (Reavaliar manual com a opcao marcada): calcula com o peso do CT-e e com o peso do Tracking
+      // (com cubagem x fator da tabela) e fica, CT-e a CT-e, com o resultado mais proximo do valor cobrado.
+      const calculo = pesoMaisProximo
+        ? Promise.all([
+          processarCtesPorChave(lote, () => {}, opcoesBase),
+          processarCtesPorChave(lote, () => {}, { ...opcoesBase, modoPesoPorChave: modoDoLote(lote, 'tracking') }),
+        ]).then(([cte, tracking]) => ({ registros: escolherPesoMaisProximo(cte.registros || [], tracking.registros || []) }))
+        : processarCtesPorChave(lote, () => {}, { ...opcoesBase, modoPesoPorChave: modoDoLote(lote) });
+      let relogio = null;
+      const { registros } = limiteMs
+        ? await Promise.race([calculo, new Promise((_, rej) => { relogio = setTimeout(() => rej(new Error(TEMPO_ESGOTADO)), limiteMs); })])
+            .finally(() => clearTimeout(relogio))
+        : await calculo;
+      if (registros.length) {
+        const competencia = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
+        // Grava so os resultados detalhados dos CT-es. NAO reler o mes inteiro para refazer o resumo mensal
+        // (centenas de milhares de CT-es): isso estourava o tempo do banco ("Erro ao recarregar o mes completo")
+        // e era repetido a cada bloco. O resumo mensal e atualizado pelo fluxo mensal da Auditoria CT-e.
+        await salvarRecorteCarregadoAuditoria({ competencia, registros, atualizarResumoMensal: false });
+        calculou = true;
+        try { await abrirAutorizacoesExcedenteLotacao(fatura, registros); } catch (e) { falhaFilaLotacao = String(e?.message || e).slice(0, 140); }
+        try { await abrirQuestionamentosSemDistLotacao(fatura, registros); } catch (e) { console.warn('[robo] questionamento para a operacao:', e?.message || e); }
+      }
+    };
+    // Bloco que estoura o limite quase sempre e o PRIMEIRO de uma transportadora grande: ele esta baixando a
+    // tabela dela (FL Brasil: ~530 mil rotas, minutos). O download continua e fica em cache; o bloco volta para o
+    // fim da fila e e refeito depois, ja com a tabela em memoria (antes ficava "sem calculo" e, como todo bloco
+    // estourava, a fatura nunca terminava e travava a fila do robo).
+    const adiados = [];
     for (let i = 0; i < chaves.length; i += BLOCO) {
       if (prazoFinal && Date.now() > prazoFinal) throw new Error('__parcial__');
       aoProgredir({ fase: 'calculando', atual: Math.min(i + BLOCO, chaves.length), total: chaves.length });
+      const lote = chaves.slice(i, i + BLOCO);
       try {
-        const lote = chaves.slice(i, i + BLOCO);
-        // pesoMaisProximo (Reavaliar manual com a opcao marcada): calcula com o peso do CT-e e com o peso do Tracking
-        // (com cubagem x fator da tabela) e fica, CT-e a CT-e, com o resultado mais proximo do valor cobrado.
-        const calculo = pesoMaisProximo
-          ? Promise.all([
-            processarCtesPorChave(lote, () => {}, opcoesBase),
-            processarCtesPorChave(lote, () => {}, { ...opcoesBase, modoPesoPorChave: modoDoLote(lote, 'tracking') }),
-          ]).then(([cte, tracking]) => ({ registros: escolherPesoMaisProximo(cte.registros || [], tracking.registros || []) }))
-          : processarCtesPorChave(lote, () => {}, { ...opcoesBase, modoPesoPorChave: modoDoLote(lote) });
-        const { registros } = limiteBlocoMs
-          ? await Promise.race([calculo, new Promise((_, rej) => { setTimeout(() => rej(new Error(`demorou demais (>${Math.round(limiteBlocoMs / 1000)}s)`)), limiteBlocoMs); })])
-          : await calculo;
-        if (registros.length) {
-          const competencia = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
-          // Grava so os resultados detalhados dos CT-es. NAO reler o mes inteiro para refazer o resumo mensal
-          // (centenas de milhares de CT-es): isso estourava o tempo do banco ("Erro ao recarregar o mes completo")
-          // e era repetido a cada bloco. O resumo mensal e atualizado pelo fluxo mensal da Auditoria CT-e.
-          await salvarRecorteCarregadoAuditoria({ competencia, registros, atualizarResumoMensal: false });
-          calculou = true;
-          try { await abrirAutorizacoesExcedenteLotacao(fatura, registros); } catch (e) { falhaFilaLotacao = String(e?.message || e).slice(0, 140); }
-          try { await abrirQuestionamentosSemDistLotacao(fatura, registros); } catch (e) { console.warn('[robo] questionamento para a operacao:', e?.message || e); }
-        }
+        await calcularLote(lote, limiteBlocoMs);
       } catch (e) {
+        if (e?.message === TEMPO_ESGOTADO) { adiados.push(lote); continue; }
         // Um bloco com erro nao derruba a fatura: os CT-es dele ficam "sem calculo" e os demais seguem.
-        falhasCalculo += Math.min(BLOCO, chaves.length - i);
+        falhasCalculo += lote.length;
         erroCalculo = erroCalculo || String(e?.message || e).slice(0, 140);
+      }
+    }
+    for (const lote of adiados) {
+      // Sem tempo para refazer: sai como parcial (o que ja calculou esta gravado; a proxima chamada continua daqui).
+      const resta = prazoFinal ? prazoFinal - Date.now() : 0;
+      if (prazoFinal && resta < 15000) throw new Error('__parcial__');
+      aoProgredir({ fase: 'calculando', atual: chaves.length, total: chaves.length, refazendo: lote.length });
+      try {
+        await calcularLote(lote, prazoFinal ? resta : limiteBlocoMs);
+      } catch (e) {
+        if (e?.message === TEMPO_ESGOTADO && prazoFinal) throw new Error('__parcial__');
+        falhasCalculo += lote.length;
+        erroCalculo = erroCalculo || (e?.message === TEMPO_ESGOTADO
+          ? `demorou demais (>${Math.round(limiteBlocoMs / 1000)}s)`
+          : String(e?.message || e).slice(0, 140));
       }
     }
     } finally {

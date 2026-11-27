@@ -62,7 +62,8 @@ function semCamposResultadoOpcionais(row) {
 
 // Alias local para o cache centralizado em freteDatabaseService (carregarBaseCompletaDb já cacheia).
 let _cacheBaseFrete = null;
-const _cacheBaseFretePorTransportadora = new Map();
+const _cacheBaseFretePorTransportadora = new Map(); // chave -> { ts, promessa }
+const CACHE_BASE_TRANSPORTADORA_MS = 30 * 60 * 1000;
 let _cacheMapaVinculosTransportadoras = null;
 // Exceções de origem (Ferramentas): transportadora emite CT-e numa cidade
 // diferente da origem cadastrada na tabela. Fica em cache de módulo porque o
@@ -651,6 +652,21 @@ function vigenciaDoGrupoTransportadora(transportadora = {}, grupo) {
   return { inicio, fim };
 }
 
+// A vigência do reajuste é cadastrada POR ORIGEM. A entrada da tabela alternativa carrega a mais antiga entre as
+// origens carregadas (vigenciaDoGrupoTransportadora), e isso fazia o resultado depender de quais origens vieram
+// junto: com a malha inteira, a Serra "herdava" a vigência de Contagem; com a busca direcionada, não. Quando se
+// sabe a origem que calculou o CT-e e ela tem vigência própria para o grupo, vale a dela.
+function vigenciaPelaOrigem(entradas = [], origemId = '') {
+  if (!origemId) return entradas;
+  return (entradas || []).map((entrada) => {
+    if (!entrada?.tabelaAlternativaDe || !entrada.varianteTabela) return entrada;
+    const origem = (entrada.origens || []).find((o) => String(o?.id) === String(origemId));
+    const v = origem?.vigenciasAlternativas?.[entrada.varianteTabela];
+    if (!v || (!v.inicio && !v.fim)) return entrada;
+    return { ...entrada, vigenciaInicio: v.inicio || '', vigenciaFim: v.fim || '' };
+  });
+}
+
 // Data de emissão do CT-e em YYYY-MM-DD (aceita ISO e dd/mm/aaaa); '' se ausente.
 function dataEmissaoIsoCte(cte = {}) {
   const valor = pick(cte, ['data_emissao', 'emissao', 'dataEmissao']);
@@ -816,17 +832,41 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
   // no fallback de baixar a base inteira (~1,8 milhao de rotas) mesmo quando so
   // precisavam de um punhado de transportadoras especificas.
   if (nomes.length > 0 && nomes.length <= 40) {
-    const cacheKey = nomes.map((nome) => normalizeTransportadoraCompare(nome)).sort().join('|');
-    if (!_cacheBaseFretePorTransportadora.has(cacheKey)) {
+    // So os destinos dos CT-es (e as origens deles: ha rota cadastrada no sentido inverso). Se algum CT-e nao tem
+    // IBGE de destino, carrega a malha inteira como antes (o casamento dele pode depender de rota sem filtro).
+    const ibgesCtes = new Set();
+    let todosComDestino = (registros || []).length > 0;
+    (registros || []).forEach((cte) => {
+      const destino = pickDigits(cte, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino']);
+      const destinoCorrigido = pickDigits(cte, ['ibge_corrigido_destino']);
+      const origem = pickDigits(cte, ['ibge_origem', 'ibgeOrigem']);
+      const origemCorrigida = pickDigits(cte, ['ibge_corrigido_origem']);
+      if (!destino && !destinoCorrigido) todosComDestino = false;
+      [destino, destinoCorrigido, origem, origemCorrigida].forEach((v) => { if (v && v.length === 7) ibgesCtes.add(v); });
+    });
+    const ibgesDestino = todosComDestino && ibgesCtes.size <= 600 ? [...ibgesCtes].sort() : null;
+    const cacheKey = nomes.map((nome) => normalizeTransportadoraCompare(nome)).sort().join('|')
+      + (ibgesDestino ? `#${ibgesDestino.join(',')}` : '');
+    // Guarda a PROMESSA (nao so o resultado): transportadora grande (ex.: FL Brasil, ~530 mil rotas) leva
+    // minutos para baixar; sem isso, cada bloco/chamada simultanea comecava outro download do zero e nenhum
+    // terminava (o robo travou assim em 23-25/11/2026). Expira em 30 min para pegar tabela republicada.
+    const entrada = _cacheBaseFretePorTransportadora.get(cacheKey);
+    if (!entrada || Date.now() - entrada.ts > CACHE_BASE_TRANSPORTADORA_MS) {
       onProgress?.({ etapa: 'carregando_tabelas_transportadora', carregados: 0, total: nomes.length });
       const cnpjs = (registros || []).map(cnpjTransportadoraCte).filter(Boolean);
-      const base = expandirTabelasAlternativasOficiais(normalizarTransportadoras(await carregarBaseTransportadorasDb(nomes, { cnpjs })));
       // Sem tabela para a transportadora (nem por nome nem por CNPJ): nao adianta
       // baixar a base inteira (~1M linhas) para uma fatura de poucos CT-es — o
       // resultado seria o mesmo "sem tabela", so que minutos depois.
-      _cacheBaseFretePorTransportadora.set(cacheKey, base);
+      const promessa = carregarBaseTransportadorasDb(nomes, { cnpjs, ibgesDestino })
+        .then((linhas) => expandirTabelasAlternativasOficiais(normalizarTransportadoras(linhas)));
+      // Com o filtro por destino cada lote gera uma chave: guarda so as mais recentes.
+      if (_cacheBaseFretePorTransportadora.size >= 40) _cacheBaseFretePorTransportadora.delete(_cacheBaseFretePorTransportadora.keys().next().value);
+      _cacheBaseFretePorTransportadora.set(cacheKey, { ts: Date.now(), promessa });
+      promessa.catch(() => {
+        if (_cacheBaseFretePorTransportadora.get(cacheKey)?.promessa === promessa) _cacheBaseFretePorTransportadora.delete(cacheKey);
+      });
     }
-    return _cacheBaseFretePorTransportadora.get(cacheKey);
+    return _cacheBaseFretePorTransportadora.get(cacheKey).promessa;
   }
 
   onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: registros.length });
@@ -1048,6 +1088,21 @@ function inverterOrigemDestinoCte(cte = {}) {
   };
 }
 
+// Transportadoras marcadas "opera lotação" no cadastro (mesmo sem tabela vigente). Coluna ausente = sem marcadas.
+async function carregarNomesOperaLotacao(supabase) {
+  const { data, error } = await supabase.from('transportadoras').select('nome').eq('opera_lotacao', true);
+  if (error) return [];
+  return (data || []).map((t) => t.nome).filter(Boolean);
+}
+
+function transportadoraOperaLotacao(cte, contexto, mapaVinculos) {
+  const marcadas = contexto?.nomesOperaLotacao;
+  if (!marcadas?.length) return false;
+  const nomeBruto = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);
+  const nomes = [nomeBruto, aplicarVinculoTransportadora(nomeBruto, mapaVinculos)].filter(Boolean);
+  return marcadas.some((marcada) => nomes.some((nome) => marcada === nome || nomeCompativel(marcada, nome)));
+}
+
 async function carregarContextoLotacaoAuditoria(supabase, mapaVinculos = null) {
   const { data: tabelasDb, error: tabelasError } = await supabase
     .from('lotacao_tabelas')
@@ -1095,6 +1150,7 @@ async function carregarContextoLotacaoAuditoria(supabase, mapaVinculos = null) {
     tabelas: tabelasValidas.map((tabela) => ({ ...tabela, rotas: rotasPorTabela.get(tabela.id) || [] })),
     origensFracionadoPorNome,
     mapaVinculos,
+    nomesOperaLotacao: await carregarNomesOperaLotacao(supabase),
     fluxo: await carregarFluxoLotacaoAuditoria(supabase),
     transgp: await carregarTransgpAuditoria(supabase),
   };
@@ -1430,16 +1486,46 @@ function calcularCteValidadoPelaOperacao(cte = {}, viagem = {}) {
   return { ...base, valor_calculado: valorCte, diferenca: 0, diferenca_abs: 0, percentual_diferenca: 0 };
 }
 
+// CHAVE DA REGRA DE LOTAÇÃO (26/11/2026): as tabelas de lotação ainda não estão 100% atualizadas, então
+// a lotação é auditada SÓ pela DIST do fluxo. Ordem com false: TransGP → DIST do fluxo → fracionado →
+// SEM_DIST_LOTACAO (pede a viagem para a Operação). Quando as tabelas estiverem atualizadas, voltar para
+// true: TransGP → tabela de lotação → fracionado → DIST do fluxo (opera lotação: DIST antes da tabela).
+const USAR_TABELA_LOTACAO = false;
+
+// Só DIST: a tabela de lotação não calcula; ela serve apenas para reconhecer que o CT-e é de lotação
+// (sem DIST, vai para a Operação em vez de ficar como "sem tabela").
+function calcularLotacaoSoPelaDist(cte, contexto, mapaVinculos, calcularFracionado, b2c) {
+  const pelaDist = calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos);
+  if (pelaDist) return pelaDist;
+  const resultado = calcularFracionado();
+  if (toNumber(resultado?.valor_calculado) > 0) return resultado;
+  if (b2c) return resultado;
+  const temTabelaLotacao = Boolean(localizarTabelaLotacaoContexto(cte, contexto, mapaVinculos));
+  return cteDeLotacao(cte, contexto, mapaVinculos, temTabelaLotacao, resultado) ? marcarSemDistLotacao(resultado) : resultado;
+}
+
 // Tabela de lotação primeiro; depois o fracionado. Se nenhum dos dois calculou
 // (rota fora da tabela de lotação, transportadora sem tabela, origem/rota fora do
 // fracionado), usa o valor combinado da viagem no fluxo de lotação.
+// (Com USAR_TABELA_LOTACAO = false, vale calcularLotacaoSoPelaDist.)
 function calcularLotacaoOuFracionado(cte, contexto, mapaVinculos, calcularFracionado) {
   // CT-e auditado pela TransGP (achado pela chave na API deles) segue a decisão de lá.
   const pelaTransgp = calcularCtePelaTransgp(cte, contexto);
   if (pelaTransgp) return pelaTransgp;
   // B2C nunca é lotação (envios B2C são manuais, fora do fluxo): sem tabela/fluxo de lotação e sem
   // questionamento/autorização para a Operação Lotação. Sem cálculo, fica na auditoria para revisar.
-  if (canalCategoria(pick(cte, ['canal', 'canal_original'])) === 'B2C') return calcularFracionado();
+  // Exceção: transportadora marcada "opera lotação" procura a DIST (tabela de lotação ou fluxo) pelo número do
+  // CT-e; sem DIST, o B2C segue o cálculo normal (fracionado), sem ir para a Operação.
+  const b2c = canalCategoria(pick(cte, ['canal', 'canal_original'])) === 'B2C';
+  const operaLotacao = transportadoraOperaLotacao(cte, contexto, mapaVinculos);
+  if (b2c && !operaLotacao) return calcularFracionado();
+  if (!USAR_TABELA_LOTACAO) return calcularLotacaoSoPelaDist(cte, contexto, mapaVinculos, calcularFracionado, b2c);
+  // Transportadora marcada "opera lotação" (ex.: Rodotista): primeiro a DIST da viagem no fluxo de lotação
+  // (pelo número do CT-e); só sem DIST vai para a tabela de lotação e depois para o fracionado.
+  if (operaLotacao) {
+    const pelaDist = calcularCtePeloFluxoLotacao(cte, contexto, mapaVinculos);
+    if (pelaDist) return pelaDist;
+  }
   const porTabela = calcularCtePelaTabelaLotacao(cte, contexto, mapaVinculos);
   if (porTabela && toNumber(porTabela.valor_calculado) > 0) return porTabela;
   const resultado = porTabela || calcularFracionado();
@@ -1457,6 +1543,7 @@ function cteDeLotacao(cte, contexto, mapaVinculos, porTabela, resultado = null) 
   const canal = canalCategoria(pick(cte, ['canal', 'canal_original']));
   if (canal === 'INTERCOMPANY' || canal === 'B2C') return false;
   if (porTabela) return true;
+  if (transportadoraOperaLotacao(cte, contexto, mapaVinculos)) return true;
   if (['SEM_ORIGEM', 'SEM_ROTA'].includes(resultado?.status_calculo)) return false;
   if (['LOTACAO', 'LOTAÇÃO'].includes(canal)) return true;
   const nomeBruto = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);
@@ -1701,7 +1788,10 @@ function montarComparativoTabelas(cte, transportadoras, transportadoraTabela, de
   // (a tabela em vigor substitui a principal).
   const grupoSemTransferencia = grupoAlvo.filter((entrada) => !ehTabelaTransferencia(entrada));
   if (grupoSemTransferencia.length <= 1 && grupoSemTransferencia.length !== grupoAlvo.length) return null;
-  const { entradas: entradasGrupo, porVigencia } = aplicarVigenciaNoGrupo(grupoSemTransferencia, dataEmissaoIsoCte(cte));
+  const { entradas: entradasGrupo, porVigencia } = aplicarVigenciaNoGrupo(
+    vigenciaPelaOrigem(grupoSemTransferencia, detalheVencedor?.origemId),
+    dataEmissaoIsoCte(cte),
+  );
   const valorCtePago = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
   const candidatos = entradasGrupo.map((entrada) => {
     const detalhe = calcularValorParaTabelaEspecifica(cte, entrada, canaisTentativa, cidadePorIbge, opcoes, usarRotaInvertida);
@@ -1843,6 +1933,7 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
       componentes_base: detalhe.detalhes?.frete,
       componente_base: detalhe.detalhes?.frete?.componenteBase,
       origem_validada: Boolean(detalhe.origemValidada),
+      origem_id: detalhe.origemId || null,
       motor: 'simulador_realizado',
       calculo_devolucao_invertida: calculoInvertido,
       observacao_devolucao: calculoInvertido ? 'CT-e de devolucao calculado pela rota de ida equivalente.' : '',
@@ -2435,7 +2526,10 @@ function processarCteSemChecagemCanal(cte, transportadoras = [], mapaVinculos = 
     if (!entradasVinculadas?.length) return resultadoDireto;
 
     // Reajuste com vigência: a data de emissão decide quais tabelas concorrem.
-    const { entradas: entradasVigentes, porVigencia } = aplicarVigenciaNoGrupo(entradasVinculadas, dataEmissaoIsoCte(cte));
+    const { entradas: entradasVigentes, porVigencia } = aplicarVigenciaNoGrupo(
+      vigenciaPelaOrigem(entradasVinculadas, resultadoDireto?.detalhes_calculo?.origem_id),
+      dataEmissaoIsoCte(cte),
+    );
     const candidatos = entradasVigentes.map((entrada) => {
       const calculadoTabela = processarCteSemChecagemCanal(cteCalculo, [entrada], mapaVinculos, entrada.nome, opcoes);
       if (calculadoTabela?.status_calculo !== 'CALCULADO' || !(Number(calculadoTabela.valor_calculado) > 0)) return null;

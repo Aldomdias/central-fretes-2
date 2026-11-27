@@ -177,6 +177,81 @@ export async function guardarBoletos(itens, { usuario = {} } = {}) {
   return guardados;
 }
 
+// Boleto de uma fatura (detalhe da fatura): controle atual + versoes anteriores (boleto substituido).
+export async function carregarBoletoDaFatura(faturaId) {
+  if (!isSupabaseConfigured() || !faturaId) return { controle: null, versoes: [] };
+  const client = getSupabaseClient();
+  const [c, v] = await Promise.all([
+    client.from(TABELA).select('*').eq('fatura_id', String(faturaId)).maybeSingle(),
+    client.from('boleto_arquivo_versoes').select('*').eq('fatura_id', String(faturaId)).order('created_at', { ascending: false }).limit(20),
+  ]);
+  if (c.error && !tabelaAusente(c.error)) throw new Error(`Erro ao carregar o boleto: ${c.error.message}`);
+  return { controle: c.data || null, versoes: v.error ? [] : (v.data || []) };
+}
+
+// Limpeza manual (card Robo de boletos): todos os PDFs guardados no servidor, por fatura (atual + anteriores),
+// com a situacao da fatura para decidir o que apagar.
+export async function listarPdfsGuardados() {
+  if (!isSupabaseConfigured()) return [];
+  const client = getSupabaseClient();
+  const pagina = async (consulta) => {
+    const out = [];
+    for (let de = 0; ; de += 1000) {
+      // eslint-disable-next-line no-await-in-loop
+      const { data, error } = await consulta().range(de, de + 999);
+      if (error) throw new Error(error.message);
+      out.push(...(data || []));
+      if (!data || data.length < 1000) break;
+    }
+    return out;
+  };
+  const controle = await pagina(() => client.from(TABELA).select('fatura_id,numero_fatura,transportadora,status,boleto_arquivo_nome,boleto_arquivo_path,boleto_valor,boleto_vencimento,confirmado_por,confirmado_em')
+    .not('boleto_arquivo_path', 'is', null).order('fatura_id'));
+  const versoes = await pagina(() => client.from('boleto_arquivo_versoes').select('id,fatura_id,arquivo_path,nome_arquivo,created_at')
+    .not('arquivo_path', 'is', null).order('id'));
+  const porFatura = new Map();
+  controle.forEach((c) => porFatura.set(String(c.fatura_id), { ...c, anteriores: [] }));
+  versoes.forEach((v) => {
+    const id = String(v.fatura_id);
+    if (!porFatura.has(id)) porFatura.set(id, { fatura_id: id, boleto_arquivo_path: null, anteriores: [] });
+    const item = porFatura.get(id);
+    if (v.arquivo_path !== item.boleto_arquivo_path) item.anteriores.push(v);
+  });
+  const ids = [...porFatura.keys()];
+  for (let i = 0; i < ids.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await client.from('faturas')
+      .select('id,numero_fatura,transportadora,status,valor_fatura,data_vencimento,data_pagamento,valor_pago,partida')
+      .in('id', ids.slice(i, i + 200));
+    if (error) throw new Error(error.message);
+    (data || []).forEach((f) => { const item = porFatura.get(String(f.id)); if (item) item.fatura = f; });
+  }
+  return [...porFatura.values()];
+}
+
+// Apaga do servidor o PDF (atual e anteriores) das faturas escolhidas; mantem valor, vencimento, linha
+// digitavel e nome do arquivo. itens: linhas de listarPdfsGuardados. motivo: PAGA | MANUAL | SEM_FATURA.
+export async function apagarPdfsBoletos(itens, { motivo = 'MANUAL' } = {}) {
+  if (!isSupabaseConfigured() || !itens.length) return 0;
+  const client = getSupabaseClient();
+  const caminhos = [...new Set(itens.flatMap((i) => [i.boleto_arquivo_path, ...(i.anteriores || []).map((v) => v.arquivo_path)]).filter(Boolean))];
+  for (let i = 0; i < caminhos.length; i += 100) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await client.storage.from(BUCKET_BOLETOS).remove(caminhos.slice(i, i + 100));
+    if (error) throw new Error(`Erro ao apagar os PDFs: ${error.message}`);
+  }
+  const agora = new Date().toISOString();
+  const ids = itens.map((i) => String(i.fatura_id));
+  for (let i = 0; i < ids.length; i += 200) {
+    const lote = ids.slice(i, i + 200);
+    // eslint-disable-next-line no-await-in-loop
+    await client.from(TABELA).update({ boleto_arquivo_path: null, boleto_apagado_em: agora, boleto_apagado_motivo: motivo }).in('fatura_id', lote).not('boleto_arquivo_path', 'is', null);
+    // eslint-disable-next-line no-await-in-loop
+    await client.from('boleto_arquivo_versoes').update({ arquivo_path: null }).in('fatura_id', lote);
+  }
+  return caminhos.length;
+}
+
 export async function urlBoletoGuardado(path) {
   const { data, error } = await getSupabaseClient().storage.from(BUCKET_BOLETOS).createSignedUrl(path, 300);
   if (error) throw new Error(`Nao foi possivel abrir o boleto: ${error.message}`);

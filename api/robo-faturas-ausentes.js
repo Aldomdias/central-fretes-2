@@ -3,7 +3,9 @@
  *
  * GET /api/robo-faturas-ausentes — cron da Vercel de toda hora cheia (vercel.json). Quem decide se roda naquela hora
  * e a configuracao da tela (Automacao > Robo identificador de faturas: tabela robo_faturas_config).
- * ?agora=1 ignora horario/dia (botao "Rodar agora"); ?simular=1 nunca envia e-mail (so registra o resultado).
+ * ?agora=1 ignora horario/dia (botao "Rodar agora"); ?simular=1 nunca envia e-mail (so registra o resultado);
+ * ?transportadora_id=<id>[,<id>...] (junto com agora=1) roda so as transportadoras informadas;
+ * ?ignorar_trava=1 (junto com agora=1) ignora a trava de reenvio nesta rodada.
  *
  * Para cada transportadora cadastrada pelos auditores (robo_faturas_transportadoras):
  *  1) conta as faturas recebidas no periodo de faturamento (semanal = 7 dias, quinzenal = 15, mensal = 30);
@@ -21,7 +23,7 @@ export const config = { maxDuration: 300 };
 
 const DIAS_PERIODO = { SEMANAL: 7, QUINZENAL: 15, MENSAL: 30 };
 const ROTULO_PERIODO = { SEMANAL: 'semanal', QUINZENAL: 'quinzenal', MENSAL: 'mensal' };
-const DIAS_SEM_REENVIO = 3;
+const DIAS_SEM_REENVIO_PADRAO = 3; // usado se a coluna dias_sem_reenvio ainda nao existir na config
 const norm = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase().replace(/\s+/g, ' ');
 const emailsDe = (texto) => [...new Set(String(texto || '').split(/[;,\s]+/).map((e) => e.trim().toLowerCase()).filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)))];
 const digitos = (v) => String(v ?? '').replace(/\D+/g, '');
@@ -31,10 +33,22 @@ const escapar = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt
 const isoDia = (d) => d.toISOString().slice(0, 10);
 const somarDias = (iso, dias) => isoDia(new Date(new Date(`${iso}T12:00:00Z`).getTime() + dias * 86400000));
 
+// Banco carregado as vezes estoura o tempo numa pagina que normalmente leva < 1s: tenta de novo antes de desistir.
+const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+async function comRetentativa(consulta, tentativas = 3) {
+  let ultimo;
+  for (let i = 0; i < tentativas; i += 1) {
+    ultimo = await consulta();
+    if (!ultimo.error) return ultimo;
+    if (i < tentativas - 1) await esperar(1500 * (i + 1));
+  }
+  return ultimo;
+}
+
 async function paginar(consulta) {
   const todos = [];
   for (let de = 0; de < 200000; de += 1000) {
-    const { data, error } = await consulta(de, de + 999);
+    const { data, error } = await comRetentativa(() => consulta(de, de + 999));
     if (error) throw new Error(error.message);
     todos.push(...(data || []));
     if (!data || data.length < 1000) break;
@@ -59,8 +73,7 @@ async function idsComFatura(db, ctes, nomesTransportadora) {
     for (let i = 0; i < lotes.length; i += 5) {
       const respostas = await Promise.all(lotes.slice(i, i + 5).map(async (lote) => {
         const consulta = () => { const q = db.from('fatura_detalhes').select('fatura_id,chave_cte,numero_cte,transportadora').in(coluna, lote); return semChave ? q.eq('chave_cte', '') : q; };
-        const r = await consulta();
-        return r.error ? consulta() : r; // uma nova tentativa antes de desistir
+        return comRetentativa(consulta);
       }));
       respostas.forEach(({ data, error }) => {
         if (error) throw new Error(`fatura_detalhes: ${error.message}`);
@@ -187,20 +200,27 @@ export default async function handler(req, res) {
     const origem = manual ? 'manual' : 'cron';
     const hoje = isoDia(brasilia);
     const janelaDias = Math.min(Math.max(Number(cfgRobo.janela_cte_dias) || 30, 7), 90);
+    // Trava de reenvio: dias configurados na tela (0 = sem trava). ?ignorar_trava=1 (so no botao manual) desliga nesta rodada.
+    const ignorarTrava = manual && /[?&]ignorar_trava=1\b/.test(String(req.url || ''));
+    const diasCfg = Number(cfgRobo.dias_sem_reenvio);
+    const diasSemReenvio = ignorarTrava ? 0 : Math.min(Math.max(Number.isFinite(diasCfg) ? diasCfg : DIAS_SEM_REENVIO_PADRAO, 0), 60);
     const copiaPadrao = emailsDe(process.env.LAUDO_EMAIL_COPIA_PADRAO || 'fatura@corpcantuinc.onmicrosoft.com; aldo.dias@cantu.inc');
 
     const { data: cadastradas, error: eLista } = await db.from('robo_faturas_transportadoras').select('*').eq('ativo', true);
     if (eLista) throw new Error(`Lista do robo: ${eLista.message}`);
-    const lista = (cadastradas || []).filter((t) => !t.nao_cadastrada || t.transportadora);
-    if (!lista.length) return res.status(200).json({ ok: true, analisadas: 0, motivo: 'Nenhuma transportadora cadastrada.' });
+    // ?transportadora_id=<id> (so no botao manual): roda apenas aquela transportadora.
+    // Aceita varias separadas por virgula (caixas marcadas na tela).
+    const idsAlvo = manual ? decodeURIComponent(String(req.url || '').match(/[?&]transportadora_id=([^&]+)/)?.[1] || '').split(',').map((x) => x.trim()).filter(Boolean) : [];
+    const lista = (cadastradas || []).filter((t) => (!t.nao_cadastrada || t.transportadora) && (!idsAlvo.length || idsAlvo.includes(String(t.id))));
+    if (!lista.length) return res.status(200).json({ ok: true, analisadas: 0, motivo: idsAlvo.length ? 'Transportadora(s) marcada(s) nao encontrada(s) ou pausada(s).' : 'Nenhuma transportadora cadastrada.' });
 
     const [{ data: vinculos }, { data: carteiras }, { data: robo }, { data: recentes }] = await Promise.all([
       db.from('transportadora_vinculos').select('nome_cte,nome_tabela'),
       db.from('auditoria_carteiras').select('transportadora,auditor_nome,auditor_email'),
       db.from('auditor_robo_transportadoras').select('transportadora,emails_transportadora'),
-      db.from('robo_faturas_execucoes').select('transportadora_id,executado_em').eq('email_enviado', true).gte('executado_em', new Date(Date.now() - DIAS_SEM_REENVIO * 86400000).toISOString()),
+      db.from('robo_faturas_execucoes').select('transportadora_id,executado_em').eq('email_enviado', true).gte('executado_em', new Date(Date.now() - diasSemReenvio * 86400000).toISOString()),
     ]);
-    const enviadoRecente = new Set((recentes || []).map((r) => String(r.transportadora_id)));
+    const enviadoRecente = new Set(diasSemReenvio > 0 ? (recentes || []).map((r) => String(r.transportadora_id)) : []);
 
     const inicioFaturas = somarDias(hoje, -60);
     const faturasRecentes = await paginar((de, ate) => db.from('faturas').select('id,transportadora,numero_fatura,serie_fatura,data_emissao,data_vencimento,valor_fatura,status,created_at')
@@ -245,7 +265,7 @@ export default async function handler(req, res) {
         registro.copia = copia.join('; ');
         if (!para.length) { registro.observacao = 'Sem e-mail do transportador cadastrado (preencha na tela do robo ou no Robo Auditor).'; resultados.push(registro); continue; }
         if (!enviarDeVerdade) { registro.observacao = simular ? 'Simulacao: e-mail nao enviado.' : 'Envio de e-mails desligado na configuracao (modo sombra).'; resultados.push(registro); continue; }
-        if (enviadoRecente.has(String(t.id))) { registro.observacao = `Ja avisado nos ultimos ${DIAS_SEM_REENVIO} dias.`; resultados.push(registro); continue; }
+        if (enviadoRecente.has(String(t.id))) { registro.observacao = `Ja avisado nos ultimos ${diasSemReenvio} dia(s).`; resultados.push(registro); continue; }
         const { assunto, html, xlsx } = montarEmail({ cfg: t, periodo, faturasPeriodo, ctes, valor, janelaDias, hoje });
         await enviarEmail({ para, copia, assunto, html, anexoCsv: { nome: `conferencia-faturas-${hoje}.xlsx`, conteudo: xlsx } });
         registro.email_enviado = true;

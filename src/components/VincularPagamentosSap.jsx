@@ -35,10 +35,16 @@ function mesmoGrupoCnpj(fatura, linha, gruposRaiz) {
   return raizLinha === raizFatura || (gruposRaiz.get(raizFatura) || []).includes(raizLinha);
 }
 
+// Numero(s) com que a fatura pode estar no SAP: o proprio e a referencia manual (quando o SAP ficou diferente).
+const numerosDaFatura = (fatura) => [fatura.numero_fatura, fatura.referencia_sap]
+  .map((n) => normalizarReferenciaSap(n).toUpperCase()).filter(Boolean);
+
 function pontuar(fatura, linha, raizesDaTransportadora, gruposRaiz = new Map()) {
   let pontos = 0;
   const motivos = [];
-  if (normalizarReferenciaSap(linha.numero_fatura).toUpperCase() === String(fatura.numero_fatura || '').trim().toUpperCase()) { pontos += 50; motivos.push('mesmo numero'); }
+  const refLinha = normalizarReferenciaSap(linha.numero_fatura).toUpperCase();
+  if (refLinha && refLinha === normalizarReferenciaSap(fatura.referencia_sap).toUpperCase()) { pontos += 50; motivos.push('referencia SAP informada'); }
+  else if (refLinha === String(fatura.numero_fatura || '').trim().toUpperCase()) { pontos += 50; motivos.push('mesmo numero'); }
   const dif = Math.abs(Number(linha.valor_pago || 0) - Number(fatura.valor_fatura || 0));
   if (dif <= 0.01) { pontos += 30; motivos.push('valor igual'); }
   else if (Number(fatura.valor_fatura) > 0 && dif / Number(fatura.valor_fatura) <= 0.05) { pontos += 10; motivos.push('valor proximo'); }
@@ -119,14 +125,17 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
 
   const sugestoes = (fatura) => {
     const raizes = raizesPorTransportadora.get(nomeBase(fatura.transportadora)) || new Set();
-    const numero = String(fatura.numero_fatura || '').trim().toUpperCase();
+    const numeros = numerosDaFatura(fatura);
     const manual = (buscaManual[fatura.id] || '').trim().toLowerCase();
     let base = linhas;
     if (manual) {
       base = linhas.filter((l) => `${l.numero_fatura} ${l.transportadora_sap} ${l.cnpj} ${l.valor_pago} ${l.partida} ${l.lancamento_contabil}`.toLowerCase().includes(manual));
     } else {
       const cents = Math.round(Number(fatura.valor_fatura || 0) * 100);
-      base = [...(porNumero.get(numero) || []), ...linhas.filter((l) => Math.round(Number(l.valor_pago || 0) * 100) === cents && normalizarReferenciaSap(l.numero_fatura).toUpperCase() !== numero)];
+      base = [...new Set([
+        ...numeros.flatMap((n) => porNumero.get(n) || []),
+        ...linhas.filter((l) => Math.round(Number(l.valor_pago || 0) * 100) === cents && !numeros.includes(normalizarReferenciaSap(l.numero_fatura).toUpperCase())),
+      ])];
     }
     return base
       .map((linha) => ({ linha, ...pontuar(fatura, linha, raizes, gruposRaiz) }))
@@ -148,8 +157,7 @@ export default function VincularPagamentosSap({ state, onState, sessao }) {
     const abertasPorNumero = new Map();
     for (const f of state.faturas || []) {
       if (STATUS_PAGOS.has(f.status)) continue;
-      const n = String(f.numero_fatura || '').trim().toUpperCase();
-      if (n) abertasPorNumero.set(n, [...(abertasPorNumero.get(n) || []), f]);
+      for (const n of new Set(numerosDaFatura(f))) abertasPorNumero.set(n, [...(abertasPorNumero.get(n) || []), f]);
     }
     const pares = [];
     for (const linha of linhas) {

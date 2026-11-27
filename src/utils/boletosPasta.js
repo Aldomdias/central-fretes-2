@@ -48,7 +48,8 @@ export function casarBoletosComFaturas(nomesArquivos, faturas) {
 }
 
 // ---- Leitura do conteudo do boleto (linha digitavel: banco, fator de vencimento e valor) ----
-const RE_LINHA = /(\d{5})\.?(\d{5})\s+(\d{5})\.?(\d{6})\s+(\d{5})\.?(\d{6})\s+(\d)\s+(\d{4})(\d{10})/;
+// Entre os blocos aceita espaco ou ponto: o OCR de boleto escaneado as vezes le o espaco como ponto.
+const RE_LINHA = /(\d{5})[.\s]?(\d{5})[.\s]+(\d{5})[.\s]?(\d{6})[.\s]+(\d{5})[.\s]?(\d{6})[.\s]+(\d)[.\s]+(\d{4})(\d{10})/;
 
 // Fator de vencimento (regra vigente desde 22/02/2025: 1000 = 22/02/2025). Retorna 'AAAA-MM-DD' ou null.
 function fatorParaData(fator) {
@@ -58,16 +59,53 @@ function fatorParaData(fator) {
   return new Date(base + (f - 1000) * 86400000).toISOString().slice(0, 10);
 }
 
+// Ultimo bloco da linha digitavel (DV + fator + valor, 1 + 14 digitos), isolado. Usado quando o OCR estraga um
+// digito do inicio da linha (ex.: "23790.497?04"): o fim ainda da valor e vencimento.
+const RE_FIM_LINHA = /(?:^|[\s.])(\d)\s+(\d{4})(\d{10})(?!\d)/g;
+const dataBr = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : '');
+
 // Procura a linha digitavel no texto do PDF e decodifica valor e vencimento.
+// Sem a linha completa, aceita so o bloco final quando o vencimento dele aparece escrito no proprio boleto
+// (dupla checagem); nesse caso linhaDigitavel volta null e parcial: true.
 export function decodificarBoleto(texto) {
-  const m = String(texto || '').replace(/¦/g, ' ').replace(/[ \t]+/g, ' ').match(RE_LINHA);
-  if (!m) return null;
-  return {
-    linhaDigitavel: `${m[1]}.${m[2]} ${m[3]}.${m[4]} ${m[5]}.${m[6]} ${m[7]} ${m[8]}${m[9]}`,
-    banco: m[1].slice(0, 3),
-    vencimento: fatorParaData(m[8]),
-    valor: Number(m[9]) / 100,
-  };
+  const limpo = String(texto || '').replace(/¦/g, ' ').replace(/[ \t]+/g, ' ');
+  const m = limpo.match(RE_LINHA);
+  if (m) {
+    return {
+      linhaDigitavel: `${m[1]}.${m[2]} ${m[3]}.${m[4]} ${m[5]}.${m[6]} ${m[7]} ${m[8]}${m[9]}`,
+      banco: m[1].slice(0, 3),
+      vencimento: fatorParaData(m[8]),
+      valor: Number(m[9]) / 100,
+    };
+  }
+  for (const f of limpo.matchAll(RE_FIM_LINHA)) {
+    const vencimento = fatorParaData(f[2]);
+    const valor = Number(f[3]) / 100;
+    if (vencimento && valor > 0 && limpo.includes(dataBr(vencimento))) {
+      return { linhaDigitavel: null, banco: null, vencimento, valor, parcial: true };
+    }
+  }
+  return null;
+}
+
+// Boleto sem linha digitavel (PIX / "comprovante de entrega" do SSW etc.): confere se o texto do PDF traz o valor
+// e o vencimento da fatura escritos (ex.: "412,32" e "26/11/2026"). Retorna true so com os dois.
+export function textoTrazValorEVencimento(texto, fatura) {
+  const t = String(texto || '');
+  const venc = String(fatura?.data_vencimento || '').slice(0, 10);
+  const valor = Number(fatura?.valor_fatura || 0);
+  if (!venc || !(valor > 0) || !t.includes(dataBr(venc))) return false;
+  const comMilhar = valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const semMilhar = valor.toFixed(2).replace('.', ',');
+  const re = (v) => new RegExp(`(^|[^\\d.,])${v.replace(/\./g, '\\.')}(?![\\d])`);
+  return re(comMilhar).test(t) || re(semMilhar).test(t);
+}
+
+// Fatura cujo numero bateu so pelo numero (transportadora do arquivo diferente): o boleto quase certamente e de
+// outra fatura que nao esta no sistema (ex.: "6 - R O C EXPRESSO" x fatura 6 da GRAMADO).
+export function nomeDoArquivoCombina(nomeArquivo, transportadoraFatura) {
+  const info = lerNomeBoleto(nomeArquivo);
+  return Boolean(info) && nomeCombina(info.transportadora, transportadoraFatura);
 }
 
 // Le o PDF (pdfjs, no navegador) e devolve { linhaDigitavel, banco, vencimento, valor } ou { erro }.

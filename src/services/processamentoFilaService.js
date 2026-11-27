@@ -1,5 +1,6 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarSessao, usuarioPodeAdministrarUsuarios } from '../utils/authLocal';
+import { iniciarProcessoTelemetria } from './telemetriaService';
 
 export const TAMANHO_LOTE_PESADO = 200;
 export const LIMITE_GLOBAL_PROCESSAMENTOS = 2;
@@ -147,20 +148,33 @@ export async function finalizarProcessamentoPesado(id, status = 'CONCLUIDO', err
 export async function executarComFila(config, executor, onStatus) {
   const tarefa = await criarProcessamentoPesado(config);
   if (!tarefa) return executor({ id: null, atualizar: () => {} });
+  let medicao = null;
   try {
     await aguardarVezProcessamento(tarefa.id, onStatus);
     onStatus?.({ ...tarefa, status: 'PROCESSANDO', posicao: 0 });
+    // Telemetria: mede rede/CPU/RAM so do tempo processando (nao conta a espera na fila).
+    medicao = iniciarProcessoTelemetria(config?.tipo || 'OUTRO', config?.titulo, {
+      itens: config?.totalItens || 0,
+      metadados: { fila_id: tarefa.id, ...(config?.metadados || {}) },
+    });
     const resultado = await executor({
       id: tarefa.id,
       atualizar: (progresso) => {
         verificarTarefaPesadaAtiva(tarefa.id);
+        const feitos = Number(progresso?.carregados ?? progresso?.itensProcessados);
+        const total = Number(progresso?.total);
+        if (Number.isFinite(feitos) || Number.isFinite(total)) {
+          medicao.itens(Math.max(config?.totalItens || 0, Number.isFinite(feitos) ? feitos : 0, Number.isFinite(total) ? total : 0));
+        }
         return atualizarProcessamentoPesado(tarefa.id, progresso);
       },
     });
     await finalizarProcessamentoPesado(tarefa.id, 'CONCLUIDO');
+    void medicao.finalizar('CONCLUIDO');
     return resultado;
   } catch (error) {
     await finalizarProcessamentoPesado(tarefa.id, 'ERRO', error?.message || String(error));
+    void medicao?.finalizar(/cancelad/i.test(String(error?.message)) ? 'CANCELADO' : 'ERRO', error?.message || String(error));
     throw error;
   }
 }

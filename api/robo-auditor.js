@@ -97,12 +97,25 @@ export default async function handler(req, res) {
     const jaFeitas = new Set((feitas || []).map((e) => String(e.fatura_id)));
     const porId = new Map((faturas || []).map((f) => [String(f.id), f]));
 
+    // Rodizio: fatura que nas ultimas 24h comecou e NAO terminou dentro da chamada vai para o fim da fila (quanto
+    // mais tentativas, mais para o fim). Antes a mais antiga era sempre a primeira: se ela nao cabia no tempo, o
+    // robo passava o dia inteiro nela com 0 analisadas (FL Brasil 2518411, 23-25/11/2026).
+    const tentativas = new Map();
+    try {
+      const { data: recentes } = await db.from('auditor_robo_rodadas').select('faturas')
+        .gte('iniciado_em', new Date(Date.now() - 24 * 3600000).toISOString()).order('iniciado_em', { ascending: false }).limit(200);
+      (recentes || []).forEach((r) => (Array.isArray(r.faturas) ? r.faturas : []).forEach((x) => {
+        if (x?.tipo === 'nao_concluiu' && x.fatura_id) tentativas.set(String(x.fatura_id), (tentativas.get(String(x.fatura_id)) || 0) + 1);
+      }));
+    } catch { /* sem historico: ordem por data */ }
     const novas = (faturas || [])
       .filter((f) => ativas.has(norm(f.transportadora)))
       .filter((f) => core.dataEntradaFatura(f) >= core.dataInicioRobo(ativas.get(norm(f.transportadora))))
       .filter((f) => !jaFeitas.has(String(f.id)))
-      // Mais antigas primeiro: o que ficou para depois e o proximo da fila, nunca esquecido.
-      .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+      // Mais antigas primeiro (o que ficou para depois e o proximo da fila, nunca esquecido), menos as que
+      // emperraram recentemente, que vao para o fim.
+      .sort((a, b) => ((tentativas.get(String(a.id)) || 0) - (tentativas.get(String(b.id)) || 0))
+        || String(a.created_at || '').localeCompare(String(b.created_at || '')));
     // Casos em revisao (ou laudo ainda sem OK): o robo reavalia a cada ciclo; se ficaram corretos
     // (calculo concluido, entrega comprovada) vao sozinhos para a gestao. Os mais antigos primeiro.
     const reavaliar = (feitas || [])
@@ -130,6 +143,7 @@ export default async function handler(req, res) {
     let enviadasGestao = 0;
     let estourouTempo = false;
     let progressou = false;
+    let emperrada = false; // uma fatura nova nao coube no tempo (a proxima chamada pula para as outras)
     const erros = [];
     const resumoFaturas = []; // para o historico de execucoes
     let laudos = 0;
@@ -164,8 +178,21 @@ export default async function handler(req, res) {
           motivo: String(registro.motivo || '').slice(0, 220),
         });
       } catch (e) {
-        if (e.message === '__tempo__') { estourouTempo = true; break; }
-        if (e.message === '__parcial__') { estourouTempo = true; progressou = true; break; }
+        if (e.message === '__tempo__' || e.message === '__parcial__') {
+          estourouTempo = true;
+          if (e.message === '__parcial__') progressou = true;
+          // Registra qual fatura nao coube no tempo: a tela mostra e a proxima chamada a manda para o fim da fila.
+          if (!anterior) {
+            emperrada = true;
+            resumoFaturas.push({
+              fatura_id: f.id, numero: f.numero_fatura, transportadora: f.transportadora, tipo: 'nao_concluiu',
+              decisao: 'NAO_CONCLUIU', enviada: false, valor_descontar: 0,
+              motivo: e.message === '__parcial__' ? 'Calculo parcial (o que ja calculou ficou gravado); continua depois, no fim da fila.' : 'Nao concluiu no tempo da chamada; vai para o fim da fila.',
+            });
+            erros.push(`${f.numero_fatura} (${f.transportadora}): nao concluiu no tempo; vai para o fim da fila.`);
+          }
+          break;
+        }
         erros.push(`${f.numero_fatura}: ${e.message || e}`);
       }
     }
@@ -177,7 +204,10 @@ export default async function handler(req, res) {
     // So encadeia por FATURA NOVA pendente (reavaliacoes ficam para a proxima rodada agendada, senao a cadeia
     // reavaliaria as mesmas faturas em revisao ate o limite).
     const novasRestantes = Math.max(novas.length - analisadas, 0);
-    if (novasRestantes > 0 && (analisadas > 0 || progressou || profundidade === 0) && profundidade < MAX_ENCADEAMENTO) {
+    // Fatura emperrada tambem encadeia (se houver outras na fila): a proxima chamada a manda para o fim e segue
+    // com as demais. Limitado por MAX_ENCADEAMENTO.
+    const pulaEmperrada = emperrada && novas.length - analisadas > 1;
+    if (novasRestantes > 0 && (analisadas > 0 || progressou || pulaEmperrada || profundidade === 0) && profundidade < MAX_ENCADEAMENTO) {
       try {
         // Endereco de producao fixo: o host da chamada do cron pode ser a URL do deploy (protegida), e ai a
         // continuacao era recusada sem aparecer no historico. Recusa rapida (401/403/500) vai para os erros.

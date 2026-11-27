@@ -12,6 +12,7 @@ const DECISAO = {
   ENVIAR_APROVACAO: { texto: 'Enviada para a gestao', cor: '#7c3aed' },
   ENVIAR_LAUDO: { texto: 'Laudo com desconto', cor: '#b45309' },
   REVISAO_AUDITOR: { texto: 'Para revisar', cor: '#b91c1c' },
+  NAO_CONCLUIU: { texto: 'Nao concluiu no tempo (vai para o fim da fila)', cor: '#64748b' },
 };
 
 // Historico de execucoes do robo: cada RODADA (ex.: a das 19h) junta a chamada inicial e as continuacoes
@@ -123,7 +124,7 @@ export default function HistoricoRodadasRobo() {
                       <tr key={`${f.numero}-${i}`}>
                         <td>{f.numero}</td>
                         <td>{f.transportadora}</td>
-                        <td>{f.tipo === 'reavaliada' ? 'Reavaliada' : 'Nova'}</td>
+                        <td>{f.tipo === 'reavaliada' ? 'Reavaliada' : (f.tipo === 'nao_concluiu' ? 'Nova (emperrou)' : 'Nova')}</td>
                         <td style={{ color: DECISAO[f.decisao]?.cor, fontWeight: 700 }}>{f.enviada && f.decisao === 'ENVIAR_APROVACAO' ? 'Enviada para a gestao' : (DECISAO[f.decisao]?.texto || f.decisao)}</td>
                         <td>{Number(f.valor_descontar) > 0 ? dinheiro(f.valor_descontar) : '-'}</td>
                         <td style={{ fontSize: 12, maxWidth: 420 }}>{f.motivo}</td>

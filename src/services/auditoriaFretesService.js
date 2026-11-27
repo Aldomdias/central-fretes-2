@@ -1,12 +1,13 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { urlBaseApp } from '../utils/urlBaseApp';
-import { aplicarReauditoriaDetalhes, ENCERRADOS, gerarProtocolo, isoDate, montarPagamentoVinculado, normalizarChaveCte } from '../utils/auditoriaFretesDomain';
+import { aplicarReauditoriaDetalhes, ENCERRADOS, gerarProtocolo, isoDate, montarPagamentoVinculado, normalizarChaveCte, normalizarReferenciaSap } from '../utils/auditoriaFretesDomain';
 import { chaveFatura, excelDateToISO } from '../utils/auditoriaFretesImport';
 import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 import { gerarTokenAleatorio } from './auditoriaCteJornadaService';
 import { carregarSaldosAutorizadosPorChave } from './transporteAutorizacoesService';
 import { buscarTrackingParaRealizado, enriquecerRealizadoComTracking, obterTrackingDaLinha } from './realizadoTrackingEnrichment';
 import { avaliarEstornoSap, compararReferenciasFatura } from '../utils/portalFinanceiroDomain';
+import { carregarGruposRaizTransportadora } from './transportadoraCnpjsService';
 
 const STORAGE_KEY = 'central_fretes_plataforma_auditoria_440_v1';
 
@@ -141,7 +142,8 @@ async function safeUpsert(table, payload) {
   if (!isSupabaseConfigured()) return false;
   const client = getSupabaseClient();
   let { error } = await client.from(table).upsert(payload, { onConflict: 'id' });
-  for (let tentativa = 0; error && tentativa < 8; tentativa += 1) {
+  // Remove campo a campo o que nao e coluna (a linha da tela traz campos calculados): ate 40 tentativas.
+  for (let tentativa = 0; error && tentativa < 40; tentativa += 1) {
     const mensagemOriginal = String(error.message || '');
     const mensagem = mensagemOriginal.toLowerCase();
     const matchColuna = mensagemOriginal.match(/'([^']+)'\s+column/i);
@@ -258,11 +260,47 @@ export async function carregarHistoricoProdutividade(inicioISO, fimISO) {
   return paginarTudo(
     getSupabaseClient(),
     'auditoria_fatura_historico',
-    'id,fatura_id,acao,status_novo,usuario_nome,created_at',
+    'id,fatura_id,acao,status_anterior,status_novo,usuario_nome,created_at',
     undefined,
     (q) => q.gte('created_at', inicioISO).lt('created_at', fimISO)
-      .or('status_novo.in.(PRONTA_PARA_PAGAMENTO,LIBERADA_COM_DESCONTO,AGUARDANDO_APROVACAO_GESTAO,AGUARDANDO_TRANSPORTADORA,ENVIADA_AO_FINANCEIRO),acao.eq.REAUDITORIA_CONCLUIDA'),
+      .or('status_novo.in.(PRONTA_PARA_PAGAMENTO,LIBERADA_COM_DESCONTO,AGUARDANDO_APROVACAO_GESTAO,AGUARDANDO_TRANSPORTADORA,ENVIADA_AO_FINANCEIRO),acao.eq.REAUDITORIA_CONCLUIDA,status_anterior.eq.AGUARDANDO_APROVACAO_GESTAO'),
   );
+}
+
+// Quem enviou cada fatura para aprovacao da gestao (ultimo envio de cada uma).
+// Usado pra creditar a liberacao a quem auditou, nao a quem aprovou.
+export async function carregarRemetentesAprovacaoGestao(faturaIds = []) {
+  const mapa = new Map();
+  const lista = [...new Set((faturaIds || []).filter(Boolean))];
+  if (!isSupabaseConfigured() || !lista.length) return mapa;
+  const client = getSupabaseClient();
+  for (let i = 0; i < lista.length; i += 100) {
+    const { data, error } = await client
+      .from('auditoria_fatura_historico')
+      .select('fatura_id,usuario_nome,created_at')
+      .in('fatura_id', lista.slice(i, i + 100))
+      .eq('status_novo', 'AGUARDANDO_APROVACAO_GESTAO')
+      .order('created_at', { ascending: false });
+    if (error) throw new Error(error.message);
+    (data || []).forEach((r) => { if (!mapa.has(r.fatura_id)) mapa.set(r.fatura_id, r.usuario_nome); });
+  }
+  return mapa;
+}
+
+// Decisoes de Transporte (B2C/Atacado) e Suprimentos no periodo (quem aprovou/recusou).
+export async function carregarDecisoesAutorizacoesProdutividade(inicioISO, fimISO) {
+  if (!isSupabaseConfigured()) return [];
+  try {
+    return await paginarTudo(
+      getSupabaseClient(),
+      'transporte_autorizacoes',
+      'id,canal,status,decidido_por,decidido_em,fatura_id',
+      undefined,
+      (q) => q.eq('ativo', true).in('status', ['AUTORIZADA', 'RECUSADA']).gte('decidido_em', inicioISO).lt('decidido_em', fimISO),
+    );
+  } catch {
+    return [];
+  }
 }
 
 // Envios da auditoria para Suprimentos / Transporte (B2C, Atacado) no periodo.
@@ -1221,7 +1259,7 @@ export async function corrigirNomesFaturasPorCnpj({ usuarioNome = 'Sistema' } = 
   const [mapa, carteiras, faturas] = await Promise.all([
     carregarMapaNomeOficialPorRaizCnpj(),
     listarCarteirasAuditoria(),
-    paginarTudo(client, 'faturas', 'id, transportadora, cnpj_transportadora, auditor_nome, status'),
+    paginarTudo(client, 'faturas', 'id, transportadora, cnpj_transportadora, auditor_nome, auditor_email, status'),
   ]);
   const carteiraPorNome = new Map();
   (carteiras || []).forEach((c) => { if (c.auditor_nome) carteiraPorNome.set(normalizarTexto(c.transportadora), c); });
@@ -1233,10 +1271,14 @@ export async function corrigirNomesFaturasPorCnpj({ usuarioNome = 'Sistema' } = 
     const nomeDiferente = normalizarTexto(oficial) !== normalizarTexto(f.transportadora);
     const carteira = !f.auditor_nome && !ENCERRADOS.has(f.status) ? carteiraPorNome.get(normalizarTexto(oficial)) : null;
     if (!nomeDiferente && !carteira) return;
+    // Upsert em lote preenche com NULL a coluna que falta em alguma linha: toda
+    // linha leva auditor_nome/auditor_email (o atual quando nao ha carteira),
+    // senao o auditor das faturas sem carteira no mesmo lote e apagado.
     alvo.push({
       id: f.id,
       transportadora: oficial,
-      ...(carteira ? { auditor_nome: carteira.auditor_nome, auditor_email: carteira.auditor_email || '' } : {}),
+      auditor_nome: carteira ? carteira.auditor_nome : (f.auditor_nome ?? null),
+      auditor_email: carteira ? (carteira.auditor_email || '') : (f.auditor_email ?? null),
       updated_at: agora,
       _antes: f.transportadora,
       _carteira: Boolean(carteira),
@@ -2395,6 +2437,53 @@ export async function vincularLinhaSapAFatura(state, linha, fatura, usuarioNome)
   }).eq('id', linha.id);
   if (error) throw new Error(`Pagamento gravado, mas nao consegui marcar a linha como vinculada: ${error.message}`);
   return next;
+}
+
+// Referencia manual da fatura no SAP (excecao: a "Referência" lancada no SAP ficou diferente do numero
+// da fatura, ex.: 1225 lancada como 12225). Grava na fatura e procura na fila de linhas do SAP sem
+// vinculo as linhas com essa referencia; as do mesmo grupo de CNPJ da transportadora sao vinculadas
+// na hora. As proximas importacoes do relatorio SAP tambem casam por ela (conciliarPagamentosSap).
+export async function salvarReferenciaSapFatura(state, fatura, referencia, usuarioNome) {
+  const valor = normalizarReferenciaSap(referencia) || null;
+  const agora = new Date().toISOString();
+  const client = getSupabaseClient();
+  const { error } = await client.from('faturas')
+    .update({ referencia_sap: valor, referencia_sap_por: valor ? (usuarioNome || null) : null, referencia_sap_em: valor ? agora : null })
+    .eq('id', fatura.id);
+  if (error) throw new Error(`${error.message} — a migration 20261125_011_faturas_referencia_sap.sql ja foi aplicada?`);
+  const historico = {
+    id: uid('hist'), fatura_id: fatura.id, created_at: agora, acao: 'REFERENCIA_SAP',
+    descricao: valor ? `Referencia no SAP informada a mao: ${valor} (fatura ${fatura.numero_fatura}).` : 'Referencia manual no SAP removida.',
+    usuario_nome: usuarioNome || 'Usuario local',
+  };
+  await inserirHistorico('auditoria_fatura_historico', historico);
+  let next = {
+    ...state,
+    faturas: state.faturas.map((item) => (item.id === fatura.id
+      ? { ...item, referencia_sap: valor, referencia_sap_por: valor ? usuarioNome : null, referencia_sap_em: valor ? agora : null } : item)),
+    historico: [historico, ...(state.historico || [])],
+  };
+  next = writeLocal(next);
+  if (!valor) return { state: next, vinculadas: [], outrasTransportadoras: [] };
+
+  // Linhas guardadas na fila "sem vinculo" com essa referencia (o SAP as vezes exporta "12225.0").
+  const { data: linhas, error: erroFila } = await client.from(TABELA_SAP_SEM_VINCULO).select('*')
+    .in('numero_fatura', [valor, `${valor}.0`]).is('vinculado_em', null);
+  if (erroFila) throw new Error(`Referencia salva, mas nao consegui ler a fila do SAP: ${erroFila.message}`);
+  let gruposRaiz = new Map();
+  try { gruposRaiz = await carregarGruposRaizTransportadora(); } catch { /* sem grupos: compara so a raiz da fatura */ }
+  const raizFatura = obterRaizCnpj(fatura.cnpj_transportadora);
+  const mesmoGrupo = (linha) => {
+    const raiz = obterRaizCnpj(linha.cnpj);
+    return !!raiz && !!raizFatura && (raiz === raizFatura || (gruposRaiz.get(raizFatura) || []).includes(raiz));
+  };
+  const vinculadas = [];
+  for (const linha of (linhas || []).filter(mesmoGrupo)) {
+    const faturaAtual = next.faturas.find((f) => f.id === fatura.id) || fatura;
+    next = await vincularLinhaSapAFatura(next, linha, faturaAtual, usuarioNome);
+    vinculadas.push(linha);
+  }
+  return { state: next, vinculadas, outrasTransportadoras: (linhas || []).filter((l) => !mesmoGrupo(l)) };
 }
 
 // ---------------------------------------------------------------------------

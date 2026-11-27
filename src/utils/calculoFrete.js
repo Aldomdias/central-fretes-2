@@ -1613,6 +1613,8 @@ function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo
     tabelaNome: candidato.tabelaNome || 'Principal',
     tabelaPrincipal: candidato.tabelaPrincipal !== false,
     origem: origemCidade || candidato.origem,
+    // Origem da tabela que calculou (a Auditoria usa para pegar a vigencia do reajuste DESSA origem).
+    origemId: candidato.origemId || null,
     cidadeDestino: destinoInfo.cidade || candidato.cidadeDestino,
     ibgeDestino: destinoInfo.ibge || candidato.ibgeDestino,
     ufDestino: destinoInfo.uf || candidato.ufDestino,

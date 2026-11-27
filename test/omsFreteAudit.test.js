@@ -140,3 +140,37 @@ test('config exige URL e secret; esperas de reenvio 1/2/4/8/16 min', () => {
   assert.deepEqual(lerConfigOms({ OMS_BASE_URL: 'https://x/', OMS_CLIENT_SECRET: 's' }), { baseUrl: 'https://x', clientId: 'amd-log', clientSecret: 's' });
   assert.deepEqual([0, 1, 2, 3, 4, 5].map(esperaRetentativaMs), [60000, 120000, 240000, 480000, 960000, null]);
 });
+
+// ---- Envio de XML de CT-e (contrato AMD-Log-envio-de-XML-de-CTe-ao-OMS) ----
+import { validarEnvioCtes, dividirXmls } from '../api/_omsFreteAudit.mjs';
+const envioOk = (extra = {}) => ({ requestId: 'r-x', invoiceId: 'a'.repeat(24), ctes: [{ xml: Buffer.from('<cteProc/>').toString('base64') }], ...extra });
+
+test('xml: validacao local (invoiceId, Base64, 1 a 50 itens)', () => {
+  assert.deepEqual(validarEnvioCtes(envioOk()), []);
+  assert.ok(validarEnvioCtes(envioOk({ invoiceId: 'zz' })).length);
+  assert.ok(validarEnvioCtes(envioOk({ ctes: [] })).length);
+  assert.ok(validarEnvioCtes(envioOk({ ctes: [{ xml: '<cte/>' }] })).length);
+  assert.ok(validarEnvioCtes(envioOk({ ctes: Array.from({ length: 51 }, () => ({ xml: 'QUJD' })) })).length);
+});
+
+test('xml: enviarCtes manda so requestId/invoiceId/xml e reconhece 202 e 200 (replayed)', async () => {
+  const f = fakeFetch([tokenResp(), resp(202, { accepted: 1, replayed: false, ctes: [{ index: 0, status: 'queued' }] }), resp(200, { replayed: true, ctes: [{ index: 0, status: 'queued' }] })]);
+  const c = cliente(f);
+  const a = await c.enviarCtes(envioOk());
+  assert.equal(a.aceitoAgora, true);
+  assert.ok(f.chamadas[1].url.endsWith('/freight-audit/ctes'));
+  assert.deepEqual(Object.keys(JSON.parse(f.chamadas[1].init.body)).sort(), ['ctes', 'invoiceId', 'requestId']);
+  const b = await c.enviarCtes(envioOk());
+  assert.equal(b.reenvioIdempotente, true);
+});
+
+test('xml: 409 REQUEST_ID_REUSED e 503 QUEUE_UNAVAILABLE', async () => {
+  const f = fakeFetch([tokenResp(), resp(409, { code: 'REQUEST_ID_REUSED' }), resp(503, { code: 'QUEUE_UNAVAILABLE' })]);
+  const c = cliente(f);
+  await assert.rejects(c.enviarCtes(envioOk()), (e) => e.acao === 'gerar_novo_requestId');
+  await assert.rejects(c.enviarCtes(envioOk()), (e) => e.retryable && e.acao === 'reenviar_mesmo_requestId');
+});
+
+test('xml: divisao em grupos de ate 50', () => {
+  assert.deepEqual(dividirXmls(Array.from({ length: 120 }, () => 'QUJD')).map((g) => g.length), [50, 50, 20]);
+});

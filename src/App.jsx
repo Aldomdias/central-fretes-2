@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import DashboardPage from './pages/DashboardPage';
 import SimuladorPage from './pages/SimuladorPage';
@@ -8,6 +8,7 @@ import FormatacaoPage from './pages/FormatacaoPage';
 import ImportarTemplatePage from './pages/ImportarTemplatePage';
 import ImportacaoIaTabelasPage from './pages/ImportacaoIaTabelasPage';
 import GestaoTabelasLotacaoPage from './pages/GestaoTabelasLotacaoPage';
+import FracionadoPortalPage from './pages/FracionadoPortalPage';
 import TransgpAuditoriaPage from './pages/TransgpAuditoriaPage';
 import LotacaoOperacaoPage from './pages/LotacaoOperacaoPage';
 import LotacaoAuditoriaPage from './pages/LotacaoAuditoriaPage';
@@ -20,6 +21,7 @@ import AvisoPrazoFaturas from './components/AvisoPrazoFaturas';
 import LoginPage from './pages/LoginPage';
 import UserManagementPage from './pages/UserManagementPage';
 import PainelUsuariosAtivosPage from './pages/PainelUsuariosAtivosPage';
+import ConsumoSistemaPage from './pages/ConsumoSistemaPage';
 import MinhaSenhaPage from './pages/MinhaSenhaPage';
 import FerramentasPage from './pages/FerramentasPage';
 import TrackingPage from './pages/TrackingPage';
@@ -43,6 +45,7 @@ import OportunidadeOrigemPage from './pages/OportunidadeOrigemPage';
 import OportunidadeTransportadoraPage from './pages/OportunidadeTransportadoraPage';
 import SimularSaidaTransportadoraPage from './pages/SimularSaidaTransportadoraPage';
 import TabelaPadraoB2cPage from './pages/TabelaPadraoB2cPage';
+import RotasB2cExportPage from './pages/RotasB2cExportPage';
 import SimuladorReversaPage from './pages/SimuladorReversaPage';
 import GestaoBaseCtePage from './pages/GestaoBaseCtePage';
 import VisualConceptPage from './pages/VisualConceptPage';
@@ -54,25 +57,30 @@ import AutorizacoesTransportePage from './pages/AutorizacoesTransportePage';
 import GestaoContratosPage from './pages/GestaoContratosPage';
 import RobosPage from './pages/RobosPage';
 import AlertasCteValorPage from './pages/AlertasCteValorPage';
+import PainelBlackPage from './pages/PainelBlackPage';
 import { useFreteStore } from './data/store';
-import { carregarSessao, carregarUsuariosAsync, MODULOS_SISTEMA, sairLocal, usuarioPodeAdministrarUsuarios, usuarioTemAcesso } from './utils/authLocal';
+import { carregarSessao, carregarUsuariosAsync, contaSomentePainelBlack, MODULOS_SISTEMA, sairLocal, usuarioPodeAdministrarUsuarios, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
 import { entrarPresenca, sairPresenca } from './services/presencaService';
+import { definirPaginaTelemetria, encerrarTelemetria, iniciarTelemetria } from './services/telemetriaService';
 import { sairSupabaseAuth } from './services/biometriaService';
 import { assinarManutencao } from './services/manutencaoService';
 import ManutencaoOverlay from './components/ManutencaoOverlay';
 import SupabaseStatusBanner from './components/SupabaseStatusBanner';
+import MinhaAreaTrabalhoPage from './pages/MinhaAreaTrabalhoPage';
+import MenuRapido from './components/MenuRapido';
+import { aplicarPreferenciasInterface, carregarPreferenciasInterface, salvarPreferenciasInterface } from './utils/preferenciasInterface';
 
 const PAGINAS_PERMITIDAS = [
   'dashboard', 'conceito-app', 'simulador', 'simulador-reversa', 'tabelas-negociacao', 'cte', 'cte-origem-destino', 'auditoria-cte', 'tracking', 'tracking-prazos',
   'torre-controle', 'reajustes', 'avaliacao-prazos', 'importacao', 'formatacao', 'importar-template',
   'importacao-ia-tabelas',
-  'lotacao', 'lotacao-cotacao', 'lotacao-operacao', 'lotacao-transgp', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
+  'lotacao', 'lotacao-cotacao', 'fracionado-portal', 'lotacao-operacao', 'lotacao-transgp', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
   'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'prazo-pagamento',
-  'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'tabela-padrao-b2c', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
-  'icms-uf', 'auditoria-ecommerce', 'usuarios-ativos',
+  'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'tabela-padrao-b2c', 'rotas-b2c', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
+  'icms-uf', 'auditoria-ecommerce', 'usuarios-ativos', 'consumo-sistema',
   'importar-descontos-obtidos', 'painel-descontos-obtidos',
-  'gestao-contratos', 'autorizacoes-transporte-b2c', 'autorizacoes-transporte-atacado', 'autorizacoes-transporte-lotacao', 'autorizacoes-suprimentos', 'robos', 'alertas-cte-valor', 'consulta-tracking',
+  'gestao-contratos', 'autorizacoes-transporte-b2c', 'autorizacoes-transporte-atacado', 'autorizacoes-transporte-lotacao', 'autorizacoes-suprimentos', 'robos', 'alertas-cte-valor', 'consulta-tracking', 'painel-black',
 ];
 
 function primeiraPaginaPermitida(usuario) {
@@ -87,6 +95,12 @@ export default function App() {
   const [filtroFaturasExterno, setFiltroFaturasExterno] = useState(null);
   const [sidebarRecolhida, setSidebarRecolhida] = useState(true);
   const [menuMobileAberto, setMenuMobileAberto] = useState(false);
+  // Painel geral antigo (Central de importacoes etc.) continua acessivel pela Minha Area de Trabalho.
+  const [painelGeralAberto, setPainelGeralAberto] = useState(false);
+  const [menuRapidoAberto, setMenuRapidoAberto] = useState(false);
+  const abrirMenuRapido = useCallback(() => setMenuRapidoAberto(true), []);
+  const fecharMenuRapido = useCallback(() => setMenuRapidoAberto(false), []);
+  const [preferenciasInterface, setPreferenciasInterface] = useState(() => carregarPreferenciasInterface(sessao));
   const [avisosOcultos, setAvisosOcultos] = useState(() => {
     try { return window.localStorage.getItem('central_fretes_avisos_ocultos') === '1'; } catch { return false; }
   });
@@ -123,11 +137,20 @@ export default function App() {
     if (!sessao) return undefined;
     const paginaLabel = MODULOS_SISTEMA.find((modulo) => modulo.chave === paginaAtual)?.label || paginaAtual;
     entrarPresenca(sessao, paginaAtual, paginaLabel);
+    definirPaginaTelemetria(paginaAtual, paginaLabel);
   }, [sessao, paginaAtual]);
+
+  // Telemetria de consumo (modulo Consumo do Sistema): mede rede/CPU/RAM/tempo online.
+  useEffect(() => {
+    if (!sessaoId) return undefined;
+    iniciarTelemetria(carregarSessao() || { id: sessaoId });
+    return undefined;
+  }, [sessaoId]);
 
   useEffect(() => {
     if (sessao) return undefined;
     sairPresenca();
+    encerrarTelemetria();
     return undefined;
   }, [sessao]);
 
@@ -136,6 +159,11 @@ export default function App() {
   useEffect(() => {
     return assinarManutencao(setManutencao);
   }, []);
+
+  useEffect(() => {
+    aplicarPreferenciasInterface(preferenciasInterface);
+    salvarPreferenciasInterface(sessao, preferenciasInterface);
+  }, [preferenciasInterface, sessao]);
 
   useEffect(() => {
     if (!sessao?.expiraEm) return undefined;
@@ -164,6 +192,7 @@ export default function App() {
   const mudarPagina = (pagina) => {
     if (!usuarioTemAcesso(sessao, pagina)) return;
     setPaginaAtual(pagina);
+    setPainelGeralAberto(false);
     setMenuMobileAberto(false);
     sincronizarPaginaAppNaUrl(pagina);
     if (pagina !== 'transportadoras') {
@@ -204,13 +233,27 @@ export default function App() {
 
   const sair = () => {
     sairPresenca();
+    encerrarTelemetria();
     sairLocal();
     void sairSupabaseAuth();
     setSessao(null);
   };
 
+  // Conta compartilhada so do Painel Black (TV/monitor da equipe): abre direto o painel na janela
+  // toda, sem menu, cabecalho nem botoes flutuantes. Fica so Atualizar, Tela cheia e Sair.
+  if (contaSomentePainelBlack(sessao)) return <PainelBlackPage modoPainel onSair={sair} />;
+
   const paginas = {
-    dashboard: <DashboardPage transportadoras={transportadorasMemo} onAbrirSimulador={abrirSimulador} onAbrirTransportadoras={abrirTransportadoras} onAbrirImportacao={abrirImportacao} onAbrirFormatacaoTabelas={() => mudarPagina('formatacao')} onMudarPagina={mudarPagina} onAtualizarBase={store.atualizarResumo} onConferirBase={store.conferirBase} syncStatus={store.syncStatus} />,
+    dashboard: painelGeralAberto ? (
+      <>
+        <div style={{ marginBottom: 12 }}>
+          <button type="button" className="btn-secondary" onClick={() => setPainelGeralAberto(false)}>← Voltar para Minha Área de Trabalho</button>
+        </div>
+        <DashboardPage transportadoras={transportadorasMemo} onAbrirSimulador={abrirSimulador} onAbrirTransportadoras={abrirTransportadoras} onAbrirImportacao={abrirImportacao} onAbrirFormatacaoTabelas={() => mudarPagina('formatacao')} onMudarPagina={mudarPagina} onAtualizarBase={store.atualizarResumo} onConferirBase={store.conferirBase} syncStatus={store.syncStatus} />
+      </>
+    ) : (
+      <MinhaAreaTrabalhoPage usuario={sessao} preferencias={preferenciasInterface} onPreferencias={setPreferenciasInterface} onMudarPagina={mudarPagina} onAbrirPainelGeral={() => setPainelGeralAberto(true)} onAbrirMenuRapido={() => setMenuRapidoAberto(true)} />
+    ),
     'conceito-app': <VisualConceptPage />,
     simulador: <SimuladorPage transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />,
     'tabelas-negociacao': <TabelasNegociacaoPageWithEditor />,
@@ -231,6 +274,7 @@ export default function App() {
     'prazo-pagamento': <PrazoPagamentoPage />,
     lotacao: <GestaoTabelasLotacaoPage abaInicial="tabelas" podeAcessar={(pagina) => usuarioTemAcesso(sessao, pagina)} />,
     'lotacao-cotacao': <GestaoTabelasLotacaoPage abaInicial="cotacao" podeAcessar={(pagina) => usuarioTemAcesso(sessao, pagina)} />,
+    'fracionado-portal': <FracionadoPortalPage />,
     'lotacao-operacao': <LotacaoOperacaoPage onRespostaConcluida={() => mudarPagina('lotacao-auditoria')} />,
     'lotacao-auditoria': <LotacaoAuditoriaPage />,
     'lotacao-transgp': <TransgpAuditoriaPage />,
@@ -245,6 +289,7 @@ export default function App() {
     'oportunidade-transportadora': <OportunidadeTransportadoraPage />,
     'simular-saida-transportadora': <SimularSaidaTransportadoraPage />,
     'tabela-padrao-b2c': <TabelaPadraoB2cPage />,
+    'rotas-b2c': <RotasB2cExportPage />,
     'simulador-reversa': <SimuladorReversaPage />,
     'gestao-base-cte': <GestaoBaseCtePage />,
     'consulta-ibge': <ConsultaIbgePage />,
@@ -252,6 +297,7 @@ export default function App() {
     ferramentas: <FerramentasPage transportadoras={transportadorasMemo} />,
     usuarios: <UserManagementPage usuarioAtual={sessao} />,
     'usuarios-ativos': <PainelUsuariosAtivosPage />,
+    'consumo-sistema': <ConsumoSistemaPage />,
     'minha-senha': <MinhaSenhaPage usuarioAtual={sessao} onSenhaAlterada={setSessao} />,
     'importar-descontos-obtidos': <ImportarDescontosObtidosPage />,
     'painel-descontos-obtidos': <CentralControlePage />,
@@ -263,6 +309,7 @@ export default function App() {
     robos: <RobosPage />,
     'alertas-cte-valor': <AlertasCteValorPage sessao={sessao} />,
     'consulta-tracking': <ConsultaTrackingPage />,
+    'painel-black': <PainelBlackPage />,
     transportadoras: <TransportadorasPage transportadoras={transportadorasMemo} transportadoraSelecionadaId={transportadoraSelecionadaId} origemSelecionadaId={origemSelecionadaId} onOpenTransportadora={abrirTransportadora} onOpenOrigem={setOrigemSelecionadaId} onVoltar={voltarTransportadoras} store={store} sessao={sessao} />,
   };
 
@@ -294,8 +341,20 @@ export default function App() {
         recolhida={sidebarRecolhida}
         menuMobileAberto={menuMobileAberto}
         onFecharMobile={() => setMenuMobileAberto(false)}
+        preferencias={preferenciasInterface}
+        onPreferencias={setPreferenciasInterface}
       />
       <main className="app-content">{content}</main>
+      <MenuRapido
+        usuario={sessao}
+        preferencias={preferenciasInterface}
+        onPreferencias={setPreferenciasInterface}
+        paginaAtual={paginaAtual}
+        onMudarPagina={mudarPagina}
+        aberto={menuRapidoAberto}
+        onAbrir={abrirMenuRapido}
+        onFechar={fecharMenuRapido}
+      />
       <IbgeRapidoModal />
       <ChamadoRapidoModal sessao={sessao} paginaAtual={paginaAtual} />
       {(usuarioTemAcesso(sessao, 'cte') || usuarioTemAcesso(sessao, 'auditoria-cte')) && <CteRapidoModal onRecalcular={usuarioTemAcesso(sessao, 'auditoria-cte') ? () => mudarPagina('auditoria-cte') : undefined} />}

@@ -16,12 +16,14 @@ export const MENU_GRUPOS = [
       { chave: 'simulador-reversa', label: 'Simulador Reversa' },
       { chave: 'produtos-catalogo', label: 'Catalogo de produtos' },
       { chave: 'tabelas-negociacao', label: 'Negociacoes' },
+      { chave: 'fracionado-portal', label: 'Portal tabelas fracionado' },
       { chave: 'reajustes', label: 'Reajustes' },
       { chave: 'perda-realizado', label: 'Perda por transportadora' },
       { chave: 'oportunidade-origem', label: 'Oportunidade por origem' },
       { chave: 'oportunidade-transportadora', label: 'Oportunidade transportadora' },
       { chave: 'simular-saida-transportadora', label: 'Saida de transportadora' },
       { chave: 'tabela-padrao-b2c', label: 'Tabela padrao B2C' },
+      { chave: 'rotas-b2c', label: 'Rotas B2C (download)' },
       { chave: 'gestao-contratos', label: 'Gestao de contratos' },
     ],
   },
@@ -32,6 +34,7 @@ export const MENU_GRUPOS = [
       { chave: 'consulta-tracking', label: 'Consulta Tracking' },
       { chave: 'tracking-prazos', label: 'Acompanhar entregas' },
       { chave: 'torre-controle', label: 'Torre de controle' },
+      { chave: 'painel-black', label: 'Painel Black' },
       { chave: 'painel-operacao', label: 'Painel operacao' },
       { chave: 'lotacao-cotacao', label: 'Gestao de tabelas lotacao' },
       { chave: 'lotacao', label: 'Gestao de tabelas lotacao', soSemAcesso: 'lotacao-cotacao' },
@@ -82,6 +85,7 @@ export const MENU_GRUPOS = [
       { chave: 'transportadoras', label: 'Transportadoras' },
       { chave: 'usuarios', label: 'Usuarios' },
       { chave: 'usuarios-ativos', label: 'Usuarios ativos' },
+      { chave: 'consumo-sistema', label: 'Consumo do sistema' },
       { chave: 'ferramentas', label: 'Ferramentas' },
     ],
   },
@@ -103,6 +107,7 @@ const ICONS = {
   'tracking-prazos': 'M4 19V5m0 14h16M7 15l3-3 3 2 5-7m0 0h-4m4 0v4',
   'auditoria-ecommerce': 'M3 3v18h18M7 15l4-4 3 3 5-6',
   'torre-controle': 'M5 20V9h4v11H5zm5 0V4h4v16h-4zm5 0v-7h4v7h-4z',
+  'painel-black': 'M3 7h11v9H3V7zm11 3h4l3 3v3h-7v-6zM7 19a2 2 0 100-4 2 2 0 000 4zm10 0a2 2 0 100-4 2 2 0 000 4z',
   reajustes: 'M4 17l6-6 4 4 6-8m0 0h-5m5 0v5',
   'gestao-contratos': 'M7 3h7l5 5v13H7a2 2 0 01-2-2V5a2 2 0 012-2zm7 0v5h5M9 13h6M9 17h4',
   robos: 'M9 3h6v3H9V3zm-4 5h14a1 1 0 011 1v9a1 1 0 01-1 1H5a1 1 0 01-1-1V9a1 1 0 011-1zm4 4h.01M15 12h.01M9 16h6',
@@ -113,6 +118,7 @@ const ICONS = {
   'icms-uf': 'M4 4h16v16H4V4zm4 4h8M8 12h8M8 16h5',
   usuarios: 'M16 11a4 4 0 10-8 0 4 4 0 008 0zm-12 9a8 8 0 0116 0',
   'usuarios-ativos': 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
+  'consumo-sistema': 'M4 19h16M6 16V9m4 7V5m4 11v-5m4 5V7',
   'minha-senha': 'M7 11V8a5 5 0 0110 0v3m-11 0h12v10H6V11zm6 4v3',
 };
 
@@ -152,6 +158,8 @@ export default function Sidebar({
   recolhida = false,
   menuMobileAberto = false,
   onFecharMobile,
+  preferencias,
+  onPreferencias,
 }) {
   const inicial = (usuario?.nome || 'A')[0].toUpperCase();
   const grupos = MENU_GRUPOS
@@ -175,8 +183,8 @@ export default function Sidebar({
 
       <aside className={`sidebar-app ${recolhida ? 'is-collapsed' : ''} ${menuMobileAberto ? 'is-mobile-open' : ''}`}>
         <div className="sidebar-brand">
-          <div className="brand-mark">A</div>
-          <img src={amdLogo} alt="AMD LOG" className="brand-logo" />
+          <div className="brand-mark">{preferencias?.identidade === 'cantu' ? 'C' : 'A'}</div>
+          {preferencias?.identidade === 'cantu' ? <div className="cantu-wordmark" aria-label="Cantu">cantu</div> : <img src={amdLogo} alt="AMD LOG" className="brand-logo" />}
           <div className="brand-copy">
             <strong>Central de Fretes</strong>
             <span>Operacao, simulacao e auditoria</span>
@@ -203,6 +211,23 @@ export default function Sidebar({
         </nav>
 
         <div className="sidebar-footer-note">
+          <div className="appearance-controls" aria-label="Aparência">
+            <label>
+              <span>Identidade</span>
+              <select value={preferencias?.identidade || 'amd'} onChange={(event) => onPreferencias({ ...preferencias, identidade: event.target.value })}>
+                <option value="amd">AMD</option>
+                <option value="cantu">Cantu</option>
+              </select>
+            </label>
+            <label>
+              <span>Tema</span>
+              <select value={preferencias?.modoCor || 'automatico'} onChange={(event) => onPreferencias({ ...preferencias, modoCor: event.target.value })}>
+                <option value="claro">Claro</option>
+                <option value="escuro">Escuro</option>
+                <option value="automatico">Automático</option>
+              </select>
+            </label>
+          </div>
           <div className="sidebar-user-row">
             <div className="sidebar-avatar">{inicial}</div>
             <div className="sidebar-user-meta">

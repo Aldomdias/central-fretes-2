@@ -65,6 +65,64 @@ export async function consultarFatura(invoiceId) {
   return (await chamar({ acao: 'fatura', invoiceId })).fatura;
 }
 
+/** Linhas sem CT-e da fatura (`missingCtes`, cada uma com `import`). Vem junto da consulta de situacao. */
+export async function consultarCtesFaltantes(invoiceId) {
+  const f = await consultarFatura(invoiceId);
+  return { state: f?.state, missingCtes: Array.isArray(f?.missingCtes) ? f.missingCtes : [] };
+}
+
+function paraBase64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/** Le o arquivo como bytes e converte direto para Base64: sem parse, sem reformatar (a assinatura exige o original). */
+export async function arquivoParaBase64(arquivo) {
+  return paraBase64(new Uint8Array(await arquivo.arrayBuffer()));
+}
+
+/** Um envio (ate 50 XMLs). `requestId` novo por envio diferente; o mesmo ao repetir o mesmo corpo. */
+export function enviarCtesXml({ invoiceId, xmls, requestId = crypto.randomUUID() }) {
+  return chamar({ acao: 'ctes', requestId, invoiceId, ctes: xmls.map((xml) => ({ xml })) }).then((r) => ({ ...r, requestId }));
+}
+
+/**
+ * Envia varios arquivos da mesma fatura, em chamadas de ate 50 XMLs / ~3 MB. Devolve o resultado POR arquivo:
+ * { nome, status: queued|alreadyExists|rejected|erro, code, message, cteKey }. Erro de chamada marca so aquele grupo.
+ */
+export async function enviarArquivosCte(invoiceId, arquivos, { aoProgredir } = {}) {
+  const itens = [];
+  for (const a of arquivos) itens.push({ nome: a.name, xml: await arquivoParaBase64(a) });
+  return enviarItensXml(invoiceId, itens, { aoProgredir });
+}
+
+/** Mesmo envio, para XMLs ja em Base64 (ex.: guardados na base): itens = [{ nome, xml, ...extra }]. */
+export async function enviarItensXml(invoiceId, itens, { aoProgredir } = {}) {
+  const grupos = [];
+  let atual = []; let bytes = 0;
+  for (const it of itens) {
+    if (atual.length && (atual.length >= 50 || bytes + it.xml.length > 3 * 1024 * 1024)) { grupos.push(atual); atual = []; bytes = 0; }
+    atual.push(it); bytes += it.xml.length;
+  }
+  if (atual.length) grupos.push(atual);
+
+  const saida = [];
+  for (const g of grupos) {
+    try {
+      const r = await enviarCtesXml({ invoiceId, xmls: g.map((x) => x.xml) });
+      g.forEach((x, i) => {
+        const c = (r.ctes || []).find((y) => y.index === i) || {};
+        saida.push({ nome: x.nome, chave: x.chave || null, status: c.status || 'erro', code: c.code || null, message: c.message || null, cteKey: c.cteKey || null });
+      });
+    } catch (e) {
+      g.forEach((x) => saida.push({ nome: x.nome, chave: x.chave || null, status: 'erro', code: e.code || null, message: e.message, cteKey: null }));
+    }
+    aoProgredir?.(saida.length, itens.length);
+  }
+  return saida;
+}
+
 const CHAVE_MOTIVOS = 'amd:oms:motivos';
 /** Motivos de tratativa: lidos uma vez por dia e guardados em cache. */
 export async function carregarMotivos({ forcar = false } = {}) {

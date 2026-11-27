@@ -3,6 +3,7 @@ import { identificacaoSapDoCte, resumirCtesFatura } from '../utils/diagnosticoFa
 import { casarLancamentoPeloGrupo, chaveCasamentoCte, situacaoLancamentoCte } from '../utils/lancamentosCteSap';
 import { carregarGruposRaizTransportadora } from './transportadoraCnpjsService';
 import { ehLinhaNfse } from '../utils/nfseFatura';
+import { mapaFornecedoresCompras } from './fornecedoresComprasService';
 
 const PAGINA = 1000;
 const LOTE_FATURAS = 40;
@@ -122,15 +123,35 @@ async function carregarLancamentos(client, detalhes) {
   return porChave;
 }
 
+// Compras: remetente (expedidor) de cada CT-e da fatura, lido da base de CT-es, casado com o cadastro de
+// fornecedores de compras. Devolve Map(chave_cte -> fornecedor) so dos CT-es de fornecedor; null quando o
+// cadastro nao carregou (card fica "verificando" em vez de dizer que nao ha compras).
+async function carregarRemetentesCompras(client, detalhes) {
+  const fornecedores = await mapaFornecedoresCompras();
+  if (!fornecedores.size) return null;
+  const chaves = [...new Set(detalhes.filter((d) => d.excluido_da_versao !== true).map((d) => String(d.chave_cte || '').replace(/\D/g, '')).filter((c) => c.length === 44))];
+  const achados = new Map();
+  if (!chaves.length) return achados;
+  const linhas = await buscarEmLotes(chaves, (lote) => client.from('realizado_local_ctes').select('id,chave_cte,documento_remetente,chave_nfe').in('chave_cte', lote));
+  linhas.forEach((r) => {
+    // Sem o remetente gravado, o emitente da NF-e (posicoes 7-20 da chave) e o mesmo CNPJ.
+    const nfe = String(r.chave_nfe || '').replace(/\D/g, '');
+    const cnpj = String(r.documento_remetente || '').replace(/\D/g, '') || (nfe.length === 44 ? nfe.slice(6, 20) : '');
+    const f = fornecedores.get(cnpj);
+    if (f) achados.set(String(r.chave_cte).replace(/\D/g, ''), { cnpj, nome: f.nome, codigo: f.codigo || '', ativo: f.ativo !== false });
+  });
+  return achados;
+}
+
 // Resumo de CT-es x partida no SAP de um lote de faturas: Map(faturaId -> resumo).
 export async function carregarResumoCtesFaturas(faturaIds = []) {
   if (!isSupabaseConfigured() || !faturaIds.length) return new Map();
   const client = getSupabaseClient();
   const detalhes = await carregarDetalhes(client, faturaIds);
-  const lancamentos = await carregarLancamentos(client, detalhes);
+  const [lancamentos, compras] = await Promise.all([carregarLancamentos(client, detalhes), carregarRemetentesCompras(client, detalhes)]);
   const porFatura = new Map(faturaIds.map((id) => [String(id), []]));
   detalhes.forEach((d) => porFatura.get(String(d.fatura_id))?.push(d));
-  return new Map([...porFatura].map(([id, lista]) => [id, resumirCtesFatura(lista, lancamentos)]));
+  return new Map([...porFatura].map(([id, lista]) => [id, resumirCtesFatura(lista, lancamentos, compras)]));
 }
 
 // Partida no SAP de cada CT-e de uma fatura (tela da fatura): Map(detalheId -> situacao).
@@ -482,6 +503,42 @@ export async function marcarEnviadaAntecipacao(ids = [], marcar = true, usuario 
     // eslint-disable-next-line no-await-in-loop
     const { error } = await client.from('auditoria_fatura_historico').insert(historico.slice(i, i + 200));
     if (error) { console.warn('Historico da antecipacao nao registrado:', error.message); break; }
+  }
+  return gravadas;
+}
+
+// Baixa de saneamento: faturas antigas em aberto que nao devemos mais. Saem de em aberto/vencidas/totais
+// e ficam so no card "Baixados". Desmarcar devolve (o status da fatura nao e mexido). Devolve os campos por id.
+export async function marcarBaixadas(ids = [], marcar = true, usuario = '', motivo = '') {
+  if (!isSupabaseConfigured() || !ids.length) return new Map();
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const campos = marcar
+    ? { baixada_saneamento: true, baixada_saneamento_em: agora, baixada_saneamento_por: usuario || null, baixada_saneamento_motivo: motivo || null }
+    : { baixada_saneamento: false, baixada_saneamento_em: null, baixada_saneamento_por: null, baixada_saneamento_motivo: null };
+  const gravadas = new Map();
+  for (let i = 0; i < ids.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await client.from('faturas').update(campos).in('id', ids.slice(i, i + 200)).select('id');
+    if (error) {
+      if (/baixada_saneamento/.test(error.message || '')) throw new Error('A migration 20261125_013_faturas_baixada_saneamento.sql ainda não foi aplicada no Supabase.');
+      throw error;
+    }
+    (data || []).forEach((r) => gravadas.set(r.id, campos));
+  }
+  const historico = [...gravadas.keys()].map((id) => ({
+    id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `baixa-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    fatura_id: id,
+    created_at: agora,
+    acao: marcar ? 'BAIXADA_SANEAMENTO' : 'BAIXADA_SANEAMENTO_DESFEITA',
+    descricao: marcar ? `Baixada no saneamento (não devemos mais) pela tela Diagnóstico.${motivo ? ` Motivo: ${motivo}` : ''}` : 'Baixa de saneamento desfeita pela tela Diagnóstico: volta para em aberto.',
+    usuario_nome: usuario || null,
+    usuario_email: '',
+  }));
+  for (let i = 0; i < historico.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await client.from('auditoria_fatura_historico').insert(historico.slice(i, i + 200));
+    if (error) { console.warn('Historico da baixa nao registrado:', error.message); break; }
   }
   return gravadas;
 }

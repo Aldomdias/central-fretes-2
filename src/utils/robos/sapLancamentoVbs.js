@@ -54,6 +54,142 @@ export function marcarPassos(corpo, etapa) {
     .join('\n');
 }
 
+// ME21N: o numero da tela principal (subSUB0:SAPLMEGUI:00xx) muda conforme o cabecalho, a sintese de
+// itens e o detalhe do item estao abertos ou recolhidos (o SAP guarda esse layout por usuario). As macros
+// originais tinham o numero fixo; aqui ele e lido na hora (TelaMe) e os blocos recolhidos sao abertos
+// antes de mexer nos campos deles (AbrirBlocosMe).
+const TELA_ME = /wnd\[0\]\/usr\/subSUB0:SAPLMEGUI:(?:\d{4}|" & Mid\(session\.ActiveWindow\.SystemFocus\.Id, 49, 4\) & ")/g;
+
+export function telaMeDinamica(corpo) {
+  return corpo
+    .split('\n')
+    .flatMap((linha) => {
+      const nova = linha.replace(TELA_ME, 'wnd[0]/usr/subSUB0:SAPLMEGUI:" & TelaMe() & "');
+      if (nova === linha || !nova.includes('SAPLMEVIEWS')) return [nova];
+      return [`${nova.match(/^\s*/)[0]}AbrirBlocosMe`, nova];
+    })
+    .join('\n');
+}
+
+export const AUX_ME21N = [
+  "' Numero atual da tela principal da ME21N (muda conforme os blocos abertos ou recolhidos).",
+  'Function TelaMe()',
+  '    Dim filhos, i, id, p',
+  '    On Error Resume Next',
+  '    TelaMe = ""',
+  '    Set filhos = session.findById("wnd[0]/usr").Children',
+  '    For i = 0 To filhos.Count - 1',
+  '        id = "" : id = filhos(i).Id',
+  '        p = InStr(id, "subSUB0:SAPLMEGUI:")',
+  '        If p > 0 Then',
+  '            TelaMe = Mid(id, p + 18, 4)',
+  '            Exit For',
+  '        End If',
+  '    Next',
+  '    If TelaMe = "" Then TelaMe = Mid(session.ActiveWindow.SystemFocus.Id, 49, 4)',
+  '    Err.Clear',
+  'End Function',
+  '',
+  "' Botao de abrir/recolher (btnDYN_4000-BUTTON) dentro de um bloco da ME21N.",
+  'Function AcharBotaoBloco(obj, prof)',
+  '    Dim filhos, i, id, achou',
+  '    On Error Resume Next',
+  '    Set AcharBotaoBloco = Nothing',
+  '    If prof > 3 Then Exit Function',
+  '    Set filhos = Nothing',
+  '    Set filhos = obj.Children',
+  '    If Err.Number <> 0 Or filhos Is Nothing Then Err.Clear : Exit Function',
+  '    For i = 0 To filhos.Count - 1',
+  '        id = "" : id = filhos(i).Id',
+  '        If InStr(id, "btnDYN_4000-BUTTON") > 0 Then',
+  '            Set AcharBotaoBloco = filhos(i)',
+  '            Exit Function',
+  '        End If',
+  '        Set achou = Nothing',
+  '        Set achou = AcharBotaoBloco(filhos(i), prof + 1)',
+  '        If Not achou Is Nothing Then',
+  '            Set AcharBotaoBloco = achou',
+  '            Exit Function',
+  '        End If',
+  '    Next',
+  '    Err.Clear',
+  'End Function',
+  '',
+  "' Abre cabecalho (1), sintese de itens (2) e detalhe do item (3) da ME21N que estiverem recolhidos.",
+  "' Bloco aberto tem o subSUB2:SAPLMEVIEWS:1200; sem ele, aperta o botao do bloco. Nunca fecha nada.",
+  'Sub AbrirBlocosMe()',
+  '    Dim b, base, bloco, conteudo, btn',
+  '    On Error Resume Next',
+  '    If session.Children.Count > 1 Then Exit Sub',
+  '    For b = 1 To 3',
+  '        base = "wnd[0]/usr/subSUB0:SAPLMEGUI:" & TelaMe() & "/subSUB" & b & ":SAPLMEVIEWS:1100"',
+  '        Err.Clear',
+  '        Set bloco = Nothing',
+  '        Set bloco = session.findById(base, False)',
+  '        If Err.Number = 0 And Not bloco Is Nothing Then',
+  '            Set conteudo = Nothing',
+  '            Set conteudo = session.findById(base & "/subSUB2:SAPLMEVIEWS:1200", False)',
+  '            If Err.Number = 0 And conteudo Is Nothing Then',
+  '                Set btn = AcharBotaoBloco(bloco, 0)',
+  '                If Not btn Is Nothing Then',
+  '                    btn.press',
+  '                    WScript.Sleep 500',
+  '                    Log "ME21N: bloco " & b & " estava recolhido e foi aberto"',
+  '                End If',
+  '            End If',
+  '        End If',
+  '    Next',
+  '    Err.Clear',
+  'End Sub',
+];
+
+// MIRO: escolha da empresa. A macro original preenchia 1420 na janela inicial e depois apertava F7
+// (Outra empresa) as cegas; com outra janela na frente o SAP recusa o F7 ("The virtual key is not
+// enabled"). Aqui: se a janela de empresa esta aberta, preenche a empresa certa nela; se e outro aviso,
+// confirma; senao tenta o F7 de novo, ate 10 vezes.
+const EMPRESA_MIRO = /^[ \t]*' AGUARDA A TELA DE SELE[^\n]*\n(?:[^\n]*\n)*?[ \t]*session\.findById\("wnd\[1\]"\)\.sendVKey 0\n/m;
+
+export function empresaMiroSegura(corpo, variavel) {
+  if (!EMPRESA_MIRO.test(corpo)) throw new Error('Trecho de empresa da MIRO nao encontrado');
+  return corpo.replace(EMPRESA_MIRO, `    SelecionarEmpresaMiro ${variavel}\n`);
+}
+
+export const AUX_MIRO = [
+  "' Deixa a MIRO na empresa emp (janela de empresa, avisos na frente e F7 recusado).",
+  'Sub SelecionarEmpresaMiro(emp)',
+  '    Dim t, campo, titulo',
+  '    For t = 1 To 10',
+  '        If session.Children.Count > 1 Then',
+  '            Set campo = Nothing',
+  '            On Error Resume Next',
+  '            Set campo = session.findById("wnd[1]/usr/ctxtBKPF-BUKRS", False)',
+  '            Err.Clear',
+  '            On Error GoTo 0',
+  '            If Not campo Is Nothing Then',
+  '                passo = "miro empresa " & emp',
+  '                campo.Text = emp',
+  '                session.findById("wnd[1]").sendVKey 0',
+  '                WScript.Sleep 1000',
+  '                If session.Children.Count = 1 Then Exit Sub',
+  '            Else',
+  '                passo = "miro aviso antes da empresa"',
+  '                titulo = session.findById("wnd[1]").Text',
+  '                Log "MIRO: janela na frente antes da empresa (" & titulo & "), confirmando"',
+  '                session.findById("wnd[1]").sendVKey 0',
+  '            End If',
+  '        Else',
+  '            passo = "miro F7 outra empresa"',
+  '            On Error Resume Next',
+  '            session.findById("wnd[0]").sendVKey 7',
+  '            Err.Clear',
+  '            On Error GoTo 0',
+  '        End If',
+  '        WScript.Sleep 1000',
+  '    Next',
+  '    Err.Raise 5004, , "MIRO: nao consegui selecionar a empresa " & emp & " (F7 recusado ou janela de empresa nao abriu). SAP: " & StatusSap()',
+  'End Sub',
+];
+
 // Rodando pelo SAP (Alt+F12 > Script Recording and Playback) o objeto WScript nao existe: o script
 // usa Esperar/Parar, que tentam o WScript e, sem ele, fazem a espera e a parada por conta propria.
 const SEM_WSCRIPT = [
@@ -426,6 +562,10 @@ export function corpoNfse(linhas, pasta) {
     '',
     ...CONEXAO,
     '',
+    ...AUX_ME21N,
+    '',
+    ...AUX_MIRO,
+    '',
     'Sub CriarPedidoLinha()',
     '    r = L(kk)',
     `    CNPJ = r(${I.cnpj})`,
@@ -434,7 +574,7 @@ export function corpoNfse(linhas, pasta) {
     `    Valor = r(${I.valor})`,
     `    C_Custo = r(${I.cc})`,
     `    CodImposto = r(${I.codImp})`,
-    marcarPassos(CORPO_NFSE_PEDIDO, 'pedido'),
+    marcarPassos(telaMeDinamica(CORPO_NFSE_PEDIDO), 'pedido'),
     `    NrPedido = NumeroSap(NrPedido, "Pedido")`,
     `    GravarResultado r(${I.id}), "pedido", NrPedido`,
     `    Pedidos(kk) = NrPedido`,
@@ -496,7 +636,7 @@ export function corpoNfse(linhas, pasta) {
     '    Ctg = "YZ"',
     `    CFOP = r(${I.cfop})`,
     marcarPassos(
-      CORPO_NFSE_MIRO.replace(
+      empresaMiroSegura(CORPO_NFSE_MIRO, 'Empresa').replace(
         'session.findById("wnd[0]/tbar[0]/btn[11]").press',
         '    ConferirLiquidoMiro\n    session.findById("wnd[0]/tbar[0]/btn[11]").press',
       ).replace(
@@ -648,9 +788,13 @@ export function corpoCte(linhas, pasta) {
     `    aliquota = ParaNumero(r(${I.aliquota}))`,
     'End Sub',
     '',
+    ...AUX_ME21N,
+    '',
+    ...AUX_MIRO,
+    '',
     'Sub CriarPedidoLinha()',
     '    CarregarLinha',
-    marcarPassos(CORPO_CTE_PEDIDO.replace('session.findById("wnd[0]/sbar").DoubleClick', 'DuploCliqueStatus').replace('NrPedido = Right(session.findById("wnd[0]/sbar").Text, 10)', 'NrPedido = NumeroDoStatus(StatusSap())'), 'pedido'),
+    marcarPassos(telaMeDinamica(CORPO_CTE_PEDIDO).replace('session.findById("wnd[0]/sbar").DoubleClick', 'DuploCliqueStatus').replace('NrPedido = Right(session.findById("wnd[0]/sbar").Text, 10)', 'NrPedido = NumeroDoStatus(StatusSap())'), 'pedido'),
     '    NrPedido = NumeroDoStatus(StatusSap())',
     `    NrPedido = NumeroSap(NrPedido, "Pedido")`,
     `    GravarResultado r(${I.id}), "pedido", NrPedido`,
@@ -659,7 +803,7 @@ export function corpoCte(linhas, pasta) {
     '',
     'Sub CriarMiroLinha()',
     '    CarregarLinha',
-    marcarPassos(CORPO_CTE_MIRO, 'miro'),
+    marcarPassos(empresaMiroSegura(CORPO_CTE_MIRO, 'v_emp'), 'miro'),
     '    nrMiro = Mid(session.findById("wnd[0]/sbar").Text, 14, 10)',
     `    nrMiro = NumeroSap(nrMiro, "MIRO")`,
     `    GravarResultado r(${I.id}), "miro", nrMiro`,
