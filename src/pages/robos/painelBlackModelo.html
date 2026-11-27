@@ -210,12 +210,14 @@ const LIM_AJUSTE = {
 Object.assign(LIM, LIM_AJUSTE);
 // RPA so tem unidade Black em Itajai (0001 - BLACK: 4201/4252) e Jaboatao (0002 - BLACK: 4204/4219):
 // nao opera Black saindo de Serra nem de Itupeva (por isso nao tem limite la).
-const SEM_OPERACAO = ['D004 - Serra|RPA', 'D003 - Itupeva|RPA'];
+// Brasil Web so tem unidade Black em Itajai (0001 - BLACK, bloqueada) e Itupeva (0002 - BLACK, 1000): sem Contagem.
+const SEM_OPERACAO = ['D004 - Serra|RPA', 'D003 - Itupeva|RPA', 'D005 - Contagem|BRASIL WEB'];
 SEM_OPERACAO.forEach(k=>{ delete LIM[k]; });
 // Bloqueadas no sistema (limite 1 no relatorio): o card mostra bloqueada e nao entra no alerta.
 const BLOQ = new Set([
   'D001 - Itajaí SC|TAM', 'D004 - Serra|TAM', 'D002 - Jaboatão dos Guararapes|TAM',
   'D004 - Serra|SOLISTICA', 'D002 - Jaboatão dos Guararapes|SOLISTICA',
+  'D001 - Itajaí SC|BRASIL WEB',
 ]);
 const COR = {'0-A processar':'var(--apr)','1-Agrupado':'var(--agr)','2-Separado':'var(--agr)',
              '3-Confirmado':'var(--agr)','4-Conferido':'var(--agr)','5-NF autorizada':'var(--nf)','6-Carregado':'var(--car)'};
