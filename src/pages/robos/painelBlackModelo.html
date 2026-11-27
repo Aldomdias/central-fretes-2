@@ -164,7 +164,7 @@ const REM = __DADOS__, LIM = __LIMITES__, DIARIO = __DIARIO__, HOJE = '__HOJE__'
 const MESMA_TRANSP = [
   [/L\.?\s*M\.?\s*RAMOS|GENEROSO/i, 'GENEROSO'],
   [/^WM LOG/i, 'WM'], [/^S\s*3\b/i, 'WM'], [/^MOVVI/i, 'MOVVI'], [/^GOL LINHAS/i, 'GOL'], [/^TAM\b/i, 'TAM'],
-  [/^REUNIDAS/i, 'REUNIDAS'], [/^CARVALIMA/i, 'CARVALIMA'], [/RIO VERMELHO/i, 'RIO VERMELHO'], [/^RPA\s*LOG/i, 'RPA'], [/^CONEXAO LOG/i, 'RPA'],
+  [/^REUNIDAS/i, 'REUNIDAS'], [/^CARVALIMA/i, 'CARVALIMA'], [/RIO VERMELHO/i, 'RIO VERMELHO'], [/^RPA\s*LOG/i, 'RPA'], [/^MID\b/i, 'MID'], [/^FABRIS/i, 'FABRIS'], [/^CONEXAO LOG/i, 'RPA'],
 ];
 const nomeTransp = t => {
   t = String(t||'').trim();
@@ -173,10 +173,32 @@ const nomeTransp = t => {
   const m = MESMA_TRANSP.find(([re])=>re.test(semCod));
   return m ? m[1] : semCod;
 };
-REM.forEach(r=>{ r.Transportadora = nomeTransp(r.Transportadora); });
-// Limites que faltam na planilha do robo (se a planilha passar a trazer, vale o da planilha).
-const LIM_EXTRA = {'D004 - Serra|GENEROSO': 750, 'D059 - Azzurra|WM': 5000};
-Object.entries(LIM_EXTRA).forEach(([k,v])=>{ if(LIM[k]==null) LIM[k]=v; });
+// Origens que sao o mesmo CD: Azzurra fica em Itajai (CPX Itajai 4252 e 4201), conta junto.
+const MESMA_ORIGEM = {'D059 - Azzurra': 'D001 - Itajaí SC'};
+REM.forEach(r=>{ r.Transportadora = nomeTransp(r.Transportadora); r['Depósito'] = MESMA_ORIGEM[r['Depósito']] || r['Depósito']; });
+{ const m={}; DIARIO.forEach(d=>{ const dep=MESMA_ORIGEM[d['Depósito']]||d['Depósito'], k=dep+'|'+d.Dia;
+    const o=(m[k] ??= {...d,'Depósito':dep,'Saída':0,'Entrada':0,'Saldo final':0});
+    o['Saída']+=d['Saída']||0; o.Entrada+=d.Entrada||0; o['Saldo final']+=d['Saldo final']||0; });
+  DIARIO.splice(0, DIARIO.length, ...Object.values(m)); }
+Object.keys(LIM).forEach(k=>{ if (MESMA_ORIGEM[k.split('|')[0]]) delete LIM[k]; });
+// Limites da planilha de contratacao Black Friday (27/11) que a planilha do robo nao traz.
+// Numero = mesmo limite todo dia; objeto = 'padrao' + dias diferentes. Se o robo trouxer o limite, vale o do robo.
+const LIM_PLANILHA = {"D001 - Itajaí SC|ALFA": 200,
+  "D001 - Itajaí SC|MID": 600,
+  "D001 - Itajaí SC|REUNIDAS": 500,
+  "D002 - Jaboatão dos Guararapes|DOMINALOG": 150,
+  "D002 - Jaboatão dos Guararapes|TERRA BRASIL": 600,
+  "D003 - Itupeva|RPA": {"padrao": 2000, "2026-11-01": 0, "2026-11-02": 0, "2026-11-06": 1843, "2026-11-07": 1440, "2026-11-08": 0, "2026-11-12": 1843, "2026-11-13": 1728, "2026-11-14": 1152, "2026-11-15": 0, "2026-11-19": 1843, "2026-11-20": 0, "2026-11-21": 1728, "2026-11-22": 173, "2026-12-05": 982},
+  "D004 - Serra|FERNANDITO": 150,
+  "D004 - Serra|GENEROSO": {"padrao": 600, "2026-11-01": 0, "2026-11-02": 0, "2026-11-07": 0, "2026-11-08": 0, "2026-11-14": 0, "2026-11-15": 0, "2026-11-20": 0, "2026-11-21": 0, "2026-11-22": 0, "2026-11-26": 750, "2026-11-27": 750, "2026-11-28": 750, "2026-11-29": 750},
+  "D004 - Serra|RPA": {"padrao": 2000, "2026-11-01": 0, "2026-11-02": 0, "2026-11-07": 1849, "2026-11-08": 0, "2026-11-14": 1479, "2026-11-15": 0, "2026-11-20": 0, "2026-11-22": 222, "2026-12-05": 1258},
+  "D005 - Contagem|TRANSLOVATO": 1800,
+  "D033 - Rio de Janeiro|PAJUCARA": 800,
+  "D033 - Rio de Janeiro|TAM": {"padrao": 300, "2026-11-07": 0, "2026-11-14": 0, "2026-11-25": 400, "2026-11-26": 400, "2026-11-27": 400, "2026-11-28": 400, "2026-11-29": 400, "2026-11-30": 400},
+  "D033 - Rio de Janeiro|TOTAL EXPRESS": 800,
+  "D033 - Rio de Janeiro|TRANSLOVATO": 900};
+Object.entries(LIM_PLANILHA).forEach(([k,v])=>{ if (LIM[k]!=null) return;
+  LIM[k] = typeof v==='number' ? v : (v[HOJE] ?? v.padrao); });
 const COR = {'0-A processar':'var(--apr)','1-Agrupado':'var(--agr)','2-Separado':'var(--agr)',
              '3-Confirmado':'var(--agr)','4-Conferido':'var(--agr)','5-NF autorizada':'var(--nf)','6-Carregado':'var(--car)'};
 const GRP = e => e==='0-A processar'?'apr':e==='6-Carregado'?'car':e==='5-NF autorizada'?'nf':'agr';
