@@ -301,7 +301,7 @@ function render(){
   const g={}; L.forEach(r=>(g[r['Depósito']+'|'+r.Transportadora] ??= []).push(r));
   let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), s=somaOcupacao(R.filter(ocupaDia)), lim=LIM[k]||null,
      pct = lim ? s.tot/lim*100 : null, bloq = BLOQ.has(k);
-     return {k,dep,tr,R,RA,s,sa,lim,pct,bloq,ord:bloq?-1:(pct??-1),fx:bloq?-1:faixa(pct),
+     return {k,dep,tr,R,RA,s,sa,lim,pct,bloq,ord:(pct??-1),fx:faixa(pct),
              ent:tot(R.filter(r=>r['Dia entrada']===HOJE)), car:tot(R.filter(r=>r['Dia carregamento']===HOJE))};});
   if (document.getElementById('fSoLim').checked) cards = cards.filter(c=>c.lim);
   const nAl = cards.filter(c=>c.fx>=2).length, nEs = cards.filter(c=>c.fx===3).length;
