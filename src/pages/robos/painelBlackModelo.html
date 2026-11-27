@@ -200,7 +200,7 @@ const LIM_PLANILHA = {"D001 - Itajaí SC|ALFA": 200,
 Object.entries(LIM_PLANILHA).forEach(([k,v])=>{ if (LIM[k]!=null) return;
   LIM[k] = typeof v==='number' ? v : (v[HOJE] ?? v.padrao); });
 // Ajustes combinados depois da planilha: valem por cima do robo e da planilha.
-const LIM_AJUSTE = {'D004 - Serra|MOVVI': 500};
+const LIM_AJUSTE = {'D004 - Serra|MOVVI': 1000};
 Object.assign(LIM, LIM_AJUSTE);
 const COR = {'0-A processar':'var(--apr)','1-Agrupado':'var(--agr)','2-Separado':'var(--agr)',
              '3-Confirmado':'var(--agr)','4-Conferido':'var(--agr)','5-NF autorizada':'var(--nf)','6-Carregado':'var(--car)'};
