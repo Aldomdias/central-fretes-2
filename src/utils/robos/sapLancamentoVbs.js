@@ -143,6 +143,53 @@ export const AUX_ME21N = [
   'End Sub',
 ];
 
+// MIRO: escolha da empresa. A macro original preenchia 1420 na janela inicial e depois apertava F7
+// (Outra empresa) as cegas; com outra janela na frente o SAP recusa o F7 ("The virtual key is not
+// enabled"). Aqui: se a janela de empresa esta aberta, preenche a empresa certa nela; se e outro aviso,
+// confirma; senao tenta o F7 de novo, ate 10 vezes.
+const EMPRESA_MIRO = /^[ \t]*' AGUARDA A TELA DE SELE[^\n]*\n(?:[^\n]*\n)*?[ \t]*session\.findById\("wnd\[1\]"\)\.sendVKey 0\n/m;
+
+export function empresaMiroSegura(corpo, variavel) {
+  if (!EMPRESA_MIRO.test(corpo)) throw new Error('Trecho de empresa da MIRO nao encontrado');
+  return corpo.replace(EMPRESA_MIRO, `    SelecionarEmpresaMiro ${variavel}\n`);
+}
+
+export const AUX_MIRO = [
+  "' Deixa a MIRO na empresa emp (janela de empresa, avisos na frente e F7 recusado).",
+  'Sub SelecionarEmpresaMiro(emp)',
+  '    Dim t, campo, titulo',
+  '    For t = 1 To 10',
+  '        If session.Children.Count > 1 Then',
+  '            Set campo = Nothing',
+  '            On Error Resume Next',
+  '            Set campo = session.findById("wnd[1]/usr/ctxtBKPF-BUKRS", False)',
+  '            Err.Clear',
+  '            On Error GoTo 0',
+  '            If Not campo Is Nothing Then',
+  '                passo = "miro empresa " & emp',
+  '                campo.Text = emp',
+  '                session.findById("wnd[1]").sendVKey 0',
+  '                WScript.Sleep 1000',
+  '                If session.Children.Count = 1 Then Exit Sub',
+  '            Else',
+  '                passo = "miro aviso antes da empresa"',
+  '                titulo = session.findById("wnd[1]").Text',
+  '                Log "MIRO: janela na frente antes da empresa (" & titulo & "), confirmando"',
+  '                session.findById("wnd[1]").sendVKey 0',
+  '            End If',
+  '        Else',
+  '            passo = "miro F7 outra empresa"',
+  '            On Error Resume Next',
+  '            session.findById("wnd[0]").sendVKey 7',
+  '            Err.Clear',
+  '            On Error GoTo 0',
+  '        End If',
+  '        WScript.Sleep 1000',
+  '    Next',
+  '    Err.Raise 5004, , "MIRO: nao consegui selecionar a empresa " & emp & " (F7 recusado ou janela de empresa nao abriu). SAP: " & StatusSap()',
+  'End Sub',
+];
+
 // Rodando pelo SAP (Alt+F12 > Script Recording and Playback) o objeto WScript nao existe: o script
 // usa Esperar/Parar, que tentam o WScript e, sem ele, fazem a espera e a parada por conta propria.
 const SEM_WSCRIPT = [
@@ -517,6 +564,8 @@ export function corpoNfse(linhas, pasta) {
     '',
     ...AUX_ME21N,
     '',
+    ...AUX_MIRO,
+    '',
     'Sub CriarPedidoLinha()',
     '    r = L(kk)',
     `    CNPJ = r(${I.cnpj})`,
@@ -587,7 +636,7 @@ export function corpoNfse(linhas, pasta) {
     '    Ctg = "YZ"',
     `    CFOP = r(${I.cfop})`,
     marcarPassos(
-      CORPO_NFSE_MIRO.replace(
+      empresaMiroSegura(CORPO_NFSE_MIRO, 'Empresa').replace(
         'session.findById("wnd[0]/tbar[0]/btn[11]").press',
         '    ConferirLiquidoMiro\n    session.findById("wnd[0]/tbar[0]/btn[11]").press',
       ).replace(
@@ -741,6 +790,8 @@ export function corpoCte(linhas, pasta) {
     '',
     ...AUX_ME21N,
     '',
+    ...AUX_MIRO,
+    '',
     'Sub CriarPedidoLinha()',
     '    CarregarLinha',
     marcarPassos(telaMeDinamica(CORPO_CTE_PEDIDO).replace('session.findById("wnd[0]/sbar").DoubleClick', 'DuploCliqueStatus').replace('NrPedido = Right(session.findById("wnd[0]/sbar").Text, 10)', 'NrPedido = NumeroDoStatus(StatusSap())'), 'pedido'),
@@ -752,7 +803,7 @@ export function corpoCte(linhas, pasta) {
     '',
     'Sub CriarMiroLinha()',
     '    CarregarLinha',
-    marcarPassos(CORPO_CTE_MIRO, 'miro'),
+    marcarPassos(empresaMiroSegura(CORPO_CTE_MIRO, 'v_emp'), 'miro'),
     '    nrMiro = Mid(session.findById("wnd[0]/sbar").Text, 14, 10)',
     `    nrMiro = NumeroSap(nrMiro, "MIRO")`,
     `    GravarResultado r(${I.id}), "miro", nrMiro`,
