@@ -163,7 +163,7 @@ const REM = __DADOS__, LIM = __LIMITES__, DIARIO = __DIARIO__, HOJE = '__HOJE__'
 // L.M. RAMOS e a GENEROSO.
 const MESMA_TRANSP = [
   [/L\.?\s*M\.?\s*RAMOS|GENEROSO/i, 'GENEROSO'],
-  [/^WM LOG/i, 'WM'], [/^MOVVI/i, 'MOVVI'], [/^GOL LINHAS/i, 'GOL'], [/^TAM\b/i, 'TAM'],
+  [/^WM LOG/i, 'WM'], [/^S\s*3\b/i, 'WM'], [/^MOVVI/i, 'MOVVI'], [/^GOL LINHAS/i, 'GOL'], [/^TAM\b/i, 'TAM'],
   [/^REUNIDAS/i, 'REUNIDAS'], [/^CARVALIMA/i, 'CARVALIMA'], [/RIO VERMELHO/i, 'RIO VERMELHO'], [/^RPA\s*LOG/i, 'RPA'], [/^CONEXAO LOG/i, 'RPA'],
 ];
 const nomeTransp = t => {
