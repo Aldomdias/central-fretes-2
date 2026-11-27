@@ -175,6 +175,9 @@ const nomeTransp = t => {
 };
 // Origens que sao o mesmo CD: Azzurra fica em Itajai (CPX Itajai 4252 e 4201), conta junto.
 const MESMA_ORIGEM = {'D059 - Azzurra': 'D001 - Itajaí SC'};
+// MELI COLETAS (Mercado Livre coleta) nao entra no painel: tira das remessas antes de qualquer conta.
+{ const sem = REM.filter(r=>!/MELI\s*COLETAS/i.test(String(r.Transportadora||'')) && !/MELI\s*COLETAS/i.test(String(r['Transp. SAP']||'')));
+  REM.splice(0, REM.length, ...sem); }
 REM.forEach(r=>{ r.Transportadora = nomeTransp(r.Transportadora); r['Depósito'] = MESMA_ORIGEM[r['Depósito']] || r['Depósito']; });
 { const m={}; DIARIO.forEach(d=>{ const dep=MESMA_ORIGEM[d['Depósito']]||d['Depósito'], k=dep+'|'+d.Dia;
     const o=(m[k] ??= {...d,'Depósito':dep,'Saída':0,'Entrada':0,'Saldo final':0});
