@@ -334,11 +334,11 @@ function render(){
   // Saldo (o que ainda nao carregou) = que veio de ontem sem carregamento + entrou hoje - carregou hoje.
   // Estourou o limite -> bloqueada por volume. Nao estourou -> liberada. O que ja carregou sai do saldo.
   // Flag 'so carregados com placa': so abate o carregado que tem placa; o carregado sem placa (sp) continua na conta.
-  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), sp=AJ.soPlaca ? tot(R.filter(r=>r['Dia carregamento']===HOJE && !r.Placa)) : 0, s={...sa, sai:sp, tot:sa.tot+sp}, lim=LIM[k]||null,
+  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), sp=AJ.soPlaca ? tot(R.filter(r=>r['Dia carregamento']===HOJE && !r.Placa)) : 0, cp=AJ.soPlaca ? tot(R.filter(r=>r['Dia carregamento']===HOJE && r.Placa)) : 0, s={...sa, sai:sp, tot:sa.tot+sp}, lim=LIM[k]||null,
      pct = lim ? s.tot/lim*100 : null, man = (k in AJ.manual) ? AJ.manual[k] : (INATIVA.has(k) ? 'inativ' : BLOQ.has(k) ? 'bloq' : ''),
      inativ = man==='inativ', desbloq = man==='desbloq', bloqM = man==='bloq',
      bloqV = !inativ && !desbloq && !bloqM && !!(lim && s.tot > lim), bloq = bloqM || bloqV;
-     return {k,dep,tr,R,RA,s,sa,sp,lim,pct,inativ,desbloq,bloq,bloqM,bloqV,man,ord:(pct??-1),fx:faixa(pct),
+     return {k,dep,tr,R,RA,s,sa,sp,cp,lim,pct,inativ,desbloq,bloq,bloqM,bloqV,man,ord:(pct??-1),fx:faixa(pct),
              ent:tot(R.filter(r=>r['Dia entrada']===HOJE)), car:tot(R.filter(r=>r['Dia carregamento']===HOJE))};});
   if (document.getElementById('fSoLim').checked) cards = cards.filter(c=>c.lim);
   const nAl = cards.filter(c=>c.fx>=2).length, nEs = cards.filter(c=>c.fx===3).length;
@@ -378,7 +378,7 @@ function render(){
         <span>Carreg. hoje<b style="color:var(--car)">${fmt(c.car)}</b></span>
         <span>A proc.<b>${fmt(c.sa.apr)}</b></span>
         <span>${c.lim?(c.lim>=c.s.tot?'Livre<b>'+fmt(c.lim-c.s.tot):'Passou<b style="color:var(--estouro)">'+fmt(c.s.tot-c.lim))+'</b>':'Remessas<b>'+c.RA.length+'</b>'}</span></div>
-      ${c.sp?`<div class="libnote">🚗 Só abate o carregado com placa: ${fmt(c.sp)} pneus carregados sem placa continuam na conta</div>`:''}
+      ${(c.sp||c.cp)?`<div class="libnote">🚗 Com placa (abatido): ${fmt(c.cp)} · Sem placa (continua na conta): ${fmt(c.sp)}</div>`:''}
       ${EDIT?`<div class="edit" data-k="${esc(c.k)}">
         <label>Limite <input type="number" min="0" class="edLim" value="${c.lim||''}" placeholder="sem"></label>
         <button type="button" class="edOk">Salvar</button>
