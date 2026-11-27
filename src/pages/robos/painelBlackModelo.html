@@ -5,7 +5,7 @@
 <title>Painel Black</title>
 <style>
   :root{--bg:#f4f5f7;--card:#fff;--txt:#1d2433;--sub:#6b7385;--lin:#e3e6ec;
-        --apr:#b8bfcc;--agr:#f2b134;--nf:#3d7bd9;--car:#2e9e5b;
+        --apr:#b8bfcc;--agr:#f2b134;--nf:#3d7bd9;--car:#2e9e5b;--sai:#1f5f3a;
         --ok:#2e9e5b;--aten:#e0a020;--alerta:#d64545;--estouro:#8b1e3f}
   *{box-sizing:border-box}
   body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--txt)}
@@ -117,12 +117,13 @@
     <label><input type="checkbox" id="fSoLim"> só com limite</label>
   </div>
   <div class="leg">
-    <b style="color:var(--txt)">Carga em aberto:</b>
+    <b style="color:var(--txt)">Ocupação do dia:</b>
+    <span><i style="background:var(--sai)"></i>Já carregado hoje</span>
     <span><i style="background:var(--apr)"></i>A processar</span>
     <span><i style="background:var(--agr)"></i>Agrupado / separação</span>
     <span><i style="background:var(--nf)"></i>NF autorizada</span>
     <span><i style="background:var(--car)"></i>Carregando (placa vinculada)</span>
-    <b style="color:var(--txt);margin-left:10px">Saldo × limite:</b>
+    <b style="color:var(--txt);margin-left:10px">(carregado hoje + aberto) × limite:</b>
     <span><i style="background:var(--ok)"></i>&lt; 60%</span>
     <span><i style="background:var(--aten)"></i>60–80%</span>
     <span><i style="background:var(--alerta)"></i>≥ 80% alerta</span>
@@ -179,13 +180,17 @@ let modo='rank', ord={k:'Pneus',d:-1};
 
 function soma(L){const s={apr:0,agr:0,nf:0,car:0,tot:0}; L.forEach(r=>{s[GRP(r.Etapa)]+=r.Pneus; s.tot+=r.Pneus}); return s;}
 const tot = L => L.reduce((a,r)=>a+r.Pneus,0);
+// Ocupacao do dia contra o limite: o que ja carregou hoje + o que esta em aberto (tudo que entrou ocupa caminhao).
+const ocupaDia = r => aberto(r) || r['Dia carregamento']===HOJE;
+function somaOcupacao(L){const s={sai:0,apr:0,agr:0,nf:0,car:0,tot:0};
+  L.forEach(r=>{ s[aberto(r)?GRP(r.Etapa):'sai']+=r.Pneus; s.tot+=r.Pneus; }); return s;}
 
 function caminhao(s, lim, fx){
   const W=200, x0=4, y0=8, h=58;
   const base = lim ? Math.max(lim, s.tot) : (s.tot || 1);
   let x=x0, segs='';
   // car = placa vinculada / carregando, mas ainda sem baixa de carregado no SAP (continua no saldo)
-  ['car','nf','agr','apr'].forEach(k=>{ if(!s[k])return; const w=s[k]/base*W;
+  ['sai','car','nf','agr','apr'].forEach(k=>{ if(!s[k])return; const w=s[k]/base*W;
     segs+=`<rect x="${x}" y="${y0}" width="${w}" height="${h}" fill="var(--${k})"/>`; x+=w; });
   let marcas='';
   if (lim){
@@ -230,9 +235,9 @@ function render(){
   const L=filtrar(), A=L.filter(aberto), sA=soma(A);
   const CH=L.filter(r=>r['Dia carregamento']===HOJE), EH=L.filter(r=>r['Dia entrada']===HOJE);
   const g={}; L.forEach(r=>(g[r['Depósito']+'|'+r.Transportadora] ??= []).push(r));
-  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), s=soma(RA), lim=LIM[k]||null,
+  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), s=somaOcupacao(R.filter(ocupaDia)), lim=LIM[k]||null,
      pct = lim ? s.tot/lim*100 : null;
-     return {k,dep,tr,R,RA,s,lim,pct,fx:faixa(pct),
+     return {k,dep,tr,R,RA,s,sa,lim,pct,fx:faixa(pct),
              ent:tot(R.filter(r=>r['Dia entrada']===HOJE)), car:tot(R.filter(r=>r['Dia carregamento']===HOJE))};});
   if (document.getElementById('fSoLim').checked) cards = cards.filter(c=>c.lim);
   const nAl = cards.filter(c=>c.fx>=2).length, nEs = cards.filter(c=>c.fx===3).length;
@@ -247,9 +252,9 @@ function render(){
   if (modo==='rank') cards.sort((a,b)=>(b.pct??-1)-(a.pct??-1) || b.s.tot-a.s.tot);
   else cards.sort((a,b)=>a.dep.localeCompare(b.dep) || (b.pct??-1)-(a.pct??-1) || b.s.tot-a.s.tot);
   document.getElementById('subCam').textContent = modo==='rank'
-    ? '(saldo em aberto × limite · do mais perto do limite para o mais longe)' : '(agrupados por CD de origem)';
+    ? '(carregado hoje + em aberto × limite · do mais perto do limite para o mais longe)' : '(agrupados por CD de origem)';
 
-  const tDep={}; cards.forEach(c=>{const t=(tDep[c.dep] ??= {tot:0,car:0,n:0,al:0}); t.tot+=c.s.tot; t.car+=c.car; t.n++; if(c.fx>=2)t.al++;});
+  const tDep={}; cards.forEach(c=>{const t=(tDep[c.dep] ??= {tot:0,car:0,n:0,al:0}); t.tot+=c.sa.tot; t.car+=c.car; t.n++; if(c.fx>=2)t.al++;});
   let ult='';
   document.getElementById('grid').innerHTML = cards.length ? cards.map((c,i)=>{
     let cab='';
@@ -264,10 +269,10 @@ function render(){
       <div class="top"><div><div class="nome ${c.tr==='(SEM TRANSPORTADORA)'?'alerta':''}">${esc(c.tr)}</div>
         <div class="dp">📍 ${esc(c.dep)}${ufs?' · '+esc(ufs):''}</div></div>${tag}</div>
       ${caminhao(c.s,c.lim,c.fx)}
-      <div class="nums"><span>Saldo<b>${fmt(c.s.tot)}</b></span><span>Entrou hoje<b>${fmt(c.ent)}</b></span>
+      <div class="nums"><span>Saldo<b>${fmt(c.sa.tot)}</b></span><span>Entrou hoje<b>${fmt(c.ent)}</b></span>
         <span>Carreg. hoje<b style="color:var(--car)">${fmt(c.car)}</b></span>
-        <span>A proc.<b>${fmt(c.s.apr)}</b></span>
-        <span>${c.lim?'Livre<b>'+fmt(c.lim-c.s.tot)+'</b>':'Remessas<b>'+c.RA.length+'</b>'}</span></div>
+        <span>A proc.<b>${fmt(c.sa.apr)}</b></span>
+        <span>${c.lim?(c.lim>=c.s.tot?'Livre<b>'+fmt(c.lim-c.s.tot):'Passou<b style="color:var(--estouro)">'+fmt(c.s.tot-c.lim))+'</b>':'Remessas<b>'+c.RA.length+'</b>'}</span></div>
       ${placas.length?`<div class="placas">Carregou hoje: ${placas.map(p=>`<span>${esc(p)}</span>`).join('')}</div>`:''}
     </div>`;}).join('') : '<div class="vazio">Nenhum caminhão com esses filtros.</div>';
 
