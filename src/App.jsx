@@ -59,7 +59,7 @@ import RobosPage from './pages/RobosPage';
 import AlertasCteValorPage from './pages/AlertasCteValorPage';
 import PainelBlackPage from './pages/PainelBlackPage';
 import { useFreteStore } from './data/store';
-import { carregarSessao, carregarUsuariosAsync, MODULOS_SISTEMA, sairLocal, usuarioPodeAdministrarUsuarios, usuarioTemAcesso } from './utils/authLocal';
+import { carregarSessao, carregarUsuariosAsync, contaSomentePainelBlack, MODULOS_SISTEMA, sairLocal, usuarioPodeAdministrarUsuarios, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
 import { entrarPresenca, sairPresenca } from './services/presencaService';
 import { definirPaginaTelemetria, encerrarTelemetria, iniciarTelemetria } from './services/telemetriaService';
@@ -238,6 +238,10 @@ export default function App() {
     void sairSupabaseAuth();
     setSessao(null);
   };
+
+  // Conta compartilhada so do Painel Black (TV/monitor da equipe): abre direto o painel na janela
+  // toda, sem menu, cabecalho nem botoes flutuantes. Fica so Atualizar, Tela cheia e Sair.
+  if (contaSomentePainelBlack(sessao)) return <PainelBlackPage modoPainel onSair={sair} />;
 
   const paginas = {
     dashboard: painelGeralAberto ? (

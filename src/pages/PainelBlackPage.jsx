@@ -36,7 +36,9 @@ function montarHtml(payload) {
     .replaceAll('__TIPOS__', () => p.tipos || 'YVEC');
 }
 
-export default function PainelBlackPage() {
+// modoPainel: conta compartilhada so do Painel Black (ex.: TV da equipe). O App nao mostra menu,
+// cabecalho nem botoes flutuantes; a tela ocupa a janela toda e so tem Atualizar, Tela cheia e Sair.
+export default function PainelBlackPage({ modoPainel = false, onSair } = {}) {
   const [snapshot, setSnapshot] = useState(null);
   const [rodada, setRodada] = useState(null);
   const [carregando, setCarregando] = useState(true);
@@ -113,8 +115,9 @@ export default function PainelBlackPage() {
   const html = useMemo(() => (snapshot ? montarHtml(snapshot.payload) : ''), [snapshot]);
   const st = situacao(snapshot, rodada);
 
+  const cheio = modoPainel || telaCheia;
   const faixa = (
-    <div className="table-card" style={{ borderLeft: `4px solid ${st.cor}`, padding: telaCheia ? '6px 12px' : 12, margin: 0, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+    <div className="table-card" style={{ borderLeft: `4px solid ${st.cor}`, padding: cheio ? '6px 12px' : 12, margin: 0, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
       <strong style={{ color: st.cor }}>{carregando && !snapshot ? 'Carregando…' : st.texto}</strong>
       <span style={{ color: '#64748b', fontSize: 12 }}>Atualiza sozinho.</span>
       <span style={{ flex: 1 }} />
@@ -124,9 +127,36 @@ export default function PainelBlackPage() {
       ) : (
         <button type="button" className="btn-secondary audit-small-button" onClick={entrarTelaCheia} disabled={!snapshot}>Tela cheia</button>
       )}
+      {modoPainel && onSair && (
+        <button type="button" className="btn-secondary audit-small-button" onClick={onSair} title="Sair desta conta">Sair</button>
+      )}
       {erro && <span className="error-text">{erro}</span>}
     </div>
   );
+
+  const quadro = (
+    <div
+      ref={quadroRef}
+      style={cheio
+        ? { position: 'fixed', inset: 0, zIndex: 9999, background: '#f4f5f7', display: 'flex', flexDirection: 'column', gap: 6, padding: 6 }
+        : { display: 'flex', flexDirection: 'column', gap: 12 }}
+    >
+      {faixa}
+      {snapshot ? (
+        <iframe
+          title="Painel Black"
+          srcDoc={html}
+          style={cheio
+            ? { width: '100%', flex: 1, minHeight: 0, border: 0, borderRadius: 8, background: '#f4f5f7' }
+            : { width: '100%', height: 'calc(100vh - 210px)', minHeight: 700, border: '1px solid #e2e8f0', borderRadius: 12, background: '#f4f5f7' }}
+        />
+      ) : (!carregando && (
+        <div className="panel-card"><p>Nenhum dado publicado ainda. Rode o robô no PC (C:\robo_black\Atualizar Robo Black.bat).</p></div>
+      ))}
+    </div>
+  );
+
+  if (modoPainel) return quadro;
 
   return (
     <div className="page-stack">
@@ -137,25 +167,7 @@ export default function PainelBlackPage() {
         </div>
       </div>
 
-      <div
-        ref={quadroRef}
-        style={telaCheia
-          ? { position: 'fixed', inset: 0, zIndex: 9999, background: '#f4f5f7', display: 'flex', flexDirection: 'column', gap: 6, padding: 6 }
-          : { display: 'flex', flexDirection: 'column', gap: 12 }}
-      >
-        {faixa}
-        {snapshot ? (
-          <iframe
-            title="Painel Black"
-            srcDoc={html}
-            style={telaCheia
-              ? { width: '100%', flex: 1, minHeight: 0, border: 0, borderRadius: 8, background: '#f4f5f7' }
-              : { width: '100%', height: 'calc(100vh - 210px)', minHeight: 700, border: '1px solid #e2e8f0', borderRadius: 12, background: '#f4f5f7' }}
-          />
-        ) : (!carregando && (
-          <div className="panel-card"><p>Nenhum dado publicado ainda. Rode o robô no PC (C:\robo_black\Atualizar Robo Black.bat).</p></div>
-        ))}
-      </div>
+      {quadro}
     </div>
   );
 }
