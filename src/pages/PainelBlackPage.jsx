@@ -31,7 +31,7 @@ function limparAjustes(a) {
   Object.entries(x.limites || {}).forEach(([k, v]) => { const n = Number(v); if (k && Number.isFinite(n) && n > 0) limites[String(k)] = n; });
   const manual = {};
   Object.entries(x.manual || {}).forEach(([k, v]) => { if (k && ['bloq', 'inativ', 'desbloq', ''].includes(v)) manual[String(k)] = v; });
-  return { limites, manual, soPlaca: x.soPlaca === true };
+  return { limites, manual, soPlaca: x.soPlaca !== false };
 }
 
 function montarHtml(payload, ajustes, editavel) {

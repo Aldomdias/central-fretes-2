@@ -191,7 +191,7 @@
 <script>
 const REM = __DADOS__, LIM = __LIMITES__, DIARIO = __DIARIO__, HOJE = '__HOJE__';
 // Ajustes feitos na tela (salvos para todos): limites editados, bloqueio/desbloqueio/inativacao manual.
-const AJ = __AJUSTES__ || {}; AJ.limites ||= {}; AJ.manual ||= {}; AJ.soPlaca = AJ.soPlaca === true;
+const AJ = __AJUSTES__ || {}; AJ.limites ||= {}; AJ.manual ||= {}; AJ.soPlaca = AJ.soPlaca !== false; // padrao LIGADO: tem placa, reduz; nao tem placa, continua na conta
 const EDIT = __EDITAVEL__;
 // Nomes do SAP -> nome usado na meta (limite). Primeiro tira o codigo da frente
 // ("0002081494 - WM LOGISTICA SPO" -> "WM LOGISTICA SPO"), depois junta apelidos da mesma transportadora.
