@@ -121,6 +121,7 @@
     <span><i style="background:var(--apr)"></i>A processar</span>
     <span><i style="background:var(--agr)"></i>Agrupado / separação</span>
     <span><i style="background:var(--nf)"></i>NF autorizada</span>
+    <span><i style="background:var(--car)"></i>Carregando (placa vinculada)</span>
     <b style="color:var(--txt);margin-left:10px">Saldo × limite:</b>
     <span><i style="background:var(--ok)"></i>&lt; 60%</span>
     <span><i style="background:var(--aten)"></i>60–80%</span>
@@ -176,7 +177,8 @@ function caminhao(s, lim, fx){
   const W=200, x0=4, y0=8, h=58;
   const base = lim ? Math.max(lim, s.tot) : (s.tot || 1);
   let x=x0, segs='';
-  ['nf','agr','apr'].forEach(k=>{ if(!s[k])return; const w=s[k]/base*W;
+  // car = placa vinculada / carregando, mas ainda sem baixa de carregado no SAP (continua no saldo)
+  ['car','nf','agr','apr'].forEach(k=>{ if(!s[k])return; const w=s[k]/base*W;
     segs+=`<rect x="${x}" y="${y0}" width="${w}" height="${h}" fill="var(--${k})"/>`; x+=w; });
   let marcas='';
   if (lim){
