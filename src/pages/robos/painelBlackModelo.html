@@ -28,6 +28,11 @@
   h2{font-size:16px;margin:24px 0 10px} h2 small{color:var(--sub);font-weight:400}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
   .card{background:var(--card);border:1px solid var(--lin);border-radius:12px;padding:12px 14px;position:relative}
+  .card.bloq{border:2px dashed #4a5162;background:#eceef2;overflow:hidden}
+  .card.bloq>*{opacity:.55}
+  .card.bloq::before,.card.bloq::after{content:'';position:absolute;left:-10%;top:50%;width:120%;height:5px;background:#c0172f;opacity:.85;z-index:2;pointer-events:none}
+  .card.bloq::before{transform:rotate(18deg)} .card.bloq::after{transform:rotate(-18deg)}
+  .card.bloq .pos{opacity:1}
   .card.f3{border:2px solid var(--alerta);background:#fff8f8}
   .card.f4{border:2px solid var(--estouro);background:#fff1f4}
   .pos{position:absolute;top:-9px;left:-9px;background:#1d2433;color:#fff;border-radius:50%;width:26px;height:26px;
@@ -216,12 +221,12 @@ Object.assign(LIM, LIM_AJUSTE);
 // Brasil Web so tem unidade Black em Itajai (0001 - BLACK, bloqueada) e Itupeva (0002 - BLACK, 1000): sem Contagem.
 const SEM_OPERACAO = ['D004 - Serra|RPA', 'D003 - Itupeva|RPA', 'D005 - Contagem|BRASIL WEB'];
 SEM_OPERACAO.forEach(k=>{ delete LIM[k]; });
-// Bloqueadas no sistema (limite 1 no relatorio): o card mostra bloqueada e nao entra no alerta.
+// Bloqueadas no sistema = status Bloqueado ou limite 1 no relatorio: o card mostra bloqueada e nao entra no alerta.
 const BLOQ = new Set([
   'D001 - Itajaí SC|TAM', 'D004 - Serra|TAM', 'D002 - Jaboatão dos Guararapes|TAM',
   'D004 - Serra|SOLISTICA', 'D002 - Jaboatão dos Guararapes|SOLISTICA',
   'D001 - Itajaí SC|BRASIL WEB',
-  // ANJUN: 0003 - BLACK Itupeva e 0004 - BLACK Serra bloqueadas por passar de 100 (0002 - BLACK Itajai segue ativa).
+  // ANJUN 0003 - BLACK (Itupeva) e 0004 - BLACK (Serra): status Bloqueado no relatorio (0002 - BLACK Itajai segue ativa).
   'D003 - Itupeva|ANJUN', 'D004 - Serra|ANJUN',
 ]);
 const COR = {'0-A processar':'var(--apr)','1-Agrupado':'var(--agr)','2-Separado':'var(--agr)',
@@ -321,10 +326,10 @@ function render(){
       cab=`<div class="origem"><b>📍 Origem ${esc(c.dep)}</b> · ${t.n} transportadora(s) · saldo ${fmt(t.tot)} pneus · carregou hoje ${fmt(t.car)}${t.al?` · <span style="color:#ff9b9b">🚨 ${t.al} em alerta</span>`:''}</div>`; }
     const placas=[...new Set(c.R.filter(r=>r['Dia carregamento']===HOJE && r.Placa).map(r=>r.Placa))];
     const ufs=[...new Set(c.RA.map(r=>r.UF).filter(Boolean))].sort().join(', ');
-    const tag = c.bloq ? `<span class="tag" style="background:#4a5162">🔒 bloqueada no sistema</span>`
+    const tag = c.bloq ? `<span class="tag" style="background:#c0172f">❌ BLOQUEADA</span>`
               : c.lim ? `<span class="tag" style="background:${FX[c.fx]}">${c.pct.toLocaleString('pt-BR',{maximumFractionDigits:0})}% do limite</span>`
                       : `<span class="tag" style="background:#8a93a5">sem limite</span>`;
-    return cab + `<div class="card ${c.fx>=2?'f'+(c.fx+1):''}">
+    return cab + `<div class="card ${c.bloq?'bloq':c.fx>=2?'f'+(c.fx+1):''}">
       ${modo==='rank'?`<div class="pos">${i+1}º</div>`:''}
       <div class="top"><div><div class="nome ${c.tr==='(SEM TRANSPORTADORA)'?'alerta':''}">${esc(c.tr)}</div>
         <div class="dp">📍 ${esc(c.dep)}${ufs?' · '+esc(ufs):''}</div></div>${tag}</div>
