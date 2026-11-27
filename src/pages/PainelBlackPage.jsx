@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import modeloHtml from './robos/painelBlackModelo.html?raw';
+import logoAmdLog from '../assets/amdlog-logo-faixa.png';
 
 // Painel Black (cargas YVEC): o robo roda no PC do Aldo (C:\robo_black), puxa a ZEWM003 do SAP
 // (a processar, processados e carregados), calcula o saldo por origem x transportadora e publica
@@ -118,6 +119,10 @@ export default function PainelBlackPage({ modoPainel = false, onSair } = {}) {
   const cheio = modoPainel || telaCheia;
   const faixa = (
     <div className="table-card" style={{ borderLeft: `4px solid ${st.cor}`, padding: cheio ? '6px 12px' : 12, margin: 0, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+      <span style={{ display: 'flex', alignItems: 'center', gap: 10, paddingRight: 12, borderRight: '1px solid #e2e8f0' }}>
+        <img src={logoAmdLog} alt="AMD LOG" style={{ height: cheio ? 44 : 46, width: 'auto', display: 'block' }} />
+        <img src="/logo_cantu.png" alt="Cantu" style={{ height: cheio ? 20 : 22, width: 'auto', display: 'block' }} onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+      </span>
       <strong style={{ color: st.cor }}>{carregando && !snapshot ? 'Carregando…' : st.texto}</strong>
       <span style={{ color: '#64748b', fontSize: 12 }}>Atualiza sozinho.</span>
       <span style={{ flex: 1 }} />
@@ -162,7 +167,7 @@ export default function PainelBlackPage({ modoPainel = false, onSair } = {}) {
     <div className="page-stack">
       <div className="page-header">
         <div>
-          <h1>Painel Black · Cargas YVEC</h1>
+          <h1>Painel Black</h1>
           <p>Saldo por origem × transportadora contra o limite do dia, ranking dos piores cenários e saída por unidade. Dados do SAP (ZEWM003) publicados pelo robô.</p>
         </div>
       </div>
