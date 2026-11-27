@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Robô Black · Cargas __TIPOS__</title>
+<style>
+  :root{--bg:#f4f5f7;--card:#fff;--txt:#1d2433;--sub:#6b7385;--lin:#e3e6ec;
+        --apr:#b8bfcc;--agr:#f2b134;--nf:#3d7bd9;--car:#2e9e5b;
+        --ok:#2e9e5b;--aten:#e0a020;--alerta:#d64545;--estouro:#8b1e3f}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--txt)}
+  header{background:#001848;color:#fff;padding:14px 24px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{font-size:20px;margin:0;font-weight:600}
+  header .dia{background:#2f3a52;padding:4px 10px;border-radius:6px;font-size:14px}
+  header .upd{margin-left:auto;font-size:13px;opacity:.8}
+  main{padding:18px 24px;max-width:1500px;margin:auto}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+  .kpi{background:var(--card);border-radius:10px;padding:12px 14px;border:1px solid var(--lin)}
+  .kpi span{display:block;font-size:12px;color:var(--sub)} .kpi b{font-size:24px}
+  .kpi.red{border-color:var(--alerta);background:#fff4f4} .kpi.red b{color:var(--alerta)}
+  .filtros{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+  .filtros input,.filtros select{padding:7px 10px;border:1px solid var(--lin);border-radius:8px;font-size:14px}
+  .seg{display:inline-flex;border:1px solid var(--lin);border-radius:8px;overflow:hidden}
+  .seg button{border:0;background:#fff;padding:7px 12px;cursor:pointer;font-size:13px}
+  .seg button.on{background:#001848;color:#fff}
+  .leg{display:flex;gap:12px;font-size:12px;color:var(--sub);flex-wrap:wrap;margin:6px 0 4px}
+  .leg i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+  h2{font-size:16px;margin:24px 0 10px} h2 small{color:var(--sub);font-weight:400}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+  .card{background:var(--card);border:1px solid var(--lin);border-radius:12px;padding:12px 14px;position:relative}
+  .card.f3{border:2px solid var(--alerta);background:#fff8f8}
+  .card.f4{border:2px solid var(--estouro);background:#fff1f4}
+  .pos{position:absolute;top:-9px;left:-9px;background:#1d2433;color:#fff;border-radius:50%;width:26px;height:26px;
+       font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .card.f3 .pos{background:var(--alerta)} .card.f4 .pos{background:var(--estouro)}
+  .card .top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+  .card .nome{font-weight:600;font-size:14px;line-height:1.25}
+  .card .dp{font-size:12px;color:var(--sub)}
+  .tag{font-size:12px;font-weight:600;padding:2px 8px;border-radius:10px;color:#fff;white-space:nowrap}
+  .nums{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;font-size:11px;color:var(--sub);margin-top:2px;text-align:center}
+  .nums b{display:block;color:var(--txt);font-size:15px}
+  .placas{font-size:12px;margin-top:6px;color:var(--sub)}
+  .placas span{display:inline-block;background:#eef1f6;border:1px solid #d4d9e2;border-radius:4px;padding:1px 6px;margin:2px 3px 0 0;font-family:Consolas,monospace;color:var(--txt)}
+  .origem{grid-column:1/-1;margin:10px 0 0;padding:8px 12px;background:#001848;color:#fff;border-radius:8px;font-size:14px}
+  .duas{display:grid;grid-template-columns:1fr 1fr;gap:14px} @media(max-width:900px){.duas{grid-template-columns:1fr}}
+  .box{background:var(--card);border:1px solid var(--lin);border-radius:12px;padding:12px 14px}
+  .box h3{margin:0 0 8px;font-size:14px}
+  .hb{display:grid;grid-template-columns:170px 1fr 90px;gap:8px;align-items:center;font-size:13px;margin:4px 0}
+  .hb .tr{background:var(--lin);height:14px;border-radius:7px;overflow:hidden;display:flex}
+  .hb .v{text-align:right;color:var(--sub)} .hb .v b{color:var(--txt)}
+  .clic{cursor:pointer} .clic:hover{background:#f4f7fb}
+  table{width:100%;border-collapse:collapse;background:var(--card);font-size:13px}
+  th,td{padding:6px 8px;border-bottom:1px solid var(--lin);text-align:left}
+  th{background:#eef1f6;cursor:pointer;position:sticky;top:0;z-index:1} td.n,th.n{text-align:right}
+  .tabwrap{max-height:520px;overflow:auto;border:1px solid var(--lin);border-radius:10px}
+  .heat td.n{font-variant-numeric:tabular-nums}
+
+  .abas{display:flex;gap:6px;margin:0 0 14px;border-bottom:2px solid var(--lin)}
+  .abas button{border:0;background:none;padding:10px 18px;font-size:15px;font-weight:600;color:var(--sub);cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px}
+  .abas button.on{color:var(--txt);border-bottom-color:#e2231a}
+  .ugrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+  .ucard{background:var(--card);border:1px solid var(--lin);border-radius:14px;padding:14px;position:relative}
+  .ucard.f3{border:2px solid var(--alerta);background:#fff8f8} .ucard.f4{border:2px solid var(--estouro);background:#fff1f4}
+  .ucab{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .logo{height:34px;max-width:130px;object-fit:contain}
+  .selo{background:#e2231a;color:#fff;font-weight:800;font-size:13px;letter-spacing:1px;padding:6px 8px;border-radius:6px}
+  .unome{font-weight:700;font-size:16px;line-height:1.15} .ucod{font-size:12px;color:var(--sub)}
+  .urank{margin-left:auto;font-size:22px;font-weight:800;color:#c9ced8}
+  .unums{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;text-align:center;font-size:11px;color:var(--sub);margin-top:4px}
+  .unums b{display:block;font-size:17px;color:var(--txt)}
+  .share{font-size:12px;color:var(--sub);margin-top:8px}
+  .share .tr{height:8px;background:var(--lin);border-radius:4px;overflow:hidden;margin-top:3px}
+  .share .tr span{display:block;height:100%;background:#e2231a}
+  .spark{margin-top:8px}
+  .udest{font-size:12px;color:var(--sub);margin-top:6px}
+  .udest span{display:inline-block;background:#eef1f6;border-radius:4px;padding:1px 6px;margin:2px 3px 0 0;color:var(--txt)}
+  .vazio{padding:30px;text-align:center;color:var(--sub)}
+  .alerta{color:var(--alerta);font-weight:600}
+</style>
+</head>
+<body>
+<header>
+  <h1>🚚 Robô Black · Cargas __TIPOS__</h1>
+  <span class="dia">Dia __DIA__</span>
+  <span class="dia" style="background:#26324a">Controle desde __INICIO__</span>
+  <span class="upd">Atualizado em <b>__ATUALIZADO__</b> · atualiza a cada 5 min</span>
+</header>
+<main>
+  <div class="abas" id="abas">
+    <button data-a="cam" class="on">🚚 Caminhões</button>
+    <button data-a="uni">🏭 Unidades</button>
+  </div>
+  <div class="kpis" id="kpis"></div>
+
+  <div id="abaUni" style="display:none">
+    <div class="filtros">
+      <span class="seg" id="uOrd">
+        <button data-v="saldo" class="on">Maior saldo</button>
+        <button data-v="ent">Mais entrou hoje</button>
+        <button data-v="car">Mais carregou hoje</button>
+        <button data-v="pct">% da capacidade</button>
+      </span>
+      <span style="font-size:12px;color:var(--sub)">Galpão = saldo em aberto × capacidade diária da unidade (capacidade_unidades.csv). Sem capacidade: comparado à maior unidade.</span>
+    </div>
+    <div class="ugrid" id="ugrid"></div>
+  </div>
+
+  <div id="abaCam">
+
+  <div class="filtros">
+    <select id="fDep"><option value="">Todas as origens (CDs)</option></select>
+    <input id="fBusca" placeholder="Buscar transportadora, placa, UF…" size="28">
+    <span class="seg" id="fOrd">
+      <button data-v="rank" class="on">🏁 Piores cenários primeiro</button>
+      <button data-v="orig">📍 Agrupar por origem</button>
+    </span>
+    <label><input type="checkbox" id="fSoLim"> só com limite</label>
+  </div>
+  <div class="leg">
+    <b style="color:var(--txt)">Carga em aberto:</b>
+    <span><i style="background:var(--apr)"></i>A processar</span>
+    <span><i style="background:var(--agr)"></i>Agrupado / separação</span>
+    <span><i style="background:var(--nf)"></i>NF autorizada</span>
+    <b style="color:var(--txt);margin-left:10px">Saldo × limite:</b>
+    <span><i style="background:var(--ok)"></i>&lt; 60%</span>
+    <span><i style="background:var(--aten)"></i>60–80%</span>
+    <span><i style="background:var(--alerta)"></i>≥ 80% alerta</span>
+    <span><i style="background:var(--estouro)"></i>≥ 100% estourado</span>
+  </div>
+
+  <h2>🏁 Caminhões <small id="subCam"></small></h2>
+  <div class="grid" id="grid"></div>
+
+  <h2>📊 Para onde estão saindo os pedidos <small>(pedidos que entraram hoje, em pneus)</small></h2>
+  <div class="duas">
+    <div class="box"><h3>Por CD de origem <small style="color:var(--sub);font-weight:400">(clique pra filtrar)</small></h3><div id="porCD"></div></div>
+    <div class="box"><h3>Por UF de destino</h3><div id="porUF"></div></div>
+  </div>
+  <div class="box" style="margin-top:14px"><h3>Origem × destino (entrou hoje)</h3><div class="tabwrap" style="max-height:380px"><table class="heat" id="matriz"></table></div></div>
+
+  <h2>📅 Dia a dia <small>(entrou = criação · saiu = carregamento · saldo passa para o dia seguinte)</small></h2>
+  <div class="box"><div id="diario"></div></div>
+
+  <h2>📋 Remessas <small>(em aberto + movimento de hoje)</small></h2>
+  <div class="tabwrap"><table>
+    <thead><tr>
+      <th data-k="Depósito">Origem</th><th data-k="Transportadora">Transportadora</th><th data-k="Etapa">Etapa</th>
+      <th data-k="Dia entrada">Entrou</th><th data-k="Dia carregamento">Carregou</th>
+      <th data-k="Placa">Placa</th><th data-k="Canal">Canal</th><th data-k="Cidade">Cidade</th><th data-k="UF">UF</th>
+      <th data-k="Pneus" class="n">Pneus</th><th data-k="Doc. EWM">Remessa</th>
+    </tr></thead>
+    <tbody id="tab"></tbody>
+  </table></div>
+  </div>
+</main>
+
+<script>
+const REM = __DADOS__, LIM = __LIMITES__, DIARIO = __DIARIO__, HOJE = '__HOJE__';
+const COR = {'0-A processar':'var(--apr)','1-Agrupado':'var(--agr)','2-Separado':'var(--agr)',
+             '3-Confirmado':'var(--agr)','4-Conferido':'var(--agr)','5-NF autorizada':'var(--nf)','6-Carregado':'var(--car)'};
+const GRP = e => e==='0-A processar'?'apr':e==='6-Carregado'?'car':e==='5-NF autorizada'?'nf':'agr';
+const FX  = ['var(--ok)','var(--aten)','var(--alerta)','var(--estouro)'];
+const faixa = p => p==null?-1 : p>=100?3 : p>=80?2 : p>=60?1 : 0;
+const fmt = n => (n||0).toLocaleString('pt-BR',{maximumFractionDigits:0});
+const esc = s => String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const br = d => d ? d.split('-').reverse().join('/') : '';
+const aberto = r => !r['Dia carregamento'];
+let modo='rank', ord={k:'Pneus',d:-1};
+
+[...new Set(REM.map(r=>r['Depósito']))].sort().forEach(d=>document.getElementById('fDep').innerHTML+=`<option>${esc(d)}</option>`);
+
+function soma(L){const s={apr:0,agr:0,nf:0,car:0,tot:0}; L.forEach(r=>{s[GRP(r.Etapa)]+=r.Pneus; s.tot+=r.Pneus}); return s;}
+const tot = L => L.reduce((a,r)=>a+r.Pneus,0);
+
+function caminhao(s, lim, fx){
+  const W=200, x0=4, y0=8, h=58;
+  const base = lim ? Math.max(lim, s.tot) : (s.tot || 1);
+  let x=x0, segs='';
+  ['nf','agr','apr'].forEach(k=>{ if(!s[k])return; const w=s[k]/base*W;
+    segs+=`<rect x="${x}" y="${y0}" width="${w}" height="${h}" fill="var(--${k})"/>`; x+=w; });
+  let marcas='';
+  if (lim){
+    const x80=x0+0.8*lim/base*W, x100=x0+lim/base*W;
+    marcas = `<line x1="${x80}" y1="${y0-4}" x2="${x80}" y2="${y0+h+4}" stroke="var(--alerta)" stroke-width="2" stroke-dasharray="4 3"/>
+      <text x="${x80}" y="${y0-5}" font-size="9" text-anchor="middle" fill="var(--alerta)">80%</text>`;
+    if (s.tot>lim) marcas += `<rect x="${x100}" y="${y0}" width="${x-x100}" height="${h}" fill="url(#lst)"/>
+      <line x1="${x100}" y1="${y0-4}" x2="${x100}" y2="${y0+h+4}" stroke="var(--estouro)" stroke-width="3"/>`;
+  }
+  const cab = fx>=2 ? FX[fx] : '#4a5162';
+  return `<svg viewBox="0 0 290 94" width="100%" style="max-height:94px">
+    <defs><pattern id="lst" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="4" height="8" fill="rgba(139,30,63,.55)"/></pattern></defs>
+    <rect x="${x0-2}" y="${y0-2}" width="${W+4}" height="${h+4}" rx="5" fill="#dde1e8"/>
+    ${segs}${marcas}
+    <rect x="${x0-2}" y="${y0-2}" width="${W+4}" height="${h+4}" rx="5" fill="none" stroke="${fx>=2?FX[fx]:'#4a5162'}" stroke-width="${fx>=2?3:2}"/>
+    <text x="${x0+W/2}" y="${y0+h/2+6}" text-anchor="middle" font-size="16" font-weight="700" fill="${s.tot/base>0.45?'#fff':'#1d2433'}" stroke="${s.tot/base>0.45?'#1d2433':'#fff'}" stroke-width=".7" paint-order="stroke">${fmt(s.tot)}${lim?' / '+fmt(lim):''} pneus</text>
+    <path d="M210 26 h38 l22 20 v20 h-60 z" fill="${cab}"/><path d="M216 31 h28 l15 14 h-43 z" fill="#cfe3f7"/>
+    ${fx>=2?'<text x="236" y="62" font-size="14" text-anchor="middle">⚠️</text>':''}
+    <rect x="2" y="66" width="270" height="6" fill="#4a5162"/>
+    ${[40,70,170,245].map(c=>`<circle cx="${c}" cy="80" r="10" fill="#222"/><circle cx="${c}" cy="80" r="4" fill="#999"/>`).join('')}
+  </svg>`;
+}
+
+function filtrar(){
+  const q=document.getElementById('fBusca').value.trim().toLowerCase(), d=document.getElementById('fDep').value;
+  return REM.filter(r=>(!d||r['Depósito']===d)
+    && (!q || [r.Transportadora,r.Placa,r.UF,r.Cidade,r.Canal,r.Romaneio,r['Doc. EWM'],r['Depósito']].join(' ').toLowerCase().includes(q)));
+}
+
+function barras(el, pares, total, clic){
+  const max = Math.max(...pares.map(p=>p[1]),1);
+  document.getElementById(el).innerHTML = pares.length ? pares.map(([k,v])=>`
+    <div class="hb ${clic?'clic':''}" data-k="${esc(k)}"><span>${esc(k)}</span>
+      <div class="tr"><span style="width:${v/max*100}%;background:var(--nf)"></span></div>
+      <span class="v"><b>${fmt(v)}</b> · ${total?Math.round(v/total*100):0}%</span></div>`).join('') : '<div class="vazio">Nenhum pedido entrou hoje ainda.</div>';
+  if (clic) document.querySelectorAll(`#${el} .hb`).forEach(e=>e.onclick=()=>{const f=document.getElementById('fDep');
+    f.value = f.value===e.dataset.k?'':e.dataset.k; render();});
+}
+
+function render(){
+  const L=filtrar(), A=L.filter(aberto), sA=soma(A);
+  const CH=L.filter(r=>r['Dia carregamento']===HOJE), EH=L.filter(r=>r['Dia entrada']===HOJE);
+  const g={}; L.forEach(r=>(g[r['Depósito']+'|'+r.Transportadora] ??= []).push(r));
+  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), s=soma(RA), lim=LIM[k]||null,
+     pct = lim ? s.tot/lim*100 : null;
+     return {k,dep,tr,R,RA,s,lim,pct,fx:faixa(pct),
+             ent:tot(R.filter(r=>r['Dia entrada']===HOJE)), car:tot(R.filter(r=>r['Dia carregamento']===HOJE))};});
+  if (document.getElementById('fSoLim').checked) cards = cards.filter(c=>c.lim);
+  const nAl = cards.filter(c=>c.fx>=2).length, nEs = cards.filter(c=>c.fx===3).length;
+
+  document.getElementById('kpis').innerHTML = [
+    ['Saldo em aberto', fmt(sA.tot)], ['Entrou hoje', fmt(tot(EH))], ['Carregado hoje', fmt(tot(CH))],
+    ['A processar', fmt(sA.apr)], ['Agrupado / separação', fmt(sA.agr)], ['NF autorizada', fmt(sA.nf)],
+    ['Veículos carregados hoje', new Set(CH.filter(r=>r.Placa).map(r=>r.Placa)).size],
+    ['🚨 Em alerta (≥80%)', nAl, nAl?'red':''], ['Estourados (≥100%)', nEs, nEs?'red':''],
+  ].map(([a,b,c])=>`<div class="kpi ${c||''}"><span>${a}</span><b>${b}</b></div>`).join('');
+
+  if (modo==='rank') cards.sort((a,b)=>(b.pct??-1)-(a.pct??-1) || b.s.tot-a.s.tot);
+  else cards.sort((a,b)=>a.dep.localeCompare(b.dep) || (b.pct??-1)-(a.pct??-1) || b.s.tot-a.s.tot);
+  document.getElementById('subCam').textContent = modo==='rank'
+    ? '(saldo em aberto × limite · do mais perto do limite para o mais longe)' : '(agrupados por CD de origem)';
+
+  const tDep={}; cards.forEach(c=>{const t=(tDep[c.dep] ??= {tot:0,car:0,n:0,al:0}); t.tot+=c.s.tot; t.car+=c.car; t.n++; if(c.fx>=2)t.al++;});
+  let ult='';
+  document.getElementById('grid').innerHTML = cards.length ? cards.map((c,i)=>{
+    let cab='';
+    if (modo==='orig' && c.dep!==ult){ ult=c.dep; const t=tDep[c.dep];
+      cab=`<div class="origem"><b>📍 Origem ${esc(c.dep)}</b> · ${t.n} transportadora(s) · saldo ${fmt(t.tot)} pneus · carregou hoje ${fmt(t.car)}${t.al?` · <span style="color:#ff9b9b">🚨 ${t.al} em alerta</span>`:''}</div>`; }
+    const placas=[...new Set(c.R.filter(r=>r['Dia carregamento']===HOJE && r.Placa).map(r=>r.Placa))];
+    const ufs=[...new Set(c.RA.map(r=>r.UF).filter(Boolean))].sort().join(', ');
+    const tag = c.lim ? `<span class="tag" style="background:${FX[c.fx]}">${c.pct.toLocaleString('pt-BR',{maximumFractionDigits:0})}% do limite</span>`
+                      : `<span class="tag" style="background:#8a93a5">sem limite</span>`;
+    return cab + `<div class="card ${c.fx>=2?'f'+(c.fx+1):''}">
+      ${modo==='rank'?`<div class="pos">${i+1}º</div>`:''}
+      <div class="top"><div><div class="nome ${c.tr==='(SEM TRANSPORTADORA)'?'alerta':''}">${esc(c.tr)}</div>
+        <div class="dp">📍 ${esc(c.dep)}${ufs?' · '+esc(ufs):''}</div></div>${tag}</div>
+      ${caminhao(c.s,c.lim,c.fx)}
+      <div class="nums"><span>Saldo<b>${fmt(c.s.tot)}</b></span><span>Entrou hoje<b>${fmt(c.ent)}</b></span>
+        <span>Carreg. hoje<b style="color:var(--car)">${fmt(c.car)}</b></span>
+        <span>A proc.<b>${fmt(c.s.apr)}</b></span>
+        <span>${c.lim?'Livre<b>'+fmt(c.lim-c.s.tot)+'</b>':'Remessas<b>'+c.RA.length+'</b>'}</span></div>
+      ${placas.length?`<div class="placas">Carregou hoje: ${placas.map(p=>`<span>${esc(p)}</span>`).join('')}</div>`:''}
+    </div>`;}).join('') : '<div class="vazio">Nenhum caminhão com esses filtros.</div>';
+
+  // para onde sai (entrou hoje)
+  const byCD={}, byUF={}; EH.forEach(r=>{byCD[r['Depósito']]=(byCD[r['Depósito']]||0)+r.Pneus; byUF[r.UF||'?']=(byUF[r.UF||'?']||0)+r.Pneus;});
+  const tE = tot(EH);
+  barras('porCD', Object.entries(byCD).sort((a,b)=>b[1]-a[1]), tE, true);
+  barras('porUF', Object.entries(byUF).sort((a,b)=>b[1]-a[1]).slice(0,15), tE, false);
+  const ufs = Object.entries(byUF).sort((a,b)=>b[1]-a[1]).map(x=>x[0]).slice(0,14);
+  const cds = Object.entries(byCD).sort((a,b)=>b[1]-a[1]).map(x=>x[0]);
+  let mx=1; const M={}; EH.forEach(r=>{const k=r['Depósito']+'|'+(r.UF||'?'); M[k]=(M[k]||0)+r.Pneus; mx=Math.max(mx,M[k]);});
+  document.getElementById('matriz').innerHTML = cds.length ? `<tr><th>Origem \\ UF</th>${ufs.map(u=>`<th class="n">${esc(u)}</th>`).join('')}<th class="n">Total</th></tr>` +
+    cds.map(c=>`<tr><td>${esc(c)}</td>${ufs.map(u=>{const v=M[c+'|'+u]||0;
+      return `<td class="n" style="background:rgba(61,123,217,${v?0.08+0.7*v/mx:0})">${v?fmt(v):''}</td>`;}).join('')}
+      <td class="n"><b>${fmt(byCD[c])}</b></td></tr>`).join('') : '<tr><td class="vazio">Nenhum pedido entrou hoje ainda.</td></tr>';
+
+  // dia a dia
+  const fd = document.getElementById('fDep').value;
+  const D = DIARIO.filter(d=>!fd || d['Depósito']===fd);
+  const dias=[...new Set(D.map(d=>d.Dia))].sort().slice(-31);
+  const somaDia = (dd,k)=>D.filter(d=>d.Dia===dd).reduce((a,d)=>a+d[k],0);
+  const mxD = Math.max(...dias.map(d=>Math.max(somaDia(d,'Entrada'),somaDia(d,'Saída'))),1);
+  document.getElementById('diario').innerHTML = dias.length ? `
+    <div style="display:flex;align-items:flex-end;gap:8px;height:150px;margin-bottom:6px">
+      ${dias.map(d=>`<div style="flex:1;max-width:80px;text-align:center;font-size:11px;color:var(--sub)">
+        <div style="display:flex;align-items:flex-end;gap:2px;height:120px">
+          <div style="flex:1;height:${somaDia(d,'Entrada')/mxD*110}px;background:var(--nf);border-radius:3px 3px 0 0" title="Entrou ${fmt(somaDia(d,'Entrada'))}"></div>
+          <div style="flex:1;height:${somaDia(d,'Saída')/mxD*110}px;background:var(--car);border-radius:3px 3px 0 0" title="Saiu ${fmt(somaDia(d,'Saída'))}"></div>
+        </div>${br(d).slice(0,5)}</div>`).join('')}
+    </div>
+    <div class="leg"><span><i style="background:var(--nf)"></i>Entrou (criação)</span><span><i style="background:var(--car)"></i>Saiu (carregamento)</span></div>
+    <div class="tabwrap" style="max-height:300px"><table><tr><th>Dia</th><th class="n">Entrou</th><th class="n">Saiu</th><th class="n">Saldo no fim do dia</th></tr>
+    ${(()=>{let acc=0; return dias.map(d=>{acc+=somaDia(d,'Entrada')-somaDia(d,'Saída'); return [d,acc];});})().reverse()
+      .map(([d,acc])=>`<tr><td>${br(d)}</td><td class="n">${fmt(somaDia(d,'Entrada'))}</td><td class="n">${fmt(somaDia(d,'Saída'))}</td><td class="n"><b>${fmt(acc)}</b></td></tr>`).join('')}
+    </table></div>` : '<div class="vazio">Sem histórico ainda.</div>';
+
+  // tabela
+  const TT=[...L].sort((a,b)=>{const x=a[ord.k],y=b[ord.k]; return (x>y?1:x<y?-1:0)*ord.d;});
+  document.getElementById('tab').innerHTML = TT.map(r=>`<tr>
+    <td>${esc(r['Depósito'])}</td><td>${esc(r.Transportadora)}</td>
+    <td><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${COR[r.Etapa]||'#999'};margin-right:5px"></span>${esc((r.Etapa||'').slice(2))}</td>
+    <td>${br(r['Dia entrada'])}</td><td>${br(r['Dia carregamento'])}</td>
+    <td>${esc(r.Placa)}</td><td>${esc(r.Canal)}</td><td>${esc(r.Cidade)}</td><td>${esc(r.UF)}</td>
+    <td class="n">${fmt(r.Pneus)}</td><td>${esc(r['Doc. EWM'])}</td></tr>`).join('');
+}
+['fDep','fBusca','fSoLim'].forEach(id=>document.getElementById(id).addEventListener('input',render));
+document.querySelectorAll('#fOrd button').forEach(b=>b.onclick=()=>{modo=b.dataset.v;
+  document.querySelectorAll('#fOrd button').forEach(x=>x.classList.toggle('on',x===b)); render();});
+document.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{const k=th.dataset.k; ord={k,d:ord.k===k?-ord.d:-1}; render();});
+render();
+
+const CAP = __CAPACIDADE__;
+const NOMEUN = d => 'Cantu ' + d.slice(7).replace(/ SC$/,'');
+let uOrd='saldo';
+
+function galpao(sa, cap, fx){
+  const W=230, H=86, x0=10, y0=34, w=W-20, h=H-y0;
+  const p = Math.min(sa/cap,1.25), alt = Math.min(p,1)*h;
+  const cor = fx>=2?FX[fx]:fx===1?'var(--aten)':'#3d7bd9';
+  return `<svg viewBox="0 0 ${W} ${H+8}" width="100%" style="max-height:110px">
+    <path d="M${x0-4} ${y0} L${W/2} 6 L${W-x0+4} ${y0} Z" fill="#4a5162"/>
+    <rect x="${x0}" y="${y0}" width="${w}" height="${h}" fill="#e6e9ef" stroke="#4a5162" stroke-width="2"/>
+    <rect x="${x0+1}" y="${y0+h-alt}" width="${w-2}" height="${alt}" fill="${cor}" opacity=".85"/>
+    ${p>1?`<rect x="${x0+1}" y="${y0}" width="${w-2}" height="${h}" fill="url(#lstU)"/>`:''}
+    <line x1="${x0}" y1="${y0+h*0.2}" x2="${x0+w}" y2="${y0+h*0.2}" stroke="var(--alerta)" stroke-dasharray="4 3" stroke-width="1.5"/>
+    ${[0,1,2,3].map(i=>`<rect x="${x0+14+i*50}" y="${y0+h-26}" width="34" height="26" fill="none" stroke="#4a5162" stroke-opacity=".35"/>`).join('')}
+    <text x="${W/2}" y="${y0+h/2+6}" text-anchor="middle" font-size="17" font-weight="800" fill="${p>.5?'#fff':'#1d2433'}" stroke="${p>.5?'#1d2433':'#fff'}" stroke-width=".6" paint-order="stroke">${fmt(sa)} pneus</text>
+    <defs><pattern id="lstU" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="4" height="8" fill="rgba(139,30,63,.45)"/></pattern></defs>
+  </svg>`;
+}
+
+function spark(dep){
+  const D = DIARIO.filter(d=>d['Depósito']===dep).sort((a,b)=>a.Dia<b.Dia?-1:1).slice(-14);
+  if (D.length<2) return '<div class="share">Evolução diária aparece a partir do 2º dia.</div>';
+  const mx = Math.max(...D.map(d=>Math.max(d.Entrada,d['Saída'])),1), W=280, H=40, bw=W/D.length;
+  return `<div class="spark"><svg viewBox="0 0 ${W} ${H+12}" width="100%">${D.map((d,i)=>`
+    <rect x="${i*bw+2}" y="${H-d.Entrada/mx*H}" width="${bw/2-2}" height="${d.Entrada/mx*H}" fill="var(--nf)"><title>${br(d.Dia)} entrou ${fmt(d.Entrada)}</title></rect>
+    <rect x="${i*bw+bw/2}" y="${H-d['Saída']/mx*H}" width="${bw/2-2}" height="${d['Saída']/mx*H}" fill="var(--car)"><title>${br(d.Dia)} saiu ${fmt(d['Saída'])}</title></rect>
+    <text x="${i*bw+bw/2}" y="${H+10}" font-size="8" text-anchor="middle" fill="#6b7385">${br(d.Dia).slice(0,5)}</text>`).join('')}</svg></div>`;
+}
+
+function renderUni(){
+  const by = {};
+  REM.forEach(r=>{ const u=(by[r['Depósito']] ??= {dep:r['Depósito'],sa:0,ent:0,car:0,tr:new Set(),uf:{}});
+    if (aberto(r)){ u.sa+=r.Pneus; if(r.Transportadora && !r.Transportadora.startsWith('(')) u.tr.add(r.Transportadora); }
+    if (r['Dia entrada']===HOJE){ u.ent+=r.Pneus; u.uf[r.UF||'?']=(u.uf[r.UF||'?']||0)+r.Pneus; }
+    if (r['Dia carregamento']===HOJE) u.car+=r.Pneus; });
+  let U = Object.values(by);
+  const totSa = U.reduce((a,u)=>a+u.sa,0)||1, totEnt = U.reduce((a,u)=>a+u.ent,0)||1, mxSa = Math.max(...U.map(u=>u.sa),1);
+  U.forEach(u=>{ u.cap = CAP[u.dep.slice(0,4)]||null; u.pct = u.cap? u.sa/u.cap*100 : null; u.fx = faixa(u.pct); });
+  const key = {saldo:u=>u.sa, ent:u=>u.ent, car:u=>u.car, pct:u=>u.pct??-1}[uOrd];
+  U.sort((a,b)=>key(b)-key(a));
+  document.getElementById('ugrid').innerHTML = U.length ? U.map((u,i)=>{
+    const dest = Object.entries(u.uf).sort((a,b)=>b[1]-a[1]).slice(0,5);
+    const tag = u.cap ? `<span class="tag" style="background:${FX[u.fx]};margin-left:6px">${Math.round(u.pct)}% da capacidade</span>` : '';
+    return `<div class="ucard ${u.fx>=2?'f'+(u.fx+1):''}">
+      <div class="ucab">
+        <img class="logo" src="/logo_cantu.png" onerror="this.outerHTML='<span class=selo>CANTU</span>'">
+        <div><div class="unome">${esc(NOMEUN(u.dep))}</div><div class="ucod">${esc(u.dep.slice(0,4))}${u.cap?' · capacidade '+fmt(u.cap)+'/dia':''}${tag}</div></div>
+        <div class="urank">${i+1}º</div>
+      </div>
+      ${galpao(u.sa, u.cap||mxSa, u.fx)}
+      <div class="unums"><span>Saldo<b>${fmt(u.sa)}</b></span><span>Entrou hoje<b>${fmt(u.ent)}</b></span>
+        <span>Saiu hoje<b style="color:var(--car)">${fmt(u.car)}</b></span><span>Transport.<b>${u.tr.size}</b></span></div>
+      <div class="share">Participação no saldo Black: <b>${(u.sa/totSa*100).toLocaleString('pt-BR',{maximumFractionDigits:1})}%</b> · no que entrou hoje: <b>${(u.ent/totEnt*100).toLocaleString('pt-BR',{maximumFractionDigits:1})}%</b>
+        <div class="tr"><span style="width:${u.sa/totSa*100}%"></span></div></div>
+      ${dest.length?`<div class="udest">Destinos hoje: ${dest.map(([k,v])=>`<span>${esc(k)} ${fmt(v)}</span>`).join('')}</div>`:''}
+      ${spark(u.dep)}
+    </div>`; }).join('') : '<div class="vazio">Sem dados.</div>';
+}
+
+document.querySelectorAll('#abas button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#abas button').forEach(x=>x.classList.toggle('on',x===b));
+  document.getElementById('abaCam').style.display = b.dataset.a==='cam'?'':'none';
+  document.getElementById('abaUni').style.display = b.dataset.a==='uni'?'':'none';
+  try{ localStorage.setItem('roboBlackAba', b.dataset.a); }catch(e){}
+});
+document.querySelectorAll('#uOrd button').forEach(b=>b.onclick=()=>{uOrd=b.dataset.v;
+  document.querySelectorAll('#uOrd button').forEach(x=>x.classList.toggle('on',x===b)); renderUni();});
+renderUni();
+try{ const a=(location.hash==='#uni'?'uni':location.hash==='#cam'?'cam':null)||localStorage.getItem('roboBlackAba'); if(a) document.querySelector(`#abas button[data-a="${a}"]`)?.click(); }catch(e){}
+
+</script>
+</body>
+</html>
