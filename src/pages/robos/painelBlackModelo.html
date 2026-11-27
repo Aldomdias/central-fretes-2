@@ -164,7 +164,7 @@ const REM = __DADOS__, LIM = __LIMITES__, DIARIO = __DIARIO__, HOJE = '__HOJE__'
 const MESMA_TRANSP = [
   [/L\.?\s*M\.?\s*RAMOS|GENEROSO/i, 'GENEROSO'],
   [/^WM LOG/i, 'WM'], [/^MOVVI/i, 'MOVVI'], [/^GOL LINHAS/i, 'GOL'], [/^TAM\b/i, 'TAM'],
-  [/^REUNIDAS/i, 'REUNIDAS'], [/^CARVALIMA/i, 'CARVALIMA'], [/RIO VERMELHO/i, 'RIO VERMELHO'], [/^RPA\s*LOG/i, 'RPA'],
+  [/^REUNIDAS/i, 'REUNIDAS'], [/^CARVALIMA/i, 'CARVALIMA'], [/RIO VERMELHO/i, 'RIO VERMELHO'], [/^RPA\s*LOG/i, 'RPA'], [/^CONEXAO LOG/i, 'RPA'],
 ];
 const nomeTransp = t => {
   t = String(t||'').trim();
