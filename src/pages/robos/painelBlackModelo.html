@@ -211,6 +211,7 @@ Object.entries(LIM_PLANILHA).forEach(([k,v])=>{ if (LIM[k]!=null) return;
 // Relatorio de limites do sistema (27/11): Tex Courier = TOTAL EXPRESS, FL Brasil = SOLISTICA.
 const LIM_AJUSTE = {
   'D004 - Serra|MOVVI': 1000,
+  'D004 - Serra|SOLISTICA': 800,
   'D004 - Serra|GENEROSO': 500,
   'D001 - Itajaí SC|ANJUN': 100, 'D004 - Serra|ANJUN': 100, 'D003 - Itupeva|ANJUN': 100,
   'D003 - Itupeva|MVT': 700,
@@ -226,7 +227,7 @@ SEM_OPERACAO.forEach(k=>{ delete LIM[k]; });
 // Bloqueadas no sistema = status Bloqueado ou limite 1 no relatorio: o card mostra bloqueada e nao entra no alerta.
 const BLOQ = new Set([
   'D001 - Itajaí SC|TAM', 'D004 - Serra|TAM', 'D002 - Jaboatão dos Guararapes|TAM',
-  'D004 - Serra|SOLISTICA', 'D002 - Jaboatão dos Guararapes|SOLISTICA',
+  'D002 - Jaboatão dos Guararapes|SOLISTICA',
   'D001 - Itajaí SC|BRASIL WEB',
   // ANJUN 0003 - BLACK (Itupeva) e 0004 - BLACK (Serra): status Bloqueado no relatorio (0002 - BLACK Itajai segue ativa).
   'D003 - Itupeva|ANJUN', 'D004 - Serra|ANJUN',
