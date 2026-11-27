@@ -47,7 +47,7 @@
   .edit .edBtns{display:flex;flex-wrap:wrap;gap:5px;flex-basis:100%}
   .edit button.on{background:#1d2433;color:#fff;border-color:#1d2433}
   .libnote{font-size:11px;color:#14733b;margin-top:6px;font-weight:600}
-  .edit button,.manual-box button,#btnManual,#btnLiberarTodos{font-size:12px;padding:3px 9px;border:1px solid var(--lin);border-radius:8px;background:#fff;cursor:pointer}
+  .edit button,.manual-box button,#btnManual,#btnLiberarTodos,#btnCarregadoTodos{font-size:12px;padding:3px 9px;border:1px solid var(--lin);border-radius:8px;background:#fff;cursor:pointer}
   .manual-box{background:#fff;border:1px solid var(--lin);border-radius:12px;padding:10px 14px;margin:8px 0;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
   .manual-box select{font-size:13px;padding:3px 6px}
   .chip{display:inline-flex;gap:6px;align-items:center;background:#eceef2;border-radius:10px;padding:2px 8px;font-size:12px}
@@ -140,6 +140,7 @@
     </span>
     <label><input type="checkbox" id="fSoLim"> só com limite</label>
     <button type="button" id="btnManual">➕ Bloqueio / inativação manual</button>
+    <button type="button" id="btnCarregadoTodos" title="O que ja carregou sai da conta do limite (so conta o saldo em aberto)">🚚 Carregado libera em todas</button>
     <button type="button" id="btnLiberarTodos" title="Recomeça a contagem de todas, como a virada do relatório">🔓 Liberar volume de todas</button>
   </div>
   <div id="painelManual" class="manual-box" style="display:none"></div>
@@ -191,7 +192,7 @@
 <script>
 const REM = __DADOS__, LIM = __LIMITES__, DIARIO = __DIARIO__, HOJE = '__HOJE__';
 // Ajustes feitos na tela (salvos para todos): limites editados, volume liberado e bloqueio/desbloqueio/inativacao manual.
-const AJ = __AJUSTES__ || {}; AJ.limites ||= {}; AJ.volume ||= {}; AJ.manual ||= {};
+const AJ = __AJUSTES__ || {}; AJ.limites ||= {}; AJ.volume ||= {}; AJ.manual ||= {}; AJ.carregado ||= {};
 const EDIT = __EDITAVEL__;
 // Nomes do SAP -> nome usado na meta (limite). Primeiro tira o codigo da frente
 // ("0002081494 - WM LOGISTICA SPO" -> "WM LOGISTICA SPO"), depois junta apelidos da mesma transportadora.
@@ -343,12 +344,12 @@ function render(){
   const L=filtrar(), A=L.filter(aberto), sA=soma(A);
   const CH=L.filter(r=>r['Dia carregamento']===HOJE), EH=L.filter(r=>r['Dia entrada']===HOJE);
   const g={}; L.forEach(r=>(g[r['Depósito']+'|'+r.Transportadora] ??= []).push(r));
-  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), s0=somaOcupacao(R.filter(ocupaDia)),
-     vol=AJ.volume[k], bv=(vol && vol.dia===HOJE) ? Math.min(vol.base||0, s0.tot) : 0, s=descontar(s0,bv), lim=LIM[k]||null,
+  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), s0=somaOcupacao(R.filter(ocupaDia)), cg=AJ.carregado[k] ? (s0.sai||0) : 0, s1=cg ? {...s0, sai:0, tot:s0.tot-cg} : s0,
+     vol=AJ.volume[k], bv=(vol && vol.dia===HOJE) ? Math.min(vol.base||0, s1.tot) : 0, s=descontar(s1,bv), lim=LIM[k]||null,
      pct = lim ? s.tot/lim*100 : null, man = (k in AJ.manual) ? AJ.manual[k] : (INATIVA.has(k) ? 'inativ' : BLOQ.has(k) ? 'bloq' : ''),
      inativ = man==='inativ', desbloq = man==='desbloq', bloqM = man==='bloq',
      bloqV = !inativ && !desbloq && !bloqM && !!(lim && s.tot > lim), bloq = bloqM || bloqV; // passou do limite: o sistema ja bloqueia
-     return {k,dep,tr,R,RA,s,sa,lim,pct,inativ,desbloq,bloq,bloqM,bloqV,man,vol,bv,ord:(pct??-1),fx:faixa(pct),
+     return {k,dep,tr,R,RA,s,sa,lim,pct,inativ,desbloq,bloq,bloqM,bloqV,man,vol,bv,cg,ord:(pct??-1),fx:faixa(pct),
              ent:tot(R.filter(r=>r['Dia entrada']===HOJE)), car:tot(R.filter(r=>r['Dia carregamento']===HOJE))};});
   if (document.getElementById('fSoLim').checked) cards = cards.filter(c=>c.lim);
   const nAl = cards.filter(c=>c.fx>=2).length, nEs = cards.filter(c=>c.fx===3).length;
@@ -388,6 +389,7 @@ function render(){
         <span>Carreg. hoje<b style="color:var(--car)">${fmt(c.car)}</b></span>
         <span>A proc.<b>${fmt(c.sa.apr)}</b></span>
         <span>${c.lim?(c.lim>=c.s.tot?'Livre<b>'+fmt(c.lim-c.s.tot):'Passou<b style="color:var(--estouro)">'+fmt(c.s.tot-c.lim))+'</b>':'Remessas<b>'+c.RA.length+'</b>'}</span></div>
+      ${c.cg?`<div class="libnote">🚚 Carregado liberado: conta só o saldo em aberto (${fmt(c.cg)} pneus já carregados fora da conta)</div>`:''}
       ${c.bv?`<div class="libnote">🔓 Volume liberado às ${esc((c.vol&&c.vol.hora)||'')} · conta só o que entrou depois (${fmt(c.bv)} pneus zerados)</div>`:''}
       ${EDIT?`<div class="edit" data-k="${esc(c.k)}">
         <label>Limite <input type="number" min="0" class="edLim" value="${c.lim||''}" placeholder="sem"></label>
@@ -395,6 +397,7 @@ function render(){
         <div class="edBtns">
           <button type="button" data-a="vol">🔓 Liberar volume</button>
           ${c.bv?'<button type="button" data-a="volx">↩ desfazer liberação</button>':''}
+          <button type="button" data-a="carr" class="${AJ.carregado[c.k]?'on':''}">🚚 Carregado libera</button>
           <button type="button" data-a="bloq" class="${c.man==='bloq'?'on':''}">✋ Bloquear</button>
           <button type="button" data-a="desbloq" class="${c.man==='desbloq'?'on':''}">✅ Desbloquear</button>
           <button type="button" data-a="inativ" class="${c.man==='inativ'?'on':''}">⛔ Inativar</button>
@@ -451,7 +454,7 @@ function render(){
 // ---- edicao (limite, contagem liberada, bloqueio/inativacao manual); salva para todos via pagina pai ----
 function salvarAj(){
   try { window.parent.postMessage({fonte:'painelBlack', tipo:'ajustes', ajustes:AJ}, '*'); } catch(e) {}
-  render(); renderManual();
+  render(); renderManual(); if (typeof rotuloCarregado==='function') rotuloCarregado();
 }
 function setLimite(k, v){
   v = Number(v);
@@ -498,6 +501,7 @@ gridEl.addEventListener('click',e=>{
   if (e.target.classList.contains('edOk')) setLimite(k, bx.querySelector('.edLim').value);
   else if (a==='vol') liberarVolume(k);
   else if (a==='volx') delete AJ.volume[k];
+  else if (a==='carr') { if (AJ.carregado[k]) delete AJ.carregado[k]; else AJ.carregado[k]=true; }
   else if (a==='bloq' || a==='desbloq' || a==='inativ') AJ.manual[k]=a;
   else if (a==='auto') delete AJ.manual[k];
   else return;
@@ -509,7 +513,19 @@ document.getElementById('btnLiberarTodos').addEventListener('click',()=>{
   chavesTodas().forEach(k=>{ if (manualAtual(k)==='inativ' || ocupAtual(k)<=0) return; liberarVolume(k); });
   salvarAj();
 });
-if (!EDIT) document.getElementById('btnLiberarTodos').style.display='none';
+const comCarregado = () => chavesTodas().filter(k=>ocupAtual(k)>0);
+function rotuloCarregado(){
+  const b=document.getElementById('btnCarregadoTodos'); if(!b) return;
+  const ks=comCarregado(); b.textContent = (ks.length && ks.every(k=>AJ.carregado[k])) ? '↩ Carregado volta a contar' : '🚚 Carregado libera em todas';
+}
+document.getElementById('btnCarregadoTodos').addEventListener('click',()=>{
+  const ks=comCarregado(), ligar=!ks.every(k=>AJ.carregado[k]);
+  if (ligar && !confirm('Considerar o que já CARREGOU como liberado em TODAS as transportadoras?\n\nO limite passa a contar só o saldo em aberto (o que ainda não carregou).')) return;
+  ks.forEach(k=>{ if (ligar) AJ.carregado[k]=true; else delete AJ.carregado[k]; });
+  salvarAj();
+});
+if (!EDIT) { document.getElementById('btnLiberarTodos').style.display='none'; document.getElementById('btnCarregadoTodos').style.display='none'; }
+rotuloCarregado();
 document.querySelectorAll('#fOrd button').forEach(b=>b.onclick=()=>{modo=b.dataset.v;
   document.querySelectorAll('#fOrd button').forEach(x=>x.classList.toggle('on',x===b)); render();});
 document.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{const k=th.dataset.k; ord={k,d:ord.k===k?-ord.d:-1}; render();});

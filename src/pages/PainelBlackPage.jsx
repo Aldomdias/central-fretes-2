@@ -34,9 +34,11 @@ function limparAjustes(a) {
     const base = Number(v?.base);
     if (k && v && typeof v.dia === 'string' && Number.isFinite(base) && base >= 0) volume[String(k)] = { dia: v.dia, base, hora: String(v.hora || '') };
   });
+  const carregado = {};
+  Object.entries(x.carregado || {}).forEach(([k, v]) => { if (k && v === true) carregado[String(k)] = true; });
   const manual = {};
   Object.entries(x.manual || {}).forEach(([k, v]) => { if (k && ['bloq', 'inativ', 'desbloq', ''].includes(v)) manual[String(k)] = v; });
-  return { limites, volume, manual };
+  return { limites, volume, manual, carregado };
 }
 
 function montarHtml(payload, ajustes, editavel) {
