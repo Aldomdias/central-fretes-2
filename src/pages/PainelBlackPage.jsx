@@ -6,10 +6,10 @@ import logoAmdLog from '../assets/amdlog-logo-faixa.png';
 // Painel Black (cargas YVEC): o robo roda no PC do Aldo (C:\robo_black), puxa a ZEWM003 do SAP
 // (a processar, processados e carregados), calcula o saldo por origem x transportadora e publica
 // em robo_black_snapshot. Aqui so se mostra a ultima foto.
-// O robo roda a cada 15 min. A tela confere a cada 2 min se saiu foto nova (consulta leve, so a data)
+// O robo roda a cada 20 min. A tela confere a cada 2 min se saiu foto nova (consulta leve, so a data)
 // e so baixa o painel inteiro quando muda: a atualizacao aparece no maximo ~2 min depois do robo.
 const VERIFICA_MS = 2 * 60 * 1000;
-const ATRASO_ALERTA_MIN = 35; // robo de 15 em 15 min: mais de 2 rodadas perdidas vira alerta
+const ATRASO_ALERTA_MIN = 60; // robo de 20 em 20 min (rodada pode levar ate ~10): so alerta passando de 1 hora
 const dataHora = (v) => (v ? new Date(v).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-');
 
 function situacao(snapshot, ultimaRodada) {
