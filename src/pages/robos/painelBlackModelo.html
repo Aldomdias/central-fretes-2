@@ -44,7 +44,10 @@
   .edit{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-top:8px;padding-top:8px;border-top:1px dashed var(--lin);font-size:12px;position:relative;z-index:3}
   .edit input[type=number]{width:70px;padding:2px 4px;font-size:12px}
   .edit select{font-size:12px;padding:2px 4px}
-  .edit button,.manual-box button,#btnManual{font-size:12px;padding:3px 9px;border:1px solid var(--lin);border-radius:8px;background:#fff;cursor:pointer}
+  .edit .edBtns{display:flex;flex-wrap:wrap;gap:5px;flex-basis:100%}
+  .edit button.on{background:#1d2433;color:#fff;border-color:#1d2433}
+  .libnote{font-size:11px;color:#14733b;margin-top:6px;font-weight:600}
+  .edit button,.manual-box button,#btnManual,#btnLiberarTodos{font-size:12px;padding:3px 9px;border:1px solid var(--lin);border-radius:8px;background:#fff;cursor:pointer}
   .manual-box{background:#fff;border:1px solid var(--lin);border-radius:12px;padding:10px 14px;margin:8px 0;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
   .manual-box select{font-size:13px;padding:3px 6px}
   .chip{display:inline-flex;gap:6px;align-items:center;background:#eceef2;border-radius:10px;padding:2px 8px;font-size:12px}
@@ -137,6 +140,7 @@
     </span>
     <label><input type="checkbox" id="fSoLim"> só com limite</label>
     <button type="button" id="btnManual">➕ Bloqueio / inativação manual</button>
+    <button type="button" id="btnLiberarTodos" title="Recomeça a contagem de todas, como a virada do relatório">🔓 Liberar volume de todas</button>
   </div>
   <div id="painelManual" class="manual-box" style="display:none"></div>
   <div class="leg">
@@ -154,6 +158,7 @@
     <b style="color:var(--txt);margin-left:10px">Bloqueio:</b>
     <span>❌ por volume (automático, passou do limite)</span>
     <span>✋ manual (marcado por você / sistema)</span>
+    <span>✅ desbloqueada manual</span>
     <span>⛔ inativada</span>
   </div>
 
@@ -185,8 +190,8 @@
 
 <script>
 const REM = __DADOS__, LIM = __LIMITES__, DIARIO = __DIARIO__, HOJE = '__HOJE__';
-// Ajustes feitos na tela (salvos para todos): limites editados, contagem liberada e bloqueio/inativacao manual.
-const AJ = __AJUSTES__ || {}; AJ.limites ||= {}; AJ.liberados ||= {}; AJ.manual ||= {};
+// Ajustes feitos na tela (salvos para todos): limites editados, volume liberado e bloqueio/desbloqueio/inativacao manual.
+const AJ = __AJUSTES__ || {}; AJ.limites ||= {}; AJ.volume ||= {}; AJ.manual ||= {};
 const EDIT = __EDITAVEL__;
 // Nomes do SAP -> nome usado na meta (limite). Primeiro tira o codigo da frente
 // ("0002081494 - WM LOGISTICA SPO" -> "WM LOGISTICA SPO"), depois junta apelidos da mesma transportadora.
@@ -249,7 +254,7 @@ Object.assign(LIM, LIM_AJUSTE);
 const SEM_OPERACAO = ['D004 - Serra|RPA', 'D003 - Itupeva|RPA', 'D005 - Contagem|BRASIL WEB'];
 SEM_OPERACAO.forEach(k=>{ delete LIM[k]; });
 // Bloqueadas no sistema (relatorio de limites 27/11, status Bloqueado ou limite 1). Contam como bloqueio MANUAL
-// (a lista e fixa); para tirar uma daqui use "contagem liberada" ou o seletor de status no card.
+// (a lista e fixa); para tirar uma daqui use "Desbloquear" ou "Liberar volume" no card.
 const BLOQ = new Set([
   'D004 - Serra|TOTAL EXPRESS', 'D004 - Serra|ALFA',
   'D001 - Itajaí SC|ANJUN', 'D003 - Itupeva|ANJUN', 'D004 - Serra|ANJUN',
@@ -279,6 +284,14 @@ const tot = L => L.reduce((a,r)=>a+r.Pneus,0);
 const ocupaDia = r => aberto(r) || r['Dia carregamento']===HOJE;
 function somaOcupacao(L){const s={sai:0,apr:0,agr:0,nf:0,car:0,tot:0};
   L.forEach(r=>{ s[aberto(r)?GRP(r.Etapa):'sai']+=r.Pneus; s.tot+=r.Pneus; }); return s;}
+
+// Liberar volume: a contagem recomeca (como a virada do relatorio). Desconta do que ja carregou primeiro, depois do resto.
+function descontar(s, bv){
+  if (!bv) return s;
+  const o={...s}; let r=bv;
+  for (const k of ['sai','car','nf','agr','apr']){ const t=Math.min(o[k]||0, r); o[k]=(o[k]||0)-t; r-=t; }
+  o.tot=o.sai+o.car+o.nf+o.agr+o.apr; return o;
+}
 
 function caminhao(s, lim, fx){
   const W=200, x0=4, y0=8, h=58;
@@ -330,12 +343,12 @@ function render(){
   const L=filtrar(), A=L.filter(aberto), sA=soma(A);
   const CH=L.filter(r=>r['Dia carregamento']===HOJE), EH=L.filter(r=>r['Dia entrada']===HOJE);
   const g={}; L.forEach(r=>(g[r['Depósito']+'|'+r.Transportadora] ??= []).push(r));
-  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), s=somaOcupacao(R.filter(ocupaDia)), lim=LIM[k]||null,
+  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), s0=somaOcupacao(R.filter(ocupaDia)),
+     vol=AJ.volume[k], bv=(vol && vol.dia===HOJE) ? Math.min(vol.base||0, s0.tot) : 0, s=descontar(s0,bv), lim=LIM[k]||null,
      pct = lim ? s.tot/lim*100 : null, man = (k in AJ.manual) ? AJ.manual[k] : (INATIVA.has(k) ? 'inativ' : BLOQ.has(k) ? 'bloq' : ''),
-     lib = !!AJ.liberados[k], inativ = man==='inativ',
-     bloqM = !inativ && !lib && man==='bloq',
-     bloqV = !inativ && !lib && !bloqM && !!(lim && s.tot > lim), bloq = bloqM || bloqV; // passou do limite: o sistema ja bloqueia
-     return {k,dep,tr,R,RA,s,sa,lim,pct,inativ,bloq,bloqM,bloqV,lib,man,ord:(pct??-1),fx:faixa(pct),
+     inativ = man==='inativ', desbloq = man==='desbloq', bloqM = man==='bloq',
+     bloqV = !inativ && !desbloq && !bloqM && !!(lim && s.tot > lim), bloq = bloqM || bloqV; // passou do limite: o sistema ja bloqueia
+     return {k,dep,tr,R,RA,s,sa,lim,pct,inativ,desbloq,bloq,bloqM,bloqV,man,vol,bv,ord:(pct??-1),fx:faixa(pct),
              ent:tot(R.filter(r=>r['Dia entrada']===HOJE)), car:tot(R.filter(r=>r['Dia carregamento']===HOJE))};});
   if (document.getElementById('fSoLim').checked) cards = cards.filter(c=>c.lim);
   const nAl = cards.filter(c=>c.fx>=2).length, nEs = cards.filter(c=>c.fx===3).length;
@@ -363,10 +376,10 @@ function render(){
     const tag = c.inativ ? `<span class="tag" style="background:#7a0c1f">⛔ INATIVADA</span>`
               : c.bloqM ? `<span class="tag" style="background:#5b2a86">✋ BLOQUEADA · MANUAL</span>`
               : c.bloqV ? `<span class="tag" style="background:#c0172f">❌ BLOQUEADA · VOLUME</span>`
-              : c.lib ? `<span class="tag" style="background:#14733b">✅ CONTAGEM LIBERADA${c.lim?' · '+c.pct.toLocaleString('pt-BR',{maximumFractionDigits:0})+'%':''}</span>`
+              : c.desbloq ? `<span class="tag" style="background:#14733b">✅ DESBLOQUEADA · MANUAL${c.lim?' · '+c.pct.toLocaleString('pt-BR',{maximumFractionDigits:0})+'%':''}</span>`
               : c.lim ? `<span class="tag" style="background:${FX[c.fx]}">${c.pct.toLocaleString('pt-BR',{maximumFractionDigits:0})}% do limite</span>`
                       : `<span class="tag" style="background:#8a93a5">sem limite</span>`;
-    return cab + `<div class="card ${c.inativ?'inativ':c.bloqM?'bloqm':c.bloqV?'bloq':c.lib?'lib':c.fx>=2?'f'+(c.fx+1):''}">
+    return cab + `<div class="card ${c.inativ?'inativ':c.bloqM?'bloqm':c.bloqV?'bloq':c.desbloq?'lib':c.fx>=2?'f'+(c.fx+1):''}">
       ${modo==='rank'?`<div class="pos">${i+1}º</div>`:''}
       <div class="top"><div><div class="nome ${c.tr==='(SEM TRANSPORTADORA)'?'alerta':''}">${esc(c.tr)}</div>
         <div class="dp">📍 ${esc(c.dep)}${ufs?' · '+esc(ufs):''}</div></div>${tag}</div>
@@ -375,11 +388,18 @@ function render(){
         <span>Carreg. hoje<b style="color:var(--car)">${fmt(c.car)}</b></span>
         <span>A proc.<b>${fmt(c.sa.apr)}</b></span>
         <span>${c.lim?(c.lim>=c.s.tot?'Livre<b>'+fmt(c.lim-c.s.tot):'Passou<b style="color:var(--estouro)">'+fmt(c.s.tot-c.lim))+'</b>':'Remessas<b>'+c.RA.length+'</b>'}</span></div>
+      ${c.bv?`<div class="libnote">🔓 Volume liberado às ${esc((c.vol&&c.vol.hora)||'')} · conta só o que entrou depois (${fmt(c.bv)} pneus zerados)</div>`:''}
       ${EDIT?`<div class="edit" data-k="${esc(c.k)}">
         <label>Limite <input type="number" min="0" class="edLim" value="${c.lim||''}" placeholder="sem"></label>
         <button type="button" class="edOk">Salvar</button>
-        <label><input type="checkbox" class="edLib" ${c.lib?'checked':''}> contagem liberada</label>
-        <select class="edSt"><option value="">sem marcação manual</option><option value="bloq" ${c.man==='bloq'?'selected':''}>✋ bloqueada (manual)</option><option value="inativ" ${c.man==='inativ'?'selected':''}>⛔ inativada</option></select>
+        <div class="edBtns">
+          <button type="button" data-a="vol">🔓 Liberar volume</button>
+          ${c.bv?'<button type="button" data-a="volx">↩ desfazer liberação</button>':''}
+          <button type="button" data-a="bloq" class="${c.man==='bloq'?'on':''}">✋ Bloquear</button>
+          <button type="button" data-a="desbloq" class="${c.man==='desbloq'?'on':''}">✅ Desbloquear</button>
+          <button type="button" data-a="inativ" class="${c.man==='inativ'?'on':''}">⛔ Inativar</button>
+          ${(c.k in AJ.manual)?'<button type="button" data-a="auto">↩ automático</button>':''}
+        </div>
       </div>`:''}
       ${placas.length?`<div class="placas">Carregou hoje: ${placas.map(p=>`<span>${esc(p)}</span>`).join('')}</div>`:''}
     </div>`;}).join('') : '<div class="vazio">Nenhum caminhão com esses filtros.</div>';
@@ -448,11 +468,11 @@ function renderManual(){
   const box=document.getElementById('painelManual'); if(!box || box.style.display==='none') return;
   const ks=chavesTodas(), deps=[...new Set(ks.map(k=>k.split('|')[0]))];
   const dep0=document.getElementById('mOrig')?.value || deps[0];
-  const lista=ks.filter(k=>manualAtual(k)).map(k=>`<span class="chip">${manualAtual(k)==='inativ'?'⛔':'✋'} ${esc(k.replace('|',' · '))} <button type="button" data-rm="${esc(k)}" title="Remover">✕</button></span>`).join('') || '<span style="color:var(--sub);font-size:12px">Nenhuma marcação manual.</span>';
+  const lista=ks.filter(k=>manualAtual(k)).map(k=>`<span class="chip">${({inativ:'⛔',desbloq:'✅'})[manualAtual(k)]||'✋'} ${esc(k.replace('|',' · '))} <button type="button" data-rm="${esc(k)}" title="Remover">✕</button></span>`).join('') || '<span style="color:var(--sub);font-size:12px">Nenhuma marcação manual.</span>';
   box.innerHTML = `<b>Bloqueio / inativação manual</b>
     <select id="mOrig">${deps.map(d=>`<option ${d===dep0?'selected':''}>${esc(d)}</option>`).join('')}</select>
     <select id="mTr">${ks.filter(k=>k.startsWith(dep0+'|')).map(k=>`<option value="${esc(k)}">${esc(k.split('|')[1])}</option>`).join('')}</select>
-    <select id="mTipo"><option value="bloq">✋ Bloqueada (manual)</option><option value="inativ">⛔ Inativada</option></select>
+    <select id="mTipo"><option value="bloq">✋ Bloqueada (manual)</option><option value="inativ">⛔ Inativada</option><option value="desbloq">✅ Desbloqueada</option></select>
     <button type="button" id="mAdd">Adicionar</button>
     <div style="flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px">${lista}</div>`;
 }
@@ -462,17 +482,34 @@ document.getElementById('btnManual').addEventListener('click',()=>{
 if (!EDIT) document.getElementById('btnManual').style.display='none';
 document.getElementById('painelManual').addEventListener('change',e=>{ if(e.target.id==='mOrig') renderManual(); });
 document.getElementById('painelManual').addEventListener('click',e=>{
-  if (e.target.id==='mAdd'){ const k=document.getElementById('mTr').value; if(!k) return; AJ.manual[k]=document.getElementById('mTipo').value; delete AJ.liberados[k]; salvarAj(); }
+  if (e.target.id==='mAdd'){ const k=document.getElementById('mTr').value; if(!k) return; AJ.manual[k]=document.getElementById('mTipo').value; salvarAj(); }
   const rm=e.target.dataset?.rm; if (rm){ AJ.manual[rm]=''; salvarAj(); }
 });
+const ocupAtual = k => somaOcupacao(REM.filter(r=>(r['Depósito']+'|'+r.Transportadora)===k && ocupaDia(r))).tot;
+const horaAgora = () => new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+// Liberar volume: a contagem recomeca do zero a partir de agora; bloqueio manual (inclusive o do relatorio) cai junto.
+function liberarVolume(k){
+  AJ.volume[k]={dia:HOJE, base:ocupAtual(k), hora:horaAgora()};
+  if (manualAtual(k)==='bloq') AJ.manual[k]='';
+}
 const gridEl=document.getElementById('grid');
-gridEl.addEventListener('click',e=>{ const b=e.target.closest('.edOk'); if(!b) return; const bx=b.closest('.edit'); setLimite(bx.dataset.k, bx.querySelector('.edLim').value); salvarAj(); });
-gridEl.addEventListener('keydown',e=>{ if(e.key==='Enter' && e.target.classList.contains('edLim')){ const bx=e.target.closest('.edit'); setLimite(bx.dataset.k, e.target.value); salvarAj(); } });
-gridEl.addEventListener('change',e=>{
-  const bx=e.target.closest('.edit'); if(!bx) return; const k=bx.dataset.k;
-  if (e.target.classList.contains('edLib')){ if(e.target.checked) AJ.liberados[k]=true; else delete AJ.liberados[k]; salvarAj(); }
-  if (e.target.classList.contains('edSt')){ AJ.manual[k]=e.target.value; salvarAj(); }
+gridEl.addEventListener('click',e=>{
+  const bx=e.target.closest('.edit'); if(!bx) return; const k=bx.dataset.k, a=e.target.dataset.a;
+  if (e.target.classList.contains('edOk')) setLimite(k, bx.querySelector('.edLim').value);
+  else if (a==='vol') liberarVolume(k);
+  else if (a==='volx') delete AJ.volume[k];
+  else if (a==='bloq' || a==='desbloq' || a==='inativ') AJ.manual[k]=a;
+  else if (a==='auto') delete AJ.manual[k];
+  else return;
+  salvarAj();
 });
+gridEl.addEventListener('keydown',e=>{ if(e.key==='Enter' && e.target.classList.contains('edLim')){ const bx=e.target.closest('.edit'); setLimite(bx.dataset.k, e.target.value); salvarAj(); } });
+document.getElementById('btnLiberarTodos').addEventListener('click',()=>{
+  if (!confirm('Liberar o volume de TODAS as transportadoras?\n\nA contagem de cada uma recomeça do zero a partir de agora (como a virada do relatório) e os bloqueios manuais caem. Inativadas e desbloqueadas não mudam.')) return;
+  chavesTodas().forEach(k=>{ if (manualAtual(k)==='inativ' || ocupAtual(k)<=0) return; liberarVolume(k); });
+  salvarAj();
+});
+if (!EDIT) document.getElementById('btnLiberarTodos').style.display='none';
 document.querySelectorAll('#fOrd button').forEach(b=>b.onclick=()=>{modo=b.dataset.v;
   document.querySelectorAll('#fOrd button').forEach(x=>x.classList.toggle('on',x===b)); render();});
 document.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{const k=th.dataset.k; ord={k,d:ord.k===k?-ord.d:-1}; render();});

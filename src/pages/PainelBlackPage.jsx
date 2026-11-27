@@ -22,18 +22,21 @@ function situacao(snapshot, ultimaRodada) {
   return { cor: '#14733b', texto: `Atualizado em ${dataHora(snapshot.gerado_em)} (há ${minutos < 60 ? `${minutos} min` : `${Math.floor(minutos / 60)} h`}).` };
 }
 
-// Ajustes feitos na tela (limite editado, contagem liberada, bloqueio/inativacao manual) ficam numa linha propria
+// Ajustes feitos na tela (limite editado, volume liberado, bloqueio/desbloqueio/inativacao manual) ficam numa linha propria
 // (id = 'ajustes') da mesma tabela do snapshot: o robo so mexe na linha 'atual', entao nao conflita.
 const AJUSTES_ID = 'ajustes';
 function limparAjustes(a) {
   const x = a && typeof a === 'object' ? a : {};
   const limites = {};
   Object.entries(x.limites || {}).forEach(([k, v]) => { const n = Number(v); if (k && Number.isFinite(n) && n > 0) limites[String(k)] = n; });
-  const liberados = {};
-  Object.entries(x.liberados || {}).forEach(([k, v]) => { if (k && v === true) liberados[String(k)] = true; });
+  const volume = {};
+  Object.entries(x.volume || {}).forEach(([k, v]) => {
+    const base = Number(v?.base);
+    if (k && v && typeof v.dia === 'string' && Number.isFinite(base) && base >= 0) volume[String(k)] = { dia: v.dia, base, hora: String(v.hora || '') };
+  });
   const manual = {};
-  Object.entries(x.manual || {}).forEach(([k, v]) => { if (k && ['bloq', 'inativ', ''].includes(v)) manual[String(k)] = v; });
-  return { limites, liberados, manual };
+  Object.entries(x.manual || {}).forEach(([k, v]) => { if (k && ['bloq', 'inativ', 'desbloq', ''].includes(v)) manual[String(k)] = v; });
+  return { limites, volume, manual };
 }
 
 function montarHtml(payload, ajustes, editavel) {
