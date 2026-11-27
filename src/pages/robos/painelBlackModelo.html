@@ -188,10 +188,8 @@ const LIM_PLANILHA = {"D001 - Itajaí SC|ALFA": 200,
   "D001 - Itajaí SC|REUNIDAS": 500,
   "D002 - Jaboatão dos Guararapes|DOMINALOG": 150,
   "D002 - Jaboatão dos Guararapes|TERRA BRASIL": 600,
-  "D003 - Itupeva|RPA": {"padrao": 2000, "2026-11-01": 0, "2026-11-02": 0, "2026-11-06": 1843, "2026-11-07": 1440, "2026-11-08": 0, "2026-11-12": 1843, "2026-11-13": 1728, "2026-11-14": 1152, "2026-11-15": 0, "2026-11-19": 1843, "2026-11-20": 0, "2026-11-21": 1728, "2026-11-22": 173, "2026-12-05": 982},
   "D004 - Serra|FERNANDITO": 150,
   "D004 - Serra|GENEROSO": {"padrao": 600, "2026-11-01": 0, "2026-11-02": 0, "2026-11-07": 0, "2026-11-08": 0, "2026-11-14": 0, "2026-11-15": 0, "2026-11-20": 0, "2026-11-21": 0, "2026-11-22": 0, "2026-11-26": 750, "2026-11-27": 750, "2026-11-28": 750, "2026-11-29": 750},
-  "D004 - Serra|RPA": {"padrao": 2000, "2026-11-01": 0, "2026-11-02": 0, "2026-11-07": 1849, "2026-11-08": 0, "2026-11-14": 1479, "2026-11-15": 0, "2026-11-20": 0, "2026-11-22": 222, "2026-12-05": 1258},
   "D005 - Contagem|TRANSLOVATO": 1800,
   "D033 - Rio de Janeiro|PAJUCARA": 800,
   "D033 - Rio de Janeiro|TAM": {"padrao": 300, "2026-11-07": 0, "2026-11-14": 0, "2026-11-25": 400, "2026-11-26": 400, "2026-11-27": 400, "2026-11-28": 400, "2026-11-29": 400, "2026-11-30": 400},
@@ -210,6 +208,10 @@ const LIM_AJUSTE = {
   'D002 - Jaboatão dos Guararapes|TERRA BRASIL': 600,
 };
 Object.assign(LIM, LIM_AJUSTE);
+// RPA so tem unidade Black em Itajai (0001 - BLACK: 4201/4252) e Jaboatao (0002 - BLACK: 4204/4219):
+// nao opera Black saindo de Serra nem de Itupeva (por isso nao tem limite la).
+const SEM_OPERACAO = ['D004 - Serra|RPA', 'D003 - Itupeva|RPA'];
+SEM_OPERACAO.forEach(k=>{ delete LIM[k]; });
 // Bloqueadas no sistema (limite 1 no relatorio): o card mostra bloqueada e nao entra no alerta.
 const BLOQ = new Set([
   'D001 - Itajaí SC|TAM', 'D004 - Serra|TAM', 'D002 - Jaboatão dos Guararapes|TAM',
