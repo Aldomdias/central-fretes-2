@@ -57,6 +57,7 @@ import AutorizacoesTransportePage from './pages/AutorizacoesTransportePage';
 import GestaoContratosPage from './pages/GestaoContratosPage';
 import RobosPage from './pages/RobosPage';
 import AlertasCteValorPage from './pages/AlertasCteValorPage';
+import PainelBlackPage from './pages/PainelBlackPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, carregarUsuariosAsync, MODULOS_SISTEMA, sairLocal, usuarioPodeAdministrarUsuarios, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
@@ -79,7 +80,7 @@ const PAGINAS_PERMITIDAS = [
   'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'tabela-padrao-b2c', 'rotas-b2c', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
   'icms-uf', 'auditoria-ecommerce', 'usuarios-ativos', 'consumo-sistema',
   'importar-descontos-obtidos', 'painel-descontos-obtidos',
-  'gestao-contratos', 'autorizacoes-transporte-b2c', 'autorizacoes-transporte-atacado', 'autorizacoes-transporte-lotacao', 'autorizacoes-suprimentos', 'robos', 'alertas-cte-valor', 'consulta-tracking',
+  'gestao-contratos', 'autorizacoes-transporte-b2c', 'autorizacoes-transporte-atacado', 'autorizacoes-transporte-lotacao', 'autorizacoes-suprimentos', 'robos', 'alertas-cte-valor', 'consulta-tracking', 'painel-black',
 ];
 
 function primeiraPaginaPermitida(usuario) {
@@ -304,6 +305,7 @@ export default function App() {
     robos: <RobosPage />,
     'alertas-cte-valor': <AlertasCteValorPage sessao={sessao} />,
     'consulta-tracking': <ConsultaTrackingPage />,
+    'painel-black': <PainelBlackPage />,
     transportadoras: <TransportadorasPage transportadoras={transportadorasMemo} transportadoraSelecionadaId={transportadoraSelecionadaId} origemSelecionadaId={origemSelecionadaId} onOpenTransportadora={abrirTransportadora} onOpenOrigem={setOrigemSelecionadaId} onVoltar={voltarTransportadoras} store={store} sessao={sessao} />,
   };
 
