@@ -336,7 +336,7 @@ function render(){
   // Saldo (o que ainda nao carregou) = que veio de ontem sem carregamento + entrou hoje - carregou hoje.
   // Estourou o limite -> bloqueada por volume. Nao estourou -> liberada. O que ja carregou sai do saldo.
   // Flag 'so carregados com placa': so abate o carregado que tem placa; o carregado sem placa (sp) continua na conta.
-  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(RA), regraPlaca=AJ.soPlaca && !SEM_PLACA.has(tr), sp=regraPlaca ? tot(R.filter(r=>r['Dia carregamento']===HOJE && !r.Placa)) : 0, cp=regraPlaca ? tot(R.filter(r=>r['Dia carregamento']===HOJE && r.Placa)) : 0, s={...sa, sai:sp, tot:sa.tot+sp}, lim=LIM[k]||null,
+  let cards = Object.entries(g).map(([k,R])=>{const [dep,tr]=k.split('|'), RA=R.filter(aberto), sa=soma(AJ.soPlaca ? RA.filter(r=>!r.Placa) : RA), regraPlaca=AJ.soPlaca && !SEM_PLACA.has(tr), sp=regraPlaca ? tot(R.filter(r=>r['Dia carregamento']===HOJE && !r.Placa)) : 0, cp=(regraPlaca ? tot(R.filter(r=>r['Dia carregamento']===HOJE && r.Placa)) : 0) + (AJ.soPlaca ? tot(RA.filter(r=>r.Placa)) : 0), s={...sa, sai:sp, tot:sa.tot+sp}, lim=LIM[k]||null,
      pct = lim ? s.tot/lim*100 : null, man = (k in AJ.manual) ? AJ.manual[k] : (INATIVA.has(k) ? 'inativ' : BLOQ.has(k) ? 'bloq' : ''),
      inativ = man==='inativ', desbloq = man==='desbloq', bloqM = man==='bloq',
      bloqV = !inativ && !desbloq && !bloqM && !!(lim && s.tot > lim), bloq = bloqM || bloqV;
